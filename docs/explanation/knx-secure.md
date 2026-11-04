@@ -141,9 +141,22 @@ link was changed on its way to the phone: close the page and start again.
 
 **The hosted page and relay.** By default the link opens
 `https://bussard-relay.tmbo.dev/enroll/`, served by the hosted relay, and the
-messages pass through that relay. The page talks to no other address. Neither keeps a label: bussard deletes the session when it ends, and
-the relay forgets it after 30 minutes at the latest. `[enroll]` in
-`bussard.toml` points both at your own copies.
+messages pass through that relay. The page talks to no other address.
+Neither keeps a label: bussard deletes the session when it ends, and the
+relay forgets it 15 minutes after the last message, or 4 hours after it
+started. `[enroll]` in `bussard.toml` points both at your own copies;
+bussard then says so before it shows the link.
+
+**One phone per session.** The first phone that opens the link owns the
+session. Another phone that opens it is refused: nothing it sends is saved,
+its page says the session belongs to another phone, and bussard warns that
+another phone tried to join. If that was not you, someone else has the link:
+stop the session and start a new one.
+
+**How long a session lasts.** A phone has 10 minutes to open the link. The
+session then stays open while the page is open, up to 4 hours, and ends 15
+minutes after the last label if the page was closed or the phone locked. A
+phone that loses signal or switches networks comes back as the same phone.
 
 **Local mode.** `bussard keys enroll --local` serves the page and the relay
 from bussard itself on `127.0.0.1`. Open the link in a browser on the same

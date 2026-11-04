@@ -2,9 +2,10 @@
 // in README.md ("API cases"); bussard's local relay (#729) runs the same file.
 //
 // Without RELAY_URL the cases run against src/worker.js under Node
-// (node-host.mjs). With RELAY_URL (and RELAY_URL_SHORT_TTL for the expiry
-// cases, a relay whose sessions expire after `short_ttl_seconds`) they run
-// against any relay, for example `wrangler dev`.
+// (node-host.mjs). With RELAY_URL (and RELAY_URL_SHORT for the expiry cases,
+// a relay whose sessions expire after `short.idle_seconds` without a write
+// and `short.max_seconds` at most) they run against any relay, for example
+// `wrangler dev`.
 
 import { after, before, describe, test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -19,16 +20,19 @@ const local = [];
 before(async () => {
   if (process.env.RELAY_URL) {
     relays.default = process.env.RELAY_URL.replace(/\/$/, '');
-    if (process.env.RELAY_URL_SHORT_TTL) {
-      relays.short_ttl = process.env.RELAY_URL_SHORT_TTL.replace(/\/$/, '');
+    if (process.env.RELAY_URL_SHORT) {
+      relays.short = process.env.RELAY_URL_SHORT.replace(/\/$/, '');
     }
     return;
   }
   const normal = await startRelay();
-  const short = await startRelay({ SESSION_TTL_SECONDS: String(spec.short_ttl_seconds) });
+  const short = await startRelay({
+    SESSION_IDLE_SECONDS: String(spec.short.idle_seconds),
+    SESSION_MAX_SECONDS: String(spec.short.max_seconds),
+  });
   local.push(normal, short);
   relays.default = normal.url;
-  relays.short_ttl = short.url;
+  relays.short = short.url;
 });
 
 after(async () => {
@@ -107,7 +111,7 @@ describe('relay API cases', { concurrency: true }, () => {
     test(c.name, async (t) => {
       const base = relays[relay];
       if (!base) {
-        t.skip(`no ${relay} relay (set RELAY_URL_SHORT_TTL)`);
+        t.skip(`no ${relay} relay (set RELAY_URL_SHORT)`);
         return;
       }
       const ctx = {

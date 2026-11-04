@@ -45,7 +45,7 @@ use crate::args::Parameters;
 use bussard_secure::Password;
 use bussard_service::enroll_session::{
     CertificateOutcome, CertificateSink, DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession,
-    EnrollTally, HttpRelay, RunOptions, data_path, hosted_endpoints,
+    EnrollTally, HttpRelay, RunOptions, data_path, endpoint_warnings, hosted_endpoints,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
 use rmcp::handler::server::tool::{InputResponses, RequestState};
@@ -68,7 +68,7 @@ use crate::server::BussardMcp;
 pub const ENROLL_TOOLS: [&str; 2] = ["knx_enroll_certificates", "knx_enroll_status"];
 
 /// The relay's session lifetime, which bounds a session.
-const SESSION_LIFETIME_SECS: u64 = 30 * 60;
+const SESSION_LIFETIME_SECS: u64 = 4 * 60 * 60;
 
 /// The longest `wait_seconds` of `knx_enroll_status`.
 const MAX_STATUS_WAIT_SECS: u64 = 120;
@@ -113,6 +113,8 @@ pub struct EnrollStatusArgs {
 struct Progress {
     /// Phones (page loads) that joined.
     phones: usize,
+    /// Other phones that tried to join and were refused.
+    refused_phones: usize,
     /// One outcome per label, in arrival order.
     results: Vec<CertificateOutcome>,
     /// Messages dropped (not an envelope, not for this session).
@@ -130,6 +132,8 @@ struct EnrollJob {
     /// multi round-trip retry names the session by.
     elicitation_id: String,
     local: bool,
+    /// F13: the page or relay is not the default (empty otherwise).
+    warnings: Vec<String>,
     started: Instant,
     stop: Arc<AtomicBool>,
     progress: Arc<Mutex<Progress>>,
@@ -311,7 +315,7 @@ fn status_json(job: &EnrollJob) -> Value {
         "The session is closed. Give the human `summary` and each entry of `next_steps` \
          (command and why). Those commands run at the CLI."
     };
-    let summary = format!(
+    let mut summary = format!(
         "{} {}",
         if running {
             "The certificate page is open."
@@ -320,6 +324,24 @@ fn status_json(job: &EnrollJob) -> Value {
         },
         tally.summary()
     );
+    let refused_warning = (progress.refused_phones > 0).then(|| {
+        format!(
+            "Another phone tried to join this session and was refused ({} so far); nothing it \
+             sent was saved. If it was not the human's, someone else has the link: stop the \
+             session (stop: true) and start a new one.",
+            progress.refused_phones
+        )
+    });
+    if let Some(warning) = &refused_warning {
+        summary = format!("{warning} {summary}");
+    }
+    let next_step = if refused_warning.is_some() {
+        "Tell the human first, plainly, that another phone tried to join this session \
+         (`warning`), and ask whether that was them; if not, call knx_enroll_status with \
+         stop: true and start a new session."
+    } else {
+        next_step
+    };
     json!({
         "ok": progress.error.is_none(),
         "session": if running { "running" } else { "ended" },
@@ -327,6 +349,8 @@ fn status_json(job: &EnrollJob) -> Value {
         "error": progress.error,
         "local": job.local,
         "phones": progress.phones,
+        "refused_phones": progress.refused_phones,
+        "warning": refused_warning,
         "certificates": progress.results.len(),
         "stored": stored,
         "ignored": progress.ignored,
@@ -375,13 +399,15 @@ fn run_session(
         &mut sink,
         RunOptions {
             wait_secs: RUN_WAIT_SECS,
+            ..RunOptions::default()
         },
         &job.stop,
         &mut |event| {
             {
                 let mut progress = job.progress();
                 match event {
-                    EnrollEvent::PhoneJoined { phones } => progress.phones = phones,
+                    EnrollEvent::PhoneJoined => progress.phones = 1,
+                    EnrollEvent::PhoneRefused { phones } => progress.refused_phones = phones,
                     EnrollEvent::Certificate(outcome) => progress.results.push(outcome),
                     EnrollEvent::Ignored { reason } => {
                         progress.ignored += 1;
@@ -403,6 +429,9 @@ fn run_session(
                 progress.end = Some(match summary.end {
                     EnrollEnd::PhoneDone => "phone_done",
                     EnrollEnd::Stopped => "stopped",
+                    EnrollEnd::ConnectTimeout => "connect_timeout",
+                    EnrollEnd::IdleTimeout => "idle_timeout",
+                    EnrollEnd::MaxDuration => "max_duration",
                     EnrollEnd::Expired => "expired",
                 });
             }
@@ -434,7 +463,10 @@ impl BussardMcp {
         instead, for a browser on the same computer (a webcam or typed codes); without it \
         the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
         session at a time; it ends when the human finishes on the phone, declines the link, \
-        on knx_enroll_status with stop: true, or after 30 minutes. Writes the key store only \
+        on knx_enroll_status with stop: true, when no phone joins within 10 minutes, after 15 \
+        minutes without a certificate or the page open, or after 4 hours. One phone per \
+        session: another phone that opens the link is refused, and knx_enroll_status reports \
+        it in `refused_phones` and `warning`. Writes the key store only \
         (needs BUSSARD_KEYRING_PASSWORD on the server), never the model or the bus."
     )]
     async fn knx_enroll_certificates(
@@ -499,8 +531,10 @@ impl BussardMcp {
     /// `knx_enroll_status`: the results of the enrolment session so far.
     #[tool(
         description = "The certificate enrolment session started by knx_enroll_certificates: \
-        `session` (`running`, `ended` or `none`), `end` (`phone_done`, `stopped`, `expired` or \
-        `error`), `phones`, `certificates`, `stored`, and `results`, one entry per label in \
+        `session` (`running`, `ended` or `none`), `end` (`phone_done`, `stopped`, \
+        `connect_timeout`, `idle_timeout`, `max_duration`, `expired` or `error`), `phones`, \
+        `refused_phones` and `warning` (another phone tried to join: tell the human first), \
+        `certificates`, `stored`, and `results`, one entry per label in \
         arrival order with `serial`, `address` and `name` of the matched device, `status` \
         (`stored`: saved on that device; `unassigned`: saved under its serial until a device \
         reports it; `already_stored`; `conflict`: the store holds another key for the serial, \
@@ -584,11 +618,21 @@ impl BussardMcp {
         // Local mode: page and relay share the origin, so the link names no relay.
         let link = session.link(&page, relay_in_link.then(|| relay.base()));
         let is_local = local.is_some();
-        let message = elicitation_message(link_host(&link), &session.fingerprint(), is_local);
+        // F13: say so when the page or relay is not the project's.
+        let warnings = if relay_in_link {
+            endpoint_warnings(&relay_url, &page)
+        } else {
+            Vec::new()
+        };
+        let mut message = elicitation_message(link_host(&link), &session.fingerprint(), is_local);
+        for warning in &warnings {
+            message.push_str(&format!(" Warning: {warning}."));
+        }
         let (changed, _) = watch::channel(0u64);
         let job = Arc::new(EnrollJob {
             elicitation_id,
             local: is_local,
+            warnings,
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::default(),
@@ -669,6 +713,9 @@ impl BussardMcp {
                           `summary`, `data_path` and the `read_more` link, then call \
                           knx_enroll_status (wait_seconds to wait for certificates).",
         });
+        if !job.warnings.is_empty() {
+            result["warnings"] = json!(job.warnings);
+        }
         if let Some(note) = self.keyring_note() {
             result["note"] = json!(note);
         }
@@ -761,6 +808,7 @@ mod tests {
         EnrollJob {
             elicitation_id: "00".to_string(),
             local: false,
+            warnings: Vec::new(),
             started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
             progress: Arc::new(Mutex::new(Progress {

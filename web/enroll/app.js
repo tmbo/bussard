@@ -10,6 +10,7 @@ import {
   checkCertificate,
   deriveSessionKey,
   doneMessage,
+  helloMessage,
   extractFromQr,
   fingerprint,
   formatCertificate,
@@ -129,7 +130,7 @@ async function main() {
   }
   Object.assign(state, { link, subtle, key, phone });
 
-  const code = (await fingerprint(subtle, link.bussardPublic)).replace("-", "‑");
+  const code = (await fingerprint(subtle, link.sid, link.bussardPublic)).replace("-", "‑");
   $("fingerprint").textContent = code;
   $("code-chip-text").textContent = code;
   $("code-dialog-code").textContent = code;
@@ -161,7 +162,24 @@ function confirmCode() {
   wireEntry();
   updateSummary();
   setMode(readPref(prefStore(), PREF_KEYS.mode, ["scan", "type"], "scan"), false);
+  // Join: the first phone whose message bussard opens owns the session.
+  sendHello();
+  setInterval(keepAlive, 60_000);
   pollDown();
+}
+
+/** The idle keep-alive: bussard ends a session 15 minutes after the last message. */
+const KEEP_ALIVE_MS = 5 * 60_000;
+
+function sendHello() {
+  state.sendQueue.push({ control: true, silent: true, plaintext: helloMessage() });
+  pumpSend();
+}
+
+/** Sends `hello` while the page is open and has sent nothing for 5 minutes. */
+function keepAlive() {
+  if (state.phase !== "active" || state.sendQueue.length > 0) return;
+  if (Date.now() - (state.lastSent ?? 0) >= KEEP_ALIVE_MS) sendHello();
 }
 
 /**
@@ -526,11 +544,12 @@ async function pumpSend() {
       }
       const outcome = await postUp(item.plaintext);
       if (outcome.ok) {
+        state.lastSent = Date.now();
         setRelayDown(false);
         backoff = 1000;
         state.sendQueue.shift();
         if (item.control) {
-          banner("info", "Sent. Waiting for bussard to close the session.");
+          if (!item.silent) banner("info", "Sent. Waiting for bussard to close the session.");
         } else {
           // The certificate no longer needs to be in memory once sent.
           item.plaintext = null;
@@ -660,6 +679,12 @@ async function handleDown(envelope) {
   if (!msg) return;
   if (msg.type === "closed") {
     closed(endTitle(), "info", msg.stored);
+    return;
+  }
+  if (msg.type === "refused") {
+    closed(
+      "This session belongs to another phone, so nothing from this one was saved. If that was not you, stop the session in bussard and start a new one.",
+    );
     return;
   }
   const item = state.items.get(msg.id);

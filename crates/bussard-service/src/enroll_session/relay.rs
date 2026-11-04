@@ -39,7 +39,7 @@ pub struct RelayPoll {
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum RelayError {
     /// The relay does not know the session (expired or never created).
-    #[error("the relay does not know this enrolment session (expired after 30 minutes?)")]
+    #[error("the relay does not know this enrolment session (it expired, or was closed)")]
     NotFound,
     /// The relay already has a session with this id.
     #[error("the relay already has this enrolment session")]
@@ -69,8 +69,10 @@ pub enum RelayError {
         /// The request.
         what: &'static str,
     },
-    /// The relay URL is not HTTP(S).
-    #[error("the relay URL {0} is not an http:// or https:// URL")]
+    /// The relay URL is not `https://`, or `http://` on a loopback host.
+    #[error(
+        "the relay URL {0} must be https:// (plain http:// only on localhost, 127.0.0.0/8 or [::1])"
+    )]
     BadUrl(String),
     /// An envelope is larger than the protocol allows.
     #[error("an envelope exceeds {MAX_ENVELOPE_BYTES} bytes")]
@@ -149,10 +151,19 @@ impl HttpRelay {
     ///
     /// # Errors
     ///
-    /// [`RelayError::BadUrl`] when `base` is not an HTTP(S) URL.
+    /// [`RelayError::BadUrl`] when `base` is not `https://`, or `http://`
+    /// on a loopback host (finding F9: a plain-http relay on the network
+    /// would expose the owner token and the session's timing).
     pub fn new(base: &str, session: &EnrollSession) -> Result<Self, RelayError> {
         let base = base.trim().trim_end_matches('/').to_string();
-        if !(base.starts_with("http://") || base.starts_with("https://")) {
+        let allowed = if base.starts_with("https://") {
+            true
+        } else if let Some(rest) = base.strip_prefix("http://") {
+            is_loopback_authority(rest.split('/').next().unwrap_or_default())
+        } else {
+            false
+        };
+        if !allowed {
             return Err(RelayError::BadUrl(base));
         }
         let agent = ureq::AgentBuilder::new()
@@ -202,6 +213,26 @@ impl HttpRelay {
             }),
         }
     }
+}
+
+/// Whether a URL authority (`host[:port]`, no user info) names a loopback
+/// host: `localhost`, an address in `127.0.0.0/8`, or `[::1]`.
+fn is_loopback_authority(authority: &str) -> bool {
+    if authority.contains('@') {
+        return false;
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => match v6.split_once(']') {
+            Some((host, _)) => host,
+            None => return false,
+        },
+        None => authority.split(':').next().unwrap_or_default(),
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>()
+        .is_ok_and(|ip| ip.is_loopback())
 }
 
 impl Relay for HttpRelay {
@@ -274,6 +305,35 @@ mod tests {
         let relay = HttpRelay::new("https://relay.example/", &session)?;
         assert_eq!(relay.base(), "https://relay.example");
         assert!(!format!("{relay:?}").contains("Bearer"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_http_relay_new_allows_plain_http_only_on_loopback()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let session = EnrollSession::new()?;
+        for ok in [
+            "http://127.0.0.1:8123",
+            "http://127.1.2.3/",
+            "http://localhost:9",
+            "http://LOCALHOST",
+            "http://[::1]:8123",
+        ] {
+            assert!(HttpRelay::new(ok, &session).is_ok(), "{ok}");
+        }
+        for bad in [
+            "http://relay.example",
+            "http://192.168.1.10:8123",
+            "http://localhost.example",
+            "http://127.0.0.1@relay.example",
+            "http://[::2]:1",
+            "http://[::1",
+        ] {
+            assert!(
+                matches!(HttpRelay::new(bad, &session), Err(RelayError::BadUrl(_))),
+                "{bad}"
+            );
+        }
         Ok(())
     }
 }

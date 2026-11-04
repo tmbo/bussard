@@ -1,16 +1,17 @@
-//! The session crypto of the certificate enrolment protocol v1 (issue #729).
+//! The session crypto of the certificate enrolment protocol v2 (issues #729,
+//! #796).
 //!
-//! The contract is `dev/enroll-protocol.md`; `dev/enroll/vectors-v1.json`
+//! The contract is `dev/enroll-protocol.md`; `dev/enroll/vectors-v2.json`
 //! holds the vectors the tests below reproduce byte for byte. bussard and the
 //! phone page each hold an X25519 key pair; the session key is
 //!
 //! ```text
 //! HKDF-SHA256(salt = sid, ikm = X25519 shared secret,
-//!             info = "bussard-enroll-v1" || b_pk || p_pk, L = 32)
+//!             info = "bussard-enroll-v2" || b_pk || p_pk, L = 32)
 //! ```
 //!
 //! and every message is AES-256-GCM sealed under it with the AAD
-//! `bussard-enroll-v1/<up|down>/<sid base64url>`.
+//! `bussard-enroll-v2/<up|down>/<sid base64url>`.
 //!
 //! # Key hygiene
 //!
@@ -24,14 +25,14 @@ use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 use x25519_dalek::{PublicKey, StaticSecret};
 use zeroize::{Zeroize, Zeroizing};
 
 /// The protocol label: the HKDF `info` prefix and the AAD prefix.
-pub const PROTOCOL: &str = "bussard-enroll-v1";
-/// The protocol version carried in the link (`v=1`) and every envelope.
-pub const VERSION: u8 = 1;
+pub const PROTOCOL: &str = "bussard-enroll-v2";
+/// The protocol version carried in the link (`v=2`) and every envelope.
+pub const VERSION: u8 = 2;
 /// Length of the session id `sid` in bytes.
 pub const SESSION_ID_LEN: usize = 16;
 /// Length of an X25519 public key in bytes.
@@ -39,8 +40,11 @@ pub const PUBLIC_KEY_LEN: usize = 32;
 /// Length of an AES-GCM nonce in bytes.
 pub const NONCE_LEN: usize = 12;
 
-/// The prefix hashed before `b_pk` to form the fingerprint.
-const FINGERPRINT_LABEL: &[u8] = b"bussard-enroll-v1 fingerprint";
+/// The PBKDF2 salt prefix of the session code; `sid` follows it.
+const SESSION_CODE_LABEL: &[u8] = b"bussard-enroll-v2 session code";
+/// PBKDF2 iterations of the session code: about a second on a mid-range
+/// phone (`dev/enroll-protocol.md`, "Session code", has the measurement).
+pub const SESSION_CODE_ITERATIONS: u32 = 1_000_000;
 
 /// The direction of an enrolment message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,21 +265,25 @@ pub fn aad(direction: Direction, sid: &[u8; SESSION_ID_LEN]) -> String {
     )
 }
 
-/// The fingerprint both sides show: the first 4 bytes of
-/// `SHA-256("bussard-enroll-v1 fingerprint" || b_pk)` as `XXXX-XXXX`.
+/// The session code both sides show (the fingerprint), `XXXX-XXXX`: 4 bytes
+/// of `PBKDF2-HMAC-SHA256(b_pk, "bussard-enroll-v2 session code" || sid,
+/// 1 000 000)`. Slow on purpose: it prices a search for a key pair whose code
+/// matches (finding F2, #796). Takes a few hundred milliseconds; call it once
+/// per session.
 #[must_use]
-pub fn fingerprint(bussard_pk: &[u8; PUBLIC_KEY_LEN]) -> String {
-    let digest = Sha256::new()
-        .chain_update(FINGERPRINT_LABEL)
-        .chain_update(bussard_pk)
-        .finalize();
+pub fn fingerprint(sid: &[u8; SESSION_ID_LEN], bussard_pk: &[u8; PUBLIC_KEY_LEN]) -> String {
+    let mut salt = Vec::with_capacity(SESSION_CODE_LABEL.len() + SESSION_ID_LEN);
+    salt.extend_from_slice(SESSION_CODE_LABEL);
+    salt.extend_from_slice(sid);
+    let mut code = [0u8; 4];
+    pbkdf2::pbkdf2_hmac::<Sha256>(bussard_pk, &salt, SESSION_CODE_ITERATIONS, &mut code);
     format!(
         "{:02X}{:02X}-{:02X}{:02X}",
-        digest[0], digest[1], digest[2], digest[3]
+        code[0], code[1], code[2], code[3]
     )
 }
 
-/// The enrolment link: `<page>#v=1&s=<sid>&k=<b_pk>&r=<relay>`, with `r`
+/// The enrolment link: `<page>#v=2&s=<sid>&k=<b_pk>&r=<relay>`, with `r`
 /// percent-encoded and left out when `relay` is `None` (page and relay on
 /// one origin).
 #[must_use]
@@ -354,7 +362,7 @@ mod tests {
     fn vectors() -> Result<serde_json::Value, Box<dyn std::error::Error>> {
         let path = concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../dev/enroll/vectors-v1.json"
+            "/../../dev/enroll/vectors-v2.json"
         );
         Ok(serde_json::from_str(&std::fs::read_to_string(path)?)?)
     }
@@ -412,16 +420,28 @@ mod tests {
         assert_eq!(*session.bussard.bussard_key(&session.sid, &p_pk)?.0, key);
         assert_eq!(*session.phone.phone_key(&session.sid, &b_pk)?.0, key);
 
-        assert_eq!(fingerprint(&b_pk), field(s, "fingerprint")?);
-        let relay = "https://relay.example";
+        assert_eq!(
+            s["session_code_iterations"].as_u64(),
+            Some(u64::from(SESSION_CODE_ITERATIONS))
+        );
+        assert_eq!(fingerprint(&session.sid, &b_pk), field(s, "session_code")?);
         assert_eq!(
             link(
                 "https://bussard-relay.tmbo.dev/enroll/",
                 &session.sid,
                 &b_pk,
-                Some(relay)
+                None
             ),
             field(s, "link")?
+        );
+        assert_eq!(
+            link(
+                "https://page.example/enroll/",
+                &session.sid,
+                &b_pk,
+                Some("https://relay.example")
+            ),
+            field(s, "link_other_relay")?
         );
         Ok(())
     }
@@ -433,9 +453,24 @@ mod tests {
         let key = session
             .bussard
             .bussard_key(&session.sid, &session.phone.public())?;
-        let messages = v["messages"].as_array().ok_or("messages")?;
-        assert_eq!(messages.len(), 3);
-        for m in messages {
+        let other = EnrollKeyPair::from_secret(hex(field(&v["other_phone"], "phone_secret")?)?);
+        let other_key: [u8; 32] = hex(field(&v["other_phone"], "key")?)?;
+        assert_eq!(
+            *session
+                .bussard
+                .bussard_key(&session.sid, &other.public())?
+                .0,
+            other_key
+        );
+        let other_key = session.bussard.bussard_key(&session.sid, &other.public())?;
+        let own = v["messages"].as_array().ok_or("messages")?;
+        let others = v["other_phone"]["messages"].as_array().ok_or("other")?;
+        assert_eq!((own.len(), others.len()), (7, 2));
+        let all = own
+            .iter()
+            .map(|m| (m, &key, session.phone.public()))
+            .chain(others.iter().map(|m| (m, &other_key, other.public())));
+        for (m, key, phone) in all {
             let direction = match field(m, "direction")? {
                 "up" => Direction::Up,
                 "down" => Direction::Down,
@@ -444,10 +479,7 @@ mod tests {
             assert_eq!(aad(direction, &session.sid), field(m, "aad")?);
             let env = &m["envelope"];
             assert_eq!(env["v"].as_u64(), Some(u64::from(VERSION)));
-            assert_eq!(
-                field(env, "pk")?,
-                URL_SAFE_NO_PAD.encode(session.phone.public())
-            );
+            assert_eq!(field(env, "pk")?, URL_SAFE_NO_PAD.encode(phone));
             let nonce: [u8; NONCE_LEN] = b64(field(env, "n")?)?;
             let plaintext = field(m, "plaintext")?;
             let sealed = key.seal(direction, &session.sid, &nonce, plaintext.as_bytes())?;
@@ -501,7 +533,7 @@ mod tests {
     fn test_link_without_relay_omits_r() {
         let link = link("http://127.0.0.1:1/enroll/", &[0; 16], &[0; 32], None);
         assert!(!link.contains("&r="), "{link}");
-        assert!(link.starts_with("http://127.0.0.1:1/enroll/#v=1&s="));
+        assert!(link.starts_with("http://127.0.0.1:1/enroll/#v=2&s="));
     }
 
     #[test]

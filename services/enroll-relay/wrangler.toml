@@ -31,3 +31,13 @@ class_name = "Session"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Session"]
+
+# Session creations per client IP and minute (dev/enroll-protocol.md,
+# "Relay API"; #796). One small object per client IP.
+[[durable_objects.bindings]]
+name = "CREATE_LIMITS"
+class_name = "CreateLimit"
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["CreateLimit"]

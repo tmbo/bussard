@@ -12,8 +12,8 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bussard_secure::enroll::{Direction, EnrollKeyPair, SessionKey};
 use bussard_service::enroll_session::{
-    CertificateOutcome, CertificateSink, DownMessage, EnrollEnd, EnrollEvent, EnrollSession,
-    EnrollStatus, Envelope, HttpRelay, RunOptions,
+    CertificateOutcome, CertificateSink, CloseReason, DownMessage, EnrollEnd, EnrollEvent,
+    EnrollSession, EnrollStatus, Envelope, HttpRelay, RunOptions,
 };
 use bussard_viz::enroll_relay::EnrollRelay;
 use serde_json::{Value, json};
@@ -21,7 +21,7 @@ use serde_json::{Value, json};
 type TestResult = Result<(), Box<dyn std::error::Error + Send + Sync>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
-/// Synthetic certificates from `dev/enroll/vectors-v1.json`.
+/// Synthetic certificates from `dev/enroll/vectors-v2.json`.
 const CERT_A: &str = "AD5ACAQDASQKDIVDUSS2NJ5IVGVKXLFNV2XR";
 const SERIAL_A: &str = "00FA01020304";
 const FDSK_A: &str = "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF";
@@ -110,8 +110,13 @@ struct FakePhone {
 
 impl FakePhone {
     fn join(link: &str) -> Result<Self, BoxError> {
+        Self::join_with(link, bussard_secure::enroll::random::<32>()?)
+    }
+
+    /// Join with a fixed phone secret: the same phone after a reload.
+    fn join_with(link: &str, secret: [u8; 32]) -> Result<Self, BoxError> {
         let params = fragment(link)?;
-        assert_eq!(params.get("v").map(String::as_str), Some("1"));
+        assert_eq!(params.get("v").map(String::as_str), Some("2"));
         let relay = percent_decode(params.get("r").ok_or("no relay")?)?;
         let sid_text = params.get("s").ok_or("no sid")?;
         let sid: [u8; 16] = URL_SAFE_NO_PAD.decode(sid_text)?.as_slice().try_into()?;
@@ -119,7 +124,7 @@ impl FakePhone {
             .decode(params.get("k").ok_or("no key")?)?
             .as_slice()
             .try_into()?;
-        let keys = EnrollKeyPair::generate()?;
+        let keys = EnrollKeyPair::from_secret(secret);
         let key = keys.phone_key(&sid, &b_pk)?;
         Ok(FakePhone {
             keys,
@@ -135,7 +140,7 @@ impl FakePhone {
             self.key
                 .seal_random(Direction::Up, &self.sid, message.to_string().as_bytes())?;
         let envelope = json!({
-            "v": 1,
+            "v": 2,
             "pk": URL_SAFE_NO_PAD.encode(self.keys.public()),
             "n": URL_SAFE_NO_PAD.encode(nonce),
             "c": URL_SAFE_NO_PAD.encode(c),
@@ -233,7 +238,10 @@ async fn test_enroll_session_end_to_end_through_local_relay() -> TestResult {
             let summary = session.run(
                 &relay,
                 &mut store,
-                RunOptions { wait_secs: 2 },
+                RunOptions {
+                    wait_secs: 2,
+                    ..RunOptions::default()
+                },
                 &stop,
                 &mut |event| events.push(event),
             )?;
@@ -245,6 +253,7 @@ async fn test_enroll_session_end_to_end_through_local_relay() -> TestResult {
         let mut phone = FakePhone::join(&link)?;
         assert_eq!(
             bussard_secure::enroll::fingerprint(
+                &phone.sid,
                 &URL_SAFE_NO_PAD
                     .decode(fragment(&link)?.get("k").ok_or("k")?)?
                     .as_slice()
@@ -288,7 +297,11 @@ async fn test_enroll_session_end_to_end_through_local_relay() -> TestResult {
     assert!(closed, "the relay session was not deleted");
     // `closed` may or may not be read before the delete empties the mailbox.
     assert!(
-        tail.iter().all(|m| *m == DownMessage::Closed { stored: 2 }),
+        tail.iter().all(|m| *m
+            == DownMessage::Closed {
+                stored: 2,
+                reason: CloseReason::Done
+            }),
         "{tail:?}"
     );
 
@@ -303,10 +316,7 @@ async fn test_enroll_session_end_to_end_through_local_relay() -> TestResult {
             .map(String::as_str),
         Some(CERT_A)
     );
-    assert_eq!(
-        events.first(),
-        Some(&EnrollEvent::PhoneJoined { phones: 1 })
-    );
+    assert_eq!(events.first(), Some(&EnrollEvent::PhoneJoined));
     assert_eq!(events.last(), Some(&EnrollEvent::PhoneDone));
 
     // Nothing bussard reports carries the certificate text or the key.
@@ -335,7 +345,10 @@ async fn test_enroll_session_stop_flag_closes_session() -> TestResult {
             Ok(session.run(
                 &relay,
                 &mut TestStore::default(),
-                RunOptions { wait_secs: 1 },
+                RunOptions {
+                    wait_secs: 1,
+                    ..RunOptions::default()
+                },
                 &stop,
                 &mut |_| {},
             )?)
@@ -353,6 +366,145 @@ async fn test_enroll_session_stop_flag_closes_session() -> TestResult {
     assert_eq!(
         serde_json::from_str::<Value>(&body)?,
         json!({"messages": [], "closed": true})
+    );
+    Ok(())
+}
+
+/// Starts the in-process relay on loopback; returns its URL.
+async fn start_relay() -> Result<String, BoxError> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let relay_url = format!("http://{}", listener.local_addr()?);
+    let router = EnrollRelay::new().router();
+    tokio::spawn(async move { axum::serve(listener, router).await });
+    Ok(relay_url)
+}
+
+/// Runs `session` over the relay at `relay_url` in a blocking task until
+/// `stop` is set or it ends; returns the summary and the events.
+fn spawn_session(
+    mut session: EnrollSession,
+    relay_url: String,
+    store: TestStore,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<
+    Result<
+        (
+            bussard_service::enroll_session::EnrollSummary,
+            Vec<EnrollEvent>,
+        ),
+        BoxError,
+    >,
+> {
+    tokio::task::spawn_blocking(move || {
+        let relay = HttpRelay::new(&relay_url, &session)?;
+        let mut events = Vec::new();
+        let mut store = store;
+        let summary = session.run(
+            &relay,
+            &mut store,
+            RunOptions {
+                wait_secs: 1,
+                ..RunOptions::default()
+            },
+            &stop,
+            &mut |event| events.push(event),
+        )?;
+        Ok((summary, events))
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_enroll_second_phone_is_refused() -> TestResult {
+    let relay_url = start_relay().await?;
+    let store = TestStore::default();
+    let session = EnrollSession::new()?;
+    let link = session.link("https://page.invalid/enroll/", Some(&relay_url));
+    let stop = Arc::new(AtomicBool::new(false));
+    let bussard = spawn_session(session, relay_url, store.clone(), Arc::clone(&stop));
+
+    let phones = tokio::task::spawn_blocking(move || -> Result<_, BoxError> {
+        let mut owner = FakePhone::join(&link)?;
+        owner.send(&json!({"type": "hello"}))?;
+        owner.send(&json!({"type": "certificate", "id": 1, "text": CERT_A}))?;
+        let owner_results = owner.results(1)?;
+        // A second phone with the same link: refused, nothing processed.
+        let mut other = FakePhone::join(&link)?;
+        other.send(&json!({"type": "certificate", "id": 1, "text": CERT_B}))?;
+        let refused = other.results(1)?;
+        other.send(&json!({"type": "done"}))?;
+        // The owner still works after the refusal.
+        owner.send(&json!({"type": "certificate", "id": 2, "text": CERT_A}))?;
+        let more = owner.results(1)?;
+        Ok((owner_results, refused, more))
+    });
+    let (owner_results, refused, more) = phones.await??;
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (summary, events) = bussard.await??;
+
+    assert_eq!(
+        owner_results,
+        [result(1, EnrollStatus::Stored, SERIAL_A, true)]
+    );
+    assert_eq!(refused, [DownMessage::Refused]);
+    assert_eq!(
+        more,
+        [result(2, EnrollStatus::AlreadyStored, SERIAL_A, true)]
+    );
+    // The other phone's `done` did not end the session; the stop did.
+    assert_eq!(summary.end, EnrollEnd::Stopped);
+    assert_eq!(summary.refused_phones, 1);
+    assert!(events.contains(&EnrollEvent::PhoneRefused { phones: 1 }));
+    assert!(
+        !store
+            .stored
+            .lock()
+            .map_err(|e| e.to_string())?
+            .contains_key(SERIAL_B),
+        "the refused phone's certificate was stored"
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_enroll_same_phone_reconnects_after_reload() -> TestResult {
+    let relay_url = start_relay().await?;
+    let store = TestStore::default();
+    let session = EnrollSession::new()?;
+    let link = session.link("https://page.invalid/enroll/", Some(&relay_url));
+    let stop = Arc::new(AtomicBool::new(false));
+    let bussard = spawn_session(session, relay_url, store, Arc::clone(&stop));
+
+    let phone = tokio::task::spawn_blocking(move || -> Result<_, BoxError> {
+        // The page keeps its phone key (IndexedDB on a real phone).
+        let secret = bussard_secure::enroll::random::<32>()?;
+        let mut first = FakePhone::join_with(&link, secret)?;
+        first.send(&json!({"type": "hello"}))?;
+        first.send(&json!({"type": "certificate", "id": 1, "text": CERT_A}))?;
+        first.results(1)?;
+        drop(first);
+        // Reload: a new page instance with the same key reads down from 0,
+        // sees its earlier result, and goes on with the next id.
+        let mut again = FakePhone::join_with(&link, secret)?;
+        again.send(&json!({"type": "hello"}))?;
+        let replayed = again.results(1)?;
+        again.send(&json!({"type": "certificate", "id": 2, "text": CERT_B}))?;
+        let next = again.results(1)?;
+        again.send(&json!({"type": "done"}))?;
+        Ok((replayed, next))
+    });
+    let (replayed, next) = phone.await??;
+    let (summary, events) = bussard.await??;
+
+    assert_eq!(replayed, [result(1, EnrollStatus::Stored, SERIAL_A, true)]);
+    assert_eq!(next, [result(2, EnrollStatus::Unassigned, SERIAL_B, false)]);
+    assert_eq!(summary.end, EnrollEnd::PhoneDone);
+    assert_eq!(summary.refused_phones, 0);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| **e == EnrollEvent::PhoneJoined)
+            .count(),
+        1
     );
     Ok(())
 }

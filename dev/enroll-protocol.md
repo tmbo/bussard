@@ -134,9 +134,15 @@ the relay keeps every message until the session ends.
 ## Encoding
 
 - All binary values in links, envelopes and JSON are base64url without padding.
-- Link: `<page>#v=2&s=<sid>&k=<b_pk>&r=<relay base URL, percent-encoded>`.
+- Link: `<page>#v=2&s=<sid>&k=<b_pk>[&r=<relay base URL, percent-encoded>]`.
   Everything after `#` stays in the browser; the page's server never sees it.
-  `r` is omitted when the page and the relay share an origin (local mode).
+- `r` is omitted when the relay is the root of the page's origin, and the
+  page then uses its own origin as the relay. That covers the hosted page
+  (served by the relay Worker since #797, with `connect-src 'self'`) and
+  local mode (bussard serves both). `r` stays in the protocol only for a
+  self-hosted page whose relay lives on another origin (`[enroll] page` and
+  `relay` in `bussard.toml`); the hosted page's CSP refuses any other relay
+  anyway.
 - A relay URL must be `https`, or `http` on a loopback host (`localhost`,
   `127.0.0.0/8`, `[::1]`). bussard refuses any other relay before it creates
   a session (finding F9), and the page refuses such a link.
@@ -346,7 +352,8 @@ run (dashes allowed) from a QR payload.
 ## Vectors
 
 `dev/enroll/vectors-v2.json` holds the session (both key pairs, `sid`, the
-shared secret, the session key, the session code and its salt, the link),
+shared secret, the session key, the session code and its salt, the hosted
+link without `r` and a self-hosted one with it),
 the owning phone's messages (`hello`, two certificates with a `stored` and
 an `invalid` result, `done`, `closed`), a second phone (`other_phone`) with
 its `hello` and the `refused` answer, and the certificate vectors. Every
@@ -354,6 +361,3 @@ value is computed by `node dev/enroll/regen-vectors.mjs` from fixed
 synthetic inputs with `node:crypto` alone; `--check` verifies the file is
 current. Neither the page's code nor bussard's computes the vectors they
 are checked against.
-
-`dev/enroll/vectors-v1.json` is the frozen v1 set the implementations still
-read until they move to v2 (#796); it goes then.

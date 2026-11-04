@@ -1,4 +1,4 @@
-// The enrolment page's protocol core against dev/enroll/vectors-v1.json.
+// The enrolment page's protocol core against dev/enroll/vectors-v2.json.
 // Run: node --test web/tests/
 
 import { test } from "node:test";
@@ -16,6 +16,7 @@ import {
   crc4,
   deriveSessionKey,
   doneMessage,
+  helloMessage,
   extractFromQr,
   fingerprint,
   formatCertificate,
@@ -34,7 +35,7 @@ import {
 
 const subtle = globalThis.crypto.subtle;
 const vectors = JSON.parse(
-  await readFile(new URL("../../dev/enroll/vectors-v1.json", import.meta.url), "utf8"),
+  await readFile(new URL("../../dev/enroll/vectors-v2.json", import.meta.url), "utf8"),
 );
 const S = vectors.session;
 
@@ -76,31 +77,34 @@ test("test_parseLink_vector", () => {
   assert.equal(link.sidText, S.session_id);
   assert.equal(link.sid.length, 16);
   assert.equal(b64urlEncode(link.bussardPublic), S.bussard_public);
-  assert.equal(link.relay, "https://relay.example");
+  // The hosted page's link names no relay: the page's own origin is it.
+  assert.equal(link.relay, "https://bussard-relay.tmbo.dev");
+  const other = parseLink(S.link_other_relay, "https://page.example");
+  assert.equal(other.relay, "https://relay.example");
   assert.equal(
-    relayUrl(link.relay, link.sidText, "down", { after: 3, wait: 25 }),
+    relayUrl(other.relay, other.sidText, "down", { after: 3, wait: 25 }),
     `https://relay.example/v1/sessions/${S.session_id}/down?after=3&wait=25`,
   );
 });
 
 test("test_parseLink_hash_only_and_local_mode", () => {
-  const hash = `#v=1&s=${S.session_id}&k=${S.bussard_public}`;
+  const hash = `#v=2&s=${S.session_id}&k=${S.bussard_public}`;
   assert.equal(parseLink(hash, "http://127.0.0.1:8123").relay, "http://127.0.0.1:8123");
   assert.equal(parseLink(hash.slice(1), "http://localhost:9").relay, "http://localhost:9");
 });
 
 test("test_parseLink_rejects", () => {
-  const ok = `v=1&s=${S.session_id}&k=${S.bussard_public}`;
+  const ok = `v=2&s=${S.session_id}&k=${S.bussard_public}`;
   const cases = [
     ["", "link_missing"],
     ["#", "link_missing"],
-    [`v=2&s=${S.session_id}&k=${S.bussard_public}`, "link_version"],
+    [`v=1&s=${S.session_id}&k=${S.bussard_public}`, "link_version"],
     [`s=${S.session_id}&k=${S.bussard_public}`, "link_version"],
-    [`v=1&k=${S.bussard_public}`, "link_invalid"],
-    [`v=1&s=${S.session_id}`, "link_invalid"],
-    [`v=1&s=${S.session_id}AA&k=${S.bussard_public}`, "link_invalid"],
-    [`v=1&s=${S.session_id}&k=${S.bussard_public}=`, "link_invalid"],
-    [`v=1&s=${S.session_id}&k=${S.bussard_public.slice(0, -2)}`, "link_invalid"],
+    [`v=2&k=${S.bussard_public}`, "link_invalid"],
+    [`v=2&s=${S.session_id}`, "link_invalid"],
+    [`v=2&s=${S.session_id}AA&k=${S.bussard_public}`, "link_invalid"],
+    [`v=2&s=${S.session_id}&k=${S.bussard_public}=`, "link_invalid"],
+    [`v=2&s=${S.session_id}&k=${S.bussard_public.slice(0, -2)}`, "link_invalid"],
     [`${ok}&r=http%3A%2F%2Frelay.example`, "link_invalid"],
     [`${ok}&r=not%20a%20url`, "link_invalid"],
     [`${ok}&r=https%3A%2F%2Frelay.example%2F%3Fx%3D1`, "link_invalid"],
@@ -116,7 +120,8 @@ test("test_parseLink_rejects", () => {
 });
 
 test("test_fingerprint_vector", async () => {
-  assert.equal(await fingerprint(subtle, b64urlDecode(S.bussard_public)), S.fingerprint);
+  const sid = b64urlDecode(S.session_id);
+  assert.equal(await fingerprint(subtle, sid, b64urlDecode(S.bussard_public)), S.session_code);
 });
 
 test("test_sharedSecret_and_key_vector", async () => {
@@ -170,10 +175,31 @@ test("test_seal_reproduces_up_vectors", async () => {
 });
 
 test("test_messages_serialize_as_vectors", () => {
-  const [cert, , done] = vectors.messages;
+  const [hello, cert] = vectors.messages;
+  const done = vectors.messages[5];
   const text = JSON.parse(cert.plaintext).text;
+  assert.equal(helloMessage(), hello.plaintext);
   assert.equal(certificateMessage(1, text), cert.plaintext);
   assert.equal(doneMessage(), done.plaintext);
+});
+
+test("test_other_phone_vectors", async () => {
+  const link = parseLink(S.link, "https://bussard-relay.tmbo.dev");
+  const O = vectors.other_phone;
+  const otherPrivate = await importPrivate(O.phone_secret);
+  assert.equal(b64urlEncode(await publicOf(otherPrivate)), O.phone_public);
+  const key = await deriveSessionKey(subtle, otherPrivate, b64urlDecode(O.phone_public), link);
+  for (const m of O.messages) {
+    const plain = await open(subtle, key, { dir: m.direction, sidText: link.sidText, envelope: m.envelope });
+    assert.equal(plain, m.plaintext);
+  }
+  assert.deepEqual(parseDown(O.messages[1].plaintext), { type: "refused" });
+  // The owning phone's key does not open the other phone's messages.
+  const { key: own } = await vectorKey();
+  await assert.rejects(
+    open(subtle, own, { dir: "down", sidText: link.sidText, envelope: O.messages[1].envelope }),
+    (e) => e.code === "crypto",
+  );
 });
 
 test("test_open_every_vector", async () => {
@@ -186,7 +212,7 @@ test("test_open_every_vector", async () => {
 
 test("test_open_rejects_wrong_direction_and_tamper", async () => {
   const { link, key } = await vectorKey();
-  const down = vectors.messages[1].envelope;
+  const down = vectors.messages[2].envelope;
   await assert.rejects(
     open(subtle, key, { dir: "up", sidText: link.sidText, envelope: down }),
     (e) => e.code === "crypto",
@@ -200,7 +226,7 @@ test("test_open_rejects_wrong_direction_and_tamper", async () => {
 });
 
 test("test_parseDown_vector_result", () => {
-  assert.deepEqual(parseDown(vectors.messages[1].plaintext), {
+  assert.deepEqual(parseDown(vectors.messages[2].plaintext), {
     type: "result",
     id: 1,
     status: "stored",
@@ -209,7 +235,21 @@ test("test_parseDown_vector_result", () => {
     name: "Test actuator",
     message: undefined,
   });
-  assert.deepEqual(parseDown('{"type":"closed","stored":2}'), { type: "closed", stored: 2 });
+  assert.deepEqual(parseDown(vectors.messages[4].plaintext), {
+    type: "result",
+    id: 2,
+    status: "invalid",
+    serial: "00FA01020304",
+    ia: undefined,
+    name: undefined,
+    message: "the label's check does not match; re-check the text (nothing was written)",
+  });
+  assert.deepEqual(parseDown(vectors.messages[6].plaintext), { type: "closed", stored: 1, reason: "done" });
+  assert.deepEqual(parseDown('{"type":"closed","stored":2}'), {
+    type: "closed",
+    stored: 2,
+    reason: undefined,
+  });
   assert.equal(parseDown('{"type":"result","id":1,"status":"weird"}'), null);
   assert.equal(parseDown("nope"), null);
 });

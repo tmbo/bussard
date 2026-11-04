@@ -308,7 +308,7 @@ fn add_certificate(
     child.wait_with_output()
 }
 
-/// The first certificate vector of `dev/enroll/vectors-v1.json` (synthetic:
+/// The first certificate vector of `dev/enroll/vectors-v2.json` (synthetic:
 /// serial 00FA01020304, FDSK A0..AF).
 const LABEL: &str = "AD5ACA-QDASQK-DIVDUS-S2NJ5I-VGVKXL-FNV2XR";
 

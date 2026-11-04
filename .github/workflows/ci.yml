@@ -243,7 +243,7 @@ jobs:
             -E 'binary(it) & test(/^(flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|flash_dry_run|offline_oracle)::/)'
 
   # The certificate enrolment page (web/enroll, #730): its protocol core
-  # against dev/enroll/vectors-v1.json with Node's built-in test runner and
+  # against dev/enroll/vectors-v2.json with Node's built-in test runner and
   # WebCrypto. No npm install: the page has no dependencies besides the
   # vendored jsQR, which the tests do not load; vendor.test.js checks its
   # sha256 against web/enroll/vendor/jsQR.json.
