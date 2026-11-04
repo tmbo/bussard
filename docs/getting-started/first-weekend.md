@@ -28,7 +28,7 @@ Assistant:  (calls knx_setup)
             addresses, 72 devices and 540 links.
 ```
 
-The project file is usually password-protected: put `BUSSARD_PROJECT_PASSWORD=...` in a `.env` file next to the project folder before you ask. The assistant never needs to see the password. Without a project file, say "Set up my house. I have no ETS project." and the assistant creates an empty project; [Find what you have](../how-to/find-what-you-have.md) shows how to scan the line and read the devices into it.
+The project file is usually password-protected: bussard opens a password form in your browser and stores the password in a `.env` file next to the project folder. The assistant never sees it. Without a project file, say "Set up my house. I have no ETS project." and the assistant creates an empty project; [Find what you have](../how-to/find-what-you-have.md) shows how to scan the line and read the devices into it.
 
 Rail: setup only reads from the network.
 

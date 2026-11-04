@@ -102,11 +102,23 @@ impl PasswordForms {
         }
     }
 
-    /// Makes `form` the open one, closing any earlier one.
+    /// Makes `form` the open one, closing any earlier one. A form the
+    /// client does not come back for closes after [`FORM_LIFETIME`].
     fn put(&self, form: Arc<PendingForm>) {
+        let id = form.id.clone();
         if let Some(old) = lock(&self.0).replace(form) {
             old.finish();
         }
+        let forms = self.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(FORM_LIFETIME).await;
+            let mut open = lock(&forms.0);
+            if open.as_ref().is_some_and(|form| form.id == id)
+                && let Some(form) = open.take()
+            {
+                form.finish();
+            }
+        });
     }
 }
 
