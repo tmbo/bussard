@@ -120,6 +120,16 @@ encrypted key store. The phone then shows what became of each label.
 | the relay | encrypted messages, a session id and their timing; it cannot decrypt them |
 | the assistant and the chat | the link, the session code, serial numbers, addresses and statuses; never a label or a key |
 
+**Scanning or typing.** Scanning is the safer way in. When you type a
+code, the page turns off autocorrect, suggestions and autofill as far as
+the browser allows, but some keyboards may still learn typed text.
+
+**The link.** The page removes the session details from the address bar as
+soon as it has read them, so the browser history and a synced browser never
+hold them. A reload in the same tab still finds the session; a new tab needs
+the link again. Before it asks for the camera, the page checks with the
+relay that the session still exists.
+
 **The session code.** bussard creates a fresh key pair for each session and
 puts the public key in the link. bussard prints a session code derived from
 it, and the page shows the code it derives from the key it received. Check

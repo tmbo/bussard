@@ -1,7 +1,7 @@
 // UI of the certificate enrolment page: reads the link, derives the session
 // key, asks once to confirm the session code, scans or takes typed
 // certificates, sends them to the relay encrypted, and shows bussard's
-// result per label. Protocol: dev/enroll-protocol.md. Wording and counting:
+// result per certificate. Protocol: dev/enroll-protocol.md. Wording and counting:
 // ui.js.
 
 import {
@@ -23,15 +23,19 @@ import {
   utf8,
 } from "./enroll.js";
 import {
-  KEPT,
   PREF_KEYS,
   ScanGate,
   bottomInset,
+  endCounts,
+  forgetLinkFragment,
   readPref,
+  sessionCheck,
+  shortCode,
   shortStatus,
   statusDetail,
   statusTone,
   summaryText,
+  takeLinkFragment,
   writePref,
 } from "./ui.js";
 
@@ -69,6 +73,15 @@ function prefStore() {
   }
 }
 
+/** sessionStorage (this tab only), or null where the browser refuses it. */
+function tabStore() {
+  try {
+    return window.sessionStorage;
+  } catch {
+    return null;
+  }
+}
+
 // -------------------------------------------------------------------- boot
 
 async function main() {
@@ -76,14 +89,27 @@ async function main() {
   if (!window.isSecureContext || !subtle) {
     return fatal("Open this page over https", "The browser offers its crypto functions only to secure pages.");
   }
+  // A new link opened in this tab (only the fragment changes) starts over.
+  window.addEventListener("hashchange", () => location.reload());
+  // The link leaves the address bar at once, so the history and a synced
+  // browser never hold it; sessionStorage keeps it for a reload in this tab.
+  const fragment = takeLinkFragment(location.hash, tabStore());
+  if (location.hash) {
+    try {
+      history.replaceState(null, "", location.pathname + location.search);
+    } catch {
+      // the link stays visible; the page works the same
+    }
+  }
   let link;
   try {
-    link = parseLink(location.hash, location.origin);
+    link = parseLink(fragment, location.origin);
   } catch (e) {
+    forgetLinkFragment(tabStore());
     return linkProblem(e);
   }
-  // The fragment stays in the address bar on purpose: a reload must find the
-  // session again. It holds only bussard's public key.
+  // Before the session code and the camera: does the session exist?
+  if (!(await checkSession(link))) return;
   let phone;
   try {
     phone = await generatePhoneKey(subtle);
@@ -97,6 +123,7 @@ async function main() {
   try {
     key = await deriveSessionKey(subtle, phone.privateKey, phone.publicRaw, link);
   } catch (e) {
+    forgetLinkFragment(tabStore());
     return linkProblem(e);
   }
   Object.assign(state, { link, subtle, key, phone });
@@ -107,7 +134,6 @@ async function main() {
   $("code-dialog-code").textContent = code;
   $("fatal").hidden = true;
   $("confirm").hidden = false;
-  window.addEventListener("hashchange", () => location.reload());
 
   $("code-ok").addEventListener("click", confirmCode);
   $("code-bad").addEventListener("click", () => {
@@ -115,6 +141,7 @@ async function main() {
     fatal(
       "The codes differ",
       "This page is not talking to your bussard, so nothing was sent. Close this page, stop the session in bussard and start a new one.",
+      "error",
     );
   });
 }
@@ -136,9 +163,56 @@ function confirmCode() {
   pollDown();
 }
 
-function fatal(title, text) {
+/**
+ * Ask the relay once whether the session exists (`GET down` answers 404 for
+ * an unknown or expired one). Shows the error state and returns false when
+ * the page cannot go on.
+ */
+async function checkSession(link) {
+  let res;
+  let body = null;
+  try {
+    res = await fetchWithTimeout(relayUrl(link.relay, link.sidText, "down", { after: 0, wait: 0 }), {
+      method: "GET",
+    });
+    try {
+      body = await res.json();
+    } catch {
+      body = null;
+    }
+  } catch {
+    res = null;
+  }
+  const verdict = res ? sessionCheck(res.status, body) : "unreachable";
+  if (verdict === "open") return true;
+  if (verdict === "gone") {
+    forgetLinkFragment(tabStore());
+    fatal(
+      "This session does not exist or has expired",
+      "Start a new session in bussard (bussard keys enroll) and open its link.",
+      "error",
+    );
+  } else if (verdict === "ended") {
+    forgetLinkFragment(tabStore());
+    fatal(
+      "This session has ended",
+      "bussard closed it already. Start a new session in bussard to add more certificates.",
+      "error",
+    );
+  } else {
+    fatal(
+      "Cannot reach the server",
+      "The page could not check the session. Check the phone's connection and reload this page.",
+      "error",
+    );
+  }
+  return false;
+}
+
+function fatal(title, text, tone = "") {
   $("fatal-title").textContent = title;
   $("fatal-text").textContent = text;
+  $("fatal").className = tone ? `panel fatal ${tone}` : "panel fatal";
   $("fatal").hidden = false;
   $("confirm").hidden = true;
   $("session").hidden = true;
@@ -154,14 +228,16 @@ function linkProblem(e) {
     return fatal(
       "Open the link from bussard",
       "This page needs the link that `bussard keys enroll` prints (or scan its QR code). The link carries the session; without it there is nothing to send to.",
+      "error",
     );
   }
   if (code === "link_version") {
-    return fatal("This link needs a newer page", `${e.message}. Update bussard or reload this page.`);
+    return fatal("This link needs a newer page", `${e.message}. Update bussard or reload this page.`, "error");
   }
   return fatal(
     "The link is damaged",
     `${e?.message ?? e}. Copy the whole link again from bussard, or scan its QR code.`,
+    "error",
   );
 }
 
@@ -251,14 +327,27 @@ function setMode(mode, remember) {
 
 // ------------------------------------------------------------------ banner
 
-function banner(kind, text) {
+/** The status banner: a line of `text`, or a bold `title` with `text` below. */
+function banner(kind, text, title) {
   const el = $("banner");
-  if (!text) {
+  if (!text && !title) {
     el.hidden = true;
     return;
   }
   el.className = `banner ${kind}`;
-  el.textContent = text;
+  el.replaceChildren();
+  if (title) {
+    const t = document.createElement("strong");
+    t.className = "banner-title";
+    t.textContent = title;
+    el.append(t);
+  }
+  if (text) {
+    const p = document.createElement("span");
+    p.className = "banner-text";
+    p.textContent = text;
+    el.append(p);
+  }
   el.hidden = false;
 }
 
@@ -267,17 +356,21 @@ function setRelayDown(down) {
   if (down === state.relayDown) return;
   state.relayDown = down;
   if (down) {
-    banner("warn", "Cannot reach the relay. Check the phone's connection; the page keeps trying and sends what is waiting.");
+    banner("warn", "Cannot reach the server. Check the phone's connection; the page keeps trying and sends what is waiting.");
   } else {
     banner(null, "");
   }
 }
 
-function closed(text) {
+/**
+ * The session is over: `title` says how it ended (`tone` `info` or `error`),
+ * the page's own count follows below it.
+ */
+function closed(title, tone = "info", stored) {
   if (state.phase === "closed") return;
   state.phase = "closed";
   state.relayDown = false;
-  banner("info", text);
+  forgetLinkFragment(tabStore());
   stopCamera();
   $("capture").hidden = true;
   $("done").hidden = true;
@@ -292,6 +385,7 @@ function closed(text) {
   }
   state.sendQueue.length = 0;
   updateSummary();
+  banner(tone, endCounts(itemStatuses(), stored), title);
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 
@@ -303,7 +397,7 @@ function wireEntry() {
   const update = () => {
     const r = checkCertificate(input.value);
     renderTyped(r);
-    // A label whose check does not match is never sent: bussard would refuse
+    // A certificate whose check does not match is never sent: bussard would refuse
     // it too (dev/enroll-protocol.md, "Certificate text").
     sendBtn.disabled = r.status !== "ok" || state.phase !== "active";
     return r;
@@ -327,18 +421,18 @@ function wireEntry() {
     const status = $("typed-status");
     if (outcome === "queued") {
       status.className = "typed-status good";
-      status.textContent = `Serial ${r.serial} sent. Type the next label, or Finish.`;
+      status.textContent = `${shortCode(r.normalized)} sent. Type the next certificate, or Finish.`;
       pulse($("type-panel"), "ok");
       beep("ok");
     } else {
       status.className = "typed-status";
-      status.textContent = `Serial ${r.serial} is already in this session.`;
+      status.textContent = `${shortCode(r.normalized)} is already in this session.`;
       if (item) flashRow(item);
     }
   };
   sendBtn.addEventListener("click", submit);
   // Keep the field focused across a tap on Send: the keyboard stays up for
-  // the next label.
+  // the next certificate.
   sendBtn.addEventListener("pointerdown", (ev) => ev.preventDefault());
   input.addEventListener("keydown", (ev) => {
     if (ev.key === "Enter") {
@@ -369,11 +463,11 @@ function renderTyped(r) {
       break;
     case "bad_check":
       status.classList.add("bad");
-      status.textContent = `Serial ${r.serial}. The check character does not match: most likely a typo. Compare with the sticker.`;
+      status.textContent = `Serial number ${r.serial}. The check character does not match: most likely a typo. Compare with the sticker.`;
       break;
     case "ok":
       status.classList.add("good");
-      status.textContent = `Serial ${r.serial}. Check OK.`;
+      status.textContent = `Serial number ${r.serial}. Check OK.`;
       break;
   }
 }
@@ -401,6 +495,7 @@ async function submitCertificate(r, source, d) {
     id: state.nextId++,
     digest: d,
     serial: r.serial,
+    code: shortCode(r.normalized),
     source,
     status: "queued",
     plaintext: null,
@@ -440,7 +535,7 @@ async function pumpSend() {
         continue;
       }
       if (outcome.gone) {
-        closed("The session has ended or expired. Start a new one in bussard to add more certificates.");
+        closed("The session has ended or expired.", "error");
         break;
       }
       if (outcome.fatal) {
@@ -510,13 +605,8 @@ async function pollDown() {
       continue;
     }
     if (res.status === 404) {
-      closed(
-        state.phase === "finished"
-          ? closedText()
-          : state.items.size === 0
-          ? "This session does not exist or has expired. Start a new one in bussard and open its link."
-          : "The session has ended or expired.",
-      );
+      if (state.phase === "finished") closed(FINISHED);
+      else closed("The session has ended or expired.", "error");
       return;
     }
     if (!res.ok) {
@@ -542,7 +632,7 @@ async function pollDown() {
       await handleDown(m?.body);
     }
     if (body.closed === true) {
-      closed(closedText());
+      closed(endTitle());
       return;
     }
   }
@@ -564,7 +654,7 @@ async function handleDown(envelope) {
   const msg = parseDown(plaintext);
   if (!msg) return;
   if (msg.type === "closed") {
-    closed(closedText(msg.stored));
+    closed(endTitle(), "info", msg.stored);
     return;
   }
   const item = state.items.get(msg.id);
@@ -577,17 +667,15 @@ async function handleDown(envelope) {
   renderItem(item);
 }
 
+const FINISHED = "Finished. You can close this page.";
 
-function closedText(stored) {
-  const n = typeof stored === "number" ? stored : countGood();
-  const what = n === 1 ? "1 certificate" : `${n} certificates`;
-  return state.phase === "finished"
-    ? `Finished. bussard stored ${what} from this session. You can close this page.`
-    : `bussard ended the session; it stored ${what}. You can close this page.`;
+/** The end message: after Finish, or when bussard stopped the session. */
+function endTitle() {
+  return state.phase === "finished" ? FINISHED : "bussard ended the session. You can close this page.";
 }
 
-function countGood() {
-  return [...state.items.values()].filter((i) => KEPT.has(i.status)).length;
+function itemStatuses() {
+  return [...state.items.values()].map((i) => i.status);
 }
 
 async function finish() {
@@ -610,16 +698,18 @@ function renderItem(item) {
     li = document.createElement("li");
     li.id = `item-${item.id}`;
     li.innerHTML =
-      '<div class="row"><span class="serial"></span><span class="pill"></span></div>' +
-      '<div class="detail"></div>';
+      '<div class="row"><span class="code"></span><span class="pill"></span></div>' +
+      '<div class="serial"></div><div class="detail"></div>';
     $("labels").prepend(li);
     li.classList.add("enter");
     li.addEventListener("animationend", () => li.classList.remove("enter", "flash"));
   }
   const keep = [...li.classList].filter((c) => c === "enter" || c === "flash");
   li.className = ["label", statusTone(item.status), ...keep].join(" ");
-  // The certificate itself is never shown again: the serial only.
-  li.querySelector(".serial").textContent = item.serial;
+  // The certificate is never shown whole again: the first and last group of
+  // its printed code (what the sticker shows) and the serial number.
+  li.querySelector(".code").textContent = item.code;
+  li.querySelector(".serial").textContent = `Serial number ${item.serial}`;
   li.querySelector(".pill").textContent = shortStatus(item.status);
   li.querySelector(".detail").textContent = statusDetail(item);
   $("labels-empty").hidden = state.items.size > 0;
@@ -627,11 +717,12 @@ function renderItem(item) {
 }
 
 function updateSummary() {
-  // Each count stays with its word when the bar wraps to two lines.
-  $("summary").textContent = summaryText([...state.items.values()].map((i) => i.status))
+  // Each count stays with its word when the bar wraps.
+  $("summary").textContent = summaryText(itemStatuses())
     .split(" · ")
     .map((part) => part.replace(/ /g, "\u00a0"))
-    .join(" · ");
+    // The dot stays at the end of a line, never starts the next one.
+    .join("\u00a0· ");
 }
 
 function flashRow(item) {
@@ -648,7 +739,7 @@ function flashRow(item) {
 let flashTimer = 0;
 
 /**
- * The overlay on the viewfinder: `ok` (green, new label), `repeat`
+ * The overlay on the viewfinder: `ok` (green, new certificate), `repeat`
  * (neutral, already in this session or not a certificate) or `bad` (red,
  * the check does not match).
  */
@@ -907,7 +998,7 @@ async function onQr(payload) {
   const d = await digest(r.normalized);
   if (r.status === "bad_check") {
     if (camera.gate.decide(`bad:${d}`, false, Date.now()) === "hold") return;
-    scanFlash("bad", "Check does not match", `Serial ${r.serial}. Rescan, or type the label.`);
+    scanFlash("bad", "Check does not match", `${shortCode(r.normalized)}. Rescan, or type the code.`);
     beep("bad");
     return;
   }
@@ -915,10 +1006,10 @@ async function onQr(payload) {
   if (decision === "hold") return;
   const { outcome, item } = await submitCertificate(r, "scan", d);
   if (outcome === "queued") {
-    scanFlash("ok", r.serial, "Added");
+    scanFlash("ok", shortCode(r.normalized), "Sent");
     beep("ok");
   } else if (outcome === "duplicate") {
-    scanFlash("repeat", r.serial, "Already in this session");
+    scanFlash("repeat", shortCode(r.normalized), "Already in this session");
     if (item) flashRow(item);
   }
 }

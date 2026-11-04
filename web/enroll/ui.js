@@ -1,35 +1,37 @@
 // Display logic of the enrolment page that does not touch the DOM: status
-// wording, the running summary, scan de-duplication and remembered choices.
+// wording, the running summary, scan de-duplication, remembered choices and
+// the link kept for a reload.
 // Kept apart from app.js so `node --test` (web/tests/) can check it.
 
 /**
- * Short status word (the row's pill) and the longer detail line per item
- * status. Statuses from bussard are those of dev/enroll-protocol.md; the
- * others are the page's own (`queued`, `sending`, `sent`, `rejected`).
+ * The badge and the detail line per item status, as in the glossary's
+ * "Certificate states" table (dev/glossary.md). Statuses from bussard are
+ * those of dev/enroll-protocol.md; the others are the page's own (`queued`,
+ * `sending`, `sent`, `rejected`). An empty detail means the badge says it.
  */
 export const STATUS_WORDS = {
-  queued: { short: "waiting", long: "Waiting to send" },
-  sending: { short: "sending", long: "Sending" },
-  sent: { short: "sent", long: "Sent, waiting for bussard" },
-  stored: { short: "saved", long: "Saved for its device" },
+  queued: { short: "waiting", long: "" },
+  sending: { short: "sending", long: "" },
+  sent: { short: "sent", long: "waiting for bussard" },
+  stored: { short: "added", long: "" },
   unassigned: {
-    short: "waiting for device",
-    long: "Kept until a device in the model has this serial",
+    short: "no device yet",
+    long:
+      "no device in your project has this serial number; bussard matches it once it finds the device (bussard scan)",
   },
-  already_stored: { short: "already known", long: "bussard already had this certificate" },
-  conflict: {
-    short: "conflict",
-    long: "bussard holds a different key for this serial; nothing written",
-  },
-  invalid: { short: "invalid", long: "bussard rejected the text" },
-  error: { short: "error", long: "Error" },
-  rejected: { short: "not sent", long: "Not sent" },
+  already_stored: { short: "already known", long: "" },
+  conflict: { short: "conflict", long: "your key store holds a different key for this device" },
+  invalid: { short: "invalid", long: "check the code" },
+  error: { short: "failed", long: "" },
+  rejected: { short: "not sent", long: "" },
 };
 
 /** Statuses bussard has kept a certificate for. */
 export const KEPT = new Set(["stored", "unassigned", "already_stored"]);
 /** Statuses that need the user's attention. */
 export const PROBLEM = new Set(["conflict", "invalid", "error", "rejected"]);
+/** Statuses whose detail line is the reason (bussard's or the page's message). */
+const REASON = new Set(["error", "rejected"]);
 
 /** Row tone for a status: `good`, `wait` (kept, device pending), `bad` or `pending`. */
 export function statusTone(status) {
@@ -39,47 +41,76 @@ export function statusTone(status) {
   return "pending";
 }
 
-/** The pill word for a status. */
+/** The badge word for a status. */
 export function shortStatus(status) {
   return STATUS_WORDS[status]?.short ?? String(status);
 }
 
 /**
- * The detail line of a row: where a saved certificate went (address and name
- * when bussard sends them), the longer wording otherwise, then bussard's or
- * the page's message.
+ * The detail line of a row: the device an added certificate went to
+ * ("for 1.1.3 Kitchen actuator"), the reason for a failed or unsent one,
+ * the glossary's line otherwise, or nothing where the badge says it.
  *
  * @param {{status: string, ia?: string, name?: string, message?: string}} item
  * @returns {string}
  */
 export function statusDetail(item) {
-  const parts = [];
-  const where = [item.ia, item.name].filter(Boolean).join(" ");
-  if (item.status === "stored" && where) {
-    parts.push(`Saved for ${where}`);
-  } else {
-    const long = STATUS_WORDS[item.status]?.long;
-    if (long) parts.push(long);
+  if (item.status === "stored") {
+    const where = [item.ia, item.name].filter(Boolean).join(" ");
+    return where ? `for ${where}` : "";
   }
-  if (item.message) parts.push(item.message);
-  return parts.join(". ");
+  if (REASON.has(item.status)) return item.message ?? "";
+  return STATUS_WORDS[item.status]?.long ?? "";
 }
 
 /**
- * Counts per group over item statuses.
+ * The title of a certificate on the page: its printed code shortened to the
+ * first and last group of six (`AAFDHW … X4VCNL`). The code, not the serial
+ * number, is what the device's sticker shows.
+ *
+ * @param {string} normalized the 36 characters, no dashes
+ * @returns {string}
+ */
+export function shortCode(normalized) {
+  return `${normalized.slice(0, 6)} \u2026 ${normalized.slice(-6)}`;
+}
+
+/**
+ * Counts per group over item statuses. `sent` is every certificate that
+ * left the page (all but `rejected`); `inFlight` those without bussard's
+ * answer yet.
  *
  * @param {Iterable<string>} statuses
- * @returns {{total: number, saved: number, waiting: number, known: number,
- *   problems: number, inFlight: number}}
+ * @returns {{total: number, sent: number, added: number, noDevice: number,
+ *   known: number, conflict: number, invalid: number, failed: number,
+ *   notSent: number, inFlight: number}}
  */
 export function countStatuses(statuses) {
-  const c = { total: 0, saved: 0, waiting: 0, known: 0, problems: 0, inFlight: 0 };
+  const c = {
+    total: 0,
+    sent: 0,
+    added: 0,
+    noDevice: 0,
+    known: 0,
+    conflict: 0,
+    invalid: 0,
+    failed: 0,
+    notSent: 0,
+    inFlight: 0,
+  };
   for (const s of statuses) {
     c.total++;
-    if (s === "stored") c.saved++;
-    else if (s === "unassigned") c.waiting++;
+    if (s === "rejected") {
+      c.notSent++;
+      continue;
+    }
+    c.sent++;
+    if (s === "stored") c.added++;
+    else if (s === "unassigned") c.noDevice++;
     else if (s === "already_stored") c.known++;
-    else if (PROBLEM.has(s)) c.problems++;
+    else if (s === "conflict") c.conflict++;
+    else if (s === "invalid") c.invalid++;
+    else if (s === "error") c.failed++;
     else c.inFlight++;
   }
   return c;
@@ -89,27 +120,62 @@ function plural(n, one, many) {
   return `${n} ${n === 1 ? one : many}`;
 }
 
+/** The non-zero result groups in the glossary's words, in a fixed order. */
+function resultParts(c) {
+  const parts = [];
+  if (c.added) parts.push(`${c.added} added`);
+  if (c.known) parts.push(`${c.known} already known`);
+  if (c.noDevice) parts.push(`${c.noDevice} no device yet`);
+  if (c.conflict) parts.push(plural(c.conflict, "conflict", "conflicts"));
+  if (c.invalid) parts.push(`${c.invalid} invalid`);
+  if (c.failed) parts.push(`${c.failed} failed`);
+  return parts;
+}
+
 /**
- * The bottom bar's summary in short words, for example
- * `3 labels · 2 saved · 1 waiting`, so it fits the narrow bar; the rows carry
- * the full wording. Groups with no label are left out.
+ * The bottom bar's summary, for example
+ * `6 sent · 1 added · 4 already known · 1 no device yet`. Groups with no
+ * certificate are left out; the bar wraps rather than shortens it.
  *
  * @param {Iterable<string>} statuses
  * @returns {string}
  */
 export function summaryText(statuses) {
   const c = countStatuses(statuses);
-  if (c.total === 0) return "No labels yet";
-  const parts = [plural(c.total, "label", "labels")];
-  if (c.saved) parts.push(`${c.saved} saved`);
-  if (c.waiting) parts.push(`${c.waiting} waiting`);
-  if (c.known) parts.push(`${c.known} known`);
-  if (c.inFlight) parts.push(`${c.inFlight} sending`);
-  if (c.problems) parts.push(`${c.problems} failed`);
+  if (c.total === 0) return "Nothing sent yet";
+  const parts = [];
+  if (c.sent) parts.push(`${c.sent} sent`);
+  parts.push(...resultParts(c));
+  if (c.inFlight) parts.push(`${c.inFlight} waiting`);
+  if (c.notSent) parts.push(`${c.notSent} not sent`);
   return parts.join(" · ");
 }
 
-/** Milliseconds a label must be out of view before it counts as presented again. */
+/**
+ * The line under the end message, counted from the page's own results:
+ * `Sent 6 certificates to your bussard: 1 added, 5 already known.`
+ * `stored` (bussard's `closed.stored`) is used only when the page has no
+ * results of its own, for example after a reload.
+ *
+ * @param {Iterable<string>} statuses
+ * @param {number} [stored]
+ * @returns {string}
+ */
+export function endCounts(statuses, stored) {
+  const c = countStatuses(statuses);
+  if (c.sent === 0) {
+    if (typeof stored === "number" && stored > 0) {
+      return `bussard added ${plural(stored, "certificate", "certificates")} in this session.`;
+    }
+    return "No certificates were sent from this page.";
+  }
+  const parts = resultParts(c);
+  if (c.inFlight) parts.push(`${c.inFlight} without an answer`);
+  const head = `Sent ${plural(c.sent, "certificate", "certificates")} to your bussard`;
+  return parts.length ? `${head}: ${parts.join(", ")}.` : `${head}.`;
+}
+
+/** Milliseconds a certificate must be out of view before it counts as presented again. */
 export const SCAN_HOLD_MS = 2500;
 
 /**
@@ -174,6 +240,65 @@ export function writePref(storage, key, value) {
   } catch {
     // not remembered; the page works the same
   }
+}
+
+/**
+ * sessionStorage key of the link fragment. It holds the session id and
+ * bussard's public key only, never a certificate or a session key, and lives
+ * as long as the tab.
+ */
+export const LINK_KEY = "bussard.enroll.link";
+
+/**
+ * The link fragment for this tab. A fragment in the address bar wins and is
+ * kept in `storage` (sessionStorage), because the page then removes it from
+ * the address bar and the history; a reload in the same tab finds it there.
+ * Returns "" when there is neither.
+ *
+ * @param {string} hash `location.hash`
+ * @param {Storage | undefined | null} storage
+ * @returns {string}
+ */
+export function takeLinkFragment(hash, storage) {
+  const fragment = String(hash ?? "").replace(/^#/, "");
+  if (fragment !== "") {
+    writePref(storage, LINK_KEY, fragment);
+    return fragment;
+  }
+  try {
+    return storage?.getItem(LINK_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Drop the kept link fragment (the session has ended or the link is broken).
+ *
+ * @param {Storage | undefined | null} storage
+ */
+export function forgetLinkFragment(storage) {
+  try {
+    storage?.removeItem(LINK_KEY);
+  } catch {
+    // nothing kept
+  }
+}
+
+/**
+ * What the relay's answer to the first `GET down` says about the session:
+ * `open`, `gone` (404: unknown or expired), `ended` (bussard closed it
+ * already) or `unreachable` (anything else; the relay or the network failed).
+ *
+ * @param {number} status HTTP status
+ * @param {unknown} body the parsed JSON answer, or null
+ * @returns {"open" | "gone" | "ended" | "unreachable"}
+ */
+export function sessionCheck(status, body) {
+  if (status === 404) return "gone";
+  if (status < 200 || status > 299) return "unreachable";
+  if (!body || typeof body !== "object" || !Array.isArray(body.messages)) return "unreachable";
+  return body.closed === true ? "ended" : "open";
 }
 
 /**
