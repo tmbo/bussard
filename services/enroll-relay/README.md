@@ -126,16 +126,18 @@ A step is one of:
 ## Deploy
 
 The project's relay runs on the owner's Cloudflare account at
-`relay.bussard.tmbo.dev` (decided 2026-11-03, #731); `wrangler.toml` carries
+`bussard-relay.tmbo.dev` (decided 2026-11-03, #731; one label below the
+zone, because Cloudflare's universal certificate covers `*.tmbo.dev` but not
+`*.bussard.tmbo.dev`, where the first choice never got a certificate); `wrangler.toml` carries
 that route and turns the `workers.dev` URL off. On the Workers Free plan or
 higher (SQLite-backed Durable Objects are available on both):
 
 1. `cd services/enroll-relay && npx wrangler@4 login`.
 2. `npx wrangler@4 deploy`. The first deploy applies migration `v1`, which
    creates the `Session` Durable Object class.
-3. Check it: `curl -i https://relay.bussard.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
+3. Check it: `curl -i https://bussard-relay.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
    answers `404` with `access-control-allow-origin: *`. Or run the cases
-   against it: `RELAY_URL=https://relay.bussard.tmbo.dev npm test` (the
+   against it: `RELAY_URL=https://bussard-relay.tmbo.dev npm test` (the
    expiry cases are skipped).
 
 A self-hosted copy replaces the `routes` entry with a hostname on its own
