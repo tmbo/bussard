@@ -44,6 +44,15 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
  </ApplicationPrograms></Manufacturer></ManufacturerData>
 </KNX>"#;
 
+/// A synthetic master file: the manufacturer list (issue #788) and nothing
+/// else.
+const MASTER_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData>
+  <Manufacturers>
+    <Manufacturer Id="M-0048" Name="Example Maker" />
+    <Manufacturer Id="M-0083" Name="Example Eighty-Three" />
+  </Manufacturers>
+</MasterData></KNX>"#;
+
 /// A minimal unencrypted project folder, as in an ETS export.
 const PROJECT_XML: &str =
     r#"<KNX xmlns="http://knx.org/xml/project/23"><Project Id="P-048B" /></KNX>"#;
@@ -62,7 +71,7 @@ fn write_zip(path: &Path, entries: &[(&str, &str)]) -> TestResult {
 /// The product entries shared by both fixtures.
 fn product_entries() -> Vec<(&'static str, &'static str)> {
     vec![
-        ("knx_master.xml", "<KNX/>"),
+        ("knx_master.xml", MASTER_XML),
         ("M-0083/Hardware.xml", HARDWARE_XML),
         ("M-0083/M-0083_A-1234-11-ABCD-O000A.xml", APP_XML),
     ]
@@ -106,6 +115,14 @@ fn import(cwd: &Path, file: &Path, dir: &Path) -> std::io::Result<(bool, String,
     ))
 }
 
+/// Checks the model in `dir` kept the master file's manufacturer list.
+fn assert_manufacturer_list(dir: &Path) -> TestResult {
+    let text = std::fs::read_to_string(dir.join("products").join("manufacturers.toml"))?;
+    assert!(text.contains("M-0048 = \"Example Maker\""), "{text}");
+    assert!(text.contains("M-0083 = \"Example Eighty-Three\""), "{text}");
+    Ok(())
+}
+
 /// Imports a project export and checks its program is extracted into
 /// `products/` while the export itself is not copied.
 fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
@@ -136,6 +153,7 @@ fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
         "the export itself must not be copied"
     );
     assert!(!dir.join("vendor").exists());
+    assert_manufacturer_list(&dir)?;
     // The extracted archive reads as a plain product archive.
     let product = bussard_prod::read_knxprod(&extracted)?;
     assert!(!product.is_project_export);
@@ -177,6 +195,7 @@ fn test_import_product_knxprod_is_cached_byte_identical() -> TestResult {
         std::fs::read(&file)?,
         "cache must be byte-identical"
     );
+    assert_manufacturer_list(&dir)?;
     // Retained data: bussard plants no .gitignore.
     assert!(!dir.join("products").join(".gitignore").exists());
     assert!(!dir.join("vendor").exists());
@@ -289,6 +308,7 @@ fn test_import_product_project_export_is_pinned_by_its_hash() -> TestResult {
     let names: Vec<_> = std::fs::read_dir(dir.join("products"))?
         .flatten()
         .map(|e| e.file_name())
+        .filter(|name| name != "manufacturers.toml")
         .collect();
     assert_eq!(names.len(), 1, "{names:?}");
     std::fs::remove_dir_all(&tmp)?;

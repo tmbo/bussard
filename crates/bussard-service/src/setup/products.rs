@@ -65,6 +65,7 @@ pub fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Setu
     let mut target = store.join(name);
     if let Ok(existing) = std::fs::read(&target) {
         if existing == bytes {
+            record_manufacturers(dir, &target);
             return Ok(target);
         }
         let sha = sha256_hex(bytes);
@@ -79,7 +80,36 @@ pub fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Setu
         target = store.join(format!("{stem}-{}{ext}", &sha[..8]));
     }
     std::fs::write(&target, bytes).ctx(|| format!("writing {}", target.display()))?;
+    record_manufacturers(dir, &target);
     Ok(target)
+}
+
+/// Keeps the manufacturer list of the `knx_master.xml` in `archive` (a stored
+/// product archive or the ETS project export) in
+/// `<dir>/products/manufacturers.toml` and installs the merged list for this
+/// process, so every place that names a manufacturer uses it (issue #788).
+///
+/// Best effort: an archive without a master file adds nothing, and one that
+/// does not read is logged and skipped. The archive itself is checked by the
+/// command that stores or reads it.
+pub fn record_manufacturers(dir: &Path, archive: &Path) {
+    let names = match bussard_prod::read_manufacturer_names(archive) {
+        Ok(names) => names,
+        Err(err) => {
+            tracing::warn!(
+                "no manufacturer names read from {}: {err}",
+                archive.display()
+            );
+            return;
+        }
+    };
+    if names.is_empty() {
+        return;
+    }
+    match bussard_model::manufacturer_names::merge(dir, names) {
+        Ok(merged) => bussard_mgmt::manufacturers::install(merged),
+        Err(err) => tracing::warn!("could not keep the manufacturer names: {err}"),
+    }
 }
 
 /// Lowercase hex SHA-256 of `bytes`.

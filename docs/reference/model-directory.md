@@ -15,6 +15,7 @@ knx/
   ha.toml                 optional Home Assistant overrides for `bussard ha-config`
   .env                    optional, untracked: passwords and the gateway
   products/               the product archives the lock pins; retained, never regenerated
+  products/manufacturers.toml  manufacturer names from the imported ETS data
   captures/               local captures, apply backups, apply-line-<line>.json resume state
   .bussard/history/       snapshots of the model files
   .bussard/facts/         @generated device facts, one file per device

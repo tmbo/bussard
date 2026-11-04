@@ -68,6 +68,8 @@ From each application program bussard reads the identity (id, application number
 - **Readable names.** The vendor's file name, or `<application-id>.knxprod` for an extracted program. A different file under a name already taken is stored with the first eight hex digits of its SHA-256 appended; nothing in the store is overwritten.
 - **Pinned.** `bussard.lock` records each archive as a `[[product]]` entry and links each device to one (see [bussard.lock](files/bussard-lock.md)). Every use checks the file's SHA-256 against the lock before the archive is read.
 
+- **Manufacturer names.** `import` and `import-product` keep the manufacturer list of each archive's `knx_master.xml` in `products/manufacturers.toml`. `scan`, the other commands and the assistant name a device's manufacturer from that list first, then from a small built-in table, else as `unknown manufacturer (0x0048)`.
+
 **Committing it is your decision.** bussard does not git-ignore `products/`. It holds copyrighted vendor data, so a public repository should not carry it. A private one usually does, because a clone without it cannot flash, apply parameters, commission with `--flash` or replace a device until the archives are back.
 
 **A missing or changed archive** refuses `flash`, `apply` (the parameters), `commission --flash` and `replace` before anything reaches the bus, with the lock's record and the way back:

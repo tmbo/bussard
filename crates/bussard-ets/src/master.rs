@@ -26,13 +26,13 @@
 //! [`LoadOp::Merge`]). The flash engine later picks the right sub-type (the full
 //! `all` download, falling back to `ap1`) and splices the app's blocks in.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
 use crate::application::push_load_op;
-use crate::attrs::{Attrs, get};
+use crate::attrs::{Attrs, attrs_map, get};
 use crate::error::{EtsError, Result};
 use crate::{LoadOp, LoadProcedure, SegmentFill};
 
@@ -419,9 +419,61 @@ pub fn parse_master_template(xml: &[u8], context: &str) -> Result<MasterTemplate
     Ok(out)
 }
 
+/// Parses the manufacturer list of a `knx_master.xml`: each
+/// `<Manufacturer Id="M-0004" Name="…">` as reference to name (issue #788).
+///
+/// Elements without an `Id` or a `Name` are skipped. Reading stops at the end
+/// of the `<Manufacturers>` block.
+///
+/// # Errors
+///
+/// The XML does not parse.
+pub fn parse_manufacturer_names(xml: &[u8], context: &str) -> Result<BTreeMap<String, String>> {
+    let xml = xml.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(xml);
+    let mut reader = Reader::from_reader(xml);
+    reader.config_mut().trim_text(false);
+    let mut names = BTreeMap::new();
+    loop {
+        match reader.read_event().map_err(|source| EtsError::Xml {
+            context: context.to_string(),
+            source,
+        })? {
+            Event::Eof => break,
+            Event::End(e) if e.local_name().as_ref() == b"Manufacturers" => break,
+            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Manufacturer" => {
+                let attrs = attrs_map(&e, context)?;
+                if let (Some(id), Some(name)) = (attrs.get(b"Id"), attrs.get(b"Name")) {
+                    names.insert(id.to_string(), name.to_string());
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_manufacturer_names_reads_the_list() -> Result<()> {
+        let xml = br#"<KNX xmlns="http://knx.org/xml/project/23"><MasterData>
+          <Manufacturers>
+            <Manufacturer Id="M-0001" Name="Example One" />
+            <Manufacturer Id="M-0048" Name="Example &amp; Two"></Manufacturer>
+            <Manufacturer Id="M-0049" />
+          </Manufacturers>
+          <Manufacturer Id="M-0050" Name="after the block" />
+        </MasterData></KNX>"#;
+        let names = parse_manufacturer_names(xml, "knx_master.xml")?;
+        assert_eq!(names.len(), 2);
+        assert_eq!(
+            names.get("M-0048").map(String::as_str),
+            Some("Example & Two")
+        );
+        Ok(())
+    }
 
     /// A tiny master file with one 07B0 mask carrying an `all` Load procedure
     /// with two merge markers, plus an `ap1` variant and an unrelated mask.

@@ -43,6 +43,7 @@ pub mod label;
 pub mod lint;
 pub mod loader;
 pub mod lock_products;
+pub mod manufacturer_names;
 pub mod merge;
 pub mod param_model;
 pub mod reconcile;

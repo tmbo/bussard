@@ -209,6 +209,10 @@ pub fn after_write(
     fetch: Option<&mut dyn DownloadPrompt>,
     out: &mut dyn Output,
 ) -> Result<(usize, usize), SetupError> {
+    // The export's manufacturer list names the devices from now on (#788).
+    if let Some(project) = project {
+        products::record_manufacturers(dir, project);
+    }
     // The lock pins where each device's product data comes from.
     if fetch.is_some() {
         products::pin_import(dir, project, model, out);
