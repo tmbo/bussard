@@ -535,7 +535,7 @@ async fn test_instructions_read_and_programming_tiers_snapshot() -> TestResult {
 const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation lives as TOML files (groups.toml, \
     devices/*.toml, bussard.lock); this server reads and edits them and works with the live \
     bus. Active tiers: read. Start with knx_project_summary (its `server` and `capabilities` \
-     fields say what this server may do), then knx_model_lookup, knx_get_group, \
+    fields say what this server may do), then knx_model_lookup, knx_get_group, \
     knx_get_device and knx_show_device to explore, and knx_validate and knx_audit to check \
     the model. To find a device that can provide a function, use knx_model_lookup with the \
     function's words and read knx_show_device for the candidates. How to talk: the human is \
@@ -555,15 +555,15 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     device or all of them up (tables, and the parameter memory a System B device bounds) \
     under captures/backups, and knx_reconstruct_device reads a device's tables back and \
     diffs them against the model; both are read-only on the bus. To find what is on the bus, \
-     knx_find_devices scans a line as a job (mask, manufacturer and order number per device) \
-     and knx_show_device with live: true reads one device's identity and, for an IP \
+    knx_find_devices scans a line as a job (mask, manufacturer and order number per device) \
+    and knx_show_device with live: true reads one device's identity and, for an IP \
     interface, its IP settings and tunnels; both only read. When a bus tool says the bus is \
     not connected, knx_bus_status says why (the last transport error, the attempts, the next \
-     retry) and knx_bus_reconnect connects afresh now; neither writes to the bus. Change the \
-     model with the edit tools, never by writing files: knx_set_group, knx_remove_group, \
+    retry) and knx_bus_reconnect connects afresh now; neither writes to the bus. Change the \
+    model with the edit tools, never by writing files: knx_set_group, knx_remove_group, \
     knx_add_link, knx_remove_link, knx_set_device, knx_set_parameter, knx_discard_edits and \
     knx_undo. To abandon a change on one device, knx_discard_edits; knx_undo rolls the whole \
-     model back to a snapshot. Parameters are edited with knx_set_parameter using the keys \
+    model back to a snapshot. Parameters are edited with knx_set_parameter using the keys \
     knx_show_device lists (the device needs its product model). Every edit snapshots the \
     files first and returns a `summary` and the change as sentences: say the summary, then \
     quote the sentences, and follow the result's next_step. KNX Secure device certificates \
@@ -571,16 +571,16 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     knx_enroll_status: the human scans them on the page the link opens; never ask for a \
     label in chat. Group writes are off: restart with --allow-writes for knx_write_group. \
     This server runs without --allow-programming, so edits stay in the files. Restarted with \
-     that flag, knx_plan_device and knx_apply_device push a device's links and parameter \
+    that flag, knx_plan_device and knx_apply_device push a device's links and parameter \
     values, knx_add_device adds a new device, knx_restore_tables writes a backup's link \
     tables back and knx_restart_device restarts a device; without it, they are `bussard plan \
-     <ia>`, `bussard apply <ia>`, `bussard adopt`, `bussard restore <backup> <ia>` and \
-    `bussard restart <ia>` at the CLI. Still needs the CLI: `bussard flash` to load a new \
-    application program, `bussard replace` and `bussard commission`. A parameter that shows \
-    or hides com-objects needs `bussard flash <ia>` at the CLI; with --allow-programming, \
-    knx_plan_device and knx_apply_device push it as a flash. Still needs ETS: the Secure \
-    activation of a fresh device, and any setting the device's product model does not \
-    expose.";
+    <ia>`, `bussard apply <ia>`, `bussard adopt`, `bussard restore <backup> <ia>` and \
+    `bussard restart <ia>` at the CLI. Still needs the CLI: `bussard replace` and `bussard \
+    commission`. A parameter that shows or hides com-objects, and loading the application \
+    program bussard.lock pins into a device, need `bussard flash <ia>` at the CLI; with \
+    --allow-programming, knx_plan_device and knx_apply_device push it as a flash. Still \
+    needs ETS: the Secure activation of a fresh device, and any setting the device's product \
+    model does not expose.";
 
 /// The instructions with `--allow-programming`.
 const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation lives as TOML files (groups.toml, \
@@ -591,9 +591,9 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     knx_audit to check the model. To find a device that can provide a function, use \
     knx_model_lookup with the function's words and read knx_show_device for the candidates. \
     How to talk: the human is a homeowner unless she says otherwise. Name things the way the \
-     model names them: rooms, device names, channel names and group names. Group addresses, \
+    model names them: rooms, device names, channel names and group names. Group addresses, \
     individual addresses, com-object numbers, parameter keys and ETS references are for tool \
-     calls, not for the reply: use ids only in tool calls, unless the human asks for the \
+    calls, not for the reply: use ids only in tool calls, unless the human asks for the \
     technical detail or a thing has no name. A result that changes something, or asks for \
     her yes, carries a `summary` written for her, and a device plan carries \
     `what_you_will_notice`. Before asking for a yes, say what will change for the household \
@@ -607,12 +607,12 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     the parameter memory a System B device bounds) under captures/backups, and \
     knx_reconstruct_device reads a device's tables back and diffs them against the model; \
     both are read-only on the bus. To find what is on the bus, knx_find_devices scans a line \
-     as a job (mask, manufacturer and order number per device) and knx_show_device with \
-    live: true reads one device's identity and, for an IP interface, its IP settings and \
-    tunnels; both only read. When a bus tool says the bus is not connected, knx_bus_status \
-    says why (the last transport error, the attempts, the next retry) and knx_bus_reconnect \
-    connects afresh now; neither writes to the bus. Change the model with the edit tools, \
-    never by writing files: knx_set_group, knx_remove_group, knx_add_link, knx_remove_link, \
+    as a job (mask, manufacturer and order number per device) and knx_show_device with live: \
+    true reads one device's identity and, for an IP interface, its IP settings and tunnels; \
+    both only read. When a bus tool says the bus is not connected, knx_bus_status says why \
+    (the last transport error, the attempts, the next retry) and knx_bus_reconnect connects \
+    afresh now; neither writes to the bus. Change the model with the edit tools, never by \
+    writing files: knx_set_group, knx_remove_group, knx_add_link, knx_remove_link, \
     knx_set_device, knx_set_parameter, knx_discard_edits and knx_undo. To abandon a change \
     on one device, knx_discard_edits; knx_undo rolls the whole model back to a snapshot. \
     Parameters are edited with knx_set_parameter using the keys knx_show_device lists (the \
@@ -622,27 +622,29 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     the key store through knx_enroll_certificates and knx_enroll_status: the human scans \
     them on the page the link opens; never ask for a label in chat. Group writes are off: \
     restart with --allow-writes for knx_write_group. Push a device with knx_plan_device: say \
-     its summary and what_you_will_notice, show its sentences in full, and call \
+    its summary and what_you_will_notice, show its sentences in full, and call \
     knx_apply_device only after an explicit yes in this conversation. It writes the device's \
-     links (group-address and association tables) and the parameter values that differ from \
+    links (group-address and association tables) and the parameter values that differ from \
     the model (one plan sentence each), over KNX Data Secure when the server's keyring lists \
-     the device. A plan without the device's product data writes the links only and says \
-    why. knx_apply_device runs the write as a job: when it answers `started` with a job id, \
-    call knx_apply_status with that job until `done` is true and report its result; a plan \
-    whose device read is slow answers `started` the same way, and the finished job's result \
-    is the plan to show. knx_last_apply recovers a device's latest result when a reply is \
-    lost. knx_restore_parameters replays a parameter backup an apply kept, and \
-    knx_restore_tables writes a backup's link tables back (a knx_backup_device run or the \
-    pre-write backup an apply kept), with the same plan, explicit yes and job flow; \
-    knx_restart_device restarts a device in the form ETS uses, after the human's yes to its \
-    question. knx_add_device adds a new device: relay its question (press the programming \
-    button), poll knx_job_status until the device is identified, show its sentences and ask \
-    its question; after an explicit yes it assigns the address, fetches the product data \
-    (download: true is the human's separate yes to the download), writes the device file and \
-     reads the device back. Still needs the CLI: `bussard flash` to load a new application \
-    program, `bussard replace` and `bussard commission`. A parameter that shows or hides \
-    com-objects is pushed by the same knx_plan_device / knx_apply_device pair; the plan says \
-     `method: flash`, the device restarts and is offline for the stated time (30 to 50 s), \
-    and the human's yes must be a yes to flashing <ia>. Still needs ETS: the Secure \
-    activation of a fresh device, and any setting the device's product model does not \
+    the device. A plan without the device's product data writes the links only and says why. \
+    knx_apply_device runs the write as a job: when it answers `started` with a job id, call \
+    knx_apply_status with that job until `done` is true and report its result; a plan whose \
+    device read is slow answers `started` the same way, and the finished job's result is the \
+    plan to show. knx_last_apply recovers a device's latest result when a reply is lost. \
+    knx_restore_parameters replays a parameter backup an apply kept, and knx_restore_tables \
+    writes a backup's link tables back (a knx_backup_device run or the pre-write backup an \
+    apply kept), with the same plan, explicit yes and job flow; knx_restart_device restarts \
+    a device in the form ETS uses, after the human's yes to its question. knx_add_device \
+    adds a new device: relay its question (press the programming button), poll \
+    knx_job_status until the device is identified, show its sentences and ask its question; \
+    after an explicit yes it assigns the address, fetches the product data (download: true \
+    is the human's separate yes to the download), writes the device file and reads the \
+    device back. Still needs the CLI: `bussard replace` and `bussard commission`. A \
+    parameter that shows or hides com-objects is pushed by the same knx_plan_device / \
+    knx_apply_device pair; the plan says `method: flash`, the device restarts and is offline \
+    for the stated time (30 to 50 s), and the human's yes must be a yes to flashing <ia>. So \
+    is a device that does not run the application program bussard.lock pins (another one, or \
+    none loaded): the plan's sentences say the application must be loaded, and one yes to \
+    its question loads it and writes the model with it as one job. Still needs ETS: the \
+    Secure activation of a fresh device, and any setting the device's product model does not \
     expose.";
