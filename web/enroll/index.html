@@ -56,7 +56,7 @@
       <div id="banner" class="banner" role="status" hidden></div>
 
       <div id="capture">
-        <div class="tabs" role="tablist" aria-label="How to add a label">
+        <div class="tabs" role="tablist" aria-label="How to add a certificate">
           <button id="tab-scan" class="tab" type="button" role="tab" aria-controls="scan-panel" aria-selected="true">Scan</button>
           <button id="tab-type" class="tab" type="button" role="tab" aria-controls="type-panel" aria-selected="false">Type</button>
         </div>
@@ -78,14 +78,17 @@
             <div id="camera-msg" class="camera-msg" hidden></div>
             <button id="camera-start" class="camera-start" type="button" hidden>Start camera</button>
           </div>
-          <p class="hint">Hold each certificate QR code in the frame. A new label beeps and is sent at once.</p>
+          <p class="hint">Hold each certificate's QR code in the frame. A new certificate beeps and is sent at once.</p>
         </div>
 
         <div id="type-panel" class="entry" role="tabpanel" aria-labelledby="tab-type" hidden>
           <label for="typed">The 36 characters under the QR code</label>
+          <!-- No name, no form: nothing for autofill or a password manager to
+               keep. Keyboards may still learn typed text (docs, F14). -->
           <input id="typed" type="text" inputmode="text" autocomplete="off" autocorrect="off"
                  autocapitalize="characters" spellcheck="false" enterkeyhint="send"
-                 placeholder="XXXXXX-XXXXXX-XXXXXX-...">
+                 aria-autocomplete="none" data-1p-ignore data-lpignore="true" data-bwignore
+                 data-form-type="other" placeholder="XXXXXX-XXXXXX-XXXXXX-...">
           <div id="typed-preview" class="typed-preview" aria-live="polite"></div>
           <div class="entry-row">
             <div id="typed-status" class="typed-status" aria-live="polite">Dashes and spaces are optional.</div>
@@ -94,13 +97,14 @@
         </div>
       </div>
 
-      <h2 class="list-title">Labels</h2>
+      <h2 class="list-title">Certificates</h2>
       <ol id="labels" class="labels"></ol>
       <p id="labels-empty" class="muted small">Nothing sent yet.</p>
 
       <p class="foot">
-        Keys are encrypted on this phone for bussard; the relay cannot read them.
-        No tracking. The browser remembers only Scan or Type and the sound setting.
+        Keys are encrypted on this phone and sent securely through a server to
+        your local bussard. The server cannot read them, and your browser does
+        not store them.
       </p>
     </section>
   </main>
@@ -108,7 +112,7 @@
   <!-- Always visible: the running count and the way out. -->
   <div id="bar" class="bar" hidden>
     <div class="bar-inner">
-      <div id="summary" class="summary" aria-live="polite">No labels yet</div>
+      <div id="summary" class="summary" aria-live="polite">Nothing sent yet</div>
       <button id="done" class="primary finish" type="button">Finish</button>
     </div>
   </div>
