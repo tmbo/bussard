@@ -96,7 +96,7 @@ impl ParamChange {
     }
 
     /// The line of a parameter the download keeps on the device (issue
-    /// #411): `keep log: the device holds 1, the model says 0, kept`.
+    /// #411): `keep log: the device holds 1, your project says 0, kept`.
     pub fn kept_line(&self) -> String {
         let unit = match &self.unit {
             Some(u) if !u.is_empty() => format!(" {u}"),
@@ -107,7 +107,7 @@ impl ParamChange {
             old => format!("the device holds {old}{unit}"),
         };
         format!(
-            "{}: {held}, the model says {}{unit}; kept on the device, not written",
+            "{}: {held}, your project says {}{unit}; kept on the device, not written",
             self.name, self.new
         )
     }

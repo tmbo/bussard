@@ -89,8 +89,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                 Severity::Warning,
                 location.clone(),
                 format!(
-                    "{ia} is KNX Data Secure-activated but there is no key store; export the \
-                     project's keyring (.knxkeys) from ETS and run `bussard keys import \
+                    "{ia} is secured but there is no key store; export the project's \
+                     keyring (.knxkeys) from ETS and run `bussard keys import \
                      <file.knxkeys>` so bussard can manage it secured"
                 ),
             ));
@@ -105,8 +105,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                 Severity::Error,
                 facts.source.clone(),
                 format!(
-                    "the keyring {file} ({}) does not exist; fix the path or re-export the \
-                     keyring from ETS",
+                    "the ETS keyring {file} ({}) does not exist; fix the path or export the \
+                     keyring from ETS again",
                     facts.source
                 ),
             ));
@@ -116,8 +116,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                     Severity::Warning,
                     location.clone(),
                     format!(
-                        "{ia} is KNX Data Secure-activated but the keyring {file} is missing; \
-                         secured management of it needs the keyring re-exported from ETS"
+                        "{ia} is secured but the ETS keyring {file} is missing; bussard needs \
+                         the keyring exported from ETS again to manage it"
                     ),
                 ));
             }
@@ -127,8 +127,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
             Severity::Info,
             facts.source.clone(),
             format!(
-                "{KEYRING_PASSWORD_ENV} is not set, so the keyring {file} was not checked \
-                 against the model's secured devices and groups"
+                "{KEYRING_PASSWORD_ENV} is not set, so the ETS keyring {file} was not checked \
+                 against the secured devices and group addresses in your project"
             ),
         )),
         KeyringStatus::Unreadable(reason) => diags.push(Diagnostic::new(
@@ -136,8 +136,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
             Severity::Warning,
             facts.source.clone(),
             format!(
-                "the keyring {file} could not be read ({reason}); its tool and group keys were \
-                 not checked against the model"
+                "the ETS keyring {file} could not be read ({reason}); its tool and group keys \
+                 were not checked against your project"
             ),
         )),
         KeyringStatus::Loaded {
@@ -151,8 +151,8 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                         Severity::Warning,
                         location.clone(),
                         format!(
-                            "{ia} is KNX Data Secure-activated but the keyring {file} has no \
-                             tool key for it; re-export the keyring from ETS (it lists a device \
+                            "{ia} is secured but the ETS keyring {file} has no tool key for \
+                             it; export the keyring again from ETS (it lists a device \
                              only after its security was commissioned there) and `bussard keys \
                              import` it"
                         ),
@@ -168,7 +168,7 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                         Severity::Warning,
                         location,
                         format!(
-                            "GA {ga} is marked `secure = true` but the keyring {file} has no \
+                            "group address {ga} is marked `secure = true` but the ETS keyring {file} has no \
                              group key for it; export a current keyring from ETS, or fix all \
                              three signals at once: `bussard groups secure {ga} on` (keeps the \
                              flag, adds a key) or `off` (runs it plain)"
@@ -180,7 +180,7 @@ pub fn validate_keyring(model: &Model, keyring: Option<&KeyringFacts>) -> Vec<Di
                         Severity::Warning,
                         location,
                         format!(
-                            "the keyring {file} holds a group key for GA {ga}, but groups.toml \
+                            "the ETS keyring {file} holds a group key for group address {ga}, but groups.toml \
                              does not mark it `secure = true`; secured devices on it expect \
                              encrypted telegrams. Fix all three signals at once: `bussard groups \
                              secure {ga} off` (drops the key) or `on` (marks it secure)"
@@ -343,7 +343,10 @@ mod tests {
                 ("W029", "groups.toml 1/2/4".to_string()),
             ]
         );
-        assert!(diags[0].message.contains("re-export"), "{diags:?}");
+        assert!(
+            diags[0].message.contains("export the keyring again"),
+            "{diags:?}"
+        );
         assert!(diags[1].message.contains("no group key"), "{diags:?}");
         assert!(diags[2].message.contains("does not mark"), "{diags:?}");
         Ok(())

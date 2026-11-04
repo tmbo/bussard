@@ -129,7 +129,7 @@ pub enum WriteRefusal {
     #[error("bus writes are disabled on this service")]
     WritesDisabled,
     /// The GA is marked `protected: true` and the write was not forced.
-    #[error("refusing to write to protected GA {ga} ({name:?})")]
+    #[error("refusing to write to protected group address {ga} ({name:?})")]
     Protected {
         /// The protected GA.
         ga: GroupAddress,
@@ -146,7 +146,7 @@ pub enum WriteRefusal {
     },
     /// The override disagrees with the model under
     /// [`DptOverridePolicy::MustMatchModel`].
-    #[error("GA {ga} is declared as DPT {declared} in the model, not {requested}")]
+    #[error("group address {ga} is declared as DPT {declared} in your project, not {requested}")]
     DptMismatch {
         /// The GA.
         ga: GroupAddress,
@@ -156,7 +156,7 @@ pub enum WriteRefusal {
         requested: Dpt,
     },
     /// No DPT could be resolved for a human value.
-    #[error("GA {ga} has no DPT")]
+    #[error("group address {ga} has no DPT")]
     NoDpt {
         /// The GA.
         ga: GroupAddress,
@@ -165,7 +165,7 @@ pub enum WriteRefusal {
         model_loaded: bool,
     },
     /// The human value did not parse for the DPT.
-    #[error("parsing value {value:?} for GA {ga}: {reason}")]
+    #[error("parsing value {value:?} for group address {ga}: {reason}")]
     InvalidValue {
         /// The GA.
         ga: GroupAddress,
@@ -177,7 +177,7 @@ pub enum WriteRefusal {
         reason: String,
     },
     /// The parsed value could not be encoded for the DPT.
-    #[error("encoding {value} as DPT {dpt} for GA {ga}: {reason}")]
+    #[error("encoding {value} as DPT {dpt} for group address {ga}: {reason}")]
     Encode {
         /// The GA.
         ga: GroupAddress,
@@ -203,7 +203,7 @@ pub enum WriteRefusal {
     #[error("{0}")]
     PayloadSize(String),
     /// The GA is secured (KNX Data Secure) but no group key is available.
-    #[error("GA {ga} is secured (KNX Data Secure) but no group key is available for it")]
+    #[error("group address {ga} is secured but no group key is available for it")]
     SecureNoKey {
         /// The GA.
         ga: GroupAddress,

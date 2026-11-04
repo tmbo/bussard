@@ -527,9 +527,9 @@ pub async fn identify<Ch: L4Channel>(
 }
 
 /// The one sentence every management command prints for a device's identity
-/// against `bussard.lock`: `identity of 1.1.4: matches bussard.lock
-/// (application id 0004D14122, mask 07B0)`, `… drift from bussard.lock: …` or
-/// `… not pinned in bussard.lock`.
+/// against `bussard.lock`: `identity of 1.1.4: matches your project
+/// (application id 0004D14122, mask 07B0)`, `… differs from your project: …`
+/// or `… no product pinned in your project`.
 pub fn identity_line(target: IndividualAddress, check: &IdentityCheck) -> String {
     format!("identity of {target}: {}", check.summary())
 }
@@ -543,9 +543,9 @@ pub fn drift_refusal(
 ) -> Option<String> {
     check.is_drift().then(|| {
         format!(
-            "refusing to {verb} {target}: {}. The model's parameters and tables are for the \
-             application the lock pins; run `bussard flash {target}` to load it, or re-import \
-             the project if the lock is stale",
+            "refusing to {verb} {target}: {}. The parameters and tables in your project are \
+             for the application it pins; run `bussard flash {target}` to load it, or re-import \
+             the ETS project if bussard.lock is stale",
             check.differences.join("; ")
         )
     })

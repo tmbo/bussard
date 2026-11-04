@@ -280,8 +280,8 @@ pub async fn read_interface<Ch: L4Channel>(
     if mask == crate::identity::HIDDEN_MASK {
         return Err(MgmtError::MalformedResponse {
             address: l4.target(),
-            reason: "the device hides its mask (FFFF): it is KNX Data Secure-activated and \
-                     answers only a secured session; pass its tool key (--keyring)"
+            reason: "the device hides its mask (FFFF): it is secured and answers \
+                     only a secured session; pass its tool key (--keyring)"
                 .to_string(),
         });
     }

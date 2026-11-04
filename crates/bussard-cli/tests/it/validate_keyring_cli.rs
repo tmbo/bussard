@@ -93,7 +93,7 @@ fn test_validate_keyring_names_the_missing_tool_key_and_the_flag_mismatch() -> T
     let w028: Vec<_> = diags.iter().filter(|d| d.0 == "W028").collect();
     assert_eq!(w028.len(), 1, "{diags:?}");
     assert!(w028[0].1.contains("1.1.13"), "{diags:?}");
-    assert!(w028[0].2.contains("re-export"), "{diags:?}");
+    assert!(w028[0].2.contains("export the keyring again"), "{diags:?}");
     let w029: Vec<_> = diags.iter().filter(|d| d.0 == "W029").collect();
     assert_eq!(w029.len(), 1, "{diags:?}");
     assert_eq!(w029[0].1, "groups.toml 1/2/4");

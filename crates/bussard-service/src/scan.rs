@@ -259,18 +259,16 @@ impl Found {
     }
 }
 
-/// The row label of a Data Secure-activated device (issue #203); `None` for a
+/// The row label of a secured device (issue #203); `None` for a
 /// plain device.
 pub fn secure_label(status: SecureStatus) -> Option<&'static str> {
     match status {
         SecureStatus::Plain => None,
-        SecureStatus::Activated => Some("Data Secure activated"),
+        SecureStatus::Activated => Some("secured"),
         SecureStatus::ActivatedNoKey => {
-            Some("Data Secure activated (mask hidden), no tool key in the keyring")
+            Some("secured, bussard has no tool key for it, so its product was not read")
         }
-        SecureStatus::KeyRefused => {
-            Some("Data Secure activated (mask hidden), the keyring's tool key was not accepted")
-        }
+        SecureStatus::KeyRefused => Some("secured, did not accept the tool key bussard has for it"),
     }
 }
 

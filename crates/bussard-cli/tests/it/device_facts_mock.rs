@@ -835,7 +835,7 @@ fn test_plan_reports_identity_match_and_drift_against_the_lock() -> TestResult {
     let out = bench.run(&["plan", "1.1.12"])?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
-        stdout.contains("drift from bussard.lock") && stdout.contains("bussard flash 1.1.12"),
+        stdout.contains("differs from your project") && stdout.contains("bussard flash 1.1.12"),
         "{stdout}"
     );
     Ok(())
@@ -901,7 +901,7 @@ fn test_identity_verdict_and_facts_across_the_management_commands() -> TestResul
         assert!(out.status.success(), "{args:?}: {said}");
         assert!(
             said.contains(
-                "identity of 1.1.12: matches bussard.lock (application id 00FA000201, mask 07B0)"
+                "identity of 1.1.12: matches your project (application id 00FA000201, mask 07B0)"
             ),
             "{args:?}: {said}"
         );
@@ -925,8 +925,8 @@ fn test_identity_verdict_and_facts_across_the_management_commands() -> TestResul
         );
         assert!(
             said.contains(
-                "identity of 1.1.12: drift from bussard.lock: the device reports application id \
-                 00FA000202 but the lock pins 00FA000201"
+                "identity of 1.1.12: differs from your project: the device reports application \
+                 id 00FA000202 but your project pins 00FA000201"
             ),
             "{args:?}: {said}"
         );

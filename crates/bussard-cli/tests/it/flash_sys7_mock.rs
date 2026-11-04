@@ -159,12 +159,12 @@ fn test_flash_system7_same_application_proceeds_without_force() -> TestResult {
     let out = bench.flash(&[])?;
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stdout.contains("parameters match the model"), "{stdout}");
+    assert!(stdout.contains("parameters match your project"), "{stdout}");
     // Issue #349: the read-back compared the links and the parameters.
     assert!(
         stdout.contains(
-            "read back from 1.1.7 and compared with the model: 1 group address(es), 1 \
-             association(s), 2 parameter(s)"
+            "read back from 1.1.7 and compared with your project: 1 group address, 1 \
+             association, 2 parameters"
         ),
         "{stdout}"
     );
@@ -242,7 +242,7 @@ fn test_flash_system7_parameter_lost_on_the_device_fails_with_the_parameter() ->
         "stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("still differ from the model") && stderr.contains("obj2"),
+        stderr.contains("from your project after the write") && stderr.contains("obj2"),
         "the error names the parameter: {stderr}"
     );
     assert!(!stdout.contains("flash verified"), "{stdout}");

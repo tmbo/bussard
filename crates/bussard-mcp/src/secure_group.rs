@@ -99,15 +99,12 @@ pub(crate) fn no_key_reason(err: &SecureGroupError) -> String {
         SecureGroupError::NoKey {
             ga,
             keyring_given: true,
-        } => format!(
-            "GA {ga} is secured (KNX Data Secure) but the server's keyring has no group key \
-             for it"
-        ),
+        } => format!("group address {ga} is secured but the server has no group key for it"),
         SecureGroupError::NoKey {
             ga,
             keyring_given: false,
         } => format!(
-            "GA {ga} is secured (KNX Data Secure): {} (restart `bussard mcp` with it)",
+            "group address {ga} is secured: {} (restart `bussard mcp` with it)",
             bussard_service::guidance::group_key_hint()
         ),
     }

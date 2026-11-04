@@ -313,7 +313,7 @@ fn api_refusal(ga: GroupAddress, refusal: WriteRefusal) -> ApiError {
         ),
         WriteRefusal::Bus(err) => ApiError::BusUnavailable(format!("could not write {ga}: {err}")),
         WriteRefusal::SecureNoKey { keyring_given, .. } => ApiError::BadRequest(if keyring_given {
-            format!("GA {ga} is secured (KNX Data Secure) but the keyring has no group key for it")
+            format!("group address {ga} is secured but the ETS keyring has no group key for it")
         } else {
             format!(
                 "GA {ga} is secured (KNX Data Secure); restart the server with `bussard viz \

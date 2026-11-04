@@ -154,7 +154,7 @@ pub fn validate_explicit_address(
     if let Some(model) = model {
         if let Some(existing) = model.devices.get(&addr) {
             return Err(AssignError::Refused(format!(
-                "address {addr} is already used in the model (\"{}\"); pick a free one",
+                "address {addr} is already used in your project (\"{}\"); pick a free one",
                 existing.device.name
             )));
         }

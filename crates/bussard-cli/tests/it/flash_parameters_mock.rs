@@ -434,7 +434,10 @@ fn test_plan_and_reconstruct_read_back_the_parameters() -> TestResult {
         "{stdout}"
     );
     assert!(stdout.contains("Threshold: 9 (default 7)"), "{stdout}");
-    assert!(stdout.contains("Threshold: device 9, model 12"), "{stdout}");
+    assert!(
+        stdout.contains("Threshold: device 9, project 12"),
+        "{stdout}"
+    );
 
     let out = bench.bussard(&["plan", "1.1.4", "--product", bench.product()?, "--json"])?;
     let (stdout, stderr) = text(&out);
@@ -472,9 +475,9 @@ fn test_reconstruct_prints_differing_internal_selectors() -> TestResult {
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
         stdout.contains(
-            "  internal ETS values that differ from the model (never shown; a run marked not \
+            "  internal ETS values that differ from your project (never shown; a run marked not \
              written is one ETS's download leaves alone, and so does `apply`):\n      1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal \
-             ETS selector, P-3), device Light, model no application\n      an internal ETS \
+             ETS selector, P-3), device Light, project no application\n      an internal ETS \
              selector differs: the device's function assignment differs from the project"
         ),
         "{stdout}"

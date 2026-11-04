@@ -616,7 +616,7 @@ fn test_assign_without_key_labels_a_secure_device() -> TestResult {
     );
     assert!(
         run.stdout
-            .contains("Data Secure activated (mask hidden), no tool key in the keyring"),
+            .contains("secured (mask hidden), bussard has no tool key for it"),
         "stdout:\n{}",
         run.stdout
     );

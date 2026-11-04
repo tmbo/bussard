@@ -72,7 +72,7 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
     }
     if !readback.internal.is_empty() {
         println!(
-            "  internal ETS values that differ from the model (never shown; a run marked not \
+            "  internal ETS values that differ from your project (never shown; a run marked not \
              written is one ETS's download leaves alone, and so does `apply`):"
         );
         for run in &readback.internal {
@@ -102,7 +102,7 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
                 .map(|v| with_unit(v, &k.unit))
                 .unwrap_or_else(|| "unreadable".to_string());
             println!(
-                "      {}: device {device}, model {}",
+                "      {}: device {device}, project {}",
                 k.name,
                 with_unit(&k.model, &k.unit)
             );
@@ -111,9 +111,11 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
     if readback.non_default.is_empty() && readback.differences.is_empty() {
         if readback.note.is_none() {
             if readback.internal.is_empty() {
-                println!("  every parameter holds its vendor default and matches the model");
+                println!("  every parameter holds its vendor default and matches your project");
             } else {
-                println!("  every shown parameter holds its vendor default and matches the model");
+                println!(
+                    "  every shown parameter holds its vendor default and matches your project"
+                );
             }
         }
         return;
@@ -131,12 +133,15 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
         );
     }
     if readback.differences.is_empty() {
-        println!("  the device matches the model's parameters: block");
+        println!("  the device matches the parameters: block in your project");
         return;
     }
     println!(
-        "  {} parameter(s) differ from the model:",
-        readback.differences.len()
+        "  {} from your project:",
+        match readback.differences.len() {
+            1 => "1 parameter differs".to_string(),
+            n => format!("{n} parameters differ"),
+        }
     );
     for d in &readback.differences {
         let device = d
@@ -145,13 +150,13 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
             .map(|v| with_unit(v, &d.unit))
             .unwrap_or_else(|| "unreadable".to_string());
         println!(
-            "      {}: device {device}, model {}",
+            "      {}: device {device}, project {}",
             d.name,
             with_unit(&d.model, &d.unit)
         );
     }
     println!(
-        "  run `bussard apply {target}` to write the model's values (a value that shows or \
+        "  run `bussard apply {target}` to write the values in your project (a value that shows or \
          hides a com-object needs a full `bussard flash`)"
     );
 }

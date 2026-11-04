@@ -127,7 +127,7 @@ pub fn edit_model(
             .collect();
         if !plain.is_empty() {
             return Err(format!(
-                "{ga} cannot run secured: {} {} not KNX Data Secure capable in the model, and a \
+                "{ga} cannot run secured: {} {} not KNX Data Secure capable in your project, and a \
                  plain device cannot send or receive a secured group address (ETS refuses this \
                  too)",
                 plain.join(", "),

@@ -151,7 +151,7 @@ impl Diff {
                         pair.object
                     ),
                     DifferenceKind::InModelNotOnDevice => format!(
-                        "Object {} is linked to {named} in the model, but not on {target}.",
+                        "Object {} is linked to {named} in your project, but not on {target}.",
                         pair.object
                     ),
                 };

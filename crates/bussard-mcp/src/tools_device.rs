@@ -423,7 +423,7 @@ impl BussardMcp {
                 )
             }
         } else {
-            format!("{target}'s link tables match the model.")
+            format!("{target}'s link tables match your project.")
         });
         Ok(out)
     }

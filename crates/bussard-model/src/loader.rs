@@ -132,7 +132,7 @@ pub enum SaveError {
     /// Links name a device the model does not hold: they live in the device's
     /// own file, so there is nowhere to write them.
     #[error(
-        "links reference device {address}, which has no device in the model; add the device \
+        "links reference device {address}, which is not in your project; add the device \
          (devices/{address}.toml) or drop the links"
     )]
     OrphanLinks {

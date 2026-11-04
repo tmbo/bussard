@@ -357,7 +357,7 @@ impl Leftover {
     /// The leftover in one line.
     pub fn sentence(&self) -> String {
         format!(
-            "{}: the device holds {}, the model says {}",
+            "{}: the device holds {}, your project says {}",
             self.item, self.device, self.model
         )
     }
@@ -447,44 +447,59 @@ impl WriteReadback {
         if self.leftovers.len() > FAILURE_ITEMS {
             items.push(format!("and {} more", self.leftovers.len() - FAILURE_ITEMS));
         }
+        let n = self.leftovers.len();
         Some(format!(
-            "not verified: {} item(s) still differ from the model after the write: {}",
-            self.leftovers.len(),
+            "not verified: {n} {} still {} from your project after the write: {}",
+            if n == 1 { "item" } else { "items" },
+            if n == 1 { "differs" } else { "differ" },
             items.join("; ")
         ))
     }
 
-    /// What was compared, in one line (`2 group address(es), 2
-    /// association(s), 14 parameter(s)`); `nothing` when nothing was.
+    /// What was compared, in one line (`2 group addresses, 2 associations,
+    /// 14 parameters`); `nothing` when nothing was.
     pub fn summary(&self) -> String {
         let c = &self.compared;
         let mut parts = Vec::new();
         if let Some(n) = c.addresses {
-            parts.push(format!("{n} group address(es)"));
+            parts.push(counted(n, "group address", "group addresses"));
         }
         if let Some(n) = c.associations {
-            parts.push(format!("{n} association(s)"));
+            parts.push(counted(n, "association", "associations"));
         }
         if let Some(n) = c.group_objects {
-            parts.push(format!("{n} group object(s)"));
+            parts.push(counted(n, "group object", "group objects"));
         }
         if let Some(n) = c.parameters {
-            parts.push(format!("{n} parameter(s)"));
+            parts.push(counted(n, "parameter", "parameters"));
         }
         if let Some(n) = c.group_keys {
-            parts.push(format!("{n} group key(s) (PID 53)"));
+            parts.push(format!(
+                "{} (PID 53)",
+                counted(n, "group key", "group keys")
+            ));
         }
         if let Some(n) = c.secure_senders {
-            parts.push(format!("{n} secure sender(s) (PID 54)"));
+            parts.push(format!(
+                "{} (PID 54)",
+                counted(n, "secure sender", "secure senders")
+            ));
         }
         if let Some(n) = c.secured_objects {
-            parts.push(format!("{n} secured object(s) (PID 61)"));
+            parts.push(format!(
+                "{} (PID 61)",
+                counted(n, "secured object", "secured objects")
+            ));
         }
         if let Some(state) = &c.security_load_state {
             parts.push(format!("security object {state} (PID 5)"));
         }
         if let Some(n) = c.properties {
-            parts.push(format!("{n} load-procedure property value(s)"));
+            parts.push(counted(
+                n,
+                "load-procedure property value",
+                "load-procedure property values",
+            ));
         }
         if parts.is_empty() {
             "nothing".to_string()
@@ -501,6 +516,12 @@ impl WriteReadback {
             model,
         });
     }
+}
+
+/// `n` and the noun for it (`1 parameter`, `2 parameters`).
+fn counted(n: impl Into<usize>, one: &str, many: &str) -> String {
+    let n: usize = n.into();
+    format!("{n} {}", if n == 1 { one } else { many })
 }
 
 /// An error and its sources, joined with `": "`.
@@ -1081,7 +1102,7 @@ mod tests {
         assert_eq!(out.compared.group_objects, Some(21));
         assert_eq!(
             out.summary(),
-            "1 group address(es), 1 association(s), 21 group object(s)"
+            "1 group address, 1 association, 21 group objects"
         );
         Ok(())
     }

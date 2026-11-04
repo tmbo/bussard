@@ -181,7 +181,7 @@ pub fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<LineTarget> 
                 .map(|v| v.as_slice())
                 .unwrap_or(&[]);
             let desired = if links.is_empty() {
-                Err("no links in the model".to_string())
+                Err("no links in your project".to_string())
             } else {
                 Ok(compute_tables(links))
             };
@@ -780,7 +780,9 @@ async fn verify_after_restart(
         Err(err) => return Err(format!("read back after the restart: {err}")),
     };
     if !plan(live.tables(), desired).is_noop() {
-        return Err("read back after the restart: the tables do not match the model".to_string());
+        return Err(
+            "read back after the restart: the tables do not match your project".to_string(),
+        );
     }
     if let Some(s7) = live.sys7() {
         let linked = desired.associations.iter().map(|&(_, a)| a).collect();

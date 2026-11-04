@@ -1333,7 +1333,7 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         WriteRefusal::Protected { name, .. } => (
             true,
             format!(
-                "GA {ga} ({name:?}) is protected (safety-critical); writes are refused via MCP"
+                "group address {ga} ({name:?}) is protected (safety-critical); writes are refused via MCP"
             ),
         ),
         WriteRefusal::DptMismatch {
@@ -1343,14 +1343,14 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         } => (
             true,
             format!(
-                "GA {ga} is declared as DPT {declared} in the model; refusing to write it \
+                "group address {ga} is declared as DPT {declared} in your project; refusing to write it \
                  as {requested}. Correct groups.toml if the model is wrong — the model \
                  is the source of truth, not the caller"
             ),
         ),
         WriteRefusal::NoDpt { .. } => (
             false,
-            format!("GA {ga} has no DPT in the model; pass `dpt` to write it"),
+            format!("group address {ga} has no DPT in your project; pass `dpt` to write it"),
         ),
         WriteRefusal::InvalidValue { reason, .. } | WriteRefusal::Encode { reason, .. } => {
             (false, reason.clone())

@@ -1015,12 +1015,12 @@ fn done_result(
         Some(_) if flashed => {
             "the application was loaded with the model's parameters and links".to_string()
         }
-        Some(_) => "the model's parameters and links were written".to_string(),
+        Some(_) => "the parameters and links in your project were written".to_string(),
     };
     let ok = !recorded.is_null();
     let summary = format!(
         "{} ({target}) is replaced: the device that was at {} now answers at {target}, {how}, \
-         and the read-back matches the model{}.",
+         and the read-back matches your project{}.",
         r.name,
         pressed.address,
         if ok {

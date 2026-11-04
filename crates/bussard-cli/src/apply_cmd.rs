@@ -10,7 +10,7 @@
 //!    `reconstruct`.
 //! 4. Show the plan in the model's words ([`crate::device_plan`]): the objects
 //!    and parameters that change, what stays, what is written, where the
-//!    backup goes. An empty plan prints `<ia> matches the model; nothing to
+//!    backup goes. An empty plan prints `<ia> matches your project; nothing to
 //!    write` and exits 0 **without touching any load state**. With
 //!    `--plan <hash>`, a device whose state no longer hashes to what the
 //!    approved plan read is refused.

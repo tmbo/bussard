@@ -704,7 +704,7 @@ impl BussardMcp {
                     // A silent success is a P1: no read-back, no "verified".
                     result["reason"] = json!(format!(
                         "the download ended with the application {} on {target}, but it was \
-                         not read back and compared with the model",
+                         not read back and compared with your project",
                         done.load_state
                     ));
                     result["recovery"] = json!(format!(
@@ -724,7 +724,7 @@ impl BussardMcp {
                     );
                     result["recovery"] = json!(format!(
                         "The application is loaded on {target}, but the items listed still \
-                         differ from the model. Plan {target} again with knx_plan_device to \
+                         differ from your project. Plan {target} again with knx_plan_device to \
                          see what is left, and do not report the change as done until a plan \
                          reports nothing to do."
                     ));

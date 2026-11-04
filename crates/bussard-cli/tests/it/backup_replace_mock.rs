@@ -921,7 +921,7 @@ fn test_replace_no_flash_refuses_a_spare_with_another_application() -> TestResul
         "stderr:\n{stderr}"
     );
     assert!(
-        stdout.contains("identity of 1.1.4: drift from bussard.lock"),
+        stdout.contains("identity of 1.1.4: differs from your project"),
         "stdout:\n{stdout}"
     );
     assert_eq!(bench.total_writes(), 0, "a refused replace writes nothing");

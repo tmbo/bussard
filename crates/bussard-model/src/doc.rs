@@ -529,7 +529,7 @@ impl InstallationDoc {
             if device.channels.is_empty() && device.other_objects.is_empty() {
                 let _ = writeln!(
                     out,
-                    "This device has no com objects in the model, so nothing is \
+                    "This device has no com objects in your project, so nothing is \
                      documented for it yet.\n"
                 );
                 continue;

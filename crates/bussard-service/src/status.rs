@@ -53,9 +53,7 @@ pub enum StatusError {
         source: MgmtError,
     },
     /// The device answered the hidden mask of a Data Secure device.
-    #[error(
-        "{target} hides its mask (FFFF): it is KNX Secure-activated and refuses plain management"
-    )]
+    #[error("{target} hides its mask (FFFF): it is secured and refuses plain management")]
     HiddenMask {
         /// The device.
         target: IndividualAddress,

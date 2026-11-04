@@ -685,18 +685,18 @@ pub fn run(
                     plan.identity.id,
                 );
                 if let Some(note) = not_compared {
-                    eprintln!("note: parameters not compared with the model: {note}");
+                    eprintln!("note: parameters not compared with your project: {note}");
                 }
             } else if let Some(note) = not_compared {
                 println!(
                     "\nflash verified: application program {} is {} on {target}",
                     plan.identity.id, verify.load_state,
                 );
-                eprintln!("warning: parameters not compared with the model: {note}");
+                eprintln!("warning: parameters not compared with your project: {note}");
             } else {
                 println!(
                     "\nflash verified: application program {} is {} on {target}, and its \
-                     parameters match the model",
+                     parameters match your project",
                     plan.identity.id, verify.load_state,
                 );
             }
@@ -710,7 +710,7 @@ pub fn run(
                 }
                 if params_failure.is_none() {
                     println!(
-                        "read back from {target} and compared with the model: {}",
+                        "read back from {target} and compared with your project: {}",
                         readback.summary()
                     );
                 }

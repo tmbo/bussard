@@ -45,7 +45,7 @@ pub type GroupKeys = HashMap<GroupAddress, Key16>;
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SecureGroupError {
     /// The GA is secured in the model but no group key is available for it.
-    #[error("GA {ga} is secured (KNX Data Secure) but no group key is available for it")]
+    #[error("group address {ga} is secured but no group key is available for it")]
     NoKey {
         /// The GA.
         ga: GroupAddress,

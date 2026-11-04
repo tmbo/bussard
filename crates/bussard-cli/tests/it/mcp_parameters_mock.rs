@@ -240,7 +240,7 @@ fn test_mcp_plan_and_apply_write_the_differing_parameter_octet() -> TestResult {
     assert!(
         plan["identity"]
             .as_str()
-            .is_some_and(|l| l.starts_with("identity of 1.1.4: matches bussard.lock")),
+            .is_some_and(|l| l.starts_with("identity of 1.1.4: matches your project")),
         "plan: {plan}"
     );
     assert!(
@@ -283,7 +283,7 @@ fn test_mcp_plan_without_a_parameter_change_is_unchanged() -> TestResult {
     assert_eq!(plan["parameters"]["changed"], json!([]), "plan: {plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 0, "plan: {plan}");
     assert_eq!(
-        plan["next_step"], "nothing to write: the device already matches the model",
+        plan["next_step"], "nothing to write: the device already matches your project",
         "plan: {plan}"
     );
     let dev = bench.device();
@@ -482,7 +482,7 @@ fn test_mcp_plan_attributes_every_written_parameter_octet() -> TestResult {
         );
         assert_eq!(
             sentences.contains(
-                "1 octet at offset 1 of segment RS-2: device memory differs from the model's \
+                "1 octet at offset 1 of segment RS-2: device memory differs from the project's \
                  defaults there, not covered by a shown parameter"
             ),
             explained,
@@ -502,7 +502,7 @@ fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
     const SELECTOR_NOTE: &str = "an internal ETS selector differs: the device's function \
          assignment differs from the project (the project changed after the device's last \
          download, or the device was downloaded from another project state); writing makes \
-         the device match the model";
+         the device match your project";
     // (octet 1 as the device holds it, the owner's key and role, the device
     // and model values, the run's sentence, whether the selector note follows)
     type Case<'a> = (u8, (&'a str, &'a str), (&'a str, &'a str), &'a str, bool);
@@ -512,7 +512,7 @@ fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
             ("P-3", "internal"),
             ("Light", "no application"),
             "1 octet at offset 1 of segment RS-2: _AppInstanz 1 (internal ETS selector, P-3), \
-             device Light, model no application",
+             device Light, project no application",
             true,
         ),
         (
@@ -520,7 +520,7 @@ fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
             ("P-2", "hidden"),
             ("1", "0"),
             "1 octet at offset 1 of segment RS-2: Delay (hidden by the configuration, P-2), \
-             device 1, model 0",
+             device 1, project 0",
             false,
         ),
     ];
@@ -646,7 +646,7 @@ fn test_download_flag_only_difference_plans_as_noop() -> TestResult {
     assert!(next.contains("device-managed"), "{next}");
     let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(
-        sentences.starts_with("1.1.4 matches the model; nothing to write\n"),
+        sentences.starts_with("1.1.4 matches your project; nothing to write\n"),
         "{sentences}"
     );
     assert!(
@@ -817,7 +817,7 @@ fn test_partial_write_leaves_an_unreached_octet_alone() -> TestResult {
     assert_eq!(
         unreached["sentence"],
         "1 octet at offset 2 of segment RS-2, not written (ETS does not write this octet in a \
-         download): _AppInstanz 1 (internal ETS selector, P-3), device Light, model no \
+         download): _AppInstanz 1 (internal ETS selector, P-3), device Light, project no \
          application",
         "plan: {plan}"
     );

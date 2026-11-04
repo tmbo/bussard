@@ -382,7 +382,7 @@ pub fn resolve_conflicts(
 pub fn report_changes(ours: &Model, merged: &Model, out: &mut dyn Output) {
     let changes = describe(ours, merged);
     if changes.is_empty() {
-        out.say("\nThe import changes nothing in the model.");
+        out.say("\nThe import changes nothing in your project.");
         return;
     }
     out.say(&format!("\nThe import changes {} thing(s):", changes.len()));
