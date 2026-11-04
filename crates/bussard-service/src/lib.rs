@@ -32,8 +32,12 @@
 //! - [`admission`]: whether the devices on a secured group address admit
 //!   bussard's tunnel address as a secure sender (PID 54), and the plan change
 //!   of `admit_tunnel_senders` (issue #297).
-//! - [`adopt`]: what `bussard adopt` records for a KNX Data Secure-activated
-//!   device (links, `secure` flags, the security intent and lock facts).
+//! - [`assign`]: the assign flow (wait for programming mode, identify, write
+//!   the individual address, read back, the device file) behind `bussard
+//!   assign`, `adopt` and `knx_add_device` (issue #749).
+//! - [`adopt`]: the adopt flow on top of it: the product data shaped into the
+//!   device file, and what a KNX Data Secure-activated device records (links,
+//!   `secure` flags, the security intent and lock facts).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
 //! - [`backup`]: the device reads behind `bussard backup` and
@@ -62,6 +66,7 @@
 
 pub mod admission;
 pub mod adopt;
+pub mod assign;
 pub mod backup;
 pub mod bus;
 pub mod describe;

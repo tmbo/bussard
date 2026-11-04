@@ -15,7 +15,7 @@ tier:
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices, rate-limited. |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected addresses are refused. |
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`) and switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), each after your yes. Not with `--passive`. |
+| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`) and add a new device (`knx_add_device`), each after your yes. Not with `--passive`. |
 | Home Assistant | `--allow-home-assistant` | Read Home Assistant and rewrite its KNX configuration, each change after your yes. Never touches the bus. |
 
 Model edits touch files only, at every tier; `--no-model-edits` withholds
@@ -88,6 +88,22 @@ a device in the form ETS uses, after your yes.
     parameter values for it, the desired tables, the parameter image the
     write would stream, and the live tables and parameter memory it read.
     The history snapshot is named `mcp knx_apply_device <address> <digest>`.
+
+## Adding a device is one flow
+
+`knx_add_device` is `bussard adopt` in chat, on the same functions. The
+assistant asks you to press the programming button on the new device; the
+server waits for its answer as long as the CLI does (30 seconds). It then
+reads what the device is (serial number, mask, order number), picks the
+address (the one you named, else the next free one), looks up its product
+data, and shows you the plan with a digest. Nothing is written yet.
+
+After your yes it checks the device again, writes the address, reads the
+device back at the new address, and writes the device file and its lock
+entry. Downloading the vendor's product data is a separate question:
+your yes to the address does not answer it. A device the keyring lists keeps
+its address and is read over KNX Data Secure, as `adopt` does; the Secure
+activation of a factory-fresh device stays with ETS.
 
 ## A com-object change becomes a flash
 

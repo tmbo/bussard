@@ -1054,7 +1054,7 @@ mod tests {
 
     #[test]
     fn test_resolve_gateway_env_beats_bussard_toml() -> Result<(), Box<dyn std::error::Error>> {
-        let mut model = crate::assign_cmd::empty_model();
+        let mut model = bussard_service::assign::empty_model();
         model.config.connection.gateway = Some("127.0.0.1:3671".to_string());
         let overrides = ConnOverrides {
             gateway: resolve_gateway(None, Some("127.0.0.2:3700")),

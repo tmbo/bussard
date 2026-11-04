@@ -8,6 +8,7 @@ mod capabilities;
 mod diff_tools;
 mod file_tools;
 mod guidance;
+mod mcp_add_device;
 mod mcp_audit;
 mod mcp_bus;
 mod mcp_discard_edits;

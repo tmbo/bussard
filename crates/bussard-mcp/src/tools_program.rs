@@ -119,6 +119,7 @@ use sha2::{Digest, Sha256};
 use crate::server::BussardMcp;
 use crate::state::ConnState;
 
+mod add_device;
 mod flash;
 mod interface;
 mod ip_secure;
@@ -129,9 +130,10 @@ mod restore_tables;
 mod secure_diag;
 
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 9] = [
+pub const PROGRAMMING_TOOLS: [&str; 10] = [
     "knx_plan_device",
     "knx_apply_device",
+    "knx_add_device",
     "knx_interface_secure",
     "knx_clear_security_log",
     "knx_apply_status",
@@ -171,6 +173,9 @@ pub struct ProgrammingTier {
     table_restores: std::sync::Mutex<HashMap<String, restore_tables::PendingTables>>,
     /// Line plans produced in this session, by digest (issue #748).
     line_plans: std::sync::Mutex<HashMap<String, line::PendingLinePlan>>,
+    /// Devices `knx_add_device` identified, waiting for the human's yes, by
+    /// job id (issue #749).
+    adds: std::sync::Mutex<HashMap<String, add_device::PendingAdd>>,
 }
 
 impl ProgrammingTier {
@@ -193,6 +198,7 @@ impl ProgrammingTier {
             restarts: std::sync::Mutex::new(HashMap::new()),
             table_restores: std::sync::Mutex::new(HashMap::new()),
             line_plans: std::sync::Mutex::new(HashMap::new()),
+            adds: std::sync::Mutex::new(HashMap::new()),
         }
     }
 
@@ -369,6 +375,35 @@ pub struct ClearSecurityLogArgs {
     pub plan_digest: Option<String>,
 }
 
+/// Arguments for `knx_add_device`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct AddDeviceArgs {
+    /// The individual address the new device gets, e.g. `"1.1.42"`. Omit it
+    /// for the next free address on the model's busiest line (a device the
+    /// keyring lists keeps its address). First call only.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The order number the human says the device is, e.g. `"2138.10 REG"`.
+    /// Optional: the device's own order number is read; this one names the
+    /// product data when the device reports none. First call only.
+    #[serde(default)]
+    pub order_number: Option<String>,
+    /// The `job` the first call returned. Pass it with `plan_digest` and
+    /// `yes: true` to write, after the human's yes.
+    #[serde(default)]
+    pub job: Option<String>,
+    /// The `plan_digest` the job reported at the `identified` step.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    /// `true` only after the human's explicit yes to the job's question.
+    #[serde(default)]
+    pub yes: Option<bool>,
+    /// `true` only after the human agreed to download the vendor product
+    /// data (`download_needed`); `yes` never answers that.
+    #[serde(default)]
+    pub download: Option<bool>,
+}
+
 /// Arguments for `knx_apply_status`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyStatusArgs {
@@ -508,6 +543,41 @@ impl BussardMcp {
                 Ok(value) => ok(value),
                 Err(reason) => refusal(address, reason),
             },
+        }
+    }
+
+    /// `knx_add_device` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Add a NEW device on the PHYSICAL bus, the flow of `bussard adopt` (issue \
+        #749): press the button, identify, assign the address, fetch the product data, write \
+        the device file. Three steps. (1) Call with optional `address` (else the next free one) \
+        and `order_number`: answers at once with `job` and `question` (press the programming \
+        button): relay it word for word, then poll knx_job_status. The job waits up to 30 s for \
+        the device. (2) knx_job_status reports step `identified`: serial, mask, order number, \
+        `product_data` (in the store, or what would be downloaded), `sentences`, `plan_digest` \
+        and `question`. Nothing is written yet: show the sentences and ask the question. (3) \
+        ONLY after the human's explicit yes in this conversation, call again with `job`, \
+        `plan_digest` and `yes: true`, plus `download: true` when `download_needed` is true and \
+        the human agreed to the download too. It re-reads the device and refuses when it \
+        changed, writes the address, reads the device back at the new address and writes the \
+        device file and its lock entry: the result has `step: done`, `assigned`, `verified` \
+        (the read-back matches the identified serial and mask), `summary`, `objects` to wire \
+        and `next_step`. Refuses an address another device answers at. A device the keyring \
+        lists is adopted where ETS put it over A_SecureData; Secure activation of a \
+        factory-fresh device stays with ETS. Only available with --allow-programming."
+    )]
+    async fn knx_add_device(
+        &self,
+        Parameters(args): Parameters<AddDeviceArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let address = args
+            .address
+            .clone()
+            .or_else(|| args.job.clone())
+            .unwrap_or_default();
+        match self.add_device_tool(args).await {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&address, reason),
         }
     }
 
