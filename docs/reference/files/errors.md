@@ -1,6 +1,6 @@
 # Errors
 
-What bussard says when a model file does not parse or does not make sense, and what it says about models from earlier versions. For anyone fixing a file by hand or reviewing an assistant's edit.
+What bussard says when a project file does not parse or does not make sense, and what it says about projects from earlier versions. For anyone fixing a file by hand or reviewing an assistant's edit.
 
 Parse errors keep the TOML parser's caret and message, and add a `help:` line where the raw message misleads.
 
@@ -25,7 +25,7 @@ The rules, matched on the message and the text around the caret:
 
 ## Semantic errors
 
-A file that parses but contradicts the rest of the model gets a validation diagnostic in the E-code style, with file, line and column. The codes that concern the file format:
+A file that parses but contradicts the rest of the project gets a validation diagnostic in the E-code style, with file, line and column. The codes that concern the file format:
 
 | Code | Rule |
 |---|---|
@@ -37,23 +37,23 @@ A file that parses but contradicts the rest of the model gets a validation diagn
 | E025 | `send` on an object without the T flag; `listen` on an object without the W flag |
 | E026 | parameter values could not be checked because the product model is missing (warning) |
 | E032 | a device's `product_sha256` has no `[[product]]` entry in the lock (warning) |
-| E033 | a `[[product]]` entry names a `file` the model directory does not hold (warning) |
+| E033 | a `[[product]]` entry names a `file` the project folder does not hold (warning) |
 | E043 | `[knxnet]` contradicts itself: static without address or netmask, static settings under dhcp, friendly name too long or not Latin-1 |
 | E044 | a `[knxnet]` tunnel address twice, or the interface's own |
 | E045 | a `[knxnet]` tunnel address off the interface's line |
-| E046 | a `[knxnet]` tunnel address that is a device of the model |
+| E046 | a `[knxnet]` tunnel address that is a device of the project |
 | W047 | `[knxnet]` tunnels differ from the key store's tunnelling addresses for the interface (warning) |
 
 A group address a device file mentions but `groups.toml` does not define is a warning during `validate`. `import`, `apply` and the MCP edit tools add it to `groups.toml`, named `<channel name> <object function>` with the object's DPT, and report it as added. Every code, with its severity, is on [Diagnostics](../diagnostics.md).
 
-## Earlier YAML models
+## Earlier YAML projects
 
-Earlier versions stored the model as YAML: `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/*.yaml`. bussard does not read those files. A directory that holds only them is refused with a message; re-import the ETS project into an empty directory to get the TOML files.
+Earlier versions stored the project as YAML: `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/*.yaml`. bussard does not read those files. A directory that holds only them is refused with a message; re-import the ETS project into an empty directory to get the TOML files.
 
 Product models keep their YAML format. They live under `.bussard/models/` and regenerate from `products/`.
 
 ## Related
 
 - [Diagnostics](../diagnostics.md): every validation code and its severity.
-- [Model directory](../model-directory.md): strict parsing and how saves keep your formatting.
+- [Project folder](../model-directory.md): strict parsing and how saves keep your formatting.
 - [Device files](device-files.md): the keys E021 to E025 check.

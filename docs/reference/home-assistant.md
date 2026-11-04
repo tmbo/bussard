@@ -1,6 +1,6 @@
 # Home Assistant
 
-How `bussard ha-config` turns the model into [Home Assistant KNX integration](https://www.home-assistant.io/integrations/knx/) YAML: which entities it derives, how your `ha.toml` overrides apply, and how to check the result. The steps to generate and install the config are on [Generate the Home Assistant config](../how-to/home-assistant.md).
+How `bussard ha-config` turns your project into [Home Assistant KNX integration](https://www.home-assistant.io/integrations/knx/) YAML: which entities it derives, how your `ha.toml` overrides apply, and how to check the result. The steps to generate and install the config are on [Generate the Home Assistant config](../how-to/home-assistant.md).
 
 ## The output
 
@@ -46,7 +46,7 @@ bussard has devices, communication objects and group addresses; Home Assistant w
 
 1. walk each device's objects;
 2. resolve each object to the group address it sends or listens to, from the device file;
-3. group related objects into a cluster, by channel where the model records one, otherwise one object per cluster;
+3. group related objects into a cluster, by channel where the project records one, otherwise one object per cluster;
 4. emit one entity per cluster.
 
 Roles come from the object flags:
@@ -56,7 +56,7 @@ Roles come from the object flags:
 
 ### Mapping rules
 
-| Model shape | Home Assistant entity |
+| Project shape | Home Assistant entity |
 |---|---|
 | `1.008` up/down `[+ 1.007` step/stop`, 5.001` position ± status`]` | `cover` (move_long / move_short / position / position_state) |
 | `1.001` switch (has a W command object) | `switch` (or `light`) |
@@ -146,7 +146,7 @@ If your installation does per-room setpoint control, re-enable setpoint wiring p
 
 ### What does not map
 
-An address that fits no rule is never silently dropped: it is counted in the `# unmapped:` footer, grouped by DPT main number. Typical unmapped addresses are forced HVAC-mode datapoints (`20.102` `Zwang`), relative dimming (`3.007`), date and time (`10.001`, `11.001`), and base setpoints the model does not tie to a controllable entity. Recognised but unwired addresses, such as the climate forced mode, also get a `# note:` line with the reason.
+An address that fits no rule is never silently dropped: it is counted in the `# unmapped:` footer, grouped by DPT main number. Typical unmapped addresses are forced HVAC-mode datapoints (`20.102` `Zwang`), relative dimming (`3.007`), date and time (`10.001`, `11.001`), and base setpoints the project does not tie to a controllable entity. Recognised but unwired addresses, such as the climate forced mode, also get a `# note:` line with the reason.
 
 ### Deduplication
 
@@ -158,7 +158,7 @@ The same address is often touched by several devices: an actuator that switches 
 
 ## Overrides
 
-Put an optional `ha.toml` in the model directory to tune the result. Its keys are on [ha.toml](files/ha-toml.md). They apply in this order:
+Put an optional `ha.toml` in the project folder to tune the result. Its keys are on [ha.toml](files/ha-toml.md). They apply in this order:
 
 1. **Exclusions win over everything.** An excluded address never produces an entity and is not counted as unmapped.
 2. **An explicit `platform`** overrides the heuristic. Only the `switch` and `light` promotion is offered; cover, sensor, binary_sensor and climate are structural.
@@ -167,7 +167,7 @@ Put an optional `ha.toml` in the model directory to tune the result. Its keys ar
 
 ## Quality check
 
-Run `bussard ha-config` and read the footer: the entity counts and the `# unmapped:` line tell you how much of the model mapped and what remains. Spot-check a few entities, then adjust with `ha.toml`.
+Run `bussard ha-config` and read the footer: the entity counts and the `# unmapped:` line tell you how much of the project mapped and what remains. Spot-check a few entities, then adjust with `ha.toml`.
 
 On one installation of 424 group addresses, 393 map (39 switch, 5 light, 26 cover, 10 climate, 135 sensor, 60 binary_sensor) and 31 are reported as unmapped. Ten of those are the `20.102` `Zwang` forced-mode addresses, one per heating room, each named in a `# note:` line; the rest are relative dimming (`3.007`), date and time, and a few one-offs.
 

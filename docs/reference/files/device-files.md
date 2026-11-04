@@ -23,7 +23,7 @@ regenalarm = "1"
 regenalarm.listen = ["4/1/8"]
 
 [channel.relaisausgaenge-1]             # handle from the lock
-name = "Fenster Süd"                    # your label for the channel
+name = "Fenster Süd"                    # your name for the channel
 bei-regenalarm = "schließen"            # parameter: scalar value
 betriebsart = "Lüftungsklappe / Dachfenster"
 langzeitbetrieb.listen = ["3/1/20"]     # command object: listens
@@ -31,20 +31,20 @@ kurzzeitbetrieb.listen = ["3/1/21"]
 rueckmeldung-lueftungsklappen-dachfensterposition.send = "3/1/23"   # status object: sends
 ```
 
-This device carries no `[security]` table, because Data Secure has not been activated on it. `application` and `replaced` are optional fields it happens not to set. `bussard device <address> <channel>` lists the keys a channel accepts, with their texts and ranges.
+This device carries no `[security]` table, because the device is not secured. `application` and `replaced` are optional fields it happens not to set. `bussard device <address> <channel>` lists the keys a channel accepts, with their texts and ranges.
 
 ## Top level
 
 | Key | Type | Meaning |
 |---|---|---|
-| `address` | string | The device identity, its individual address. Must match the file name (E002). |
+| `address` | string | The device identity, its address. Must match the file name (E002). |
 | `name` | string | Display name. Required. |
 | `description` | string, optional | Free text. |
 | `product` | string, optional | The order number. The join key into the lock and the product data; needed for anything beyond links. |
 | `application` | string, optional | Override of the application program the lock pins. |
 | `replaced` | string, optional | RFC 3339 timestamp, written by `bussard replace`. |
 | `[location]` | `floor`, `room` | Physical location. Optional. |
-| `[security]` | `activated`, `secure_commissioning` | Intent only. What the device and project generated (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) lives in the lock; key material never appears in either. |
+| `[security]` | `activated`, `secure_commissioning` | Intent only; `activated = true` means secured. What the device and the ETS project generated (`secure_capable`, `has_fdsk_certificate`, `sequence_number`) lives in the lock; key material never appears in either. |
 | `[knxnet]` | table | The KNXnet/IP settings of an IP interface, or of a device with one built in, intent only. See [`[knxnet]`](#the-knxnet-table). |
 | `[parameters]` | table | Device-level parameters. |
 | `[links]` | table | Device-level objects. |
@@ -56,7 +56,7 @@ This device carries no `[security]` table, because Data Secure has not been acti
 
 | Entry | Shape | Meaning |
 |---|---|---|
-| `name` | string | Your label for the channel. |
+| `name` | string | Your name for the channel. |
 | `<key> = <value>` | string, integer or bool | A parameter. |
 | `<key>.send` | string, one group address | The address the object transmits on. The object needs the T flag (E025). |
 | `<key>.listen` | array of group addresses | The addresses the object accepts writes from. The object needs the W flag (E025). |
@@ -78,7 +78,7 @@ Command objects `listen`; status objects `send`.
 A parameter key the lock does not list, a value you set for the first time, resolves through the product model:
 
 - the key must equal the slug of exactly one parameter's text in the channel's scope (the module definition's parameters for a module channel, the application's own otherwise);
-- that parameter must have exactly one ref in the model;
+- that parameter must have exactly one ref in the product model;
 - the next save adds the key to the lock.
 
 A key that resolves neither way is E023. A `<slug>@<ref>` escape key always resolves, lock or not; once the lock names that parameter, the next save writes the lock's key instead. A key the lock lists for one channel does not resolve in another channel's table. A device without a lock entry cannot resolve its parameters or object keys; validation reports E021 with the command that creates the entry (`adopt`, `import`, or `import-product` plus `import`).
@@ -153,15 +153,15 @@ tunnels = ["1.1.22", "1.1.23", "1.1.24", "1.1.25", "1.1.26", "1.1.27", "1.1.28",
 | `netmask` | IPv4 string | With `static` only, and required there (E043). |
 | `gateway` | IPv4 string | With `static` only. |
 | `friendly_name` | string | At most 30 ISO 8859-1 characters (E043). Absent: bussard leaves the device's name alone. |
-| `tunnels` | array of individual addresses | The tunnelling slots, in order (`PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`). |
+| `tunnels` | array of addresses | The tunnelling slots, in order (`PID_ADDITIONAL_INDIVIDUAL_ADDRESSES`). |
 
-The table is what you mean. What the device reports (the address, netmask and gateway in use, the assignment method in effect, the MAC address, the capabilities and the state) are device facts in `.bussard/facts/<address>.toml` (see [Model directory](../model-directory.md)), never in this file or in the lock.
+The table is what you mean. What the device reports (the address, netmask and gateway in use, the assignment method in effect, the MAC address, the capabilities and the state) are device facts in `.bussard/facts/<address>.toml` (see [Project folder](../model-directory.md)), never in this file or in the lock.
 
 Where the values come from:
 
-- **`import`** reads the device instance's `<IPConfig>` and `<AdditionalAddresses>`. `Assign="Fixed"` is `static`, with the project's `IPAddress`, `SubnetMask` and `DefaultGateway`. Anything else, including no `Assign` at all, is `dhcp`, the ETS default, and the project's `IPAddress` (the last address ETS saw) is not kept. Each `<Address Address="22"/>` is a tunnel address on the interface's own line, in document order. The project carries no friendly name. The import summary prints one line per interface. Nothing is read from the device's `<Security>` element: the device authentication code, the management password and the tool key belong to the key store, never to the model.
-- **`adopt`** of an IP interface reads the object and writes the table: the configured method (`dhcp`, with a note, when the device reports one the model does not spell, such as BootP), the static settings when `static`, the friendly name and the tunnels.
-- **A re-import** keeps the file's table. A project whose tunnel addresses or static address differ is reported as a conflict (`knxnet.tunnels`, `knxnet.address`); `--theirs` takes the project's.
+- **`import`** reads the device instance's `<IPConfig>` and `<AdditionalAddresses>`. `Assign="Fixed"` is `static`, with the ETS project's `IPAddress`, `SubnetMask` and `DefaultGateway`. Anything else, including no `Assign` at all, is `dhcp`, the ETS default, and the ETS project's `IPAddress` (the last address ETS saw) is not kept. Each `<Address Address="22"/>` is a tunnel address on the interface's own line, in document order. The ETS project carries no friendly name. The import summary prints one line per interface. Nothing is read from the device's `<Security>` element: the device authentication code, the management password and the tool key belong to the key store, never to the project files.
+- **`adopt`** of an IP interface reads the object and writes the table: the configured method (`dhcp`, with a note, when the device reports one the device file cannot spell, such as BootP), the static settings when `static`, the friendly name and the tunnels.
+- **A re-import** keeps the file's table. An ETS project whose tunnel addresses or static address differ is reported as a conflict (`knxnet.tunnels`, `knxnet.address`); `--theirs` takes the ETS project's.
 
 `validate` checks the table with E043 to E046 and, with the key checks, W047 (see [Diagnostics](../diagnostics.md)). `diff` and `status` describe a change as `Interface KNX IP Interface (1.1.200): tunnel address 1.1.30 added.`
 
@@ -179,7 +179,7 @@ A bus device whose application declares tunnelling addresses (`AdditionalAddress
 - the assignment method, which must be `dhcp`: no ETS capture shows what a download writes for a static address, so `static` is refused;
 - `tunnels`, exactly as many as the application declares.
 
-A `flash` whose device file lacks the table, or one of these values, is refused before anything is written. `import` fills `tunnels` and `assignment` from the project; add `friendly_name` by hand (ETS uses the device's name).
+A `flash` whose device file lacks the table, or one of these values, is refused before anything is written. `import` fills `tunnels` and `assignment` from the ETS project; add `friendly_name` by hand (ETS uses the device's name).
 
 ??? note "Details"
     The writes are property writes on the KNXnet/IP parameter object: the friendly name (PID 76), the tunnel addresses (PID 53), the static address set (PIDs 60 to 62) and the assignment method (PID 55).

@@ -1,6 +1,6 @@
 # ha.toml
 
-`ha.toml` holds your overrides for `bussard ha-config`: group addresses to skip, and per-entity changes to platform, name, device class and extra addresses. You write it; it is optional. The output stays YAML, because that is what Home Assistant reads; only the overrides file is TOML, like the rest of the model.
+`ha.toml` holds your overrides for `bussard ha-config`: group addresses to skip, and per-entity changes to platform, name, device class and extra addresses. You write it; it is optional. The output stays YAML, because that is what Home Assistant reads; only the overrides file is TOML, like the rest of the project.
 
 ## Example
 
