@@ -99,11 +99,14 @@ no Layer 4 acks, memory writes as address, length and content hash.
 - **CLI vs MCP (the #314 class).** For every product the same change runs
   through `bussard plan` and `bussard apply` (or `flash`) and through
   `knx_plan_device` and `knx_apply_device`, each on its own simulator from
-  the same flashed state. Session plumbing (connects, authorize, device
-  descriptor, maximum APDU length, object-type discovery) is dropped. Before
-  the first write the MCP session may read more than the CLI (it re-reads the
-  device to check the plan digest) but never skip a CLI read; from the first
-  write on, the two must be identical. The flash half needs a parameter that
+  the same flashed state. An apply must send the very same requests on both
+  surfaces, the reads before the write and the session plumbing included
+  (issue #761). A flash is compared with the session plumbing (connects,
+  authorize, device descriptor, maximum APDU length, object-type discovery)
+  dropped: before the first write the MCP session may read more than the
+  CLI (it re-reads the device to check the plan digest, where `bussard
+  flash` reads no tables) but never skip a CLI read; from the first write
+  on, the two must be identical. The flash half needs a parameter that
   shows or hides a com-object (the MCP tier flashes only then):
   `syn-dynamic-tests` (07B0) and `syn-s7-no-comobjects` (0701) have one.
 
