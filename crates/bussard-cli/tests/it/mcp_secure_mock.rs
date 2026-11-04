@@ -1406,7 +1406,7 @@ fn test_cli_apply_readback_reports_the_counts_when_healthy() -> TestResult {
     assert!(success, "{stdout}\n{stderr}");
     assert!(
         stdout.contains(
-            "read back from 1.1.10 and compared with the model: 2 group address(es), 2 \
+            "read back from 1.1.10 and compared with your project: 2 group address(es), 2 \
              association(s)"
         ),
         "{stdout}"

@@ -1,7 +1,7 @@
 //! The `bussard validate` subcommand.
 //!
 //! Loads the model and prints diagnostics either as rustc-style coloured text
-//! (respecting `NO_COLOR`) or as a JSON array. Exits with a failure code if any
+//! (the shared [`crate::style`], respecting `NO_COLOR`) or as a JSON array. Exits with a failure code if any
 //! diagnostic is an error.
 //!
 //! Besides the model's own rules it checks the configured keyring (issue
@@ -10,12 +10,12 @@
 //! from `BUSSARD_KEYRING_PASSWORD`; without it one info line says the key
 //! checks were skipped. `validate` stays offline and never prompts.
 
-use std::io::IsTerminal;
 use std::path::Path;
 use std::process::ExitCode;
 
 use bussard_model::{Diagnostic, Model, Severity, validate_in_dir};
-use owo_colors::OwoColorize;
+
+use crate::style::{Style, Tone, count};
 
 /// Runs the validate command over the model in `dir`.
 pub fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
@@ -62,73 +62,41 @@ fn keyring_diagnostics(model: &Model, dir: &Path) -> Vec<Diagnostic> {
     diags
 }
 
-/// Whether colour should be used: enabled on a terminal unless `NO_COLOR` is set.
-fn use_color() -> bool {
-    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
-}
-
 /// Prints diagnostics in rustc style.
 fn print_text(diagnostics: &[Diagnostic]) {
-    let color = use_color();
-    let mut errors = 0usize;
-    let mut warnings = 0usize;
+    print!("{}", render_text(diagnostics, Style::stdout()));
+}
 
+/// Diagnostics in rustc style, coloured by severity, then one summary line.
+fn render_text(diagnostics: &[Diagnostic], style: Style) -> String {
+    let mut out = String::new();
     for d in diagnostics {
-        let label = match d.severity {
-            Severity::Error => "error",
-            Severity::Warning => "warning",
-            Severity::Info => "info",
+        let (label, tone) = match d.severity {
+            Severity::Error => ("error", Tone::Error),
+            Severity::Warning => ("warning", Tone::Warn),
+            Severity::Info => ("info", Tone::Dim),
         };
-        match d.severity {
-            Severity::Error => errors += 1,
-            Severity::Warning => warnings += 1,
-            Severity::Info => {}
-        }
-
-        let header = format!("{label}[{}]", d.code);
-        if color {
-            let header = match d.severity {
-                Severity::Error => header.red().bold().to_string(),
-                Severity::Warning => header.yellow().bold().to_string(),
-                Severity::Info => header.cyan().bold().to_string(),
-            };
-            println!("{header}: {}", d.message);
-            println!("  {} {}", "-->".blue(), d.location);
-        } else {
-            println!("{header}: {}", d.message);
-            println!("  --> {}", d.location);
-        }
+        let header = style.paint(&style.bold(&format!("{label}[{}]", d.code)), tone);
+        out.push_str(&format!("{header}: {}\n", d.message));
+        out.push_str(&format!("  {} {}\n", style.dim("-->"), d.location));
     }
-
+    let (errors, warnings) = counts(diagnostics);
     if diagnostics.is_empty() {
-        let msg = "no problems found";
-        if color {
-            println!("{}", msg.green());
-        } else {
-            println!("{msg}");
-        }
-        return;
+        out.push_str(&style.summary(&[("No problems found".to_string(), Tone::Ok)]));
+        out.push('\n');
+        return out;
     }
-
-    let summary = format!(
-        "{} error{}, {} warning{}",
-        errors,
-        if errors == 1 { "" } else { "s" },
-        warnings,
-        if warnings == 1 { "" } else { "s" }
-    );
-    println!();
-    if color {
-        if errors > 0 {
-            println!("{}", summary.red().bold());
-        } else if warnings > 0 {
-            println!("{}", summary.yellow().bold());
-        } else {
-            println!("{summary}");
-        }
-    } else {
-        println!("{summary}");
-    }
+    let tone = |n: usize, bad: Tone| if n > 0 { bad } else { Tone::Ok };
+    out.push('\n');
+    out.push_str(&style.summary(&[
+        (count(errors, "error", "errors"), tone(errors, Tone::Error)),
+        (
+            count(warnings, "warning", "warnings"),
+            tone(warnings, Tone::Warn),
+        ),
+    ]));
+    out.push('\n');
+    out
 }
 
 /// Prints diagnostics as a JSON document: `{ "schema", "diagnostics": [...] }`.
@@ -166,13 +134,72 @@ pub(crate) fn gate(model: &Model, dir: &Path, verb: &str) -> bool {
     if errors == 0 {
         return true;
     }
+    let style = Style::stderr();
     eprintln!(
-        "refusing to {verb}: the model has {errors} error(s) ({warnings} warning(s)); nothing \
-         was written. Fix these first:"
+        "{}",
+        style.error_line(&format!(
+            "refusing to {verb}: your project has {} ({}); nothing was written. Fix these \
+             first:",
+            count(errors, "error", "errors"),
+            count(warnings, "warning", "warnings")
+        ))
     );
     for d in diagnostics.iter().filter(|d| d.severity == Severity::Error) {
-        eprintln!("  error[{}]: {}", d.code, d.message);
-        eprintln!("    --> {}", d.location);
+        eprintln!(
+            "  {}: {}",
+            style.paint(&format!("error[{}]", d.code), Tone::Error),
+            d.message
+        );
+        eprintln!("    {} {}", style.dim("-->"), d.location);
     }
+    eprintln!(
+        "{}",
+        style.dim("Run `bussard validate` to see every problem.")
+    );
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn diag(severity: Severity, code: &'static str) -> Diagnostic {
+        Diagnostic {
+            code,
+            severity,
+            message: "the message".to_string(),
+            location: "devices/1.1.4.toml".to_string(),
+        }
+    }
+
+    #[test]
+    fn test_render_text_plain_counts_and_points() {
+        let text = render_text(
+            &[
+                diag(Severity::Error, "E001"),
+                diag(Severity::Warning, "W002"),
+                diag(Severity::Warning, "W003"),
+            ],
+            Style::plain(),
+        );
+        assert_eq!(
+            text,
+            "error[E001]: the message\n  --> devices/1.1.4.toml\n\
+             warning[W002]: the message\n  --> devices/1.1.4.toml\n\
+             warning[W003]: the message\n  --> devices/1.1.4.toml\n\
+             \n1 error, 2 warnings\n"
+        );
+    }
+
+    #[test]
+    fn test_render_text_clean_project() {
+        assert_eq!(render_text(&[], Style::plain()), "No problems found\n");
+    }
+
+    #[test]
+    fn test_render_text_colour_by_severity() {
+        let text = render_text(&[diag(Severity::Error, "E001")], Style::rich());
+        assert!(text.contains("\u{1b}[31m"), "{text:?}");
+        assert!(text.contains("\u{1b}[32m"), "0 warnings in green: {text:?}");
+    }
 }

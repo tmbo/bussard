@@ -95,7 +95,7 @@ Behaviour:
 - A security-activated device refuses plain management access. Pass its tool key with `--keyring` (or `--tool-key` for a test device) and `describe` runs over KNX Data Secure.
 - A device without a tool key that refuses the plain walk is tried once more under its factory key (FDSK) from the key store. One that answers there was reset to default or never commissioned: `describe` says so and tells you to commission it with ETS and import the new keyring. Nothing is written under the factory key.
 - A walk that finds no interface object after a successful descriptor read is a failure, not an empty device: `describe` exits 1 with the `--keyring` hint on stderr. System 1 (BCU1) devices have no interface objects and are exempt.
-- The text output prints `KNX Secure (model):` and `KNX Secure (this run):` lines. No key material appears in text or JSON.
+- The text output prints `Secure in your project` and `Secure in this run` lines. No key material appears in text or JSON.
 
 | JSON field | Present | Meaning |
 |---|---|---|

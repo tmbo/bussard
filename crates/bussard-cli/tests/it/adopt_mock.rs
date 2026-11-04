@@ -329,7 +329,7 @@ fn adopt_happy_path_writes_rich_device_file() -> TestResult {
     );
     // No order-number mismatch warning on the happy path.
     assert!(
-        !stderr.contains("WARNING:"),
+        !stderr.contains("which is not among the product's order numbers"),
         "no mismatch warning expected; stderr:\n{stderr}"
     );
     // Ready-to-paste snippets are printed: a groups.toml row and a device-file
@@ -443,7 +443,8 @@ fn adopt_warns_on_order_number_mismatch() -> TestResult {
         "mismatch must not fail the run; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("WARNING") && stderr.contains("JUNG-4093TSM"),
+        stderr.contains("warning: the device reported order number")
+            && stderr.contains("JUNG-4093TSM"),
         "expected a loud order-number mismatch warning; stderr:\n{stderr}"
     );
     assert!(
@@ -855,7 +856,8 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
         "{out}"
     );
     assert!(
-        run.stdout.contains("verified (secured): mask 0x07b0"),
+        run.stdout
+            .contains("mask 0x07b0 (System B), read secured; KNX Data Secure is on"),
         "{out}"
     );
     assert!(run.secured_requests > 0, "the reads rode A_SecureData");
@@ -901,7 +903,7 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
         run.plan.starts_with("exit Some(0)")
             && run
                 .plan
-                .contains("1.1.10 matches the model; nothing to write"),
+                .contains("1.1.10 matches your project; nothing to write"),
         "plan after adopt: {}",
         run.plan
     );

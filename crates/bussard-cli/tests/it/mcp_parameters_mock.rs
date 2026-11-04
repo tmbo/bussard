@@ -660,7 +660,7 @@ fn test_download_flag_only_difference_plans_as_noop() -> TestResult {
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
-        stdout.contains("1.1.4 matches the model; nothing to write"),
+        stdout.contains("1.1.4 matches your project; nothing to write"),
         "{stdout}"
     );
     assert!(stdout.contains("Download-Flag"), "{stdout}");

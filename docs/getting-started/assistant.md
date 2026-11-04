@@ -136,7 +136,7 @@ Every edit comes back as a plain sentence for the assistant to quote, and touche
 
 ```console
 $ bussard status
-1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
+1 pending change since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z)
 
 Living room blind actuator, channel B, now listens to Central down.
 ```

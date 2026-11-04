@@ -22,15 +22,15 @@ Find out what the model holds, which devices answer on the bus, and what bussard
 
     ```console
     $ bussard audit
-    == Model ==
-    project: my-house   imported from: my-house.knxproj
-    38 device(s), 214 group address(es), 402 link(s)
-      line 1.1: 38 device(s)
+    Your project
+      project: my-house   imported from: my-house.knxproj
+      38 devices, 214 group addresses, 402 links
+        line 1.1: 38 devices
     ...
-    == Devices per mask ==
-      07B0 System B (29 device(s)): bussard can: plan/apply, flash, reconstruct, describe
-      0705 System 7 (7 device(s)): bussard can: plan/apply, flash, reconstruct, describe
-      0012 System 1 (2 device(s)): bussard can: describe only
+    Devices per mask
+      07B0 System B (29 devices): bussard can: plan/apply, flash, reconstruct, describe
+      0705 System 7 (7 devices): bussard can: plan/apply, flash, reconstruct, describe
+      0012 System 1 (2 devices): bussard can: describe only
     ```
 
     Add `--keyring <file.knxkeys>` (password in `BUSSARD_KEYRING_PASSWORD`) to see which Secure devices your keyring covers. `--json` prints the same report as one object.

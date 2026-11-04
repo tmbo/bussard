@@ -258,7 +258,7 @@ fn test_plan_interface_with_a_property_procedure_shows_both() -> TestResult {
         "{stdout}"
     );
     assert!(stdout.contains("bussard flash 1.1.200"), "{stdout}");
-    assert!(stdout.contains("run `bussard apply 1.1.200`"), "{stdout}");
+    assert!(stdout.contains("> bussard apply 1.1.200"), "{stdout}");
 
     let out = bench.plan(true)?;
     let (stdout, _) = text(&out);

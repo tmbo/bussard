@@ -73,6 +73,7 @@ use crate::conn_cmd::{
     resolve_config,
 };
 use crate::import_product_cmd::is_project_export;
+use crate::style::Style;
 
 /// What one `bussard adopt` run was asked to do.
 #[derive(Debug, Clone, Copy)]
@@ -114,8 +115,13 @@ pub(crate) fn run(
     // wizard starts writing device files.
     crate::history_cmd::capture_external_edit(dir);
 
-    println!("bussard adopt — the guided new-device flow");
-    println!("  step 1/5  product data");
+    let style = Style::stdout();
+    println!(
+        "{} {}",
+        style.bold("bussard adopt"),
+        style.dim("guides a new device into your project")
+    );
+    step(1, "product data");
 
     // Step 1: resolve product data (import, pick a cached model, or product-less).
     let selected = resolve_product(product, dir, interactive)?;
@@ -126,7 +132,8 @@ pub(crate) fn run(
             app.display_name()
         ),
         None => println!(
-            "  proceeding product-less (stub-only adoption) — no com-object table will be generated"
+            "  continuing without product data (stub-only adoption); no com-object table is \
+             generated"
         ),
     }
 
@@ -217,7 +224,8 @@ fn resolve_product(
     let models = cached_models(dir);
     if models.is_empty() {
         println!(
-            "  no --product given and no cached models under {} — continuing product-less.",
+            "  no --product given and no cached product data under {}; continuing without \
+             product data.",
             dir.join(bussard_model::param_model::MODELS_DIR).display()
         );
         return Ok(None);
@@ -227,8 +235,8 @@ fn resolve_product(
         // Reachable only via the scripted shape, which always passes --product;
         // guard anyway so a future caller does not silently pick model 0.
         println!(
-            "  no --product given (non-interactive) — continuing product-less; \
-             pass --product to attach product data."
+            "  no --product given (non-interactive); continuing without product data. Pass \
+             --product to attach product data."
         );
         return Ok(None);
     }
@@ -330,7 +338,7 @@ async fn adopt_flow(
         force,
         gateway,
     } = run;
-    println!("  step 2/5  assign an address");
+    step(2, "assign an address");
 
     // Find exactly one device in programming mode.
     let current = match wait_for_single_device_as(service, source, "adopt").await? {
@@ -426,18 +434,18 @@ async fn adopt_flow(
         mismatch = true;
         eprintln!();
         eprintln!(
-            "WARNING: the device reported order number {read_order:?}, which is not among the \
-                 product's order numbers ({}).",
-            sel.order_numbers.join(", ")
-        );
-        eprintln!(
-            "         the product data may not match this hardware — double-check before \
-                 wiring links. (continuing anyway)"
+            "{}",
+            Style::stderr().warning_line(&format!(
+                "the device reported order number {read_order:?}, which is not among the \
+                 product's order numbers ({}). The product data may not match this hardware; \
+                 check it before wiring links (continuing anyway).",
+                sel.order_numbers.join(", ")
+            ))
         );
     }
 
     // Step 3: write the rich device file.
-    println!("  step 3/5  write the device file");
+    step(3, "write the device file");
     let device = build_device(target, &verified, selected);
     // A Data Secure device is commissioned: read what ETS programmed into it
     // (links, parameters, security object) over A_SecureData (issue #201).
@@ -524,7 +532,7 @@ async fn adopt_flow(
 
     // Step 4: links scaffolding (print only — the model stays untouched), or
     // the links a secured device already holds (recorded in the model).
-    println!("  step 4/5  wire the group objects");
+    step(4, "wire the group objects");
     match &secure_summary {
         Some(summary) if summary.links > 0 => println!(
             "  recorded the {} link(s) the device holds in {}",
@@ -535,7 +543,7 @@ async fn adopt_flow(
     }
 
     // Step 5: summary.
-    println!("  step 5/5  summary");
+    step(5, "summary");
     print_summary(current, target, &verified, &path, selected, mismatch);
     if let Some(summary) = &secure_summary {
         print_secure_summary(target, summary);
@@ -612,7 +620,7 @@ fn print_links_snippet(
 ) {
     if device.com_objects.is_empty() {
         println!(
-            "  no com-object table (product-less) — import the product later with \
+            "  no com-object table (no product data); import the product later with \
              `bussard import-product` to generate one."
         );
         return;
@@ -678,65 +686,86 @@ fn print_summary(
     selected: Option<&SelectedProduct>,
     mismatch: bool,
 ) {
+    let style = Style::stdout();
     println!();
-    println!("adopted {current} → {target}");
+    println!(
+        "{}",
+        style.ok(&style.bold(&format!("adopted {current} → {target}")))
+    );
     let secured = v.secure == SecureStatus::Activated;
+    let label = |text: &str| style.dim(&format!("{text:<14}"));
     match v.mask {
         Some(mask) if secured => println!(
-            "  verified (secured): mask {mask:#06x} ({}); Data Secure activated",
+            "  {}mask {mask:#06x} ({}), read secured; KNX Data Secure is on",
+            label("verified"),
             system_type(mask)
         ),
-        Some(mask) => println!("  verified: mask {mask:#06x} ({})", system_type(mask)),
+        Some(mask) => println!(
+            "  {}mask {mask:#06x} ({})",
+            label("verified"),
+            system_type(mask)
+        ),
         None => {}
     }
     if let Some(serial) = &v.serial {
-        println!("  serial: {}", hex(serial));
+        println!("  {}{}", label("serial number"), hex(serial).to_uppercase());
     }
-    println!("  device file: {}", path.display());
+    println!("  {}{}", label("device file"), path.display());
     match selected {
         Some(sel) if !sel.com_objects.is_empty() => {
             println!(
-                "  product: {} ({} com objects)",
+                "  {}{} ({} com objects)",
+                label("product"),
                 sel.display_name(),
                 sel.com_objects.len()
             );
         }
-        Some(sel) => println!("  product: {} (identity only)", sel.display_name()),
-        None => println!("  product: none (stub-only adoption)"),
+        Some(sel) => println!(
+            "  {}{} (identity only)",
+            label("product"),
+            sel.display_name()
+        ),
+        None => println!("  {}none (stub-only adoption)", label("product")),
     }
     if mismatch {
-        println!("  NOTE: order-number cross-check flagged a possible mismatch (see above).");
+        println!(
+            "  {}",
+            style.warn("the order number check flagged a possible mismatch (see above)")
+        );
     }
 
-    println!();
-    println!("what remains manual:");
+    let edit = format!("edit {}", path.display());
+    let plan = format!("bussard plan {target}");
+    let apply = format!("bussard apply {target}");
+    let flash = format!("bussard flash {target}");
+    let mut steps: Vec<(&str, &str)> = vec![(edit.as_str(), "set the device's name and room")];
     if secured {
-        println!("  1. edit the name/room in {}", path.display());
-        println!(
-            "  2. `bussard plan {target}`   — should report no change (the model now holds what \
-             the device holds; it uses the same keyring)"
-        );
-        return;
+        steps.push((
+            plan.as_str(),
+            "should report no change: your project now holds what the device holds",
+        ));
+    } else {
+        steps[0].1 = "set the device's name and room, and wire its group objects (snippet above)";
+        steps.push((plan.as_str(), "shows what writing the tables would change"));
+        steps.push((apply.as_str(), "writes them to the device"));
+        // A factory-fresh device needs its first application download before
+        // links take effect; `bussard flash` (#43) is the path when product
+        // data is in hand.
+        if selected.is_some_and(|s| !s.com_objects.is_empty()) {
+            steps.push((
+                flash.as_str(),
+                "only for a factory-fresh device: downloads the application first",
+            ));
+        }
     }
-    println!("  1. edit the name/room in {}", path.display());
-    println!(
-        "  2. wire the group objects: edit {} (snippet above)",
-        path.display()
-    );
-    println!("  3. `bussard plan {target}`   — preview the tables");
-    println!("  4. `bussard apply {target}`  — write them to the device");
+    println!();
+    print!("{}", style.next_steps(&steps));
+}
 
-    // Flash pointer for factory-fresh devices: with product data in hand and a
-    // verified device, `bussard flash` (#43) is the path if it is still Unloaded.
-    // A Data Secure device is commissioned already (ETS activated it).
-    if !secured && selected.map(|s| !s.com_objects.is_empty()).unwrap_or(false) {
-        println!();
-        println!(
-            "if this device is factory-fresh (never downloaded), it needs its first application \
-             download before links take effect:"
-        );
-        println!("  - `bussard flash {target}`  — download the application (see issue #43)");
-    }
+/// One step heading of the flow: `Step 2 of 5  assign an address`.
+fn step(n: u8, what: &str) {
+    let style = Style::stdout();
+    println!("{} {what}", style.bold(&format!("Step {n} of 5")));
 }
 
 // ---------------------------------------------------------------------------

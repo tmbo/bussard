@@ -444,7 +444,7 @@ pub(crate) fn apply_desired(
     let profile = MaskProfile::from_mask(live.mask);
     if !profile.capabilities().plan_apply {
         eprintln!(
-            "{target} reports mask {:04X} ({}) — refusing to write a device outside the \
+            "{target} reports mask {:04X} ({}); refusing to write a device outside the \
              System B / System 7 families",
             live.mask,
             system_type(live.mask)
@@ -500,9 +500,16 @@ pub(crate) fn apply_desired(
                 );
                 return Ok(ExitCode::FAILURE);
             }
-            print!("{}", built.plan.render_text());
+            print!(
+                "{}",
+                crate::plan_view::render(&built.plan, crate::style::Style::stdout())
+            );
             if let Some(refusal) = &built.refusal {
-                eprintln!("refusing to apply to {target}: {refusal}");
+                eprintln!(
+                    "{}",
+                    crate::style::Style::stderr()
+                        .error_line(&format!("refusing to apply to {target}: {refusal}"))
+                );
                 return Ok(ExitCode::FAILURE);
             }
         }
@@ -557,7 +564,7 @@ pub(crate) fn apply_desired(
     // Confirm unless --yes: one question for the whole write.
     let question = built.as_ref().map(|b| b.plan.question());
     if !confirm(target, &gateway, yes, &report, origin, question.as_deref())? {
-        eprintln!("aborted — no changes written.");
+        eprintln!("aborted; nothing was written.");
         return Ok(ExitCode::FAILURE);
     }
 
@@ -584,7 +591,10 @@ pub(crate) fn apply_desired(
             origin.verb()
         )
     })?;
-    println!("backup written to {}", backup_path.display());
+    println!(
+        "{}",
+        crate::style::Style::stdout().dim(&format!("backup written to {}", backup_path.display()))
+    );
     let param_backup = match (partial, param_detail) {
         (Some(_), Some(detail)) => {
             let path =
@@ -702,12 +712,16 @@ pub(crate) fn apply_desired(
         write_seed.clone(),
         &expected,
     ));
+    let err_style = crate::style::Style::stderr();
     for note in &readback.notes {
-        eprintln!("warning: {note}");
+        eprintln!("{}", err_style.warning_line(note));
     }
     match readback.failure() {
         Some(failure) => {
-            eprintln!("\nERROR: {} {target}: {failure}", origin.verb());
+            eprintln!(
+                "\n{}",
+                err_style.error_line(&format!("{} {target}: {failure}", origin.verb()))
+            );
             if code == ExitCode::SUCCESS {
                 recovery_notice(&backup_path, target);
             }
@@ -715,8 +729,11 @@ pub(crate) fn apply_desired(
         }
         None => {
             println!(
-                "read back from {target} and compared with the model: {}",
-                readback.summary()
+                "{}",
+                crate::style::Style::stdout().ok(&format!(
+                    "read back from {target} and compared with your project: {}",
+                    readback.summary()
+                ))
             );
             if code == ExitCode::SUCCESS
                 && let Some(hint) = crate::export_cmd::stale_export_hint(dir)
@@ -795,12 +812,16 @@ fn write_tables_then_parameters(
                 );
             }
             println!(
-                "\n{} verified: address table {} ({} entries), association table {} ({} entries)",
-                origin.verb(),
-                summary.address_state,
-                report.resulting_address_count,
-                summary.association_state,
-                report.resulting_association_count,
+                "\n{}",
+                crate::style::Style::stdout().ok(&format!(
+                    "{} verified: address table {} ({} entries), association table {} ({} \
+                     entries)",
+                    origin.verb(),
+                    summary.address_state,
+                    report.resulting_address_count,
+                    summary.association_state,
+                    report.resulting_association_count,
+                ))
             );
             // A System 7 table write ends with a basic restart, as ETS's does;
             // the parameters and the read-back need the device back first.
@@ -818,7 +839,11 @@ fn write_tables_then_parameters(
                         after.as_secs_f64()
                     ),
                     Err(err) => {
-                        eprintln!("\nERROR: {} {target}: {err}", origin.verb());
+                        eprintln!(
+                            "\n{}",
+                            crate::style::Style::stderr()
+                                .error_line(&format!("{} {target}: {err}", origin.verb()))
+                        );
                         recovery_notice(backup_path, target);
                         return Ok((ExitCode::FAILURE, false));
                     }
@@ -836,12 +861,15 @@ fn write_tables_then_parameters(
                     &inputs.senders,
                 ) {
                     Ok(true) => println!(
-                        "recorded {target}'s security individual address table (PID 54, {} \
-                         sender(s)) in bussard.lock",
-                        inputs.senders.len()
+                        "saved {target}'s security individual address table (PID 54, {}) to \
+                         your project",
+                        crate::style::count(inputs.senders.len(), "sender", "senders")
                     ),
                     Ok(false) => {}
-                    Err(err) => eprintln!("warning: {err}"),
+                    Err(err) => eprintln!(
+                        "{}",
+                        crate::style::Style::stderr().warning_line(&err.to_string())
+                    ),
                 }
                 // And the group-object flags it wrote (PID 61, issue #331).
                 match bussard_service::security_change::record_security_flags(
@@ -850,12 +878,19 @@ fn write_tables_then_parameters(
                     &inputs.secure_objects,
                 ) {
                     Ok(true) => println!(
-                        "recorded {target}'s group-object security flags (PID 61, {} secured \
-                         object(s)) in bussard.lock",
-                        inputs.secure_objects.len()
+                        "saved {target}'s group-object security flags (PID 61, {}) to your \
+                         project",
+                        crate::style::count(
+                            inputs.secure_objects.len(),
+                            "secured object",
+                            "secured objects"
+                        )
                     ),
                     Ok(false) => {}
-                    Err(err) => eprintln!("warning: {err}"),
+                    Err(err) => eprintln!(
+                        "{}",
+                        crate::style::Style::stderr().warning_line(&err.to_string())
+                    ),
                 }
             }
             write_parameters(
@@ -873,15 +908,22 @@ fn write_tables_then_parameters(
         }
         Ok(summary) => {
             eprintln!(
-                "\nERROR: {} did not verify: {}",
-                origin.verb(),
-                summary.detail
+                "\n{}",
+                crate::style::Style::stderr().error_line(&format!(
+                    "{} did not verify: {}",
+                    origin.verb(),
+                    summary.detail
+                ))
             );
             recovery_notice(backup_path, target);
             Ok((ExitCode::FAILURE, true))
         }
         Err(err) => {
-            eprintln!("\nERROR: {} failed: {err}", origin.verb());
+            eprintln!(
+                "\n{}",
+                crate::style::Style::stderr()
+                    .error_line(&format!("{} failed: {err}", origin.verb()))
+            );
             recovery_notice(backup_path, target);
             Ok((ExitCode::FAILURE, false))
         }
@@ -933,13 +975,19 @@ fn write_parameters(
     match (&outcome, outcome.failure()) {
         (bussard_service::download::ParamWriteOutcome::Verified { octets }, _) => {
             println!(
-                "parameters verified: {octets} changed octet(s) read back from {target}; the \
-                 application is Loaded"
+                "{}",
+                crate::style::Style::stdout().ok(&format!(
+                    "parameters verified: {octets} changed octet(s) read back from {target}; \
+                     the application is Loaded"
+                ))
             );
             Ok((ExitCode::SUCCESS, true))
         }
         (_, failure) => {
-            eprintln!("\nERROR: {}", failure.unwrap_or_default());
+            eprintln!(
+                "\n{}",
+                crate::style::Style::stderr().error_line(&failure.unwrap_or_default())
+            );
             backup_note(target);
             // A download that stopped (`Failed`) wrote nothing more to read.
             let wrote = !matches!(

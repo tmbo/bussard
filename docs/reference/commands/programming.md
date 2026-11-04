@@ -23,7 +23,7 @@ $ bussard plan 1.1.47
   backup: knx/captures/backups (tables) and knx/captures/backups/parameters (parameter memory)
 ```
 
-The plan speaks the device file's words, grouped by channel. `+` is a link the device gains (`now listens on`, or `now sends` for the object's sending address). `~` is a sending address or a parameter that takes another value. `-` is an address only the device has (`no longer uses`). A device that already matches prints `<ia> matches the model; nothing to write`.
+The plan speaks the device file's words, grouped by channel. `+` is a link the device gains (`now listens on`, or `now sends` for the object's sending address). `~` is a sending address or a parameter that takes another value. `-` is an address only the device has (`no longer uses`). A device that already matches prints `<ia> matches your project; nothing to write`.
 
 | Flag | Default | Meaning |
 |---|---|---|
@@ -112,7 +112,7 @@ The output above is illustrative: the plan is the one [`plan`](#bussard-plan-add
 
 1. Validate the model. An error stops here with the diagnostics and nothing is written; warnings do not block. A group address the device files use but `groups.toml` does not define is declared there first.
 2. Read the device's live tables and, when product data is at hand, its parameter memory, over one management session.
-3. Print the plan and ask once. An empty plan prints `1.1.47 matches the model; nothing to write` and asks nothing.
+3. Print the plan and ask once. An empty plan prints `1.1.47 matches your project; nothing to write` and asks nothing.
 4. Back up the pre-state tables to `<dir>/captures/backups/<ia>-<timestamp>.json` (the format `backup` and `restore` share) and, when parameters change, the parameter memory to `<dir>/captures/backups/parameters/`.
 5. Write the minimum: the tables when a link changes, and only the parameter octets that differ where a parameter is placed under the configuration (the [parameter-only download](#parameter-only-download)). Each write is verified by reading it back.
 
@@ -375,7 +375,7 @@ A plan that writes parameter octets names the parameters behind each run of writ
 | `internal` | An `Access="None"` parameter the configuration does not reach: a value ETS keeps for itself, never shown and never in the model, such as a push-button's function-block selectors. An enumeration is named an internal ETS selector. |
 | `device_managed` | An `Access="None"` parameter the configuration reaches, owned by the application at runtime, such as a download flag the application resets after the restart. |
 
-- Octets owned only by `device_managed` parameters do not count as a difference. A plan whose only differing octets are device-managed writes nothing: `plan` prints `<ia> matches the model; nothing to write` with a note naming the octets, `apply` exits without touching the device, and `knx_plan_device` reports `noop: true` with no digest.
+- Octets owned only by `device_managed` parameters do not count as a difference. A plan whose only differing octets are device-managed writes nothing: `plan` prints `<ia> matches your project; nothing to write` with a note naming the octets, `apply` exits without touching the device, and `knx_plan_device` reports `noop: true` with no digest.
 - When a link or another parameter changes, device-managed octets are written along with it at the model's value, as ETS does.
 - A plan whose only differing octets are unwritten ones writes nothing either.
 - When an internal selector the download writes differs, the plan adds one note: the device's function assignment differs from the project, and writing makes the device match the model.

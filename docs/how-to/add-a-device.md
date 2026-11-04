@@ -69,23 +69,33 @@ The order number is printed on the device and shown by a scan. bussard checks th
 
     ```console
     $ bussard adopt
-      step 1/5  product data
-      step 2/5  assign an address
+    bussard adopt guides a new device into your project
+    Step 1 of 5 product data
+    Step 2 of 5 assign an address
     device in programming mode: 15.15.255 (its current address)
     adopt 15.15.255 → 1.1.5? [y/N] y
     wrote 1.1.5; verifying…
-      step 3/5  write the device file
+    Step 3 of 5 write the device file
       wrote knx/devices/1.1.5.toml
-      step 4/5  wire the group objects
+    Step 4 of 5 wire the group objects
       ready-to-paste snippets (edit the group address to a free one):
         # ---8<--- groups.toml (inside `groups = [ … ]`)
         { address = "0/0/1", name = "Status channel A", dpt = "1.001" },
         # ---8<--- devices/1.1.5.toml
         [channel.a]
         status.send = "0/0/1"     # or `status.listen = ["0/0/1"]` for a receiving object
-      step 5/5  summary
+    Step 5 of 5 summary
 
     adopted 15.15.255 → 1.1.5
+      device file   knx/devices/1.1.5.toml
+
+    Next steps
+      > edit knx/devices/1.1.5.toml
+        set the device's name and room, and wire its group objects (snippet above)
+      > bussard plan 1.1.5
+        shows what writing the tables would change
+      > bussard apply 1.1.5
+        writes them to the device
     ```
 
     Press the device's programming button when `adopt` asks. It prints snippets to paste. Without a terminal it needs `--yes`. `--no-download` adopts without product data.

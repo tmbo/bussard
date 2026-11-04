@@ -881,7 +881,7 @@ fn test_apply_refuses_a_model_with_validation_errors() -> TestResult {
     let (stdout, stderr) = text(&out);
     assert!(!out.status.success(), "must refuse:\n{stdout}\n{stderr}");
     assert!(
-        stderr.contains("refusing to apply: the model has"),
+        stderr.contains("refusing to apply: your project has"),
         "{stderr}"
     );
     assert!(stderr.contains("E020"), "{stderr}");
