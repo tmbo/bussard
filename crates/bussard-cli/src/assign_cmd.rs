@@ -323,7 +323,6 @@ pub(crate) use bussard_service::assign::Verified;
 pub(crate) use bussard_service::assign::VerifyKey;
 
 pub(crate) use bussard_service::assign::{build_stub_device, hex};
-pub(crate) use bussard_service::identity::clean_ascii;
 
 /// Step 1 of NM_IndividualAddress_Write
 /// ([`bussard_service::assign::probe_occupant`]).

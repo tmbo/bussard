@@ -134,16 +134,12 @@ mod restore_tables;
 mod secure_diag;
 
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 11] = [
+pub const PROGRAMMING_TOOLS: [&str; 12] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_add_device",
-<<<<<<< HEAD
     "knx_commission_line",
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
     "knx_replace_device",
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     "knx_interface_secure",
     "knx_clear_security_log",
     "knx_apply_status",
@@ -186,15 +182,11 @@ pub struct ProgrammingTier {
     /// Devices `knx_add_device` identified, waiting for the human's yes, by
     /// job id (issue #749).
     adds: std::sync::Mutex<HashMap<String, add_device::PendingAdd>>,
-<<<<<<< HEAD
     /// `knx_commission_line`'s plans and jobs (issue #753).
     commissions: std::sync::Mutex<commission::Commissions>,
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
     /// Replacements `knx_replace_device` identified, waiting for the human's
     /// yes, by job id (issue #751).
     replaces: std::sync::Mutex<HashMap<String, replace_device::PendingReplace>>,
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 }
 
 impl ProgrammingTier {
@@ -218,12 +210,8 @@ impl ProgrammingTier {
             table_restores: std::sync::Mutex::new(HashMap::new()),
             line_plans: std::sync::Mutex::new(HashMap::new()),
             adds: std::sync::Mutex::new(HashMap::new()),
-<<<<<<< HEAD
             commissions: std::sync::Mutex::new(commission::Commissions::default()),
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
             replaces: std::sync::Mutex::new(HashMap::new()),
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
         }
     }
 
@@ -429,7 +417,6 @@ pub struct AddDeviceArgs {
     pub download: Option<bool>,
 }
 
-<<<<<<< HEAD
 /// Arguments for `knx_commission_line`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct CommissionLineArgs {
@@ -453,8 +440,6 @@ pub struct CommissionLineArgs {
     pub answer: Option<String>,
 }
 
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
 /// Arguments for `knx_replace_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReplaceDeviceArgs {
@@ -478,7 +463,6 @@ pub struct ReplaceDeviceArgs {
     pub download: Option<bool>,
 }
 
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 /// Arguments for `knx_apply_status`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyStatusArgs {
@@ -665,7 +649,6 @@ impl BussardMcp {
         }
     }
 
-<<<<<<< HEAD
     /// `knx_commission_line` (registered only with `--allow-programming`).
     #[tool(
         description = "Commission a LINE on the PHYSICAL bus, the flow of `bussard commission` \
@@ -710,8 +693,6 @@ impl BussardMcp {
         }
     }
 
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
     /// `knx_replace_device` (registered only with `--allow-programming`).
     #[tool(
         description = "Replace a DEAD device with the same product on the PHYSICAL bus, the \
@@ -756,7 +737,6 @@ impl BussardMcp {
         }
     }
 
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
     /// `knx_restore_parameters` (registered only with `--allow-programming`).
     #[tool(
         description = "Replay a parameter backup onto ONE device on the PHYSICAL bus (issue \

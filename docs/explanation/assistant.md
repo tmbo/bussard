@@ -15,13 +15,7 @@ tier:
 | Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices, rate-limited. |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected addresses are refused. |
-<<<<<<< HEAD
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), add a new device (`knx_add_device`) and commission a line (`knx_commission_line`), each after your yes. Not with `--passive`. |
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`) and add a new device (`knx_add_device`), each after your yes. Not with `--passive`. |
-=======
-| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`) add a new device (`knx_add_device`) and replace a dead one (`knx_replace_device`), each after your yes. Not with `--passive`. |
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
+| Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), add a new device (`knx_add_device`), replace a dead one (`knx_replace_device`) and commission a line (`knx_commission_line`), each after your yes. Not with `--passive`. |
 | Home Assistant | `--allow-home-assistant` | Read Home Assistant and rewrite its KNX configuration, each change after your yes. Never touches the bus. |
 
 Model edits touch files only, at every tier; `--no-model-edits` withholds
@@ -81,8 +75,8 @@ fingerprint `bussard plan --json` prints.
 An apply then runs the CLI rails: the backups to `captures/backups/` (no
 backup, no write), a history snapshot naming the gateway, the table write,
 the parameter download, and a read-back of each. The result carries the
-verify outcome, what was written and the backup paths. `apply --line` stays
-CLI-only.
+verify outcome, what was written and the backup paths. With `line`, the same
+job writes every device the model has on a line.
 
 The safety net around an apply is in chat too. `knx_backup_device` and
 `knx_reconstruct_device` back a device up and read its tables back against
@@ -113,7 +107,6 @@ your yes to the address does not answer it. A device the keyring lists keeps
 its address and is read over KNX Data Secure, as `adopt` does; the Secure
 activation of a factory-fresh device stays with ETS.
 
-<<<<<<< HEAD
 ## Commissioning a line is one job
 
 `knx_commission_line` is `bussard commission --line` in chat, on the same
@@ -133,8 +126,6 @@ too, and you can say assign. You can stop the run at any time. Only
 addresses are written; links, parameters and the application follow per
 device with `knx_plan_device` and `knx_apply_device`.
 
-||||||| parent of de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
-=======
 ## Replacing a dead device is one flow
 
 `knx_replace_device` is `bussard replace` in chat, on the same step machine.
@@ -155,7 +146,6 @@ then are the replacement and the new serial number recorded in the device
 file and the lock. A device the model records as KNX Data Secure is refused:
 its replacement needs the Secure activation, which stays with ETS.
 
->>>>>>> de215fc7 (Add knx_replace_device on the replace flow moved into bussard-service (#751))
 ## A com-object change becomes a flash
 
 A parameter that shows or hides a com-object changes the group-object table,
