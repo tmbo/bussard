@@ -5,6 +5,11 @@ it reaches the bus only through tiers you switch on, and each physical step
 waits for your explicit yes. This page explains the tiers and the rails on
 each.
 
+Every workflow the how-to guides describe can run from chat, with two
+exceptions on purpose: a write to a group address marked `protected = true`
+(only `bussard write --force` at the terminal reaches it), and the KNX
+Secure activation of a factory-fresh device, which stays with ETS.
+
 ## Each tier adds to the one before
 
 `bussard mcp` runs at one of four bus tiers, plus an optional Home Assistant
@@ -246,8 +251,9 @@ MCP. `bussard status` says what changed since the last snapshot, `bussard
 history` lists them, and `bussard undo` puts the files back.
 
 `undo` sends nothing on the bus: after it, the installation behaves exactly
-as before. The restored model reaches a device only when a human runs
-`bussard plan <ia>` and `bussard apply <ia>`. An undo is snapshotted first, so
+as before. The restored model reaches a device only when it is planned and
+written again: by you with `bussard plan <ia>` and `bussard apply <ia>`, or by
+the assistant with `knx_plan_device` and `knx_apply_device` after your yes. An undo is snapshotted first, so
 it can be undone.
 
 Snapshots carry the model files (`bussard.toml`, `groups.toml`,

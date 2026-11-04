@@ -4,100 +4,181 @@ Point a button at another light, check the change, write it to the device, and t
 
 ## Edit the device file
 
-Each device has a file, `devices/<address>.toml`. `bussard device` prints the lines for one channel, ready to paste:
+=== "In chat"
 
-```console
-$ bussard device 1.1.47 a-1 --toml
-# devices/1.1.47.toml: Jalousieaktor Kind 2; uncomment what you want to set
+    An illustrative exchange:
 
-[channel.a-1]   # Jalousie 1
-name = "Fenster Süd"
-betriebsart = "Jalousie"   # Betriebsart: Rollladen | Jalousie
-# fahrzeit = "60"   # Fahrzeit: 1..600
-langzeitbetrieb.listen = ["0/1/3"]   # CWU Langzeitbetrieb, Jalousie 1, 1.008
-# status-position.send = ""   # CRT 5.001
-```
+    ```text
+    You:        Make the hallway rocker switch the porch light too.
+    Assistant:  (calls knx_model_lookup, then knx_add_link)
+                Rocker 1 on Hallway push button now switches Porch light.
+                This changes the model only.
+    ```
 
-Change the group address on the com object's line. `send` is the address an object reports on; `listen` lists the addresses it obeys. `apply` adds a group address that `groups.toml` does not define yet. Or ask the assistant: "make the hallway rocker switch the porch light". Its edit tools change the same files and read the change back to you as sentences before you agree. They never touch the bus.
+    `knx_model_lookup` finds the button and the light by their names, and `knx_add_link` writes the link into the device file. The assistant reads the change back as a sentence; nothing reaches the bus.
+
+=== "At the terminal"
+
+    Each device has a file, `devices/<address>.toml`. `bussard device` prints the lines for one channel, ready to paste:
+
+    ```console
+    $ bussard device 1.1.47 a-1 --toml
+    # devices/1.1.47.toml: Jalousieaktor Kind 2; uncomment what you want to set
+
+    [channel.a-1]   # Jalousie 1
+    name = "Fenster Süd"
+    betriebsart = "Jalousie"   # Betriebsart: Rollladen | Jalousie
+    # fahrzeit = "60"   # Fahrzeit: 1..600
+    langzeitbetrieb.listen = ["0/1/3"]   # CWU Langzeitbetrieb, Jalousie 1, 1.008
+    # status-position.send = ""   # CRT 5.001
+    ```
+
+    Change the group address on the com object's line. `apply` adds a group address that `groups.toml` does not define yet.
+
+`send` is the address an object reports on; `listen` lists the addresses it obeys. Both forms change the same files.
 
 ## Check the model
 
-```console
-$ bussard validate
-0 errors, 2 warnings
-```
+=== "In chat"
 
-`validate` reads files only. It exits non-zero on an error, and `apply` refuses to write while one exists. Warnings do not block.
+    ```text
+    You:        Is the model still valid?
+    Assistant:  (calls knx_validate)
+                No errors, 2 warnings.
+    ```
+
+=== "At the terminal"
+
+    ```console
+    $ bussard validate
+    0 errors, 2 warnings
+    ```
+
+    `validate` exits non-zero on an error.
+
+The check reads files only. A write is refused while the model has an error. Warnings do not block.
 
 ## Preview the write
 
-```console
-$ bussard plan 1.1.47
-1.1.47 Jalousieaktor Kind 2
-  channel a-1 (Fenster Süd)
-    + langzeitbetrieb now listens on 0/1/3 (Jalousie Auf/Ab)
-    ~ status-position sends 0/1/4, was 0/1/9
-    ~ betriebsart = Jalousie, was Rollladen
-  unchanged: 3 objects, 41 parameters
-  writes: address table (4 entries), association table (5 entries), 1 parameter octet
-  backup: knx/captures/backups (tables) and knx/captures/backups/parameters (parameter memory)
-```
+=== "In chat"
 
-`plan` reads the device and shows what `apply` would write, in the device file's words. `+` is a link the device gains, `~` a value that changes, `-` an address only the device has. A `-` line is often a stale link from an old ETS download; `apply` removes it.
+    ```text
+    You:        What would change on the blind actuator?
+    Assistant:  (calls knx_plan_device)
+                Jalousieaktor Kind 2, channel Fenster Süd:
+                Langzeitbetrieb now listens on Jalousie Auf/Ab.
+                Status position sends 0/1/4 instead of 0/1/9.
+                Betriebsart becomes Jalousie, was Rollladen.
+                Shall I write these 3 changes?
+    ```
 
-A device that already matches prints `1.1.47 matches the model; nothing to write`. `plan` never writes. It refuses a device with no links in the model, because writing that plan would empty the device.
+    `knx_plan_device` needs a server started with `--allow-programming`. It returns the plan with a digest that the write must present.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard plan 1.1.47
+    1.1.47 Jalousieaktor Kind 2
+      channel a-1 (Fenster Süd)
+        + langzeitbetrieb now listens on 0/1/3 (Jalousie Auf/Ab)
+        ~ status-position sends 0/1/4, was 0/1/9
+        ~ betriebsart = Jalousie, was Rollladen
+      unchanged: 3 objects, 41 parameters
+      writes: address table (4 entries), association table (5 entries), 1 parameter octet
+      backup: knx/captures/backups (tables) and knx/captures/backups/parameters (parameter memory)
+    ```
+
+    `+` is a link the device gains, `~` a value that changes, `-` an address only the device has.
+
+The plan reads the device and shows what the write would change, in the device file's words. An address only the device has is often a stale link from an old ETS download; the write removes it.
+
+A device that already matches has nothing to write. The plan never writes. It refuses a device with no links in the model, because writing that plan would empty the device.
 
 ## Write the change
 
 !!! warning
-    `apply` writes the device. Do your first writes against a spare device or the simulator. A gateway that is not on your own machine needs `--allow-remote-gateway`.
+    The write changes the device. Do your first writes against a spare device or the simulator. A gateway that is not on your own machine needs `--allow-remote-gateway`.
 
-```console
-$ bussard apply 1.1.47
-apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N] y
-```
+=== "In chat"
 
-`apply` validates the model, reads the device, shows the plan, and asks once. Then it backs up the device's tables to `captures/backups/<address>-<timestamp>.json`, writes only what differs, and reads every write back. It refuses before writing when:
+    ```text
+    You:        Yes.
+    Assistant:  (calls knx_apply_device)
+                Written and verified: the blind actuator now matches the
+                model.
+    ```
 
-- the model has a validation error
+    `knx_apply_device` writes only with the digest of a plan you said yes to, and refuses when a fresh read of the device no longer produces that plan. A long write runs as a job the assistant follows with `knx_job_status`.
+
+=== "At the terminal"
+
+    ```console
+    $ bussard apply 1.1.47
+    apply these 3 changes to 1.1.47 through 192.0.2.10:3671? [y/N] y
+    ```
+
+    `apply` validates the model, reads the device, shows the plan, and asks once. Without a terminal it needs `--yes`.
+
+Both forms run the same write. It backs up the device's tables to `captures/backups/<address>-<timestamp>.json`, writes only what differs, and reads every write back. Both refuse before writing when the model has a validation error or the backup cannot be written.
+
+At the terminal `apply` also refuses when:
+
 - the product data the lock pins is missing or changed
 - the device runs another application or mask than the lock pins (the message names the `bussard flash` it needs)
 - a parameter change shows or hides a com object (see [Change a parameter](change-a-parameter.md))
-- the backup cannot be written
-- there is no terminal and no `--yes`
 
-"Verified" in the output means bussard read the tables and parameters back from the device and they match the model, not merely that the writes completed. The tables are rewritten whole, so running `apply` again after a failure is safe. `apply` also reminds you when no installation-wide [backup](back-up-and-replace.md) exists yet.
+In chat these become part of the plan instead. The assistant says the device needs its application loaded or a full flash, and your yes covers that too. Without the product data the plan writes the links only, and says so.
+
+"Verified" means bussard read the tables and parameters back from the device and they match the model, not merely that the writes completed. The tables are rewritten whole, so writing again after a failure is safe. `apply` also reminds you when no installation-wide [backup](back-up-and-replace.md) exists yet.
 
 ## Undo a change
 
-bussard saves a copy of the model files before every command that writes the model or the bus. You do not need git.
+bussard saves a copy of the model files before every command that writes the model or the bus, and before every edit the assistant makes. You do not need git.
 
-```console
-$ bussard status
-2 pending change(s) since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z):
+=== "In chat"
 
-Rocker 1 on Hallway push button now switches Porch light.
-Porch light (0/0/4) changes type from 1.001 to 1.002.
+    ```text
+    You:        What did we change today?
+    Assistant:  (calls knx_describe_change)
+                Rocker 1 on Hallway push button now switches Porch light.
+                Porch light changes type from 1.001 to 1.002.
+                Nothing has reached any device yet.
+    You:        Undo that.
+    Assistant:  (calls knx_undo)
+                Rocker 1 on Hallway push button no longer switches Porch
+                light. The model is back; the devices were never changed.
+    ```
 
-Nothing has reached any device yet. Run `bussard plan <ia>` to check a device,
-`bussard apply <ia>` to write it, or `bussard undo` to put the files back.
-$ bussard history
-  1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
-     the first snapshot of the model
-  2  20260922T101112Z-001  apply 1.1.5 → 192.0.2.10:3671 (before writing the device tables)
-     Rocker 1 on Hallway push button now switches Porch light and 1 more
-$ bussard undo
-Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
-The state before this undo is kept as snapshot 20260922T103000Z-001.
+    `knx_describe_change` says in sentences what changed since the last snapshot, `knx_history` lists the snapshots, and `knx_undo` restores one.
 
-Rocker 1 on Hallway push button (1.1.5) no longer switches Porch light (0/0/4).
+=== "At the terminal"
 
-Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
-```
+    ```console
+    $ bussard status
+    2 pending change(s) since snapshot 20260922T101112Z-001 (2026-09-22T10:11:12Z):
 
-`undo` changes files only. The devices keep working as before until you run `plan` and `apply`. Without an argument it restores the newest snapshot that differs from your files; `bussard undo 1` picks one by number. The undo is snapshotted too, so you can undo it.
+    Rocker 1 on Hallway push button now switches Porch light.
+    Porch light (0/0/4) changes type from 1.001 to 1.002.
 
-`bussard show 2` prints what one snapshot changed, `bussard show 1 2` the change between two, and `bussard status --raw` the file-level diff. An edit made in an editor is recorded by the next command as an `external edit` snapshot.
+    Nothing has reached any device yet. Run `bussard plan <ia>` to check a device,
+    `bussard apply <ia>` to write it, or `bussard undo` to put the files back.
+    $ bussard history
+      1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
+         the first snapshot of the model
+      2  20260922T101112Z-001  apply 1.1.5 → 192.0.2.10:3671 (before writing the device tables)
+         Rocker 1 on Hallway push button now switches Porch light and 1 more
+    $ bussard undo
+    Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
+    The state before this undo is kept as snapshot 20260922T103000Z-001.
+
+    Rocker 1 on Hallway push button (1.1.5) no longer switches Porch light (0/0/4).
+
+    Run `bussard plan 1.1.5` and `bussard apply 1.1.5` to push this to devices.
+    ```
+
+    `bussard undo 1` picks a snapshot by number. `bussard show 2` prints what one snapshot changed, `bussard show 1 2` the change between two, and `bussard status --raw` the file-level diff.
+
+Undo changes files only. The devices keep working as before until you plan and write them again. Without a choice it restores the newest snapshot that differs from your files. The undo is snapshotted too, so you can undo it. An edit made in an editor is recorded by the next command as an `external edit` snapshot.
 
 ## See what the assistant changed
 
