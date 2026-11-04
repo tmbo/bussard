@@ -596,7 +596,7 @@ mod tests {
         let status = status_json(&job);
         assert_eq!(
             status["summary"],
-            "The certificate page is closed. 2 label(s): 1 waiting for a device, 1 conflict(s)."
+            "The certificate page is closed. 2 sent \u{00B7} 1 no device yet \u{00B7} 1 conflict"
         );
         assert_eq!(status["tally"]["waiting"], 1);
         assert_eq!(status["tally"]["conflicts"], 1);

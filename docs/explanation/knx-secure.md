@@ -137,10 +137,10 @@ from bussard itself on `127.0.0.1`. Open the link in a browser on the same
 computer and scan with its camera or type the labels. Nothing leaves this
 machine, and a phone cannot reach that address.
 
-**At the end** bussard says how many labels it stored on a device, how many
-wait for a device, and which were already known, in conflict or invalid,
-and lists the next steps that apply. A label whose device the model does not
-know yet waits under its serial number; `bussard scan` or `bussard adopt`
+**At the end** bussard says how many certificates were sent and how many
+were added, have no device yet, were already known, are in conflict or
+invalid, and lists the next steps that apply. A certificate whose device
+your project does not have yet waits under its serial number; `bussard scan` or `bussard adopt`
 reads the serial off the device and attaches the key. After new keys,
 `bussard keys export` gives ETS or Home Assistant a current keyring.
 

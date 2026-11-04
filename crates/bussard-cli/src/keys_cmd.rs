@@ -21,8 +21,11 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_project::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
+use bussard_service::enroll_session::{CertificateOutcome, EnrollTally};
 use bussard_service::files::keyring;
 use bussard_service::setup;
+
+use crate::style::{Cell, Style, Symbol, Table, Tone};
 
 /// The environment variable carrying the keyring (and key store) password.
 const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
@@ -255,16 +258,20 @@ pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::R
         if export.verified {
             println!("  verified: read back, decrypted and compared with the key store");
         } else {
+            let style = Style::stderr();
             for leftover in &export.leftovers {
-                eprintln!("ERROR: {leftover}");
+                eprintln!("{}", style.error_line(leftover));
             }
         }
         println!("  keep it out of git: the model's .gitignore lists *.knxkeys");
     }
     if !export.verified {
         eprintln!(
-            "ERROR: {} does not carry the key store's keys; do not hand it on",
-            file.display()
+            "{}",
+            Style::stderr().error_line(&format!(
+                "{} does not carry the key store's keys; do not hand it on",
+                file.display()
+            ))
         );
         return Ok(ExitCode::FAILURE);
     }
@@ -276,109 +283,212 @@ pub fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let password = password()?;
     let store = load_existing(dir, &password)?;
     let s = store.summary();
-    // Secure-capable devices of the model whose label is still to enter.
-    let without_fdsk: Vec<String> = bussard_model::Model::load(dir)
-        .map(|model| {
-            bussard_service::enroll::devices_without_fdsk(&model, &store)
-                .iter()
-                .map(|ia| {
-                    let name = model
-                        .devices
-                        .get(ia)
-                        .map(|d| d.device.name.clone())
-                        .unwrap_or_default();
-                    if name.is_empty() {
-                        ia.to_string()
-                    } else {
-                        format!("{ia} ({name})")
-                    }
-                })
-                .collect()
-        })
+    let model = bussard_model::Model::load(dir).ok();
+    // Devices of the project that support Secure and have no factory key yet.
+    let without_fdsk: Vec<bussard_model::IndividualAddress> = model
+        .as_ref()
+        .map(|model| bussard_service::enroll::devices_without_fdsk(model, &store))
         .unwrap_or_default();
     if json {
         let mut value = serde_json::to_value(&s)?;
         if let Some(object) = value.as_object_mut() {
-            let addresses: Vec<String> = without_fdsk
-                .iter()
-                .map(|d| d.split(' ').next().unwrap_or_default().to_string())
-                .collect();
+            let addresses: Vec<String> = without_fdsk.iter().map(ToString::to_string).collect();
             object.insert("devices_without_fdsk".to_string(), addresses.into());
         }
         crate::output::print(crate::output::schema::KEYS_SHOW, &value)?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
-        "key store {} for project {:?}, created {}",
-        KeyStore::path(dir).display(),
-        s.project,
-        s.created
+    let name_of = |address: &str| -> String {
+        address
+            .parse::<bussard_model::IndividualAddress>()
+            .ok()
+            .and_then(|ia| model.as_ref()?.devices.get(&ia))
+            .map(|d| d.device.name.clone())
+            .unwrap_or_default()
+    };
+    print!(
+        "{}",
+        render_show(
+            &KeyStore::path(dir),
+            &s,
+            &without_fdsk
+                .iter()
+                .map(|ia| (ia.to_string(), name_of(&ia.to_string())))
+                .collect::<Vec<_>>(),
+            &name_of,
+            Style::stdout()
+        )
     );
-    match &s.backbone_multicast {
-        Some(addr) => println!("  backbone key: present ({addr})"),
-        None => println!("  backbone key: none"),
-    }
-    println!("  devices ({}):", s.devices.len());
-    for d in &s.devices {
-        let mut parts = Vec::new();
-        parts.push(if d.has_tool_key {
-            "tool key"
-        } else {
-            "no tool key"
-        });
-        if d.has_fdsk {
-            parts.push("FDSK");
-        }
-        if d.has_management_password {
-            parts.push("management password");
-        }
-        if d.has_authentication {
-            parts.push("authentication code");
-        }
-        let serial = d
-            .serial
-            .as_deref()
-            .map(|s| format!(" serial {s}"))
-            .unwrap_or_default();
-        println!("    {}{serial}: {}", d.address, parts.join(", "));
-    }
-    println!("  interfaces ({}):", s.interfaces.len());
-    for i in &s.interfaces {
-        let host = i.host.as_deref().unwrap_or("?");
-        let mut line = format!(
-            "    {} {} user {} (host {host})",
-            if i.interface_type.is_empty() {
-                "interface"
-            } else {
-                i.interface_type.as_str()
-            },
-            i.address,
-            i.user_id
-        );
-        if !i.has_password {
-            line.push_str(", no password");
-        }
-        if !i.has_authentication {
-            line.push_str(", no authentication code");
-        }
-        println!("{line}");
-    }
-    println!("  group keys: {}", s.group_key_count);
-    if !s.unassigned_certificates.is_empty() {
-        println!(
-            "  certificates without a device (serial numbers): {}",
-            s.unassigned_certificates.join(", ")
-        );
-    }
-    if !without_fdsk.is_empty() {
-        println!(
-            "  secure-capable devices without a factory key (FDSK): {}",
-            without_fdsk.join(", ")
-        );
-        println!("    enter their labels with `bussard keys add-certificate`");
-    }
-    println!("  (key material is never printed)");
     Ok(ExitCode::SUCCESS)
+}
+
+/// The text of `bussard keys show`: what the key store holds, as presence
+/// flags and counts, never a key.
+fn render_show(
+    path: &Path,
+    s: &bussard_project::keystore::KeyStoreSummary,
+    without_fdsk: &[(String, String)],
+    name_of: &dyn Fn(&str) -> String,
+    style: Style,
+) -> String {
+    let mut out = format!(
+        "{} {}\n{}\n",
+        style.bold("Key store"),
+        path.display(),
+        style.dim(&format!("project {:?}, created {}", s.project, s.created))
+    );
+
+    out.push_str(&format!(
+        "\n{}\n",
+        style.bold(&crate::style::count(s.devices.len(), "device", "devices"))
+    ));
+    if !s.devices.is_empty() {
+        let mut table = Table::new(&["Address", "Name", "Serial number", "Keys"]);
+        for d in &s.devices {
+            let mut keys = Vec::new();
+            if d.has_tool_key {
+                keys.push("tool key");
+            }
+            if d.has_fdsk {
+                keys.push("factory key");
+            }
+            if d.has_management_password {
+                keys.push("management password");
+            }
+            if d.has_authentication {
+                keys.push("authentication code");
+            }
+            let keys = if d.has_tool_key {
+                Cell::plain(keys.join(", "))
+            } else {
+                let mut text = vec!["no tool key"];
+                text.extend(keys);
+                Cell::new(text.join(", "), Tone::Warn)
+            };
+            table.row(vec![
+                Cell::plain(d.address.as_str()),
+                Cell::plain(name_of(&d.address)),
+                match &d.serial {
+                    Some(serial) => Cell::plain(serial.as_str()),
+                    None => Cell::new(style.symbol(Symbol::Missing), Tone::Dim),
+                },
+                keys,
+            ]);
+        }
+        indent(&mut out, &table.render(style));
+    }
+
+    out.push_str(&format!(
+        "\n{}\n",
+        style.bold(&crate::style::count(
+            s.interfaces.len(),
+            "interface",
+            "interfaces"
+        ))
+    ));
+    if !s.interfaces.is_empty() {
+        let mut table = Table::new(&["Address", "Type", "User", "Host", "Missing"]);
+        for i in &s.interfaces {
+            let mut missing = Vec::new();
+            if !i.has_password {
+                missing.push("password");
+            }
+            if !i.has_authentication {
+                missing.push("authentication code");
+            }
+            table.row(vec![
+                Cell::plain(i.address.as_str()),
+                Cell::plain(if i.interface_type.is_empty() {
+                    "interface"
+                } else {
+                    i.interface_type.as_str()
+                }),
+                Cell::plain(i.user_id.to_string()),
+                Cell::plain(i.host.as_deref().unwrap_or("-")),
+                Cell::new(missing.join(", "), Tone::Warn),
+            ]);
+        }
+        indent(&mut out, &table.render(style));
+    }
+
+    out.push('\n');
+    out.push_str(&format!(
+        "{} {}\n",
+        style.dim("Group keys:"),
+        s.group_key_count
+    ));
+    out.push_str(&format!(
+        "{} {}\n",
+        style.dim("Backbone key:"),
+        match &s.backbone_multicast {
+            Some(addr) => format!("present ({addr})"),
+            None => "none".to_string(),
+        }
+    ));
+    if !s.unassigned_certificates.is_empty() {
+        out.push_str(&format!(
+            "{} {}\n",
+            style.warn(&format!(
+                "{} with no device yet (serial numbers):",
+                crate::style::count(
+                    s.unassigned_certificates.len(),
+                    "certificate",
+                    "certificates"
+                )
+            )),
+            s.unassigned_certificates.join(", ")
+        ));
+    }
+    let mut steps = Vec::new();
+    if !without_fdsk.is_empty() {
+        let devices: Vec<String> = without_fdsk
+            .iter()
+            .map(|(ia, name)| {
+                if name.is_empty() {
+                    ia.clone()
+                } else {
+                    format!("{ia} {name}")
+                }
+            })
+            .collect();
+        out.push_str(&format!(
+            "{} {}\n",
+            style.warn(&format!(
+                "{} that support Secure without a factory key:",
+                crate::style::count(without_fdsk.len(), "device", "devices")
+            )),
+            devices.join(", ")
+        ));
+        steps.push((
+            "bussard keys enroll",
+            "scan their certificates with your phone (or type them with `bussard keys \
+             add-certificate`)",
+        ));
+    }
+    if !s.unassigned_certificates.is_empty() {
+        steps.push((
+            "bussard scan <LINE>",
+            "saves the serial numbers of your devices and matches the certificates that have \
+             no device yet",
+        ));
+    }
+    out.push_str(&style.dim("Codes and keys are never shown."));
+    out.push('\n');
+    let block = style.next_steps(&steps);
+    if !block.is_empty() {
+        out.push('\n');
+        out.push_str(&block);
+    }
+    out
+}
+
+/// Appends `text`'s lines to `out`, two spaces in.
+fn indent(out: &mut String, text: &str) {
+    for line in text.lines() {
+        out.push_str("  ");
+        out.push_str(line);
+        out.push('\n');
+    }
 }
 
 /// Runs `bussard keys add-certificate`: one label per line from the terminal
@@ -394,14 +504,18 @@ pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::
     let interactive = !from_stdin;
     if interactive && !std::io::stdin().is_terminal() {
         bail!(
-            "standard input is not a terminal; pipe the labels with `bussard keys              add-certificate --stdin` (never as an argument)"
+            "standard input is not a terminal; pipe the certificates with `bussard keys add-certificate --stdin` (never as an argument)"
         );
     }
     let mut outcomes = Vec::new();
+    let style = Style::stdout();
     let mut handle = |text: &str, outcomes: &mut Vec<bussard_service::EnrolOutcome>| {
         let outcome = session.enroll_certificate(text);
         if !json {
-            println!("{}", outcome_line(&outcome));
+            println!(
+                "{}",
+                crate::certificate_view::line(&CertificateOutcome::from(outcome.clone()), style)
+            );
         }
         outcomes.push(outcome);
     };
@@ -443,17 +557,14 @@ pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::
             }),
         )?;
     } else {
-        let count = |status: EnrolStatus| outcomes.iter().filter(|o| o.status == status).count();
-        println!(
-            "{} stored, {} unassigned, {} already stored, {} conflict(s), {} invalid, {} error(s) \
-             (key material is never printed)",
-            count(EnrolStatus::Stored),
-            count(EnrolStatus::Unassigned),
-            count(EnrolStatus::AlreadyStored),
-            count(EnrolStatus::Conflict),
-            count(EnrolStatus::Invalid),
-            count(EnrolStatus::Error),
+        let tally = EnrollTally::of(
+            &outcomes
+                .iter()
+                .cloned()
+                .map(CertificateOutcome::from)
+                .collect::<Vec<_>>(),
         );
+        print!("{}", add_certificate_ending(&tally, style));
     }
     Ok(if failed {
         ExitCode::FAILURE
@@ -462,17 +573,92 @@ pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::
     })
 }
 
+/// What [`learn_serials`] and [`attach_learned_serials`] did, for the
+/// command to show in its own layout (issue #792). Never a key.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(crate) struct SerialNews {
+    /// Devices whose serial number was saved to the project, with it.
+    pub saved: Vec<(bussard_model::IndividualAddress, String)>,
+    /// Devices a waiting certificate was attached to.
+    pub attached: Vec<bussard_model::IndividualAddress>,
+    /// Facts worth a line: a replaced device, a serial number moved.
+    pub notes: Vec<String>,
+    /// Problems: nothing changed for these.
+    pub warnings: Vec<String>,
+}
+
+impl SerialNews {
+    /// Whether the device's serial number was saved just now.
+    pub(crate) fn saved(&self, address: bussard_model::IndividualAddress) -> bool {
+        self.saved.iter().any(|(a, _)| *a == address)
+    }
+
+    /// The lines of the attached certificates and the notes, without the
+    /// saved serial numbers (a table shows those).
+    pub(crate) fn lines(&self, style: crate::style::Style) -> Vec<String> {
+        let mut lines: Vec<String> = self
+            .attached
+            .iter()
+            .map(|ia| style.ok(&format!("certificate for {ia} attached")))
+            .collect();
+        lines.extend(self.notes.iter().map(|n| style.dim(n)));
+        lines
+    }
+
+    /// Prints everything for a command without a table (`describe`,
+    /// `assign`, `adopt`): one line per saved serial number, attached
+    /// certificate and note on stdout (stderr under `--json`), the warnings
+    /// on stderr.
+    pub(crate) fn print(&self, json: bool) {
+        let style = if json {
+            crate::style::Style::stderr()
+        } else {
+            crate::style::Style::stdout()
+        };
+        let mut lines: Vec<String> = self
+            .saved
+            .iter()
+            .map(|(ia, serial)| format!("  serial number {serial} of {ia} saved to your project"))
+            .collect();
+        lines.extend(self.lines(style).into_iter().map(|l| format!("  {l}")));
+        for line in lines {
+            if json {
+                eprintln!("{line}");
+            } else {
+                println!("{line}");
+            }
+        }
+        self.print_warnings();
+    }
+
+    /// Prints the warnings on stderr.
+    pub(crate) fn print_warnings(&self) {
+        let style = crate::style::Style::stderr();
+        for warning in &self.warnings {
+            eprintln!("{}", style.warning_line(warning));
+        }
+    }
+
+    /// Adds `other`'s entries after this one's.
+    fn extend(&mut self, other: SerialNews) {
+        self.saved.extend(other.saved);
+        self.attached.extend(other.attached);
+        self.notes.extend(other.notes);
+        self.warnings.extend(other.warnings);
+    }
+}
+
 /// After `adopt`, `assign`, `scan` or `describe` read the serial numbers of
 /// these devices (issue #728, #752): moves a certificate entered for one of
 /// them to its device in the key store. Without the password or a store, or
 /// with nothing pending, it does nothing; a failure is a warning, never a
-/// command failure. Messages go to stderr under `--json`.
-pub fn attach_learned_serials(
+/// command failure. The caller shows the result ([`SerialNews`]).
+pub(crate) fn attach_learned_serials(
     dir: &Path,
     serials: &[(bussard_model::IndividualAddress, Vec<u8>)],
-    json: bool,
-) {
+) -> SerialNews {
     use bussard_project::keystore::{AttachOutcome, SerialNumber};
+    let mut news = SerialNews::default();
     let serials: Vec<(bussard_model::IndividualAddress, SerialNumber)> = serials
         .iter()
         .filter_map(|(ia, s)| {
@@ -482,48 +668,40 @@ pub fn attach_learned_serials(
         })
         .collect();
     if serials.is_empty() || !KeyStore::path(dir).exists() {
-        return;
+        return news;
     }
     let Ok(password) = password().map(bussard_secure::Password::new) else {
-        return;
+        return news;
     };
     let outcomes = match bussard_service::attach_serials(dir, password.expose(), &serials) {
         Ok(outcomes) => outcomes,
         Err(err) => {
-            eprintln!("warning: certificates were not attached to the devices just read: {err}");
-            return;
+            news.warnings.push(format!(
+                "certificates were not attached to the devices just read: {err}"
+            ));
+            return news;
         }
     };
     for (ia, serial, outcome) in outcomes {
         match outcome {
-            AttachOutcome::Attached => {
-                let line = format!(
-                    "  factory key (FDSK) of the certificate for serial {serial} attached to {ia} \
-                     in the key store"
-                );
-                if json {
-                    eprintln!("{line}");
-                } else {
-                    println!("{line}");
-                }
-            }
+            AttachOutcome::Attached => news.attached.push(ia),
             AttachOutcome::NothingPending => {}
-            AttachOutcome::Conflict => eprintln!(
-                "warning: the key store has a certificate for serial {serial}, but its entry for \
-                 {ia} names another serial number or factory key; nothing changed (see `bussard \
-                 keys show`)"
-            ),
+            AttachOutcome::Conflict => news.warnings.push(format!(
+                "your key store has a certificate for serial number {serial}, but holds another \
+                 serial number or factory key for {ia}; nothing changed (see `bussard keys show`)"
+            )),
         }
     }
+    news
 }
 
-/// After `scan` or `describe` read serial numbers (issue #752): records each
-/// one in the `bussard.lock` entry of its device and attaches a certificate
-/// entered for it before ([`attach_learned_serials`]). Only a device the
-/// model holds and whose identity did not drift is recorded, and the model
-/// is reloaded and saved only when a serial differs from what `model` holds.
-/// A failure is a warning; messages go to stderr.
-pub fn learn_serials(
+/// After `scan` or `describe` read serial numbers (issue #752): saves each
+/// one to the project (the `bussard.lock` entry of its device) and attaches
+/// a certificate entered for it before ([`attach_learned_serials`]). Only a
+/// device the project holds and whose identity did not drift is saved, and
+/// the project is reloaded and saved only when a serial differs from what
+/// `model` holds. A failure is a warning; the caller shows the result.
+pub(crate) fn learn_serials(
     dir: &Path,
     model: Option<&bussard_model::Model>,
     read: &[(
@@ -531,12 +709,12 @@ pub fn learn_serials(
         Vec<u8>,
         bussard_model::identity::IdentityVerdict,
     )],
-    json: bool,
-) {
+) -> SerialNews {
     use bussard_model::identity::IdentityVerdict;
     use bussard_project::keystore::SerialNumber;
+    let mut news = SerialNews::default();
     let Some(model) = model else {
-        return;
+        return news;
     };
     let fresh: Vec<(bussard_model::IndividualAddress, SerialNumber)> = read
         .iter()
@@ -550,51 +728,62 @@ pub fn learn_serials(
         })
         .collect();
     if fresh.is_empty() {
-        return;
+        return news;
     }
     let records = match bussard_service::record_serials(dir, &fresh) {
         Ok(records) => records,
         Err(err) => {
-            eprintln!("warning: the serial numbers just read were not recorded: {err}");
-            return;
+            news.warnings.push(format!(
+                "the serial numbers just read were not saved to your project: {err}"
+            ));
+            return news;
         }
     };
     let mut recorded = Vec::new();
     for ((ia, record), (_, serial)) in records.into_iter().zip(&fresh) {
         if let bussard_model::SerialRecord::Recorded { previous, cleared } = record {
-            match previous {
-                Some(previous) => eprintln!(
-                    "note: {ia} reports serial number {serial}, bussard.lock had {previous} (the \
-                     hardware was replaced?); recorded {serial}"
-                ),
-                None => eprintln!("recorded serial number {serial} of {ia} in bussard.lock"),
+            if let Some(previous) = previous {
+                news.notes.push(format!(
+                    "{ia} reports serial number {serial}, your project had {previous} (was the \
+                     device replaced?); saved {serial}"
+                ));
             }
             for other in cleared {
-                eprintln!(
-                    "note: serial number {serial} was recorded for {other} too; removed there"
-                );
+                news.notes.push(format!(
+                    "serial number {serial} was saved for {other} too; removed there"
+                ));
             }
+            news.saved.push((ia, serial.to_string()));
             recorded.push((ia, serial.0.to_vec()));
         }
     }
-    attach_learned_serials(dir, &recorded, json);
+    news.extend(attach_learned_serials(dir, &recorded));
+    news
 }
 
-/// One line per entered label: serial, matched address and name, status.
-fn outcome_line(o: &bussard_service::EnrolOutcome) -> String {
-    let status = serde_json::to_value(o.status)
-        .ok()
-        .and_then(|v| v.as_str().map(str::to_string))
-        .unwrap_or_default();
-    let mut line = format!("{} ", o.serial.as_deref().unwrap_or("------------"));
-    match (&o.ia, &o.name) {
-        (Some(ia), Some(name)) if !name.is_empty() => line.push_str(&format!("{ia} {name:?}: ")),
-        (Some(ia), _) => line.push_str(&format!("{ia}: ")),
-        (None, _) => line.push_str("no device: "),
+/// The end of `keys add-certificate`: the summary line and the next steps.
+fn add_certificate_ending(tally: &EnrollTally, style: Style) -> String {
+    let mut out = format!(
+        "\n{}\n{}\n",
+        crate::certificate_view::summary(tally, style),
+        style.dim("Codes and keys are never shown.")
+    );
+    // The session's steps, with this command for the certificates to retype.
+    let steps: Vec<(&str, &str)> = tally
+        .next_steps()
+        .iter()
+        .map(|step| match step.command {
+            "bussard keys enroll" => (
+                "bussard keys add-certificate",
+                "type the invalid or failed certificates again",
+            ),
+            command => (command, step.why),
+        })
+        .collect();
+    let block = style.next_steps(&steps);
+    if !block.is_empty() {
+        out.push('\n');
+        out.push_str(&block);
     }
-    line.push_str(&status);
-    if let Some(message) = &o.message {
-        line.push_str(&format!(" ({message})"));
-    }
-    line
+    out
 }

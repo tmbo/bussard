@@ -219,6 +219,78 @@ fn scan_reports_devices_and_model_delta() -> TestResult {
     Ok(())
 }
 
+/// The text report (issue #792), colour off: one table with the glossary's
+/// columns, one summary line, the silent project devices and the next steps.
+#[test]
+fn test_scan_text_report_reads_as_a_table() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let devices = vec![
+        device("1.1.4", 0x07B0, 0x0083, b"MDT-JAL0410")?,
+        device("1.1.7", 0x0705, 0x0004, b"2118REGHE")?,
+    ];
+    let gw = start_gateway(&rt, devices)?;
+    let tmp = std::env::temp_dir().join(format!("bussard-scan-text-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
+        .env_remove("BUSSARD_KEYRING")
+        .args([
+            "scan",
+            "1.1",
+            "--from",
+            "1",
+            "--to",
+            "8",
+            "--dir",
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
+            "--gateway",
+            &format!("127.0.0.1:{}", gw.port()),
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout)?;
+    assert!(!text.contains('\u{1b}'), "no colour into a pipe: {text}");
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(
+        lines[..3],
+        [
+            "Address  Product          Serial number         In project",
+            "1.1.4    MDT MDT-JAL0410  112233445566 (saved)  yes",
+            "1.1.7    Jung 2118REGHE   112233445566          no",
+        ],
+        "{text}"
+    );
+    let summary = lines
+        .iter()
+        .find(|l| l.starts_with("2 devices found, 8 addresses in "))
+        .ok_or(format!("no summary line: {text}"))?;
+    assert!(
+        summary.ends_with(", 6 did not answer within 40 ms, 1 not in your project"),
+        "{summary}"
+    );
+    assert!(
+        text.contains(
+            "1 device in your project did not answer\n  Address  Name\n  1.1.6    Dimmer Flur\n"
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains("Next steps\n  > bussard describe 1.1.7\n"),
+        "{text}"
+    );
+    for internal in ["model", "NOT", "device(s)", "IA "] {
+        assert!(!text.contains(internal), "{internal:?} in: {text}");
+    }
+    Ok(())
+}
+
 /// A scan in a model with an imported manufacturer list (issue #788) names
 /// each device by that list first, then by the built-in table, and calls an id
 /// neither knows an unknown manufacturer.
@@ -584,7 +656,7 @@ fn test_scan_secure_devices_are_read_secured_or_labelled() -> TestResult {
     );
     let labelled = text
         .lines()
-        .filter(|l| l.contains("Data Secure activated (mask hidden), no tool key in the keyring"))
+        .filter(|l| l.contains("secure (no tool key)"))
         .count();
     assert_eq!(labelled, 2, "both activated devices are labelled:\n{text}");
     Ok(())
@@ -731,8 +803,9 @@ fn test_scan_negative_confirmation_classifies_absent_fast() -> TestResult {
     assert_eq!(json["timing"]["absent_negative_confirmation"], 7);
     assert_eq!(json["timing"]["absent_timeout"], 0);
     assert!(
-        stderr.contains("12 addresses in")
-            && stderr.contains("(absent by negative confirmation: 7, by timeout: 0)"),
+        stderr.contains("5 devices found, 12 addresses in")
+            && stderr.contains(", 7 did not answer")
+            && !stderr.contains("within"),
         "the summary line: {stderr}"
     );
     let with_con = (found_rows(&json)?, frames_to_present(&gw)?);
@@ -768,7 +841,7 @@ fn test_scan_without_confirmations_falls_back_to_timeout() -> TestResult {
     assert_eq!(json["timing"]["absent_negative_confirmation"], 0);
     assert_eq!(json["timing"]["absent_timeout"], 7);
     assert!(
-        stderr.contains("(absent by negative confirmation: 0, by timeout: 7)"),
+        stderr.contains("7 did not answer within 40 ms"),
         "the summary line: {stderr}"
     );
     Ok(())
@@ -879,7 +952,7 @@ fn test_scan_records_serials_and_certificates_find_their_device() -> TestResult 
     let before = add_certificate(&model_dir, LABEL)?;
     let before_text = String::from_utf8(before.stdout)?;
     assert!(
-        before_text.contains("00FA01020304") && before_text.contains("unassigned"),
+        before_text.contains("00FA01020304  no device yet"),
         "{before_text}\nstderr: {}",
         String::from_utf8_lossy(&before.stderr)
     );
@@ -917,11 +990,11 @@ fn test_scan_records_serials_and_certificates_find_their_device() -> TestResult 
     serde_json::from_str::<serde_json::Value>(&stdout)
         .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
     assert!(
-        stderr.contains("recorded serial number 00FA01020304 of 1.1.4 in bussard.lock"),
+        stderr.contains("serial number 00FA01020304 of 1.1.4 saved to your project"),
         "stderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("attached to 1.1.4 in the key store"),
+        stderr.contains("certificate for 1.1.4 attached"),
         "stderr:\n{stderr}"
     );
 
@@ -951,7 +1024,7 @@ fn test_scan_records_serials_and_certificates_find_their_device() -> TestResult 
         String::from_utf8_lossy(&after.stderr)
     );
     assert!(
-        after_text.contains("0083A1B2C3D4 1.1.5") && after_text.contains("stored"),
+        after_text.contains("0083A1B2C3D4  added          for 1.1.5 Rollladen Bad"),
         "{after_text}"
     );
     assert!(after_text.contains("Rollladen Bad"), "{after_text}");

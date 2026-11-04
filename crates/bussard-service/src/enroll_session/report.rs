@@ -18,14 +18,14 @@ pub fn data_path(local: bool) -> &'static [&'static str] {
     if local {
         &[
             "The page and its relay run inside this bussard on 127.0.0.1.",
-            "The browser encrypts each label and hands it to this bussard, which stores it",
-            "in the encrypted key store. Nothing leaves this machine.",
+            "The browser encrypts each certificate and hands it to this bussard, which",
+            "saves it in your encrypted key store. Nothing leaves this machine.",
         ]
     } else {
         &[
-            "The phone reads each label, encrypts it on the phone and sends it to a relay",
-            "that cannot decrypt it. The relay forwards it to this bussard, which decrypts",
-            "it and stores it in the encrypted key store.",
+            "The phone reads each certificate, encrypts it on the phone and sends it to a",
+            "relay that cannot decrypt it. The relay forwards it to this bussard, which",
+            "decrypts it and saves it in your encrypted key store.",
         ]
     }
 }
@@ -82,26 +82,45 @@ impl EnrollTally {
             + self.errors
     }
 
-    /// One line: the total, then each status that occurred, e.g.
-    /// `3 label(s): 2 stored on a device, 1 waiting for a device.`
+    /// One line in the words of `dev/glossary.md`: the total sent, then
+    /// each certificate state that occurred, e.g.
+    /// `6 sent · 1 added · 4 already known · 1 no device yet`.
     #[must_use]
     pub fn summary(&self) -> String {
         if self.total() == 0 {
-            return "No labels received.".to_string();
+            return "No certificates received.".to_string();
         }
-        let parts: Vec<String> = [
-            (self.stored, "stored on a device"),
-            (self.waiting, "waiting for a device"),
+        std::iter::once(format!("{} sent", self.total()))
+            .chain(
+                self.states()
+                    .iter()
+                    .filter(|(n, _)| *n > 0)
+                    .map(|(n, badge)| format!("{n} {badge}")),
+            )
+            .collect::<Vec<_>>()
+            .join(" \u{00B7} ")
+    }
+
+    /// Each count with its certificate state as the glossary names it
+    /// (`added`, `no device yet`, `already known`, `conflict`, `invalid`,
+    /// `failed`), in that order, zeros included.
+    #[must_use]
+    pub fn states(&self) -> [(u32, &'static str); 6] {
+        [
+            (self.stored, "added"),
+            (self.waiting, "no device yet"),
             (self.already_known, "already known"),
-            (self.conflicts, "conflict(s)"),
+            (
+                self.conflicts,
+                if self.conflicts == 1 {
+                    "conflict"
+                } else {
+                    "conflicts"
+                },
+            ),
             (self.invalid, "invalid"),
-            (self.errors, "error(s)"),
+            (self.errors, "failed"),
         ]
-        .iter()
-        .filter(|(n, _)| *n > 0)
-        .map(|(n, what)| format!("{n} {what}"))
-        .collect();
-        format!("{} label(s): {}.", self.total(), parts.join(", "))
     }
 
     /// The steps that apply, in the order to take them; empty when nothing
@@ -112,7 +131,8 @@ impl EnrollTally {
         if self.waiting > 0 {
             steps.push(NextStep {
                 command: "bussard scan <LINE>, or bussard adopt <ADDRESS>",
-                why: "records the serial of each device and attaches the waiting keys",
+                why: "saves the serial number of each device to your project and matches the \
+                      certificates that have no device yet",
             });
         }
         if self.stored + self.waiting > 0 {
@@ -124,13 +144,13 @@ impl EnrollTally {
         if self.conflicts > 0 {
             steps.push(NextStep {
                 command: "bussard keys show",
-                why: "inspect the keys the store already holds for the conflicting serials",
+                why: "shows what your key store holds for the devices in conflict",
             });
         }
         if self.invalid + self.errors > 0 {
             steps.push(NextStep {
                 command: "bussard keys enroll",
-                why: "scan the invalid or failed labels again in a new session",
+                why: "scan the invalid or failed certificates again in a new session",
             });
         }
         steps
@@ -173,13 +193,16 @@ mod tests {
         ]);
         assert_eq!(
             tally.summary(),
-            "3 label(s): 2 stored on a device, 1 waiting for a device."
+            "3 sent \u{00B7} 2 added \u{00B7} 1 no device yet"
         );
     }
 
     #[test]
     fn test_summary_empty_session() {
-        assert_eq!(EnrollTally::default().summary(), "No labels received.");
+        assert_eq!(
+            EnrollTally::default().summary(),
+            "No certificates received."
+        );
         assert!(EnrollTally::default().next_steps().is_empty());
     }
 
@@ -204,7 +227,7 @@ mod tests {
     #[test]
     fn test_next_steps_already_known_needs_nothing() {
         let tally = EnrollTally::of(&[outcome(EnrollStatus::AlreadyStored)]);
-        assert_eq!(tally.summary(), "1 label(s): 1 already known.");
+        assert_eq!(tally.summary(), "1 sent \u{00B7} 1 already known");
         assert!(tally.next_steps().is_empty());
     }
 
@@ -218,7 +241,10 @@ mod tests {
     fn test_next_steps_invalid_or_error_suggests_new_session() {
         let tally =
             EnrollTally::of(&[outcome(EnrollStatus::Invalid), outcome(EnrollStatus::Error)]);
-        assert_eq!(tally.summary(), "2 label(s): 1 invalid, 1 error(s).");
+        assert_eq!(
+            tally.summary(),
+            "2 sent \u{00B7} 1 invalid \u{00B7} 1 failed"
+        );
         assert_eq!(commands(&tally), ["bussard keys enroll"]);
     }
 

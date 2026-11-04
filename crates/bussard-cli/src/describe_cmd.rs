@@ -294,8 +294,8 @@ pub fn run(
             dir,
             model.as_ref(),
             &[(target, serial.clone(), check.verdict)],
-            json,
-        );
+        )
+        .print(json);
     }
     let loaded = model.as_ref().and_then(|m| m.devices.get(&target));
     // The product's Data Secure table capacities (issue #537).
