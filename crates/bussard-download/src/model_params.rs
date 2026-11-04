@@ -345,9 +345,10 @@ pub fn build_table_images_with(
             compute_group_object_table(&descriptors)
         }
     };
-    if let Some(obj3) = obj3 {
-        out.insert(3, obj3);
-    }
+    // A program that declares no group object (`<ComObjectTable />`) has an
+    // empty group-object table: the count word 0, the 2 octets ETS allocates
+    // for it (issue #840, ekinex `A-4945-10`, KNX IP interface secure).
+    out.insert(3, obj3.unwrap_or_else(|| table_image_with_count(0, &[])));
 
     out
 }

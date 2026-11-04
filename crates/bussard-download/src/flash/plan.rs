@@ -38,6 +38,25 @@ pub(super) fn table_object_name(idx: u32) -> Option<&'static str> {
     }
 }
 
+/// Whether a merged download of `app` leaves its empty tables unwritten.
+///
+/// A program that declares no group object (`<ComObjectTable />`, no
+/// `<ComObject>`) can hold no link: ETS allocates each table object its
+/// 2-octet empty table (`LdCtrlRelSegment` without fill) and writes no octet
+/// of any of them (issue #840, ekinex `M-00B6_A-4945-10-C905-O00C5`, KNX IP
+/// interface secure, sweep capture of 2026-11-04). Every program with group
+/// objects gets its empty address and association tables written (issue
+/// #542).
+fn writes_no_empty_table(app: &ApplicationProgram) -> bool {
+    app.com_objects.is_empty()
+}
+
+/// Whether a table image is the empty table: the count word 0 and nothing
+/// after it.
+fn is_empty_table(image: &[u8]) -> bool {
+    image == [0, 0]
+}
+
 /// `PID_PROGRAM_VERSION` (PID 13) — the application object's app-id / run-state
 /// property. The master template writes it with an all-zero placeholder that the
 /// flash replaces with the synthesized [`app_program_version`] value.
@@ -427,6 +446,11 @@ pub fn plan_flash_with_memo(
     // segment and then check each object's MCB in turn.
     let mut written_image_by_object: std::collections::HashMap<u32, ImageRef> =
         std::collections::HashMap::new();
+    // The table objects allocated but deliberately not written (see
+    // [`writes_no_empty_table`]); their MCB check reads the device's entry
+    // without comparing it with another object's image.
+    let mut unwritten_tables: BTreeSet<u32> = BTreeSet::new();
+    let writes_no_tables = writes_no_empty_table(app);
     // The allocations of the product's `AppliesTo="par"` procedure (issue
     // #490): the planner lowers the `full` one, and a download onto a device
     // that already holds this application swaps in these.
@@ -726,6 +750,17 @@ pub fn plan_flash_with_memo(
                     obj_idx: *idx,
                     table: table_object_name(*idx).unwrap_or("table"),
                 });
+            }
+
+            // A program without group objects: ETS allocates the empty table
+            // and writes none of its octets (issue #840).
+            LoadOp::WriteRelMem {
+                obj_idx: Some(idx), ..
+            } if writes_no_tables
+                && table_object_name(*idx).is_some()
+                && table_images.get(idx).is_some_and(|t| is_empty_table(t)) =>
+            {
+                unwritten_tables.insert(*idx);
             }
 
             // A relative-memory write into a table object (obj1/obj2/obj3):
@@ -1107,7 +1142,11 @@ pub fn plan_flash_with_memo(
                 let image = written_image_by_object
                     .get(&obj_idx)
                     .cloned()
-                    .or_else(|| last_written_image.clone())
+                    .or_else(|| {
+                        (!unwritten_tables.contains(&obj_idx))
+                            .then(|| last_written_image.clone())
+                            .flatten()
+                    })
                     // The device's CRC covers octets it keeps (issue #411):
                     // the MCB is read, as ETS reads it, but not compared.
                     .filter(|img| !kept.iter().any(|k| k.segment == img.segment_id));
@@ -2539,6 +2578,71 @@ mod tests {
                 .count(),
             1
         );
+        Ok(())
+    }
+
+    /// Issue #840 (ekinex `A-4945-10`, KNX IP interface secure): a merged
+    /// 07B0 program without group objects allocates the 2-octet empty table
+    /// on objects 1 to 3, writes none of them, and checks each table's MCB on
+    /// its own object without an image; the parameters are still written.
+    #[test]
+    fn test_plan_flash_program_without_group_objects_writes_no_table()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-2_A-2" ApplicationNumber="2" ApplicationVersion="16"
+            MaskVersion="MV-07B0" Name="IP" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code>
+            <RelativeSegment Id="M-2_A-2_RS-04-00000" Size="4" LoadStateMachine="4" Offset="0"><Data>AQIDBA==</Data></RelativeSegment>
+           </Code>
+           <AddressTable MaxEntries="200" />
+           <AssociationTable MaxEntries="200" />
+           <ComObjectTable />
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />
+            </LoadProcedure>
+            <LoadProcedure MergeId="7">
+             <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+             <LdCtrlLoadImageProp ObjIdx="2" PropId="27" />
+             <LdCtrlLoadImageProp ObjIdx="3" PropId="27" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-2_A-2", xml.as_bytes())?;
+        let template = bussard_prod::MasterTemplate::builtin_for_mask("07B0")
+            .ok_or("a built-in 07B0 template")?;
+        let tables = crate::build_table_images(None, "1.1.1".parse()?, &app, &no_overrides());
+        assert_eq!(tables.get(&3), Some(&vec![0, 0]));
+        let plan = plan_flash(
+            &app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&template.ops),
+            &tables,
+        )?;
+        for idx in 1..=3 {
+            assert!(
+                plan.steps.iter().any(|s| matches!(s,
+                    FlashStep::AllocateSegment { size: 2, target: Some(t), fill }
+                        if *t == idx && *fill == SegmentFill::NONE)),
+                "object {idx} allocated 2 octets without fill"
+            );
+            assert!(
+                !plan.steps.iter().any(|s| matches!(s,
+                    FlashStep::WriteRelMem { target: Some(t), .. } if *t == idx)),
+                "object {idx} written"
+            );
+            assert!(
+                plan.steps.iter().any(|s| matches!(s,
+                    FlashStep::LoadImageProp { obj_idx, image: None, .. } if *obj_idx == idx)),
+                "object {idx}'s MCB read without an image: {:?}",
+                plan.steps
+            );
+        }
         Ok(())
     }
 

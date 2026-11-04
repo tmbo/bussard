@@ -1014,6 +1014,11 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                                     &object_table,
                                     app_obj,
                                 ),
+                                // A table object the plan allocates and leaves
+                                // unwritten (issue #840) has its own entry.
+                                None if allocates_unwritten_table(plan, *obj_idx) => {
+                                    (*obj_idx).min(u32::from(u8::MAX)) as u8
+                                }
                                 None => app_obj,
                             };
                             match read_mcb_table(
@@ -1658,6 +1663,20 @@ async fn master_reset_confirmed<C: Connector>(
             session.reconnect_after_reboot().await
         }
     }
+}
+
+/// Whether `plan` allocates the table object `obj_idx` (1 to 3) and writes
+/// nothing into it: the empty tables of a program without group objects
+/// (issue #840). Its MCB check reads that object's own entry.
+fn allocates_unwritten_table(plan: &FlashPlan, obj_idx: u32) -> bool {
+    (1..=3).contains(&obj_idx)
+        && plan.steps.iter().any(
+            |s| matches!(s, FlashStep::AllocateSegment { target: Some(t), .. } if *t == obj_idx),
+        )
+        && !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::WriteRelMem { target: Some(t), .. } if *t == obj_idx))
 }
 
 #[cfg(test)]
