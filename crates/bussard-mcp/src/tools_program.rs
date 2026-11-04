@@ -1391,20 +1391,20 @@ impl BussardMcp {
             "next_step": if noop {
                 match &built.parameters_skipped {
                     Some(why) => format!(
-                        "nothing to write over MCP: the links already match the model, and {why}"
+                        "nothing to write over MCP: the links already match your project, and {why}"
                     ),
                     None if built.octet_ranges.iter().any(|r| !r.written) => "nothing to \
-                        write: the device matches the model wherever the configuration places a \
+                        write: the device matches your project wherever the configuration places a \
                         parameter; the parameter octets that differ (parameters.octet_ranges \
                         with written: false) are ones ETS does not write in a download either, \
                         so they stay as the device holds them (see notes)"
                         .to_string(),
                     None if !built.octet_ranges.is_empty() => "nothing to write: the device \
-                        already matches the model; only device-managed parameter octets differ \
+                        already matches your project; only device-managed parameter octets differ \
                         (see notes and parameters.octet_ranges), and those are not written on \
                         their own"
                         .to_string(),
-                    None => "nothing to write: the device already matches the model".to_string(),
+                    None => "nothing to write: the device already matches your project".to_string(),
                 }
             } else if let Some(why) = flash.as_ref().and_then(|f| f.load.as_ref()) {
                 format!(

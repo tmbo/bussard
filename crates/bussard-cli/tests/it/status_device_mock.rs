@@ -115,7 +115,7 @@ fn test_status_address_prints_the_knxnet_state_and_the_drift() -> TestResult {
         "tunnels        1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.29",
         "state          ok",
         "[knxnet] in devices/1.1.200.toml differs from the device:",
-        "tunnels: 1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.30 in the model",
+        "tunnels: 1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.30 in your project",
     ] {
         assert!(
             squash(&stdout).contains(&squash(needle)),

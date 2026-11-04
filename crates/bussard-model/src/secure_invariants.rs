@@ -127,17 +127,17 @@ pub(crate) fn check_secure_invariants(model: &Model, diags: &mut Vec<Diagnostic>
         let list = join(gas);
         let message = if security.secure_commissioning {
             format!(
-                "{ia} runs the secured {list}, but ETS set it up for Secure commissioning without \
-                 activating it (no tool key loaded yet), so it still sends and expects plain \
+                "{ia} runs the secured {list}, but ETS set it up for Secure commissioning and it \
+                 is not secured yet (no tool key loaded), so it still sends and expects plain \
                  telegrams: its secured partners drop what it sends and it cannot decrypt what \
-                 they send. Download it from ETS, which activates it, then re-import the project \
-                 and `bussard keys import` the new keyring"
+                 they send. Download it from ETS, which secures it, then re-import the project \
+                 and `bussard keys import` the new ETS keyring"
             )
         } else {
             format!(
-                "{ia} can run KNX Data Secure and is linked to the secured {list}, but its \
-                 security is not activated, so it sends and expects plain telegrams: its secured \
-                 partners drop what it sends and it cannot decrypt what they send. Activate \
+                "{ia} can run KNX Data Secure and is linked to the secured {list}, but it is not \
+                 secured, so it sends and expects plain telegrams: its secured \
+                 partners drop what it sends and it cannot decrypt what they send. Turn on \
                  Secure commissioning for it in ETS and download it, or run the addresses plain \
                  (`bussard groups secure <ga> off`)"
             )
@@ -167,7 +167,7 @@ pub(crate) fn check_secure_invariants(model: &Model, diags: &mut Vec<Diagnostic>
             format!(
                 "{ia} sends secured on {}, but bussard.lock records no Data Secure sequence \
                  number for it (`sequence_number`): a download of its receivers can then only \
-                 seed their security individual address tables (PID 54) from the keyring or \
+                 seed their security individual address tables (PID 54) from the key store or \
                  with 0, which accepts replayed telegrams. Re-import the ETS project (it carries \
                  the device's SequenceNumber) or run `bussard adopt {ia}`",
                 join(gas)
@@ -214,7 +214,7 @@ pub(crate) fn check_secure_invariants(model: &Model, diags: &mut Vec<Diagnostic>
         let objects = disagree.join(", ");
         let message = if group.secure {
             format!(
-                "GA {ga} is marked `secure = true`, but {objects} on it {} not secured in \
+                "group address {ga} is marked `secure = true`, but {objects} on it {} not secured in \
                  bussard.lock: the group flag, the key store and the object flags must agree. \
                  Fix: `bussard groups secure {ga} on` sets all three (or `off` to run {ga} \
                  plain)",
@@ -222,7 +222,7 @@ pub(crate) fn check_secure_invariants(model: &Model, diags: &mut Vec<Diagnostic>
             )
         } else {
             format!(
-                "GA {ga} is plain, but {objects} on it {} secured in bussard.lock and has no \
+                "group address {ga} is plain, but {objects} on it {} secured in bussard.lock and has no \
                  secured address besides it: the group flag, the key store and the object flags \
                  must agree. Fix: `bussard groups secure {ga} off` clears all three (or `on` to \
                  secure {ga})",
@@ -278,7 +278,7 @@ pub fn resecured_by_import(before: &Model, after: &Model) -> Vec<Diagnostic> {
             Severity::Warning,
             format!("groups.toml {ga}"),
             format!(
-                "the ETS project secures {ga} again, which this model ran plain; {apply}. To \
+                "the ETS project secures {ga} again, which your project ran plain; {apply}. To \
                  keep it plain, run `bussard groups secure {ga} off` (and set it plain in ETS so \
                  the next import agrees)"
             ),
@@ -312,8 +312,8 @@ pub fn rekeyed_by_keys_import(model: &Model, added: &[GroupAddress]) -> Vec<Diag
             Severity::Warning,
             format!("groups.toml {ga}"),
             format!(
-                "the imported keyring puts back the group key of {ga}, which the model runs \
-                 plain; the next apply of {who} would secure {ga} again. Run `bussard groups \
+                "the imported ETS keyring puts back the group key of {ga}, which your project \
+                 runs plain; the next apply of {who} would secure {ga} again. Run `bussard groups \
                  secure {ga} off` to drop the key, or `bussard groups secure {ga} on` and apply \
                  {who} to run it secured"
             ),

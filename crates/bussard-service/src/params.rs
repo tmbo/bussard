@@ -746,7 +746,7 @@ impl FlashedParameters {
                     None => v.to_string(),
                 };
                 format!(
-                    "{} ({}) is {}, the model says {}",
+                    "{} ({}) is {}, your project says {}",
                     d.key,
                     d.name,
                     d.device
@@ -756,9 +756,11 @@ impl FlashedParameters {
                 )
             })
             .collect();
+        let n = listed.len();
         Some(format!(
-            "{} parameter(s) still differ from the model after the flash: {}",
-            listed.len(),
+            "{n} {} still {} from your project after the flash: {}",
+            if n == 1 { "parameter" } else { "parameters" },
+            if n == 1 { "differs" } else { "differ" },
             listed.join("; ")
         ))
     }
@@ -978,7 +980,7 @@ impl TargetLabel {
     /// The word a run's sentence uses for the side.
     fn word(self) -> &'static str {
         match self {
-            TargetLabel::Model => "model",
+            TargetLabel::Model => "project",
             TargetLabel::Backup => "backup",
         }
     }
@@ -988,7 +990,7 @@ impl TargetLabel {
 pub const INTERNAL_SELECTOR_NOTE: &str = "an internal ETS selector differs: the device's \
      function assignment differs from the project (the project changed after the device's \
      last download, or the device was downloaded from another project state); writing makes \
-     the device match the model";
+     the device match your project";
 
 /// What an octet a download of the model does not place means, when the
 /// device holds another value there (issue #289, 1.1.18): ETS skips such an
@@ -1255,9 +1257,9 @@ fn device_managed_note(octets: usize, ranges: &[OctetAttribution]) -> String {
         .map(|r| r.sentence.as_str())
         .collect();
     format!(
-        "{octets} device-managed parameter octet{s} differ{v} from the model's image and {is} \
-         not written on {its} own (the application owns {them} at runtime; the next table or \
-         parameter write puts back the model's value, as ETS does at a download): {}",
+        "{octets} device-managed parameter octet{s} differ{v} from your project and {is} not \
+         written on {its} own (the application owns {them} at runtime; the next table or \
+         parameter write puts back the value in your project, as ETS does at a download): {}",
         runs.join("; "),
         s = if octets == 1 { "" } else { "s" },
         v = if octets == 1 { "s" } else { "" },
@@ -1289,7 +1291,7 @@ pub fn unwritten_note_for(ranges: &[OctetAttribution]) -> Option<String> {
     };
     sentences.dedup();
     Some(format!(
-        "{octets} parameter octet{s} differ{v} from the model's image where no parameter the \
+        "{octets} parameter octet{s} differ{v} from your project where no parameter the \
          configuration reaches is placed; ETS does not write {them} in a download, so this plan \
          leaves the device's value{s} (a full `bussard flash` writes the segment fill): {}{tail}",
         sentences.join("; "),
@@ -1782,7 +1784,7 @@ mod tests {
         assert_eq!(uncovered[0].segment, "RS-2");
         assert_eq!(
             uncovered[0].sentence,
-            "2 octets at offset 1 of segment RS-2: device memory differs from the model's \
+            "2 octets at offset 1 of segment RS-2: device memory differs from the project's \
              defaults there, not covered by a shown parameter"
         );
         let hidden = octet_attributions(
@@ -1881,7 +1883,7 @@ mod tests {
             &octet_attributions(None, &[run(vec![flag()])], true, TargetLabel::Model),
         );
         assert!(
-            note.starts_with("1 device-managed parameter octet differs from the model's image"),
+            note.starts_with("1 device-managed parameter octet differs from your project"),
             "{note}"
         );
         assert!(!note.starts_with("parameters not"), "{note}");
@@ -1914,7 +1916,7 @@ mod tests {
         assert_eq!(
             runs[0].sentence,
             "1 octet at offset 165 of segment RS-04-00000: _AppInstanz 51 (internal ETS \
-             selector, P-643), device 3, model no application"
+             selector, P-643), device 3, project no application"
         );
         assert_eq!(runs[0].explanation.as_deref(), Some(INTERNAL_SELECTOR_NOTE));
         assert_eq!(runs[0].parameters[0].role, OctetRole::Internal);
@@ -1960,7 +1962,7 @@ mod tests {
         assert_eq!(
             runs[0].sentence,
             "1 octet at offset 165 of segment RS-04-00000, not written (ETS does not write this \
-             octet in a download): _AppInstanz 51 (internal ETS selector, P-643), device 3, model \
+             octet in a download): _AppInstanz 51 (internal ETS selector, P-643), device 3, project \
              no application"
         );
         assert!(octet_notes(1, 0, &runs).is_empty());
@@ -1968,7 +1970,7 @@ mod tests {
         let note = unwritten_note_for(&runs).unwrap_or_default();
         assert!(
             note.starts_with(
-                "1 parameter octet differs from the model's image where no parameter the \
+                "1 parameter octet differs from your project where no parameter the \
                  configuration reaches is placed; ETS does not write it in a download"
             ),
             "{note}"

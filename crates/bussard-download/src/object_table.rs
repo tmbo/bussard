@@ -201,7 +201,7 @@ impl ObjectTableChange {
         let mut out: Vec<String> = self.objects.iter().map(|c| c.sentence()).collect();
         if self.from_count != self.to_count {
             out.push(format!(
-                "group-object table: {} entries on the device, {} in the model",
+                "group-object table: {} entries on the device, {} in your project",
                 self.from_count, self.to_count
             ));
         }

@@ -864,17 +864,17 @@ fn test_adopt_secure_device_reads_everything_over_secure_data() -> TestResult {
     assert_eq!(run.writes, 0, "nothing written to the device");
     assert!(
         run.stdout
-            .contains("secure objects (the device's GO security flags (PID 61)): 1"),
+            .contains("secure objects (the device's object security flags (PID 61)): 1"),
         "{out}"
     );
     assert!(
         run.stdout
-            .contains("secure groups (keyed in the keyring): 1/2/3"),
+            .contains("secured group addresses (with a group key): 1/2/3"),
         "{out}"
     );
     assert!(
         run.stdout
-            .contains("secured senders (PID 54, kept in the lock): 1.1.20 (sequence 7)"),
+            .contains("secured senders (PID 54, saved to your project): 1.1.20 (sequence 7)"),
         "{out}"
     );
     assert!(run.stdout.contains("recorded the 2 link(s)"), "{out}");
@@ -937,7 +937,7 @@ fn test_adopt_activated_device_without_keyring_entry_fails_cleanly() -> TestResu
     assert!(!run.success, "{out}");
     assert!(run.stderr.contains("has no tool key for 1.1.13"), "{out}");
     assert!(
-        run.stderr.contains("Re-export the keyring from ETS"),
+        run.stderr.contains("Export the keyring from ETS again"),
         "{out}"
     );
     assert!(run.stderr.contains("No device file was written"), "{out}");

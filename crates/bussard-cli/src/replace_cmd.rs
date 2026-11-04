@@ -418,6 +418,6 @@ fn print_summary(
     println!("  link tables: applied and verified");
     println!("  recorded replaced: {when} in {}", device_file.display());
     println!("\nnext steps:");
-    println!("  - `bussard plan {target}` to confirm the links match the model");
+    println!("  - `bussard plan {target}` to confirm the links match your project");
     println!("  - `bussard backup` to refresh the installation snapshot");
 }

@@ -622,9 +622,9 @@ if [[ $rc -eq 0 ]] && grep -q "verified (secured): mask 0x07b0" <<<"$out" \
 else
   bad "adopt 1.1.10 failed (exit $rc)"; tail -12 <<<"$out" | sed 's/^/      /'
 fi
-if grep -q "secure objects (the device's GO security flags (PID 61)): 1$" <<<"$out" \
-   && grep -q "secured senders (PID 54, kept in the lock): 1.1.20 (sequence 0)" <<<"$out" \
-   && grep -q "secure groups (keyed in the keyring): 1/2/3" <<<"$out"; then
+if grep -q "secure objects (the device's object security flags (PID 61)): 1$" <<<"$out" \
+   && grep -q "secured senders (PID 54, saved to your project): 1.1.20 (sequence 0)" <<<"$out" \
+   && grep -q "secured group addresses (with a group key): 1/2/3" <<<"$out"; then
   ok "adopt read PID 61 (object 1 secured) and PID 54 (sender 1.1.20)"
 else
   bad "adopt did not report the security object read-back"
@@ -651,7 +651,7 @@ else
   ok "adopt: nothing written to the security object, no frame refused"
 fi
 out="$("$BUSSARD" plan 1.1.10 --dir "$ADOPT_MODEL" --gateway "$GATEWAY" </dev/null 2>&1)"
-if grep -q "1.1.10 matches the model; nothing to write" <<<"$out"; then
+if grep -q "1.1.10 matches your project; nothing to write" <<<"$out"; then
   ok "plan 1.1.10 against the adopted model: no change"
 else
   bad "plan after adopt reports changes"; tail -12 <<<"$out" | sed 's/^/      /'

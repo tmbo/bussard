@@ -193,22 +193,23 @@ fn check_parameters(
             });
             let hint = match (app_ref, stored) {
                 (Some(r), Some(archive)) => format!(
-                    "no model for {r}; it regenerates automatically from {archive}, so that \
+                    "the product data for {r} is missing; bussard rebuilds it from {archive}, so that \
                      archive could not be read (the warning above says why)"
                 ),
                 (Some(r), None) => format!(
-                    "no model for {r} and no stored archive carries it; run `bussard \
-                     import-product` to fetch the product data"
+                    "the product data for {r} is missing and no stored archive carries it; run \
+                     `bussard import-product` to fetch it"
                 ),
-                (None, _) => "the lock pins no application for the device".to_string(),
+                (None, _) => "your project pins no product for the device".to_string(),
             };
             diags.push(Diagnostic::new(
                 "E026",
                 Severity::Warning,
                 format!("{file} parameters"),
                 format!(
-                    "{} parameter value(s) on {ia} could not be normalized or checked ({hint})",
-                    dev.parameters.len()
+                    "{} parameter value{} on {ia} could not be normalized or checked ({hint})",
+                    dev.parameters.len(),
+                    if dev.parameters.len() == 1 { "" } else { "s" }
                 ),
             ));
             continue;
@@ -233,7 +234,7 @@ fn check_parameters(
                     Severity::Error,
                     loc,
                     format!(
-                        "unknown parameter {param_id:?} (from key {key:?}) — not in the model for {}",
+                        "unknown parameter {param_id:?} (from key {key:?}); the product {} has no such parameter",
                         app_ref.unwrap_or("?")
                     ),
                 ));
@@ -397,7 +398,7 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                         "E001",
                         Severity::Warning,
                         loc.clone(),
-                        format!("{role} GA {ga} is not defined in groups.toml"),
+                        format!("{role} group address {ga} is not defined in groups.toml"),
                     ));
                 }
             }
@@ -453,7 +454,7 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                                 Severity::Error,
                                 loc.clone(),
                                 format!(
-                                    "object {} has a send GA but lacks the T (transmit) flag",
+                                    "object {} has a send group address but lacks the T (transmit) flag",
                                     link.object
                                 ),
                             ));
@@ -465,7 +466,7 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                                 Severity::Error,
                                 loc.clone(),
                                 format!(
-                                    "object {} has listen GAs but lacks the W (write) flag",
+                                    "object {} has listen group addresses but lacks the W (write) flag",
                                     link.object
                                 ),
                             ));
@@ -483,7 +484,7 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                                         Severity::Error,
                                         loc.clone(),
                                         format!(
-                                            "object {} is DPT {odpt} but GA {ga} is DPT {gdpt}",
+                                            "object {} is DPT {odpt} but group address {ga} is DPT {gdpt}",
                                             link.object
                                         ),
                                     ));
@@ -632,7 +633,10 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 "E004",
                 Severity::Error,
                 loc.clone(),
-                format!("conflicting sizes on GA {ga}: {}", described.join(", ")),
+                format!(
+                    "conflicting sizes on group address {ga}: {}",
+                    described.join(", ")
+                ),
             ));
         } else if let Some(subs) = conflicting_subtypes(&info.subtypes) {
             // W005: same size but different DPT main types.
@@ -641,7 +645,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 Severity::Warning,
                 loc.clone(),
                 format!(
-                    "GA {ga} has one size but DPTs of different main types: {}; a receiver \
+                    "group address {ga} has one size but DPTs of different main types: {}; a receiver \
                      decodes the value in another number format",
                     subs.join(", ")
                 ),
@@ -659,7 +663,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 Severity::Info,
                 loc.clone(),
                 format!(
-                    "GA {ga} has {} senders: {}",
+                    "group address {ga} has {} senders: {}",
                     senders.len(),
                     senders.join(", ")
                 ),
@@ -676,7 +680,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 "W011",
                 Severity::Warning,
                 loc.clone(),
-                format!("GA {ga} has no DPT; the monitor cannot decode it"),
+                format!("group address {ga} has no DPT; the monitor cannot decode it"),
             ));
         }
         let linked = infos.get(ga).map(|i| i.linked).unwrap_or(false);
@@ -685,7 +689,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 "I010",
                 Severity::Info,
                 loc,
-                format!("GA {ga} is defined but never linked"),
+                format!("group address {ga} is defined but never linked"),
             ));
         }
     }
@@ -731,7 +735,7 @@ fn check_protected_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
                 Severity::Info,
                 format!("groups.\"{ga}\""),
                 format!(
-                    "GA {ga} ({:?}) is protected; writes require --force (CLI) and are refused via MCP",
+                    "group address {ga} ({:?}) is protected; writes require --force (CLI) and are refused via MCP",
                     group.name
                 ),
             ));
@@ -1220,7 +1224,7 @@ parameters:
         let e026: Vec<_> = diags.iter().filter(|d| d.code == "E026").collect();
         assert_eq!(e026.len(), 1, "{diags:#?}");
         assert_eq!(e026[0].severity, Severity::Warning);
-        assert!(e026[0].message.contains("no model"));
+        assert!(e026[0].message.contains("product data"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

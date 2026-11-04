@@ -1707,7 +1707,7 @@ async fn test_knx_plan_device_summary_and_notice_speak_in_names() -> anyhow::Res
         .call("knx_plan_device", json!({"address": "1.1.4"}))
         .await?;
     assert_eq!(
-        replan["summary"], "Jalousie Wohnen already matches the model; nothing to write.",
+        replan["summary"], "Jalousie Wohnen already matches your project; nothing to write.",
         "{replan}"
     );
     h.stop().await

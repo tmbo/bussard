@@ -380,12 +380,12 @@ impl DevicePlan {
     }
 
     /// The text rendering (see the module docs). An empty plan is the single
-    /// line `<ia> matches the model; nothing to write`, plus the notes.
+    /// line `<ia> matches your project; nothing to write`, plus the notes.
     pub fn render_text(&self) -> String {
         let mut out = String::new();
         if self.is_empty() {
             out.push_str(&format!(
-                "{} matches the model; nothing to write\n",
+                "{} matches your project; nothing to write\n",
                 self.address
             ));
             for note in &self.notes {

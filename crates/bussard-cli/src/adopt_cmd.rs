@@ -804,7 +804,7 @@ async fn read_secured(
     material: &SecureMaterial,
 ) -> anyhow::Result<SecuredRead> {
     println!(
-        "  reading the Data Secure device over A_SecureData (tables, security object, parameters)"
+        "  reading the secured device over A_SecureData (tables, security object, parameters)"
     );
     // The product the parameter read-back decodes with, found through the
     // device file being written (its order number and application).
@@ -839,7 +839,7 @@ async fn read_secured(
     .await
     .map_err(|err| {
         anyhow::Error::from(err).context(format!(
-            "reading {target} over A_SecureData with its keyring tool key"
+            "reading {target} over A_SecureData with its tool key"
         ))
     })
 }
@@ -855,28 +855,28 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
         }
     };
     println!();
-    println!("KNX Data Secure (read over A_SecureData with the keyring's tool key):");
+    println!("Secure (read over A_SecureData with the device's tool key):");
     println!("  device file: [security] activated = true, secure_commissioning = true");
     println!(
         "  links: {}; parameters (non-default): {}",
         s.links, s.parameters
     );
     let source = if s.adoption.from_device_flags {
-        "the device's GO security flags (PID 61)"
+        "the device's object security flags (PID 61)"
     } else {
-        "the keyring's group keys (PID 61 not read)"
+        "the group keys bussard has (PID 61 not read)"
     };
     println!(
         "  secure objects ({source}): {}",
         list(&mut s.adoption.secure_objects.iter().map(u16::to_string))
     );
     println!(
-        "  secure groups (keyed in the keyring): {}",
+        "  secured group addresses (with a group key): {}",
         list(&mut s.adoption.secure_groups.iter().map(GroupAddress::to_string))
     );
     match &s.senders {
         Some(senders) => println!(
-            "  secured senders (PID 54, kept in the lock): {}",
+            "  secured senders (PID 54, saved to your project): {}",
             list(
                 &mut senders
                     .iter()
@@ -886,23 +886,44 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
         None => println!("  secured senders (PID 54): not read"),
     }
     if !s.adoption.flagged_without_key.is_empty() {
+        let (noun, verb) = objects_are(s.adoption.flagged_without_key.len());
+        let link = if s.adoption.flagged_without_key.len() == 1 {
+            "links"
+        } else {
+            "link"
+        };
         println!(
-            "  NOTE: object(s) {} are secured on the device but link no group address the keyring \
-             has a key for: the keyring may be older than the device's last download",
+            "  NOTE: {noun} {} {verb} secured on the device but {link} no group address bussard \
+             has a key for: the keys may be older than the device's last download",
             list(&mut s.adoption.flagged_without_key.iter().map(u16::to_string))
         );
     }
     if !s.adoption.keyed_not_flagged.is_empty() {
+        let (noun, verb) = objects_are(s.adoption.keyed_not_flagged.len());
+        let link = if s.adoption.keyed_not_flagged.len() == 1 {
+            "links"
+        } else {
+            "link"
+        };
         println!(
-            "  NOTE: object(s) {} link a keyed group address but are not secured on the device: \
-             the keyring may be newer than the device's last download",
+            "  NOTE: {noun} {} {link} a group address with a group key but {verb} not secured on \
+             the device: the keys may be newer than the device's last download",
             list(&mut s.adoption.keyed_not_flagged.iter().map(u16::to_string))
         );
     }
     for note in &s.notes {
         println!("  note: {note}");
     }
-    println!("  nothing was written to {target}; activation and keys stay with ETS");
+    println!("  nothing was written to {target}; Secure and its keys stay with ETS");
+}
+
+/// "object … is" or "objects … are", by count.
+fn objects_are(n: usize) -> (&'static str, &'static str) {
+    if n == 1 {
+        ("object", "is")
+    } else {
+        ("objects", "are")
+    }
 }
 
 // ---------------------------------------------------------------------------

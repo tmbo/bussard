@@ -284,11 +284,11 @@ async fn assign_flow(
     println!("assigned {current} → {target}");
     match (verified.secure, verified.mask) {
         (SecureStatus::ActivatedNoKey, _) => println!(
-            "  verified: the device answers at {target}; Data Secure activated (mask hidden), \
-             no tool key in the keyring (pass --keyring with a current export, or --tool-key)"
+            "  verified: the device answers at {target}; secured (mask hidden), bussard \
+             has no tool key for it (pass --keyring with a current export, or --tool-key)"
         ),
         (SecureStatus::Activated, Some(mask)) => println!(
-            "  verified (secured): mask {mask:#06x} ({}); Data Secure activated",
+            "  verified (secured): mask {mask:#06x} ({})",
             system_type(mask)
         ),
         (_, Some(mask)) => println!("  verified: mask {mask:#06x} ({})", system_type(mask)),

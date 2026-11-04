@@ -193,8 +193,13 @@ fn check_bus_current(
         }
         if total > *supply {
             let note = if unknown > 0 {
+                let (noun, verb) = if unknown == 1 {
+                    ("device", "has")
+                } else {
+                    ("devices", "have")
+                };
                 format!(
-                    " ({unknown} device(s) have no cached product data, so the real draw is higher)"
+                    " ({unknown} {noun} {verb} no cached product data, so the real draw is higher)"
                 )
             } else {
                 String::new()
@@ -242,8 +247,8 @@ fn check_secure_couplers(model: &Model, diags: &mut Vec<Diagnostic>) {
                 Severity::Warning,
                 format!("devices \"{ia}\""),
                 format!(
-                    "{ia} is KNX Secure but its line coupler {coupler_ia} is not Secure-capable; \
-                     secured traffic cannot cross it"
+                    "{ia} supports Secure but its line coupler {coupler_ia} does not; secured \
+                     traffic cannot cross it"
                 ),
             ));
         }

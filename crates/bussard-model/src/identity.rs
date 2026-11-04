@@ -141,7 +141,7 @@ impl IdentityCheck {
             && !reported.mask.eq_ignore_ascii_case(mask)
         {
             differences.push(format!(
-                "the device reports mask {} but the lock pins {mask}",
+                "the device reports mask {} but your project pins {mask}",
                 reported.mask
             ));
         }
@@ -150,7 +150,7 @@ impl IdentityCheck {
             && !device_id.eq_ignore_ascii_case(pinned_id)
         {
             differences.push(format!(
-                "the device reports application id {device_id} but the lock pins {pinned_id}{}",
+                "the device reports application id {device_id} but your project pins {pinned_id}{}",
                 pinned
                     .application
                     .as_deref()
@@ -183,12 +183,12 @@ impl IdentityCheck {
                     .and_then(|l| l.mask.as_deref())
                     .map(|m| format!("mask {m}"));
                 let what: Vec<String> = id.into_iter().chain(mask).collect();
-                format!("matches bussard.lock ({})", what.join(", "))
+                format!("matches your project ({})", what.join(", "))
             }
             IdentityVerdict::Drift => {
-                format!("drift from bussard.lock: {}", self.differences.join("; "))
+                format!("differs from your project: {}", self.differences.join("; "))
             }
-            IdentityVerdict::Unmodelled => "not pinned in bussard.lock".to_string(),
+            IdentityVerdict::Unmodelled => "no product pinned in your project".to_string(),
         }
     }
 

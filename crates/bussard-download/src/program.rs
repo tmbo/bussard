@@ -225,7 +225,7 @@ pub fn render_plan_text(
     if report.is_noop() {
         let _ = writeln!(
             out,
-            "\nnothing to do — the device tables already match the model"
+            "\nnothing to do: the device tables already match your project"
         );
         return out;
     }

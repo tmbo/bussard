@@ -310,7 +310,7 @@ impl PlanFacts<'_> {
     pub fn summary(&self) -> String {
         let device = device_phrase(self.model, self.target);
         if self.noop {
-            return format!("{device} already matches the model; nothing to write.");
+            return format!("{device} already matches your project; nothing to write.");
         }
         let lines = self.lines();
         let shown: Vec<String> = lines.iter().take(3).cloned().collect();
@@ -589,7 +589,7 @@ fn finished_summary(tool: &str, device: &str, result: &Value) -> String {
     }
     if result["ok"] == true && verified {
         format!(
-            "{} is written and checked: it now matches the model. Its previous state is backed \
+            "{} is written and checked: it now matches your project. Its previous state is backed \
              up, so this can be undone.",
             capitalize(device)
         )
@@ -646,15 +646,15 @@ fn reconstruct_summary(device: &str, value: &Value) -> String {
     let n = value["diff"]["count"].as_u64().unwrap_or(0);
     match n {
         0 => format!(
-            "{}'s connections match the model; nothing is missing or extra.",
+            "{}'s connections match your project; nothing is missing or extra.",
             capitalize(device)
         ),
         1 => format!(
-            "{} differs from the model in one connection (the sentences list it).",
+            "{} differs from your project in one connection (the sentences list it).",
             capitalize(device)
         ),
         n => format!(
-            "{} differs from the model in {n} connections (the sentences list them).",
+            "{} differs from your project in {n} connections (the sentences list them).",
             capitalize(device)
         ),
     }
@@ -663,7 +663,7 @@ fn reconstruct_summary(device: &str, value: &Value) -> String {
 /// `knx_ha_plan`: what Home Assistant would gain, change and lose.
 fn ha_plan_summary(value: &Value) -> String {
     if value["noop"] == true || value["plan_digest"].is_null() {
-        return "Home Assistant already matches the model; nothing to write.".to_string();
+        return "Home Assistant already matches your project; nothing to write.".to_string();
     }
     let counts = &value["counts"];
     let n = |k: &str| counts[k].as_u64().unwrap_or(0);

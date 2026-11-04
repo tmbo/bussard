@@ -417,15 +417,15 @@ pub fn activated_without_key(
                 devices: keys.listed().len(),
             };
             format!(
-                "{target} is KNX Data Secure-activated (it hides its mask from an unsecured read) \
-                 and cannot be adopted: {no_entry} Re-export the keyring from ETS after the \
+                "{target} is secured (it hides its mask from an unsecured read) and cannot be \
+                 adopted: {no_entry} Export the keyring from ETS again after the \
                  device's secure commissioning, so it lists {target}, and point \
                  --keyring (or connection.keyring in bussard.toml) at it. No device file was written.{moved}"
             )
         }
         None => format!(
-            "{target} is KNX Data Secure-activated (it hides its mask from an unsecured read) and \
-             cannot be adopted without its tool key: {}. No device file was written.{moved}",
+            "{target} is secured (it hides its mask from an unsecured read) and cannot be \
+             adopted without its tool key: {}. No device file was written.{moved}",
             crate::guidance::tool_key_hint()
         ),
     }
@@ -435,11 +435,11 @@ pub fn activated_without_key(
 /// adopt reads a secured device where ETS put it.
 pub fn secured_move_refusal(current: IndividualAddress, target: IndividualAddress) -> String {
     format!(
-        "{current} is KNX Data Secure-activated and the keyring holds its tool key under \
+        "{current} is secured and the ETS keyring holds its tool key under \
          {current}: adopt reads a secured device at the address ETS gave it and never \
          re-addresses it. Adopt it at {current} (`bussard adopt {current}`), or \
          re-address it first with `bussard assign {target} --keyring <file.knxkeys>` and \
-         re-export the keyring from ETS. Nothing was written."
+         export the keyring from ETS again. Nothing was written."
     )
 }
 
@@ -708,7 +708,9 @@ pub fn record_secured(
         .devices
         .remove(&target)
         .map(|loaded| loaded.device)
-        .ok_or_else(|| AdoptError::Message("the adopted device vanished from the model".into()))?;
+        .ok_or_else(|| {
+            AdoptError::Message("the adopted device vanished from your project".into())
+        })?;
     let summary = SecureSummary {
         links: link_count,
         parameters,

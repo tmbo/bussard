@@ -180,12 +180,12 @@ pub fn group_keys(keyring: Option<&Path>) -> anyhow::Result<Option<GroupKeys>> {
 pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -> String {
     if keyring_given {
         format!(
-            "GA {ga} is secured (KNX Data Secure) but the keyring has no group key for it; \
+            "group address {ga} is secured but the ETS keyring has no group key for it; \
              export a current keyring from ETS"
         )
     } else {
         format!(
-            "GA {ga} is secured (KNX Data Secure, `secure = true` in groups.toml): {}",
+            "group address {ga} is secured (`secure = true` in groups.toml): {}",
             bussard_service::guidance::group_key_hint()
         )
     }

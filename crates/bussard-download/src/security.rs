@@ -300,8 +300,8 @@ pub enum SecurityPlanError {
     /// The project runs a group address of this device with Data Secure, but the
     /// keyring (or no keyring) carries no key for it.
     #[error(
-        "{device}: group address {ga} is Data Secure in the model but the keyring has no key for \
-         it; pass the project's current keyring with --keyring (a --tool-key alone carries no \
+        "{device}: group address {ga} is secured in your project but there is no key for it; \
+         pass the project's current ETS keyring with --keyring (a --tool-key alone carries no \
          group keys)"
     )]
     MissingGroupKey {

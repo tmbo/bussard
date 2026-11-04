@@ -1406,14 +1406,14 @@ fn test_cli_apply_readback_reports_the_counts_when_healthy() -> TestResult {
     assert!(success, "{stdout}\n{stderr}");
     assert!(
         stdout.contains(
-            "read back from 1.1.10 and compared with your project: 2 group address(es), 2 \
-             association(s)"
+            "read back from 1.1.10 and compared with your project: 2 group addresses, 2 \
+             associations"
         ),
         "{stdout}"
     );
     assert!(
         stdout.contains(
-            "1 group key(s) (PID 53), 1 secure sender(s) (PID 54), 1 secured object(s) (PID 61), \
+            "1 group key (PID 53), 1 secure sender (PID 54), 1 secured object (PID 61), \
              security object Loaded (PID 5)"
         ),
         "{stdout}"

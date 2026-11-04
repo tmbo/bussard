@@ -160,7 +160,7 @@ fn test_plan_flash_sys7_split_segment_writes_the_two_parts() -> TestResult {
     let names: Vec<String> = decoded.kept.iter().map(|k| k.kept_line()).collect();
     assert_eq!(names.len(), 1, "{names:?}");
     assert!(
-        names[0].contains("the device holds 10") && names[0].contains("model says 300"),
+        names[0].contains("the device holds 10") && names[0].contains("project says 300"),
         "{names:?}"
     );
     Ok(())

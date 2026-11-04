@@ -304,7 +304,7 @@ impl KnxnetFacts {
     }
 
     /// The differences between `config` (the device file) and these facts,
-    /// one sentence each (`friendly name: "Alpha" in the model, "Beta" on the
+    /// one sentence each (`friendly name: "Alpha" in your project, "Beta" on the
     /// device`). Only fields both sides carry are compared.
     pub fn drift(&self, config: &KnxnetConfig) -> Vec<String> {
         let mut out = Vec::new();
@@ -312,7 +312,7 @@ impl KnxnetFacts {
             && mode != config.assignment
         {
             out.push(format!(
-                "assignment: {} in the model, {} on the device",
+                "assignment: {} in your project, {} on the device",
                 config.assignment.label(),
                 mode.label()
             ));
@@ -326,7 +326,9 @@ impl KnxnetFacts {
                 if let (Some(want), Some(have)) = (want, have)
                     && want != have
                 {
-                    out.push(format!("{what}: {want} in the model, {have} on the device"));
+                    out.push(format!(
+                        "{what}: {want} in your project, {have} on the device"
+                    ));
                 }
             }
         }
@@ -334,12 +336,12 @@ impl KnxnetFacts {
             && want != have
         {
             out.push(format!(
-                "friendly name: {want:?} in the model, {have:?} on the device"
+                "friendly name: {want:?} in your project, {have:?} on the device"
             ));
         }
         if config.tunnels != self.tunnels {
             out.push(format!(
-                "tunnels: {} in the model, {} on the device",
+                "tunnels: {} in your project, {} on the device",
                 list_or_none(&config.tunnels),
                 list_or_none(&self.tunnels)
             ));
@@ -484,7 +486,7 @@ pub fn check_config<'a>(
             out.push(KnxnetIssue {
                 code: "E046",
                 message: format!(
-                    "tunnel address {ia} is the address of a device in the model \
+                    "tunnel address {ia} is the address of a device in your project \
                      (devices/{ia}.toml)"
                 ),
             });
@@ -629,7 +631,7 @@ mod tests {
         want.friendly_name = Some("Beta".to_string());
         let drift = facts.drift(&want);
         assert_eq!(drift.len(), 2, "{drift:?}");
-        assert!(drift[1].contains("1.1.22, 1.1.23 in the model, 1.1.22 on the device"));
+        assert!(drift[1].contains("1.1.22, 1.1.23 in your project, 1.1.22 on the device"));
         Ok(())
     }
 

@@ -180,7 +180,7 @@ async fn test_knx_plan_device_flashes_a_healthy_system7_device_without_force() -
     assert_eq!(plan["system_type"], "System 7", "plan: {plan}");
     let flash = &plan["flash"];
     let identity = flash["identity"].as_str().unwrap_or_default();
-    assert!(identity.contains("matches bussard.lock"), "{flash}");
+    assert!(identity.contains("matches your project"), "{flash}");
     let resident = flash["resident"].as_str().unwrap_or_default();
     assert!(
         resident.contains("runs this application") && resident.contains("the code matches"),
