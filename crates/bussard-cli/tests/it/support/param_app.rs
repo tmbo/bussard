@@ -6,6 +6,7 @@
 // Object 2 on, written at its default 0 otherwise), bits 4..7 an internal
 // function-block selector (`Access="None"`, reached by no Dynamic section,
 // default "no application"), as ETS keeps them on a push-button (issue #285).
+// `MinEtsVersion` 5.0: hidden parameters are written at their defaults (#838).
 
 /// The synthetic application (bussard's own work, MIT; no vendor data).
 const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -14,7 +15,8 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
     <Manufacturer RefId="M-00FA">
       <ApplicationPrograms>
         <ApplicationProgram Id="M-00FA_A-0002" ApplicationNumber="2" ApplicationVersion="1"
-            MaskVersion="MV-07B0" Name="bussard parameter test app" LoadProcedureStyle="ProductDefault">
+            MaskVersion="MV-07B0" Name="bussard parameter test app" LoadProcedureStyle="ProductDefault"
+            MinEtsVersion="5.0">
           <Static>
             <Code>
               <RelativeSegment Id="M-00FA_A-0002_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
