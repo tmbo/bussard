@@ -41,6 +41,9 @@
 //! - [`commission`]: the line walk of `bussard commission` and
 //!   `knx_commission_line` on the assign steps: the order-number check
 //!   before the write, the read-back and the label (issue #753).
+//! - [`declare`]: the group addresses the device files use first, declared
+//!   in `groups.toml` before `bussard apply` (device and `--line`) and
+//!   `knx_apply_device` (both forms) validate (issue #779).
 //! - [`describe`]: the interface-object walk and the PID / object-type name
 //!   tables shared by `bussard describe` and `knx_describe_device`.
 //! - [`backup`]: the device reads behind `bussard backup` and
@@ -76,6 +79,7 @@ pub mod assign;
 pub mod backup;
 pub mod bus;
 pub mod commission;
+pub mod declare;
 pub mod describe;
 pub mod download;
 pub mod enroll;

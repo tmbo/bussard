@@ -61,6 +61,8 @@ pub(super) struct PendingAdd {
     address_arg: Option<String>,
     /// The `order_number` argument of the first call.
     order_arg: Option<String>,
+    /// The archive the `product` argument of the first call stored.
+    product_file: Option<std::path::PathBuf>,
     /// What the identification read.
     identified: Verified,
     /// The keyring lists the device: adopted where it is, over A_SecureData.
@@ -89,6 +91,8 @@ struct Identification {
     order: Option<String>,
     /// Where the product data comes from.
     product: Option<ProductPlan>,
+    /// The product data is the file the `product` argument named.
+    from_file: bool,
 }
 
 /// The plan digest: the device (current and target address, serial, mask,
@@ -180,10 +184,26 @@ impl BussardMcp {
                     .map_err(|e| e.to_string())?;
                 }
                 let job = tier.jobs.claim_add()?;
+                // `product`: the import `bussard adopt --product` runs, before
+                // the bus is touched (issue #779).
+                let imported = match args.product.as_deref().map(str::trim) {
+                    Some(file) => match self.import_add_product(file).await {
+                        Ok(imported) => Some(imported),
+                        Err(reason) => {
+                            tier.jobs.abandon(&job);
+                            return Err(reason);
+                        }
+                    },
+                    None => None,
+                };
+                let (product_file, product_import) = match imported {
+                    Some((archive, sentences)) => (archive, Some(sentences)),
+                    None => (None, None),
+                };
                 let me = self.clone();
                 let (id, address, order) = (job.clone(), args.address, args.order_number);
                 let worker = tokio::spawn(async move {
-                    me.add_identify_job(&id, address, order).await;
+                    me.add_identify_job(&id, address, order, product_file).await;
                 });
                 self.watch_job(job.clone(), "add-device", worker);
                 Ok(json!({
@@ -193,6 +213,7 @@ impl BussardMcp {
                     "step": "press_button",
                     "job": job,
                     "gateway": gateway,
+                    "product_import": product_import,
                     "question": PRESS_BUTTON,
                     "next_step": format!(
                         "Relay `question` to the human word for word. The server waits up to \
@@ -224,6 +245,7 @@ impl BussardMcp {
         job: &str,
         address: Option<String>,
         order_arg: Option<String>,
+        product_file: Option<std::path::PathBuf>,
     ) {
         let state = std::sync::Arc::clone(self.state());
         let Some(tier) = state.programming.as_ref() else {
@@ -235,8 +257,13 @@ impl BussardMcp {
             warm.release().await;
             tier.jobs.step(job, "press_button");
             tier.jobs.ask(job, Some(PRESS_BUTTON.to_string()));
-            self.add_identify(job, address.as_deref(), order_arg.as_deref())
-                .await
+            self.add_identify(
+                job,
+                address.as_deref(),
+                order_arg.as_deref(),
+                product_file.as_deref(),
+            )
+            .await
         };
         match outcome {
             Ok((id, digest)) => {
@@ -251,6 +278,7 @@ impl BussardMcp {
                         target: id.target,
                         address_arg: address,
                         order_arg,
+                        product_file,
                         identified: id.identified,
                         secured: id.secured,
                         order: id.order,
@@ -275,6 +303,7 @@ impl BussardMcp {
         job: &str,
         address: Option<&str>,
         order_arg: Option<&str>,
+        product_file: Option<&std::path::Path>,
     ) -> Result<(Identification, String), String> {
         let state = self.state();
         let tier = state
@@ -314,7 +343,7 @@ impl BussardMcp {
         tier.jobs
             .step(job, format!("identifying the device at {current}"));
         let id = self
-            .identification(&service, source, current, address, order_arg)
+            .identification(&service, source, current, address, order_arg, product_file)
             .await?;
         let digest = add_digest(&id, &state.model.reload());
         Ok((id, digest))
@@ -322,7 +351,7 @@ impl BussardMcp {
 
     /// Reads what the device in programming mode at `current` is and plans
     /// its adoption: the target address, the occupant check, the product
-    /// data. Read-only.
+    /// data (the archive `product_file` names when given). Read-only.
     async fn identification(
         &self,
         service: &BusService,
@@ -330,6 +359,7 @@ impl BussardMcp {
         current: IndividualAddress,
         address: Option<&str>,
         order_arg: Option<&str>,
+        product_file: Option<&std::path::Path>,
     ) -> Result<Identification, String> {
         let state = self.state();
         let keyring = state.keyring.as_deref();
@@ -378,7 +408,12 @@ impl BussardMcp {
         let order = order_arg
             .map(str::to_string)
             .or_else(|| identified.order.clone());
-        let product = order.as_deref().map(|o| product_plan(&state.dir, o));
+        let product = match product_file {
+            Some(path) => Some(ProductPlan::Cached {
+                path: path.to_path_buf(),
+            }),
+            None => order.as_deref().map(|o| product_plan(&state.dir, o)),
+        };
         Ok(Identification {
             current,
             target,
@@ -386,6 +421,7 @@ impl BussardMcp {
             secured,
             order,
             product,
+            from_file: product_file.is_some(),
         })
     }
 
@@ -536,6 +572,7 @@ impl BussardMcp {
                 p.current,
                 p.address_arg.as_deref(),
                 p.order_arg.as_deref(),
+                p.product_file.as_deref(),
             )
             .await?;
         if add_digest(&fresh, &state.model.reload()) != p.digest {
@@ -550,13 +587,23 @@ impl BussardMcp {
         let mut notes: Vec<String> = Vec::new();
         // The product data: the store, or the download the human agreed to.
         let selected = match (&p.order, &p.product) {
-            (Some(order), Some(ProductPlan::Cached { path })) => {
+            // A `product` file is used whatever order number the device
+            // reported, as `bussard adopt --product` uses it.
+            (order, Some(ProductPlan::Cached { path }))
+                if order.is_some() || p.product_file.is_some() =>
+            {
+                let order = order.as_deref().unwrap_or_default();
                 match selected_from_archive(path, &dir, order) {
                     Ok(selected) => Some(selected),
                     Err(why) => {
                         notes.push(format!(
-                            "The product data for {order} did not load ({why}); the device was \
-                             added without a com-object table."
+                            "The product data {} did not load ({why}); the device was added \
+                             without a com-object table.",
+                            if order.is_empty() {
+                                format!("in {}", path.display())
+                            } else {
+                                format!("for {order}")
+                            }
                         ));
                         None
                     }
@@ -730,6 +777,36 @@ impl BussardMcp {
         })
         .map_err(|e| chain(&e))?;
         keys.material(p.current, true).map_err(|e| chain(&e))
+    }
+
+    /// The `product` argument: imports the `.knxprod` into the product store
+    /// as `bussard adopt --product` does, through the function
+    /// `bussard import-product` and `knx_import_file` call, behind a history
+    /// snapshot. Returns the stored archive and the import's sentences.
+    async fn import_add_product(
+        &self,
+        file: &str,
+    ) -> Result<(Option<std::path::PathBuf>, Vec<String>), String> {
+        let path = std::path::PathBuf::from(file);
+        let is_knxprod = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| e.eq_ignore_ascii_case("knxprod"));
+        if !is_knxprod {
+            return Err(format!(
+                "product must be a vendor .knxprod file, not {file}; an ETS project export goes \
+                 through knx_import_file first. Nothing was written."
+            ));
+        }
+        let dir = self.state().dir.clone();
+        let imported = tokio::task::spawn_blocking(move || import_product(&dir, &path))
+            .await
+            .map_err(|e| format!("the product import did not finish: {e}"))?;
+        // Whatever the import wrote, the server reads the files afresh.
+        self.state().model.reload();
+        imported.map_err(|why| {
+            format!("the product file {file} did not import ({why}). Nothing was written.")
+        })
     }
 
     /// Downloads the product data for `order` (the human agreed) and loads
@@ -948,6 +1025,15 @@ fn identified_detail(
         ));
     }
     let (product_data, download_needed) = match (&id.order, &id.product) {
+        (_, Some(ProductPlan::Cached { path })) if id.from_file => (
+            format!(
+                "the file you gave, imported into the model's product store ({})",
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            ),
+            false,
+        ),
         (Some(order), Some(ProductPlan::Cached { path })) => (
             format!(
                 "{order}: in the model's product store ({})",
@@ -1143,4 +1229,31 @@ impl ProgrammingTier {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
+}
+
+/// Imports the `.knxprod` at `file` into the product store of `dir` behind a
+/// history snapshot; `Err` is the reason in words.
+fn import_product(
+    dir: &std::path::Path,
+    file: &std::path::Path,
+) -> Result<(Option<std::path::PathBuf>, Vec<String>), String> {
+    let mut out = Collected::default();
+    bussard_service::setup::import::snapshot(
+        dir,
+        SnapshotReason::new("mcp knx_add_device")
+            .with_args(["product".to_string(), file.display().to_string()])
+            .with_result("before importing the product data"),
+        &mut out,
+    );
+    let imported = bussard_service::files::products::import_product_file(file, dir, None, &mut out)
+        .map_err(|err| bussard_service::setup::products::error_chain(&err))?;
+    let mut sentences = vec![imported.stored];
+    if !imported.models.is_empty() {
+        sentences.push(format!(
+            "Generated {} product model(s): {}",
+            imported.models.len(),
+            imported.models.join(", ")
+        ));
+    }
+    Ok((imported.archive, sentences))
 }

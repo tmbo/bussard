@@ -162,6 +162,10 @@ pub struct ProductImport {
     pub stored: String,
     /// The product model files written, by name.
     pub models: Vec<String>,
+    /// The archive in the store, for vendor product data; `None` for an ETS
+    /// project export, whose programs were extracted into archives of their
+    /// own (found by order number through the lock).
+    pub archive: Option<PathBuf>,
 }
 
 /// How an `import-product --order-number` ended.
@@ -310,7 +314,7 @@ fn import_from_file(
 
     // Only a local file can be an export; an index download is vendor data.
     let project_export = matches!(note, DownloadNote::Local) && is_project_export(file, &product);
-    let (stored_note, entries) = if project_export {
+    let (stored_note, entries, archive) = if project_export {
         let apps: Vec<String> = product
             .applications
             .iter()
@@ -326,6 +330,7 @@ fn import_from_file(
                 dir.join(PRODUCTS_DIR).display()
             ),
             entries,
+            None,
         )
     } else {
         let (stored, origin, what) = match note {
@@ -342,6 +347,7 @@ fn import_from_file(
         (
             format!("Stored vendor file ({what}): {}", stored.display()),
             vec![entry],
+            Some(stored),
         )
     };
 
@@ -373,5 +379,6 @@ fn import_from_file(
     Ok(ProductImport {
         stored: stored_note,
         models: written,
+        archive,
     })
 }

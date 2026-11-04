@@ -675,6 +675,35 @@ mod tests {
     }
 
     #[test]
+    fn test_render_report_prints_an_identity_drift_once() {
+        let model = model_with_devices(&["1.1.4"]);
+        let mut found = found_at("1.1.4");
+        found.identity = Some(bussard_model::identity::IdentityCheck {
+            lock: None,
+            device: bussard_model::identity::ReportedIdentity {
+                mask: "07B0".to_string(),
+                application_id: None,
+            },
+            verdict: bussard_model::identity::IdentityVerdict::Drift,
+            differences: vec!["mask 07B0, your project pins 0705".to_string()],
+        });
+        let report = scan::cross_reference(vec![found], Some(&model));
+        let text = render_report(
+            &report,
+            &crate::keys_cmd::SerialNews::default(),
+            &stats(),
+            range(),
+            Style::plain(),
+        );
+        assert_eq!(
+            text.matches("identity of 1.1.4: differs from your project")
+                .count(),
+            1,
+            "{text}"
+        );
+    }
+
+    #[test]
     fn test_seconds_rounds_by_size() {
         use std::time::Duration;
         assert_eq!(seconds(Duration::from_millis(52_200)), "52 s");

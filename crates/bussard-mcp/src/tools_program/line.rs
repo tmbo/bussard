@@ -429,7 +429,8 @@ impl BussardMcp {
             let next_step = format!(
                 "The write finished within this call (job {job}). Tell the human, per device, \
                  what was written and verified, and name every failed device with its detail \
-                 and backup; knx_job_status with job {job} returns this result again."
+                 and backup; knx_job_status with job {job} returns this result again.{}",
+                super::declared_step(&result)
             );
             merge(
                 &mut result,
@@ -495,7 +496,7 @@ impl BussardMcp {
                 return;
             }
         };
-        let (model, targets, planned, gateway, snapshot) = prepared;
+        let (model, targets, planned, gateway, snapshot, declared) = prepared;
         let line_text = format!("{}.{}", line.0, line.1);
         let record = snapshot.as_ref().map(|id| {
             History::open(&self.state().dir)
@@ -505,7 +506,12 @@ impl BussardMcp {
         });
         tier.jobs.started(
             job,
-            json!({"line": line_text, "gateway": gateway, "snapshot": snapshot}),
+            json!({
+                "line": line_text,
+                "gateway": gateway,
+                "snapshot": snapshot,
+                "declared": declared,
+            }),
             record,
         );
         let _ = started.send(Ok(()));
@@ -528,6 +534,7 @@ impl BussardMcp {
                 "gateway": gateway,
                 "reason": reason,
                 "snapshot": snapshot,
+                "declared": declared,
             }),
             Ok(visited) => {
                 for (o, _) in &visited {
@@ -549,6 +556,7 @@ impl BussardMcp {
                     "mode": "apply",
                     "gateway": gateway,
                     "snapshot": snapshot,
+                    "declared": declared,
                     "devices": visited
                         .iter()
                         .map(|(o, notes)| device_json(&model, o, notes))
@@ -561,8 +569,9 @@ impl BussardMcp {
     }
 
     /// The pre-flight of a line write: the digest names a fresh line plan of
-    /// this session for `line`, the model still produces it, the model
-    /// validates, and the audit snapshot is recorded. Consumes the plan.
+    /// this session for `line`, the model still produces it, the group
+    /// addresses the device files use are declared, the model validates, and
+    /// the audit snapshot is recorded. Consumes the plan.
     #[allow(clippy::type_complexity)] // one pre-flight's findings, used once
     fn apply_line_preflight(
         &self,
@@ -576,6 +585,7 @@ impl BussardMcp {
             PendingLinePlan,
             String,
             Option<String>,
+            Vec<String>,
         ),
         String,
     > {
@@ -609,9 +619,14 @@ impl BussardMcp {
                  with knx_plan_device and line {line_text}, and show the new plan to the human."
             ));
         }
+        // A group address a device file uses but groups.toml does not define
+        // is declared there first, named after the object that uses it, as
+        // `bussard apply --line` does (issue #779). It adds no link, so the
+        // plan's tables stand.
+        let dir = self.state().dir.clone();
+        let (model, declared) = self.declare_used(model, "mcp knx_apply_device --line")?;
         // Validation is part of apply, as `bussard apply --line` gates it: a
         // model with errors is never written.
-        let dir = self.state().dir.clone();
         let errors: Vec<String> = bussard_model::validate_in_dir(&model, &dir)
             .iter()
             .filter(|d| d.severity == bussard_model::Severity::Error)
@@ -634,7 +649,10 @@ impl BussardMcp {
             let reason = SnapshotReason::new("mcp knx_apply_device")
                 .with_args(["--line".to_string(), line_text.clone(), digest.to_string()])
                 .with_gateway(Some(gateway.clone()))
-                .with_result("before writing the line's device tables");
+                .with_result(super::with_declared(
+                    "before writing the line's device tables",
+                    &declared,
+                ));
             match history.snapshot(reason) {
                 Ok(id) => Some(id.to_string()),
                 Err(err) => {
@@ -647,7 +665,7 @@ impl BussardMcp {
         } else {
             None
         };
-        Ok((model, targets, planned, gateway, snapshot))
+        Ok((model, targets, planned, gateway, snapshot, declared))
     }
 }
 

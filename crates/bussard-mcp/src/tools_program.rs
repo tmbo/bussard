@@ -401,6 +401,12 @@ pub struct AddDeviceArgs {
     /// product data when the device reports none. First call only.
     #[serde(default)]
     pub order_number: Option<String>,
+    /// A path to the device's vendor `.knxprod` on the server's machine, as
+    /// `bussard adopt --product`: imported into the product store first and
+    /// used as the device's product data, whatever order number it reports.
+    /// First call only.
+    #[serde(default)]
+    pub product: Option<String>,
     /// The `job` the first call returned. Pass it with `plan_digest` and
     /// `yes: true` to write, after the human's yes.
     #[serde(default)]
@@ -620,8 +626,9 @@ impl BussardMcp {
     #[tool(
         description = "Add a NEW device on the PHYSICAL bus, the flow of `bussard adopt` (issue \
         #749): press the button, identify, assign the address, fetch the product data, write \
-        the device file. Three steps. (1) Call with optional `address` (else the next free one) \
-        and `order_number`: answers at once with `job` and `question` (press the programming \
+        the device file. Three steps. (1) Call with optional `address` (else the next free one), \
+        `order_number` and `product` (a path to the device's .knxprod, imported into the product \
+        store first, as `bussard adopt --product`; then no download is asked): answers at once with `job` and `question` (press the programming \
         button): relay it word for word, then poll knx_job_status. The job waits up to 30 s for \
         the device. (2) knx_job_status reports step `identified`: serial, mask, order number, \
         `product_data` (in the store, or what would be downloaded), `sentences`, `plan_digest` \
@@ -946,6 +953,44 @@ impl BussardMcp {
 }
 
 impl BussardMcp {
+    /// Declares in `groups.toml` the group addresses the device files use but
+    /// do not define, as `bussard apply` does before its validation gate
+    /// (issue #779), through the same [`bussard_service::declare::declare_used`].
+    /// Returns the model to go on with and one sentence per addition. A
+    /// server started with `--no-model-edits` writes nothing to the project,
+    /// so it declares nothing (an undeclared address is a validation warning,
+    /// E001, and the apply goes on as before).
+    fn declare_used(
+        &self,
+        model: std::sync::Arc<Model>,
+        verb: &str,
+    ) -> Result<(std::sync::Arc<Model>, Vec<String>), String> {
+        if self.state().no_model_edits {
+            return Ok((model, Vec::new()));
+        }
+        let dir = self.state().dir.clone();
+        let mut edited = (*model).clone();
+        let mut out = bussard_service::setup::Collected::default();
+        let added = bussard_service::declare::declare_used(&dir, &mut edited, verb, &mut out)
+            .map_err(|err| {
+                format!(
+                    "refusing to write: the group addresses the device files use could not be \
+                     declared ({err}); nothing was written"
+                )
+            })?;
+        for line in &out.lines {
+            tracing::warn!("{line}");
+        }
+        if added.is_empty() {
+            return Ok((model, Vec::new()));
+        }
+        // The handle debounces its directory check; force it so the next
+        // tool call sees the declared addresses.
+        self.state().model.reload();
+        let sentences = added.iter().map(|d| d.sentence()).collect();
+        Ok((std::sync::Arc::new(edited), sentences))
+    }
+
     /// The tier, the write gate and the connected bus every programming call
     /// needs, or the refusal saying which is missing.
     fn programming_preflight(&self) -> Result<(&ProgrammingTier, BusService, String), String> {
@@ -1962,6 +2007,12 @@ impl BussardMcp {
             _ => None,
         };
 
+        // A group address a device file uses but groups.toml does not define
+        // is declared there first, named after the object that uses it, as
+        // `bussard apply` does (issue #779). It adds no link, so the plan's
+        // tables stand; the audit snapshot below holds the declared file.
+        let (model, declared) = self.declare_used(model, "mcp knx_apply_device")?;
+
         // The audit line: a history snapshot naming the device, the plan and the
         // gateway, recorded before the bus write (as `bussard apply` does).
         let history = History::open(&dir);
@@ -1969,13 +2020,16 @@ impl BussardMcp {
             let reason = SnapshotReason::new("mcp knx_apply_device")
                 .with_args([target.to_string(), digest.to_string()])
                 .with_gateway(Some(gateway.clone()))
-                .with_result(match (tables_change, param_write.is_some()) {
-                    _ if load.is_some() => "before loading the application program",
-                    _ if flash.is_some() => "before flashing the application program",
-                    (true, true) => "before writing the device tables and parameters",
-                    (false, true) => "before writing the device parameters",
-                    _ => "before writing the device tables",
-                });
+                .with_result(with_declared(
+                    match (tables_change, param_write.is_some()) {
+                        _ if load.is_some() => "before loading the application program",
+                        _ if flash.is_some() => "before flashing the application program",
+                        (true, true) => "before writing the device tables and parameters",
+                        (false, true) => "before writing the device parameters",
+                        _ => "before writing the device tables",
+                    },
+                    &declared,
+                ));
             match history.snapshot(reason) {
                 Ok(id) => Some(id.to_string()),
                 Err(err) => {
@@ -2032,6 +2086,7 @@ impl BussardMcp {
             "backup": backup_path,
             "parameter_backup": param_backup_path,
             "snapshot": snapshot,
+            "declared": declared,
         });
         if load.is_some() && param_backup_path.is_none() {
             // Issue #750: the device holds no application the pinned
@@ -2770,6 +2825,27 @@ impl bussard_service::download::FlashObserver for JobObserver<'_> {
 
 /// The `next_step` of an apply that finished within its call.
 fn inline_next_step(job: &str, target: IndividualAddress, result: &Value) -> String {
+    format!(
+        "{}{}",
+        inline_outcome_step(job, target, result),
+        declared_step(result)
+    )
+}
+
+/// The sentence naming the group addresses an apply declared in
+/// `groups.toml` (issue #779), empty when it declared none.
+fn declared_step(result: &Value) -> &'static str {
+    match result["declared"].as_array() {
+        Some(declared) if !declared.is_empty() => {
+            " Before writing, it added to groups.toml the group addresses the device files use \
+             but did not define (result.declared); name each one to the human."
+        }
+        _ => "",
+    }
+}
+
+/// The outcome half of [`inline_next_step`].
+fn inline_outcome_step(job: &str, target: IndividualAddress, result: &Value) -> String {
     if result["ok"] == true {
         // The table backup taken before the write (issue #717): the way back.
         let undo = if result["backup"].is_string() {
@@ -3630,6 +3706,15 @@ fn refusal_json(address: &str, reason: String) -> Value {
         "address": address,
         "reason": reason,
     })
+}
+
+/// `text`, followed by the group addresses the apply declared in
+/// `groups.toml` first, for the audit snapshot's result line.
+fn with_declared(text: &str, declared: &[String]) -> String {
+    if declared.is_empty() {
+        return text.to_string();
+    }
+    format!("{text}; {}", declared.join("; "))
 }
 
 #[cfg(test)]

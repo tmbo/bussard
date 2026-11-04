@@ -362,6 +362,95 @@ async fn test_knx_add_device_identifies_then_assigns_downloads_and_verifies() ->
 }
 
 #[tokio::test]
+async fn test_knx_add_device_product_file_imports_and_needs_no_download() -> anyhow::Result<()> {
+    let h = Harness::start(vec![new_device()?]).await?;
+    let file = h.dir.path().join("download.knxprod");
+    let first = h
+        .call(
+            "knx_add_device",
+            json!({"address": "1.1.7", "product": file.display().to_string()}),
+        )
+        .await?;
+    assert_eq!(first["step"], "press_button", "{first}");
+    assert!(
+        first["product_import"]
+            .to_string()
+            .contains("Stored vendor file"),
+        "{first}"
+    );
+    // The import ran before the bus: the archive is in the store.
+    assert!(
+        h.model()
+            .join("products")
+            .join("download.knxprod")
+            .is_file()
+    );
+    let job = first["job"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no job in {first}"))?
+        .to_string();
+    let status = h
+        .poll(&job, |s| s["step"] == "identified" || s["done"] == true)
+        .await?;
+    assert_eq!(status["step"], "identified", "{status}");
+    assert_eq!(status["download_needed"], false, "{status}");
+    assert!(
+        status["product_data"]
+            .as_str()
+            .unwrap_or_default()
+            .starts_with("the file you gave"),
+        "{status}"
+    );
+    let digest = status["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {status}"))?
+        .to_string();
+
+    // One yes is enough: there is nothing to download.
+    let mut done = h
+        .call(
+            "knx_add_device",
+            json!({"job": job, "plan_digest": digest, "yes": true}),
+        )
+        .await?;
+    if done["started"] == true {
+        done = h.poll(&job, |s| s["done"] == true).await?["result"].clone();
+    }
+    assert_eq!(done["ok"], true, "{done}");
+    assert_eq!(done["verified"], true, "{done}");
+    assert_eq!(done["name"], "Taster BE 04001", "{done}");
+    assert_eq!(done["product"]["com_objects"], 2, "{done}");
+    let lock = std::fs::read_to_string(h.model().join("bussard.lock"))?;
+    assert!(lock.contains("M-0083_A-1234-11-ABCD-O000A"), "{lock}");
+    assert!(!h.model().join("products").join("fixture.knxprod").exists());
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_add_device_product_refuses_a_file_that_is_not_a_knxprod() -> anyhow::Result<()> {
+    let h = Harness::start(vec![new_device()?]).await?;
+    let file = h.dir.path().join("index.json");
+    let refused = h
+        .call(
+            "knx_add_device",
+            json!({"product": file.display().to_string()}),
+        )
+        .await?;
+    assert_eq!(refused["refused"], true, "{refused}");
+    assert!(
+        refused["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains(".knxprod"),
+        "{refused}"
+    );
+    // The refusal freed the slot: the next add starts.
+    let (_, status) = h.identified(json!({"address": "1.1.7"})).await?;
+    assert_eq!(status["step"], "identified", "{status}");
+    h.stop().await
+}
+
+#[tokio::test]
 async fn test_knx_add_device_without_a_device_in_programming_mode_ends_the_job()
 -> anyhow::Result<()> {
     let h = Harness::start(vec![]).await?;
