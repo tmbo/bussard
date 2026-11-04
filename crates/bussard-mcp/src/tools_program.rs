@@ -122,6 +122,7 @@ use crate::server::BussardMcp;
 use crate::state::ConnState;
 
 mod add_device;
+mod commission;
 mod flash;
 mod interface;
 mod ip_secure;
@@ -132,10 +133,11 @@ mod restore_tables;
 mod secure_diag;
 
 /// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 10] = [
+pub const PROGRAMMING_TOOLS: [&str; 11] = [
     "knx_plan_device",
     "knx_apply_device",
     "knx_add_device",
+    "knx_commission_line",
     "knx_interface_secure",
     "knx_clear_security_log",
     "knx_apply_status",
@@ -178,6 +180,8 @@ pub struct ProgrammingTier {
     /// Devices `knx_add_device` identified, waiting for the human's yes, by
     /// job id (issue #749).
     adds: std::sync::Mutex<HashMap<String, add_device::PendingAdd>>,
+    /// `knx_commission_line`'s plans and jobs (issue #753).
+    commissions: std::sync::Mutex<commission::Commissions>,
 }
 
 impl ProgrammingTier {
@@ -201,6 +205,7 @@ impl ProgrammingTier {
             table_restores: std::sync::Mutex::new(HashMap::new()),
             line_plans: std::sync::Mutex::new(HashMap::new()),
             adds: std::sync::Mutex::new(HashMap::new()),
+            commissions: std::sync::Mutex::new(commission::Commissions::default()),
         }
     }
 
@@ -406,6 +411,29 @@ pub struct AddDeviceArgs {
     pub download: Option<bool>,
 }
 
+/// Arguments for `knx_commission_line`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CommissionLineArgs {
+    /// The line to commission, e.g. `"1.1"`. Alone it returns the plan; with
+    /// `plan_digest` and `yes: true` it starts the run.
+    #[serde(default)]
+    pub line: Option<String>,
+    /// The `plan_digest` the plan returned.
+    #[serde(default)]
+    pub plan_digest: Option<String>,
+    /// `true` only after the human's explicit yes to the plan's question.
+    #[serde(default)]
+    pub yes: Option<bool>,
+    /// The `job` the run returned, with `answer`.
+    #[serde(default)]
+    pub job: Option<String>,
+    /// The human's word for a waiting job: `"retry"`, `"skip"`, `"stop"`, or
+    /// `"assign"` where the question offers it. `"stop"` also ends a
+    /// running job.
+    #[serde(default)]
+    pub answer: Option<String>,
+}
+
 /// Arguments for `knx_apply_status`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyStatusArgs {
@@ -589,6 +617,50 @@ impl BussardMcp {
         match self.add_device_tool(args).await {
             Ok(value) => ok(value),
             Err(reason) => refusal(&address, reason),
+        }
+    }
+
+    /// `knx_commission_line` (registered only with `--allow-programming`).
+    #[tool(
+        description = "Commission a LINE on the PHYSICAL bus, the flow of `bussard commission` \
+        (issue #753): give each device the model has on the line its address, one press of a \
+        programming button at a time, and return the label text per device. Three kinds of \
+        call. (1) `line` alone (e.g. \"1.1\") reads the model only and returns the devices by \
+        name, room and order number, `sentences`, `question` and `plan_digest`: show the \
+        sentences and ask the question. (2) ONLY after the human's explicit yes in this \
+        conversation, call again with `line`, `plan_digest` and `yes: true`: it starts a job \
+        (poll knx_job_status). The job skips the devices that already answer at their address, \
+        then repeats per device: `press_button` (`question` names the device by name, room and \
+        order number: relay it word for word; the job waits up to 30 s), `identified` (serial, \
+        mask and order number read at the device's current address, the order number checked \
+        against the model) and `assigned` (the address written and read back at the new \
+        address; `progress.devices` gets the device's report and `label`). That one yes covers \
+        every device whose identification matches the model's order number, exactly as the \
+        CLI's one confirmation covers its run: no further yes per device. Anything else pauses \
+        the job with `waiting` (reason) and `question`, writing nothing: another product, an \
+        unreadable order number, no device or several in programming mode, or a device the \
+        model has no order number for. (3) Pass the human's word as `job` with `answer`: \
+        \"retry\", \"skip\" or \"stop\", or \"assign\" where the question offers it (a device \
+        the model has no order number for). The human can stop the run at any time: `answer: \
+        \"stop\"` ends it at once while it waits for a button, else after the device it is \
+        on. The result has `devices` (status, identified, readback, label), `labels`, the \
+        totals, `not_reached` and `summary`. Only addresses are written, as `bussard \
+        commission` without --flash/--apply: push each device afterwards with knx_plan_device \
+        and knx_apply_device. Secure activation of a fresh device stays with ETS. Only \
+        available with --allow-programming."
+    )]
+    async fn knx_commission_line(
+        &self,
+        Parameters(args): Parameters<CommissionLineArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let subject = args
+            .line
+            .clone()
+            .or_else(|| args.job.clone())
+            .unwrap_or_default();
+        match self.commission_line_tool(args).await {
+            Ok(value) => ok(value),
+            Err(reason) => refusal(&subject, reason),
         }
     }
 

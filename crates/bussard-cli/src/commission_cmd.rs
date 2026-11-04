@@ -15,12 +15,15 @@
 //! anything and stops on a mismatch — for that device only: the run moves on to
 //! the next one, because one wrong module must not end the session.
 //!
-//! What it reuses:
+//! The flow is [`bussard_service::commission`] (issue #753), which
+//! `knx_commission_line` runs too: the line walk, the presence pre-pass, the
+//! identification with the order-number check, the address write with its
+//! read-back, and the label. This module keeps the prompts and the printing,
+//! and reuses:
 //!
 //! * [`crate::assign_cmd::wait_for_single_device`] for the programming-mode
 //!   wait (same nagging, same budgets, same refusal to act on two devices at
-//!   once) and [`crate::assign_cmd::verify_assignment`] for the write-back
-//!   verify plus the explicit `PID_PROGMODE = 0` clear;
+//!   once);
 //! * [`crate::flash_cmd::run`] and [`crate::apply_cmd::run`] verbatim for
 //!   `--flash` and `--apply`, so a commissioned device is programmed exactly the
 //!   way the single-device commands program it.
@@ -29,16 +32,17 @@
 //! closed before `flash`/`apply` open theirs: a gateway has few tunnel slots and
 //! bench mode is human-paced anyway.
 
+use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO};
-use bussard_mgmt::{manufacturers, write_individual_address};
-use bussard_model::{IndividualAddress, Model};
-use bussard_prod::normalize_order_number;
-use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy, WritePolicy};
+use bussard_model::IndividualAddress;
+use bussard_service::commission::{
+    Assigned, CommissionError, LineRun, Next, OrderCheck, Outcome, Status, Target,
+};
+use bussard_service::{BusService, WritePolicy};
 
 use crate::assign_cmd;
 use crate::conn_cmd::{
@@ -66,56 +70,6 @@ pub struct CommissionOptions<'a> {
     pub allow_remote_gateway: bool,
 }
 
-/// What happened to one device in a commissioning run.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Status {
-    /// The address was written, verified, and everything asked for was done.
-    Commissioned,
-    /// The device already answered at its model address, so nothing was pressed.
-    AlreadyPresent,
-    /// The ceremony stopped for this device, for the stated reason.
-    Failed(String),
-}
-
-impl Status {
-    /// The machine-readable status key for the JSON summary.
-    fn key(&self) -> &'static str {
-        match self {
-            Status::Commissioned => "commissioned",
-            Status::AlreadyPresent => "present",
-            Status::Failed(_) => "failed",
-        }
-    }
-
-    /// The human cell for the summary table.
-    fn label(&self) -> String {
-        match self {
-            Status::Commissioned => "commissioned".to_string(),
-            Status::AlreadyPresent => "present (already assigned)".to_string(),
-            Status::Failed(detail) => format!("failed: {detail}"),
-        }
-    }
-
-    /// The reason text for a failure.
-    fn detail(&self) -> Option<&str> {
-        match self {
-            Status::Failed(d) => Some(d),
-            _ => None,
-        }
-    }
-}
-
-/// One device's row in the summary.
-#[derive(Debug, Clone)]
-struct Outcome {
-    address: IndividualAddress,
-    name: String,
-    order_number: Option<String>,
-    status: Status,
-    /// The printed label line, when the device was commissioned.
-    label: Option<String>,
-}
-
 /// The stable JSON shape of one device row.
 #[derive(Debug, serde::Serialize)]
 struct DeviceJson {
@@ -140,40 +94,9 @@ struct CommissionJson {
     labels_file: Option<String>,
 }
 
-/// One device the model expects on the line.
-struct Target {
-    address: IndividualAddress,
-    name: String,
-    order_number: Option<String>,
-    manufacturer: Option<String>,
-    floor: Option<String>,
-    room: Option<String>,
-    /// The product archive `--flash` downloads from, resolved before any bus
-    /// access (issue #228).
-    product: Option<PathBuf>,
-}
-
-/// The model's devices on `area.line`, in address order.
-fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<Target> {
-    model
-        .devices
-        .iter()
-        .filter(|(ia, _)| ia.area() == area && ia.line() == line_no)
-        .map(|(ia, loaded)| {
-            let device = &loaded.device;
-            let product = device.product.as_ref();
-            Target {
-                address: *ia,
-                name: device.name.clone(),
-                order_number: product.and_then(|p| p.order_number.clone()),
-                manufacturer: product.and_then(|p| p.manufacturer.clone()),
-                floor: device.location.as_ref().and_then(|l| l.floor.clone()),
-                room: device.location.as_ref().and_then(|l| l.room.clone()),
-                product: None,
-            }
-        })
-        .collect()
-}
+/// The product archives `--flash` downloads from, by device, resolved before
+/// any bus access (issue #228).
+type Products = BTreeMap<IndividualAddress, PathBuf>;
 
 /// Runs `bussard commission`.
 pub fn run(
@@ -203,8 +126,8 @@ pub fn run(
     enforce_write_gate(&config, options.allow_remote_gateway)?;
     let gateway = gateway_display(&config);
 
-    let mut targets = targets_on_line(&model, area, line_no);
-    if targets.is_empty() {
+    let mut walk = LineRun::new(&model, area, line_no);
+    if walk.targets().is_empty() {
         bail!(
             "the model has no devices on line {line} (looked in {}/devices)",
             dir.display()
@@ -212,15 +135,18 @@ pub fn run(
     }
     // `--flash` needs every device's product data: a missing or changed
     // archive refuses the run before anything touches the bus (issue #228).
+    let mut products = Products::new();
     if options.flash {
         let mut refusals = Vec::new();
-        for target in &mut targets {
+        for target in walk.targets() {
             let Some(order) = target.order_number.clone() else {
                 continue;
             };
             let device = model.devices.get(&target.address).map(|d| &d.device);
             match crate::product_store::resolve(dir, options.product, device, &order) {
-                Ok(path) => target.product = Some(path),
+                Ok(path) => {
+                    products.insert(target.address, path);
+                }
                 Err(err) => refusals.push(format!("{}: {err:#}", target.address)),
             }
         }
@@ -238,9 +164,9 @@ pub fn run(
     // already, only when its order number says so; anything else holds the
     // address and that device is refused.
     let runtime = tokio::runtime::Runtime::new()?;
-    let occupied = {
+    let verdicts = {
         let config = config.clone();
-        let addresses: Vec<IndividualAddress> = targets.iter().map(|t| t.address).collect();
+        let targets = walk.targets().to_vec();
         let conn = overrides.clone();
         runtime.block_on(async move {
             let service =
@@ -249,28 +175,21 @@ pub fn run(
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
             let source = checked_source_or_close(&service, &conn).await?;
-            let mut occupied = Vec::new();
-            for addr in addresses {
+            let mut on_probe = |addr: IndividualAddress| {
                 eprint!("\rchecking {addr}…   ");
                 let _ = std::io::stderr().flush();
-                if let Some(occupant) = assign_cmd::probe_occupant(&service, source, addr).await {
-                    occupied.push((addr, occupant));
-                }
-            }
+            };
+            let verdicts =
+                bussard_service::commission::probe_line(&service, source, &targets, &mut on_probe)
+                    .await;
             eprintln!("\r                       ");
             service.close().await;
-            anyhow::Ok(occupied)
+            anyhow::Ok(verdicts)
         })?
     };
-    let verdicts: Vec<(IndividualAddress, Status)> = occupied
-        .iter()
-        .filter_map(|(addr, occupant)| {
-            let target = targets.iter().find(|t| t.address == *addr)?;
-            Some((*addr, occupied_status(target, occupant)))
-        })
-        .collect();
+    walk.set_verdicts(verdicts);
 
-    let pending = targets.len() - verdicts.len();
+    let pending = walk.pending();
     if pending == 0 {
         eprintln!("every device the model has on line {line} already answers at its address.");
     } else if !confirm(&line, pending, &gateway, options.yes)? {
@@ -290,32 +209,29 @@ pub fn run(
     }
 
     // Phase 2: the bench ritual, one device at a time.
-    let mut outcomes = Vec::new();
-    for (index, target) in targets.iter().enumerate() {
-        if let Some((_, status)) = verdicts.iter().find(|(a, _)| *a == target.address) {
-            if let Some(detail) = status.detail() {
-                eprintln!("{}: {detail}", target.address);
+    while let Some(next) = walk.advance() {
+        let (position, total, target) = match next {
+            Next::Settled(outcome) => {
+                if let Some(detail) = outcome.status.detail() {
+                    eprintln!("{}: {detail}", outcome.address);
+                }
+                continue;
             }
-            outcomes.push(Outcome {
-                address: target.address,
-                name: target.name.clone(),
-                order_number: target.order_number.clone(),
-                status: status.clone(),
-                label: None,
-            });
-            continue;
-        }
+            Next::Device {
+                position,
+                total,
+                target,
+            } => (position, total, target),
+        };
         eprintln!(
-            "\n[{}/{}] {} — {}",
-            index + 1,
-            targets.len(),
-            target.address,
-            target.name
+            "\n[{position}/{total}] {} — {}",
+            target.address, target.name
         );
         let outcome = commission_one(
             &runtime,
             &config,
-            target,
+            &target,
+            products.get(&target.address).cloned(),
             dir,
             &options,
             tool_key_source,
@@ -334,31 +250,29 @@ pub fn run(
                 println!("{label}");
             }
         }
-        outcomes.push(outcome);
+        walk.record(outcome);
     }
+    let outcomes = walk.outcomes();
 
     // Labels are appended after each device would risk a half-written row on a
     // crash; writing them in one pass at the end keeps the CSV consistent with
     // the summary the operator just read.
     let labels_file = match options.labels {
         Some(path) => {
-            append_labels(path, &outcomes, &targets)
+            append_labels(path, outcomes, walk.targets())
                 .with_context(|| format!("writing the labels CSV {}", path.display()))?;
             Some(path.display().to_string())
         }
         None => None,
     };
 
-    let failed = outcomes
-        .iter()
-        .filter(|o| matches!(o.status, Status::Failed(_)))
-        .count();
+    let failed = walk.totals().failed;
 
     if options.json {
-        let out = to_json(&line, &gateway, &outcomes, labels_file);
+        let out = to_json(&line, &gateway, outcomes, labels_file);
         crate::output::print(crate::output::schema::COMMISSION, &out)?;
     } else {
-        print_summary(&line, &gateway, &outcomes);
+        print_summary(&line, &gateway, outcomes);
         if let Some(path) = options.labels {
             println!("labels appended to {}", path.display());
         }
@@ -372,22 +286,18 @@ pub fn run(
 
 /// Commissions one device: prompt, wait, verify the product, assign, then the
 /// optional flash / apply and the label.
+#[allow(clippy::too_many_arguments)] // one call site; the run's state, spelled out
 fn commission_one(
     runtime: &tokio::runtime::Runtime,
     config: &bussard_transport::ConnectionConfig,
     target: &Target,
+    product: Option<PathBuf>,
     dir: &Path,
     options: &CommissionOptions<'_>,
     tool_key_source: ToolKeySource<'_>,
     overrides: &ConnOverrides,
 ) -> Outcome {
-    let fail = |detail: String| Outcome {
-        address: target.address,
-        name: target.name.clone(),
-        order_number: target.order_number.clone(),
-        status: Status::Failed(detail),
-        label: None,
-    };
+    let fail = |detail: String| Outcome::failed(target, detail);
 
     // The bus half: wait for the button, read the identity, write the address.
     let assigned = {
@@ -404,14 +314,14 @@ fn commission_one(
             result
         })
     };
-    let identity = match assigned {
-        Ok(identity) => {
+    let assigned = match assigned {
+        Ok(assigned) => {
             // A new box now answers at the address: facts stored for it
             // describe whatever was there before (issue #228, item 5). The
             // flash and apply below read the new device's and report its
             // identity; apply refuses a device that drifted from the lock.
-            let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target.address));
-            identity
+            bussard_service::commission::forget_facts(dir, target.address);
+            assigned
         }
         Err(err) => return fail(one_line(&format!("{err:#}"))),
     };
@@ -429,7 +339,7 @@ fn commission_one(
                 );
             }
         };
-        let Some(product) = target.product.clone() else {
+        let Some(product) = product else {
             return fail(format!("no product data resolved for {order}"));
         };
         eprintln!("  flashing from {}", product.display());
@@ -477,33 +387,18 @@ fn commission_one(
         }
     }
 
-    let label = label_line(target, &identity);
-    Outcome {
-        address: target.address,
-        name: target.name.clone(),
-        order_number: target.order_number.clone(),
-        status: Status::Commissioned,
-        label: Some(label),
-    }
-}
-
-/// What the device on the bench told us about itself before it was addressed.
-struct Identity {
-    /// The mask version, when the descriptor read answered.
-    mask: Option<u16>,
-    /// The KNX manufacturer id, when readable.
-    manufacturer_id: Option<u16>,
-    /// The order info string, when readable.
-    order: Option<String>,
+    Outcome::commissioned(target, assigned.label)
 }
 
 /// The bus half of one device: wait for the programming button, check the
-/// product, write and verify the address.
+/// product, write and verify the address
+/// ([`bussard_service::commission::identify_pressed`] and
+/// [`bussard_service::commission::assign_pressed`]).
 async fn assign_on_bus(
     service: &BusService,
     source: IndividualAddress,
     target: &Target,
-) -> anyhow::Result<Identity> {
+) -> anyhow::Result<Assigned> {
     match &target.order_number {
         Some(order) => eprintln!(
             "  press the programming button on {} ({order})",
@@ -525,181 +420,51 @@ async fn assign_on_bus(
         })?;
     eprintln!("  device in programming mode: {current} (its current address)");
 
-    let identity = read_identity(service, source, current).await?;
-    check_order_number(target, &identity)?;
+    let identified =
+        bussard_service::commission::identify_pressed(service, source, target, current)
+            .await
+            .map_err(cli_error)?;
+    match &identified.check {
+        OrderCheck::Matches => {}
+        OrderCheck::NoModelNumber => eprintln!(
+            "  {}",
+            bussard_service::commission::unchecked_warning(target)
+        ),
+        OrderCheck::Refused(sentence) => bail!("{sentence}"),
+    }
 
-    let channel = service.lease_channel().await?;
-    write_individual_address(channel, source, target.address)
-        .await
-        .context("broadcasting the new individual address")?;
-    let verified = assign_cmd::verify_assignment(
-        service,
-        source,
-        target.address,
-        &assign_cmd::VerifyKey::default(),
-    )
-    .await?;
-    if verified.programming_mode_cleared {
+    let assigned =
+        bussard_service::commission::assign_pressed(service, source, target, &identified)
+            .await
+            .map_err(cli_error)?;
+    for warning in &assigned.warnings {
+        eprintln!("{warning}");
+    }
+    if assigned.programming_mode_cleared {
         eprintln!(
             "  cleared programming mode on {} (PID_PROGMODE = 0)",
             target.address
         );
     }
-    assign_cmd::warn_if_still_in_programming_mode(service, source, target.address).await;
-    eprintln!("  assigned {current} → {}", target.address);
-
-    Ok(Identity {
-        mask: verified.mask.or(identity.mask),
-        manufacturer_id: verified.manufacturer_id.or(identity.manufacturer_id),
-        order: verified.order.or(identity.order),
-    })
-}
-
-/// Reads the identity of the device answering at `addr`: descriptor, then
-/// best-effort manufacturer and order info.
-async fn read_identity(
-    service: &BusService,
-    source: IndividualAddress,
-    addr: IndividualAddress,
-) -> anyhow::Result<Identity> {
-    // Authorize comes after the descriptor read (below), so the session opens
-    // without it.
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    service
-        .with_device(addr, &options, async |dev| {
-            let mask = dev.device_descriptor().await.ok();
-            // Authorize with the free-access key before the property reads, as
-            // ETS does.
-            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-                tracing::debug!("{addr} authorize (free access) did not grant: {err}");
-            }
-            let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
-                Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-                _ => None,
-            };
-            let order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| assign_cmd::clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            Ok::<_, ServiceError>(Identity {
-                mask,
-                manufacturer_id,
-                order,
-            })
-        })
-        .await
-        .map_err(|err| {
-            session_open_error(err, || {
-                format!("connecting to the device in programming mode at {addr}")
-            })
-        })
-}
-
-/// The hard stop: the pressed device must be the product the model expects.
-///
-/// Three cases. The order numbers match (normalised the way the product index
-/// normalises them) — proceed. They differ — refuse, naming both, and nothing is
-/// written. The model has no order number — proceed with a warning, because
-/// there is nothing to check against; a device that cannot be *read* while the
-/// model does expect a number is a refusal, since the check was asked for and
-/// could not be made.
-fn check_order_number(target: &Target, identity: &Identity) -> anyhow::Result<()> {
-    let Some(expected) = target.order_number.as_deref() else {
-        eprintln!(
-            "  warning: the model has no order number for {}, so the pressed device was not \
-             verified against it",
-            target.address
-        );
-        return Ok(());
-    };
-    let Some(read) = identity.order.as_deref() else {
-        bail!(
-            "the device in programming mode did not answer an order-number read, so it cannot be \
-             verified against the model's {expected:?} for {}; nothing was written. Read it with \
-             `bussard scan`, or clear the model's order number if this device cannot report one",
-            target.address
-        );
-    };
-    if normalize_order_number(read) == normalize_order_number(expected) {
-        return Ok(());
-    }
-    bail!(
-        "the device in programming mode reports order number {read:?}, but the model expects \
-         {expected:?} for {} ({}); nothing was written. Leave programming mode on this device and \
-         press the right one, then re-run",
-        target.address,
-        target.name
-    )
-}
-
-/// What an answer at a model address means for that device (issue #530):
-/// the modelled device is already there when the order number it reports
-/// matches the model's; otherwise another device holds the address, or it
-/// cannot be told which, and the device is refused before anything is
-/// pressed or written.
-fn occupied_status(target: &Target, occupant: &assign_cmd::Occupant) -> Status {
-    match (target.order_number.as_deref(), occupant.order.as_deref()) {
-        (Some(expected), Some(read))
-            if normalize_order_number(read) == normalize_order_number(expected) =>
-        {
-            Status::AlreadyPresent
+    if assigned.still_in_programming_mode {
+        eprintln!();
+        for line in bussard_service::assign::still_in_programming_mode_warning(target.address) {
+            eprintln!("{line}");
         }
-        (Some(expected), Some(read)) => Status::Failed(format!(
-            "the address is in use by another device ({}), not the modelled {expected:?} \
-             (it reports {read:?}); nothing was written. Re-address or remove that device, \
-             then re-run",
-            occupant.describe()
-        )),
-        (Some(expected), None) => Status::Failed(format!(
-            "the address is in use ({}) and the device there did not report an order number, \
-             so it cannot be told from the modelled {expected:?}; nothing was written",
-            occupant.describe()
-        )),
-        (None, _) => Status::Failed(format!(
-            "the address is in use ({}) and the model has no order number to tell whether \
-             that is the modelled device; nothing was written",
-            occupant.describe()
-        )),
     }
+    eprintln!("  assigned {current} → {}", target.address);
+    Ok(assigned)
 }
 
-/// Builds the label line stuck on the device, e.g.
-/// `1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room`.
-fn label_line(target: &Target, identity: &Identity) -> String {
-    let manufacturer = target
-        .manufacturer
-        .clone()
-        .or_else(|| identity.manufacturer_id.map(manufacturers::display));
-    let order = target
-        .order_number
-        .clone()
-        .or_else(|| identity.order.clone());
-    let product = [manufacturer, order]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" ");
-    let location = [target.floor.clone(), target.room.clone()]
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>()
-        .join(" / ");
-    [
-        target.address.to_string(),
-        target.name.clone(),
-        product,
-        location,
-    ]
-    .into_iter()
-    .filter(|f| !f.is_empty())
-    .collect::<Vec<_>>()
-    .join("  ")
+/// A commission step's error as the CLI reports it: an identification that
+/// could not open its session keeps a lease error as it is.
+fn cli_error(err: CommissionError) -> anyhow::Error {
+    match err {
+        CommissionError::Identify { current, source } => session_open_error(source, || {
+            format!("connecting to the device in programming mode at {current}")
+        }),
+        other => other.into(),
+    }
 }
 
 /// Appends one row per commissioned device to the labels CSV, writing the header
@@ -850,115 +615,6 @@ fn print_summary(line: &str, gateway: &str, outcomes: &[Outcome]) {
 mod tests {
     use super::*;
 
-    fn target() -> Target {
-        Target {
-            address: "1.1.7".parse().expect("a valid address"),
-            name: "Blind actuator".to_string(),
-            order_number: Some("JAL-0810.03".to_string()),
-            manufacturer: Some("MDT".to_string()),
-            floor: Some("Ground floor".to_string()),
-            room: Some("Living room".to_string()),
-            product: None,
-        }
-    }
-
-    fn identity(order: Option<&str>) -> Identity {
-        Identity {
-            mask: Some(0x07B0),
-            manufacturer_id: Some(0x0083),
-            order: order.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn test_label_line_matches_the_documented_shape() {
-        assert_eq!(
-            label_line(&target(), &identity(Some("JAL-0810.03"))),
-            "1.1.7  Blind actuator  MDT JAL-0810.03  Ground floor / Living room"
-        );
-    }
-
-    #[test]
-    fn test_label_line_drops_absent_fields() {
-        let mut t = target();
-        t.manufacturer = None;
-        t.floor = None;
-        t.room = None;
-        // The manufacturer falls back to the id read from the device (0x0083 = MDT).
-        assert_eq!(
-            label_line(&t, &identity(Some("JAL-0810.03"))),
-            "1.1.7  Blind actuator  MDT JAL-0810.03"
-        );
-    }
-
-    #[test]
-    fn test_check_order_number_accepts_a_match() -> anyhow::Result<()> {
-        // Case and surrounding space are normalised, as the product index does.
-        check_order_number(&target(), &identity(Some("  jal-0810.03 ")))?;
-        Ok(())
-    }
-
-    #[test]
-    fn test_check_order_number_refuses_a_mismatch() {
-        let err = check_order_number(&target(), &identity(Some("AKK-0216.03")))
-            .expect_err("a mismatch must be refused");
-        let msg = err.to_string();
-        assert!(msg.contains("AKK-0216.03"), "names what was read: {msg}");
-        assert!(
-            msg.contains("JAL-0810.03"),
-            "names what was expected: {msg}"
-        );
-        assert!(msg.contains("nothing was written"), "{msg}");
-    }
-
-    #[test]
-    fn test_check_order_number_refuses_an_unreadable_one() {
-        let err = check_order_number(&target(), &identity(None))
-            .expect_err("an unverifiable device must be refused");
-        assert!(
-            err.to_string()
-                .contains("did not answer an order-number read"),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn test_check_order_number_warns_without_a_model_number() -> anyhow::Result<()> {
-        let mut t = target();
-        t.order_number = None;
-        check_order_number(&t, &identity(None))?;
-        Ok(())
-    }
-
-    fn occupant(order: Option<&str>) -> assign_cmd::Occupant {
-        assign_cmd::Occupant {
-            mask: Some(0x07B0),
-            manufacturer_id: Some(0x0083),
-            order: order.map(str::to_string),
-        }
-    }
-
-    #[test]
-    fn test_occupied_status_the_modelled_device_is_present() {
-        // Issue #530: the order number the occupant reports is the model's.
-        let status = occupied_status(&target(), &occupant(Some("jal-0810.03")));
-        assert_eq!(status, Status::AlreadyPresent);
-    }
-
-    #[test]
-    fn test_occupied_status_refuses_another_device() {
-        let status = occupied_status(&target(), &occupant(Some("AKK-0216.03")));
-        let detail = status.detail().unwrap_or_default();
-        assert!(detail.contains("in use by another device"), "{detail}");
-        assert!(detail.contains("mask 07B0"), "{detail}");
-    }
-
-    #[test]
-    fn test_occupied_status_refuses_an_unidentified_occupant() {
-        let status = occupied_status(&target(), &occupant(None));
-        assert!(matches!(status, Status::Failed(_)), "{status:?}");
-    }
-
     #[test]
     fn test_csv_field_quotes_only_when_needed() {
         assert_eq!(csv_field("Living room"), "Living room");
@@ -970,5 +626,38 @@ mod tests {
     fn test_exited_ok_distinguishes_the_two_codes() {
         assert!(exited_ok(&ExitCode::SUCCESS));
         assert!(!exited_ok(&ExitCode::FAILURE));
+    }
+
+    #[test]
+    fn test_append_labels_writes_only_commissioned_rows() -> anyhow::Result<()> {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-commission-labels-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?
+        ));
+        let path = dir.join("labels.csv");
+        let target = Target {
+            address: "1.1.7".parse()?,
+            name: "Blind actuator".to_string(),
+            order_number: Some("JAL-0810.03".to_string()),
+            manufacturer: Some("MDT".to_string()),
+            floor: Some("Ground floor".to_string()),
+            room: Some("Living room".to_string()),
+        };
+        let mut other = target.clone();
+        other.address = "1.1.8".parse()?;
+        let outcomes = [
+            Outcome::commissioned(&target, "label".to_string()),
+            Outcome::failed(&other, "skipped".to_string()),
+        ];
+        append_labels(&path, &outcomes, &[target, other])?;
+        let csv = std::fs::read_to_string(&path);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(
+            csv?,
+            "address;name;order_number;floor;room\n\
+             1.1.7;Blind actuator;JAL-0810.03;Ground floor;Living room\n"
+        );
+        Ok(())
     }
 }
