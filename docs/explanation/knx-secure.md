@@ -116,6 +116,35 @@ and sends it to a relay. The relay forwards it to your bussard, which
 decrypts it, matches its serial number to a device and stores the key in the
 encrypted key store. The phone then shows what became of each certificate.
 
+```mermaid
+sequenceDiagram
+  participant Phone
+  participant Relay
+  participant bussard
+  participant Store as key store
+  Phone->>Phone: scan the certificate,<br>encrypt it for this session
+  Phone->>Relay: encrypted certificate
+  Relay->>bussard: encrypted certificate
+  bussard->>bussard: decrypt, match the serial<br>number to a device
+  bussard->>Store: factory key, encrypted
+  bussard-->>Relay: outcome: added, already known, no device yet
+  Relay-->>Phone: outcome
+```
+
+<div class="grid" markdown>
+
+<figure markdown="span">
+  ![The session code on the phone](../assets/screenshots/phone-session-code.png){ width="300" }
+  <figcaption>The phone page first shows the session code, which must match the one bussard shows.</figcaption>
+</figure>
+
+<figure markdown="span">
+  ![Scanning certificates on the phone](../assets/screenshots/phone-scan.png){ width="300" }
+  <figcaption>Then it scans certificates, or takes them typed, and lists what became of each.</figcaption>
+</figure>
+
+</div>
+
 | Party | Sees |
 |---|---|
 | bussard | the certificates in plain text; it writes the key store |
