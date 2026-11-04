@@ -633,7 +633,7 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     knx_write_group. Push a device with knx_plan_device: say its summary and \
     what_you_will_notice, show its sentences in full, and call knx_apply_device only after \
     an explicit yes in this conversation. It writes the device's links (group-address and \
-    association tables) and the parameter values that differ from the project (one plan \
+    association tables) and the parameter values that differ from your project (one plan \
     sentence each), over KNX Data Secure when the server holds the device's tool key. A plan \
     without the device's product data writes the links only and says why. knx_apply_device \
     runs the write as a job: when it answers `started` with a job id, call knx_apply_status \

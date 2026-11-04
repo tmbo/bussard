@@ -134,7 +134,7 @@ What remains: wire the device's objects (see [Change what a button does](change-
       writes      : 512 byte(s) across 8 step(s), est. 2.4s on TP1
     flash M-0083_A-000D-23-5BFD (2 memory write(s)) to 1.1.5? [y/N] y
     ...
-    flash verified: application program M-0083_A-000D-23-5BFD is Loaded on 1.1.5, and its parameters match the model
+    flash verified: application program M-0083_A-000D-23-5BFD is Loaded on 1.1.5, and its parameters match your project
     ```
 
     `flash` takes no backup. A device with a BCU access key needs `--bcu-key <HEX>`. `--dry-run` prints the plan without a gateway.
