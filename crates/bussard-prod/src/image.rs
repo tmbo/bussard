@@ -44,14 +44,16 @@
 //! keep the vendor's bytes); otherwise the image starts as all-`0x00`, sized to
 //! hold every parameter that targets it (to the segment's `Size` on the Dynamic
 //! path). In a relative segment without `<Data>`, every octet no parameter
-//! writes is then set to `0xFF`, the erased flash ETS writes there (issue
-//! #377, see `ERASED_FILL`).
+//! writes is then set to the fill byte of the segment's full-download
+//! `LdCtrlRelSegment` when it pre-fills (issue #834), else to `0xFF`, the
+//! erased flash ETS writes there (issue #377, see `unplaced_fill`).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 
 use bussard_ets::application::{
-    ApplicationProgram, LabelMatch, ParameterType, SegmentKind, enum_member_by_label,
+    ApplicationProgram, CodeSegment, LabelMatch, LoadOp, ParameterType, SegmentFill, SegmentKind,
+    enum_member_by_label,
 };
 use bussard_model::text_codec::TextCodec;
 
@@ -80,7 +82,8 @@ fn mark(placed: &mut PlacedOctets, seg_id: &str, range: Range<usize>) {
 }
 
 /// The octet ETS leaves in every unplaced octet of a relative segment that
-/// carries no `<Data>`: erased flash.
+/// carries no `<Data>` when the full download's `LdCtrlRelSegment` does not
+/// ask the device to pre-fill it: erased flash (see [`unplaced_fill`]).
 ///
 /// Evidence (issue #377): the ETS 6.4 full download of 1.1.201 (Jung IP
 /// interface additional function, `M-0004_A-0024-22-EA66`, capture
@@ -94,26 +97,64 @@ fn mark(placed: &mut PlacedOctets, seg_id: &str, range: Range<usize>) {
 /// `0x00` past a short one), which every other System B capture matches.
 const ERASED_FILL: u8 = 0xFF;
 
-/// Sets every octet that no placement wrote ([`PlacedOctets`]) to
-/// [`ERASED_FILL`] in the image of each relative segment without `<Data>`.
-/// The image length is unchanged.
+/// The octet ETS leaves in the unplaced octets of the relative segment `seg`
+/// (one without `<Data>`): the fill byte of the full download's
+/// `LdCtrlRelSegment` for the segment's load state machine when its `Mode`
+/// asks the device to pre-fill the allocation, [`ERASED_FILL`] otherwise.
+///
+/// Evidence (issue #834, defaults sweep 2026-11-04, ETS 6.4.1 into knx-sim):
+/// with `<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Mode="1" Fill="0">`
+/// ETS leaves those octets `00` (Enertex `M-00A6_A-0031-30-EE6B`, 9096
+/// octets; MDT `A-0153/0154/0155`; ekinex `A-DA22`), with `Mode="1"
+/// Fill="255"` `ff` (Enertex `A-0035-31`, Jung `A-0024-22` of #377). A
+/// `Mode="0"` allocation (19 programs in the corpus, none captured) and a
+/// segment whose procedure comes from the mask template keep #377's `0xFF`.
+fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
+    let Some(lsm) = seg.load_state_machine else {
+        return ERASED_FILL;
+    };
+    let full = |applies_to: &Option<String>| {
+        applies_to
+            .as_deref()
+            .is_none_or(|a| a.split(',').any(|part| part.trim() == "full"))
+    };
+    app.load_procedures
+        .iter()
+        .flat_map(|lp| lp.ops.iter())
+        .find_map(|op| match op {
+            LoadOp::RelSegment {
+                lsm_idx: Some(idx),
+                applies_to,
+                fill,
+                ..
+            } if *idx == lsm && full(applies_to) => Some(*fill),
+            _ => None,
+        })
+        .and_then(SegmentFill::prefill)
+        .unwrap_or(ERASED_FILL)
+}
+
+/// Sets every octet that no placement wrote ([`PlacedOctets`]) to the
+/// segment's [`unplaced_fill`] in the image of each relative segment without
+/// `<Data>`. The image length is unchanged.
 fn apply_erased_fill(
     app: &ApplicationProgram,
     images: &mut BTreeMap<String, Vec<u8>>,
     placed: &PlacedOctets,
 ) {
     for (seg_id, image) in images.iter_mut() {
-        let erased = app
+        let Some(seg) = app
             .code_segments
             .get(seg_id)
-            .is_some_and(|s| s.kind == SegmentKind::Relative && s.data.is_none());
-        if !erased {
+            .filter(|s| s.kind == SegmentKind::Relative && s.data.is_none())
+        else {
             continue;
-        }
+        };
+        let fill = unplaced_fill(app, seg);
         let written = placed.get(seg_id);
         for (i, octet) in image.iter_mut().enumerate() {
             if !written.is_some_and(|w| w.contains(&i)) {
-                *octet = ERASED_FILL;
+                *octet = fill;
             }
         }
     }
@@ -3681,10 +3722,26 @@ mod tests {
     /// A relative segment with or without `<Data>`, a 4-octet `Size`, and a
     /// 1-bit parameter set to 1 at octet 1, bit 0, on the Dynamic path.
     fn fill_app(data: &str) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        fill_app_with_procedure(data, "")
+    }
+
+    /// [`fill_app`] with `ops` as the program's load procedure.
+    fn fill_app_with_procedure(
+        data: &str,
+        ops: &str,
+    ) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let procedures = if ops.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<LoadProcedures><LoadProcedure MergeId=\"2\">{ops}</LoadProcedure></LoadProcedures>"
+            )
+        };
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
           <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4" LoadStateMachine="4" Offset="0">{data}</RelativeSegment></Code>
+          {procedures}
           <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="b"><TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" /></ParameterType></ParameterTypes>
           <Parameters><Parameter Id="M-1_A-1_P-0" Name="on" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="1" BitOffset="0" /></Parameter></Parameters>
           <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-0" RefId="M-1_A-1_P-0" /></ParameterRefs>
@@ -3709,6 +3766,75 @@ mod tests {
             compute_dynamic_parameter_image(&app, &no_overrides())?,
             images
         );
+        Ok(())
+    }
+
+    /// A data-less segment whose full `LdCtrlRelSegment` pre-fills with `00`
+    /// keeps `00` in the unplaced octets, as ETS leaves them (Enertex
+    /// `A-0031-30`, MDT `A-0153/0154/0155`, issue #834); the `par` op does not
+    /// count.
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_follows_full_fill_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />
+               <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="4" Mode="1" Fill="255" />"#,
+        )?;
+        let (images, _) = compute_parameter_image_placed(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0x00, 0x80, 0x00, 0x00]);
+        assert_eq!(
+            compute_dynamic_parameter_image(&app, &no_overrides())?,
+            images
+        );
+        Ok(())
+    }
+
+    /// `Mode="1" Fill="255"` keeps the erased `0xFF` (Enertex `A-0035-31`,
+    /// Jung `A-0024-22`, issues #377 and #834).
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_follows_full_fill_ff()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="255" />"#,
+        )?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0xFF, 0x80, 0xFF, 0xFF]);
+        Ok(())
+    }
+
+    /// A `Mode="0"` allocation does not pre-fill, so its `Fill` octet does not
+    /// apply and the unplaced octets stay `0xFF` (#377); so does an op for
+    /// another load state machine.
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_mode_zero_stays_erased()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for ops in [
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="0" Fill="0" />"#,
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="4" Mode="1" Fill="0" />"#,
+        ] {
+            let app = fill_app_with_procedure("", ops)?;
+            let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+            assert_eq!(
+                images["M-1_A-1_RS-1"],
+                vec![0xFF, 0x80, 0xFF, 0xFF],
+                "{ops}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A segment with `<Data>` keeps its data whatever the procedure's fill.
+    #[test]
+    fn test_compute_parameter_image_placed_with_data_ignores_fill()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "<Data>ESIzRA==</Data>",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />"#,
+        )?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0x11, 0xA2, 0x33, 0x44]);
         Ok(())
     }
 
