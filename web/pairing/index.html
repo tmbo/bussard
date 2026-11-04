@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- The pairing page (#809): served by bussard's MCP server on 127.0.0.1
+       under a random token path. bussard fills the double-brace placeholders
+       (escaped) and sends the same policy as a header, with
+       frame-ancestors. No inline script or style, no third-party requests. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <meta name="referrer" content="no-referrer">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>bussard: add certificates</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="pairing.css">
+  <script type="module" src="pairing.js"></script>
+</head>
+<body>
+  <header class="top">
+    <span class="brand">bussard</span>
+    <span class="title">Add KNX Secure certificates</span>
+    <span id="state" class="state waiting" role="status">Waiting for your phone</span>
+  </header>
+
+  <main>
+    {{warnings}}
+    <div id="refused" class="banner warn" role="alert" hidden>
+      <span class="banner-title">Another phone tried to join this session</span>
+      It was refused and nothing it sent was saved. If it was not yours,
+      someone else has the link: stop the session in the chat and start a new one.
+    </div>
+    <div class="grid">
+      <section class="panel connect" {{hosted_hidden}} aria-labelledby="scan-title">
+        <h1 id="scan-title">Scan this with your phone</h1>
+        <div class="qr-frame">{{qr}}</div>
+        <p class="muted small">Or open this link on the phone:</p>
+        <div class="link-row">
+          <code id="phone-link" class="link">{{link}}</code>
+          <button id="copy" class="secondary small-btn" type="button">Copy</button>
+        </div>
+      </section>
+
+      <section class="panel connect" {{local_hidden}} aria-labelledby="local-title">
+        <h1 id="local-title">Open the certificate page</h1>
+        <p>The certificate page runs inside bussard on this computer. Use it with a
+          webcam, or type the codes.</p>
+        <a id="local-link" class="button primary" href="{{link}}" target="_blank" rel="noopener noreferrer">Open the certificate page</a>
+      </section>
+
+      <section class="panel code-panel" aria-labelledby="code-title">
+        <div id="code-title" class="fp-label">Session code</div>
+        <div id="code" class="fingerprint">{{code}}</div>
+        <p class="code-help">The certificate page shows the same code. Tap
+          <strong>Matches</strong> there only if both codes are the same.</p>
+        <ol class="steps">
+          <li>Open the link on your phone.</li>
+          <li>Check the session code.</li>
+          <li>Scan the certificates on your Secure devices. Each one appears below.</li>
+        </ol>
+      </section>
+    </div>
+
+    <section class="panel results" aria-labelledby="list-title">
+      <div class="results-head">
+        <h2 id="list-title">Certificates</h2>
+        <span id="summary" class="summary" aria-live="polite">Nothing sent yet</span>
+      </div>
+      <div id="end" class="banner" role="status" hidden>
+        <span id="end-title" class="banner-title"></span>
+        <ul id="next-steps" class="next-steps"></ul>
+      </div>
+      <ol id="labels" class="labels" aria-live="polite"></ol>
+      <p id="labels-empty" class="muted small">No certificates yet. They appear here as your phone sends them.</p>
+    </section>
+
+    <p class="foot">
+      This page is served by bussard on this computer and only you can see it.
+      bussard never asks you to open a link from the chat. The certificates go
+      into your encrypted key store, never into the chat.
+    </p>
+  </main>
+</body>
+</html>

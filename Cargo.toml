@@ -156,8 +156,9 @@ getrandom = "0.2"
 # WebCrypto's AES-GCM). RustCrypto, cipher-0.4 generation like `aes 0.8`;
 # MSRV 1.56. Apache-2.0 OR MIT. Its tree (aead, ghash, polyval) is the same.
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
-# qrcode: the terminal QR code of the enrolment link `bussard keys enroll`
-# prints. Without default features: no image/svg backends, only the unicode
+# qrcode: the QR code of the enrolment link, in the terminal (`bussard keys
+# enroll`) and as an SVG on the MCP pairing page (#809, drawn by hand from the
+# modules). Without default features: no image/svg backends, only the unicode
 # renderer. MSRV 1.67. MIT OR Apache-2.0, no dependencies left.
 qrcode = { version = "0.14", default-features = false }
 

@@ -3,24 +3,30 @@
 //!
 //! `knx_enroll_certificates` starts the enrolment session of
 //! [`bussard_service::enroll_session`] (the one `bussard keys enroll` runs)
-//! in a thread of the server process and shows the link to the human with
-//! URL-mode elicitation (issue #798). The human opens the link on a phone
-//! (or, with `local: true`, in a browser on the computer running the server)
-//! and scans the labels; each one is entered into the key store exactly as
-//! `bussard keys add-certificate` enters it. `knx_enroll_status` reports the
-//! results so far: serial, address, name and status per label.
+//! in a thread of the server process and opens a **pairing page** in the
+//! human's browser (issue #809): [`bussard_viz::pairing_page`] on
+//! 127.0.0.1, which shows the session code, a QR code of the phone link and
+//! the certificates as they arrive. The human opens the link on a phone (or,
+//! with `local: true`, the certificate page in a browser on the computer
+//! running the server) and scans the labels; each one is entered into the
+//! key store exactly as `bussard keys add-certificate` enters it.
+//! `knx_enroll_status` reports the results so far: serial, address, name
+//! and status per label.
 //!
 //! # The link never passes through the assistant
 //!
 //! A link and session code the assistant relays prove nothing: a prompt
 //! injection could hand the human an attacker's link with a matching code
-//! (#798, finding F1 of the #201 security review). So the link and the
-//! session code go to the human only in the elicitation, which the client
-//! shows with the full URL and asks consent for; no tool result carries
-//! either. A client that does not declare URL-mode elicitation gets a
-//! refusal pointing at `bussard keys enroll`, and no session starts.
+//! (#798, finding F1 of the #201 security review). So the phone link, the
+//! session code and the pairing page's URL never appear in a tool result.
+//! bussard opens the pairing page itself (`open`, `xdg-open`, `start`, see
+//! [`crate::browser`]); when nobody can see a browser here (SSH, no
+//! display) the tool refuses with a pointer to `bussard keys enroll`, and no
+//! session starts.
 //!
-//! Two transports of the same request (MCP 2026-07-28, client features):
+//! A client that declares URL-mode elicitation (#798) gets the pairing
+//! page's URL as an elicitation instead, a consent step before the page
+//! opens. Two transports of that request (MCP 2026-07-28, client features):
 //! from protocol 2026-07-28 the tool answers with an `InputRequiredResult`
 //! holding the `elicitation/create` request and the client calls the tool
 //! again with the human's answer (multi round-trip, SEP-2322); before it,
@@ -48,6 +54,9 @@ use bussard_service::enroll_session::{
     EnrollTally, HttpRelay, RunOptions, data_path, endpoint_warnings, hosted_endpoints,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
+use bussard_viz::pairing_page::{
+    PairingCertificate, PairingContent, PairingPage, PairingStatus, StatusFn,
+};
 use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{
     CallToolResponse, CallToolResult, ElicitRequest, ElicitRequestParams, ElicitResult,
@@ -207,17 +216,17 @@ fn refused(reason: impl Into<String>) -> CallToolResult {
     }))
 }
 
-/// The refusal for a client that cannot show a link to the human itself.
-fn no_url_elicitation() -> CallToolResult {
+/// The refusal when bussard cannot show its pairing page to the human:
+/// `reason` says why (no display, the opener failed).
+fn no_pairing_page(reason: impl Into<String>) -> CallToolResult {
     CallToolResult::structured(json!({
         "ok": false,
         "refused": true,
-        "reason": "this chat app cannot show a link to the human directly (it does not \
-                   declare URL-mode elicitation), and the certificate page link must never \
-                   pass through the assistant",
-        "summary": "This chat app cannot open the certificate page for you. Run \
-                    `bussard keys enroll` in a terminal in your project folder instead; it \
-                    shows the link, a QR code for your phone and the session code.",
+        "pairing_page_opened": false,
+        "reason": reason.into(),
+        "summary": "bussard cannot open its pairing page here. Run `bussard keys enroll` in a \
+                    terminal in your project folder instead; it shows a QR code for your phone \
+                    and the session code.",
         "next_step": "Tell the human to run `bussard keys enroll` in a terminal in the project \
                       folder. Do not offer a link or a session code yourself, and never ask \
                       for a certificate in chat.",
@@ -240,20 +249,20 @@ fn link_host(link: &str) -> &str {
     rest.split(['/', '#', '?']).next().unwrap_or(rest)
 }
 
-/// The elicitation message: what the page is, where it is served from and
-/// the session code to check. Written by the server and shown by the
-/// client; the assistant never sees it.
-fn elicitation_message(host: &str, code: &str, local: bool) -> String {
-    let open = if local {
-        "Open it in a browser on this computer"
-    } else {
-        "Open it on the phone you scan with"
-    };
-    format!(
-        "bussard asks you to open its certificate page on {host}. {open}, check that the page \
-         shows the session code {code}, then scan the certificates on your Secure devices. \
-         They go into your key store, never into the chat."
-    )
+/// The elicitation message: what the pairing page is and where it is
+/// served from. Written by the server and shown by the client; the
+/// assistant never sees it.
+fn elicitation_message(host: &str, warnings: &[String]) -> String {
+    let mut message = format!(
+        "bussard asks you to open its pairing page, served by bussard on this computer \
+         ({host}). It shows the session code and the link for your phone, and lists the \
+         certificates you scan. They go into your key store, never into the chat."
+    );
+    // F13: say so when the page or relay is not the project's.
+    for warning in warnings {
+        message.push_str(&format!(" Warning: {warning}."));
+    }
+    message
 }
 
 /// A fresh random elicitation id.
@@ -271,11 +280,10 @@ async fn close(job: &EnrollJob) {
     }
 }
 
-/// A started session: the job and what the elicitation shows.
+/// A started session: the job and its pairing page's URL.
 struct Started {
     job: Arc<EnrollJob>,
-    link: String,
-    message: String,
+    pairing_url: String,
 }
 
 /// One label as the tools report it: never a key.
@@ -367,6 +375,45 @@ fn status_json(job: &EnrollJob) -> Value {
     })
 }
 
+/// The live part of the pairing page, from `progress`.
+fn pairing_status(progress: &Progress) -> PairingStatus {
+    let tally = EnrollTally::of(&progress.results);
+    let ended = progress.end.map(|end| match end {
+        "phone_done" => "Finished. You can close this page.".to_string(),
+        "stopped" => "The session was ended from the chat. You can close this page.".to_string(),
+        "connect_timeout" => "No phone joined within 10 minutes, so the session was closed. \
+                              You can close this page."
+            .to_string(),
+        "idle_timeout" => "Nothing happened for 15 minutes, so the session was closed. You can \
+                           close this page."
+            .to_string(),
+        "max_duration" | "expired" => {
+            "The session ran out of time. You can close this page.".to_string()
+        }
+        _ => format!(
+            "The session failed: {}. You can close this page.",
+            progress.error.as_deref().unwrap_or("for an unknown reason")
+        ),
+    });
+    PairingStatus {
+        running: ended.is_none(),
+        phones: progress.phones,
+        refused_phones: progress.refused_phones,
+        certificates: progress
+            .results
+            .iter()
+            .map(PairingCertificate::of)
+            .collect(),
+        summary: tally.summary(),
+        next_steps: if ended.is_some() {
+            tally.next_steps()
+        } else {
+            Vec::new()
+        },
+        ended,
+    }
+}
+
 /// How the session's relay is reached: the hosted page and relay of
 /// bussard.toml, or the local server.
 enum Endpoint {
@@ -391,6 +438,7 @@ fn run_session(
     relay: HttpRelay,
     mut sink: FreshKeyStore,
     local: Option<LocalEnrollServer>,
+    pairing: PairingPage,
     job: &EnrollJob,
 ) {
     let bump = || job.changed.send_modify(|v| *v += 1);
@@ -442,6 +490,7 @@ fn run_session(
         }
     }
     bump();
+    pairing.finish();
 }
 
 #[tool_router(router = enroll_router, vis = "pub(crate)")]
@@ -450,20 +499,21 @@ impl BussardMcp {
     #[tool(
         description = "Start a session that takes KNX Secure device certificates (the \
         36-character codes printed on Secure devices) from a phone camera into the key store, \
-        without them passing through this chat. The chat app shows the human the certificate \
-        page link and the session code itself (MCP URL elicitation) and asks before opening \
-        it; neither ever reaches you. NEVER write, repeat or guess a link or a session code \
-        for this: one coming from you proves nothing. The human opens the page, checks the \
-        session code and scans the certificates. Each one is matched to a device by its \
-        serial number and stored, end to end encrypted on the way; this tool and \
-        knx_enroll_status never return a certificate or a key. NEVER ask the human to paste \
-        a certificate into the chat. When the chat app cannot show a link, the tool refuses: \
-        tell the human to run `bussard keys enroll` in a terminal. Follow up with \
-        knx_enroll_status. `local: true` serves the page from this server on 127.0.0.1 \
-        instead, for a browser on the same computer (a webcam or typed codes); without it \
-        the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
-        session at a time; it ends when the human finishes on the phone, declines the link, \
-        on knx_enroll_status with stop: true, when no phone joins within 10 minutes, after 15 \
+        without them passing through this chat. bussard opens its pairing page in the human's \
+        browser on this computer: it shows the session code, a QR code for the phone and the \
+        certificates as they arrive. The link and the session code never reach you. NEVER \
+        write, repeat or guess a link or a session code for this: one coming from you proves \
+        nothing. The human scans the QR code, checks the session code on the phone and scans \
+        the certificates. Each one is matched to a device by its serial number and stored, \
+        end to end encrypted on the way; this tool and knx_enroll_status never return a \
+        certificate or a key. NEVER ask the human to paste a certificate into the chat. When \
+        bussard cannot open a page here (an SSH session, no display), the tool refuses: tell \
+        the human to run `bussard keys enroll` in a terminal. Follow up with \
+        knx_enroll_status. `local: true` serves the certificate page from this server on \
+        127.0.0.1 too, for a browser on the same computer (a webcam or typed codes); without \
+        it the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
+        session at a time; it ends when the human finishes on the phone, on \
+        knx_enroll_status with stop: true, when no phone joins within 10 minutes, after 15 \
         minutes without a certificate or the page open, or after 4 hours. One phone per \
         session: another phone that opens the link is refused, and knx_enroll_status reports \
         it in `refused_phones` and `warning`. Writes the key store only \
@@ -483,18 +533,22 @@ impl BussardMcp {
                 .and_then(|value| serde_json::from_value::<ElicitResult>(value).ok());
             return Ok(self.enroll_answered(&state, answer).await.into());
         }
-        if !shows_urls(&context) {
-            return Ok(no_url_elicitation().into());
+        // Nobody would see the page: refuse before a session starts.
+        if let Some(reason) = self.browser.no_display() {
+            return Ok(no_pairing_page(format!("{reason}; no session was started")).into());
         }
         let started = match self.start_enrolment(args.local) {
             Ok(started) => started,
             Err(refused) => return Ok(refused.into()),
         };
+        if !shows_urls(&context) {
+            return Ok(self.open_pairing_page(started).await.into());
+        }
         let id = started.job.elicitation_id.clone();
         let params = ElicitRequestParams::UrlElicitationParams {
             meta: None,
-            message: started.message,
-            url: started.link,
+            message: elicitation_message(link_host(&started.pairing_url), &started.job.warnings),
+            url: started.pairing_url,
             elicitation_id: id.clone(),
         };
         if context
@@ -515,12 +569,11 @@ impl BussardMcp {
         let action = match context.peer.create_elicitation(params).await {
             Ok(result) => result.action,
             Err(err) => {
-                // Logged only: a client's error text could echo the link.
-                tracing::warn!(%err, "enrolment: the client did not show the link");
+                // Logged only: a client's error text could echo the URL.
+                tracing::warn!(%err, "enrolment: the client did not show the pairing page");
                 close(&started.job).await;
-                return Ok(refused(
-                    "the chat app did not show the certificate page link; the session was \
-                     closed. Run `bussard keys enroll` in a terminal instead",
+                return Ok(no_pairing_page(
+                    "the chat app did not show the pairing page; the session was closed",
                 )
                 .into());
             }
@@ -624,10 +677,6 @@ impl BussardMcp {
         } else {
             Vec::new()
         };
-        let mut message = elicitation_message(link_host(&link), &session.fingerprint(), is_local);
-        for warning in &warnings {
-            message.push_str(&format!(" Warning: {warning}."));
-        }
         let (changed, _) = watch::channel(0u64);
         let job = Arc::new(EnrollJob {
             elicitation_id,
@@ -638,6 +687,20 @@ impl BussardMcp {
             progress: Arc::default(),
             changed: Arc::new(changed),
         });
+        let progress = Arc::clone(&job.progress);
+        let status: StatusFn = Arc::new(move || pairing_status(&lock(&progress)));
+        let pairing = PairingPage::start(
+            &PairingContent {
+                code: session.fingerprint(),
+                phone_link: link,
+                local: is_local,
+                warnings: job.warnings.clone(),
+            },
+            status,
+            job.changed.subscribe(),
+        )
+        .map_err(|err| refused(format!("starting the pairing page: {err}")))?;
+        let pairing_url = pairing.url();
         let sink = FreshKeyStore {
             dir: dir.clone(),
             password,
@@ -645,10 +708,10 @@ impl BussardMcp {
         let thread_job = Arc::clone(&job);
         std::thread::Builder::new()
             .name("enroll-session".to_owned())
-            .spawn(move || run_session(session, relay, sink, local, &thread_job))
+            .spawn(move || run_session(session, relay, sink, local, pairing, &thread_job))
             .map_err(|err| refused(format!("starting the enrolment session: {err}")))?;
         *lock(&self.enroll.0) = Some(Arc::clone(&job));
-        Ok(Started { job, link, message })
+        Ok(Started { job, pairing_url })
     }
 
     /// The second round of a multi round-trip call: `state` names the
@@ -682,33 +745,63 @@ impl BussardMcp {
             return CallToolResult::structured(json!({
                 "ok": false,
                 "declined": true,
+                "pairing_page_opened": false,
                 "session": "ended",
-                "summary": "You did not open the certificate page, so it was closed. Nothing \
-                            was changed.",
-                "next_step": "The human declined or dismissed the certificate page link. Do \
-                              not offer a link or a session code yourself. Call \
-                              knx_enroll_certificates again only if the human asks to.",
+                "summary": "You did not open the pairing page, so the session was closed. \
+                            Nothing was changed.",
+                "next_step": "The human declined or dismissed the pairing page. Do not offer a \
+                              link or a session code yourself. Call knx_enroll_certificates \
+                              again only if the human asks to.",
             }));
         }
+        self.opened(job)
+    }
+
+    /// Opens the pairing page of `started` in the browser; closes the
+    /// session when that fails.
+    async fn open_pairing_page(&self, started: Started) -> CallToolResult {
+        let browser = Arc::clone(&self.browser);
+        let url = started.pairing_url;
+        let opened = tokio::task::spawn_blocking(move || browser.open(&url))
+            .await
+            .unwrap_or_else(|err| Err(format!("opening the browser: {err}")));
+        match opened {
+            Ok(()) => self.opened(&started.job),
+            Err(err) => {
+                close(&started.job).await;
+                no_pairing_page(format!("{err}; the session was closed"))
+            }
+        }
+    }
+
+    /// The result once the pairing page of `job` is open. Carries neither
+    /// the link, nor the session code, nor the page's URL.
+    fn opened(&self, job: &EnrollJob) -> CallToolResult {
         let local = job.local;
         let mut result = json!({
             "ok": true,
             "session": "running",
-            "link_shown": true,
+            "pairing_page_opened": true,
             "local": local,
+            "certificates": 0,
+            "results": [],
             "expires_in_seconds": SESSION_LIFETIME_SECS,
             "data_path": data_path(local).join(" "),
             "read_more": DOCS_URL,
-            "summary": format!(
-                "The certificate page link and its session code were shown to you by your chat \
-                 app. Open the link {}, check that the page shows the same session code, and \
-                 scan the certificates on your Secure devices. Each one is saved in the key \
-                 store; nothing is sent to the devices.",
-                if local { "in a browser on this computer" } else { "on your phone" }
-            ),
-            "next_step": "Your chat app showed the human the link and the session code \
-                          directly; you never see them. Never write, repeat or guess a link or \
-                          a session code: if the human lost the link, stop this session \
+            "summary": if local {
+                "bussard opened its pairing page in your browser. Open the certificate page \
+                 from there, check that it shows the same session code, and scan or type the \
+                 certificates on your Secure devices. Each one appears on the pairing page and \
+                 is saved in your key store; nothing is sent to the devices."
+            } else {
+                "bussard opened its pairing page in your browser. Scan its QR code with your \
+                 phone, check that the phone shows the same session code, and scan the \
+                 certificates on your Secure devices. Each one appears on the pairing page and \
+                 is saved in your key store; nothing is sent to the devices."
+            },
+            "next_step": "bussard opened the pairing page in the human's browser; you never see \
+                          the link or the session code. Never write, repeat or guess a link or \
+                          a session code: if the human closed the page, stop this session \
                           (knx_enroll_status, stop: true) and start a new one. Give the human \
                           `summary`, `data_path` and the `read_more` link, then call \
                           knx_enroll_status (wait_seconds to wait for certificates).",

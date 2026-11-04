@@ -568,11 +568,7 @@ const READ_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The installation
     files first and returns a `summary` and the change as sentences: say the summary, then \
     quote the sentences, and follow the result's next_step. KNX Secure device certificates \
     (the FDSK labels) enter the key store through knx_enroll_certificates and \
-    knx_enroll_status: the chat app shows the human the page link and its session code \
-    directly, and the human scans the certificates there. Never write, repeat or guess an \
-    enrolment link or session code yourself, and never ask for a certificate in chat; when \
-    the chat app cannot show the link, point the human to `bussard keys enroll` in a \
-    terminal. Group writes are off: restart with --allow-writes for knx_write_group. \
+    knx_enroll_status: bussard opens a pairing page in the human's browser with the phone link and its session code, and the human scans the certificates with the phone. Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal. Group writes are off: restart with --allow-writes for knx_write_group. \
     This server runs without --allow-programming, so edits stay in the files. Restarted with \
     that flag, knx_plan_device and knx_apply_device push a device's links and parameter \
     values, knx_add_device adds a new device, knx_commission_line commissions a line, \
@@ -623,11 +619,7 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     device needs its product model). Every edit snapshots the files first and returns a \
     `summary` and the change as sentences: say the summary, then quote the sentences, and \
     follow the result's next_step. KNX Secure device certificates (the FDSK labels) enter \
-    the key store through knx_enroll_certificates and knx_enroll_status: the chat app shows \
-    the human the page link and its session code directly, and the human scans the \
-    certificates there. Never write, repeat or guess an enrolment link or session code \
-    yourself, and never ask for a certificate in chat; when the chat app cannot show the \
-    link, point the human to `bussard keys enroll` in a terminal. Group writes are off: \
+    the key store through knx_enroll_certificates and knx_enroll_status: bussard opens a pairing page in the human's browser with the phone link and its session code, and the human scans the certificates with the phone. Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal. Group writes are off: \
     restart with --allow-writes for knx_write_group. Push a device with knx_plan_device: say \
     its summary and what_you_will_notice, show its sentences in full, and call \
     knx_apply_device only after an explicit yes in this conversation. It writes the device's \

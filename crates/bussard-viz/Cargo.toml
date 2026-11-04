@@ -30,6 +30,8 @@ axum = { workspace = true }
 # The in-process enrolment relay (issue #729) stores SHA-256 of each session's
 # owner token, never the token. Already in the tree. MIT OR Apache-2.0.
 sha2 = { workspace = true }
+getrandom = { workspace = true }
+qrcode = { workspace = true }
 
 [features]
 # `browser-tests`: enables tests/it/browser_smoke.rs, a headless-Chrome smoke test

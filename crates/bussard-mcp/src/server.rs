@@ -62,6 +62,8 @@ pub struct BussardMcp {
     /// The certificate enrolment session of this server, if one was started
     /// (issue #732).
     pub(crate) enroll: crate::tools_enroll::EnrollJobs,
+    /// Opens the enrolment pairing page in the human's browser (issue #809).
+    pub(crate) browser: Arc<dyn crate::browser::BrowserOpener>,
 }
 
 impl BussardMcp {
@@ -139,7 +141,16 @@ impl BussardMcp {
             session_edits: crate::session_edits::SessionEdits::new(),
             admission_tables: Arc::default(),
             enroll: crate::tools_enroll::EnrollJobs::new(),
+            browser: Arc::new(crate::browser::SystemBrowser),
         }
+    }
+
+    /// This server with `browser` opening the enrolment pairing page
+    /// instead of the system browser (the tests open nothing).
+    #[must_use]
+    pub fn with_browser(mut self, browser: Arc<dyn crate::browser::BrowserOpener>) -> Self {
+        self.browser = browser;
+        self
     }
 
     /// Resolves an unknown sender admission by reading the receivers' PID 54
