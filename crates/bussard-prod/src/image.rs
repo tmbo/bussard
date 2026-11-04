@@ -1546,6 +1546,16 @@ fn encode_value(
         Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => {
             encode_ip_address(app, pname, value)
         }
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeColor" => {
+            // A colour space bussard does not encode, declared as
+            // `<TypeColor Space>` or as a `TypeText` pattern marker (issue
+            // #833): refused rather than written with a guessed width.
+            Err(param_err(
+                app,
+                pname,
+                "a colour in a space bussard does not encode (only RGB, RGBW and HSV)",
+            ))
+        }
         Some(ParameterType::Other {
             kind,
             size_bits: Some(24),
@@ -2555,6 +2565,7 @@ fn param_err(_app: &ApplicationProgram, pname: &str, reason: &str) -> ProdError 
 mod tests {
     use super::*;
     use bussard_ets::application::parse_application_program;
+    use bussard_model::color_codec::ColorSpace;
 
     fn no_overrides() -> BTreeMap<String, String> {
         BTreeMap::new()
@@ -2694,6 +2705,58 @@ mod tests {
             matches!(&err, Err(ProdError::ParameterImage { reason, .. }) if reason.contains("RGB colour")),
             "{err:?}"
         );
+        Ok(())
+    }
+
+    /// Issue #833 (ekinex `M-00B6_A-4534-03-4181`): a 56-bit `TypeText` whose
+    /// pattern ends in `(?# TypeColor:RGB)` is a colour. ETS writes `#FFFFFF`
+    /// as `ff ff ff` and leaves the template's fourth octet and the parameters
+    /// after it alone; the value reads back as the colour.
+    #[test]
+    fn test_compute_parameter_image_text_color_pattern()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let rgb = r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)" />"#;
+        let hsv = r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:HSV)" />"#;
+        let byte = r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#;
+        let app = app_with(&[
+            ("blink", rgb, Some("#FFFFFF"), 2, 0),
+            ("offset", byte, Some("1"), 6, 0),
+            ("hsv", hsv, Some("#2A80C0"), 8, 0),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(image.get(2..5), Some(&[0xFF, 0xFF, 0xFF][..]));
+        // Octet 5 is unplaced (erased, #377); octet 6 keeps its parameter.
+        assert_eq!(image.get(5..7), Some(&[0xFF, 0x01][..]));
+        // The HSV conversion of `TypeColor Space="HSV"` (#616).
+        assert_eq!(
+            image.get(8..11),
+            Some(&ColorSpace::Hsv.encode("#2A80C0")?[..])
+        );
+        let blink = app.parameters.get("M-1_A-1_P-0").ok_or("no blink")?;
+        assert_eq!(
+            decode_parameter_value(&app, blink, &image, 2, 0).as_deref(),
+            Some("#FFFFFF")
+        );
+        Ok(())
+    }
+
+    /// A `TypeColor` pattern marker naming a space bussard does not encode,
+    /// or a text too short for the colour, is refused rather than written as
+    /// text over the following parameters (issue #833).
+    #[test]
+    fn test_compute_parameter_image_text_color_pattern_unknown_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for ty in [
+            r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:XYZ)" />"#,
+            r#"<TypeText SizeInBit="16" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)" />"#,
+        ] {
+            let app = app_with(&[("c", ty, Some("#FFFFFF"), 0, 0)])?;
+            let err = compute_parameter_image(&app, &no_overrides(), &no_bases());
+            assert!(
+                matches!(&err, Err(ProdError::ParameterImage { reason, .. }) if reason.contains("colour")),
+                "{ty}: {err:?}"
+            );
+        }
         Ok(())
     }
 
