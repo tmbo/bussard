@@ -180,6 +180,16 @@ mod tests {
     }
 
     #[test]
+    fn test_tier_counts_include_knx_viz_in_every_tier() {
+        for (passive, writes) in [(true, false), (false, false), (false, true)] {
+            assert!(names(passive, writes, false, false, false).contains(&"knx_viz"));
+            assert!(names(passive, writes, true, false, false).contains(&"knx_viz"));
+        }
+        assert!(!passive_omitted().contains(&"knx_viz"));
+        assert!(!no_model_edits_omitted().contains(&"knx_viz"));
+    }
+
+    #[test]
     fn test_tier_counts_help_names_the_onboarding_tools() {
         let help = tier_counts_help();
         assert!(

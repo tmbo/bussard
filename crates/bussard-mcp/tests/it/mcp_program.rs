@@ -252,6 +252,7 @@ async fn serve(
         plan_ttl,
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     if let (Some(wait), Some(tier)) = (reply_wait, state.programming.as_ref()) {

@@ -210,10 +210,20 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
         source,
     })?;
     let model = ModelHandle::watching(config.dir.clone(), model);
-    let hub = TrafficHub::new();
-    let group_keys = config.group_keys.clone().map(std::sync::Arc::new);
+    let security = Security {
+        allow_writes: config.allow_writes,
+        allowed_hosts: std::sync::Arc::new(
+            config
+                .allowed_hosts
+                .iter()
+                .map(|h| h.trim().to_ascii_lowercase())
+                .filter(|h| !h.is_empty())
+                .collect(),
+        ),
+        group_keys: config.group_keys.clone().map(std::sync::Arc::new),
+    };
 
-    let (bus, handle, watch) = match &config.connection {
+    let service = match &config.connection {
         Some(conn) => {
             let policy = if config.allow_writes || config.watch_prog {
                 WritePolicy::transmit(config.allow_remote_gateway)
@@ -227,56 +237,78 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
                     bussard_service::guidance::opt_in_warning(&service.gateway_display())
                 );
             }
+            Some(service)
+        }
+        None => None,
+    };
+
+    // The feeder ends on its own when the bus actor stops (the caller closes
+    // the service on shutdown), so its handle is not kept here.
+    let (state, _feeder) = state_with_feed(model, config.dir.clone(), service.clone(), security);
+
+    // Spawn the programming-mode watch only when explicitly enabled: it puts
+    // active broadcast reads on the bus, so it is opt-in via `--watch-prog` and
+    // must never run unnoticed against a real installation.
+    let watch = match (&service, config.watch_prog) {
+        (Some(service), true) => Some(tokio::spawn(traffic::watch_prog(
+            state.hub.clone(),
+            service.handle().clone(),
+        ))),
+        _ => None,
+    };
+    Ok((state, service, watch))
+}
+
+/// Builds the [`AppState`] over an already loaded model and an already open
+/// bus, and spawns the feeder that fills the traffic hub from a frame
+/// subscription on `service`.
+///
+/// `bussard viz` ([`build_state`]) opens its own bus first; the MCP server's
+/// `knx_viz` passes the bus it already holds, so the page shares that one
+/// connection and never opens a second tunnel. With `service` `None` the page
+/// is model-only: every read view works, live traffic stays empty, and group
+/// writes answer `503` (or `403` when `security` forbids them).
+///
+/// Secured group telegrams are decrypted with `security.group_keys` on the
+/// way into the hub. Returns the state and the feeder task, `None` without a
+/// bus; the feeder ends when the bus actor stops, or when the caller aborts it.
+///
+/// Must be called from within a tokio runtime when `service` is set.
+pub fn state_with_feed(
+    model: ModelHandle,
+    dir: PathBuf,
+    service: Option<BusService>,
+    security: Security,
+) -> (AppState, Option<tokio::task::JoinHandle<()>>) {
+    let hub = TrafficHub::new();
+    let (bus, feeder) = match service {
+        Some(service) => {
             let handle = service.handle().clone();
-            let bus = BusStatus::connected(service.clone());
-            // Spawn the feeder: it fills the hub from the live bus and emits
-            // `bus` events on state changes. It resolves names through the
-            // `ModelHandle`, so a reload swap is reflected on the next telegram.
-            tokio::spawn(traffic::feed_secured(
+            let bus = BusStatus::connected(service);
+            // The feeder resolves names through the `ModelHandle`, so a reload
+            // swap is reflected on the next telegram.
+            let feeder = tokio::spawn(traffic::feed_secured(
                 hub.clone(),
-                handle.clone(),
+                handle,
                 model.clone(),
                 bus.clone(),
-                group_keys
+                security
+                    .group_keys
                     .as_deref()
                     .map(|keys| bussard_monitor::GroupKeyring::new(keys.clone())),
             ));
-            // Spawn the programming-mode watch only when explicitly enabled: it
-            // puts active broadcast reads on the bus, so it is opt-in via
-            // `--watch-prog` and must never run unnoticed against a real
-            // installation.
-            let watch = if config.watch_prog {
-                Some(tokio::spawn(traffic::watch_prog(
-                    hub.clone(),
-                    handle.clone(),
-                )))
-            } else {
-                None
-            };
-            (bus, Some(service), watch)
+            (bus, Some(feeder))
         }
-        None => (BusStatus::none(), None, None),
+        None => (BusStatus::none(), None),
     };
-
     let state = AppState {
         model,
-        dir: config.dir.clone(),
+        dir,
         hub,
         bus,
-        security: Security {
-            allow_writes: config.allow_writes,
-            allowed_hosts: std::sync::Arc::new(
-                config
-                    .allowed_hosts
-                    .iter()
-                    .map(|h| h.trim().to_ascii_lowercase())
-                    .filter(|h| !h.is_empty())
-                    .collect(),
-            ),
-            group_keys,
-        },
+        security,
     };
-    Ok((state, handle, watch))
+    (state, feeder)
 }
 
 /// Loads the model, wires the bus, and serves the HTTP API until the process is
@@ -350,6 +382,28 @@ mod tests {
     fn test_router_builds() {
         // Building the router must not panic (route table is well-formed).
         let _ = router(empty_state());
+    }
+
+    #[test]
+    fn test_state_with_feed_without_bus_is_model_only() {
+        let shared = bussard_service::ModelHandle::fixed(
+            empty_state().model.current().model.as_ref().clone(),
+        );
+        let model = ModelHandle::from_shared(shared.clone(), None);
+        let (state, feeder) = state_with_feed(
+            model,
+            std::path::PathBuf::from("."),
+            None,
+            Security::default(),
+        );
+        assert!(feeder.is_none(), "no bus, no feeder");
+        assert!(state.bus.state().is_none(), "model-only reports no bus");
+        assert!(!state.security.allow_writes);
+        // The page projects the caller's handle: an install there is the next
+        // version here.
+        let before = state.model.current().version;
+        shared.install(empty_state().model.current().model.as_ref().clone());
+        assert!(state.model.current().version > before);
     }
 
     #[test]

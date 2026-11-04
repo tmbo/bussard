@@ -268,6 +268,7 @@ pub(super) async fn serve(
         plan_ttl: Duration::from_secs(600),
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     if let Some(tier) = state.programming.as_ref() {

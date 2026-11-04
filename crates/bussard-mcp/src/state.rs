@@ -336,6 +336,9 @@ pub struct SharedState {
     /// tier runs as a job here, read by `knx_job_status`. The programming
     /// tier holds the same table for its apply and plan jobs.
     pub jobs: Arc<crate::jobs::JobTable>,
+    /// The browser page `knx_viz` starts (the `bussard viz` page over this
+    /// server's model and bus), and where it binds (`--viz-listen`).
+    pub viz: crate::tools_viz::VizPage,
 }
 
 #[cfg(test)]

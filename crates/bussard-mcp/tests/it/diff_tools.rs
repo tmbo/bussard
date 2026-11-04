@@ -59,6 +59,7 @@ fn server_over(dir: &Path) -> Result<BussardMcp, Box<dyn std::error::Error>> {
         keyring: None,
         home_assistant: None,
         jobs: Default::default(),
+        viz: Default::default(),
     });
     Ok(BussardMcp::new(state))
 }

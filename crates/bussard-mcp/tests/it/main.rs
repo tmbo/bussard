@@ -28,6 +28,7 @@ mod mcp_program;
 mod mcp_replace;
 mod mcp_safety_net;
 mod mcp_server;
+mod mcp_viz;
 mod model_edit_tools;
 mod model_lookup_texts;
 mod tools_and_limiter_stress;

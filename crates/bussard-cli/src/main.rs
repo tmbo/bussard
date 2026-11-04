@@ -1714,6 +1714,11 @@ enum Command {
         /// blocks DNS rebinding from a browser.
         #[arg(long, value_name = "HOST", requires = "listen")]
         allow_host: Vec<String>,
+        /// Where `knx_viz` serves the browser page, read-only like a bare
+        /// `bussard viz`. Without it the page binds 127.0.0.1:0, a free port,
+        /// on the first `knx_viz`.
+        #[arg(long, value_name = "ADDR")]
+        viz_listen: Option<SocketAddr>,
     },
 }
 
@@ -2492,6 +2497,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
             listen,
             allow_remote_clients,
             allow_host,
+            viz_listen,
         } => mcp_cmd::run(
             dir,
             g.group(),
@@ -2503,6 +2509,7 @@ fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
                 allow_remote_gateway: g.allow_remote_gateway,
                 no_model_edits,
                 allow_home_assistant,
+                viz_listen,
             },
             capture_db,
             g.keyring.clone(),

@@ -119,6 +119,7 @@ async fn test_knx_discard_edits_one_device_keeps_the_other_and_undo_restores() -
         plan_ttl: Duration::from_secs(600),
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     let service = bussard_service::BusService::open(connection, config.write_policy())?;

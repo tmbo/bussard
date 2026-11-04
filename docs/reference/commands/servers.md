@@ -26,6 +26,7 @@ Started from a terminal, the server prints how to register it once it is ready: 
 | `--listen [<ADDR>]` | stdio | Serve streamable HTTP at `http://<ADDR>/mcp` instead of stdio. Without a value it binds `127.0.0.1:0`, a free port, and prints the URL. A non-loopback address is refused without `--allow-remote-clients`. |
 | `--allow-remote-clients` | off | Permit a non-loopback `--listen` address. Every request must then carry `Authorization: Bearer <token>`, with the token from `BUSSARD_MCP_TOKEN` or generated at start and printed once. Turns the `Host` header check off. Needs `--listen`. |
 | `--allow-host <HOST>` | | Also accept this `Host` header on a loopback `--listen`, for a reverse proxy or tunnel that forwards its public host name. Repeatable. Needs `--listen`. |
+| `--viz-listen <ADDR>` | 127.0.0.1:0 | Where `knx_viz` serves the browser page, read-only like a bare `bussard viz`. Without it the page takes a free loopback port on the first `knx_viz`. |
 
 What `--keyring` covers:
 

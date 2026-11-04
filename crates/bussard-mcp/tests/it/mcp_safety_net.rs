@@ -253,6 +253,7 @@ async fn serve(
         plan_ttl: bussard_mcp::tools_program::DEFAULT_PLAN_TTL,
         keyring: None,
         allow_home_assistant: false,
+        viz_listen: None,
     };
     let state = bussard_mcp::build_state(&config)?;
     let service = bussard_service::BusService::open(connection, config.write_policy())?;

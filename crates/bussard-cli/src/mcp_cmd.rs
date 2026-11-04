@@ -57,6 +57,8 @@ pub struct McpModes {
     pub no_model_edits: bool,
     /// Register the Home Assistant tier (with a `[home_assistant]` table).
     pub allow_home_assistant: bool,
+    /// Where `knx_viz` binds the browser page (`--viz-listen`).
+    pub viz_listen: Option<SocketAddr>,
 }
 
 /// `--listen` and its companions: serve streamable HTTP instead of stdio.
@@ -87,6 +89,7 @@ pub fn run(
         allow_remote_gateway,
         no_model_edits,
         allow_home_assistant,
+        viz_listen,
     } = modes;
     if bussard_mcp::onboarding::is_onboarding_dir(dir) {
         return run_onboarding(dir, overrides, modes, capture_db, keyring, listen);
@@ -115,6 +118,7 @@ pub fn run(
         plan_ttl,
         keyring,
         allow_home_assistant,
+        viz_listen,
     };
     // The Home Assistant token the client must provide, by name only.
     let ha_token_env: Vec<String> = model
@@ -178,6 +182,7 @@ fn run_onboarding(
         plan_ttl: modes.plan_ttl,
         keyring: keyring.clone(),
         allow_home_assistant: modes.allow_home_assistant,
+        viz_listen: modes.viz_listen,
     };
     let default_gateway = overrides.gateway.clone();
     let routing = overrides.routing;

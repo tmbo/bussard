@@ -196,6 +196,7 @@ async fn start_setup(
         dir: knx.to_path_buf(),
         connection: ConnectionConfig::tunnel(gateway),
         passive: true,
+        viz_listen: None,
         allow_writes: false,
         no_model_edits: false,
         capture_db: None,
@@ -229,6 +230,7 @@ async fn start_full(dir: &Path, human: Human) -> Result<Client, BoxError> {
         ring: bussard_monitor::TelegramRing::new(),
         bus: BusStatus::new(TransportKind::Tunnel),
         passive: true,
+        viz: Default::default(),
         allow_writes: false,
         no_model_edits: false,
         read_limiter: ReadLimiter::new(
