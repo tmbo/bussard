@@ -22,7 +22,7 @@ creation.
 | party | runs | sees |
 |---|---|---|
 | bussard | `bussard keys enroll`, or the MCP tool `knx_enroll_certificates` | plaintext, writes the key store |
-| page | static HTML/JS at `https://bussard.tmbo.dev/enroll/` (or served by bussard on localhost) | plaintext, in the phone's browser only |
+| page | static HTML/JS served by its relay: at `https://bussard-relay.tmbo.dev/enroll/` by the hosted Worker, or by bussard on localhost; its CSP allows only its own origin | plaintext, in the phone's browser only |
 | relay | a mailbox service (the hosted Worker at `https://bussard-relay.tmbo.dev`, the default, or bussard's in-process local relay) | ciphertext, session ids, timing, client IPs |
 | chat / MCP client | the link and the results | the link (public key only), serials, addresses; never a key |
 

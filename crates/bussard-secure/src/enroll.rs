@@ -416,7 +416,7 @@ mod tests {
         let relay = "https://relay.example";
         assert_eq!(
             link(
-                "https://bussard.tmbo.dev/enroll/",
+                "https://bussard-relay.tmbo.dev/enroll/",
                 &session.sid,
                 &b_pk,
                 Some(relay)

@@ -7,6 +7,12 @@
 // One Durable Object per session id holds the session's metadata and messages.
 // The Worker in front routes requests to it and adds CORS headers on the two
 // phone-side endpoints (POST up, GET down) only.
+//
+// The Worker also serves the enrolment page (web/enroll/, bound as ASSETS) at
+// /enroll/, so page and relay share one origin (#797). Every response carries
+// the security headers of SECURITY_HEADERS; page responses add PAGE_CSP.
+
+import { API_CSP, PAGE_CSP, SECURITY_HEADERS } from './headers.js';
 
 /** Session lifetime in seconds, counted from the PUT that created it. */
 const SESSION_TTL_SECONDS = 30 * 60;
@@ -22,6 +28,9 @@ const SID_RE = /^[A-Za-z0-9_-]{22}$/;
 /** A non-empty base64url string without padding. */
 const B64URL_RE = /^[A-Za-z0-9_-]+$/;
 const ROUTE_RE = /^\/v1\/sessions\/([^/]+)(?:\/(up|down))?$/;
+/** Where the enrolment page is served. */
+const PAGE_PREFIX = '/enroll/';
+
 
 function json(status, value, headers = {}) {
   return new Response(JSON.stringify(value), {
@@ -127,7 +136,56 @@ function messageKey(dir, seq) {
   return `m:${dir}:${String(seq).padStart(6, '0')}`;
 }
 
+/** A copy of `response` with the security headers and the given policy. */
+function secured(response, csp) {
+  const headers = new Headers(response.headers);
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) {
+    headers.set(name, value);
+  }
+  headers.set('content-security-policy', csp);
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
+}
+
+/**
+ * Serves the page's files from the static assets: `/enroll/` is
+ * `index.html`, `/enroll/<file>` is `<file>`. `/enroll` redirects to
+ * `/enroll/`; a browser keeps the link's fragment across the redirect.
+ */
+async function page(request, env, url) {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    return new Response(null, { status: 405, headers: { allow: 'GET, HEAD' } });
+  }
+  if (url.pathname === '/enroll') {
+    return new Response(null, { status: 301, headers: { location: PAGE_PREFIX } });
+  }
+  const assetUrl = new URL(url);
+  assetUrl.pathname = `/${url.pathname.slice(PAGE_PREFIX.length) || 'index.html'}`;
+  assetUrl.search = '';
+  const asset = await env.ASSETS.fetch(
+    new Request(assetUrl, { method: request.method, headers: request.headers }),
+  );
+  if (asset.status === 404) {
+    return error(404, 'not found');
+  }
+  const headers = new Headers(asset.headers);
+  // Revalidate on every load, so a deploy reaches phones at once.
+  headers.set('cache-control', 'no-cache');
+  return new Response(asset.body, { status: asset.status, headers });
+}
+
 export default {
+  /** Routes one request to the page or the relay. */
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    if (url.pathname === '/enroll' || url.pathname.startsWith(PAGE_PREFIX)) {
+      return secured(await page(request, env, url), PAGE_CSP);
+    }
+    return secured(await relay.fetch(request, env), API_CSP);
+  },
+};
+
+/** The Relay API of `dev/enroll-protocol.md`. */
+const relay = {
   async fetch(request, env) {
     const url = new URL(request.url);
     const route = ROUTE_RE.exec(url.pathname);

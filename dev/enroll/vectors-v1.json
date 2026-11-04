@@ -9,7 +9,7 @@
     "shared_secret": "c9ea6a3f79a000b60b076d4afc990b272f3f0b5aaa3f0b8713c209273e363863",
     "key": "334673a4288dac3a58bb7994d94fff965fd1345ce23ee1b4ec76bcda6a3b265b",
     "fingerprint": "6989-2F01",
-    "link": "https://bussard.tmbo.dev/enroll/#v=1&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&r=https%3A%2F%2Frelay.example"
+    "link": "https://bussard-relay.tmbo.dev/enroll/#v=1&s=yMnKy8zNzs_Q0dLT1NXW1w&k=B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9_AsrhtHHw&r=https%3A%2F%2Frelay.example"
   },
   "messages": [
     {

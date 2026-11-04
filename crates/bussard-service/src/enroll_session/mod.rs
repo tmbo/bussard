@@ -41,13 +41,14 @@ pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
 pub use report::{DOCS_URL, EnrollTally, NextStep, data_path};
 
 /// The enrolment page a link opens unless the surface names another
-/// (`dev/enroll-protocol.md`, "Parties").
-pub const DEFAULT_PAGE: &str = "https://bussard.tmbo.dev/enroll/";
+/// (`dev/enroll-protocol.md`, "Parties"). The relay's Worker serves it, so
+/// page and [`DEFAULT_RELAY`] share one origin (#797).
+pub const DEFAULT_PAGE: &str = "https://bussard-relay.tmbo.dev/enroll/";
 
 /// The hosted relay a session uses unless the surface names another
 /// (`--relay`, then `[enroll] relay`). The hosted page's CSP allows only
-/// this relay: a self-hosted relay needs a self-hosted page (`[enroll]
-/// page`).
+/// its own origin, this relay: a self-hosted relay needs a self-hosted page
+/// (`[enroll] page`).
 pub const DEFAULT_RELAY: &str = "https://bussard-relay.tmbo.dev";
 
 /// The relay and page of a hosted session: each the first of the
@@ -625,6 +626,12 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_default_page_is_served_by_default_relay() {
+        // The hosted page's CSP allows only its own origin (#797).
+        assert_eq!(DEFAULT_PAGE, format!("{DEFAULT_RELAY}/enroll/"));
+    }
+
+    #[test]
     fn test_hosted_endpoints_flag_then_config_then_default() {
         use bussard_model::schema::EnrollConfig;
         let none = EnrollConfig::default();
@@ -715,7 +722,7 @@ mod tests {
         assert_eq!(session.fingerprint(), str_of(&v["session"], "fingerprint")?);
         assert_eq!(
             session.link(
-                "https://bussard.tmbo.dev/enroll/",
+                "https://bussard-relay.tmbo.dev/enroll/",
                 Some("https://relay.example")
             ),
             str_of(&v["session"], "link")?

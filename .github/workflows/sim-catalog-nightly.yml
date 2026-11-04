@@ -26,15 +26,15 @@ jobs:
       matrix:
         shard: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 1
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable (branch)
 
       - name: Cache cargo artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: false
           workspaces: |
@@ -43,13 +43,13 @@ jobs:
           shared-key: rust-sim-conformance
 
       - name: Cache the vendor corpus
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: tests-support/product-corpus/cache
           key: product-corpus-${{ hashFiles('tests-support/product-corpus/corpus.txt', 'data/product-index.json') }}
 
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@nextest
+        uses: taiki-e/install-action@379230e3202a8992f107d2a2dca15562c37d67bf # nextest
 
       - name: Fetch the corpus
         # A vendor download that fails is reported and skipped; the loop runs
@@ -65,7 +65,7 @@ jobs:
 
       - name: Upload the baseline and reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: sim-loop-shard-${{ matrix.shard }}
           path: |

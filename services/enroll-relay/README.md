@@ -2,15 +2,19 @@
 
 The hosted relay for the certificate enrolment protocol (#201, #731): a
 Cloudflare Worker that passes encrypted envelopes between `bussard keys
-enroll` and the phone page. The contract is `dev/enroll-protocol.md`,
+enroll` and the phone page. The same Worker serves that page
+(`web/enroll/`) at `/enroll/`, so page and relay are one origin (#797). The contract is `dev/enroll-protocol.md`,
 section "Relay API". The relay never decrypts and never logs a body.
 
 ```
-src/worker.js        the Worker and the Session Durable Object
-wrangler.toml        Worker config: one Durable Object class, no account, no route
+src/worker.js        the Worker (page and relay routes) and the Session Durable Object
+src/headers.js       the security headers and the page's CSP
+wrangler.toml        Worker config: the page as static assets, one Durable Object class
 test/cases.json      the Relay API cases, shared with bussard's local relay (#729)
 test/cases.test.mjs  runs the cases with `node --test`
+test/page.test.mjs   the page routes and the headers of every response
 test/node-host.mjs   runs the Worker under Node with in-memory Durable Objects
+                     and web/enroll/ as the assets binding
 ```
 
 There are no npm dependencies, runtime or dev. `wrangler` is only used to run
@@ -48,6 +52,31 @@ pin each one):
 | `PUT` on a deleted session before it expires | `409` |
 | a long poll pending when the session expires | `404` |
 
+## The page
+
+`wrangler.toml` binds `../../web/enroll` as static assets (`ASSETS`), as it
+is in the repository: no build step, no copy. `run_worker_first = true`
+sends every request through the Worker, so no file is served without its
+headers. The Worker maps `/enroll/` to `index.html` and `/enroll/<file>` to
+`<file>`, redirects `/enroll` to `/enroll/` (`301`; the browser keeps the
+link's fragment), answers `405` to anything but `GET` and `HEAD` there, and
+sets `Cache-Control: no-cache` so a deploy reaches phones at once.
+
+Every response, page or relay, carries:
+
+| header | value |
+|---|---|
+| `Strict-Transport-Security` | `max-age=31536000; includeSubDomains` |
+| `X-Content-Type-Options` | `nosniff` |
+| `Referrer-Policy` | `no-referrer` |
+| `X-Frame-Options` | `DENY` |
+| `Content-Security-Policy` | page: the `<meta>` policy of `index.html` plus `frame-ancestors 'none'` (`connect-src 'self'`); relay: `default-src 'none'; frame-ancestors 'none'` |
+
+`test/page.test.mjs` checks that the header policy and the page's `<meta>`
+policy name the same directives. The old address,
+`https://bussard.tmbo.dev/enroll/`, now holds a notice without script
+(`website/enroll/index.html`).
+
 `DELETE` drops the messages at once and keeps only the metadata, so reads
 answer `{"messages": [], "closed": true}` until expiry.
 
@@ -58,8 +87,9 @@ cd services/enroll-relay
 npm test
 ```
 
-This runs `test/cases.json` against the Worker under Node (`node-host.mjs`, an
-HTTP server and an in-memory stand-in for Durable Object storage and alarms).
+This runs `test/cases.json` and `test/page.test.mjs` against the Worker under
+Node (`node-host.mjs`, an HTTP server, an in-memory stand-in for Durable
+Object storage and alarms, and `web/enroll/` as the assets binding).
 CI runs it in the `enroll-relay` job. To run the same cases against workerd,
 start two `wrangler dev` instances, one with the short TTL the expiry cases
 need, and point the runner at them:
@@ -134,11 +164,28 @@ higher (SQLite-backed Durable Objects are available on both):
 
 1. `cd services/enroll-relay && npx wrangler@4 login`.
 2. `npx wrangler@4 deploy`. The first deploy applies migration `v1`, which
-   creates the `Session` Durable Object class.
-3. Check it: `curl -i https://bussard-relay.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
-   answers `404` with `access-control-allow-origin: *`. Or run the cases
-   against it: `RELAY_URL=https://bussard-relay.tmbo.dev npm test` (the
-   expiry cases are skipped).
+   creates the `Session` Durable Object class. Every deploy uploads
+   `web/enroll/` as the Worker's static assets, so deploy again after a
+   change to the page.
+3. Check the relay: `curl -i https://bussard-relay.tmbo.dev/v1/sessions/AAAAAAAAAAAAAAAAAAAAAA/down`
+   answers `404` with `access-control-allow-origin: *`.
+4. Check the page (#797): `curl -sI https://bussard-relay.tmbo.dev/enroll/`
+   answers `200` with `content-type: text/html`, `content-security-policy`
+   ending in `frame-ancestors 'none'` and containing `connect-src 'self'`,
+   `strict-transport-security`, `x-content-type-options: nosniff`,
+   `referrer-policy: no-referrer` and `x-frame-options: DENY`.
+5. Or run both suites against it: `RELAY_URL=https://bussard-relay.tmbo.dev npm test`
+   (the expiry cases are skipped).
+
+The same checks run locally against `npx wrangler@4 dev --ip 127.0.0.1 --port 8787`
+(`RELAY_URL=http://127.0.0.1:8787 npm test`); the assets binding works
+there too.
+
+The deploy of #797 moves the page's default address from
+`https://bussard.tmbo.dev/enroll/` (GitHub Pages) to
+`https://bussard-relay.tmbo.dev/enroll/`. The site workflow replaces the old
+page with the moved notice on the first push to `main` after the merge, so
+deploy the Worker right after that merge; until then no hosted page answers.
 
 A self-hosted copy replaces the `routes` entry with a hostname on its own
 zone, and needs a self-hosted page too (`[enroll] page` and `relay` in

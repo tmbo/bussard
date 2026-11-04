@@ -1,0 +1,9 @@
+{
+  "package": "jsqr",
+  "version": "1.4.0",
+  "license": "Apache-2.0",
+  "source": "https://registry.npmjs.org/jsqr/-/jsqr-1.4.0.tgz",
+  "path_in_source": "package/dist/jsQR.js",
+  "file": "jsQR.js",
+  "sha256": "bc40c8a15196236b2314db0856f72ca0b49980cd5413b8c852a7349f5fee0859"
+}
