@@ -7,6 +7,11 @@
 //! `bussard-testkit` [`MockDevice`] in programming mode at 15.15.255 running
 //! no application, on a loopback [`MockGateway`] tunnel.
 //!
+//! The `download: true` path (issue #779) moves the pinned archive out of
+//! `products/` into a mirror that a fixture vendor index serves over
+//! `file://`: the download puts it back and the flash runs, or, when the
+//! index's SHA-256 does not match, the job refuses before the address write.
+//!
 //! **No test here ever reaches a real gateway**: the mock binds `127.0.0.1:0`.
 
 use std::time::Duration;
@@ -264,6 +269,154 @@ async fn test_knx_replace_device_refuses_a_device_the_model_does_not_have() -> a
             .unwrap_or_default()
             .contains("no device file for 1.1.9"),
         "{refused}"
+    );
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// The download case (issue #779): the device file names the replacement's
+/// order number, the archive `bussard.lock` pins is not in `products/`, and
+/// a fixture vendor index serves it from a `file://` mirror outside the
+/// model directory. `intact: false` lists a SHA-256 the mirror's bytes do
+/// not have, so the download never yields the pinned archive. Returns the
+/// job and its identified status.
+async fn identified_with_download(
+    dir: &std::path::Path,
+    mirror: &std::path::Path,
+    client: &Client,
+    intact: bool,
+) -> anyhow::Result<(String, Value)> {
+    use sha2::Digest as _;
+    let path = dir.join("devices").join("1.1.4.toml");
+    let file = std::fs::read_to_string(&path)?;
+    std::fs::write(
+        &path,
+        file.replacen(
+            "name = \"Weather station\"\n",
+            "name = \"Weather station\"\nproduct = \"M-00FA-TEST\"\n",
+            1,
+        ),
+    )?;
+    let served = mirror.join("flash-test.knxprod");
+    std::fs::rename(dir.join("products").join("flash-test.knxprod"), &served)?;
+    let bytes = std::fs::read(&served)?;
+    let sha: String = if intact {
+        sha2::Sha256::digest(&bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    } else {
+        "0".repeat(64)
+    };
+    let index = mirror.join("index.json");
+    std::fs::write(
+        &index,
+        serde_json::to_vec(&json!({"entries": [{
+            "manufacturer": "Test",
+            "manufacturer_id": "M-00FA",
+            "order_numbers": ["M-00FA-TEST"],
+            "name": "Flash test",
+            "url": format!("file://{}", served.display()),
+            "sha256": sha,
+            "size": bytes.len(),
+            "filename": "flash-test.knxprod",
+        }]}))?,
+    )?;
+    // SAFETY: nextest runs each test in its own process; the index is read
+    // when the tool plans the product data and when it downloads.
+    unsafe {
+        std::env::set_var(bussard_service::setup::products::PRODUCT_INDEX_ENV, &index);
+    }
+    let (job, status) = identified(client).await?;
+    assert_eq!(status["step"], "identified", "{status}");
+    assert_eq!(status["download_needed"], true, "{status}");
+    Ok((job, status))
+}
+
+/// The yes for `job`: without `download: true` it is refused with nothing
+/// written; with it, the job runs to its end, whose result is returned.
+async fn yes_with_download(client: &Client, job: &str, status: &Value) -> anyhow::Result<Value> {
+    let digest = status["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {status}"))?;
+    let without = call(
+        client,
+        "knx_replace_device",
+        json!({"job": job, "plan_digest": digest, "yes": true}),
+    )
+    .await?;
+    assert_eq!(without["refused"], true, "{without}");
+    assert!(
+        without["reason"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("download: true"),
+        "{without}"
+    );
+    let started = call(
+        client,
+        "knx_replace_device",
+        json!({"job": job, "plan_digest": digest, "yes": true, "download": true}),
+    )
+    .await?;
+    if started["done"] == true {
+        return Ok(started);
+    }
+    Ok(poll(client, job, |s| s["done"] == true).await?["result"].clone())
+}
+
+#[tokio::test]
+async fn test_knx_replace_device_downloads_the_pinned_archive_then_flashes() -> anyhow::Result<()> {
+    let (gateway, dir, client, task) = start(vec![spare()?]).await?;
+    let mirror = tempfile::tempdir()?;
+    let (job, status) = identified_with_download(dir.path(), mirror.path(), &client, true).await?;
+    let result = yes_with_download(&client, &job, &status).await?;
+    assert_eq!(result["ok"], true, "{result}");
+    assert_eq!(result["verified"], true, "{result}");
+    assert_eq!(result["flashed"], true, "{result}");
+    assert_eq!(
+        result["write"]["load_application"]["loaded"], true,
+        "{result}"
+    );
+    // The download put the pinned archive back into the store.
+    assert_eq!(
+        std::fs::read(dir.path().join("products").join("flash-test.knxprod"))?,
+        std::fs::read(mirror.path().join("flash-test.knxprod"))?
+    );
+    let events = gateway.with_device(ia("1.1.4")?, |dev| app_load_events(dev))?;
+    assert_eq!(
+        events.last(),
+        Some(&LE_LOAD_COMPLETED),
+        "load events {events:?}"
+    );
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_knx_replace_device_refuses_when_the_download_leaves_the_archive_unusable()
+-> anyhow::Result<()> {
+    let (gateway, dir, client, task) = start(vec![spare()?]).await?;
+    let mirror = tempfile::tempdir()?;
+    let (job, status) = identified_with_download(dir.path(), mirror.path(), &client, false).await?;
+    let result = yes_with_download(&client, &job, &status).await?;
+    assert_ne!(result["ok"], true, "{result}");
+    let reason = result["reason"].as_str().unwrap_or_default();
+    assert!(
+        reason.contains("the download did not give bussard the archive"),
+        "{result}"
+    );
+    assert!(reason.contains("Nothing was written"), "{reason}");
+    // Refused before the address write: the spare is untouched.
+    assert_eq!(gateway.with_device(ia("15.15.255")?, |d| d.writes)?, 0);
+    assert!(gateway.with_device(ia("1.1.4")?, |_| ()).is_err());
+    assert!(
+        !dir.path()
+            .join("products")
+            .join("flash-test.knxprod")
+            .exists()
     );
     client.cancel().await?;
     task.abort();

@@ -582,6 +582,67 @@ pub(crate) const TCP_READ_DEADLINE_MS_ENV: &str = "BUSSARD_TCP_READ_DEADLINE_MS"
 /// often. `0` sends none. Unset means the default (30 s).
 pub(crate) const SECURE_KEEPALIVE_SECS_ENV: &str = "BUSSARD_SECURE_KEEPALIVE_SECS";
 
+/// Attaches the KNXnet/IP Secure tunnelling users of `keyring` to
+/// `connection`, as `main` does at start for a keyring that already exists,
+/// for the keyring `knx_setup` wrote after the server started (issue #779).
+///
+/// Only a tunnel without credentials gets them: explicit `--secure-user`
+/// flags and a start-up keyring are already attached by [`resolve_config`].
+/// Returns the sentence for the `knx_setup` summary: which users the tunnel
+/// offers, or, when the keyring does not open, that the tunnel stays plain
+/// until the server restarts with the password. A keyring without
+/// tunnelling users says nothing (the tunnel is plain, as it would be at
+/// start).
+pub fn attach_keyring_tunnel(
+    connection: &mut ConnectionConfig,
+    keyring: &Path,
+    dir: &Path,
+) -> Option<String> {
+    if connection.transport != TransportKind::Tunnel || connection.secure.is_some() {
+        return None;
+    }
+    let source = bussard_service::secure::TunnelCredentialSource {
+        keyring: Some(keyring),
+        user: None,
+        password_env: None,
+    };
+    match bussard_service::secure::tunnel_config(source) {
+        Ok(Some(secure)) => {
+            let users = secure.users.len();
+            let secure = apply_secure_keepalive(
+                secure,
+                bussard_model::dotenv::var(SECURE_KEEPALIVE_SECS_ENV)
+                    .ok()
+                    .as_deref(),
+            )
+            .with_user_lock_dir(dir.join(".bussard").join("tunnel-users"));
+            connection.secure = Some(secure);
+            tracing::info!(
+                "using the keyring {} for KNXnet/IP Secure tunnelling",
+                keyring.display()
+            );
+            Some(format!(
+                "The tunnel uses KNXnet/IP Secure with the {users} tunnelling user(s) of {}; no \
+                 restart is needed.",
+                keyring.display()
+            ))
+        }
+        Ok(None) => None,
+        Err(err) => {
+            tracing::warn!(
+                "the keyring {} did not open for the tunnel credentials: {err}",
+                keyring.display()
+            );
+            Some(format!(
+                "The keyring {} did not open ({err}), so the tunnel is plain. If the interface \
+                 needs KNXnet/IP Secure, set BUSSARD_KEYRING_PASSWORD in the .env next to the \
+                 project folder and restart the server (the MCP client reconnects it).",
+                keyring.display()
+            ))
+        }
+    }
+}
+
 /// Applies a [`SECURE_KEEPALIVE_SECS_ENV`] value to `secure`; an absent or
 /// unparsable value keeps its interval.
 fn apply_secure_keepalive(secure: SecureTunnelConfig, value: Option<&str>) -> SecureTunnelConfig {

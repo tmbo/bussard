@@ -187,13 +187,29 @@ fn run_onboarding(
     let default_gateway = overrides.gateway.clone();
     let routing = overrides.routing;
     let model_dir = dir.to_path_buf();
+    let started_keyring = keyring.clone();
     let resolve: bussard_mcp::onboarding::ResolveConnection =
         std::sync::Arc::new(move |model: &Model| {
-            let connection = resolve_config(Some(model), &overrides)?;
-            // The key store the import may have written (issue #241).
-            let keyring = crate::conn_cmd::resolve_keyring(None, None, &model_dir)
+            let mut connection = resolve_config(Some(model), &overrides)?;
+            // The key store the import may have written (issue #241), unless
+            // the server was started with a keyring.
+            let store = crate::conn_cmd::resolve_keyring(None, None, &model_dir)
                 .map(|resolved| resolved.path);
-            Ok((connection, keyring))
+            // Its tunnelling users, read now rather than at start, when the
+            // directory had none (issue #779). The server opens no bus before
+            // this, so nothing needs a restart unless the keyring does not
+            // open.
+            let tunnel_note = match started_keyring.as_deref().or(store.as_deref()) {
+                Some(path) => {
+                    crate::conn_cmd::attach_keyring_tunnel(&mut connection, path, &model_dir)
+                }
+                None => None,
+            };
+            Ok(bussard_mcp::onboarding::ResolvedConnection {
+                connection,
+                keyring: store,
+                tunnel_note,
+            })
         });
     let onboarding = bussard_mcp::onboarding::Onboarding {
         config,

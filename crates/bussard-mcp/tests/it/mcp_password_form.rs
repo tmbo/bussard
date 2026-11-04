@@ -208,7 +208,13 @@ async fn start_setup(
     };
     let server = SetupMcp::new(Onboarding {
         config,
-        resolve: Arc::new(move |_model: &Model| Ok((ConnectionConfig::tunnel(gateway), None))),
+        resolve: Arc::new(move |_model: &Model| {
+            Ok(bussard_mcp::onboarding::ResolvedConnection {
+                connection: ConnectionConfig::tunnel(gateway),
+                keyring: None,
+                tunnel_note: None,
+            })
+        }),
         default_gateway: Some(gateway.to_string()),
         routing: false,
     });
