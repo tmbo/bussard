@@ -1,14 +1,14 @@
 # The assistant over MCP
 
-An LLM assistant can read your installation and edit the model freely, but
+An LLM assistant can read your installation and edit your project freely, but
 it reaches the bus only through tiers you switch on, and each physical step
 waits for your explicit yes. This page explains the tiers and the rails on
 each.
 
 Every workflow the how-to guides describe can run from chat, with two
 exceptions on purpose: a write to a group address marked `protected = true`
-(only `bussard write --force` at the terminal reaches it), and the KNX
-Secure activation of a factory-fresh device, which stays with ETS.
+(only `bussard write --force` at the terminal reaches it), and securing
+a factory-fresh device with KNX Secure, which stays with ETS.
 
 ## Each tier adds to the one before
 
@@ -17,13 +17,13 @@ tier:
 
 | Tier | Flag | What the assistant can do |
 |---|---|---|
-| Passive | `--passive` | Read and edit the model files, watch the bus. Nothing is transmitted. |
+| Passive | `--passive` | Read and edit the project files, watch the bus. Nothing is transmitted. |
 | Read | none | Also read group values and introspect devices, rate-limited. |
 | Write | `--allow-writes` | Also send group values (`knx_write_group`, `knx_run_tests`). Protected addresses are refused. |
 | Programming | `--allow-programming` | Also write one device's link tables and parameters after you approve the plan, replay a parameter backup (`knx_restore_parameters`), clear a Secure device's security failures log (`knx_clear_security_log`), switch KNXnet/IP Secure of an IP interface (`knx_interface_secure`), add a new device (`knx_add_device`), replace a dead one (`knx_replace_device`) and commission a line (`knx_commission_line`), each after your yes. Not with `--passive`. |
 | Home Assistant | `--allow-home-assistant` | Read Home Assistant and rewrite its KNX configuration, each change after your yes. Never touches the bus. |
 
-Model edits touch files only, at every tier; `--no-model-edits` withholds
+Edits to the project touch files only, at every tier; `--no-model-edits` withholds
 them. A parameter value set with `knx_set_parameter` reaches a device through
 the same plan and apply as a link. The server's instructions, each edit's
 `next_step` and `knx_project_summary` state the active tier, so the assistant
@@ -72,26 +72,26 @@ plan digest:
    below); without a pinned archive it is refused with the `bussard flash`
    it needs.
 
-If ETS or another tool changed the device, or the model was edited, the
+If ETS or another tool changed the device, or the project was edited, the
 apply is refused and the digest retired. With `plan_hash`, the apply also
 refuses when the device no longer produces the plan's `state_hash`, the
-fingerprint `bussard plan --json` prints.
+hash `bussard plan --json` prints.
 
 An apply then runs the CLI rails: the backups to `captures/backups/` (no
 backup, no write), a history snapshot naming the gateway, the table write,
 the parameter download, and a read-back of each. The result carries the
 verify outcome, what was written and the backup paths. With `line`, the same
-job writes every device the model has on a line.
+job writes every device your project has on a line.
 
 The safety net around an apply is in chat too. `knx_backup_device` and
 `knx_reconstruct_device` back a device up and read its tables back against
-the model; they only read, so they are in the default tier.
+your project; they only read, so they are in the default tier.
 `knx_restore_tables` writes a backup's link tables back through the same
 plan, approval and read-back as an apply, and `knx_restart_device` restarts
 a device in the form ETS uses, after your yes.
 
 ??? note "Details"
-    The digest is a SHA-256 over the device address, the model's links and
+    The digest is a SHA-256 over the device address, the project's links and
     parameter values for it, the desired tables, the parameter image the
     write would stream, and the live tables and parameter memory it read.
     The history snapshot is named `mcp knx_apply_device <address> <digest>`.
@@ -108,25 +108,25 @@ data, and shows you the plan with a digest. Nothing is written yet.
 After your yes it checks the device again, writes the address, reads the
 device back at the new address, and writes the device file and its lock
 entry. Downloading the vendor's product data is a separate question:
-your yes to the address does not answer it. A device the keyring lists keeps
-its address and is read over KNX Data Secure, as `adopt` does; the Secure
-activation of a factory-fresh device stays with ETS.
+your yes to the address does not answer it. A device the key store lists keeps
+its address and is read over KNX Data Secure, as `adopt` does; securing a
+factory-fresh device stays with ETS.
 
 ## Commissioning a line is one job
 
 `knx_commission_line` is `bussard commission --line` in chat, on the same
-functions. The assistant shows you the devices the model has on the line
+functions. The assistant shows you the devices your project has on the line
 and asks once. Your yes covers the whole line, as the CLI's one
 confirmation does. Devices that already answer at their address are
 skipped. For each other device the assistant names the one to press, by
 name, room and order number. The server reads the pressed device's order
-number before it writes anything; when it is the product the model
+number before it writes anything; when it is the product your project
 expects, it writes the address, reads the device back at it and gives you
 the label text, without asking again.
 
 When the pressed device is another product, reports no order number, or
 nothing or two devices answer, the job waits for your word: retry, skip
-that device, or stop. A device the model has no order number for waits
+that device, or stop. A device your project has no order number for waits
 too, and you can say assign. You can stop the run at any time. Only
 addresses are written; links, parameters and the application follow per
 device with `knx_plan_device` and `knx_apply_device`.
@@ -134,7 +134,7 @@ device with `knx_plan_device` and `knx_apply_device`.
 ## Replacing a dead device is one flow
 
 `knx_replace_device` is `bussard replace` in chat, on the same step machine.
-It first keeps a backup: a history snapshot of the model, the dead device's
+It first keeps a backup: a history snapshot of the project, the dead device's
 file and its lock record included. The server checks that nothing answers at
 the address any more, and the assistant asks you to press the programming
 button on the replacement. The server reads what it is (serial number, mask,
@@ -145,11 +145,11 @@ for the address, the application and the links. Nothing is written yet.
 After your one yes it checks the device again, writes the address and reads
 it back, then plans and writes the device as `knx_plan_device` and
 `knx_apply_device` do: the application the lock pins is loaded when the
-replacement does not run it, the model's parameters and links are written,
-and the result says verified only when the read-back matches the model. Only
+replacement does not run it, your project's parameters and links are written,
+and the result says verified only when the read-back matches your project. Only
 then are the replacement and the new serial number recorded in the device
-file and the lock. A device the model records as KNX Data Secure is refused:
-its replacement needs the Secure activation, which stays with ETS.
+file and the lock. A device your project records as secured is refused:
+securing its replacement stays with ETS.
 
 ## A com-object change becomes a flash
 
@@ -167,10 +167,10 @@ carrying another application, or whose load state cannot be read.
 When a device does not run the application program the lock pins (another
 one, or none loaded), the plan says so first: its sentences start with
 "must have its application program loaded" and say what it replaces. One yes
-to the plan's question loads the application and writes the model's
+to the plan's question loads the application and writes your project's
 parameters and links with it, as one job. It runs the same functions as
-`bussard flash`: the download, the read-back against the model and the lock
-update, so the result says verified only when the device holds the model.
+`bussard flash`: the download, the read-back against your project and the lock
+update, so the result says verified only when the device matches your project.
 A device whose state cannot be read, or whose application bussard cannot
 identify, is refused; `bussard flash --force` at the terminal stays the way
 to overwrite it.
@@ -178,7 +178,7 @@ to overwrite it.
 ## Parameters are approved by name
 
 The plan lists every parameter that differs by key, vendor text, device value
-and model value, one sentence each. The write streams only the differing
+and project value, one sentence each. The write streams only the differing
 octets, after the tables, and reads them back. Device-managed parameters
 (values the application owns at runtime) never make a plan non-empty on
 their own; the plan lists them with the role `device_managed`.
@@ -189,12 +189,12 @@ it writes the links only. Once the archive is back, a new plan covers them.
 
 ## Secured devices follow the CLI
 
-A device the server's keyring lists is planned and written over Data Secure,
+A device the server's key store lists is planned and written over Data Secure,
 as `bussard apply --keyring` does. The plan shows what the security object
 receives (senders, keyed addresses, secured objects, never a key). A
-`secure = true` address without a key refuses the plan, and a keyring or flag
-change between plan and apply retires it. A device the model marks activated
-but the keyring does not list is refused.
+`secure = true` address without a key refuses the plan, and a key store or flag
+change between plan and apply retires it. A device your project marks secured
+but the key store does not list is refused.
 
 ## The apply runs as a job
 
@@ -245,25 +245,24 @@ registered.
 
 ## Undo takes back files, never the bus
 
-bussard copies the model files to `<dir>/.bussard/history` before every
-command that writes the model or the bus, and before every model edit over
-MCP. `bussard status` says what changed since the last snapshot, `bussard
+bussard copies the project files to `<dir>/.bussard/history` before every
+command that writes them or the bus, and before every edit over MCP. `bussard status` says what changed since the last snapshot, `bussard
 history` lists them, and `bussard undo` puts the files back.
 
 `undo` sends nothing on the bus: after it, the installation behaves exactly
-as before. The restored model reaches a device only when it is planned and
+as before. The restored project reaches a device only when it is planned and
 written again: by you with `bussard plan <ia>` and `bussard apply <ia>`, or by
 the assistant with `knx_plan_device` and `knx_apply_device` after your yes. An undo is snapshotted first, so
 it can be undone.
 
-Snapshots carry the model files (`bussard.toml`, `groups.toml`,
+Snapshots carry the project files (`bussard.toml`, `groups.toml`,
 `bussard.lock`, `devices/*.toml`, and `tests.toml` and `ha.toml` when
 present). A Data Secure switch of a group address also keeps a copy of the
 encrypted key store, so `undo` restores the key. A snapshot never holds a
 password, a plain key or vendor data. A bundle from `bussard export` holds the same files, the
 snapshots and a manifest, copied from an allow-list: never `products/`,
 captures, keyrings, `.knxproj` or `.knxprod` files, or `.env`. It carries your gateway address
-in `bussard.toml`, and an import into an existing model keeps the
+in `bussard.toml`, and an import into an existing project keeps the
 recipient's own. Importing a bundle writes files only.
 
 ## Next steps

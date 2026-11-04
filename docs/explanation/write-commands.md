@@ -1,7 +1,7 @@
 # What each write command does
 
 Every write command refuses on any doubt before it writes, and reports
-"verified" only after a read-back matches the model. This page lists, per
+"verified" only after a read-back matches your project. This page lists, per
 command, what it writes, refuses, backs up and verifies. A refusal exits
 non-zero before anything is written; the confirmation and real-gateway rules
 are on [Safety](safety.md).
@@ -32,7 +32,7 @@ would change, then refuse at the prompt.
   given, the parameter octets that differ. Tables are rewritten wholesale, so
   re-running `apply` is idempotent. A device that already matches is not asked
   about and not written.
-- **Refuses**, before the bus is touched, a model that fails validation, a
+- **Refuses**, before the bus is touched, a project that fails validation, a
   pinned archive that is missing or changed, and a `--product` or
   `--application` that contradicts the lock without `--force`. It refuses a
   device whose application id or mask differs from the lock, naming the
@@ -48,17 +48,17 @@ would change, then refuse at the prompt.
   device to answer again.
 
 The prompt reads `apply these N changes to <ia> through <gateway>? [y/N]`. To
-go back, re-apply from the model or `restore` the backup. The parameter half is
+go back, re-apply from your project or `restore` the backup. The parameter half is
 [the parameter-only download](../reference/commands/programming.md#parameter-only-download).
 
 **Device-managed parameters** (`Access="None"`, owned by the application at
-runtime) always differ from the model. A plan with only those differences is
-"nothing to write"; alongside another write they are written at the model's
+runtime) always differ from your project. A plan with only those differences is
+"nothing to write"; alongside another write they are written at your project's
 value, as ETS does.
 
 ## `backup` and `restore`
 
-`bussard backup` is read-only on the bus. It reads every model device into
+`bussard backup` is read-only on the bus. It reads every device in your project into
 `<dir>/captures/backups/<UTC timestamp>/`, one JSON file per device plus a
 `manifest.json` that lists every device, including `skipped` (a mask bussard
 cannot read), `unreachable` and `failed` (exit 1). On System B it includes the
@@ -84,8 +84,8 @@ it should take up a change at startup.
 
 - **Asks** once, naming the device and the gateway, behind the real-gateway
   gate.
-- **Picks the form ETS picks** from the product data: a secure-capable
-  System B application gets the confirmed restart (master reset, erase code
+- **Picks the form ETS picks** from the product data: a System B
+  application that supports Secure gets the confirmed restart (master reset, erase code
   1), which the device answers; every other device gets a bare `A_Restart`,
   which it does not answer.
 - **Verifies** a confirmed restart by its answer: only error code 0 counts,
@@ -103,7 +103,7 @@ it should take up a change at startup.
 
 - **Writes** a whole application program: parameters at the vendor defaults
   plus the device file's values, and the address, association and
-  group-object tables from the model's links. The image comes from the archive
+  group-object tables from your project's links. The image comes from the archive
   `bussard.lock` pins under `products/`, checked by its SHA-256, or from
   `--product`.
 - **Refuses** before any bus access a pinned archive that is missing or
@@ -146,15 +146,15 @@ octets of its code decide whether it runs the same application.
 
 **The factory reset (System B).** Many applications write only the octets
 that differ from a fill byte, so on a re-flash the octets the new image leaves
-out keep the old image's values. `flash` therefore opens such a download of a
-secure-capable application, and any `--force` over an unknown one, with a
+out keep the old image's values. `flash` therefore opens such a download of an
+application that supports Secure, and any `--force` over an unknown one, with a
 confirmed factory reset, as ETS does: it
-keeps the individual address, erases application, parameters and links, waits
+keeps the address, erases application, parameters and links, waits
 for the reboot (at most a minute) and streams every object in full. A device
 that refuses or ignores the reset fails the flash before anything is written.
 Pass `--no-factory-reset` only for a device you know holds no stale image.
 System 7 downloads write every region in full and never reset. An
-application that is not secure-capable is never reset either: ETS sends it no
+application that does not support Secure is never reset either: ETS sends it no
 master reset, only the download's own unloads, and ends its download with a
 bare `A_Restart`.
 
@@ -241,7 +241,7 @@ application still reads `Loaded`, re-run it; if not, use `flash --force`.
 
 ## `assign` and `adopt` set an address
 
-- **Writes** the individual address: the optional `ADDRESS`, else the next
+- **Writes** the device's address: the optional `ADDRESS`, else the next
   free one on the line. `adopt` also writes the device file and prints the
   `flash` command; it does not flash.
 - **Refuses** a new address another device already answers at, before
@@ -251,17 +251,17 @@ application still reads `Loaded`, re-run it; if not, use `flash --force`.
 - **Verifies** by reading the device at its new address.
 
 **A Data Secure device** answers a plain read with mask `FFFF`, so `assign`
-verifies over Data Secure, with the tool key of the old address's keyring
-entry or `--tool-key`, and asks you to re-export the keyring from ETS: later
+verifies over Data Secure, with the old address's tool key from the key store
+or keyring, or `--tool-key`, and asks you to re-export the keyring from ETS: later
 commands look the key up under the new address. Without a key it only checks
 that the device answers, and records no mask.
 
-**Adopting a Data Secure device only reads.** When the keyring lists it,
+**Adopting a Data Secure device only reads.** When the key store lists it,
 `adopt` refuses any target address but the device's own, writes nothing, and
 reads the identity, tables, parameters, security flags and sender table, kept
 in the lock (`secure_senders`) so a later secured download keeps those
-senders. Press the button to leave programming mode. An activated device the
-keyring does not list fails before any file is written.
+senders. Press the button to leave programming mode. A secured device the
+key store does not list fails before any file is written.
 
 ## `replace` swaps a dead device
 
@@ -279,8 +279,8 @@ keyring does not list fails before any file is written.
 naming the gateway and the number of devices. Each device still gets every
 single-device rail: `apply --line` backs up and verifies each one, and
 `commission` refuses to address a device whose order number does not match
-the model. An address that already answers counts as commissioned only when
-the device there reports the model's order number; any other answer refuses
+your project. An address that already answers counts as commissioned only
+when the device there reports your project's order number; any other answer refuses
 that device as an address in use. A failed device is reported and the run moves on. `apply --line`
 records each outcome in `<dir>/captures/apply-line-<line>.json`, so `--resume`
 skips finished devices after an interruption; a clean run deletes the file.
@@ -301,8 +301,8 @@ the way the ETS secured download does. `apply --keyring`, `restore` and
 `apply --line` with a keyring rewrite it next to the tables, because the key
 table indexes the address table.
 
-- **Refuses** the plan when a group address the model marks `secure` has no
-  key in the keyring. Use the project's current keyring. `--tool-key` carries
+- **Refuses** the plan when a group address your project marks `secure` has no
+  key in the keyring. Use the ETS project's current keyring. `--tool-key` carries
   no group keys, so it suits only a device without secured addresses.
 - **Prints** each step in the dry run, never key bytes, and **keeps** the
   factory reset: the device keeps its tool key across it.
@@ -324,7 +324,7 @@ table indexes the address table.
 
 A device with a secured group object ignores a plain telegram on its address.
 `write`, `read`, viz and the assistant send to a secured address over Data
-Secure when the keyring holds its group key or `groups.toml` marks it
+Secure when the key store holds its group key or `groups.toml` marks it
 `secure = true`. A secured address without a key is refused before anything is
 sent; a secured `read` accepts only a response that verifies under the key.
 
@@ -359,7 +359,7 @@ for example for a non-Secure sender:
    links another secured address.
 2. `bussard plan <ia>` on each linked device lists the change; `apply`
    rewrites the tables and the whole security object.
-3. Every other keyring user (Home Assistant, ETS) keeps sending secured, which
+3. Every other user of the keys (Home Assistant, ETS) keeps sending secured, which
    the device drops. Run `bussard keys export` and load the export there.
 
 `on` keeps the store's key or generates one, and is refused while a linked
@@ -372,15 +372,15 @@ back, with a warning naming the devices: change it in ETS too.
 plain and secure tunnelling the way ETS does. Its sequence matches ETS
 offline but has not yet run against a live interface.
 
-- **Credentials** live in the key store, never the model. `on` needs the
-  FDSK there and takes the tool key, authentication code, management password
+- **Credentials** live in the key store, never the project files. `on` needs
+  the factory key there and takes the tool key, authentication code, management password
   and a tunnelling user per `[knxnet] tunnels` address, generating and saving
   any missing one before the first write.
 - **Refuses** `on` when the interface already reports secure-only tunnelling;
   `on` runs over a plain tunnel to a device in factory state. `off` needs the
   tool key, and through a secure session with the interface itself it needs
   `--allow-self-reconfigure`. The store drops the tool key only after the
-  device verified on its FDSK.
+  device verified on its factory key.
 - **Verifies** on a fresh connection under the key the device should now hold:
   the security mode, the tunnelling users after `on`, and through the
   interface itself its secured service families.
@@ -388,12 +388,12 @@ offline but has not yet run against a live interface.
 If a switch stops half way, the device holds every step before the one the
 error names and the store keeps its credentials (the previous store is
 `bussard.keys.bak`): retry. If no stored credential reaches it, press its
-reset button to return it to its FDSK and plain tunnelling, then run
+reset button to return it to its factory key and plain tunnelling, then run
 `interface secure on` again, or `bussard keys import` an ETS export.
 
 ## Next steps
 
 - [Programming commands](../reference/commands/programming.md): every flag of `apply`, `flash`, `restore`, `replace` and `restart`.
 - [Back up and replace](../how-to/back-up-and-replace.md): backups, restores and a dead device, step by step.
-- [KNX Secure](knx-secure.md): keys, the key store and what activated means.
+- [KNX Secure](knx-secure.md): keys, the key store and what secured means.
 - [Device support](device-support.md): which masks each command supports.
