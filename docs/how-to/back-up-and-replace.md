@@ -122,13 +122,13 @@ Mount a new device of the same product and connect it to the bus.
     Assistant:  (calls knx_job_status)
                 It is an MDT JAL-0410.02 at 15.15.255, the same product.
                 I would give it 1.1.4, load its application and write
-                the model's parameters and links. Go ahead?
+                the parameters and links from your project. Go ahead?
     You:        Yes.
     Assistant:  (calls knx_replace_device with yes, then knx_job_status)
-                Replaced and verified: 1.1.4 holds the model again.
+                Replaced and verified: 1.1.4 matches your project again.
     ```
 
-    `knx_replace_device` needs a server started with `--allow-programming`. One yes covers the address, the application and the links, and the replacement is recorded only after a verified write. A device the model records as KNX Data Secure is refused, because its replacement needs the Secure activation in ETS.
+    `knx_replace_device` needs a server started with `--allow-programming`. One yes covers the address, the application and the links, and the replacement is recorded only after a verified write. A device your project records as secured is refused, because securing its replacement needs ETS.
 
 === "At the terminal"
 
@@ -143,9 +143,9 @@ Mount a new device of the same product and connect it to the bus.
     replaced 1.1.4 via 192.0.2.10:3671
     ```
 
-    Without `--product` it uses the product data the lock pins. `--force` overrides the first three refusals below, for a model that is out of date. Pass `--no-flash` for a spare that already carries the right application.
+    Without `--product` it uses the product data the lock pins. `--force` overrides the first three refusals below, for a project that is out of date. Pass `--no-flash` for a spare that already carries the right application.
 
-After one confirmation bussard assigns the old address, loads the application with the model's parameters, writes the model's links, and records the replacement in the device file. It refuses when:
+After one confirmation bussard assigns the old address, loads the application with your project's parameters, writes your project's links, and records the replacement in the device file. It refuses when:
 
 - the old device still answers at the address
 - the new device reports another order number or mask than the device file
@@ -160,11 +160,11 @@ A link an old ETS download left on the device, but missing from its device file,
 
 === "In chat"
 
-    Ask the assistant to plan the device (`knx_plan_device`) and say yes to the write (`knx_apply_device`). To see first what a device carries, `knx_reconstruct_device` reads its tables back against the model.
+    Ask the assistant to plan the device (`knx_plan_device`) and say yes to the write (`knx_apply_device`). To see first what a device carries, `knx_reconstruct_device` reads its tables back against your project.
 
 === "At the terminal"
 
-    `bussard apply 1.1.5` removes it, after the usual confirmation and backup. To see first what a device carries, `bussard reconstruct 1.1.5` reads its tables back and compares them with the model.
+    `bussard apply 1.1.5` removes it, after the usual confirmation and backup. To see first what a device carries, `bussard reconstruct 1.1.5` reads its tables back and compares them with your project.
 
 ## Next steps
 

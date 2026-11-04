@@ -19,7 +19,7 @@ Watch telegrams as they happen, read a single value, see the installation in a b
                 Hallway push button just sent "on" to Hallway light.
     ```
 
-    `knx_recent_telegrams` returns the latest telegrams the server has decoded, filtered by group address or sender. `knx_wait_for_telegram` waits up to five minutes for the next matching one. A secured telegram arrives decrypted when the server has the keyring.
+    `knx_recent_telegrams` returns the latest telegrams the server has decoded, filtered by group address or sender. `knx_wait_for_telegram` waits up to five minutes for the next matching one. A secured telegram arrives decrypted when the server holds its key.
 
 === "At the terminal"
 
@@ -36,7 +36,7 @@ Watch telegrams as they happen, read a single value, see the installation in a b
 
     Secured telegrams (KNX Data Secure) decode only with the keyring: pass `--keyring <file.knxkeys>` and set the password in `BUSSARD_KEYRING_PASSWORD`. Decoded ones are marked `[secured]`.
 
-A group address the model does not know shows as raw hex. Give it a `dpt` in `groups.toml` (its data type, which tells bussard how to decode the value), or let the assistant do it, and it decodes from then on.
+A group address that is not in your project shows as raw hex. Give it a `dpt` in `groups.toml` (its data type, which tells bussard how to decode the value), or let the assistant do it, and it decodes from then on.
 
 ## Read a value
 
@@ -70,7 +70,7 @@ bussard viz serving on http://127.0.0.1:8080 (Ctrl-C to stop)
 read-only: group writes return 403 (pass --allow-writes to enable them)
 ```
 
-Open the address. You get every device drawn along the bus by floor and room, the group-address tree, and live telegrams as they happen. Select a device or a group address to see its links, senders and listeners. With no reachable gateway the page still shows the model, without live traffic.
+Open the address. You get every device drawn along the bus by floor and room, the group-address tree, and live telegrams as they happen. Select a device or a group address to see its links, senders and listeners. With no reachable gateway the page still shows your project, without live traffic.
 
 A bare `bussard viz` never transmits, so it is safe to point at the live installation. It holds one tunnelling slot of your interface while it runs (see [Find what you have](find-what-you-have.md)).
 
@@ -83,7 +83,7 @@ A bare `bussard viz` never transmits, so it is safe to point at the live install
 $ bussard capture --to knx/captures/bus.db --filter 3/
 ```
 
-Recording to a file is a terminal command too. `capture` writes every matching telegram into a SQLite file, created if absent. It stores the raw bytes next to the decoded value, so you can decode the history again after you fix a name or a type in the model. `--filter` works as for `monitor`, and `--keyring` decrypts secured telegrams.
+Recording to a file is a terminal command too. `capture` writes every matching telegram into a SQLite file, created if absent. It stores the raw bytes next to the decoded value, so you can decode the history again after you fix a name or a type in your project. `--filter` works as for `monitor`, and `--keyring` decrypts secured telegrams.
 
 Query the file with any SQLite tool:
 
@@ -138,7 +138,7 @@ The table layout is in the [JSON and capture reference](../reference/json-output
 
     | Flag | What it learns |
     |---|---|
-    | `--untyped` | Every group address in the model without a type |
+    | `--untyped` | Every group address in your project without a type |
     | `--unnamed` | Every group address with a placeholder name |
     | `--ga <GA>` | The addresses you name, in that order (repeatable) |
     | none | Whatever appears on the bus next, until a wait times out |
@@ -149,6 +149,6 @@ The proposal comes from the sending device's room, channel and com object (one i
 
 ## Next steps
 
-- [Find what you have](find-what-you-have.md): list devices, gaps in the model, and what bussard can do with each device.
+- [Find what you have](find-what-you-have.md): list devices, gaps in your project, and what bussard can do with each device.
 - [Change what a button does](change-a-link.md): the first write, with plan and undo.
 - [Bus commands reference](../reference/commands/bus.md): every flag of `monitor`, `capture`, `read` and `learn`.

@@ -44,10 +44,10 @@ An inactive page says which parameter turns it on and whether that needs a full 
     You:        Set the blind actuator's channel Fenster Süd to Jalousie.
     Assistant:  (calls knx_set_parameter)
                 Betriebsart on Fenster Süd is now Jalousie (was
-                Rollladen). This changes the model only.
+                Rollladen). This changes your project only.
     ```
 
-    `knx_set_parameter` takes the keys `knx_show_device` lists and checks the value against the product model. It refuses an unknown key and names the closest ones.
+    `knx_set_parameter` takes the keys `knx_show_device` lists and checks the value against the product data. It refuses an unknown key and names the closest ones.
 
 === "At the terminal"
 
@@ -134,7 +134,7 @@ For most parameters this is enough. The write backs up the parameter memory to `
 ## Write it with a full flash
 
 !!! warning
-    A full flash rewrites the device's application, parameters and links. On a secure-capable System B device it usually starts with a factory reset that erases everything but the device's address. Try it on a spare device or the simulator first.
+    A full flash rewrites the device's application, parameters and links. On a System B device that supports Secure it usually starts with a factory reset that erases everything but the device's address. Try it on a spare device or the simulator first.
 
 === "In chat"
 
@@ -146,7 +146,7 @@ For most parameters this is enough. The write backs up the parameter memory to `
                 The parameter memory is backed up first. Flash it?
     You:        Yes.
     Assistant:  (calls knx_apply_device, then knx_job_status until done)
-                Flashed and verified: the device holds the model.
+                Flashed and verified: the device matches your project.
     ```
 
     The plan says `method: flash` and lists the com objects that appear or disappear. Your one yes covers the flash, and `knx_apply_device` runs it as a job. A device that runs an application bussard cannot identify is refused; overwriting it stays `bussard flash --force` at the terminal.
@@ -171,7 +171,7 @@ The flash computes the full parameter memory from the vendor defaults plus your 
 
 ## Check the read-back
 
-After writing, the flash checks that the application reads back as `Loaded`, then reads the parameter memory and compares it with the model as the plan does. A parameter that still differs is named, and the result is not verified. If a flash fails or stops midway, run it again; it rewrites the application whole.
+After writing, the flash checks that the application reads back as `Loaded`, then reads the parameter memory and compares it with your project as the plan does. A parameter that still differs is named, and the result is not verified. If a flash fails or stops midway, run it again; it rewrites the application whole.
 
 ## Next steps
 

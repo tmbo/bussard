@@ -14,6 +14,6 @@ Every guide shows each step in two forms, "In chat" with an assistant and "At th
 | get my names into ETS, see what a new ETS export changes | [Exchange with ETS](exchange-with-ets.md) |
 | send changes to an integrator and get them back | [Work with an integrator](work-with-an-integrator.md) |
 | drive the house from Home Assistant | [Home Assistant](home-assistant.md) |
-| use keyrings, secure interfaces and secured group addresses | [KNX Secure](knx-secure.md) |
+| use the key store, secure interfaces and secured group addresses | [KNX Secure](knx-secure.md) |
 
 Before the first guide that writes to the bus, read [Safety](../explanation/safety.md) once.
