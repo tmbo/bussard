@@ -296,6 +296,12 @@ def ets_failed_since(c, since: str) -> list[str]:
     return ets_failure_lines(vm.run(c, cmd, 60)[1], since)
 
 
+def ets_log_failed(lines: list[str] | None) -> bool:
+    """Whether ETS's log lines of a download name a failure: an ERROR line
+    or an exception, not a WARN that ETS went on after."""
+    return any(" ERROR " in l or "Exception" in l for l in lines or [])
+
+
 HISTORY_HEADER = "Historie löschen"
 HISTORY_LABELS = ("Verbindung:", "Start:", "Ende:")
 _STATUS = ("Programmieren", "Entladen", "Herunterladen")
@@ -547,7 +553,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # again.
         settle = time.time()
         while True:
-            result["history"] = vm.driver(c, "POST", "/ets/history", dict(flow_extra or {}), timeout=120).get("lines")
+            result["history"] = vm.driver(c, "POST", "/ets/history", {"project": project, **(flow_extra or {})}, timeout=120).get("lines")
             result["ets"] = ets_status(result["history"])
             if result["ets"] != "unknown" or time.time() - settle > 120:
                 break
@@ -582,6 +588,12 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
+        # An exception ETS logged for the download outranks the history pane
+        # (the secure run read 'Abgeschlossen' off another project's pane
+        # while ETS logged 'Das Gerät ist mit einem in diesem Projekt nicht
+        # bekannten Schlüssel gesichert', 2026-11-04). A plain WARN is not a
+        # failure (ekinex A-4945: AssignedIPAddress discovery).
+        else "ets-failed" if ets_log_failed(result.get("ets_log"))
         else "captured" if result.get("ets") == "ok" and result.get("ops")
         else "ets-failed" if result.get("ets") == "failed"
         else "driver-error" if result.get("error")

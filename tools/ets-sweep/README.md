@@ -372,7 +372,7 @@ port per row.
 
 ## Part 4: KNX Data Secure (#423), not yet run
 
-    export ETS_SWEEP_PROJECT_PASSWORD=<8-64 letters and digits>
+    export ETS_SWEEP_PROJECT_PASSWORD=<8-64 characters: upper, lower, digit and one of !#$*,.:;=?@_->
     uv run tools/ets-sweep/secure.py jobs                    # the secure-capable captured applications
     uv run tools/ets-sweep/secure.py run --filter <app> --limit 1
 

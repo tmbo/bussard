@@ -154,8 +154,15 @@ def decode_verdict(text: str) -> dict:
 
 def password() -> str:
     pw = os.environ.get(PASSWORD_ENV, "")
-    if not re.fullmatch(r"[A-Za-z0-9]{8,64}", pw):
-        raise SystemExit(f"${PASSWORD_ENV} must hold 8 to 64 letters and digits (the driver types it)")
+    # ETS 6.4.1 enables 'Passwort setzen' only for a password with a digit, an
+    # upper and a lower case letter and a special character (2026-11-04); the
+    # driver types it, so the special characters are ones send_keys takes
+    # literally.
+    if not (re.fullmatch(r"[A-Za-z0-9!#$*,.:;=?@_-]{8,64}", pw)
+            and all(re.search(c, pw) for c in (r"[a-z]", r"[A-Z]", r"[0-9]", r"[!#$*,.:;=?@_-]"))):
+        raise SystemExit(f"${PASSWORD_ENV} must hold 8 to 64 letters, digits and at least one of "
+                         "! # $ * , . : ; = ? @ _ -, with a digit, an upper and a lower case letter "
+                         "(ETS's rule; the driver types it)")
     return pw
 
 

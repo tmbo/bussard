@@ -262,6 +262,21 @@ class TestEtsHistoryAndLog(unittest.TestCase):
             self.assertEqual(sweep.ets_failed_since(None, "2026-11-04 10:06:00"), [])
 
 
+class TestEtsLogFailed(unittest.TestCase):
+    def test_ets_log_failed_exception_and_error_only(self):
+        import sweep
+
+        warn = ("2026-11-04 21:00:00,000 [37] WARN  Knx.Ets.Hawk.LoadDeviceTask - Determining "
+                "AssignedIPAddress from IP discovery has failed")
+        exc = ("2026-11-04 22:26:44,439 [37] WARN  Knx.Ets.Hawk.LoadDeviceTask - Knx.Ets.Hawk."
+               "DeviceManagementException: Das Gerät ist mit einem in diesem Projekt nicht bekannten Schlüssel gesichert.")
+        err = "2026-11-04 22:26:44,445 [1] ERROR Knx.Ets.ViewModel.OnlineOperations.Download.HawkPendingOperation - x"
+        self.assertFalse(sweep.ets_log_failed(None))
+        self.assertFalse(sweep.ets_log_failed([warn]))
+        self.assertTrue(sweep.ets_log_failed([warn, exc]))
+        self.assertTrue(sweep.ets_log_failed([err]))
+
+
 class TestFollowups(unittest.TestCase):
     def test_draft_names_app_capture_and_diff(self):
         tmp = Path(tempfile.mkdtemp())
@@ -646,7 +661,7 @@ class TestCaptureSecure(unittest.TestCase):
     def test_secure_run_passes_the_secure_flow(self):
         self.assertEqual(capture.secure_run("syn-minimal", self.APP), {})
         old = os.environ.get(secure.PASSWORD_ENV)
-        os.environ[secure.PASSWORD_ENV] = "Synthetic1234"
+        os.environ[secure.PASSWORD_ENV] = "Synthetic1234!"
         try:
             kw = capture.secure_run("syn-secure", self.APP)
         finally:
@@ -657,7 +672,7 @@ class TestCaptureSecure(unittest.TestCase):
         self.assertEqual(kw["project"], secure.PROJECT)
         self.assertEqual(kw["secure"], {"status": "factory", "tool_key": "5e2c820a4e1b264302afda130b69c915"})
         self.assertEqual(kw["properties"], [{"object": 0, "pid": 11, "value": "00fad4730c98"}])
-        self.assertEqual(kw["flow_extra"], {"project_password": "Synthetic1234",
+        self.assertEqual(kw["flow_extra"], {"project_password": "Synthetic1234!",
                                             "certificate": "AD5NI4-YMTBPC-ZAQKJY-NSMQYC-V7NBGC-3JZEKR"})
         self.assertTrue(callable(kw["after_download"]))
 
