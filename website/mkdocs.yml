@@ -79,7 +79,7 @@ nav:
   - Home: index.md
   - Getting started:
       - Install: getting-started/install.md
-      - Your first model: getting-started/first-model.md
+      - Your first project: getting-started/first-model.md
       - Connect an assistant: getting-started/assistant.md
       - The first weekend: getting-started/first-weekend.md
   - How-to guides:
