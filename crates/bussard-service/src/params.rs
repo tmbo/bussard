@@ -527,6 +527,11 @@ pub struct ParamState {
     /// application id the flash gate decides on. `None` on System B, on a
     /// factory-fresh device and when the read stopped before the check.
     pub sys7_identity: Option<Sys7Identity>,
+    /// What the probe found resident when the device does not run the
+    /// application the read decodes with (the identity gate refused it), so
+    /// a plan can say the application must be loaded (issue #750). `None`
+    /// when [`ParamState::detail`] holds it, or the probe did not run.
+    pub refused_resident: Option<ResidentState>,
 }
 
 impl ParamState {
@@ -535,7 +540,17 @@ impl ParamState {
             readback: Readback::noted(application, note),
             detail: None,
             sys7_identity: None,
+            refused_resident: None,
         }
+    }
+
+    /// What the probe found resident on the device, whether or not the
+    /// memory was decoded.
+    pub fn resident(&self) -> Option<&ResidentState> {
+        self.detail
+            .as_ref()
+            .map(|d| &d.resident)
+            .or(self.refused_resident.as_ref())
     }
 }
 
@@ -579,7 +594,9 @@ pub async fn read_state<Ch: L4Channel>(
     // The parameter-only download's rule: the same program (any build hash)
     // on System B, every driven LSM Loaded and the product's code on System 7.
     if let Err(why) = bussard_download::identity_gate(&plan, Some(&resident)) {
-        return ParamState::noted(&app.id, format!("parameters not decoded: {why}"));
+        let mut state = ParamState::noted(&app.id, format!("parameters not decoded: {why}"));
+        state.refused_resident = Some(resident);
+        return state;
     }
     // System 7 has no readable id: the code sample stands in for it (issue
     // #314). Code that differs is another application; code that could not
@@ -595,6 +612,7 @@ pub async fn read_state<Ch: L4Channel>(
             format!("parameters not decoded: {reason}. Run `bussard flash --force` to replace it."),
         );
         state.sys7_identity = sys7_identity;
+        state.refused_resident = Some(resident);
         return state;
     }
     let regions = read_parameter_regions(l4, &plan).await;
@@ -677,6 +695,7 @@ pub async fn read_state<Ch: L4Channel>(
             properties,
         }),
         sys7_identity,
+        refused_resident: None,
     }
 }
 

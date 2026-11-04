@@ -62,8 +62,10 @@ plan digest:
    `knx_apply_device` only after an explicit yes. The digest makes this
    checkable: an apply can only write what a plan showed.
 5. **Protected addresses** in the plan refuse it.
-6. **Identity.** A device whose application or mask differs from the lock is
-   refused with the `bussard flash` it needs.
+6. **Identity.** A device whose application or mask differs from the lock
+   gets the pinned application loaded, after your yes to loading it (see
+   below); without a pinned archive it is refused with the `bussard flash`
+   it needs.
 
 If ETS or another tool changed the device, or the model was edited, the
 apply is refused and the digest retired. With `plan_hash`, the apply also
@@ -114,8 +116,20 @@ com-objects that appear or disappear, the table sizes, the parameter backup
 and the pinned archive, and asks to flash. The device restarts and is offline
 for the stated time, 30 to 50 seconds. It is the flash `bussard flash <ia>
 --yes` writes, refused without an archive pinned in the lock, for a device
-carrying another application, or whose load state cannot be read. A `flash`
-that loads a new application stays CLI-only.
+carrying another application, or whose load state cannot be read.
+
+## Loading an application from chat
+
+When a device does not run the application program the lock pins (another
+one, or none loaded), the plan says so first: its sentences start with
+"must have its application program loaded" and say what it replaces. One yes
+to the plan's question loads the application and writes the model's
+parameters and links with it, as one job. It runs the same functions as
+`bussard flash`: the download, the read-back against the model and the lock
+update, so the result says verified only when the device holds the model.
+A device whose state cannot be read, or whose application bussard cannot
+identify, is refused; `bussard flash --force` at the terminal stays the way
+to overwrite it.
 
 ## Parameters are approved by name
 

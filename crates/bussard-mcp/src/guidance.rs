@@ -30,8 +30,7 @@ use serde_json::{Value, json};
 use crate::state::SharedState;
 
 /// The CLI commands no MCP tool replaces, named once in the instructions.
-const CLI_ONLY: &str = "Still needs the CLI: `bussard flash` to load a new application \
-    program, `bussard replace` and `bussard commission`.";
+const CLI_ONLY: &str = "Still needs the CLI: `bussard replace` and `bussard commission`.";
 
 /// What still needs ETS, named once in the instructions.
 const ETS_ONLY: &str = "Still needs ETS: the Secure activation of a fresh device, and any \
@@ -213,10 +212,11 @@ impl Tiers {
         }
     }
 
-    /// How a parameter that shows or hides com-objects reaches device `ia`
-    /// (`<ia>` when `None`) at this tier (issue #303): the same plan and
-    /// apply pair as a full download with `--allow-programming`, else
-    /// `bussard flash` at the CLI.
+    /// How a parameter that shows or hides com-objects, and the load of the
+    /// application bussard.lock pins (issue #750), reach device `ia` (`<ia>`
+    /// when `None`) at this tier (issue #303): the same plan and apply pair
+    /// as a full download with `--allow-programming`, else `bussard flash`
+    /// at the CLI.
     pub fn flash_push(&self, ia: Option<IndividualAddress>) -> String {
         let ia = ia.map_or_else(|| "<ia>".to_string(), |ia| ia.to_string());
         if self.programming {
@@ -225,13 +225,17 @@ impl Tiers {
                 "A parameter that shows or hides com-objects is pushed by the same \
                  knx_plan_device / knx_apply_device pair; the plan says `method: flash`, the \
                  device restarts and is offline for the stated time ({min} to {max} s), and the \
-                 human's yes must be a yes to flashing {ia}."
+                 human's yes must be a yes to flashing {ia}. So is a device that does not run \
+                 the application program bussard.lock pins (another one, or none loaded): the \
+                 plan's sentences say the application must be loaded, and one yes to its \
+                 question loads it and writes the model with it as one job."
             )
         } else {
             format!(
-                "A parameter that shows or hides com-objects needs `bussard flash {ia}` at the \
-                 CLI; with --allow-programming, knx_plan_device and knx_apply_device push it as \
-                 a flash."
+                "A parameter that shows or hides com-objects, and loading the application \
+                 program bussard.lock pins into a device, need `bussard flash {ia}` at the CLI; \
+                 with --allow-programming, knx_plan_device and knx_apply_device push it as a \
+                 flash."
             )
         }
     }

@@ -20,9 +20,9 @@ use bussard_mcp::McpConfig;
 use bussard_mgmt::apci::{A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE};
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_testkit::consts::{
-    LE_ADDITIONAL, LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED, OT_ADDRESS_TABLE,
-    OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE, PID_LOAD_STATE_CONTROL,
-    PID_PROGRAM_VERSION, SUB_REL_SEGMENT,
+    LE_ADDITIONAL, LE_LOAD_COMPLETED, LE_START_LOADING, LE_UNLOAD, LS_LOADED, LS_UNLOADED,
+    OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
+    PID_LOAD_STATE_CONTROL, PID_PROGRAM_VERSION, SUB_REL_SEGMENT,
 };
 use bussard_testkit::device::{decode_prop_header, prop_response};
 use bussard_testkit::{MockDevice, MockGateway, Reaction};
@@ -118,6 +118,12 @@ fn device_ia() -> anyhow::Result<IndividualAddress> {
 /// The device: runs the application with threshold 9 and object 2 off, and
 /// the links the model asks for (object 1 listens on 1/2/0).
 fn device() -> anyhow::Result<MockDevice> {
+    device_running(Some([0x00, 0xFA, 0x00, 0x02, 0x01]), LS_LOADED)
+}
+
+/// The device with the links the model asks for, reporting `app_id` (none:
+/// no `PID_PROGRAM_VERSION`) and its application object in `load_state`.
+fn device_running(app_id: Option<[u8; 5]>, load_state: u8) -> anyhow::Result<MockDevice> {
     let ga: GroupAddress = "1/2/0".parse()?;
     let mut addresses = 1u16.to_be_bytes().to_vec();
     addresses.extend_from_slice(&ga.raw().to_be_bytes());
@@ -134,13 +140,6 @@ fn device() -> anyhow::Result<MockDevice> {
         ])
         .with_table(1, &addresses)
         .with_table(2, &associations)
-        // M-00FA, application 2, version 1: the synthetic app's id.
-        .with_property(
-            APP_OBJECT,
-            PID_PROGRAM_VERSION,
-            5,
-            &[0x00, 0xFA, 0x00, 0x02, 0x01],
-        )
         .with_memory(CODE_BASE, &[0, 1, 2, 3, 4, 5])
         .with_memory(PARAM_BASE, &[9, 0x00])
         .with_hook(move |dev, apci, data| {
@@ -170,8 +169,12 @@ fn device() -> anyhow::Result<MockDevice> {
                 prop_response(APP_OBJECT, PID_LOAD_STATE_CONTROL, 1, start, &[state]),
             ))
         });
+    // M-00FA, application 2, version 1 is the synthetic app's id.
+    if let Some(id) = app_id {
+        dev = dev.with_property(APP_OBJECT, PID_PROGRAM_VERSION, 5, &id);
+    }
     dev.segments.insert(APP_OBJECT, (PARAM_BASE, 2));
-    dev.load_states.insert(APP_OBJECT, LS_LOADED);
+    dev.load_states.insert(APP_OBJECT, load_state);
     Ok(dev)
 }
 
@@ -447,6 +450,188 @@ async fn test_knx_apply_device_flashes_a_parameter_that_shows_a_com_object() -> 
     assert_eq!(replan["method"], "apply", "replan: {replan}");
     let last = call(&client, "knx_last_apply", json!({"address": "1.1.4"})).await?;
     assert_eq!(last["result"]["method"], "flash", "{last}");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Polls a job until it is done and returns its status.
+async fn finish(client: &Client, started: &Value) -> anyhow::Result<Value> {
+    let job = started["job"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no job in {started}"))?
+        .to_string();
+    let deadline = std::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let status = call(client, "knx_apply_status", json!({"job": job})).await?;
+        if status["done"] == true {
+            return Ok(status);
+        }
+        if std::time::Instant::now() > deadline {
+            anyhow::bail!("job {job} did not finish: {status}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// Issue #750: a device with no application loaded gets the application
+/// bussard.lock pins from the plan's one yes: the plan says it must be
+/// loaded, the job downloads it with the model's parameters, reads it back
+/// and says verified only when the device holds the model.
+#[tokio::test]
+async fn test_knx_apply_device_loads_the_application_into_a_fresh_device() -> anyhow::Result<()> {
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_UNLOADED)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    let load = &plan["flash"]["load_application"];
+    assert_eq!(load["application"], "M-00FA_A-0002", "{plan}");
+    assert!(
+        load["why"]
+            .as_str()
+            .is_some_and(|w| w.contains("no application program loaded")),
+        "{plan}"
+    );
+    let sentences = plan["sentences"].as_str().unwrap_or_default();
+    assert!(
+        sentences.starts_with("! 1.1.4 must have its application program loaded"),
+        "{sentences}"
+    );
+    let question = plan["question"].as_str().unwrap_or_default();
+    assert!(
+        question.starts_with("load application M-00FA_A-0002 into 1.1.4"),
+        "{question}"
+    );
+    let next = plan["next_step"].as_str().unwrap_or_default();
+    assert!(next.contains("explicit yes to loading it"), "{next}");
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
+    assert_eq!(gateway.with_device(device_ia()?, |dev| dev.writes)?, 0);
+
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["verified"], true, "{done}");
+    assert_eq!(result["load_application"]["loaded"], true, "{done}");
+    assert_eq!(result["readback"]["verified"], true, "{done}");
+    assert_eq!(result["readback"]["compared"]["parameters"], 2, "{done}");
+
+    let (events, params) = gateway.with_device(device_ia()?, |dev| {
+        (app_load_events(dev), dev.read_mem(ALLOC_BASE + 0x100, 2))
+    })?;
+    assert_eq!(events.first(), Some(&LE_UNLOAD), "load events {events:?}");
+    assert_eq!(
+        events.last(),
+        Some(&LE_LOAD_COMPLETED),
+        "load events {events:?}"
+    );
+    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #750: a device that runs another application gets the pinned one
+/// from the plan's one yes; the plan names what it replaces.
+#[tokio::test]
+async fn test_knx_apply_device_loads_the_application_over_another_one() -> anyhow::Result<()> {
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(
+            Some([0x00, 0xFA, 0x00, 0x03, 0x01]),
+            LS_LOADED,
+        )?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    let replaces = plan["flash"]["load_application"]["replaces"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(replaces.contains("M-00FA A-0003 v1"), "{plan}");
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["verified"], true, "{done}");
+    assert_eq!(result["load_application"]["loaded"], true, "{done}");
+    let params = gateway.with_device(device_ia()?, |dev| dev.read_mem(ALLOC_BASE + 0x100, 2))?;
+    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #750: when the links change too and this application's download
+/// writes no link table, a load would leave the links different from the
+/// model, which its read-back cannot see. The plan refuses before anything
+/// is written and names the way through.
+#[tokio::test]
+async fn test_knx_plan_device_refuses_a_load_that_would_leave_the_links() -> anyhow::Result<()> {
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_UNLOADED)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    std::fs::write(
+        dir.path().join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Weather station\"\n\n[parameters]\n\
+         \"thr@P-0_R-1\" = \"9\"\n\"obj2@P-1_R-2\" = \"1\"\n\n[links]\n\
+         1.listen = [\"1/2/0\", \"1/2/1\"]\n",
+    )?;
+    std::fs::write(
+        dir.path().join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Switch\" },\n  \
+         { address = \"1/2/1\", name = \"Switch 2\" },\n]\n",
+    )?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert_ne!(plan["ok"], true, "plan: {plan}");
+    let text = plan.to_string();
+    assert!(text.contains("does not write the link tables"), "{text}");
+    assert!(text.contains("bussard flash 1.1.4"), "{text}");
+    assert_eq!(gateway.with_device(device_ia()?, |dev| dev.writes)?, 0);
 
     client.cancel().await?;
     task.abort();
