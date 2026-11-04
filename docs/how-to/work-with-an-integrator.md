@@ -28,6 +28,19 @@ The handover bundle is the delivered state. At acceptance the integrator exports
 
 `bussard history` on either side shows who changed what, when, and which gateway each device write went to.
 
+```mermaid
+sequenceDiagram
+  participant Owner
+  participant Integrator
+  Integrator->>Owner: handover bundle, checksum on the acceptance protocol
+  Owner->>Integrator: current bundle (export), or the wish in words
+  Integrator->>Integrator: diff against the delivered bundle
+  Integrator->>Integrator: the change, in ETS or in bussard
+  Integrator->>Owner: new bundle or .knxproj
+  Owner->>Owner: preview (diff), import
+  Note over Owner,Integrator: whoever is on site plans and writes the devices that changed
+```
+
 ### Example: one link, by file
 
 This uses the four-device project in `knx-sim/examples/small-installation`, which points at the simulator on `127.0.0.1:13671`. The outputs are illustrative.

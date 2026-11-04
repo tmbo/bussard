@@ -4,6 +4,13 @@ Keep bussard and ETS, the KNX Association's commissioning tool, in step in both 
 
 None of these steps touch the bus.
 
+```mermaid
+flowchart LR
+  ets["ETS project"] -->|export .knxproj| imp["bussard import"] --> project["your project"]
+  project -->|export-groups| names["group-address names<br>as an ETS import file"] -->|import in ETS| ets
+  ets -->|new export| diff["bussard diff"] -->|what would change,<br>in sentences| project
+```
+
 ## Send your group-address names to ETS
 
 === "In chat"

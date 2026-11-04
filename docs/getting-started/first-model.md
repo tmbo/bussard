@@ -48,6 +48,11 @@ Nothing on this page writes to a device. Every command here only reads the bus.
 
 The export is usually password-protected. At the terminal bussard asks for the password, or takes it from `BUSSARD_PROJECT_PASSWORD` in the `.env`. In chat, bussard opens a password form in your browser, so the password never goes through the chat, and stores what you type in the `.env` next to the project folder. A chat app that cannot show the form tells you to put it there yourself. bussard then looks up the vendor product data for every device (the `.knxprod` files that describe each device's parameters), lists what it would download, and asks once. A device without product data still gets its file, with its identity, location and links.
 
+<figure markdown="span">
+  ![The password form](../assets/screenshots/password-form.png){ width="560" }
+  <figcaption>The password form bussard opens in chat. The page runs on your computer; the password never enters the chat.</figcaption>
+</figure>
+
 ## Or start without one
 
 === "In chat"

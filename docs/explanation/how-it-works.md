@@ -4,6 +4,16 @@ bussard keeps a KNX installation as text files and treats the devices as the
 place those files get written to. This page explains the pieces and how a
 command moves between them.
 
+```mermaid
+flowchart LR
+  ets["ETS export<br>(.knxproj)"] -->|import| project
+  product["vendor product data<br>(.knxprod)"] -->|parameter dialogs,<br>download procedures| project
+  assistant["assistant over MCP"] <-->|reads and edits| project["your project<br>bussard.toml, groups.toml,<br>devices/, bussard.lock"]
+  project -->|plan, apply, flash| gateway["KNXnet/IP gateway"]
+  gateway <--> devices["devices on the bus"]
+  gateway -->|monitor, read, backup| project
+```
+
 ## Your project is the source of truth
 
 A KNX device holds tables and parameter memory, but none of the meaning: no
@@ -83,6 +93,13 @@ the MCP programming tier:
 6. read back and compare with your project.
 
 A result says "verified" only when the read-back matches.
+
+```mermaid
+flowchart LR
+  id["identity<br>matches the lock?"] --> plan["plan:<br>device vs project"] --> confirm["confirm,<br>naming the gateway"] --> backup["back up<br>the device"] --> write["write"] --> verify["read back<br>and compare"]
+  verify -->|matches| ok["verified"]
+  verify -->|differs| fail["reported,<br>never silent"]
+```
 
 ## The assistant is an operator
 

@@ -29,6 +29,13 @@ the same plan and apply as a link. The server's instructions, each edit's
 `next_step` and `knx_project_summary` state the active tier, so the assistant
 tells you which push actually applies.
 
+```mermaid
+flowchart TB
+  passive["Passive<br><code>--passive</code><br>reads and edits the project,<br>watches the bus"] -->|adds reads<br>on the bus| read["Read<br>(default)"]
+  read -->|adds group values| write["Write<br><code>--allow-writes</code>"]
+  write -->|adds programming one device<br>after your yes| prog["Programming<br><code>--allow-programming</code>"]
+```
+
 A write-enabled server pointed at a real gateway refuses to start without
 `--allow-remote-gateway` or an exported `BUSSARD_ALLOW_REAL_GATEWAY=1`, as on
 [Safety](safety.md). `knx_bus_reconnect` at the read tier only reopens the
