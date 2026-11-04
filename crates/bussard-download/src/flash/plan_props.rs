@@ -7,8 +7,10 @@
 //! The value an `LdCtrlWriteProp` writes is its `InlineData` when it carries
 //! one, else the value the program's property-located parameters compose
 //! ([`bussard_prod::compute_property_values`]), as ETS resolves it from the
-//! project. A write whose value neither source supplies is refused; nothing is
-//! guessed.
+//! project. A write without `InlineData` on a property no parameter of the
+//! program is stored in reads the property's description and writes nothing,
+//! as ETS does (issue #841). Any other write whose value neither source
+//! supplies is refused; nothing is guessed.
 
 use super::{AppIdentity, FlashPlan, FlashStep, PlanError, PropObject};
 use bussard_prod::application::{ApplicationProgram, LoadGuard, LoadOp, LoadProcedure};
@@ -347,20 +349,54 @@ fn parameter_value(
     by_index.or(by_type)
 }
 
+/// Whether a parameter located at `loc` may be stored in the property `prop_id`
+/// of `object`. An object named by index on one side and by type on the other
+/// cannot be told apart at plan time, and a location naming no object is
+/// unplaceable: both count as the same object, so the caller refuses rather
+/// than skips.
+fn may_hold(
+    loc: &bussard_prod::application::PropertyLocation,
+    object: PropObject,
+    prop_id: u32,
+) -> bool {
+    if loc.property_id != prop_id {
+        return false;
+    }
+    match (object, loc.object_index, loc.object_type) {
+        (PropObject::Index(index), Some(at), _) => index == at,
+        (PropObject::Index(index), None, Some(OT_DEVICE)) => index == 0,
+        (
+            PropObject::Type {
+                object_type,
+                occurrence,
+            },
+            None,
+            Some(at),
+        ) => u32::from(object_type) == at && u32::from(occurrence) == loc.occurrence.unwrap_or(0),
+        _ => true,
+    }
+}
+
 /// Lowers an `LdCtrlWriteProp` with its `Count` and `Verify` (the System 7
 /// and property-only planners, and the System B planner for a write without
 /// `InlineData`, issue #669; a System B write with `InlineData` keeps its own
 /// lowering).
 ///
+/// A write without `InlineData` on a property no parameter of `app` is stored
+/// in lowers to [`FlashStep::DescribeProp`]: ETS reads the property's
+/// description and writes nothing (issue #841, `M-00A6_A-0033-20-BFA6`).
+///
 /// # Errors
 ///
-/// [`PlanError::UnsupportedWriteProp`] when the value has no source, does not
-/// split into `Count` whole elements, or the object or property id does not
-/// fit the services that address it.
+/// [`PlanError::UnsupportedWriteProp`] when a parameter is stored in the
+/// property but its value has no source, the value does not split into
+/// `Count` whole elements, or the object or property id does not fit the
+/// services that address it.
 pub(super) fn lower_write_prop(
     step: usize,
     op: &LoadOp,
     values: &PropertyValues,
+    app: &ApplicationProgram,
 ) -> Result<FlashStep, PlanError> {
     let LoadOp::WriteProp {
         obj_idx,
@@ -386,18 +422,39 @@ pub(super) fn lower_write_prop(
     let name = format!("{object} PID {prop_id}");
     let (value, from_parameters) = match inline_data.as_ref().filter(|d| !d.is_empty()) {
         Some(data) => (data.clone(), false),
-        None => (
-            parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id)
-                .cloned()
-                .ok_or_else(|| PlanError::UnsupportedWriteProp {
+        None => match parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id) {
+            Some(value) => (value.clone(), true),
+            None if !app.parameters.values().any(|p| {
+                p.property
+                    .as_ref()
+                    .is_some_and(|loc| may_hold(loc, object, prop_id))
+            }) =>
+            {
+                // Nothing in the program decides the property: ETS reads its
+                // description and writes nothing (issue #841).
+                if let PropObject::Index(index) = object
+                    && index > u32::from(u8::MAX)
+                {
+                    return Err(PlanError::UnsupportedWriteProp {
+                        step,
+                        reason: format!(
+                            "object index {index} exceeds the 8-bit index the services address"
+                        ),
+                    });
+                }
+                return Ok(FlashStep::DescribeProp { object, prop_id });
+            }
+            None => {
+                return Err(PlanError::UnsupportedWriteProp {
                     step,
                     reason: format!(
-                        "the write to {name} carries no InlineData and no parameter of the \
-                         program is located in that property, so bussard has no value to write"
+                        "the write to {name} carries no InlineData and the value the program's \
+                         parameters store in that property could not be composed, so bussard \
+                         has no value to write"
                     ),
-                })?,
-            true,
-        ),
+                });
+            }
+        },
     };
     let count = count.unwrap_or(1).max(1);
     let count = u16::try_from(count)
@@ -537,7 +594,7 @@ pub(super) fn plan_flash_properties(
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
-            LoadOp::WriteProp { .. } => steps.push(lower_write_prop(step, op, &values)?),
+            LoadOp::WriteProp { .. } => steps.push(lower_write_prop(step, op, &values, app)?),
             LoadOp::CompareProp { .. } => steps.push(lower_compare_prop(step, op)?),
             other => {
                 return Err(PlanError::UnsupportedOp {
@@ -700,7 +757,7 @@ mod tests {
             })
             .ok_or("the label write is taken")?;
         assert_eq!(
-            lower_write_prop(2, label, &values)?,
+            lower_write_prop(2, label, &values, &app)?,
             FlashStep::WriteProp {
                 object: PropObject::Index(6),
                 prop_id: 60,
@@ -723,7 +780,7 @@ mod tests {
                 )
             })
             .ok_or("the inline write is unguarded")?;
-        match lower_write_prop(3, inline, &values)? {
+        match lower_write_prop(3, inline, &values, &app)? {
             FlashStep::WriteProp {
                 count,
                 value,
@@ -752,7 +809,68 @@ mod tests {
             occurrence: None,
         };
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new()),
+            lower_write_prop(1, &op, &PropertyValues::new(), &guarded_app()?),
+            Err(PlanError::UnsupportedWriteProp { .. })
+        ));
+        Ok(())
+    }
+
+    /// A data-less write on a property no parameter is stored in.
+    fn dataless_write(obj_idx: Option<u32>, obj_type: Option<u32>, prop_id: u32) -> LoadOp {
+        LoadOp::WriteProp {
+            obj_idx,
+            obj_type,
+            prop_id: Some(prop_id),
+            inline_data: None,
+            start_element: None,
+            count: None,
+            verify: Some(false),
+            occurrence: None,
+        }
+    }
+
+    #[test]
+    fn test_lower_write_prop_describes_a_property_no_parameter_is_stored_in() -> TestResult {
+        // The Enertex `PID_ENX_TELEGRAMMRATE_LIMIT` step of
+        // `M-00A6_A-0033-20-BFA6` (issue #841): ETS reads the description of
+        // 50001/211 and writes nothing.
+        let app = guarded_app()?;
+        let op = dataless_write(None, Some(50001), 211);
+        assert_eq!(
+            lower_write_prop(21, &op, &PropertyValues::new(), &app)?,
+            FlashStep::DescribeProp {
+                object: PropObject::Type {
+                    object_type: 50001,
+                    occurrence: 0,
+                },
+                prop_id: 211,
+            }
+        );
+        let op = dataless_write(Some(6), None, 61);
+        assert_eq!(
+            lower_write_prop(1, &op, &PropertyValues::new(), &app)?,
+            FlashStep::DescribeProp {
+                object: PropObject::Index(6),
+                prop_id: 61,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_write_prop_refuses_a_stored_property_without_a_value() -> TestResult {
+        // The label parameter lives in object 6 PID 60: without its composed
+        // value the write is refused, never turned into a description read.
+        let app = guarded_app()?;
+        let op = dataless_write(Some(6), None, 60);
+        assert!(matches!(
+            lower_write_prop(1, &op, &PropertyValues::new(), &app),
+            Err(PlanError::UnsupportedWriteProp { .. })
+        ));
+        // Named by type, the object cannot be told apart from index 6: refused.
+        let op = dataless_write(None, Some(17), 60);
+        assert!(matches!(
+            lower_write_prop(1, &op, &PropertyValues::new(), &app),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         Ok(())

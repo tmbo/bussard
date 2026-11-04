@@ -649,6 +649,7 @@ pub(super) fn plan_flash_sys7(
                     step_no,
                     op,
                     &property_values,
+                    app,
                 )?);
             }
             LoadOp::LoadImageProp {

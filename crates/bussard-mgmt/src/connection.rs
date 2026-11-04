@@ -2179,6 +2179,35 @@ pub(crate) async fn property_description_request<Ch: L4Channel>(
     })
 }
 
+/// Sends an `A_PropertyDescription_Read` of `property_id` on `object_index`
+/// and returns the description, or `None` when the device acknowledged the
+/// request without answering, answered with another service, or sent a short
+/// descriptor. Only a transport failure is an error.
+///
+/// For a read whose answer the caller does not depend on: the load procedure
+/// step ETS answers with a description read and no write (issue #841).
+///
+/// # Errors
+///
+/// A transport failure the connection cannot recover from.
+pub async fn read_property_description_optional<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_index: u8,
+    property_id: u8,
+) -> Result<Option<crate::apci::PropertyDescription>> {
+    let payload = crate::apci::encode_property_description_read(object_index, property_id, 0);
+    let Some((apci, data)) = l4
+        .request_optional(crate::apci::A_PROPERTY_DESCRIPTION_READ, &payload)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if apci != crate::apci::A_PROPERTY_DESCRIPTION_RESPONSE {
+        return Ok(None);
+    }
+    Ok(crate::apci::decode_property_description_response(&data))
+}
+
 /// The interface-object index the discovery sweep stops at (exclusive).
 ///
 /// Interface objects are contiguously indexed from 0, so the sweep ends at the

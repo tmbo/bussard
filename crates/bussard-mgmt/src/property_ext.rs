@@ -736,6 +736,32 @@ pub async fn read_property_ext_description<Ch: L4Channel>(
     })
 }
 
+/// [`read_property_ext_description`] for a read whose answer the caller does
+/// not depend on: `None` when the device acknowledged the request without
+/// answering, answered with another service, or sent a short response. Only a
+/// transport failure is an error. ETS sends it for a load procedure's
+/// property write it has no value for (issue #841).
+///
+/// # Errors
+///
+/// A transport failure the connection cannot recover from.
+pub async fn read_property_ext_description_optional<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: PropertyExtAddress,
+) -> Result<Option<PropertyExtDescription>> {
+    let payload = encode_property_ext_description_read(&addr, 0);
+    let Some((resp_apci, data)) = l4
+        .request_optional(A_PROPERTY_EXT_DESCRIPTION_READ, &payload)
+        .await?
+    else {
+        return Ok(None);
+    };
+    if resp_apci != A_PROPERTY_EXT_DESCRIPTION_RESPONSE {
+        return Ok(None);
+    }
+    Ok(decode_property_ext_description_response(&data))
+}
+
 /// Sends `A_FunctionPropertyExt_Command` and returns the device's state
 /// response, checking the echoed header and a zero return code.
 pub async fn function_property_ext_command<Ch: L4Channel>(

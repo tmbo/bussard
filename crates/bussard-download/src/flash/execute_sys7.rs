@@ -255,6 +255,11 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
                             ));
                         }
                     }
+                    FlashStep::DescribeProp { object, prop_id } => {
+                        // ETS's description read for a property write it has no
+                        // value for (issue #841); the answer changes nothing.
+                        super::props::describe_property(session.l4(), *object, *prop_id).await?;
+                    }
                     FlashStep::CompareProp {
                         object,
                         prop_id,

@@ -74,6 +74,9 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
                     )
                     .await
                 }
+                FlashStep::DescribeProp { object, prop_id } => {
+                    super::props::describe_property(session.l4(), *object, *prop_id).await
+                }
                 FlashStep::Restart => {
                     // Sent after the read-back below: the device is unreachable
                     // while it reboots.

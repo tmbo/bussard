@@ -290,9 +290,10 @@ pub enum FlashStep {
     },
     /// Write an interface-object property (`LdCtrlWriteProp`). Carries the value
     /// to write and the object the write targets, resolved at plan time. A
-    /// value-less op whose value no parameter supplies is refused at plan time
-    /// (see [`PlanError::UnsupportedWriteProp`]) rather than lowering to a step
-    /// that would execute as a silent no-op.
+    /// value-less op on a property no parameter of the program is stored in
+    /// lowers to [`FlashStep::DescribeProp`] instead (issue #841); every other
+    /// op without a value is refused at plan time (see
+    /// [`PlanError::UnsupportedWriteProp`]).
     WriteProp {
         /// The interface object the write targets: by index (`ObjIdx`) or by
         /// type and occurrence (`ObjType`), resolved on the device.
@@ -317,6 +318,20 @@ pub enum FlashStep {
         /// compares it on every system (issue #669), and the executor never
         /// skips it as a template write to an absent object.
         from_parameters: bool,
+    },
+    /// Read the description of an interface-object property and write nothing:
+    /// an `LdCtrlWriteProp` without `InlineData` on a property no parameter of
+    /// the program is stored in (issue #841). ETS has no value for such a
+    /// write either; it reads the property's description and goes on (the
+    /// Enertex `PID_ENX_TELEGRAMMRATE_LIMIT`, object type 50001 PID 211, of
+    /// `M-00A6_A-0033-20-BFA6`, ETS 6.4.1 into knx-sim on 2026-11-04). The
+    /// model holds no value for the property, so there is nothing to read back.
+    /// The read's answer, or its absence, does not change the flash.
+    DescribeProp {
+        /// The interface object the op names: by index or by type.
+        object: PropObject,
+        /// The property id.
+        prop_id: u32,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
@@ -1467,6 +1482,7 @@ impl FlashPlan {
                 matches!(
                     s,
                     FlashStep::WriteProp { .. }
+                        | FlashStep::DescribeProp { .. }
                         | FlashStep::CompareProp { .. }
                         | FlashStep::Restart
                 )
