@@ -2,10 +2,12 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <!-- The pairing page (#809): served by bussard's MCP server on 127.0.0.1
-       under a random token path. bussard fills the double-brace placeholders
-       (escaped) and sends the same policy as a header, with
-       frame-ancestors. No inline script or style, no third-party requests. -->
+  <!-- The pairing page (#809, #820): served by bussard's MCP server on
+       127.0.0.1 under a random token path. bussard fills the double-brace
+       placeholders (escaped) and sends the same policy as a header, with
+       frame-ancestors. No inline script or style, no third-party requests.
+       One column read top to bottom: three numbered steps; once the phone
+       joined, steps 1 and 2 fold into one line and the certificates lead. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
   <meta name="referrer" content="no-referrer">
   <meta name="robots" content="noindex, nofollow">
@@ -16,7 +18,7 @@
   <link rel="stylesheet" href="pairing.css">
   <script type="module" src="pairing.js"></script>
 </head>
-<body>
+<body class="{{mode}}">
   <header class="top">
     <span class="brand">bussard</span>
     <span class="title">Add KNX Secure certificates</span>
@@ -30,48 +32,54 @@
       It was refused and nothing it sent was saved. If it was not yours,
       someone else has the link: stop the session in the chat and start a new one.
     </div>
-    <div class="grid">
-      <section class="panel connect" {{hosted_hidden}} aria-labelledby="scan-title">
-        <h1 id="scan-title">Scan this with your phone</h1>
-        <div class="qr-frame">{{qr}}</div>
-        <p class="muted small">Or open this link on the phone:</p>
-        <div class="link-row">
-          <code id="phone-link" class="link">{{link}}</code>
-          <button id="copy" class="secondary small-btn" type="button">Copy</button>
-        </div>
-      </section>
 
-      <section class="panel connect" {{local_hidden}} aria-labelledby="local-title">
-        <h1 id="local-title">Open the certificate page</h1>
-        <p>The certificate page runs inside bussard on this computer. Use it with a
-          webcam, or type the codes.</p>
-        <a id="local-link" class="button primary" href="{{link}}" target="_blank" rel="noopener noreferrer">Open the certificate page</a>
-      </section>
-
-      <section class="panel code-panel" aria-labelledby="code-title">
-        <div id="code-title" class="fp-label">Session code</div>
-        <div id="code" class="fingerprint">{{code}}</div>
-        <p class="code-help">The certificate page shows the same code. Tap
-          <strong>Matches</strong> there only if both codes are the same.</p>
-        <ol class="steps">
-          <li>Open the link on your phone.</li>
-          <li>Check the session code.</li>
-          <li>Scan the certificates on your Secure devices. Each one appears below.</li>
-        </ol>
-      </section>
-    </div>
-
-    <section class="panel results" aria-labelledby="list-title">
-      <div class="results-head">
-        <h2 id="list-title">Certificates</h2>
-        <span id="summary" class="summary" aria-live="polite">Nothing sent yet</span>
+    <section class="panel" aria-label="Steps">
+      <div id="compact" class="compact" hidden>
+        <span class="tick" aria-hidden="true"></span>
+        <span class="compact-line"><span id="compact-text">Phone connected</span>
+          <span class="sep" aria-hidden="true">&middot;</span>
+          session code <span class="compact-code">{{code}}</span></span>
+        <button id="toggle-setup" class="link-btn" type="button" aria-expanded="false">Show the QR code</button>
       </div>
-      <div id="end" class="banner" role="status" hidden>
-        <span id="end-title" class="banner-title"></span>
-        <ul id="next-steps" class="next-steps"></ul>
-      </div>
-      <ol id="labels" class="labels" aria-live="polite"></ol>
-      <p id="labels-empty" class="muted small">No certificates yet. They appear here as your phone sends them.</p>
+
+      <ol class="steps">
+        <li class="step setup" {{hosted_hidden}}>
+          <h1 class="step-title">Scan this QR code with your phone</h1>
+          <div class="qr-frame">{{qr}}</div>
+          <p class="muted small alt">Or open this link on the phone:</p>
+          <div class="link-row">
+            <code id="phone-link" class="link">{{link}}</code>
+            <button id="copy" class="secondary small-btn" type="button">Copy</button>
+          </div>
+        </li>
+
+        <li class="step setup" {{local_hidden}}>
+          <h1 class="step-title">Open the certificate page</h1>
+          <p class="step-text">It runs inside bussard on this computer. Use it with a
+            webcam, or type the codes.</p>
+          <a id="local-link" class="button primary" href="{{link}}" target="_blank" rel="noopener noreferrer">Open the certificate page</a>
+        </li>
+
+        <li class="step setup">
+          <h2 class="step-title">Check the session code</h2>
+          <div id="code" class="fingerprint">{{code}}</div>
+          <p class="step-text">The certificate page shows the same code. Tap
+            <strong>Matches</strong> there only if both codes are the same.</p>
+        </li>
+
+        <li class="step results">
+          <div class="results-head">
+            <h2 id="list-title" class="step-title">Scan the certificates on your devices</h2>
+            <span id="summary" class="summary" aria-live="polite">Nothing sent yet</span>
+          </div>
+          <div id="end" class="banner" role="status" hidden>
+            <span id="end-title" class="banner-title"></span>
+            <ul id="next-steps" class="next-steps"></ul>
+          </div>
+          <ol id="labels" class="labels" aria-live="polite" aria-labelledby="list-title"></ol>
+          <p id="labels-empty" class="muted small empty">Each certificate appears here as it arrives.</p>
+        </li>
+      </ol>
     </section>
 
     <p class="foot">

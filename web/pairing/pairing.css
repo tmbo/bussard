@@ -1,6 +1,8 @@
-/* The pairing page (#809). Laptop first: the QR code is scanned off this
-   screen. Colour tokens are those of web/enroll/style.css, so both pages
-   look like one product. */
+/* The pairing page (#809, #820). One column read top to bottom: numbered
+   steps with the QR code in step 1; once the phone joined, steps 1 and 2
+   fold into one line and the certificate list leads. Laptop first: the QR
+   code is scanned off this screen. Colour tokens are those of
+   web/enroll/style.css, so both pages look like one product. */
 
 :root {
   color-scheme: light dark;
@@ -52,20 +54,20 @@ body {
 
 button { font: inherit; cursor: pointer; }
 
-main { max-width: 1040px; margin: 0 auto; padding: 0 24px 40px; }
+main, .top { max-width: 720px; margin: 0 auto; }
+main { padding: 0 16px 40px; }
 
 /* ------------------------------------------------------------- header */
 
 .top {
-  max-width: 1040px;
-  margin: 0 auto;
-  padding: 18px 24px 14px;
+  padding: 18px 16px 14px;
   display: flex;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   align-items: center;
 }
 .brand { font-weight: 700; font-size: 1.15rem; color: var(--green-ink); }
-.title { color: var(--muted); flex: 1; min-width: 0; }
+.title { color: var(--muted); flex: 1; min-width: 12em; }
 
 .state {
   font-size: 0.9rem;
@@ -96,7 +98,7 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 40px; }
 .state.warn::before { background: var(--amber-ink); }
 @keyframes pulse { 50% { opacity: 0.25; } }
 
-/* ------------------------------------------------------------- panels */
+/* -------------------------------------------------------------- steps */
 
 .panel {
   background: var(--surface);
@@ -104,22 +106,38 @@ main { max-width: 1040px; margin: 0 auto; padding: 0 24px 40px; }
   border-radius: 16px;
   padding: 24px;
 }
+@media (max-width: 520px) {
+  .panel { padding: 18px 14px; }
+}
 
-.grid {
+.steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.step {
+  counter-increment: step;
+  position: relative;
+  padding-left: 44px;
+}
+/* A rule above every step that follows a shown one (local mode hides the
+   QR step with the hidden attribute). */
+.step:not([hidden]) ~ .step { margin-top: 22px; padding-top: 22px; border-top: 1px solid var(--line); }
+.step::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  color: var(--green-ink);
+  font-weight: 700;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
-  gap: 16px;
-  align-items: stretch;
+  place-items: center;
 }
-@media (max-width: 820px) {
-  .grid { grid-template-columns: 1fr; }
-}
-
-h1 { font-size: 1.25rem; margin: 0 0 16px; }
-h2 { font-size: 1.1rem; margin: 0; }
+.step:not([hidden]) ~ .step::before { top: 22px; }
+.step-title { font-size: 1.15rem; font-weight: 650; margin: 2px 0 12px; line-height: 1.35; }
+.step-text { margin: 0; color: var(--muted); max-width: 52ch; }
+.step-text + .button { margin-top: 14px; }
 
 /* The QR code stays dark on white in both schemes, for the camera. */
-.connect { text-align: center; }
 .qr-frame {
   display: inline-block;
   background: #fff;
@@ -128,27 +146,27 @@ h2 { font-size: 1.1rem; margin: 0; }
   line-height: 0;
   box-shadow: 0 0 0 1px var(--line);
 }
-.qr { width: min(360px, 70vw); height: auto; display: block; }
+.qr { width: min(240px, 60vw); height: auto; display: block; }
+.alt { margin: 14px 0 6px; }
 .link-row {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  align-items: center;
-  max-width: 460px;
-  margin: 0 auto;
-  text-align: left;
+  align-items: flex-start;
 }
+/* The whole link, wrapped anywhere: no fixed height, nothing clipped. */
 .link {
-  flex: 1;
+  flex: 1 1 18em;
   min-width: 0;
   font-family: var(--mono);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  line-height: 1.5;
   color: var(--muted);
   background: var(--surface-2);
   border-radius: 8px;
   padding: 8px 10px;
   overflow-wrap: anywhere;
-  max-height: 4.6em;
-  overflow: auto;
+  word-break: break-all;
   user-select: all;
 }
 
@@ -163,40 +181,67 @@ h2 { font-size: 1.1rem; margin: 0; }
 button.secondary { background: transparent; color: var(--ink); border: 1px solid var(--line); }
 .small-btn { padding: 8px 14px; font-size: 0.9rem; }
 
-.code-panel { display: flex; flex-direction: column; justify-content: center; text-align: center; }
-.fp-label { font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); }
 .fingerprint {
   font-family: var(--mono);
-  font-size: clamp(2.4rem, 5vw, 3.8rem);
+  font-size: clamp(2rem, 7vw, 3rem);
   font-weight: 700;
   letter-spacing: 0.08em;
   line-height: 1.15;
-  margin: 8px 0 12px;
+  margin: 0 0 10px;
   white-space: nowrap;
 }
-.code-help { margin: 0 auto 18px; max-width: 34ch; }
-.steps {
-  text-align: left;
-  margin: 0 auto;
-  padding: 16px 0 0 1.4em;
-  border-top: 1px solid var(--line);
-  color: var(--muted);
-  max-width: 36ch;
+
+/* ------------------------------------------- compact, once connected */
+
+.compact {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  padding-bottom: 18px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
 }
-.steps li + li { margin-top: 4px; }
+.compact-line { flex: 1; min-width: 14em; }
+.tick {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--green);
+  flex: none;
+}
+.ended .tick { background: var(--muted); }
+.sep { color: var(--muted); margin: 0 4px; }
+.compact-code { font-family: var(--mono); font-weight: 700; letter-spacing: 0.05em; }
+.link-btn {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--green-ink);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+/* Connected: steps 1 and 2 fold away unless asked for; the list leads and
+   loses its number. */
+.connected:not(.show-setup) .setup { display: none; }
+.connected:not(.show-setup) .step.results { padding-left: 0; margin-top: 0; padding-top: 0; border-top: 0; }
+.connected:not(.show-setup) .step.results::before { display: none; }
 
 /* --------------------------------------------------------------- list */
 
-.results { margin-top: 16px; }
 .results-head {
   display: flex;
   justify-content: space-between;
   align-items: baseline;
-  gap: 12px;
+  gap: 4px 12px;
   flex-wrap: wrap;
   margin-bottom: 12px;
 }
+.results-head .step-title { margin-bottom: 0; }
 .summary { color: var(--muted); font-size: 0.95rem; }
+.empty { margin: 0; }
 
 .labels { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .label {
@@ -241,10 +286,7 @@ main > .banner { margin-bottom: 16px; }
 .banner-title { display: block; font-weight: 600; }
 .next-steps { margin: 6px 0 0; padding-left: 1.2em; }
 .next-steps:empty { display: none; }
-.next-steps code { font-family: var(--mono); font-weight: 600; }
-
-/* Once the session ended the phone link is no use: dim it. */
-.ended .connect { opacity: 0.45; }
+.next-steps code { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }
 
 .muted { color: var(--muted); }
 .small { font-size: 0.88rem; }

@@ -320,7 +320,7 @@ impl Tiers {
              returns a `summary` and the change as sentences: say the summary, then quote the \
              sentences, and follow the result's next_step. KNX Secure device certificates (the \
              codes that carry each device's factory key) enter the key store through knx_enroll_certificates and \
-             knx_enroll_status: bussard opens a pairing page in the human's browser with the phone link and its session code, and the human scans the certificates with the phone. Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal."
+             knx_enroll_status: bussard opens a pairing page in the human's browser that shows the steps, the phone link, its session code and the certificates as they arrive. Tell the human only that the page is open and to follow it there; do not repeat its steps or its list in the chat. Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal."
                 .to_string()
         } else {
             "Edits to the project are off (--no-model-edits): the project is read-only here.".to_string()

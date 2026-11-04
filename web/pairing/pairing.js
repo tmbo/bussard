@@ -1,12 +1,16 @@
-// The pairing page (#809): keeps the list of certificates current with a
-// long poll on `status` (relative to the page's token path) and copies the
-// phone link. Every text goes in with textContent; the server's strings are
-// already in the glossary's words (dev/glossary.md).
+// The pairing page (#809, #820): keeps the list of certificates current with
+// a long poll on `status` (relative to the page's token path), folds steps 1
+// and 2 into one line once the phone joined, and copies the phone link.
+// Every text goes in with textContent; the server's strings are already in
+// the glossary's words (dev/glossary.md).
 
 const $ = (id) => document.getElementById(id);
 
 /** Retries before the page says bussard stopped answering. */
 const MAX_FAILURES = 4;
+
+/** Local mode: the certificate page runs in a browser on this computer. */
+const LOCAL = document.body.classList.contains("local");
 
 let version = null;
 let shown = 0;
@@ -41,6 +45,15 @@ function row(cert) {
   return li;
 }
 
+/** Folds steps 1 and 2 into the one line of `text`; `again` offers them back. */
+function compact(text, again) {
+  document.body.classList.add("connected");
+  $("compact").hidden = false;
+  $("compact-text").textContent = text;
+  $("toggle-setup").hidden = !again;
+  if (!again) document.body.classList.remove("show-setup");
+}
+
 function render(status) {
   const list = $("labels");
   const certs = status.certificates;
@@ -64,6 +77,10 @@ function render(status) {
   if (!status.running) {
     const problems = certs.some((c) => c.tone === "bad");
     setState("Finished", problems ? "warn" : "done");
+    // The link is no use any more: the session code stays for reference.
+    compact("Session closed", false);
+    $("list-title").textContent = "Certificates";
+    $("labels-empty").textContent = "No certificates were sent.";
     const end = $("end");
     end.hidden = false;
     end.className = `banner ${problems ? "warn" : "info"}`;
@@ -79,9 +96,10 @@ function render(status) {
     }
     document.body.classList.add("ended");
   } else if (status.phones > 0) {
-    setState("Phone connected", "live");
+    setState(LOCAL ? "Connected" : "Phone connected", "live");
+    compact(LOCAL ? "Certificate page connected" : "Phone connected", true);
   } else {
-    setState("Waiting for your phone", "waiting");
+    setState(LOCAL ? "Waiting for the certificate page" : "Waiting for your phone", "waiting");
   }
 }
 
@@ -108,6 +126,17 @@ async function poll() {
   }
 }
 
+function setupToggle() {
+  const button = $("toggle-setup");
+  const label = () => (LOCAL ? "the steps" : "the QR code");
+  button.textContent = `Show ${label()}`;
+  button.addEventListener("click", () => {
+    const open = document.body.classList.toggle("show-setup");
+    button.setAttribute("aria-expanded", String(open));
+    button.textContent = `${open ? "Hide" : "Show"} ${label()}`;
+  });
+}
+
 function setupCopy() {
   const button = $("copy");
   button.addEventListener("click", async () => {
@@ -129,5 +158,6 @@ function setupCopy() {
   });
 }
 
+setupToggle();
 setupCopy();
 poll();
