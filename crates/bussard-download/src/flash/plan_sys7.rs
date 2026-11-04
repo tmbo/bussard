@@ -706,10 +706,19 @@ pub(super) fn plan_flash_sys7(
     // device's parameter values make visible, as in ETS (issue #117).
     let default_flags = sys7_object_defaults(app, &config);
     // Module instances shift numbers past the declared ones: count those too.
+    // A static `<ComObject>` without any `<ComObjectRef>` counts as declared:
+    // ETS clears C on it like on every object nothing shows (issue #837,
+    // ekinex `A-4743-02`: object 160 `Dummy`, template `df`, ETS `db`).
     let last_object = app
         .resolved_com_objects()
         .iter()
         .map(|c| c.number())
+        .chain(
+            app.com_objects
+                .values()
+                .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
+                .map(|c| c.number),
+        )
         .chain(default_flags.keys().copied())
         .chain(linked.iter().copied())
         .max();
@@ -1131,9 +1140,10 @@ pub(super) struct Sys7ObjectDefault {
     /// The TYPE octet (the size code of the ref's object size), `None` to keep
     /// the template's.
     type_code: Option<u8>,
-    /// The transmission priority the ref (else its base object) declares,
-    /// for CONFIG bits 1-0; `None` keeps the template's (issue #541).
-    priority: Option<bussard_model::Priority>,
+    /// The transmission priority for CONFIG bits 1-0: the one the ref (else
+    /// its base object) declares (issue #541), else `Low`, the schema default
+    /// ETS writes over any template value (issue #836).
+    priority: bussard_model::Priority,
 }
 
 /// The per-ASAP defaults the System 7 post-pass writes, from the Dynamic walk.
@@ -1166,7 +1176,7 @@ pub(super) fn sys7_object_defaults(
                     Sys7ObjectDefault {
                         flags: c.flags(),
                         type_code: None,
-                        priority: c.declared_priority(),
+                        priority: c.priority(),
                     },
                 )
             })
@@ -1195,7 +1205,7 @@ pub(super) fn sys7_object_defaults(
             Sys7ObjectDefault {
                 flags: base.flags.merge(cref.flags).to_flags(),
                 type_code: size.and_then(sys7_type_code),
-                priority: cref.priority.or(base.priority),
+                priority: cref.priority.or(base.priority).unwrap_or_default(),
             },
         );
     }
@@ -1260,9 +1270,11 @@ pub(super) fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 ///   cleared.
 ///
 /// An ASAP whose default carries a TYPE octet (the visible ref's object size)
-/// takes that too, and one whose visible ref (else base object) declares a
-/// `Priority` takes it into bits 1-0 (Resources 3/5/1 §4.18.3.1.2.1, issue
-/// #541); without a declaration the template's priority stays.
+/// takes that too, and its priority goes into bits 1-0: the one its visible
+/// ref (else base object) declares (Resources 3/5/1 §4.18.3.1.2.1, issue
+/// #541), else `Low` (issue #836, ekinex `A-4741-01`: objects 24-28 declare
+/// none, the template holds `00`, ETS wrote `11`). An ASAP without a default
+/// keeps the template's priority.
 ///
 /// `last_object` is the highest com-object `Number` the application declares:
 /// ETS rewrites the descriptors up to it (numbering gaps included) and leaves
@@ -1336,7 +1348,7 @@ pub(super) fn apply_sys7_group_object_links(
         if let Some(t) = default.and_then(|o| o.type_code) {
             d[3] = t;
         }
-        if let Some(p) = default.and_then(|o| o.priority) {
+        if let Some(p) = default.map(|o| o.priority) {
             d[2] = (d[2] & !0b11) | (p.code() as u8 & 0b11);
         }
     }
@@ -2163,7 +2175,7 @@ mod tests {
                 Sys7ObjectDefault {
                     flags: Flags::WRITE | Flags::COMMUNICATION,
                     type_code: None,
-                    priority: None,
+                    priority: bussard_model::Priority::Low,
                 },
             ),
             (
@@ -2171,7 +2183,7 @@ mod tests {
                 Sys7ObjectDefault {
                     flags: Flags::TRANSMIT | Flags::WRITE | Flags::COMMUNICATION,
                     type_code: None,
-                    priority: None,
+                    priority: bussard_model::Priority::Low,
                 },
             ),
         ]);
@@ -2213,7 +2225,7 @@ mod tests {
             (1, bussard_model::Priority::High),
         ] {
             if let Some(d) = prioritised.get_mut(&asap) {
-                d.priority = Some(priority);
+                d.priority = priority;
             }
         }
         prioritised.insert(
@@ -2221,7 +2233,7 @@ mod tests {
             Sys7ObjectDefault {
                 flags: Flags::TRANSMIT,
                 type_code: None,
-                priority: Some(bussard_model::Priority::Alarm),
+                priority: bussard_model::Priority::Alarm,
             },
         );
         assert_eq!(
@@ -2612,13 +2624,22 @@ mod tests {
         objects: &str,
         dynamic: &str,
     ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        sys7_descriptor_app_with("AwcPBwDfAAcB3wcHAt8A", objects, dynamic)
+    }
+
+    /// [`sys7_descriptor_app`] with the segment's base64 `data` (15 octets).
+    fn sys7_descriptor_app_with(
+        data: &str,
+        objects: &str,
+        dynamic: &str,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram PeiType="0" Id="A" ApplicationNumber="1" ApplicationVersion="16"
             MaskVersion="MV-0701" Name="Descriptors" LoadProcedureStyle="ProductProcedure">
           <Static>
            <Code>
-            <AbsoluteSegment Id="A_AS-43FF" Size="15" Address="17407"><Data>AwcPBwDfAAcB3wcHAt8A</Data></AbsoluteSegment>
+            <AbsoluteSegment Id="A_AS-43FF" Size="15" Address="17407"><Data>{data}</Data></AbsoluteSegment>
            </Code>
            <ParameterTypes><ParameterType Id="A_PT-1" Name="t"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="1" /></ParameterType></ParameterTypes>
            <Parameters><Parameter Id="A_P-1" Name="enable" ParameterType="A_PT-1" Value="0" /></Parameters>
@@ -2720,6 +2741,50 @@ mod tests {
                 0x00
             ]
         );
+        Ok(())
+    }
+
+    /// Issues #836 and #837 (ekinex `A-4741-01`, `A-4743-02`): an object
+    /// that declares no `Priority` gets `Low` (bits 1-0 `11`) over the
+    /// template's, a declared one keeps it, and a `<ComObject>` without any
+    /// `<ComObjectRef>` gets the template with C cleared.
+    #[test]
+    fn test_plan_flash_sys7_undeclared_priority_and_refless_object()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let objects = r#"<ComObjects>
+            <ComObject Id="A_O-0" Number="0" ObjectSize="1 Bit" TransmitFlag="Enabled" ReadFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" Priority="High" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-2" Number="2" ObjectSize="1 Bit" Name="Dummy" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-0_R-1" RefId="A_O-0" />
+            <ComObjectRef Id="A_O-1_R-2" RefId="A_O-1" />
+           </ComObjectRefs>"#;
+        let dynamic = r#"<Dynamic>
+           <ChannelIndependentBlock>
+            <ParameterBlock Id="A_PB-1" Name="main">
+             <ParameterRefRef RefId="A_P-1_R-1" />
+             <choose ParamRefId="A_P-1_R-1">
+              <when test="0"><ComObjectRefRef RefId="A_O-0_R-1" /><ComObjectRefRef RefId="A_O-1_R-2" /></when>
+             </choose>
+            </ParameterBlock>
+           </ChannelIndependentBlock>
+          </Dynamic>"#;
+        // Template CONFIG `dc`, `94`, `df` (priority `00`, `00`, `11`).
+        let data = "AwcPBwDcAAcBlAcHAt8A";
+        // `dc` with T R, Low: `4b` (ETS on `A-4741-01` objects 27, 28);
+        // `94` with W, the declared High: `11`; the Dummy `df & !C`: `db`.
+        // The visible ref also writes TYPE (`1 Bit`: `00`) over slot 1's `07`.
+        let mut want = vec![
+            0x03, 0x07, 0x0F, 0x07, 0x00, 0x4B, 0x00, 0x07, 0x01, 0x11, 0x00, 0x07, 0x02, 0xDB,
+            0x00,
+        ];
+        let app = sys7_descriptor_app_with(data, objects, dynamic)?;
+        assert_eq!(plan_descriptor_table(&app)?, want);
+        // The flat defaults (no Dynamic section) do the same, TYPE kept.
+        want[10] = 0x07;
+        let flat = sys7_descriptor_app_with(data, objects, "")?;
+        assert_eq!(plan_descriptor_table(&flat)?, want);
         Ok(())
     }
 
