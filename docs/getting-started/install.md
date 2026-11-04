@@ -41,19 +41,48 @@ Pick one. Each installer puts `bussard` on your `PATH` and checks the download a
 
 ## Download the binary by hand
 
-Every [release](https://github.com/tmbo/bussard/releases/latest) has five binaries: `bussard-linux-x64`, `bussard-linux-arm64`, `bussard-macos-arm64`, `bussard-macos-x64` and `bussard-windows-x64.exe`. Each comes with a `.sha256` file next to it. You can also download them from the [landing page](../../).
+Pick the file for your machine on the [download page](https://bussard.tmbo.dev/#download). Then make it executable and put it on your `PATH`:
 
-Check the download against its checksum file (`sha256sum -c` on Linux), make it executable and put it on your `PATH`:
+=== "macOS"
 
-```console
-$ shasum -a 256 -c bussard-macos-arm64.sha256
-bussard-macos-arm64: OK
-$ chmod +x bussard-macos-arm64
-$ mv bussard-macos-arm64 /usr/local/bin/bussard
-$ xattr -d com.apple.quarantine /usr/local/bin/bussard
-```
+    ```console
+    $ chmod +x bussard-macos-arm64
+    $ xattr -d com.apple.quarantine bussard-macos-arm64
+    $ mv bussard-macos-arm64 /usr/local/bin/bussard
+    ```
 
-The `xattr` line is for macOS only: the binary is not notarized, so macOS blocks it until you remove the quarantine flag once.
+    The `xattr` line removes the quarantine flag once: the binary is not notarized, so macOS blocks it otherwise.
+
+    Optional: check the download against the checksum file next to it first.
+
+    ```console
+    $ shasum -a 256 -c bussard-macos-arm64.sha256
+    bussard-macos-arm64: OK
+    ```
+
+=== "Linux"
+
+    ```console
+    $ chmod +x bussard-linux-x64
+    $ sudo mv bussard-linux-x64 /usr/local/bin/bussard
+    ```
+
+    Optional: check the download against the checksum file next to it first.
+
+    ```console
+    $ sha256sum -c bussard-linux-x64.sha256
+    bussard-linux-x64: OK
+    ```
+
+=== "Windows"
+
+    Rename `bussard-windows-x64.exe` to `bussard.exe` and move it into a folder on your `PATH`, for example `%LOCALAPPDATA%\Programs\bussard`. Windows shows a SmartScreen warning the first time, because the binary is not signed.
+
+    Optional: compare the hash with the content of the `.sha256` file next to the download.
+
+    ```console
+    > certutil -hashfile bussard.exe SHA256
+    ```
 
 ## Build from source
 
