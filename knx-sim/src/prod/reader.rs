@@ -303,6 +303,15 @@ fn parse_application_program(
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
     let mut typed_props: Vec<crate::prod::TypedProperty> = Vec::new();
     let mut object_types: Vec<(u8, u16)> = Vec::new();
+    // The `InlineData` length (when any) and `Count` of each property write,
+    // sized after the parse from the parameters the product stores in the
+    // property (issue #841).
+    let mut written_raw: Vec<(PropTarget, u8, Option<usize>, u16)> = Vec::new();
+    let mut type_bits: std::collections::HashMap<String, TypeSize> = Default::default();
+    let mut prop_locs: Vec<PropLocation> = Vec::new();
+    let mut cur_ptype: Option<String> = None;
+    let mut cur_param_type: Option<String> = None;
+    let mut cur_union_bits: Option<u32> = None;
     // Whether the procedure holds a property op, and any other load op.
     let mut property_ops = false;
     let mut other_ops = false;
@@ -337,6 +346,14 @@ fn parse_application_program(
         {
             other_ops = true;
         }
+        // The size of the parameter type being read, from its first child
+        // that gives one.
+        if let Some(id) = &cur_ptype
+            && let Event::Start(e) | Event::Empty(e) = &event
+            && let Some(size) = type_size(e)?
+        {
+            type_bits.entry(id.clone()).or_insert(size);
+        }
         match event {
             Event::Eof => break,
             Event::Start(e) | Event::Empty(e) => match e.name().as_ref() {
@@ -363,6 +380,41 @@ fn parse_application_program(
                 b"Parameter" if in_app => {
                     if let Some(id) = attr(&e, "Id") {
                         defaults.parameter(id, attr(&e, "Value"));
+                    }
+                    if !is_empty_element {
+                        cur_param_type = attr(&e, "ParameterType");
+                    }
+                }
+                b"ParameterType" if in_app && !is_empty_element => {
+                    cur_ptype = attr(&e, "Id");
+                }
+                b"Union" if in_app && !is_empty_element => {
+                    cur_union_bits = parse_u32(&e, "SizeInBit")?;
+                }
+                // Where a parameter (or a union of them) lives when the
+                // product stores it in a property rather than in memory.
+                b"Property" if in_app && (cur_param_type.is_some() || cur_union_bits.is_some()) => {
+                    let target = match (
+                        parse_u32(&e, "ObjectIndex")?.and_then(|v| u8::try_from(v).ok()),
+                        parse_u32(&e, "ObjectType")?.and_then(|v| u16::try_from(v).ok()),
+                    ) {
+                        (Some(index), _) => Some(PropTarget::Index(index)),
+                        (None, Some(object_type)) => Some(PropTarget::Type(object_type)),
+                        (None, None) => None,
+                    };
+                    let pid = parse_u32(&e, "PropertyId")?.and_then(|v| u8::try_from(v).ok());
+                    if let (Some(target), Some(pid)) = (target, pid) {
+                        prop_locs.push(PropLocation {
+                            target,
+                            pid,
+                            offset: parse_u32(&e, "Offset")?.unwrap_or(0),
+                            bit_offset: parse_u32(&e, "BitOffset")?.unwrap_or(0),
+                            size: match (&cur_param_type, cur_union_bits) {
+                                (Some(ptype), _) => LocationSize::Type(ptype.clone()),
+                                (None, Some(bits)) => LocationSize::Bits(bits),
+                                (None, None) => LocationSize::Bits(0),
+                            },
+                        });
                     }
                 }
                 b"ParameterRef" if in_app => {
@@ -456,24 +508,33 @@ fn parse_application_program(
                                 pid,
                                 compare: None,
                                 written: true,
+                                len: 0,
+                                count: 1,
+                                pdt: None,
                             }),
                         }
                     }
                     let object = parse_u32(&e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok());
                     let pid = parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok());
-                    let len = attr(&e, "InlineData")
+                    let inline_len = attr(&e, "InlineData")
                         .and_then(|hex| decode_hex(&hex))
-                        .map_or(1, |v| v.len().max(1));
+                        .map(|v| v.len())
+                        .filter(|&n| n > 0);
                     // `Count` elements of `len / Count` octets (issue #692).
                     let count = parse_u32(&e, "Count")?
                         .and_then(|v| u16::try_from(v).ok())
                         .unwrap_or(1);
-                    if let (Some(object), Some(pid)) = (object, pid)
-                        && !written_props
+                    let target = match (object, obj_type) {
+                        (Some(object), _) => Some(PropTarget::Index(object)),
+                        (None, Some(object_type)) => Some(PropTarget::Type(object_type)),
+                        (None, None) => None,
+                    };
+                    if let (Some(target), Some(pid)) = (target, pid)
+                        && !written_raw
                             .iter()
-                            .any(|&(o, p, _, _)| o == object && p == pid)
+                            .any(|&(t, p, _, _)| t == target && p == pid)
                     {
-                        written_props.push((object, pid, len, count));
+                        written_raw.push((target, pid, inline_len, count));
                     }
                 }
                 b"LdCtrlLoadCompleted" if in_app => completes_loads = true,
@@ -536,6 +597,9 @@ fn parse_application_program(
                                             pid,
                                             compare: None,
                                             written: false,
+                                            len: 0,
+                                            count: 1,
+                                            pdt: None,
                                         });
                                     }
                                     typed_cands.push(((object_type, pid), value, chooses.guards()));
@@ -581,6 +645,9 @@ fn parse_application_program(
                     }
                 }
                 b"ApplicationProgram" => in_app = false,
+                b"ParameterType" => cur_ptype = None,
+                b"Parameter" => cur_param_type = None,
+                b"Union" => cur_union_bits = None,
                 b"choose" if in_app => chooses.close_choose(),
                 b"when" if in_app => chooses.close_when(),
                 _ => {}
@@ -627,6 +694,34 @@ fn parse_application_program(
             .find(|t| t.object_type == object_type && t.pid == pid)
         {
             t.compare = Some(value);
+        }
+    }
+
+    // The size of every written property, and the data type of the
+    // parameters it holds (issue #841).
+    let mut written_prop_pdts: Vec<(u8, u8, u8)> = Vec::new();
+    for &(target, pid, inline_len, count) in &written_raw {
+        let len = inline_len
+            .or_else(|| declared_extent(&prop_locs, &type_bits, target, pid))
+            .unwrap_or(usize::from(count.max(1)));
+        let pdt = declared_pdt(&prop_locs, &type_bits, target, pid, len, count);
+        match target {
+            PropTarget::Index(object) => {
+                written_props.push((object, pid, len, count));
+                if let Some(pdt) = pdt {
+                    written_prop_pdts.push((object, pid, pdt));
+                }
+            }
+            PropTarget::Type(object_type) => {
+                if let Some(t) = typed_props
+                    .iter_mut()
+                    .find(|t| t.object_type == object_type && t.pid == pid)
+                {
+                    t.len = len;
+                    t.count = count;
+                    t.pdt = pdt;
+                }
+            }
         }
     }
 
@@ -681,6 +776,7 @@ fn parse_application_program(
         hardware_type_marker,
         device_compare_props,
         written_props,
+        written_prop_pdts,
         task_segment_lsms: completes_loads.then_some(task_segment_lsms),
         compare_mems,
         object_compare_props,
@@ -689,6 +785,131 @@ fn parse_application_program(
         property_only: property_ops && !other_ops,
         security_capacity,
     }))
+}
+
+/// The interface object a property step or a parameter's `<Property>`
+/// addresses: by index (`ObjIdx`, `ObjectIndex`) or by type (`ObjType`,
+/// `ObjectType`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PropTarget {
+    Index(u8),
+    Type(u16),
+}
+
+/// The size of a parameter stored in a property: its parameter type's, or a
+/// union's `SizeInBit`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum LocationSize {
+    Type(String),
+    Bits(u32),
+}
+
+/// A parameter (or union) the product stores in a property
+/// (`<Property ObjectType="50001" PropertyId="211" Offset="0" BitOffset="0"/>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PropLocation {
+    target: PropTarget,
+    pid: u8,
+    /// Octets from the start of the property value.
+    offset: u32,
+    bit_offset: u32,
+    size: LocationSize,
+}
+
+/// A parameter type's size, and the property data type a device describes a
+/// property holding one value of it with, where the type has a scalar one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TypeSize {
+    bits: u32,
+    pdt: Option<u8>,
+}
+
+/// The size a parameter type's child element declares: `SizeInBit`
+/// (`TypeNumber`, `TypeRestriction`, `TypeText`, ...), 32 for `TypeIPAddress`,
+/// and the encoding's width for `TypeFloat`. `None` for any other element.
+/// An 8, 16 or 32-bit `TypeNumber` is `PDT_(UNSIGNED_)CHAR`, `_INT` or
+/// `_LONG`, an IP address `PDT_UNSIGNED_LONG` (Resources 03.05.01, the PDT
+/// codes of 03.07.03).
+fn type_size(e: &quick_xml::events::BytesStart<'_>) -> Result<Option<TypeSize>, ProdError> {
+    let name = e.name();
+    let bits = match parse_u32(e, "SizeInBit")? {
+        Some(bits) => bits,
+        None => match name.as_ref() {
+            b"TypeIPAddress" => 32,
+            b"TypeFloat" => match attr(e, "Encoding").as_deref() {
+                Some("DPT 9") => 16,
+                Some("IEEE-754 Single") => 32,
+                Some("IEEE-754 Double") => 64,
+                _ => return Ok(None),
+            },
+            _ => return Ok(None),
+        },
+    };
+    let pdt = match (name.as_ref(), attr(e, "Type").as_deref(), bits) {
+        (b"TypeNumber", Some("unsignedInt"), 8) => Some(0x02),
+        (b"TypeNumber", Some("unsignedInt"), 16) => Some(0x04),
+        (b"TypeNumber", Some("unsignedInt"), 32) => Some(0x09),
+        (b"TypeNumber", Some("signedInt"), 8) => Some(0x01),
+        (b"TypeNumber", Some("signedInt"), 16) => Some(0x03),
+        (b"TypeNumber", Some("signedInt"), 32) => Some(0x08),
+        (b"TypeIPAddress", _, 32) => Some(0x09),
+        _ => None,
+    };
+    Ok(Some(TypeSize { bits, pdt }))
+}
+
+/// The scalar PDT of property `pid` of `target` when every parameter the
+/// product stores there fills one whole element of `len / count` octets with
+/// a type that has one, the same for all; else `None` (the generic PDT of
+/// the element size describes it).
+fn declared_pdt(
+    locs: &[PropLocation],
+    type_bits: &std::collections::HashMap<String, TypeSize>,
+    target: PropTarget,
+    pid: u8,
+    len: usize,
+    count: u16,
+) -> Option<u8> {
+    let elem = len / usize::from(count.max(1));
+    let mut pdt = None;
+    for l in locs.iter().filter(|l| l.target == target && l.pid == pid) {
+        let LocationSize::Type(id) = &l.size else {
+            return None;
+        };
+        let size = type_bits.get(id)?;
+        let aligned = l.bit_offset == 0
+            && usize::try_from(l.offset).is_ok_and(|o| elem > 0 && o % elem == 0)
+            && usize::try_from(size.bits).is_ok_and(|b| b == elem * 8);
+        if !aligned || size.pdt.is_none() || (pdt.is_some() && pdt != size.pdt) {
+            return None;
+        }
+        pdt = size.pdt;
+    }
+    pdt
+}
+
+/// The octets of property `pid` of `target` the product's parameters cover:
+/// the furthest end (`Offset` + the bit offset and size, rounded up to whole
+/// octets) of a parameter stored there, or `None` when none is, or none of
+/// their sizes is known.
+fn declared_extent(
+    locs: &[PropLocation],
+    type_bits: &std::collections::HashMap<String, TypeSize>,
+    target: PropTarget,
+    pid: u8,
+) -> Option<usize> {
+    locs.iter()
+        .filter(|l| l.target == target && l.pid == pid)
+        .filter_map(|l| {
+            let bits = match &l.size {
+                LocationSize::Type(id) => type_bits.get(id)?.bits,
+                LocationSize::Bits(bits) => *bits,
+            };
+            let end = u64::from(l.offset) + (u64::from(l.bit_offset) + u64::from(bits)).div_ceil(8);
+            usize::try_from(end).ok()
+        })
+        .filter(|&n| n > 0)
+        .max()
 }
 
 /// The manufacturer a device reports in its program id (PID 13 of the
@@ -980,6 +1201,61 @@ mod tests {
         assert!(pd.typed_props.iter().all(|t| t.written));
         assert_eq!(pd.typed_props[0].object_type, 11);
         assert_eq!(pd.typed_props[1].object_type, 50001);
+        Ok(())
+    }
+
+    /// Bussard issue #841: a property write without `InlineData` is as long
+    /// as the parameters the product stores in the property, else one octet
+    /// per element.
+    #[test]
+    fn test_reader_sizes_written_props_from_parameters() -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ManufacturerData><Manufacturer RefId="M-00A6"><ApplicationPrograms>
+          <ApplicationProgram Id="M-00A6_A-1" ApplicationNumber="20" ApplicationVersion="16" MaskVersion="MV-0021">
+           <Static>
+            <ParameterTypes>
+             <ParameterType Id="PT-U8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="5" maxInclusive="50" /></ParameterType>
+             <ParameterType Id="PT-IP"><TypeIPAddress AddressType="IPv4" /></ParameterType>
+             <ParameterType Id="PT-B"><TypeRestriction Base="Value" SizeInBit="1"><Enumeration Text="a" Value="0" Id="E-0" /></TypeRestriction></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+             <Parameter Id="P-1" Name="a" ParameterType="PT-U8" Value="50"><Property ObjectType="50001" PropertyId="211" Offset="0" BitOffset="0" /></Parameter>
+             <Parameter Id="P-2" Name="b" ParameterType="PT-IP" Value="0.0.0.0"><Property ObjectType="11" PropertyId="205" Offset="0" BitOffset="0" /></Parameter>
+             <Parameter Id="P-3" Name="c" ParameterType="PT-IP" Value="0.0.0.0"><Property ObjectType="11" PropertyId="205" Offset="28" BitOffset="0" /></Parameter>
+             <Parameter Id="P-4" Name="d" ParameterType="PT-B" Value="0"><Property ObjectIndex="7" PropertyId="161" Offset="2" BitOffset="3" /></Parameter>
+             <Union SizeInBit="16"><Property ObjectIndex="7" PropertyId="162" Offset="0" BitOffset="0" /><Parameter Id="P-5" Name="e" ParameterType="PT-U8" Offset="0" BitOffset="0" Value="0" /></Union>
+             <Parameter Id="P-6" Name="f" ParameterType="PT-U8" Value="1" />
+            </Parameters>
+            <LoadProcedures><LoadProcedure>
+             <LdCtrlWriteProp ObjType="11" PropId="205" Count="8" Verify="true" />
+             <LdCtrlWriteProp ObjType="50001" PropId="211" Verify="false" />
+             <LdCtrlWriteProp ObjType="50002" PropId="212" Count="3" />
+             <LdCtrlWriteProp ObjIdx="7" PropId="161" />
+             <LdCtrlWriteProp ObjIdx="7" PropId="162" />
+             <LdCtrlWriteProp ObjIdx="7" PropId="163" InlineData="0102" Count="2" />
+            </LoadProcedure></LoadProcedures>
+           </Static>
+          </ApplicationProgram>
+         </ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        let typed: Vec<(u16, u8, usize, u16)> = pd
+            .typed_props
+            .iter()
+            .map(|t| (t.object_type, t.pid, t.len, t.count))
+            .collect();
+        assert_eq!(
+            typed,
+            vec![(11, 205, 32, 8), (50001, 211, 1, 1), (50002, 212, 3, 3)]
+        );
+        // PDT_UNSIGNED_LONG per IP address, PDT_UNSIGNED_CHAR for the 8-bit
+        // number, nothing where no parameter says.
+        let pdts: Vec<Option<u8>> = pd.typed_props.iter().map(|t| t.pdt).collect();
+        assert_eq!(pdts, vec![Some(0x09), Some(0x02), None]);
+        assert_eq!(
+            pd.written_props,
+            vec![(7, 161, 3, 1), (7, 162, 2, 1), (7, 163, 2, 2)]
+        );
+        // A bit field at offset 2 and a union: no scalar type.
+        assert!(pd.written_prop_pdts.is_empty());
         Ok(())
     }
 

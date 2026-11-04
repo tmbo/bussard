@@ -158,6 +158,9 @@ impl Device {
             LoadEvent::Unload => {
                 self.memory.release_owner(object);
                 self.set_table_reference(object, 0);
+                if let Some(state) = self.loadables.get_mut(&object) {
+                    state.mcb_written = None;
+                }
             }
             LoadEvent::AllocRelSegment { size, fill } if prior == LoadState::Loading => {
                 if self.max_allocation.is_some_and(|max| size > max) {

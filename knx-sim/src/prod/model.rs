@@ -114,11 +114,17 @@ pub struct ProductData {
     pub device_compare_props: Vec<(u8, Vec<u8>)>,
     /// Every property the application's `LdCtrlWriteProp` steps write, as
     /// `(object index, PID, value length, element count)`: the length of the
-    /// step's `InlineData` and its `Count` (1 when absent). A real device of that hardware
+    /// step's `InlineData` (else the extent of the parameters the product
+    /// stores in the property, else one octet per element, bussard issue
+    /// #841) and its `Count` (1 when absent). A real device of that hardware
     /// accepts those writes (an ABB i-bus program writes the PEI type to
     /// object 4 or 5 PID 16, others object 0 PID 52 or 86), so the simulated
     /// device seeds each one writable where it lacks it.
     pub written_props: Vec<(u8, u8, usize, u16)>,
+    /// The scalar PDT of a [`ProductData::written_props`] property, as
+    /// `(object index, PID, PDT)`, where the parameters the product stores
+    /// in it give one ([`TypedProperty::pdt`], bussard issue #841).
+    pub written_prop_pdts: Vec<(u8, u8, u8)>,
     /// The LSM indices the application's load procedures finalise with an
     /// `LdCtrlTaskSegment` (System 7), or `None` when the product carries no
     /// procedure that completes a load (a synthetic product): then every LSM
@@ -180,6 +186,18 @@ pub struct TypedProperty {
     pub compare: Option<Vec<u8>>,
     /// Whether an `LdCtrlWriteProp` writes it.
     pub written: bool,
+    /// The octets the write declares (bussard issue #841): the step's
+    /// `InlineData`, else the extent of the parameters the product stores in
+    /// the property (`<Parameter><Property ObjectType PropertyId Offset/>`),
+    /// else one octet per element. 0 when no step writes it.
+    pub len: usize,
+    /// The elements the write declares (`Count`, 1 when absent).
+    pub count: u16,
+    /// The scalar PDT of the parameters the product stores in the property
+    /// (an 8-bit `TypeNumber` is `PDT_UNSIGNED_CHAR`), when they fill whole
+    /// elements of one such type; `None` describes it with the generic PDT
+    /// of its element size.
+    pub pdt: Option<u8>,
 }
 
 impl ProductData {

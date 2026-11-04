@@ -21,6 +21,14 @@
 //!   | 6..8 | CRC           | CRC-16/AUG-CCITT over the bytes BE |
 //! ```
 //!
+//! That is the entry of an object whose load procedure wrote none. A tool
+//! that writes the entry while the object is Loading (ETS, from the
+//! procedure's `LdCtrlWriteProp PropId="27"`) reads back its size, CRC control
+//! byte and access as written, with the CRC the device computes over that
+//! many octets of the segment (Resources 03.05.01 §4.2.27; the house's Jung
+//! 07B0 devices report the written access `0x33`, bussard #482; bussard
+//! issue #840 for knx-sim, `Device::mcb_entry_for`).
+//!
 //! The CRC is **CRC-16/AUG-CCITT**: width 16, polynomial `0x1021`, init `0xFFFF`,
 //! no reflection, no final XOR, message augmented with 16 zero bits before
 //! reduction. Its catalogued check value for `"123456789"` is `0xE5CC`.

@@ -32,9 +32,9 @@ mod transport;
 
 pub use group_comm::{ComObject, GroupComm, flag};
 pub use interface_object::{
-    InterfaceObject, PDT_GENERIC_01, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE, PID_OBJECT_TYPE,
-    PID_PROGMODE, PID_PROGRAM_VERSION, PID_TABLE, PID_TABLE_REFERENCE, Property,
-    PropertyDescription, iot,
+    InterfaceObject, PDT_GENERIC_01, PDT_VARIABLE_LENGTH, PID_LOAD_STATE_CONTROL, PID_MCB_TABLE,
+    PID_OBJECT_TYPE, PID_PROGMODE, PID_PROGRAM_VERSION, PID_TABLE, PID_TABLE_REFERENCE,
+    PRODUCT_WRITE_LEVEL, Property, PropertyDescription, iot,
 };
 pub use lsm::{
     LoadEvent, LoadState, LoadStateMachine, Sys7LoadStateMachine, Sys7Step, Sys7TransitionError,
@@ -154,6 +154,11 @@ struct ObjectState {
     base: u32,
     #[allow(dead_code)] // retained for logging / future viz
     descriptor: LoadableObject,
+    /// The `PID_MCB_TABLE` entry a tool wrote while the object was Loading
+    /// (size, CRC control byte, access), which the device keeps and completes
+    /// with the CRC it computes (Resources 03.05.01 §4.2.27, bussard issue
+    /// #840). Cleared by an Unload.
+    mcb_written: Option<[u8; MCB_ENTRY_LEN]>,
 }
 
 /// Construction-time overrides that select and tune a device's mask profile.
@@ -824,6 +829,25 @@ impl Device {
     /// which a tool reads as "no MCB entry" — but after a load the segment exists,
     /// so a verify step gets a real CRC over exactly the bytes the download wrote.
     fn mcb_entry_for(&self, object: u8) -> Option<Vec<u8>> {
+        // A tool that wrote the entry while Loading (ETS on the ekinex
+        // A-4945: `00000016 00 32 0000`) reads back its size, CRC control
+        // byte and access as written, and the CRC the device computed over
+        // that many octets of the segment (Resources 03.05.01 §4.2.27: the
+        // property "shall define and control" the segment's subsegmentation;
+        // the CRC is calculated on the transition to Loaded). The sim
+        // answered `00 ff` and the size of the written span instead
+        // (2026-11-04, bussard issue #840).
+        if let Some(written) = self.loadables.get(&object).and_then(|s| s.mcb_written)
+            && let Some(seg) = self.memory.segment_of(object)
+        {
+            let size = u32::from_be_bytes([written[0], written[1], written[2], written[3]]);
+            let bytes = self
+                .memory
+                .read(seg.base, usize::try_from(size.min(seg.len)).ok()?);
+            let mut entry = written;
+            entry[6..8].copy_from_slice(&mcb::crc16_aug_ccitt(&bytes).to_be_bytes());
+            return Some(entry.to_vec());
+        }
         // The MCB covers the bytes the tool actually streamed (the loaded image),
         // which may be shorter than the allocated segment — a tool that writes a
         // compact table into a larger allocation must still verify against just
@@ -1165,12 +1189,18 @@ mod tests {
                 pid: 205,
                 compare: None,
                 written: true,
+                len: 32,
+                count: 8,
+                pdt: Some(0x09),
             },
             crate::prod::TypedProperty {
                 object_type: 50001,
                 pid: 211,
                 compare: None,
                 written: true,
+                len: 1,
+                count: 1,
+                pdt: Some(0x02),
             },
         ];
         pd.property_only = true;
@@ -1205,7 +1235,16 @@ mod tests {
         );
         let r = dev.handle_cemi(&data(&dev, 0x1CC, &[0x00, 0x0B, 0x00, 0x10, 0xCD, 2, 0, 1]))?;
         assert_eq!(&r.responses[0].tpdu[10..], &[192, 168, 1, 2, 10, 0, 0, 2]);
-        // The vendor object, type 50001.
+        // The vendor object, type 50001: ETS reads PID 211's description
+        // before the write (Enertex A-0014, 2026-11-04). One octet the
+        // product stores an 8-bit number in: writable PDT_UNSIGNED_CHAR, one
+        // element, read level 3, write level 2 (bussard issue #841).
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1D2,
+            &[0xC3, 0x51, 0x00, 0x10, 0xD3, 0x00, 0x00],
+        ))?;
+        assert_eq!(&r.responses[0].tpdu[13..], &[0x80 | 0x02, 0x00, 0x01, 0x32]);
         let r = dev.handle_cemi(&data(
             &dev,
             0x1CE,
