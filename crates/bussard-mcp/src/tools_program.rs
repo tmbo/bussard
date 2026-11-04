@@ -2175,6 +2175,17 @@ impl BussardMcp {
         }
         let live = &read.live;
         let tables = live.tables();
+        // The facts the pre-flight read checked seed every later connection
+        // of the job, as `bussard apply` seeds its write and read-back
+        // (issue #761): no second object walk, descriptor or max APDU read.
+        let seed = read.seed.clone();
+        // A device the facts record as not answering authorize is not asked
+        // again on those connections (issue #215), as the CLI does.
+        let authorize = if seed.as_ref().is_some_and(|s| s.authorize_unanswered) {
+            Authorize::Skip
+        } else {
+            Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        };
         let tables_change = !report.is_noop()
             || built.plan.writes.security_object
             || !built.plan.writes.communication_flags.is_empty();
@@ -2282,7 +2293,7 @@ impl BussardMcp {
                             product.as_ref().and_then(|p| p.app()),
                         ),
                     },
-                    None,
+                    seed.clone(),
                 )
                 .await;
                 let verified = matches!(&outcome, Ok(summary) if summary.ok);
@@ -2440,7 +2451,7 @@ impl BussardMcp {
                     source: SourcePolicy::Known(source),
                     tool_key: tool_key.clone(),
                     high_water: high_water.clone(),
-                    authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+                    authorize,
                     ..L4Options::default()
                 };
                 let mut observer = JobObserver {
@@ -2529,14 +2540,14 @@ impl BussardMcp {
                 source: SourcePolicy::Known(source),
                 tool_key: tool_key.clone(),
                 high_water: high_water.clone(),
-                authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+                authorize,
                 ..L4Options::default()
             };
             let readback = bussard_service::verify::read_back_on(
                 service,
                 target,
                 &read_options,
-                None,
+                seed,
                 &expected,
             )
             .await;
@@ -3074,6 +3085,12 @@ struct DeviceRead {
     /// of a System B device (issue #331); `None` on a plain session, on
     /// System 7, or when the device refused the read.
     go_flags: Option<Vec<u8>>,
+    /// The device facts this read checked (or read), as the seed of the
+    /// write and read-back connections, so they neither walk the interface
+    /// objects again nor re-read the maximum APDU length (issue #761, as
+    /// `bussard apply` seeds them, issue #209). `None` when no facts were in
+    /// effect: those connections then discover them.
+    seed: Option<bussard_mgmt::ConnectionSeed>,
 }
 
 /// Checks the source address (once per tunnel instance, issue #341: the
@@ -3116,17 +3133,21 @@ async fn read_device(
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;
     // Authorize (free access) before reading, as ETS does and as System 7
-    // requires before any memory access. Best-effort on this read.
-    if let Err(err) = l4
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
+    // requires before any memory access. Best-effort on this read, and
+    // skipped for a device whose facts record that it never answers (issue
+    // #215; a stale verdict presents the key on the same connection), as
+    // `bussard plan` and `bussard apply` read (issue #761).
+    let mut facts = FactsCache::new(dir, false);
+    if let Authorize::BestEffort(key) =
+        bussard_service::status::read_only_authorize(&mut facts, target)
+        && let Err(err) = l4.authorize_or_fail(key).await
     {
         tracing::debug!("{target} authorize (free access) did not grant: {err}");
     }
     let read = read_on(
         &mut l4,
         target,
-        dir,
+        &facts,
         model,
         product,
         tunnel,
@@ -3135,16 +3156,17 @@ async fn read_device(
     )
     .await;
     let _ = l4.disconnect().await;
-    let (read, check, params, senders, go_flags) = read?;
+    let (read, identified, params, senders, go_flags) = read?;
     match read {
         LiveRead::Tables(live) => Ok((
             source,
             DeviceRead {
                 live,
-                check,
+                check: identified.check,
                 params,
                 senders,
                 go_flags,
+                seed: bussard_service::seed_of(identified.established.as_ref()),
             },
         )),
         LiveRead::UnsupportedMask { address, mask } => Err(format!(
@@ -3227,7 +3249,7 @@ async fn read_property_rows(
 async fn read_on<Ch: bussard_mgmt::L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     target: IndividualAddress,
-    dir: &std::path::Path,
+    facts: &FactsCache,
     model: &Model,
     product: Option<&ProductSource>,
     tunnel: &[IndividualAddress],
@@ -3236,16 +3258,15 @@ async fn read_on<Ch: bussard_mgmt::L4Channel>(
 ) -> Result<
     (
         LiveRead,
-        Option<IdentityCheck>,
+        bussard_service::Identified,
         Option<ParamState>,
         Option<Vec<SecureSenderEntry>>,
         Option<Vec<u8>>,
     ),
     String,
 > {
-    let facts = FactsCache::new(dir, false);
     let device = model.devices.get(&target).map(|d| &d.device);
-    let identified = bussard_service::identify(l4, &facts, device)
+    let identified = bussard_service::identify(l4, facts, device)
         .await
         .map_err(|e| chain(&e))?;
     let bases = product
@@ -3298,7 +3319,7 @@ async fn read_on<Ch: bussard_mgmt::L4Channel>(
         }
         _ => None,
     };
-    Ok((read, identified.check, params, senders, go_flags))
+    Ok((read, identified, params, senders, go_flags))
 }
 
 /// Adds the security-object change (issue #331) to `built`: the group
@@ -3729,6 +3750,7 @@ mod tests {
             params: None,
             senders: None,
             go_flags: None,
+            seed: None,
         }
     }
 

@@ -28,17 +28,23 @@
 //!   decides so; the CLI side runs `bussard plan` and then `bussard flash` or
 //!   `bussard apply` as the MCP plan says.
 //!
-//! Before the first write the MCP session may read more than the CLI (its
-//! `knx_apply_device` re-reads the device to check the plan digest), but
-//! never skip a read the CLI makes (the identity gate, the plan's reads);
-//! from the first write on (the write, the read-back and the memory image)
-//! the two must be identical ([`compare_streams`]).
+//! An apply (`method: apply`, the partial change and a reshape the planner
+//! writes as an object-table reload) must send the very same requests on
+//! both surfaces, every read before the write included: the same
+//! connections, the same device facts reuse (no second descriptor, maximum
+//! APDU length or object-type discovery, issue #761), the same digest-check
+//! re-read that `bussard apply` makes as its own plan ([`compare_apply`]).
 //!
-//! The comparison drops the session plumbing whose count depends on how
-//! often a surface opens a connection, not on what it writes or verifies:
-//! `T_Connect`/`T_Disconnect`, the authorize, the device descriptor, the
-//! maximum APDU length and the object-type (`PID_1`) discovery
-//! ([`PLUMBING`]).
+//! A flash is compared more loosely: before the first write the MCP session
+//! may read more than the CLI (its `knx_apply_device` re-reads the device to
+//! check the plan digest, where `bussard flash` reads no tables), but never
+//! skip a read the CLI makes (the identity gate, the plan's reads); from the
+//! first write on (the write, the read-back and the memory image) the two
+//! must be identical ([`compare_streams`]). That comparison drops the
+//! session plumbing whose count depends on how often a surface opens a
+//! connection: `T_Connect`/`T_Disconnect`, the authorize, the device
+//! descriptor, the maximum APDU length and the object-type (`PID_1`)
+//! discovery ([`PLUMBING`]).
 //!
 //! Both tests need the knx-sim `serve` binary (`BUSSARD_KNX_SIM_BIN`, set by
 //! the `sim-conformance` CI job) and `python3`; without the binary they skip
@@ -334,7 +340,7 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
                 )
                 .into());
             }
-            match compare_streams(&cli, &mcp) {
+            match compare_apply(&cli, &mcp) {
                 None => checked.push(if method == "noop" {
                     "apply: a no-op on both".to_string()
                 } else {
@@ -347,7 +353,12 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
             // The planner decides between a flash and an apply that reloads
             // the object table; both surfaces must write the same either way.
             let (method, cli, mcp) = work.compare(&flash.pcap, "reshape", &reshape)?;
-            match compare_streams(&cli, &mcp) {
+            let differs = if method == "flash" {
+                compare_streams(&cli, &mcp)
+            } else {
+                compare_apply(&cli, &mcp)
+            };
+            match differs {
                 None => checked.push(format!("reshape as {method} identical")),
                 Some(diff) => {
                     divergences.push(format!("{} reshape as {method}:\n{diff}", product.name));
@@ -916,6 +927,26 @@ fn compare_streams(cli: &str, mcp: &str) -> Option<String> {
     })
 }
 
+/// `None` when the MCP session of an apply sends exactly the CLI's
+/// requests, plumbing and pre-write reads included (issue #761), else the
+/// diff. The plan-digest re-read of `knx_apply_device` is the read `bussard
+/// apply` makes for its own plan, so nothing is left to excuse.
+fn compare_apply(cli: &str, mcp: &str) -> Option<String> {
+    (cli != mcp).then(|| {
+        let (a, b) = (count_ops(cli), count_ops(mcp));
+        format!(
+            "the sessions differ ({a} operations on the CLI, {b} on the MCP server; CLI -, MCP \
+             +):\n{}",
+            line_diff(cli, mcp)
+        )
+    })
+}
+
+/// The number of operations in a normalized session.
+fn count_ops(ops: &str) -> usize {
+    ops.lines().filter(|l| !l.trim().is_empty()).count()
+}
+
 /// A short diff of two texts: the common head and tail are cut, the middle
 /// is shown with `-` (expected) and `+` (actual), at most 40 lines each.
 fn line_diff(expected: &str, actual: &str) -> String {
@@ -1060,6 +1091,21 @@ mod tests {
         let no_readback = "prop-read obj4/PID_PROGRAM_VERSION count=1 index=1\n\
                            mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False\n";
         assert!(compare_streams(cli, no_readback).is_some());
+    }
+
+    #[test]
+    fn test_compare_apply_refuses_a_rediscovery_before_the_write() -> TestResult {
+        let cli = "connect T_Connect\ndescriptor type0 type=0\n\
+                   prop-read obj4/PID_PROGRAM_VERSION count=1 index=1\n\
+                   mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False\n";
+        assert_eq!(compare_apply(cli, cli), None);
+        let rediscovers = "connect T_Connect\ndescriptor type0 type=0\n\
+                           prop-read obj4/PID_PROGRAM_VERSION count=1 index=1\n\
+                           prop-read obj0/PID_1 count=1 index=1\n\
+                           mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False\n";
+        let diff = compare_apply(cli, rediscovers).ok_or("a rediscovery must differ")?;
+        assert!(diff.contains("+ prop-read obj0/PID_1"), "{diff}");
+        Ok(())
     }
 
     #[test]

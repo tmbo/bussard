@@ -57,6 +57,10 @@ pub(super) struct FlashImage {
     pub(super) senders: Option<Vec<SecureSenderEntry>>,
     /// The resident object table the probe read, seeding the download.
     pub(super) object_table: Vec<(u8, u16)>,
+    /// The device's `PID_MAX_APDU_LENGTH` from the facts the read checked,
+    /// seeding the download as `bussard flash` seeds it from its pre-flight
+    /// (issue #761); `None` lets the download negotiate it.
+    pub(super) max_apdu: Option<u16>,
     /// The plan's `flash` field.
     pub(super) summary: Value,
     /// What the read-back after the flash compares against (issue #319),
@@ -552,6 +556,7 @@ fn shape(
         options,
         senders,
         object_table: resident.object_table.clone(),
+        max_apdu: read.seed.as_ref().and_then(|seed| seed.max_apdu),
         summary,
         readback: None,
         load: s.load,
@@ -655,6 +660,7 @@ impl BussardMcp {
             options: image.options,
             facts: DeviceFacts {
                 object_table: image.object_table.clone(),
+                max_apdu: image.max_apdu,
                 ..DeviceFacts::default()
             },
             tool_key: ctx.tool_key,
