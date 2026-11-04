@@ -77,6 +77,7 @@ pub mod error;
 pub mod facts;
 pub mod files;
 pub mod flash;
+pub mod flash_flow;
 pub mod group;
 pub mod group_security;
 /// The one wording per condition every surface reports (issue #228), from

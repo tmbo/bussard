@@ -49,7 +49,9 @@
 //! Without the product data (a pinned archive missing or changed) the plan
 //! says why, with the recovery step, and a links-only plan the human
 //! approved still applies. A device whose application drifted from the lock
-//! is refused with the `bussard flash` it needs.
+//! gets the pinned application loaded by the plan's flash (issue #750);
+//! without product data to load, it is refused with the `bussard flash` it
+//! needs.
 //!
 //! A parameter change that shows or hides a com-object changes the
 //! group-object table, which the parameter-only write cannot touch (issue
@@ -442,11 +444,16 @@ impl BussardMcp {
         earlier plan was approved. The digest expires (default 10 minutes) and is invalidated \
         if the device or the model changes. Refuses protected group addresses in the change, a \
         device the model links without KNX Data Secure to a group address the other side runs \
-        secured (E035/E036), and \
-        a device whose application drifted from bussard.lock (it needs `bussard flash`). \
+        secured (E035/E036). \
         `method` says how the change is written: \"apply\" (tables and parameter octets) or \
         \"flash\" when a parameter shows or hides a com-object, which only a full application \
-        download writes. A flash plan's `flash` field lists the com-objects that appear or \
+        download writes, or when the device does not run the application program \
+        bussard.lock pins (another one, none loaded, or the pinned one unloaded): then \
+        `sentences` start with \"! <ia> must have its application program loaded\", \
+        `flash.load_application` says why and what it replaces, and the `question` asks to \
+        load it; one yes covers the load and the write of the model with it. A load is \
+        refused when the device's application cannot be identified or its state read, and \
+        when the download writes no link table while the links would differ. A flash plan's `flash` field lists the com-objects that appear or \
         disappear (number, text, DPT) and the parameters behind them, the address, \
         association and group-object table sizes before and after, `device_offline_seconds` \
         (the device restarts), that the parameter memory is backed up first, and the product \
@@ -508,9 +515,13 @@ impl BussardMcp {
         plan) runs is refused with its id. Tell the human the outcome and the backup paths. A KNX Data Secure device the \
         server's keyring lists is written over A_SecureData, its security object reprogrammed \
         with the tables, exactly as `bussard apply --keyring` does. A plan with `method: \
-        \"flash\"` runs the full application download `bussard flash --yes` writes (the \
-        parameter memory backed up first, then the download, the restart and the read-back) \
-        as the same job; call it only after the human said yes to flashing the device. LINE \
+        \"flash\"` runs the full application download `bussard flash --yes` writes, through \
+        the same service function (the parameter memory backed up first when it is readable, \
+        then the download, the restart, the independent read-back and the lock update) as \
+        the same job; call it only after the human said yes to flashing the device. When the \
+        plan loads the application (`flash.load_application`), the result carries \
+        `load_application` with `loaded`, and `ok` is true only when the read-back matches \
+        the model. LINE \
         FORM: pass `line` and the plan_digest of knx_plan_device's line plan (instead of \
         `address`) after the human's explicit yes to it, to write the line as `bussard apply \
         --line` does: one job (poll knx_job_status) that writes each device with changes in \
@@ -1011,7 +1022,14 @@ impl BussardMcp {
         if let (false, Some(flags)) = (flags_cached, read.go_flags.as_deref()) {
             bussard_service::security_change::remember_flags(&dir, target, flags);
         }
-        refuse_drift(target, &read)?;
+        // Issue #750: a device that does not run the application the lock
+        // pins (another one, none, or the pinned one unloaded) gets it
+        // loaded by this plan's flash; without product data to load it is
+        // the drift refusal, as before.
+        let load = flash::load_need(&model, target, &read, &product).transpose()?;
+        if load.is_none() {
+            refuse_drift(target, &read)?;
+        }
         let live = &read.live;
         let tables = live.tables();
         let report = plan(tables, &desired);
@@ -1035,12 +1053,16 @@ impl BussardMcp {
             &report,
         );
         // A parameter change that shows or hides a com-object is written by a
-        // full download (issue #303): the plan says `method: flash`.
-        let flash = match built.needs_flash {
-            Some(_) => Some(flash::flash_image(
+        // full download (issue #303), and so is an application that must be
+        // loaded (issue #750): the plan says `method: flash`.
+        let flash = match (&load, &built.needs_flash) {
+            (Some(need), _) => Some(flash::load_image(
+                &dir, &model, target, &read, &report, &product, &material, &tunnel, need,
+            )?),
+            (None, Some(_)) => Some(flash::flash_image(
                 &dir, &model, target, &read, &report, &built, &product, &material, &tunnel,
             )?),
-            None => None,
+            (None, None) => None,
         };
         if flash.is_none()
             && let Some(refusal) = &built.refusal
@@ -1099,7 +1121,21 @@ impl BussardMcp {
             device_plan.notes.push(line);
         }
         if let Some(f) = &flash {
-            device_plan.notes.push(flash_note(target));
+            match &f.load {
+                // Issue #750: the load leads the plan's sentences.
+                Some(why) => {
+                    device_plan.notes.insert(0, load_note(target, why, &f.plan));
+                    if device_plan.writes.full_image.is_none() {
+                        device_plan.writes.full_image = Some(bussard_download::FullImage {
+                            segments: Vec::new(),
+                            address_table: report.resulting_address_count,
+                            association_table: report.resulting_association_count,
+                            tables_change: !report.is_noop(),
+                        });
+                    }
+                }
+                None => device_plan.notes.push(flash_note(target)),
+            }
             // Issue #326: name what the full download writes.
             if let Some(full) = device_plan.writes.full_image.as_mut() {
                 full.segments = f.plan.written_segments();
@@ -1152,8 +1188,23 @@ impl BussardMcp {
         };
         let question = match &flash {
             _ if noop => None,
+            Some(f) if f.load.is_some() => Some(load_question(target, &gateway, &f.plan)),
             Some(_) => Some(flash_question(target, &gateway, device_plan.change_count())),
             None => Some(device_plan.question()),
+        };
+        // Issue #750: the sentences say first that the application must be
+        // loaded, so a human who reads only them knows what the yes is for.
+        let sentences = match flash
+            .as_ref()
+            .and_then(|f| f.load.as_ref().map(|why| (f, why)))
+        {
+            Some((f, why)) => format!(
+                "! {target} must have its application program loaded: {why}. The yes loads {} \
+                 and writes the model's parameters and links with it.\n{}",
+                f.plan.identity.id,
+                device_plan.render_text()
+            ),
+            None => device_plan.render_text(),
         };
         Ok(json!({
             "ok": true,
@@ -1170,7 +1221,7 @@ impl BussardMcp {
             "plan": plan_text,
             "summary": facts.summary(),
             "what_you_will_notice": facts.what_you_will_notice(),
-            "sentences": device_plan.render_text(),
+            "sentences": sentences,
             "changes": device_plan.changes,
             "unchanged_objects": device_plan.unchanged_objects,
             "unchanged_parameters": device_plan.unchanged_parameters,
@@ -1210,6 +1261,19 @@ impl BussardMcp {
                         .to_string(),
                     None => "nothing to write: the device already matches the model".to_string(),
                 }
+            } else if let Some(why) = flash.as_ref().and_then(|f| f.load.as_ref()) {
+                format!(
+                    "Show the plan above to the human (every sentence, and \
+                     flash.load_application) and say that the application program must be \
+                     loaded first: {why}. Loading it replaces what {target} runs now, \
+                     {target} restarts and is offline for {} to {} s, and the model's \
+                     parameters and links are written with it and read back. Ask whether to \
+                     load the application into {target}. Call knx_apply_device with this \
+                     plan_digest only after an explicit yes to loading it; that one call runs \
+                     the load and the write as one job.",
+                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
+                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
+                )
             } else if flash.is_some() {
                 format!(
                     "Show the plan above to the human (every sentence, the com-objects in \
@@ -1494,19 +1558,31 @@ impl BussardMcp {
             &read,
             &report,
         );
-        // The flash a com-object change needs (issue #303), rebuilt from the
-        // fresh read: its image is part of the digest.
-        let flash = match built.needs_flash {
-            Some(_) => match flash::flash_image(
+        // The flash a com-object change needs (issue #303), or the load of
+        // the pinned application (issue #750), rebuilt from the fresh read:
+        // its image is part of the digest.
+        let load = match flash::load_need(&model, target, &read, &product).transpose() {
+            Ok(load) => load,
+            Err(reason) => {
+                tier.plans().remove(digest);
+                return Err(reason);
+            }
+        };
+        let image = match (&load, &built.needs_flash) {
+            (Some(need), _) => Some(flash::load_image(
+                &dir, &model, target, &read, &report, &product, &material, &tunnel, need,
+            )),
+            (None, Some(_)) => Some(flash::flash_image(
                 &dir, &model, target, &read, &report, &built, &product, &material, &tunnel,
-            ) {
-                Ok(image) => Some(image),
-                Err(reason) => {
-                    tier.plans().remove(digest);
-                    return Err(reason);
-                }
-            },
-            None => None,
+            )),
+            (None, None) => None,
+        };
+        let flash = match image.transpose() {
+            Ok(image) => image,
+            Err(reason) => {
+                tier.plans().remove(digest);
+                return Err(reason);
+            }
         };
 
         // Re-derive the digest from what is true now; anything that moved since
@@ -1541,7 +1617,9 @@ impl BussardMcp {
         // The identity verdict (issue #228, item 5): a device that runs another
         // application than the lock pins cannot take the model's tables and
         // parameters; it needs a flash first.
-        if let Err(refusal) = refuse_drift(target, &read) {
+        if load.is_none()
+            && let Err(refusal) = refuse_drift(target, &read)
+        {
             tier.plans().remove(digest);
             return Err(refusal);
         }
@@ -1591,6 +1669,7 @@ impl BussardMcp {
                 .with_args([target.to_string(), digest.to_string()])
                 .with_gateway(Some(gateway.clone()))
                 .with_result(match (tables_change, param_write.is_some()) {
+                    _ if load.is_some() => "before loading the application program",
                     _ if flash.is_some() => "before flashing the application program",
                     (true, true) => "before writing the device tables and parameters",
                     (false, true) => "before writing the device parameters",
@@ -1644,7 +1723,7 @@ impl BussardMcp {
             image
         });
 
-        let result = json!({
+        let mut result = json!({
             "method": if flash.is_some() { "flash" } else { "apply" },
             "address": target.to_string(),
             "gateway": gateway,
@@ -1653,6 +1732,15 @@ impl BussardMcp {
             "parameter_backup": param_backup_path,
             "snapshot": snapshot,
         });
+        if load.is_some() && param_backup_path.is_none() {
+            // Issue #750: the device holds no application the pinned
+            // product data can read, so there is no parameter memory to
+            // keep; the tables are backed up as for any apply.
+            result["parameter_backup_note"] = json!(
+                "not backed up: the device holds no application whose parameter memory the \
+                 pinned product data can read (as `bussard flash`, which takes no backup)"
+            );
+        }
         Ok(Prepared {
             origin: Origin::Model,
             model: std::sync::Arc::clone(&model),
@@ -2890,6 +2978,37 @@ fn flash_question(target: IndividualAddress, gateway: &str, changes: usize) -> S
         } else {
             format!("these {changes} changes")
         }
+    )
+}
+
+/// The plan note of a load (issue #750): why, and what the download does.
+fn load_note(target: IndividualAddress, why: &str, plan: &bussard_download::FlashPlan) -> String {
+    let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
+    format!(
+        "method: flash. The application program must be loaded: {why}. {target} gets {} with \
+         the model's parameters and tables as `bussard flash {target} --yes` writes them{}, \
+         restarts, and is offline for {min} to {max} s; the result is read back and compared \
+         with the model.",
+        plan.identity.id,
+        if plan.has_factory_reset() {
+            ", after a factory reset that erases what it runs now"
+        } else {
+            ""
+        }
+    )
+}
+
+/// The question of a load plan: the human's yes must be a yes to loading.
+fn load_question(
+    target: IndividualAddress,
+    gateway: &str,
+    plan: &bussard_download::FlashPlan,
+) -> String {
+    let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
+    format!(
+        "load application {} into {target} through {gateway} and write the model's \
+         parameters and links with it? The device restarts and is offline for {min} to {max} s.",
+        plan.identity.id
     )
 }
 

@@ -270,16 +270,7 @@ impl<'a> Expected<'a> {
         target: IndividualAddress,
         device_mask: u16,
     ) -> Expected<'a> {
-        // Whether the download loads LSM `lsm` (1 address table, 2
-        // association table, 3 group-object table on System B; LSM 1 holds
-        // the address and group-object tables on System 7).
-        let loads = |lsm: u32| {
-            flash.steps.iter().any(|s| match s {
-                FlashStep::StartLoading { target: Some(t) } => *t == lsm,
-                FlashStep::Sys7StartLoading { lsm: l } => *l == lsm,
-                _ => false,
-            })
-        };
+        let loads = |lsm: u32| crate::flash_flow::loads_lsm(flash, lsm);
         let (overrides, _) = parameter_overrides(model, target);
         let images = build_table_images(model, target, app, &overrides);
         let links: &[bussard_model::schema::Link] = model
