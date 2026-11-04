@@ -157,6 +157,17 @@ impl BussardMcp {
         self
     }
 
+    /// This server with enrolment sessions that use `timeouts` instead of
+    /// the protocol's (the tests shorten them).
+    #[must_use]
+    pub fn with_enroll_timeouts(
+        mut self,
+        timeouts: bussard_service::enroll_session::Timeouts,
+    ) -> Self {
+        self.enroll = crate::tools_enroll::EnrollJobs::with_timeouts(timeouts);
+        self
+    }
+
     /// Resolves an unknown sender admission by reading the receivers' PID 54
     /// once per server lifetime (issue #316, see
     /// [`bussard_service::admission::resolve_unknown`]). The tables read are

@@ -284,6 +284,8 @@ main > .banner { margin-bottom: 16px; }
 .banner.info { background: var(--green-soft); color: var(--green-ink); }
 .banner.warn { background: var(--amber-soft); color: var(--amber-ink); }
 .banner-title { display: block; font-weight: 600; }
+.banner-text { display: block; margin-top: 2px; }
+.banner-text:empty { display: none; }
 .next-steps { margin: 6px 0 0; padding-left: 1.2em; }
 .next-steps:empty { display: none; }
 .next-steps code { font-family: var(--mono); font-weight: 600; overflow-wrap: anywhere; }

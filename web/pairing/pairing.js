@@ -1,6 +1,9 @@
 // The pairing page (#809, #820): keeps the list of certificates current with
 // a long poll on `status` (relative to the page's token path), folds steps 1
-// and 2 into one line once the phone joined, and copies the phone link.
+// and 2 into one line once the phone joined, and copies the phone link. At
+// the end it points back to the chat, which continues by itself (#831), and
+// tries to close the tab; a browser only lets a script close a window a
+// script opened, so the message stays when it refuses.
 // Every text goes in with textContent; the server's strings are already in
 // the glossary's words (dev/glossary.md).
 
@@ -12,9 +15,13 @@ const MAX_FAILURES = 4;
 /** Local mode: the certificate page runs in a browser on this computer. */
 const LOCAL = document.body.classList.contains("local");
 
+/** How long the end stays on screen before the page tries to close. */
+const CLOSE_DELAY_MS = 4000;
+
 let version = null;
 let shown = 0;
 let rendered = false;
+let sawRunning = false;
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -70,6 +77,7 @@ function render(status) {
   }
   shown = certs.length;
   rendered = true;
+  if (status.running) sawRunning = true;
   $("refused").hidden = !(status.refused_phones > 0);
   $("labels-empty").hidden = certs.length > 0;
   $("summary").textContent = certs.length ? status.summary : "Nothing sent yet";
@@ -84,7 +92,9 @@ function render(status) {
     const end = $("end");
     end.hidden = false;
     end.className = `banner ${problems ? "warn" : "info"}`;
-    $("end-title").textContent = status.ended ?? "Finished.";
+    $("end-title").textContent =
+      status.ended ?? "Done. You can close this tab and go back to your chat.";
+    $("end-summary").textContent = certs.length ? status.summary : "";
     const steps = $("next-steps");
     steps.replaceChildren();
     for (const step of status.next_steps) {
@@ -95,6 +105,9 @@ function render(status) {
       steps.append(li);
     }
     document.body.classList.add("ended");
+    // Only a session that ended while this tab watched: a reload of an
+    // ended page stays open.
+    if (sawRunning) setTimeout(() => window.close(), CLOSE_DELAY_MS);
   } else if (status.phones > 0) {
     setState(LOCAL ? "Connected" : "Phone connected", "live");
     compact(LOCAL ? "Certificate page connected" : "Phone connected", true);
