@@ -194,6 +194,12 @@ fn seed_procedure_props(
         if let Some(io) = objects.get_mut(object) {
             let prop = match written {
                 Some(&(_, _, _, count)) => Property::writable(value.clone()).with_elements(count),
+                // The program version (PID 13) is stamped by the tool at the
+                // end of every download whether or not the procedure compares
+                // it first: an Enertex IP system device compares object 4's
+                // PID 13 and ETS then writes it (refused as read-only,
+                // 2026-11-04).
+                None if *pid == PID_PROGRAM_VERSION => Property::writable(value.clone()),
                 None => Property::read_only(value.clone()).sized(),
             };
             io.set_property(*pid, prop);
