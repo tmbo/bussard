@@ -49,7 +49,12 @@ A secure-capable product (`[application.security]`, syn-secure, #423) is
 downloaded as `secure.py` downloads a vendor one: the sim device in factory
 state with a synthetic FDSK and serial number, the secure project, the
 password from `$ETS_SWEEP_PROJECT_PASSWORD`, the device certificate, and the
-keyring exported and fetched into the sweep's run directory.
+keyring exported and fetched into the sweep's run directory. The keyring is
+exported under the public `SYNTHETIC_KEYRING_PASSWORD`, not the project
+password: it holds only the synthetic FDSK and the tool key ETS drew for the
+fabricated device, and it is committed next to the capture
+(`project.knxkeys`), so the row (`keyring=`), `ops.txt` and `image.json`
+decode the secured frames anywhere, CI included.
 
 `--no-ets` skips steps 1 to 3 and reuses the sweep's run directory (the ETS
 version, simulator build and date come from `--ets-version`, `--sim-build`
@@ -212,10 +217,18 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
 # state with a synthetic FDSK and serial number, the sweep's secure project,
 # the project password from $ETS_SWEEP_PROJECT_PASSWORD, the device
 # certificate typed at ETS's prompt and the keyring exported after the
-# download (into the sweep's run directory, never under captures/synthetic/).
-# The identity is derived from the rendered application id, so a re-sign keeps
-# the certificate ETS already holds. Decoding the secured frames for the row
-# (`knxtrace --keyring`) is the #423 bring-up.
+# download under SYNTHETIC_KEYRING_PASSWORD (into the sweep's run directory,
+# then copied next to the capture). The identity is derived from the rendered
+# application id, so a re-sign keeps the certificate ETS already holds. The
+# row decodes the secured frames with that keyring (`keyring=`, #423).
+
+# The password of a synthetic product's keyring export. Public on purpose: the
+# keyring holds the synthetic FDSK of a fabricated device and the tool key ETS
+# drew for it, nothing of a real installation, and committing it lets every
+# checkout and CI decode the capture. ETS's rule (secure.password) holds for
+# it. crates/bussard-cli/tests/it/offline_oracle.rs exports the same value.
+SYNTHETIC_KEYRING_PASSWORD = "SyntheticKeyring1!"
+KEYRING_FILE = "project.knxkeys"
 
 def is_secure(product: str) -> bool:
     return "security" in generate_spec(product)["application"]
@@ -246,7 +259,7 @@ def secure_run(product: str, app: str) -> dict:
     serial, fdsk = secure.synthetic_identity(app)
     return {"project": secure.PROJECT, "secure": block, "properties": props,
             "flow_extra": {"project_password": pw, "certificate": secure.certificate_text(serial, fdsk)},
-            "after_download": secure.export_hook(pw)}
+            "after_download": secure.export_hook(SYNTHETIC_KEYRING_PASSWORD)}
 
 
 def fetch_keyring(c, sid: str) -> Path:
@@ -254,7 +267,7 @@ def fetch_keyring(c, sid: str) -> Path:
     import vm
 
     remote = f"{vm.REMOTE_DIR}\\keyrings\\{sid}.knxkeys"
-    local = calibrate.run_dir(sid) / "project.knxkeys"
+    local = calibrate.run_dir(sid) / KEYRING_FILE
     c.open_sftp().get(remote.replace("\\", "/"), str(local))
     return local
 
@@ -303,14 +316,37 @@ def copy_capture(product: str, sid: str, app: str, mask: str = "07B0") -> Path:
     dst.mkdir(parents=True, exist_ok=True)
     rel = dst.relative_to(REPO).as_posix()
     shutil.copyfile(src / "ets.pcapng", dst / "ets.pcapng")
-    shutil.copyfile(src / "driver.json", dst / "driver.json")
+    (dst / "driver.json").write_text(portable_driver((src / "driver.json").read_text(), src, rel))
     ops = (src / "ops.txt").read_text().replace(str(src / "ets.pcapng"), f"{rel}/ets.pcapng")
     (dst / "ops.txt").write_text(ops)
     reqs = distil.requests(dst / "ets.pcapng")
     (dst / "requests.txt").write_text(distil.render(reqs, f"{rel}/ets.pcapng"))
     (dst / "sim.yaml").write_text(sim_yaml(product, app, mask))
+    if is_secure(product):
+        shutil.copyfile(src / KEYRING_FILE, dst / KEYRING_FILE)
     write_image(dst, rel)
     return dst
+
+
+# A path in the VM's sweep directory (`vm.REMOTE_DIR`, the VM user's home).
+VM_SWEEP_DIR = re.compile(r"C:\\\\Users\\\\[^\\\\\"]+\\\\ets-sweep")
+
+
+def portable_driver(text: str, src: Path, rel: str) -> str:
+    """`driver.json` as committed: the run directory's absolute path (the
+    fetched keyring of a secure run) becomes the capture's relative one and
+    the VM's sweep directory `<vm>`, so no local user name is committed."""
+    return VM_SWEEP_DIR.sub("<vm>", text.replace(str(src), rel))
+
+
+def keyring_args(dst: Path) -> tuple[list[str], dict]:
+    """The `knxtrace --keyring` arguments and environment that decode the
+    capture in `dst`: its committed keyring under the public synthetic
+    password, or nothing for a plain capture."""
+    keyring = dst / KEYRING_FILE
+    if not keyring.is_file():
+        return [], dict(os.environ)
+    return ["--keyring", str(keyring)], {**os.environ, "BUSSARD_KEYRING_PASSWORD": SYNTHETIC_KEYRING_PASSWORD}
 
 
 def write_image(dst: Path, rel: str) -> None:
@@ -319,8 +355,10 @@ def write_image(dst: Path, rel: str) -> None:
     replay (`knx-sim/tests/synthetic_calibration.rs`) compares the device it
     replayed `requests.txt` into against this, without running Python."""
     knxtrace = REPO / "tools" / "knxtrace" / "knxtrace.py"
+    args, env = keyring_args(dst)
     with tempfile.TemporaryDirectory() as tmp:
-        run([sys.executable, str(knxtrace), "image", str(dst / "ets.pcapng"), "--device", "1.1.1", "--out", tmp])
+        run([sys.executable, str(knxtrace), "image", str(dst / "ets.pcapng"), "--device", "1.1.1", "--out", tmp,
+             *args], env=env)
         index = json.loads((Path(tmp) / "regions.json").read_text())
         regions = [{"start": r["start"], "hex": (Path(tmp) / r["file"]).read_bytes().hex()} for r in index["regions"]]
     segments = [{"object": a["object"], "base": a["base"], "size": a["size"]}
@@ -362,7 +400,9 @@ def oracle_row(product: str, app: str, coverage: str = "", options: str = "", wh
     xml = (CATALOGUE / product / "xml").relative_to(REPO).as_posix()
     note = f"{product} {variant}{': ' + why if why else ''}"
     state = "" if "state=" in extra or "run=" in extra else device_state(product, variant)
-    options = " ".join(o for o in (options, extra, state) if o)
+    # A Data Secure capture decodes with the keyring committed next to it.
+    keyring = f"keyring={rel}/{KEYRING_FILE}" if is_secure(product) and "keyring=" not in extra else ""
+    options = " ".join(o for o in (options, extra, state, keyring) if o)
     return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{note}|{coverage}|{options}".rstrip("|")
 
 
@@ -373,7 +413,8 @@ def run_oracle(args: list[str]) -> tuple[int, str]:
         shutil.copytree(MODEL, model)
         r = subprocess.run(["bash", str(ORACLE), *args, "--dir", str(model), "--out", str(Path(tmp) / "out")],
                            capture_output=True, text=True, cwd=REPO, timeout=1800,
-                           env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
+                           env={**os.environ, "BUSSARD_NO_DOTENV": "1",
+                                "BUSSARD_KEYRING_PASSWORD": SYNTHETIC_KEYRING_PASSWORD})
         out = ANSI.sub("", r.stdout + r.stderr)
         diff = Path(tmp) / "out" / "1.1.1" / "diff.json"
         if diff.exists():
@@ -470,7 +511,8 @@ def row_options(verdicts: dict) -> str:
 # The row options capture.py derives on every capture: from the verdicts
 # (`row_options`), the device state (`device_state`), the variant
 # (`variant_options`) and an IP-enabled product's model (`knxnet_model`).
-DERIVED_OPTIONS = frozenset({"expect", "confirmed", "loadctl", "props", "state", "dir", "run", "base", "lsm"})
+DERIVED_OPTIONS = frozenset({"expect", "confirmed", "loadctl", "props", "state", "dir", "run", "base", "lsm",
+                             "keyring"})
 
 
 def carried_options(derived: str, previous: str) -> str:
@@ -485,8 +527,11 @@ def carried_options(derived: str, previous: str) -> str:
 def write_rows(entries: list[dict]) -> None:
     head = (
         "# Offline oracle rows of the synthetic captures (epic #596), for\n"
-        "#   scripts/campaign/95-offline-oracle.sh --rows captures/synthetic/rows.txt --check\n"
-        "# run from the repository root. Written by tools/ets-sweep/synthetic/capture.py\n"
+        "#   BUSSARD_KEYRING_PASSWORD='SyntheticKeyring1!' \\\n"
+        "#     scripts/campaign/95-offline-oracle.sh --rows captures/synthetic/rows.txt --check\n"
+        "# run from the repository root. The password is the public one of the synthetic\n"
+        "# keyrings (keyring=, capture.py SYNTHETIC_KEYRING_PASSWORD), never a real one.\n"
+        "# Written by tools/ets-sweep/synthetic/capture.py\n"
         "# from manifest.json. The product field is the committed xml/ directory,\n"
         "# zipped with the stub master by the script; the application is the rendered\n"
         "# id (the signed fingerprint never reaches the wire).\n"
@@ -497,10 +542,12 @@ def write_rows(entries: list[dict]) -> None:
         coverage = e["oracle"]["coverage"].rstrip("%")
         # A not-comparable row (bussard refused the product) has no coverage.
         coverage = coverage if re.fullmatch(r"[0-9.]+", coverage) else ""
-        why = ""
-        if e["oracle"]["verdict"] == "not-comparable" and e["oracle"].get("confirmed"):
+        # A hand-set note (`note`) names what a compared row's recorded
+        # difference is; else a not-comparable row says why.
+        why = e.get("note", "")
+        if not why and e["oracle"]["verdict"] == "not-comparable" and e["oracle"].get("confirmed"):
             why = "ETS read-compared the image the device held and wrote no memory, #384"
-        elif e["oracle"]["verdict"] == "not-comparable":
+        elif not why and e["oracle"]["verdict"] == "not-comparable":
             issues = tomllib.loads((CATALOGUE / e["product"] / "product.toml").read_text())["doc"]["issues"]
             why = "bussard refuses the product, " + ", ".join(f"#{n}" for n in issues)
         rows.append(oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why,
@@ -946,6 +993,7 @@ def capture_variant(product: str, variant: str, args) -> int:
         "steps": [{"product": s["product"], "mode": s["mode"], "ets": s.get("ets"), "ops": s.get("ops")}
                   for s in result["steps"]],
         "row_options": extra,
+        "note": previous.get("note"),
         "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl", "props") if k in verdict},
     }
     for p in involved:
@@ -1004,13 +1052,12 @@ def main() -> int:
         result = calibrate.calibrate_one(signed, sid, order, True, Path(tempfile.mkdtemp()), mask, **run_kw)
         if run_kw and result.get("outcome") == "captured":
             keyring = fetch_keyring(c, sid)
-            print(f"keyring: {keyring} (the project password)")
+            print(f"keyring: {keyring} (the public synthetic keyring password)")
             # The secured writes (program version among them) are listed only
             # once ops.txt is decoded with the keyring.
-            import secure
             import sweep
 
-            result["ops"] = sweep.write_ops(calibrate.run_dir(sid), "1.1.1", keyring, secure.password())
+            result["ops"] = sweep.write_ops(calibrate.run_dir(sid), "1.1.1", keyring, SYNTHETIC_KEYRING_PASSWORD)
         print(f"ETS download: {result.get('outcome')} ets={result.get('ets')} ops={result.get('ops')} "
               f"loaded={result.get('loaded_objects')}; signed-product oracle: {result.get('oracle', {}).get('summary')}")
         when = datetime.date.today().isoformat()
@@ -1029,6 +1076,8 @@ def main() -> int:
     }
     if extra:
         entry["row_options"] = extra
+    if previous.get("note"):
+        entry["note"] = previous["note"]  # hand-set, see write_rows
     entries.append(entry)
     write_manifest(entries)
     write_rows(entries)

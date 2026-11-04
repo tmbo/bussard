@@ -389,7 +389,12 @@ the keyring (`export_keyring`: the project tab's context menu, the save
 dialog, the export password). The keyring lands next to the capture as
 `project.knxkeys` (gitignored with the capture) and `knxtrace devices
 --keyring` decides `decoded` / `partial` / `undecoded`; outcomes in
-`results/secure.json`.
+`results/secure.json`. A vendor run's keyring is exported under the project
+password and stays local. A synthetic product's run (`syn-secure`,
+`synthetic/capture.py`) exports it under the public
+`SYNTHETIC_KEYRING_PASSWORD` instead, because it holds only the keys of a
+fabricated device. That keyring is committed next to the capture, and the
+oracle row decodes the secured frames with it (`keyring=`).
 
 The driver's secure flows were written without ETS at hand (2026-10-30):
 they anchor on dialog text and fail with what they saw, and the repair loop

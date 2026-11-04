@@ -676,6 +676,65 @@ class TestCaptureSecure(unittest.TestCase):
                                             "certificate": "AD5NI4-YMTBPC-ZAQKJY-NSMQYC-V7NBGC-3JZEKR"})
         self.assertTrue(callable(kw["after_download"]))
 
+    def test_secure_run_exports_the_keyring_under_the_synthetic_password(self):
+        # The project password stays private; the keyring is committed next
+        # to the capture, so it is exported under the public one (#423).
+        old = os.environ.get(secure.PASSWORD_ENV)
+        os.environ[secure.PASSWORD_ENV] = "Synthetic1234!"
+        try:
+            kw = capture.secure_run("syn-secure", self.APP)
+        finally:
+            if old is None:
+                del os.environ[secure.PASSWORD_ENV]
+            else:
+                os.environ[secure.PASSWORD_ENV] = old
+        calls = []
+        kw["after_download"](lambda name, **body: calls.append((name, body)), Path("/tmp/run/out"))
+        self.assertEqual(calls[0][0], "export_keyring")
+        self.assertEqual(calls[0][1]["password"], capture.SYNTHETIC_KEYRING_PASSWORD)
+        self.assertNotEqual(capture.SYNTHETIC_KEYRING_PASSWORD, "Synthetic1234!")
+        # ETS's rule for the password the driver types.
+        os.environ[secure.PASSWORD_ENV] = capture.SYNTHETIC_KEYRING_PASSWORD
+        try:
+            self.assertEqual(secure.password(), capture.SYNTHETIC_KEYRING_PASSWORD)
+        finally:
+            if old is None:
+                del os.environ[secure.PASSWORD_ENV]
+            else:
+                os.environ[secure.PASSWORD_ENV] = old
+
+    def test_oracle_row_names_the_keyring_of_a_secure_capture(self):
+        row = capture.oracle_row("syn-secure", self.APP, "100.0", "loadctl=identical")
+        self.assertTrue(row.endswith("keyring=captures/synthetic/syn-secure/defaults/project.knxkeys"), row)
+        self.assertNotIn("keyring=", capture.oracle_row("syn-minimal", "M-00FA_A-2700-10-0000"))
+        # Derived on every capture, so a re-capture does not carry an old one.
+        self.assertEqual(capture.carried_options("loadctl=identical", "keyring=old.knxkeys scope=par"),
+                         "loadctl=identical scope=par")
+
+    def test_keyring_args_decode_with_the_committed_keyring(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            dst = Path(tmp)
+            self.assertEqual(capture.keyring_args(dst)[0], [])
+            (dst / capture.KEYRING_FILE).write_text("<Keyring/>")
+            args, env = capture.keyring_args(dst)
+            self.assertEqual(args, ["--keyring", str(dst / capture.KEYRING_FILE)])
+            self.assertEqual(env["BUSSARD_KEYRING_PASSWORD"], capture.SYNTHETIC_KEYRING_PASSWORD)
+
+    def test_portable_driver_commits_no_local_path(self):
+        src = Path("/Users/someone/bussard/captures/ets-sweep/M-00FA_A-2900-10-14FD/plain-defaults")
+        text = json.dumps({"keyring": str(src / "project.knxkeys"),
+                           "keyring_remote": "C:\\Users\\vmuser\\ets-sweep\\keyrings\\x.knxkeys"})
+        out = json.loads(capture.portable_driver(text, src, "captures/synthetic/syn-secure/defaults"))
+        self.assertEqual(out, {"keyring": "captures/synthetic/syn-secure/defaults/project.knxkeys",
+                               "keyring_remote": "<vm>\\keyrings\\x.knxkeys"})
+
+    def test_synthetic_keyring_password_matches_the_oracle_test(self):
+        # crates/bussard-cli/tests/it/offline_oracle.rs runs the synthetic
+        # rows with the same password.
+        rs = (Path(__file__).resolve().parents[2] / "crates" / "bussard-cli" / "tests" / "it"
+              / "offline_oracle.rs").read_text()
+        self.assertIn(f'const SYNTHETIC_KEYRING_PASSWORD: &str = "{capture.SYNTHETIC_KEYRING_PASSWORD}";', rs)
+
     def test_secure_run_needs_the_password(self):
         old = os.environ.pop(secure.PASSWORD_ENV, None)
         try:

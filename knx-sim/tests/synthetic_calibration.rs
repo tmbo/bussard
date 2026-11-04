@@ -24,6 +24,16 @@
 //! A device whose `sim.yaml` has a `knxnet` block (an IP-enabled TP product,
 //! `syn-ip-enabled-tp`, bussard issue #455) gets that KNXnet/IP parameter
 //! object, as the sim in the VM had it, so ETS's writes to it are replayed too.
+//!
+//! A device whose `sim.yaml` has a `security` block (a KNX Data Secure capable
+//! product, `syn-secure`, bussard issue #423) starts as the sim in the VM did:
+//! in factory state under the synthetic FDSK, with the `properties` overrides
+//! (its serial number). The replay then runs ETS's secured requests through
+//! the device's Data Secure layer: the FDSK session, the tool key ETS writes,
+//! and the download under it. ETS sent its second S-A_Sync_Req seconds after
+//! the first; the replay waits out the device's 1 s Sync window before it
+//! (`SYNC_WINDOW`), since the sim keeps that window on the wall clock. The
+//! refusals the sim in the VM gave ETS too are listed in `KNOWN_REFUSALS`.
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -31,14 +41,39 @@ use std::sync::Arc;
 
 use knx_sim::bus::Bus;
 use knx_sim::bus::event::{Event, RecordingSink};
-use knx_sim::config::KnxnetSimConfig;
-use knx_sim::device::{Device, LoadState, MasterResetSupport, ProfileOverrides, profile};
+use knx_sim::config::{KnxnetSimConfig, PropertyOverride, SecurityConfig, SecurityStatus};
+use knx_sim::device::{
+    Device, LoadState, MasterResetSupport, ProfileOverrides, SecureActivation, profile,
+};
 use knx_sim::prod::read_knxprod_bytes;
+use knx_sim::secure::Key16;
 use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
 use serde::Deserialize;
 use zip::write::SimpleFileOptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+/// A little over the 1 s in which a Data Secure device ignores a further
+/// S-A_Sync_Req after its S-A_Sync_Res (KNX 3/3/7 §5.3.2 step 1).
+const SYNC_WINDOW: std::time::Duration = std::time::Duration::from_millis(1100);
+
+/// Refusals the replay reproduces from the live run: (capture directory
+/// suffix, the rejected request's summary, how many). The sim in the VM gave
+/// ETS the same, and the capture shows ETS waiting them out.
+const KNOWN_REFUSALS: &[(&str, &str, usize)] = &[
+    // The plain PID_SERIAL_NUMBER reads before the FDSK Sync: the factory
+    // device refuses them, ETS times out twice and goes on (bussard #859).
+    (
+        "syn-secure/defaults",
+        "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
+        2,
+    ),
+];
+
+/// Whether `tpdu` is an S-A_Sync_Req (A_SecureData, SCF service 2).
+fn is_sync_request(tpdu: &[u8]) -> bool {
+    tpdu.len() > 2 && tpdu[0] & 0x03 == 0x03 && tpdu[1] == 0xF1 && tpdu[2] & 0x07 == 0x02
+}
 
 /// One request of `requests.txt`: source, destination, TPDU.
 type Request = (u16, u16, Vec<u8>);
@@ -83,6 +118,13 @@ struct SimDevice {
     /// `syn-master-reset` refuses it, bussard #611).
     #[serde(default)]
     master_reset: MasterResetSupport,
+    /// The device's KNX Data Secure block (`syn-secure`, bussard #423).
+    #[serde(default)]
+    security: Option<SecurityConfig>,
+    /// Property values the device starts with (the serial number of a
+    /// secure device, which its certificate names).
+    #[serde(default)]
+    properties: Vec<PropertyOverride>,
 }
 
 /// The device of the capture's `sim.yaml` (the defaults without the file).
@@ -216,43 +258,100 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // `sim.yaml` without `lsm_access` gets it: memory mapped on 0700 and
     // 0701, property on 0705 (`Device::from_product` would keep property).
     let mask = profile::parse_mask(&pd.mask_version).unwrap_or(0x07B0);
+    let sim = sim_device(capture)?;
+    let secure = match &sim.security {
+        Some(sec) if sec.status != SecurityStatus::Plain => Some(SecureActivation {
+            tool_key: Key16::from_hex(&sec.tool_key)
+                .ok_or_else(|| format!("{label}: sim.yaml tool_key is not 32 hex characters"))?,
+            initial_tx_seq: sec.initial_tx_seq,
+            initial_rx_seq: sec.initial_rx_seq,
+        }),
+        _ => None,
+    };
     let device = Device::from_product_with_overrides(
         IndividualAddress(ia),
         &pd,
         LoadState::Unloaded,
         ProfileOverrides {
             lsm_access: profile::default_lsm_access_for_mask(mask),
+            secure,
             ..Default::default()
         },
         sink.clone(),
     )?;
-    let sim = sim_device(capture)?;
     let device = device.with_master_reset(sim.master_reset);
+    let device = match &sim.security {
+        Some(sec) if sec.status == SecurityStatus::Factory => device.with_factory_security(),
+        _ => device,
+    };
+    let mut device = device;
+    for p in &sim.properties {
+        let value: String = p.value.chars().filter(|c| !c.is_whitespace()).collect();
+        device = device.with_property(p.object, p.pid, hex(&value)?);
+    }
     let device = match sim.knxnet {
         Some(k) => device.with_knxnet(&k.parameters(IndividualAddress(ia))?, k.listed),
         None => device,
     };
     bus.add_device(device);
+    // The tunnel's address. ETS sends a plain request from 0.0.0 and the
+    // gateway fills in its tunnel address; a secured request carries that
+    // address itself, since it is part of the authenticated data. The replay
+    // fills it in for the plain requests too, so the connection ETS opened
+    // plain continues under the secured requests (`syn-secure`, #423). A
+    // capture without a secured request has no other source and is unchanged.
+    let tunnel = base
+        .iter()
+        .chain(&stream)
+        .map(|(src, _, _)| *src)
+        .find(|src| *src != 0)
+        .unwrap_or(0);
+    let mut synced = false;
     for (src, dst, tpdu) in base.into_iter().chain(stream) {
+        if is_sync_request(&tpdu) {
+            if synced {
+                std::thread::sleep(SYNC_WINDOW);
+            }
+            synced = true;
+        }
         let _ = bus.deliver_from_tool(&CemiLData {
             message_code: MessageCode::LDataReq,
             ctrl1: 0xbc,
             ctrl2: 0x60,
-            source: IndividualAddress(src),
+            source: IndividualAddress(if src == 0 { tunnel } else { src }),
             dest: dst,
             tpdu,
         });
     }
+    let mut known: Vec<(&str, usize)> = KNOWN_REFUSALS
+        .iter()
+        .filter(|(dir, _, _)| label.ends_with(dir))
+        .map(|(_, summary, n)| (*summary, *n))
+        .collect();
     let mut failures: Vec<String> = sink
         .events()
         .into_iter()
         .filter_map(|e| match e {
             Event::Telegram { summary, .. } if summary.contains("REJECTED") => {
-                Some(format!("{label}: rejected {summary}"))
+                match known.iter_mut().find(|(s, n)| *s == summary && *n > 0) {
+                    Some((_, n)) => {
+                        *n -= 1;
+                        None
+                    }
+                    None => Some(format!("{label}: rejected {summary}")),
+                }
             }
             _ => None,
         })
         .collect();
+    // A known refusal that no longer happens is stale: the entry goes.
+    for (summary, n) in known {
+        if n > 0 {
+            failures.push(format!(
+                "{label}: {n} known refusal(s) did not happen, remove them from KNOWN_REFUSALS: {summary}"
+            ));
+        }
+    }
     let dev = bus
         .device(IndividualAddress(ia))
         .ok_or_else(|| format!("{label}: device {ia:04x} missing"))?;

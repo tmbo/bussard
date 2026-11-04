@@ -1,0 +1,121 @@
+{
+ "app": "M-00FA_A-2900-10-14FD",
+ "variant": "plain-defaults",
+ "ia": "1.1.1",
+ "search": "NEST-GUARD",
+ "version": "1.0",
+ "properties": [
+  {
+   "object": 0,
+   "pid": 11,
+   "value": "00fad4730c98"
+  }
+ ],
+ "driver": {
+  "project_tab": {
+   "project": "ets-sweep-secure",
+   "ok": true,
+   "watchdog": {
+    "language_dialog": false,
+    "password_dialog": false,
+    "ets_error": null,
+    "ets_started": [
+     "opened project",
+     "{'did': [], 'import_button': True, 'catalog_dy': 1}"
+    ]
+   }
+  },
+  "devices": {
+   "devices": [],
+   "ok": true
+  },
+  "catalog_add": {
+   "devices": [
+    {
+     "ia": "1.1.1",
+     "y": 286
+    }
+   ],
+   "added": [
+    {
+     "ia": "1.1.1",
+     "y": 286
+    }
+   ],
+   "row": {
+    "y": 1510,
+    "name": "-guard lock Nest",
+    "order": "NEST-GUARD",
+    "application": "Nestwächterschloss",
+    "version": "1.0",
+    "online": false
+   },
+   "password_dialog": false,
+   "certificate": true,
+   "ok": true
+  },
+  "select_connection": {
+   "entries": [
+    "88",
+    "Automatisch",
+    "KNX IP (192.168.1.74:3671 - 1.1.200)",
+    "knx-sim (127.0.0.1:3672 Udp)",
+    "Konfigurierte Verbindungen verwalten...",
+    "Arbeitsbereiche"
+   ],
+   "ok": true
+  },
+  "download": {
+   "ia": "1.1.1",
+   "mode": "application",
+   "medium_dialog_kept": false,
+   "password_dialog": false,
+   "certificate_dialog": false,
+   "ok": true
+  },
+  "export_keyring": {
+   "path": "<vm>\\keyrings\\M-00FA_A-2900-10-14FD.knxkeys",
+   "exported": true,
+   "com_error_after_save": "COMError(-2147220991, 'Ein Ereignis konnte keinen Abonnenten aufrufen.', (None, None, None, 0, None))",
+   "ok": true
+  }
+ },
+ "catalog_row": {
+  "y": 1510,
+  "name": "-guard lock Nest",
+  "order": "NEST-GUARD",
+  "application": "Nestwächterschloss",
+  "version": "1.0",
+  "online": false
+ },
+ "end": "bus quiet",
+ "history": [
+  "Historie löschen",
+  "1.1.1 Nest-guard lock",
+  "Programmieren(Appl.): Abgeschlossen",
+  "Keine Details verfügbar",
+  "Verbindung:",
+  "Start:",
+  "Ende:",
+  "1.1.1 Nest-guard lock",
+  "1.1.254 knx-sim (127.0.0.1)",
+  "Programmieren(Appl.): Abgeschlossen",
+  "1.1.1 Nest-guard lock",
+  "Programmieren(Appl.): fehlgeschlagen",
+  "1.1.1 Nest-guard lock"
+ ],
+ "ets": "ok",
+ "after": {
+  "keyring_remote": "<vm>\\keyrings\\M-00FA_A-2900-10-14FD.knxkeys",
+  "keyring": "captures/synthetic/syn-secure/defaults/project.knxkeys"
+ },
+ "loaded_objects": [
+  "1",
+  "2",
+  "3",
+  "4"
+ ],
+ "seconds": 191,
+ "ops": 72,
+ "outcome": "captured"
+}

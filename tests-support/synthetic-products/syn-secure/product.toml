@@ -18,7 +18,8 @@ synthetic FDSK and serial number (tools/ets-sweep/secure.py). The capture of
 ETS commissioning it (FDSK tool access, tool key, security mode on, the group
 key and sender tables, then the secured download) answers #423 for a product
 of our own, sizes the tables #537 checks, and is the reference for #201 tier
-2. Capture pending: it needs the #423 secure project in the VM."""
+2. Captured 2026-11-04 (ETS 6.4.1, captures/synthetic/syn-secure/defaults/,
+the keyring next to it under the public synthetic password)."""
 construct = "KNX Data Secure capable 07B0, factory state with a synthetic FDSK"
 issues = [423, 537, 201]
 

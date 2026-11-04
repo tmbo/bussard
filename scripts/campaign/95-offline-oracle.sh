@@ -143,6 +143,16 @@
 #                                lsm=memory|property  the sim's load-state
 #                                              realisation (default property;
 #                                              memory for mask 0701)
+#                keyring=FILE    the ETS .knxkeys export that decodes this
+#                                row's capture (a KNX Data Secure download),
+#                                added to --keyring for this row only, so a
+#                                rows file with one secure capture among plain
+#                                ones (captures/synthetic/rows.txt, #423) needs
+#                                no file-wide keyring. Its password comes from
+#                                $BUSSARD_KEYRING_PASSWORD as for --keyring;
+#                                without one the row is not comparable. The
+#                                bussard side still plans with the model's
+#                                own key material
 #                phase=fdsk|tool with run=: compare only bussard's writes under
 #                                that key (the decoded half of a capture whose
 #                                other half ran in a KNXnet/IP Secure session)
@@ -564,7 +574,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" word
+  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -578,7 +588,8 @@ run_row() {
       dir=*)       rowdir="${word#dir=}" ;;
       lsm=*)       lsm="${word#lsm=}" ;;
       state=*)     devstate="${word#state=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=...)" ;;
+      keyring=*)   rowkeyring="${word#keyring=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=...)" ;;
     esac
   done
   local scope_args=()
@@ -624,9 +635,23 @@ PY
     return 0
   fi
 
+  # The row's own keyring (keyring=, issue #423) decodes its capture only.
+  local row_keyring_args=(${KEYRING_ARGS+"${KEYRING_ARGS[@]}"})
+  if [ -n "$rowkeyring" ]; then
+    if [ ! -f "$rowkeyring" ]; then
+      not_comparable "$dir" "$device" "keyring not found: $rowkeyring"
+      return 0
+    fi
+    if [ -z "${BUSSARD_KEYRING_PASSWORD:-}" ]; then
+      not_comparable "$dir" "$device" "keyring=$rowkeyring needs its password in \$BUSSARD_KEYRING_PASSWORD"
+      return 0
+    fi
+    row_keyring_args+=(--keyring "$rowkeyring")
+  fi
+
   # 1. What ETS wrote.
   if ! "$PYTHON" "$KNXTRACE" image "$capture" --device "$device" --out "$dir/ets" \
-       ${KEYRING_ARGS+"${KEYRING_ARGS[@]}"} >"$dir/ets.log" 2>&1; then
+       ${row_keyring_args+"${row_keyring_args[@]}"} >"$dir/ets.log" 2>&1; then
     not_comparable "$dir" "$device" "capture: $(tail -1 "$dir/ets.log")"
     return 0
   fi
