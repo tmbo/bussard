@@ -38,7 +38,9 @@ use std::path::Path;
 pub use bussard_model::loader::Model;
 pub use error::ImportError;
 pub use keyring::{Backbone, Device, Interface, Keyring, KeyringError, parse_keyring};
-pub use keystore::{ImportReport, KeyStore, KeyStoreError, KeyStoreSummary, SaveOutcome};
+pub use keystore::{
+    ImportReport, KeyStore, KeyStoreError, KeyStoreSummary, SaveOutcome, StoreRevision,
+};
 pub use password::derive_zip_password;
 
 use container::Container;

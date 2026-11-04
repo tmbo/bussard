@@ -55,13 +55,13 @@ impl BussardMcp {
         };
         let password = bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
             .map_err(|_| format!("the key store needs {KEYRING_PASSWORD_ENV}"))?;
-        let store = KeyStore::load(&dir, &password)
-            .map_err(|e| format!("loading the key store: {e}"))?
-            .ok_or_else(|| {
-                "no key store (bussard.keys): the interface's FDSK and credentials live there; \
+        let (store, keystore_loaded) = KeyStore::load_with_revision(&dir, &password)
+            .map_err(|e| format!("loading the key store: {e}"))?;
+        let store = store.ok_or_else(|| {
+            "no key store (bussard.keys): the interface's FDSK and credentials live there; \
                  import the ETS keyring export with `bussard keys import`"
-                    .to_string()
-            })?;
+                .to_string()
+        })?;
         let mut plan = match switch {
             Switch::On => plan_on(&store, target, &knxnet.tunnels),
             Switch::Off => plan_off(&store, target),
@@ -114,6 +114,7 @@ impl BussardMcp {
             skip_address_check: false,
             dir: &dir,
             keystore_password: &password,
+            keystore_loaded: &keystore_loaded,
             connect_wait: std::time::Duration::from_secs(10),
         };
         let mut steps_done = Vec::new();

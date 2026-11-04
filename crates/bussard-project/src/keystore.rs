@@ -290,6 +290,17 @@ pub enum KeyStoreError {
     /// A crypto primitive failed while encrypting.
     #[error("encrypting the key store: {0}")]
     Crypto(#[from] CryptoError),
+    /// The store file changed on disk after it was loaded (another command
+    /// or the MCP server wrote it), so saving the loaded copy would drop
+    /// that edit (issue #793). Nothing was written.
+    #[error(
+        "{path} changed since this command loaded it (another command or the MCP server wrote \
+         it); nothing was written, so that edit is kept. Run the command again"
+    )]
+    ChangedSinceLoad {
+        /// The file.
+        path: PathBuf,
+    },
     /// The file is not a bussard key store (or a newer format).
     #[error("{path} is not a {KEYSTORE_FORMAT} key store (Format = {found:?})")]
     Format {
@@ -344,6 +355,21 @@ pub enum SaveOutcome {
     },
     /// The encrypted bytes were already on disk; nothing was touched.
     Unchanged,
+}
+
+/// What `bussard.keys` held when a store was loaded: a digest of the file's
+/// bytes, or no file. [`KeyStore::save_unchanged_since`] refuses to write
+/// when the file no longer matches it (issue #793), so a store held across a
+/// prompt, a bus session or a phone enrolment never overwrites a key another
+/// command saved meanwhile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreRevision(Option<[u8; 32]>);
+
+impl StoreRevision {
+    /// The revision of a file holding `bytes`, or of no file.
+    fn of(bytes: Option<&[u8]>) -> Self {
+        StoreRevision(bytes.map(|b| Sha256::digest(b).into()))
+    }
 }
 
 /// How an import changed the backbone key.
@@ -719,10 +745,25 @@ impl KeyStore {
     /// An unreadable file, a wrong password
     /// ([`KeyringError::SignatureMismatch`]), or a malformed store.
     pub fn load(dir: &Path, password: &str) -> Result<Option<Self>, KeyStoreError> {
+        Self::load_with_revision(dir, password).map(|(store, _)| store)
+    }
+
+    /// [`KeyStore::load`], plus the [`StoreRevision`] of the file it read,
+    /// for a caller that saves with [`KeyStore::save_unchanged_since`].
+    ///
+    /// # Errors
+    ///
+    /// As [`KeyStore::load`].
+    pub fn load_with_revision(
+        dir: &Path,
+        password: &str,
+    ) -> Result<(Option<Self>, StoreRevision), KeyStoreError> {
         let path = Self::path(dir);
-        let xml = match std::fs::read_to_string(&path) {
-            Ok(xml) => xml,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((None, StoreRevision::of(None)));
+            }
             Err(source) => {
                 return Err(KeyStoreError::Io {
                     action: "reading",
@@ -731,10 +772,17 @@ impl KeyStore {
                 });
             }
         };
-        Self::parse(&xml, password).map(Some).map_err(|e| match e {
+        let revision = StoreRevision::of(Some(&bytes));
+        let xml = String::from_utf8(bytes).map_err(|e| KeyStoreError::Io {
+            action: "reading",
+            path: path.clone(),
+            source: std::io::Error::new(std::io::ErrorKind::InvalidData, e),
+        })?;
+        let store = Self::parse(&xml, password).map_err(|e| match e {
             KeyStoreError::Format { found, .. } => KeyStoreError::Format { path, found },
             other => other,
-        })
+        })?;
+        Ok((Some(store), revision))
     }
 
     /// Parses and verifies a store from its XML text.
@@ -794,14 +842,52 @@ impl KeyStore {
     /// keyring holds. A metadata file that cannot be written is logged, not
     /// an error: the store itself is saved.
     pub fn save(&self, dir: &Path, password: &str) -> Result<SaveOutcome, KeyStoreError> {
+        self.save_checked(dir, password, None)
+            .map(|(outcome, _)| outcome)
+    }
+
+    /// [`KeyStore::save`], but only when `bussard.keys` still holds what
+    /// `loaded` records (from [`KeyStore::load_with_revision`]); on success
+    /// `loaded` becomes the revision just written, so the caller can save
+    /// again. For a caller that holds the store across a prompt, a bus
+    /// session or a phone enrolment (issue #793).
+    ///
+    /// The check and the rename are not one atomic step: a write landing in
+    /// the few milliseconds between them is not detected.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyStoreError::ChangedSinceLoad`] when the file changed (nothing is
+    /// written), otherwise as [`KeyStore::save`].
+    pub fn save_unchanged_since(
+        &self,
+        dir: &Path,
+        password: &str,
+        loaded: &mut StoreRevision,
+    ) -> Result<SaveOutcome, KeyStoreError> {
+        let (outcome, written) = self.save_checked(dir, password, Some(loaded))?;
+        *loaded = written;
+        Ok(outcome)
+    }
+
+    /// The save behind [`KeyStore::save`] and
+    /// [`KeyStore::save_unchanged_since`]; also returns the revision of the
+    /// file as it now stands.
+    fn save_checked(
+        &self,
+        dir: &Path,
+        password: &str,
+        expected: Option<&StoreRevision>,
+    ) -> Result<(SaveOutcome, StoreRevision), KeyStoreError> {
         let xml = self.to_xml(password)?;
-        let outcome = write_atomic(dir, &xml)?;
+        let written = StoreRevision::of(Some(xml.as_bytes()));
+        let outcome = write_atomic(dir, &xml, expected)?;
         if outcome == (SaveOutcome::Written { backup: true })
             && let Err(err) = bussard_model::KeyStoreMeta::record_change(dir)
         {
             tracing::warn!("recording the key store change: {err}");
         }
-        Ok(outcome)
+        Ok((outcome, written))
     }
 
     /// Merges a decrypted `.knxkeys` export into the store (issue #241):
@@ -1535,7 +1621,14 @@ fn civil_from_days(z: i64) -> (i64, i64, i64) {
 /// so a half-written backup never replaces a good one); then the temporary
 /// file is renamed over the store, so `bussard.keys` always holds either the
 /// old or the new store.
-fn write_atomic(dir: &Path, xml: &str) -> Result<SaveOutcome, KeyStoreError> {
+///
+/// With `expected`, the file on disk must still match that revision, or
+/// nothing is written ([`KeyStoreError::ChangedSinceLoad`]).
+fn write_atomic(
+    dir: &Path,
+    xml: &str,
+    expected: Option<&StoreRevision>,
+) -> Result<SaveOutcome, KeyStoreError> {
     let path = dir.join(KEYSTORE_FILE);
     let io = |action: &'static str, path: &Path| {
         let path = path.to_path_buf();
@@ -1550,6 +1643,9 @@ fn write_atomic(dir: &Path, xml: &str) -> Result<SaveOutcome, KeyStoreError> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => return Err(io("reading", &path)(e)),
     };
+    if expected.is_some_and(|loaded| *loaded != StoreRevision::of(existing.as_deref())) {
+        return Err(KeyStoreError::ChangedSinceLoad { path });
+    }
     if existing.as_deref() == Some(xml.as_bytes()) {
         return Ok(SaveOutcome::Unchanged);
     }
@@ -2167,6 +2263,69 @@ mod tests {
         // The backup is itself a valid store.
         let bak = std::fs::read_to_string(dir.join(KEYSTORE_BACKUP_FILE))?;
         assert_eq!(KeyStore::parse(&bak, PASSWORD)?.group_keys.len(), 1);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_unchanged_since_refuses_a_store_changed_on_disk() -> TestResult {
+        let dir = temp_dir("revision")?;
+        sample()?.save(&dir, PASSWORD)?;
+        let (held, mut revision) = KeyStore::load_with_revision(&dir, PASSWORD)?;
+        let mut held = held.ok_or("store missing")?;
+        // Another command adds a group key meanwhile.
+        let mut other = KeyStore::load(&dir, PASSWORD)?.ok_or("store missing")?;
+        other
+            .group_keys
+            .insert(ga("1/2/6")?, Key16::new([0x66; 16]));
+        other.save(&dir, PASSWORD)?;
+        let on_disk = std::fs::read(dir.join(KEYSTORE_FILE))?;
+
+        held.group_keys.insert(ga("1/2/7")?, Key16::new([0x77; 16]));
+        let refused = held.save_unchanged_since(&dir, PASSWORD, &mut revision);
+        assert!(
+            matches!(refused, Err(KeyStoreError::ChangedSinceLoad { .. })),
+            "{refused:?}"
+        );
+        assert_eq!(std::fs::read(dir.join(KEYSTORE_FILE))?, on_disk);
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_unchanged_since_saves_again_after_its_own_write() -> TestResult {
+        let dir = temp_dir("revision-own")?;
+        let (none, mut revision) = KeyStore::load_with_revision(&dir, PASSWORD)?;
+        assert!(none.is_none());
+        let mut store = sample()?;
+        assert_eq!(
+            store.save_unchanged_since(&dir, PASSWORD, &mut revision)?,
+            SaveOutcome::Written { backup: false }
+        );
+        store
+            .group_keys
+            .insert(ga("1/2/8")?, Key16::new([0x88; 16]));
+        assert_eq!(
+            store.save_unchanged_since(&dir, PASSWORD, &mut revision)?,
+            SaveOutcome::Written { backup: true }
+        );
+        let back = KeyStore::load(&dir, PASSWORD)?.ok_or("store missing")?;
+        assert!(back.group_keys.contains_key(&ga("1/2/8")?));
+        std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_unchanged_since_refuses_a_store_created_meanwhile() -> TestResult {
+        let dir = temp_dir("revision-created")?;
+        let (_, mut revision) = KeyStore::load_with_revision(&dir, PASSWORD)?;
+        sample()?.save(&dir, PASSWORD)?;
+        let refused =
+            KeyStore::new("synthetic").save_unchanged_since(&dir, PASSWORD, &mut revision);
+        assert!(
+            matches!(refused, Err(KeyStoreError::ChangedSinceLoad { .. })),
+            "{refused:?}"
+        );
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }
