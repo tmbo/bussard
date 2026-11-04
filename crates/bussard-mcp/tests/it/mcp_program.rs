@@ -138,6 +138,16 @@ impl Harness {
         read_wait: Option<Duration>,
         extra: Vec<MockDevice>,
     ) -> anyhow::Result<Harness> {
+        Harness::start_full(plan_ttl, (reply_wait, read_wait), extra, true).await
+    }
+
+    /// [`Harness::start_line`] with the `--no-model-edits` switch chosen.
+    async fn start_full(
+        plan_ttl: Duration,
+        (reply_wait, read_wait): (Option<Duration>, Option<Duration>),
+        extra: Vec<MockDevice>,
+        no_model_edits: bool,
+    ) -> anyhow::Result<Harness> {
         // Keep serving after a DISCONNECT so a second connection finds the
         // same device with the same state.
         let gateway = MockGateway::builder()
@@ -152,12 +162,13 @@ impl Harness {
         let dir = tempfile::tempdir()?;
         write_model(dir.path())?;
         let connection = ConnectionConfig::tunnel(gateway.addr());
-        let (client, server_task) = serve(
+        let (client, server_task) = serve_config(
             dir.path(),
             connection.clone(),
             plan_ttl,
             true,
             (reply_wait, read_wait),
+            no_model_edits,
         )
         .await?;
         Ok(Harness {
@@ -234,7 +245,22 @@ async fn serve(
     connection: ConnectionConfig,
     plan_ttl: Duration,
     with_bus: bool,
+    waits: (Option<Duration>, Option<Duration>),
+) -> anyhow::Result<(
+    rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    tokio::task::JoinHandle<()>,
+)> {
+    serve_config(dir, connection, plan_ttl, with_bus, waits, true).await
+}
+
+/// [`serve`] with the `--no-model-edits` switch chosen.
+async fn serve_config(
+    dir: &Path,
+    connection: ConnectionConfig,
+    plan_ttl: Duration,
+    with_bus: bool,
     (reply_wait, read_wait): (Option<Duration>, Option<Duration>),
+    no_model_edits: bool,
 ) -> anyhow::Result<(
     rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tokio::task::JoinHandle<()>,
@@ -245,7 +271,7 @@ async fn serve(
         connection: connection.clone(),
         passive: false,
         allow_writes: false,
-        no_model_edits: true,
+        no_model_edits,
         capture_db: None,
         allow_programming: true,
         allow_remote_gateway: false,
@@ -1469,6 +1495,144 @@ async fn test_knx_apply_device_line_plans_writes_and_verifies_every_device() -> 
     let replan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
     assert_eq!(replan["noop"], true, "{replan}");
     assert!(replan["plan_digest"].is_null(), "{replan}");
+
+    h.stop().await
+}
+
+/// The latest history snapshot's result line and its `groups.toml`.
+fn latest_snapshot(dir: &Path) -> anyhow::Result<(String, String)> {
+    let history = bussard_model::history::History::open(dir);
+    let latest = history
+        .latest()?
+        .ok_or_else(|| anyhow::anyhow!("no history snapshot recorded"))?;
+    let groups = std::fs::read_to_string(history.snapshot_dir(&latest.id).join("groups.toml"))?;
+    Ok((latest.manifest.result, groups))
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_declares_an_undeclared_group_address() -> anyhow::Result<()> {
+    let h = Harness::start_full(Duration::from_secs(600), (None, None), Vec::new(), false).await?;
+    // 1/2/2 is linked by object 22 but groups.toml does not define it.
+    std::fs::write(
+        h.dir.path().join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Blind move\" },\n  \
+         { address = \"1/2/1\", name = \"Blind stop\" },\n]\n",
+    )?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    let digest = digest_of(&plan)?;
+
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    let declared = applied["declared"].to_string();
+    assert!(
+        declared.contains("added 1/2/2") && declared.contains("first used by 1.1.4 object 22"),
+        "{applied}"
+    );
+    assert!(
+        applied["next_step"]
+            .as_str()
+            .is_some_and(|n| n.contains("result.declared")),
+        "{applied}"
+    );
+    let groups = std::fs::read_to_string(h.dir.path().join("groups.toml"))?;
+    assert!(groups.contains("1/2/2"), "{groups}");
+    // The audit snapshot names the addition and holds the declared file.
+    let (result, snapshot_groups) = latest_snapshot(h.dir.path())?;
+    assert!(result.contains("added 1/2/2"), "{result}");
+    assert!(snapshot_groups.contains("1/2/2"), "{snapshot_groups}");
+    assert_eq!(h.tables()?.0, address_table(&["1/2/0", "1/2/1", "1/2/2"])?);
+
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_line_declares_an_undeclared_group_address() -> anyhow::Result<()> {
+    let h = Harness::start_full(
+        Duration::from_secs(600),
+        (None, None),
+        vec![unchanged_device()?, changed_device()?],
+        false,
+    )
+    .await?;
+    write_line_model(h.dir.path())?;
+    // 1/4/1 is linked by 1.1.6 object 31 but groups.toml does not define it;
+    // `bussard apply --line` declares it, so the MCP form does too.
+    std::fs::write(
+        h.dir.path().join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Blind move\" },\n  \
+         { address = \"1/2/1\", name = \"Blind stop\" },\n  \
+         { address = \"1/2/2\", name = \"Blind position\" },\n  \
+         { address = \"1/3/0\", name = \"Flur switch\" },\n  \
+         { address = \"1/4/0\", name = \"Bad setpoint\" },\n]\n",
+    )?;
+    let plan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    let digest = digest_of(&plan)?;
+
+    let applied = finished(
+        &h,
+        h.call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?,
+    )
+    .await?;
+    assert_eq!(applied["ok"], true, "apply: {applied}");
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    let declared = applied["declared"].to_string();
+    assert!(
+        declared.contains("added 1/4/1") && declared.contains("first used by 1.1.6 object 31"),
+        "{applied}"
+    );
+    let groups = std::fs::read_to_string(h.dir.path().join("groups.toml"))?;
+    assert!(groups.contains("1/4/1"), "{groups}");
+    let (result, snapshot_groups) = latest_snapshot(h.dir.path())?;
+    assert!(result.contains("added 1/4/1"), "{result}");
+    assert!(snapshot_groups.contains("1/4/1"), "{snapshot_groups}");
+    assert_eq!(
+        tables_of(&h, "1.1.6")?.0,
+        address_table(&["1/4/0", "1/4/1"])?
+    );
+
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_line_without_model_edits_leaves_groups_toml_alone()
+-> anyhow::Result<()> {
+    // `--no-model-edits`: the apply writes nothing to the project, so an
+    // undeclared address stays undeclared (validation only warns, E001).
+    let h = line_harness().await?;
+    let groups = h.dir.path().join("groups.toml");
+    let text = std::fs::read_to_string(&groups)?
+        .replace("  { address = \"1/4/1\", name = \"Bad mode\" },\n", "");
+    assert!(!text.contains("1/4/1"), "{text}");
+    std::fs::write(&groups, &text)?;
+    let plan = finished(&h, h.call("knx_plan_device", json!({"line": "1.1"})).await?).await?;
+    let digest = digest_of(&plan)?;
+    let applied = finished(
+        &h,
+        h.call(
+            "knx_apply_device",
+            json!({"line": "1.1", "plan_digest": digest}),
+        )
+        .await?,
+    )
+    .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["declared"], json!([]), "{applied}");
+    assert_eq!(std::fs::read_to_string(&groups)?, text);
+    assert_eq!(row(&applied, "1.1.6")?["status"], "applied", "{applied}");
 
     h.stop().await
 }

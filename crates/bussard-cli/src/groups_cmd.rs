@@ -258,7 +258,8 @@ fn validation_counts(dir: &Path) -> (usize, usize) {
 /// Adds the group addresses the device files link but `groups.toml` does not
 /// define, saves `groups.toml` (behind a history snapshot) and prints one line
 /// per addition (on stderr when `json`, so stdout stays one JSON document).
-/// `verb` names the command in the snapshot.
+/// `verb` names the command in the snapshot. The write is
+/// [`bussard_service::declare::declare_used`], shared with the MCP apply.
 ///
 /// Returns what was added; an empty list writes nothing.
 pub(crate) fn declare_used(
@@ -267,19 +268,8 @@ pub(crate) fn declare_used(
     verb: &str,
     json: bool,
 ) -> anyhow::Result<Vec<DeclaredGroup>> {
-    let mut edited = model.clone();
-    let added = bussard_model::declare_used_groups(&mut edited);
-    if added.is_empty() {
-        return Ok(added);
-    }
-    crate::history_cmd::snapshot(
-        dir,
-        bussard_model::history::SnapshotReason::new(verb)
-            .with_result("before declaring the group addresses the device files use"),
-    );
-    let path = dir.join("groups.toml");
-    bussard_model::loader::save_groups(&path, &edited.groups)
-        .with_context(|| format!("writing {}", path.display()))?;
+    let added =
+        bussard_service::declare::declare_used(dir, model, verb, &mut crate::console::Console)?;
     for d in &added {
         if json {
             eprintln!("{}", d.sentence());
@@ -287,6 +277,5 @@ pub(crate) fn declare_used(
             println!("{}", d.sentence());
         }
     }
-    *model = edited;
     Ok(added)
 }
