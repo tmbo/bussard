@@ -63,6 +63,7 @@ impl ModelHandle {
     /// changes, fingerprinting it now.
     pub fn new(dir: PathBuf, model: Model) -> Self {
         let fingerprint = fingerprint(&dir);
+        bussard_mgmt::manufacturers::load_model_dir(&dir);
         ModelHandle {
             dir: Some(dir),
             inner: Arc::new(RwLock::new(Snapshot {
@@ -170,6 +171,7 @@ impl ModelHandle {
         }
 
         complete_product_models(dir);
+        bussard_mgmt::manufacturers::load_model_dir(dir);
         match Model::load(dir) {
             Ok(model) => {
                 snapshot.model = Arc::new(model);

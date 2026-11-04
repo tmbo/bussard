@@ -219,6 +219,83 @@ fn scan_reports_devices_and_model_delta() -> TestResult {
     Ok(())
 }
 
+/// A scan in a model with an imported manufacturer list (issue #788) names
+/// each device by that list first, then by the built-in table, and calls an id
+/// neither knows an unknown manufacturer.
+#[test]
+fn test_scan_names_manufacturers_from_the_imported_list() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let devices = vec![
+        device("1.1.4", 0x07B0, 0x0048, b"EX-1")?, // only in the imported list
+        device("1.1.7", 0x07B0, 0x0083, b"EX-2")?, // in both: the list wins
+        device("1.1.8", 0x07B0, 0x0002, b"EX-3")?, // built-in table only
+        device("1.1.5", 0x07B0, 0x0123, b"EX-4")?, // in neither
+    ];
+    let gw = start_gateway(&rt, devices)?;
+    let port = gw.port();
+
+    let tmp =
+        std::env::temp_dir().join(format!("bussard-scan-manufacturers-{}", std::process::id()));
+    let model_dir = tmp.join("knx");
+    write_model(&model_dir)?;
+    std::fs::create_dir_all(model_dir.join("products"))?;
+    std::fs::write(
+        model_dir.join("products").join("manufacturers.toml"),
+        "[manufacturers]\nM-0048 = \"Example Maker\"\nM-0083 = \"Example Eighty-Three\"\n",
+    )?;
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env("BUSSARD_SCAN_DISCOVERY_MS", "40")
+        .args([
+            "scan",
+            "1.1",
+            "--from",
+            "1",
+            "--to",
+            "8",
+            "--dir",
+            model_dir.to_str().ok_or("temp path is not UTF-8")?,
+            "--gateway",
+            &format!("127.0.0.1:{port}"),
+            "--json",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+
+    drop(gw);
+    let _ = std::fs::remove_dir_all(&tmp);
+
+    assert!(
+        output.status.success(),
+        "scan should exit 0; stderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout)?;
+    let json: serde_json::Value = serde_json::from_str(&stdout)?;
+    let found = json["found"].as_array().ok_or("found array")?;
+    let manufacturer = |addr: &str| {
+        found
+            .iter()
+            .find(|d| d["address"] == addr)
+            .map(|d| d["manufacturer"].clone())
+    };
+    assert_eq!(
+        manufacturer("1.1.4"),
+        Some("Example Maker".into()),
+        "{stdout}"
+    );
+    assert_eq!(manufacturer("1.1.7"), Some("Example Eighty-Three".into()));
+    assert_eq!(manufacturer("1.1.8"), Some("ABB".into()));
+    assert_eq!(
+        manufacturer("1.1.5"),
+        Some("unknown manufacturer (0x0123)".into())
+    );
+    Ok(())
+}
+
 /// The pre-flight source-address check: the mock hands out tunnel address
 /// `1.1.255` in its CONNECT_RESPONSE *and* answers management traffic there, so
 /// a real device sits exactly where bussard would speak from. Sharing a source

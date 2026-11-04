@@ -1860,6 +1860,9 @@ fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
 fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
     let dir = g.dir.as_path();
     let json = g.json;
+    // One manufacturer lookup for every command (issue #788): the model's
+    // list from the imported ETS master data, then the built-in table.
+    bussard_mgmt::manufacturers::load_model_dir(dir);
     match command {
         Command::Scan { line, from, to } => {
             scan_cmd::run(&line, from, to, dir, json, g.keyring.as_deref(), g.mgmt())

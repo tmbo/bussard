@@ -31,6 +31,7 @@ const LEGACY_VENDOR_DIR: &str = "vendor";
 pub fn store_file(dir: &Path, src: &Path) -> Result<PathBuf, SetupError> {
     let store_dir = dir.join(PRODUCTS_DIR);
     if src.parent().is_some_and(|p| same_dir(p, &store_dir)) {
+        store::record_manufacturers(dir, src);
         return Ok(src.to_path_buf());
     }
     let name = src

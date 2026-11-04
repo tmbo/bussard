@@ -2,40 +2,16 @@
 
 use std::collections::HashMap;
 
-use bussard_ets::attrs::attrs_map;
+use crate::error::Result;
 
-use quick_xml::Reader;
-use quick_xml::events::Event;
-
-use crate::error::{ImportError, Result};
-
-/// Parses the manufacturer id → display name map from `knx_master.xml`.
+/// Parses the manufacturer id → display name map from `knx_master.xml`, with
+/// the parser `bussard-ets` shares with the product store (issue #788).
 pub fn parse_manufacturers(xml: &str) -> Result<HashMap<String, String>> {
-    let context = "knx_master.xml";
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(false);
-
-    let mut map = HashMap::new();
-    loop {
-        match reader.read_event().map_err(|source| ImportError::Xml {
-            context: context.to_string(),
-            source,
-        })? {
-            Event::Eof => break,
-            Event::Start(e) | Event::Empty(e) if e.local_name().as_ref() == b"Manufacturer" => {
-                // Plain (non-normalizing) unescape via the shared helper keeps
-                // import output byte-stable.
-                let attrs = attrs_map(&e, context)?;
-                let id = attrs.get(b"Id").map(str::to_string);
-                let name = attrs.get(b"Name").map(str::to_string);
-                if let (Some(id), Some(name)) = (id, name) {
-                    map.insert(id, name);
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(map)
+    Ok(
+        bussard_ets::master::parse_manufacturer_names(xml.as_bytes(), "knx_master.xml")?
+            .into_iter()
+            .collect(),
+    )
 }
 
 #[cfg(test)]

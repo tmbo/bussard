@@ -226,6 +226,25 @@ pub enum AppSelection {
     Exact(Vec<String>),
 }
 
+/// Reads the manufacturer list of the `knx_master.xml` in the archive at
+/// `path` (a `.knxprod`, an archive extracted from an export, or a `.knxproj`):
+/// ETS reference (`M-0004`) to name. Empty when the archive carries no master
+/// file (issue #788).
+///
+/// # Errors
+///
+/// The archive does not open or its master file does not parse.
+pub fn read_manufacturer_names(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut container = container::Container::open(path)?;
+    match container.master_xml()? {
+        Some(xml) => Ok(bussard_ets::master::parse_manufacturer_names(
+            xml.as_bytes(),
+            "knx_master.xml",
+        )?),
+        None => Ok(std::collections::BTreeMap::new()),
+    }
+}
+
 /// Reads a `.knxprod` (or a `.knxproj` project export) but parses only the
 /// application programs `select` picks from the archive's [`ProductCatalog`]
 /// (issue #214).
