@@ -54,6 +54,9 @@ CLAUDE.md applies in full. The ones agents most often miss:
 - No `.unwrap()` or `.expect()` anywhere but a binary's `main`; tests return
   `Result` and use `?`.
 - Doc comments on every public item; no wildcard imports outside test modules.
+- User-facing words (CLI output, the enrolment page, MCP results, `docs/`)
+  follow `dev/glossary.md`: "project", not "model"; "certificate", not
+  "label"; and so on.
 - No new dependency without a one-line justification in the PR body, and
   never a copyleft or git dependency.
 - Changelog: never edit `CHANGELOG.md`. Add a fragment under
