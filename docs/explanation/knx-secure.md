@@ -100,6 +100,50 @@ After an address change of a Secure device, re-export from ETS too: the
 keyring lists tool keys by individual address, and every later command looks
 the key up under the new address.
 
+## Certificate entry from a phone
+
+Every Secure device ships with a certificate label that carries its factory
+key (FDSK). `bussard keys enroll` takes these labels from a phone camera into
+the key store, so you never type or paste one. The MCP tool
+`knx_enroll_certificates` runs the same session for the assistant.
+
+**How a label travels.** The phone reads the label, encrypts it on the phone
+and sends it to a relay. The relay forwards it to your bussard, which
+decrypts it, matches its serial number to a device and stores the key in the
+encrypted key store. The phone then shows what became of each label.
+
+| Party | Sees |
+|---|---|
+| bussard | the labels in plain text; it writes the key store |
+| the page in the phone's browser | the labels it scans, on the phone only |
+| the server that hosts the page | a request for a static page; the session details in the link never reach it |
+| the relay | encrypted messages, a session id and their timing; it cannot decrypt them |
+| the assistant and the chat | the link, the session code, serial numbers, addresses and statuses; never a label or a key |
+
+**The session code.** bussard creates a fresh key pair for each session and
+puts the public key in the link. bussard prints a session code derived from
+it, and the page shows the code it derives from the key it received. Check
+that both show the same code before you scan. A different code means the
+link was changed on its way to the phone: close the page and start again.
+
+**The hosted page and relay.** By default the link opens
+`https://bussard.tmbo.dev/enroll/` and the messages pass through the hosted
+relay. Neither keeps a label: bussard deletes the session when it ends, and
+the relay forgets it after 30 minutes at the latest. `[enroll]` in
+`bussard.toml` points both at your own copies.
+
+**Local mode.** `bussard keys enroll --local` serves the page and the relay
+from bussard itself on `127.0.0.1`. Open the link in a browser on the same
+computer and scan with its camera or type the labels. Nothing leaves this
+machine, and a phone cannot reach that address.
+
+**At the end** bussard says how many labels it stored on a device, how many
+wait for a device, and which were already known, in conflict or invalid,
+and lists the next steps that apply. A label whose device the model does not
+know yet waits under its serial number; `bussard scan` or `bussard adopt`
+reads the serial off the device and attaches the key. After new keys,
+`bussard keys export` gives ETS or Home Assistant a current keyring.
+
 ## Secrets and the .env file
 
 bussard reads `BUSSARD_*` variables from one `.env` file: the first of

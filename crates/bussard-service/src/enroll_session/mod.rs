@@ -23,6 +23,7 @@
 //! a `Debug` output. The certificate text is zeroized once the sink returns.
 
 pub mod relay;
+pub mod report;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -37,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
 
 pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
+pub use report::{DOCS_URL, EnrollTally, NextStep, data_path};
 
 /// The enrolment page a link opens unless the surface names another
 /// (`dev/enroll-protocol.md`, "Parties").

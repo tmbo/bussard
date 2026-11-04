@@ -1,16 +1,18 @@
 //! `bussard keys enroll`: take KNX Secure device certificates from a phone
 //! (issue #729, protocol `dev/enroll-protocol.md`).
 //!
-//! Prints the link, a terminal QR code of it and the fingerprint, then one
-//! line per certificate the phone sends until the phone sends `done`, the
+//! Prints how the labels travel with a docs link, the link, a terminal QR
+//! code of it and the session code (the fingerprint), then one line per
+//! certificate the phone sends until the phone sends `done`, the
 //! user types `q` (and Enter) or presses Ctrl-C. The relay comes from
 //! `--relay`, then `[enroll] relay` in `bussard.toml`, then the hosted relay
 //! ([`bussard_service::enroll_session::DEFAULT_RELAY`]). `--local` (#732) serves the page and the relay on
 //! 127.0.0.1 instead ([`bussard_viz::enroll_local`]), for a browser on this
 //! computer. Never prints a certificate or a key: only serials, addresses,
-//! names and statuses.
+//! names and statuses. At the end it prints a summary and the next steps
+//! that apply (issue #784, [`EnrollTally`]).
 
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -18,9 +20,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use bussard_service::enroll_session::{
-    CertificateOutcome, EnrollEnd, EnrollEvent, EnrollSession, HttpRelay, RunOptions,
-    hosted_endpoints,
+    CertificateOutcome, DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession, EnrollTally, HttpRelay,
+    RunOptions, data_path, hosted_endpoints,
 };
+use owo_colors::OwoColorize;
 use serde_json::json;
 
 /// The long-poll wait: how long a `q` or Ctrl-C takes at most to be noticed.
@@ -81,17 +84,23 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
                 "local": local.is_some(),
             }),
         )?;
-    } else if local.is_some() {
-        // A phone cannot reach 127.0.0.1: no QR code.
-        println!("Open this link in a browser on this computer and scan or type the labels:\n");
     } else {
-        println!("Open this link on the phone and scan the certificate labels:\n");
-        if !options.no_qr {
-            print!("{}", qr(&link)?);
-        }
-        println!("{link}\n");
-        println!("Fingerprint: {fingerprint} (the page must show the same)");
-        println!("Type q and Enter, or press Ctrl-C, to finish.\n");
+        // A phone cannot reach 127.0.0.1: no QR code in local mode.
+        let code = if options.no_qr || local.is_some() {
+            None
+        } else {
+            Some(qr(&link)?)
+        };
+        print!(
+            "{}",
+            intro_text(
+                local.is_some(),
+                &link,
+                &fingerprint,
+                code.as_deref(),
+                use_color()
+            )
+        );
     }
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -99,6 +108,7 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
     watch_ctrl_c(Arc::clone(&stop));
 
     let mut print_error = None;
+    let mut tally = EnrollTally::default();
     let summary = session.run(
         &relay,
         &mut store,
@@ -107,6 +117,9 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
         },
         &stop,
         &mut |event| {
+            if let EnrollEvent::Certificate(outcome) = &event {
+                tally.add(outcome.status);
+            }
             if let Err(err) = show(&event, json_out) {
                 print_error.get_or_insert(err);
             }
@@ -132,15 +145,82 @@ pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result
                 "end": why,
                 "stored": summary.stored,
                 "certificates": summary.certificates,
+                "tally": tally,
+                "summary": tally.summary(),
+                "next_steps": tally.next_steps(),
             }),
         )?;
     } else {
-        println!(
-            "\nSession closed ({why}): {} of {} certificate(s) stored.",
-            summary.stored, summary.certificates
-        );
+        print!("{}", ending_text(why, &tally, use_color()));
     }
     Ok(ExitCode::SUCCESS)
+}
+
+/// Whether to style the text: on a terminal unless `NO_COLOR` is set, as
+/// `validate` and `monitor` decide.
+fn use_color() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && std::io::stdout().is_terminal()
+}
+
+/// The text before the session runs: how the labels travel, the docs link,
+/// the link (and its QR code), the session code to compare, how to finish.
+fn intro_text(local: bool, link: &str, fingerprint: &str, qr: Option<&str>, color: bool) -> String {
+    let mut out = String::new();
+    for line in data_path(local) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.push_str(&format!("Read more: {DOCS_URL}\n\n"));
+    if local {
+        out.push_str(
+            "Open this link in a browser on this computer and scan or type the labels:\n\n",
+        );
+    } else {
+        out.push_str("Open this link on the phone and scan the certificate labels:\n\n");
+    }
+    if let Some(qr) = qr {
+        out.push_str(qr);
+    }
+    out.push_str(&format!("{link}\n\n"));
+    let code = format!("Session code: {fingerprint}");
+    if color {
+        out.push_str(&format!("{}\n", code.bold().green()));
+    } else {
+        out.push_str(&format!("{code}\n"));
+    }
+    out.push_str(if local {
+        "Check that the page shows the same code.\n\n"
+    } else {
+        "Check that your phone shows the same code.\n\n"
+    });
+    out.push_str("Type q and Enter, or press Ctrl-C, to finish.\n\n");
+    out
+}
+
+/// The text after the session: why it ended, the summary of the labels and
+/// the next steps that apply.
+fn ending_text(why: &str, tally: &EnrollTally, color: bool) -> String {
+    let heading = format!("Session closed ({why}).");
+    let mut out = if color {
+        format!("\n{}\n", heading.bold())
+    } else {
+        format!("\n{heading}\n")
+    };
+    out.push_str(&tally.summary());
+    out.push('\n');
+    let steps = tally.next_steps();
+    if !steps.is_empty() {
+        out.push_str("\nNext steps:\n");
+        for step in steps {
+            let command = if color {
+                step.command.bold().to_string()
+            } else {
+                step.command.to_string()
+            };
+            out.push_str(&format!("  {command}\n    {}\n", step.why));
+        }
+    }
+    out
 }
 
 /// One event as a line. Never a key: events carry none.
@@ -253,6 +333,92 @@ mod tests {
             message: None,
         });
         assert_eq!(line, "00FA01020304  stored  1.1.20 Test actuator");
+    }
+
+    fn tally(statuses: &[EnrollStatus]) -> EnrollTally {
+        let mut tally = EnrollTally::default();
+        for status in statuses {
+            tally.add(*status);
+        }
+        tally
+    }
+
+    #[test]
+    fn test_intro_text_hosted_explains_relay_and_code() {
+        let text = intro_text(false, "https://page.invalid/#x", "ABCD-1234", None, false);
+        assert!(text.contains("relay"), "{text}");
+        assert!(text.contains("cannot decrypt"), "{text}");
+        assert!(text.contains(&format!("Read more: {DOCS_URL}")), "{text}");
+        assert!(text.contains("\nSession code: ABCD-1234\n"), "{text}");
+        assert!(text.contains("Check that your phone shows the same code."));
+        assert!(!text.contains("Nothing leaves this machine"));
+        assert!(
+            !text.contains('\u{1b}'),
+            "no escapes without colour: {text}"
+        );
+    }
+
+    #[test]
+    fn test_intro_text_local_says_nothing_leaves() {
+        let text = intro_text(
+            true,
+            "http://127.0.0.1:1/enroll/#x",
+            "ABCD-1234",
+            None,
+            false,
+        );
+        assert!(text.contains("Nothing leaves this machine."), "{text}");
+        assert!(text.contains("http://127.0.0.1:1/enroll/#x"), "{text}");
+        assert!(text.contains("Check that the page shows the same code."));
+        assert!(!text.contains("cannot decrypt"), "{text}");
+    }
+
+    #[test]
+    fn test_intro_text_colour_highlights_the_code() {
+        let text = intro_text(false, "https://page.invalid/#x", "ABCD-1234", None, true);
+        let line = text
+            .lines()
+            .find(|l| l.contains("Session code"))
+            .unwrap_or_default();
+        assert!(line.starts_with('\u{1b}'), "{line:?}");
+        assert!(line.contains("ABCD-1234"));
+    }
+
+    #[test]
+    fn test_ending_text_lists_only_applying_steps() {
+        let text = ending_text(
+            "the phone finished",
+            &tally(&[EnrollStatus::Stored, EnrollStatus::Unassigned]),
+            false,
+        );
+        assert!(
+            text.contains("Session closed (the phone finished)."),
+            "{text}"
+        );
+        assert!(text.contains("2 label(s): 1 stored on a device, 1 waiting for a device."));
+        assert!(text.contains("bussard adopt <ADDRESS>"), "{text}");
+        assert!(text.contains("bussard keys export <FILE>"), "{text}");
+        assert!(!text.contains("bussard keys show"), "{text}");
+        assert!(!text.contains('\u{1b}'), "{text}");
+    }
+
+    #[test]
+    fn test_ending_text_conflict_and_invalid() {
+        let text = ending_text(
+            "stopped",
+            &tally(&[EnrollStatus::Conflict, EnrollStatus::Invalid]),
+            false,
+        );
+        assert!(text.contains("bussard keys show"), "{text}");
+        assert!(text.contains("bussard keys enroll"), "{text}");
+        assert!(!text.contains("keys export"), "{text}");
+    }
+
+    #[test]
+    fn test_ending_text_nothing_to_do_has_no_steps() {
+        let text = ending_text("stopped", &tally(&[EnrollStatus::AlreadyStored]), false);
+        assert!(text.contains("1 already known."), "{text}");
+        assert!(!text.contains("Next steps"), "{text}");
     }
 
     #[test]
