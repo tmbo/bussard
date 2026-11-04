@@ -1,1 +1,1 @@
-Living room blind actuator (1.1.4), channel B, now listens to Wind alarm (3/2/0). This group address is protected.
+Living room blind actuator, channel B, now listens to Wind alarm (3/2/0). This group address is protected.

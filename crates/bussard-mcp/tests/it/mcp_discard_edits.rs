@@ -161,7 +161,15 @@ async fn test_knx_discard_edits_one_device_keeps_the_other_and_undo_restores() -
     assert_eq!(discarded["ok"], true, "{discarded}");
     assert_eq!(discarded["discarded"], "1.1.5");
     let dropped = discarded["dropped"].to_string();
-    assert!(dropped.contains("1/2/2"), "{discarded}");
+    // The dropped link names the group address by its name (issue #306);
+    // the structured detail keeps the address.
+    assert!(dropped.contains("Light dim"), "{discarded}");
+    assert!(
+        discarded["detail"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|c| c["group"] == "1/2/2")),
+        "{discarded}"
+    );
     assert!(discarded["snapshot"].is_string(), "{discarded}");
     assert!(!device_file("1.1.5")?.contains("1/2/2"));
     assert!(

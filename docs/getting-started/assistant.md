@@ -124,8 +124,8 @@ Assistant:  (calls knx_wait_for_telegram, then knx_infer_group)
             I would call it "Hallway light". OK?
 You:        Yes, and the device is the hallway push button.
 Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
-            New group address Hallway light (1/1/1), type 1.001.
-            Hallway push button now switches Hallway light (1/1/1).
+            New group address Hallway light, type 1.001.
+            Hallway push button now switches Hallway light.
 ```
 
 `knx_wait_for_telegram` waits for the press, `knx_infer_group` ranks the possible data types from the telegrams it has seen, and `knx_set_group` writes the name you agreed to. Every telegram narrows the candidates, so an uncertain one gets "press it again". The loop only listens and never transmits.
@@ -138,7 +138,7 @@ Every edit comes back as a plain sentence for the assistant to quote, and touche
 $ bussard status
 1 pending change(s) since snapshot 20260922T104500Z-001 (2026-09-22T10:45:00Z):
 
-Living room blind actuator (1.1.4), channel B, now listens to Central down (3/0/1).
+Living room blind actuator, channel B, now listens to Central down.
 ```
 
 `status` lists every change since the last saved state in the same sentences. `bussard history` lists every saved state with the command that caused it; an edit over MCP shows as `mcp knx_add_link` and similar.

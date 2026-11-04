@@ -230,10 +230,7 @@ fn test_groups_secure_off_export_reimport_and_undo() -> TestResult {
 
     let out = ok(&bussard(&model, &["groups", "secure", "1/2/3", "off"])?)?;
     assert_no_secrets(&out);
-    assert!(
-        out.contains("Secured level (1/2/3) now runs plain"),
-        "{out}"
-    );
+    assert!(out.contains("Secured level now runs plain"), "{out}");
     assert!(out.contains("object 22 now runs plain"), "{out}");
     assert!(
         out.contains("no longer holds a group key for 1/2/3"),

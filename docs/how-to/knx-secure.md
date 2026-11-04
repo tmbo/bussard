@@ -59,8 +59,8 @@ A device the keyring lists is managed over KNX Data Secure with its tool key; a 
 
 ```console
 $ bussard groups secure 1/0/4 off
-Licht Küche (1/0/4) now runs plain (KNX Data Secure off).
-Aktor Küche (1.1.5): object 12 now runs plain (KNX Data Secure off).
+Licht Küche now runs plain (KNX Data Secure off).
+Aktor Küche: object 12 now runs plain (KNX Data Secure off).
 The key store no longer holds a group key for 1/0/4.
 ...
 ```

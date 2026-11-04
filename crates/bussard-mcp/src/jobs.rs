@@ -570,6 +570,16 @@ impl JobTable {
             .map(restored)
     }
 
+    /// How many seconds the last verified write of `address` took (this
+    /// session's, else the newest record), for a plan's
+    /// `what_you_will_notice` (issue #306).
+    pub fn last_write_seconds(&self, dir: &Path, address: IndividualAddress) -> Option<f64> {
+        let last = self.last(dir, address)?;
+        (last["kind"] == "apply" && last["state"] == "done" && last["result"]["ok"] == true)
+            .then(|| last["elapsed_s"].as_f64())
+            .flatten()
+    }
+
     /// The final result of a job of this session, once done.
     pub fn result(&self, id: &str) -> Option<Value> {
         self.inner().jobs.get(id).and_then(|job| job.result.clone())

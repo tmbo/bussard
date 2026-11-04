@@ -138,7 +138,7 @@ async fn test_model_edit_tools_snapshot_edit_and_describe() -> TestResult {
     assert_eq!(res["ok"], true, "{res}");
     assert!(res["snapshot"].is_string(), "{res}");
     assert_eq!(
-        res["changes"][0], "New group address Porch light (0/0/4), type 1.001.",
+        res["changes"][0], "New group address Porch light, type 1.001.",
         "{res}"
     );
     assert_eq!(res["validation"]["ok"], true, "{res}");
@@ -152,8 +152,7 @@ async fn test_model_edit_tools_snapshot_edit_and_describe() -> TestResult {
     .await;
     assert_eq!(res["ok"], true, "{res}");
     assert_eq!(
-        res["changes"][0],
-        "Living room blind actuator (1.1.4), channel B, now listens to Porch light (0/0/4).",
+        res["changes"][0], "Living room blind actuator, channel B, now listens to Porch light.",
         "{res}"
     );
 
@@ -357,11 +356,18 @@ async fn test_add_link_declares_an_undefined_group_address() -> TestResult {
     let saved = Model::load(&dir)?;
     let ga: bussard_model::GroupAddress = "0/0/9".parse()?;
     assert_eq!(saved.groups.groups[&ga].name, "B object 12");
-    // The declared address is part of the change the human is shown.
+    // The declared address is part of the change the human is shown, by
+    // its name; the structured detail keeps the address (issue #306).
     assert!(
         res["changes"].as_array().is_some_and(|c| c
             .iter()
-            .any(|s| s.as_str().is_some_and(|s| s.contains("0/0/9")))),
+            .any(|s| s.as_str().is_some_and(|s| s.contains("B object 12")))),
+        "{res}"
+    );
+    assert!(
+        res["detail"]
+            .as_array()
+            .is_some_and(|d| d.iter().any(|c| c["group"] == "0/0/9")),
         "{res}"
     );
 
@@ -385,7 +391,18 @@ async fn test_show_device_lists_a_channel_and_its_toml() -> TestResult {
     .await;
     assert_eq!(res["channels"][0]["handle"], "CH-2", "{res}");
     assert_eq!(res["scope"]["objects"][0]["number"], 12, "{res}");
-    assert_eq!(res["scope"]["objects"][0]["flags"], "CRT", "{res}");
+    // The flags are the integrator's (issue #306): `technical` returns them.
+    assert!(res["scope"]["objects"][0].get("flags").is_none(), "{res}");
+    let technical = call(
+        &client,
+        "knx_show_device",
+        json!({"address": "1.1.4", "channel": "CH-2", "toml": true, "technical": true}),
+    )
+    .await;
+    assert_eq!(
+        technical["scope"]["objects"][0]["flags"], "CRT",
+        "{technical}"
+    );
     assert!(
         res["notes"][0]
             .as_str()
@@ -712,26 +729,26 @@ async fn test_edit_tools_report_only_their_change_and_new_warnings() -> TestResu
         (
             "knx_set_parameter",
             json!({"address": "1.1.47", "parameter": "betriebsart", "value": "Rollladen"}),
-            vec!["Betriebsart on Jalousieaktor Kind 2 (1.1.47): Jalousie (2) to Rollladen (1)."],
+            vec!["Betriebsart on Jalousieaktor Kind 2: Jalousie (2) to Rollladen (1)."],
             vec![],
         ),
         (
             "knx_set_parameter",
             json!({"address": "1.1.47", "parameter": "regenalarm", "value": "1"}),
-            vec!["Regenalarm on Jalousieaktor Kind 2 (1.1.47) is set to Ja (1)."],
+            vec!["Regenalarm on Jalousieaktor Kind 2 is set to Ja (1)."],
             vec![],
         ),
         (
             "knx_set_group",
             json!({"ga": "0/1/3", "dpt": "1.009"}),
-            vec!["Langzeit (0/1/3) changes type from 1.008 to 1.009."],
+            vec!["Langzeit changes type from 1.008 to 1.009."],
             // Two subtypes of one main type agree (W005 follows ETS, #348).
             vec![],
         ),
         (
             "knx_set_group",
             json!({"ga": "0/1/3", "dpt": "1"}),
-            vec!["Langzeit (0/1/3) changes type from 1.008 to 1."],
+            vec!["Langzeit changes type from 1.008 to 1."],
             vec![],
         ),
         (
@@ -831,7 +848,7 @@ async fn test_remove_group_refuses_while_linked_and_succeeds_after_remove_link()
     assert_eq!(res["ok"], true, "{res}");
     assert_eq!(
         res["changes"],
-        json!(["Group address 3/0/1 (Central down) removed."]),
+        json!(["Group address Central down removed."]),
         "{res}"
     );
     assert_eq!(res["detail"][0]["kind"], "group_removed", "{res}");
@@ -1182,6 +1199,147 @@ async fn test_set_parameter_synthetic_param_calculation_views_agree_with_the_pla
         "the refused output is not stored: {:?}",
         device.parameters
     );
+
+    client.cancel().await?;
+    task.abort();
+    std::fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// The ids a homeowner should not have to read (issue #306) in `text`: group
+/// addresses (`1/2/3`), individual addresses (`1.1.4`), ETS references
+/// (`MD-…`) and parameter keys (`key@ref`).
+fn ids_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || "(),;:\"`{}[]".contains(c)) {
+        let word = word.trim_end_matches('.');
+        let three = |sep: char| {
+            let p: Vec<&str> = word.split(sep).collect();
+            p.len() == 3
+                && p.iter()
+                    .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+        };
+        if three('/') || three('.') || word.contains("MD-") || word.contains('@') {
+            out.push(word.to_string());
+        }
+    }
+    out
+}
+
+/// Every edit, the pending change, a discard and an undo carry a `summary` in
+/// names, with no group address, individual address, ETS reference or
+/// parameter key; `validation.for_the_human` says in one line whether the
+/// edit left anything to worry about (issue #306). The sentences and the
+/// structured detail still carry every address.
+#[tokio::test]
+async fn test_edit_results_summarize_without_ids() -> TestResult {
+    let dir = labelled_dir("summary")?;
+    std::fs::write(
+        dir.join("devices").join("1.1.4.toml"),
+        "address = \"1.1.4\"\nname = \"Living room blind actuator\"\n\n\
+         [channel.CH-2]\nname = \"B\"\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}\n[[device]]\naddress = \"1.1.4\"\nchannels = [\n  {{ id = \"CH-2\" }},\n]\n\
+             objects = [\n  {{ number = 12, channel = \"CH-2\", flags = \"CRT\" }},\n]\n"
+        ),
+    )?;
+    let (client, task) = connect(server_over(&dir)?).await?;
+    let edits: [(&'static str, Value); 6] = [
+        (
+            "knx_set_group",
+            json!({"ga": "0/0/4", "name": "Porch light", "dpt": "1.001"}),
+        ),
+        (
+            "knx_add_link",
+            json!({"address": "1.1.4", "com_object": 12, "ga": "0/0/4", "role": "listen"}),
+        ),
+        (
+            "knx_set_device",
+            json!({"address": "1.1.4", "room": "Wohnzimmer", "floor": "EG"}),
+        ),
+        (
+            "knx_set_parameter",
+            json!({"address": "1.1.47", "parameter": "betriebsart", "value": "Rollladen"}),
+        ),
+        (
+            "knx_add_link",
+            json!({"address": "1.1.47", "com_object": 144, "ga": "0/0/4", "role": "listen"}),
+        ),
+        ("knx_describe_change", json!({})),
+    ];
+    for (tool, args) in edits {
+        let res = call(&client, tool, args.clone()).await;
+        assert_eq!(res["ok"], true, "{tool} {args}: {res}");
+        let summary = res["summary"].as_str().unwrap_or_default();
+        assert!(!summary.is_empty(), "{tool}: {res}");
+        assert_eq!(ids_in(summary), Vec::<String>::new(), "{tool}: {summary}");
+        if tool != "knx_describe_change" {
+            assert!(
+                res["validation"]["for_the_human"].is_string(),
+                "{tool}: {res}"
+            );
+            // The structured detail keeps the addresses.
+            assert!(
+                res["detail"].as_array().is_some_and(|d| d
+                    .iter()
+                    .all(|c| c["group"].is_string() || c["device"].is_string())),
+                "{tool}: {res}"
+            );
+        }
+        match tool {
+            "knx_set_group" => assert!(summary.contains("Porch light"), "{summary}"),
+            "knx_add_link" if args["address"] == "1.1.4" => {
+                assert!(
+                    summary.contains(
+                        "Living room blind actuator, channel B, now listens to Porch light"
+                    ),
+                    "{summary}"
+                );
+                assert!(summary.contains("needs to be written"), "{summary}");
+            }
+            "knx_set_parameter" => {
+                assert!(summary.contains("Betriebsart"), "{summary}");
+                assert!(summary.contains("Jalousieaktor Kind 2"), "{summary}");
+            }
+            "knx_add_link" => {
+                // The vendor's object text and channel text name it.
+                assert!(
+                    summary
+                        .contains("Langzeitbetrieb on Jalousieaktor Kind 2, channel Fenster Süd"),
+                    "{summary}"
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // The room set above names the device in the next push.
+    let res = call(
+        &client,
+        "knx_remove_link",
+        json!({"address": "1.1.4", "com_object": 12, "ga": "0/0/4", "role": "listen"}),
+    )
+    .await;
+    let summary = res["summary"].as_str().unwrap_or_default();
+    assert!(
+        summary.contains("Living room blind actuator in Wohnzimmer, EG needs to be written"),
+        "{summary}"
+    );
+
+    let res = call(&client, "knx_discard_edits", json!({"address": "1.1.47"})).await;
+    assert_eq!(res["ok"], true, "{res}");
+    let summary = res["summary"].as_str().unwrap_or_default();
+    assert_eq!(ids_in(summary), Vec::<String>::new(), "{summary}");
+
+    let res = call(&client, "knx_undo", json!({})).await;
+    assert_eq!(res["ok"], true, "{res}");
+    let summary = res["summary"].as_str().unwrap_or_default();
+    assert!(!summary.is_empty(), "{res}");
+    assert_eq!(ids_in(summary), Vec::<String>::new(), "{summary}");
 
     client.cancel().await?;
     task.abort();

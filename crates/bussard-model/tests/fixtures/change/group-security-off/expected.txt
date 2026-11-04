@@ -1,2 +1,2 @@
-Kitchen light (1/0/4) now runs plain (KNX Data Secure off).
-Kitchen actuator (1.1.5): object 12 now runs plain (KNX Data Secure off).
+Kitchen light now runs plain (KNX Data Secure off).
+Kitchen actuator: object 12 now runs plain (KNX Data Secure off).

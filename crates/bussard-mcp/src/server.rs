@@ -182,6 +182,29 @@ impl BussardMcp {
     pub(crate) fn session_edits(&self) -> &crate::session_edits::SessionEdits {
         &self.session_edits
     }
+
+    /// Adds the homeowner's `summary` to the result of a programming,
+    /// device-read or Home Assistant tool that did not write one (issue
+    /// #306, [`crate::everyday::add_result_summary`]).
+    fn with_summary(
+        &self,
+        tool: &str,
+        response: rmcp::model::CallToolResponse,
+    ) -> rmcp::model::CallToolResponse {
+        if !crate::everyday::SUMMARIZED_TOOLS.contains(&tool) {
+            return response;
+        }
+        let rmcp::model::CallToolResponse::Complete(mut result) = response else {
+            return response;
+        };
+        if let Some(value) = result.structured_content.as_mut() {
+            let model = self.state.model.current();
+            if crate::everyday::add_result_summary(tool, value, &model) {
+                result.content = vec![rmcp::model::ContentBlock::text(value.to_string())];
+            }
+        }
+        rmcp::model::CallToolResponse::Complete(result)
+    }
 }
 
 /// Arguments for `knx_model_lookup`.
@@ -195,6 +218,11 @@ pub struct LookupArgs {
     /// Maximum matches to return per category (default 50).
     #[serde(default)]
     pub limit: Option<u32>,
+    /// Also return what only an integrator reads (issue #306): the empty and null fields of every match and the ETS references a capability's key already names.
+    /// Off by default; `true` returns the payload as it was before the
+    /// homeowner view.
+    #[serde(default)]
+    pub technical: bool,
 }
 
 /// Arguments for tools that take a single group address.
@@ -202,6 +230,18 @@ pub struct LookupArgs {
 pub struct GaArgs {
     /// A 3-level group address like `"3/2/0"`.
     pub ga: String,
+}
+
+/// Arguments for `knx_get_group`.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetGroupArgs {
+    /// A 3-level group address like `"3/2/0"`.
+    pub ga: String,
+    /// Also return what only an integrator reads (issue #306): the last telegram's wire detail (APCI, raw payload, Data Secure sequence) instead of each link's `room` and `what`.
+    /// Off by default; `true` returns the payload as it was before the
+    /// homeowner view.
+    #[serde(default)]
+    pub technical: bool,
 }
 
 /// Arguments for `knx_write_group`.
@@ -260,6 +300,11 @@ pub struct ShowDeviceArgs {
     /// addresses and state. Read-only; refused in `--passive` mode.
     #[serde(default)]
     pub live: bool,
+    /// Also return what only an integrator reads (issue #306): the ETS ids (a parameter's `reference`, a page's `id`, the `application`, folded page ids, `computed_by`) and each object's `flags`.
+    /// Off by default; `true` returns the payload as it was before the
+    /// homeowner view.
+    #[serde(default)]
+    pub technical: bool,
 }
 
 /// Arguments for `knx_validate`.
@@ -364,39 +409,44 @@ impl BussardMcp {
 
     /// `knx_model_lookup`.
     #[tool(
-        description = "Search the KNX model by a case-insensitive substring. Matches group-address names and addresses, device names and individual addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link. `capabilities` searches what the installed devices could do: the parameter texts and enum choice texts of their product models (every word of the query must appear; umlauts may be spelled out). Each names the device, the ETS page or channel (`block_or_channel`, `handle`), the parameter, the matching choice and whether that page is active; `provides` matches come first, then `could provide` ones on inactive pages and channels (spare capacity, with `enable`: the parameters to set, and `needs`), then other choices of active pages; within each, a device whose com-objects send the measured value the query names (9.004 for \"Helligkeit\") leads and its first entry lists them in `sends`. An entry repeated on several channels of a device is one entry with `channels`, and one repeated on devices of one application one entry with `also_on`. Read knx_show_device with the `handle` for the candidates."
+        description = "Search the KNX model by a case-insensitive substring. Matches group-address names and addresses, device names and individual addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link. `capabilities` searches what the installed devices could do: the parameter texts and enum choice texts of their product models (every word of the query must appear; umlauts may be spelled out). Each names the device, the ETS page or channel (`block_or_channel`, `handle`), the parameter, the matching choice and whether that page is active; `provides` matches come first, then `could provide` ones on inactive pages and channels (spare capacity, with `enable`: the parameters to set, and `needs`), then other choices of active pages; within each, a device whose com-objects send the measured value the query names (9.004 for \"Helligkeit\") leads and its first entry lists them in `sends`. An entry repeated on several channels of a device is one entry with `channels`, and one repeated on devices of one application one entry with `also_on`. Read knx_show_device with the `handle` for the candidates. Empty fields and the ETS references a key already names are left out; `technical: true` keeps them."
     )]
     async fn knx_model_lookup(
         &self,
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        ok(tools::model_lookup_with_capabilities(
+        let mut value = tools::model_lookup_with_capabilities(
             &self.state.model.current(),
             &self.state.dir,
             &args.query,
             limit,
             crate::guidance::Tiers::of(&self.state),
-        ))
+        );
+        if !args.technical {
+            crate::everyday::plain_lookup(&mut value);
+        }
+        ok(value)
     }
 
     /// `knx_get_group`.
     #[tool(
-        description = "Look up a single group address: its definition (name, DPT, description), every link that sends to or listens on it (device IA/name, com-object number/name, send|listen), and the last telegram seen on it from the live buffer, if any."
+        description = "Look up a single group address: its definition (name, DPT, description), every link that sends to or listens on it (device IA/name, com-object number/name, send|listen, and by default the device's `room` and `what` the object is in words), and the last telegram seen on it from the live buffer, if any. `technical: true` returns the raw shape (the telegram's wire detail, no `room`/`what`)."
     )]
     async fn knx_get_group(
         &self,
-        Parameters(args): Parameters<GaArgs>,
+        Parameters(args): Parameters<GetGroupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let ga: GroupAddress = args
             .ga
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
-        ok(tools::get_group(
-            &self.state.model.current(),
-            &self.state.ring,
-            ga,
-        ))
+        let model = self.state.model.current();
+        let mut value = tools::get_group(&model, &self.state.ring, ga);
+        if !args.technical {
+            crate::everyday::plain_group(&mut value, &model);
+        }
+        ok(value)
     }
 
     /// `knx_get_device`.
@@ -455,7 +505,10 @@ impl BussardMcp {
         name, tunnelling addresses, device state), `knxnet_lines`, `model_knxnet` and \
         `knxnet_drift`; `security` on a Data Secure device read with its tool key. The live \
         read is read-only and refused in passive mode; it works for a device the model does \
-        not have too (a `knx_find_devices` responder)."
+        not have too (a `knx_find_devices` responder). \
+        The ETS ids (`reference` where a key names the \
+        parameter, page `id`s, `application`, `computed_by`) and object `flags` are left out; \
+        `technical: true` returns them."
     )]
     async fn knx_show_device(
         &self,
@@ -508,6 +561,9 @@ impl BussardMcp {
             crate::tools_model::knxnet_section(&self.state.dir, &model, ia),
         ) {
             map.insert("knxnet".to_string(), knxnet);
+        }
+        if !args.technical {
+            crate::everyday::plain_view(&mut value);
         }
         if args.live {
             value["live"] = self.live_part(ia).await;
@@ -1466,8 +1522,10 @@ impl ServerHandler for BussardMcp {
                 "tools/call request (string values redacted)"
             );
         }
+        let tool = request.name.to_string();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await)
+        let response = crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await);
+        Ok(self.with_summary(&tool, response?))
     }
 
     fn get_info(&self) -> ServerInfo {

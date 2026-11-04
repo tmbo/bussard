@@ -263,7 +263,7 @@ impl BussardMcp {
                     .map_err(|e| e.to_string())?;
                 (
                     id.clone(),
-                    Some((rendered.to_json(), automation::sentence(rule))),
+                    Some((rendered.to_json(), automation::sentence(&model, rule))),
                 )
             }
             Op::Remove { id } => {

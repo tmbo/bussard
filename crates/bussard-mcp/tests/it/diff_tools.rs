@@ -124,7 +124,7 @@ async fn test_export_bundle_and_diff_project_explain_a_rename() -> TestResult {
     assert_eq!(res["changes"][0]["kind"], "group_renamed", "{res}");
     assert_eq!(
         res["summary"],
-        "Group address 1/0/1 is now called \"Kitchen ceiling\" (was \"Light Kitchen\")."
+        "Group address Light Kitchen is now called \"Kitchen ceiling\"."
     );
 
     // A missing file is a refusal the assistant reads out, not a protocol error.

@@ -388,7 +388,7 @@ fn test_mcp_pending_model_changes_lists_only_this_sessions_edits() -> TestResult
         json!({"address": "1.1.4", "parameter": "thr@P-0_R-1", "value": "13"}),
     )?;
     assert_eq!(edit["ok"], true, "edit: {edit}");
-    let threshold = "Threshold on Parameter test (1.1.4): 12 to 13.";
+    let threshold = "Threshold on Parameter test: 12 to 13.";
     assert!(
         edit["changes"]
             .as_array()

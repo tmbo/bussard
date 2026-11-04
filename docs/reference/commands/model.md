@@ -150,7 +150,7 @@ Behaviour:
 - Exits 0 whether or not there are differences.
 - Group addresses are matched by address and devices by individual address, so a GA renamed in a newer export is one rename, not a removal and an addition. Two exports of the same project give an empty diff.
 - A parameter change is named by its text from the product model when a model-directory side has one, else by its key.
-- A link sentence names the device with its address: `Meteodata 140 S (1.1.202), channel CH-0, now switches …`.
+- A sentence names a device or group address by its name; the address follows only when another device or group address has the same name, or the group address is protected: `Meteodata 140 S now switches Aussen dunkel.` An unnamed one reads as its address, and a channel without a name or vendor text is left out.
 
 **`--checklist`.** ETS signs its project files, so bussard cannot write changes back into a `.knxproj`. `bussard diff <export> knx --checklist` prints the work to redo in ETS, in ETS order:
 

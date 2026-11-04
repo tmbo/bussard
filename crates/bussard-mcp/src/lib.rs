@@ -153,6 +153,7 @@
 #![warn(missing_docs)]
 
 pub mod args;
+pub mod everyday;
 pub mod guidance;
 pub mod http;
 pub mod instances;

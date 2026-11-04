@@ -1131,7 +1131,7 @@ parameters = [
         );
         assert_eq!(
             dev.device[0].text,
-            "Device 1.1.30 is now called \"Weather station roof\" (was \"Weather station\")"
+            "Device Weather station is now called \"Weather station roof\""
         );
         let params: Vec<&str> = dev.parameters.iter().map(|i| i.text.as_str()).collect();
         assert_eq!(
@@ -1323,7 +1323,7 @@ parameters = [
         assert!(
             dev.device[0]
                 .text
-                .starts_with("New device Weather station (1.1.30)")
+                .starts_with("New device Weather station in")
         );
         assert_eq!(dev.objects.len(), 1, "{:?}", dev.objects);
         Ok(())

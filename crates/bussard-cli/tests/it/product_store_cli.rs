@@ -873,7 +873,7 @@ fn test_mcp_edits_on_a_labelled_import_report_only_their_change() -> TestResult 
     assert_eq!(set["ok"], true, "{set}");
     assert_eq!(
         sentences(&set),
-        ["Mode on Test Switch Actuator (1.1.1): K\u{fc}hlen (1) to Heizen (0)."],
+        ["Mode on Test Switch Actuator: K\u{fc}hlen (1) to Heizen (0)."],
         "{set}"
     );
     assert_eq!(

@@ -157,7 +157,7 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
     let out = run(&[&args[..], &["--theirs"]].concat(), 0)?;
     assert!(out.contains("Took the bundle's value."), "{out}");
     assert!(
-        out.contains("Group address 1/0/1 is now called \"Kitchen ceiling\""),
+        out.contains("Group address Light Kitchen is now called \"Kitchen ceiling\""),
         "{out}"
     );
     assert!(std::fs::read_to_string(owner.join("groups.toml"))?.contains("Kitchen ceiling"));
@@ -294,14 +294,16 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
     assert_eq!(objects[1]["old_value"], "sends 1/0/2");
     assert_eq!(value["notes"][0]["kind"], "connection_changed");
 
-    // The plain `--json` keeps its shape, with the address in a link sentence.
+    // The plain `--json` keeps its shape: a link sentence names the device
+    // by its unique name and the change's `device` keeps the address (#306).
     let out = run(&["diff", s(&json)?, s(&model)?, "--json"], 0)?;
     let value: serde_json::Value = serde_json::from_str(&out)?;
     let changes = value["changes"].as_array().ok_or("changes")?;
     assert!(
         changes.iter().any(|c| c["sentence"]
             .as_str()
-            .is_some_and(|t| t.contains("Test Switch Actuator (1.1.1)"))),
+            .is_some_and(|t| t.contains("Test Switch Actuator") && !t.contains("(1.1.1)"))
+            && c["device"] == "1.1.1"),
         "{out}"
     );
 

@@ -1612,3 +1612,103 @@ async fn test_knx_reconstruct_device_line_synthesizes_a_fresh_model() -> anyhow:
 
     h.stop().await
 }
+
+/// The ids a homeowner should not have to read (issue #306) in `text`: group
+/// addresses (`1/2/3`), individual addresses (`1.1.4`), ETS references
+/// (`MD-…`) and parameter keys (`key@ref`).
+fn ids_in(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for word in text.split(|c: char| c.is_whitespace() || "(),;:\"`{}[]".contains(c)) {
+        let word = word.trim_end_matches('.');
+        let three = |sep: char| {
+            let p: Vec<&str> = word.split(sep).collect();
+            p.len() == 3
+                && p.iter()
+                    .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+        };
+        if three('/') || three('.') || word.contains("MD-") || word.contains('@') {
+            out.push(word.to_string());
+        }
+    }
+    out
+}
+
+/// `knx_plan_device` and `knx_apply_device` speak to the homeowner in names
+/// (issue #306): the plan's `summary` and `what_you_will_notice` and the
+/// apply's `summary` carry no id but the one group address the model has no
+/// name for, and the plan keeps its sentences, digest and question.
+#[tokio::test]
+async fn test_knx_plan_device_summary_and_notice_speak_in_names() -> anyhow::Result<()> {
+    let h = Harness::start(Duration::from_secs(600)).await?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    let summary = plan["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("Jalousie Wohnen"), "{summary}");
+    assert!(summary.contains("Blind position"), "{summary}");
+    let notice = &plan["what_you_will_notice"];
+    assert_eq!(notice["device"], "Jalousie Wohnen", "{notice}");
+    assert!(notice["takes"].is_string(), "{notice}");
+    assert!(
+        notice["meanwhile"]
+            .as_str()
+            .is_some_and(|m| m.contains("keep working")),
+        "{notice}"
+    );
+    let to_test = notice["to_test"].as_array().cloned().unwrap_or_default();
+    assert!(
+        to_test
+            .iter()
+            .any(|t| t.as_str().is_some_and(|t| t.contains("Blind position"))),
+        "{notice}"
+    );
+    // 4/2/12 is the one address groups.toml does not name: it may stay.
+    for text in [summary.to_string(), notice.to_string()] {
+        let ids: Vec<String> = ids_in(&text)
+            .into_iter()
+            .filter(|id| id != "4/2/12")
+            .collect();
+        assert!(ids.is_empty(), "ids {ids:?} in {text}");
+    }
+    // What the integrator and the explicit-yes rule rely on is unchanged.
+    assert!(plan["sentences"].is_string(), "{plan}");
+    assert!(plan["question"].is_string(), "{plan}");
+    let digest = digest_of(&plan)?;
+
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(applied["verified"], true, "apply: {applied}");
+    let summary = applied["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("Jalousie Wohnen"), "{summary}");
+    assert!(summary.contains("checked"), "{summary}");
+    assert!(ids_in(summary).is_empty(), "{summary}");
+    // The backup path stays in the payload.
+    assert!(applied["backup"].is_string(), "{applied}");
+
+    let last = h
+        .call("knx_last_apply", json!({"address": "1.1.4"}))
+        .await?;
+    let summary = last["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("checked"), "{last}");
+    assert!(ids_in(summary).is_empty(), "{summary}");
+    // The one job table's status tool speaks the same way (#746).
+    let job = last["job"].as_str().unwrap_or_default().to_string();
+    let status = h.call("knx_job_status", json!({"job": job})).await?;
+    let summary = status["summary"].as_str().unwrap_or_default();
+    assert!(summary.contains("checked"), "{status}");
+    assert!(ids_in(summary).is_empty(), "{summary}");
+
+    let replan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(
+        replan["summary"], "Jalousie Wohnen already matches the model; nothing to write.",
+        "{replan}"
+    );
+    h.stop().await
+}

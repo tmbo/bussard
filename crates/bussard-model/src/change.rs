@@ -12,6 +12,11 @@
 //! * **Nothing degrades to silence.** An unnamed group address renders as its
 //!   address, an unnamed device as its individual address. A change never
 //!   produces an empty sentence.
+//! * **Names, not ids (issue #306).** A named group address or device is
+//!   called by its name alone; the address follows in parentheses only when
+//!   another group address or device of either model has the same name, or
+//!   when the group address is protected. The structured fields of a
+//!   [`Change`] keep every address.
 //! * **Protected group addresses are called out.** A change that touches a GA
 //!   marked `protected: true` in either model sets
 //!   [`Change::touches_protected`] and its sentence ends with
@@ -266,10 +271,11 @@ pub fn render_text(set: &ChangeSet) -> String {
 /// deterministic, so golden tests can pin it.
 pub fn describe(old: &Model, new: &Model) -> ChangeSet {
     let mut changes = Vec::new();
+    let labels = Labels::new([new, old]);
     describe_connection(old, new, &mut changes);
-    describe_groups(old, new, &mut changes);
-    describe_devices(old, new, &mut changes);
-    describe_links(old, new, &mut changes);
+    describe_groups(old, new, &labels, &mut changes);
+    describe_devices(old, new, &labels, &mut changes);
+    describe_links(old, new, &labels, &mut changes);
     ChangeSet { changes }
 }
 
@@ -335,6 +341,7 @@ pub fn name_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Prod
 /// fields keep the values as the models hold them. A parameter without a
 /// cached product model, or not an enumeration, is left as described.
 pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
+    let labels = Labels::new(models);
     set.changes.retain_mut(|change| {
         if change.kind != ChangeKind::ParameterChanged {
             return true;
@@ -358,16 +365,7 @@ pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Pr
             return false;
         }
         let shown = |v: &str| shown_enum_value(def, v);
-        let name = models
-            .iter()
-            .find_map(|m| m.devices.get(&ia))
-            .map(|d| d.device.name.trim().to_string())
-            .unwrap_or_default();
-        let device = if name.is_empty() {
-            ia.to_string()
-        } else {
-            format!("{name} ({ia})")
-        };
+        let device = labels.device(ia);
         let from = change.from.as_deref().map(shown);
         let to = change.to.as_deref().map(shown);
         if let Some(sentence) = parameter_sentence(
@@ -396,6 +394,7 @@ pub fn settle_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &Pr
 /// model, is left as described.
 pub fn compute_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &ProductModels) {
     let [new, old] = models;
+    let labels = Labels::new(models);
     let devices: BTreeSet<IndividualAddress> = set
         .changes
         .iter()
@@ -429,11 +428,7 @@ pub fn compute_parameters(set: &mut ChangeSet, models: [&Model; 2], products: &P
             .keys()
             .chain(computed_before.keys())
             .collect();
-        let device_name = if after.device.name.trim().is_empty() {
-            ia.to_string()
-        } else {
-            format!("{} ({ia})", after.device.name.trim())
-        };
+        let device_name = labels.device(ia);
         let address = ia.to_string();
         let of_device = |c: &Change| {
             c.kind == ChangeKind::ParameterChanged && c.device.as_deref() == Some(address.as_str())
@@ -546,48 +541,417 @@ fn parameter_sentence(
     })
 }
 
+/// The most items [`summarize`] names before it counts the rest.
+const SUMMARY_ITEMS: usize = 4;
+
+/// The most links or parameters of one device [`summarize`] spells out.
+const SUMMARY_PER_DEVICE: usize = 3;
+
+/// A homeowner's summary of `set` (issue #306): one or two sentences in
+/// rooms, device, channel and group names, without a group address,
+/// individual address, com-object number or parameter key unless the item
+/// has no name. `models` are the two sides the set was described from, the
+/// new side first.
+///
+/// It says what changes, not how it reaches a device: the caller adds that.
+/// A change touching a protected group address adds a sentence saying so.
+pub fn summarize(set: &ChangeSet, models: [&Model; 2]) -> String {
+    if set.is_empty() {
+        return "Nothing changes.".to_string();
+    }
+    let labels = Labels::plain(models);
+    let mut items: Vec<String> = Vec::new();
+    // Group-address changes, one item per address.
+    let mut groups: BTreeMap<String, Vec<&Change>> = BTreeMap::new();
+    let mut devices: Vec<(String, Vec<&Change>)> = Vec::new();
+    let mut connection = false;
+    for change in &set.changes {
+        if change.kind == ChangeKind::ConnectionChanged {
+            connection = true;
+        } else if let Some(device) = &change.device {
+            match devices.iter_mut().find(|(d, _)| d == device) {
+                Some((_, list)) => list.push(change),
+                None => devices.push((device.clone(), vec![change])),
+            }
+        } else if let Some(group) = &change.group {
+            groups.entry(group.clone()).or_default().push(change);
+        }
+    }
+    if connection {
+        items.push("the bus connection settings change".to_string());
+    }
+    for (address, changes) in &groups {
+        let Ok(ga) = address.parse::<GroupAddress>() else {
+            continue;
+        };
+        items.push(group_item(&labels, ga, changes));
+    }
+    for (address, changes) in &devices {
+        let Ok(ia) = address.parse::<IndividualAddress>() else {
+            continue;
+        };
+        items.extend(device_items(&labels, ia, changes));
+    }
+    let total = items.len();
+    let mut shown: Vec<String> = items.into_iter().take(SUMMARY_ITEMS).collect();
+    if total > SUMMARY_ITEMS {
+        shown.push(format!("{} more change(s)", total - SUMMARY_ITEMS));
+    }
+    let mut out = capitalize(&join_and(&shown, "; ", "; and "));
+    out.push('.');
+    if set.touches_protected() {
+        out.push_str(
+            " Part of this concerns a protected safety function, so it needs the human's \
+             explicit yes.",
+        );
+    }
+    out
+}
+
+/// One item of [`summarize`] for the changes of one group address.
+fn group_item(labels: &Labels<'_>, ga: GroupAddress, changes: &[&Change]) -> String {
+    let label = labels.ga(ga);
+    let kinds: Vec<ChangeKind> = changes.iter().map(|c| c.kind).collect();
+    if kinds.contains(&ChangeKind::GroupAdded) {
+        return format!("a new function {label} is added");
+    }
+    if kinds.contains(&ChangeKind::GroupRemoved) {
+        return format!("the function {label} is removed");
+    }
+    if let Some(rename) = changes.iter().find(|c| c.kind == ChangeKind::GroupRenamed) {
+        let old = rename.from.as_deref().map(str::trim).unwrap_or_default();
+        let new = rename.to.as_deref().map(str::trim).unwrap_or_default();
+        return match (old.is_empty(), new.is_empty()) {
+            (false, false) => format!("{old} is renamed to {new}"),
+            (true, false) => format!("a function is now called {new}"),
+            (false, true) => format!("{old} loses its name"),
+            (true, true) => format!("{label} is renamed"),
+        };
+    }
+    if kinds.contains(&ChangeKind::GroupSecurityChanged) {
+        return format!("{label} changes its encryption");
+    }
+    format!("the details of {label} change")
+}
+
+/// The items of [`summarize`] for the changes of one device: its own
+/// fields, its links and its settings.
+fn device_items(labels: &Labels<'_>, ia: IndividualAddress, changes: &[&Change]) -> Vec<String> {
+    let device = labels.device(ia);
+    let mut out = Vec::new();
+    let mut links = Vec::new();
+    let mut settings = Vec::new();
+    for change in changes {
+        match change.kind {
+            ChangeKind::LinkAdded | ChangeKind::LinkRemoved => links.push(*change),
+            ChangeKind::ParameterChanged => settings.push(*change),
+            ChangeKind::DeviceAdded => out.push(format!("{device} is added")),
+            ChangeKind::DeviceRemoved => out.push(format!("{device} is removed")),
+            ChangeKind::DeviceRenamed => {
+                let old = change.from.as_deref().map(str::trim).unwrap_or_default();
+                let new = change.to.as_deref().map(str::trim).unwrap_or_default();
+                out.push(match (old.is_empty(), new.is_empty()) {
+                    (false, false) => format!("{old} is renamed to {new}"),
+                    (true, false) => format!("a device gets the name {new}"),
+                    _ => format!("{device} is renamed"),
+                });
+            }
+            ChangeKind::DeviceMoved => out.push(format!(
+                "{device} moves to {}",
+                change.to.as_deref().unwrap_or("another room")
+            )),
+            ChangeKind::DeviceProductChanged => {
+                out.push(format!("{device} is recorded as another product"));
+            }
+            ChangeKind::ChannelRenamed => {
+                let new = change.to.as_deref().map(str::trim).unwrap_or_default();
+                out.push(if new.is_empty() {
+                    format!("a channel of {device} loses its name")
+                } else {
+                    format!("a channel of {device} is renamed to {new}")
+                });
+            }
+            ChangeKind::ObjectSecurityChanged => {
+                out.push(format!("{device} changes the encryption of some functions"));
+            }
+            ChangeKind::InterfaceChanged => {
+                out.push(format!("the network settings of {device} change"));
+            }
+            _ => {}
+        }
+    }
+    if !links.is_empty() {
+        if links.len() <= SUMMARY_PER_DEVICE {
+            out.extend(links.iter().filter_map(|c| plain_link(labels, ia, c)));
+        } else {
+            out.push(format!("{} connections of {device} change", links.len()));
+        }
+    }
+    if !settings.is_empty() {
+        let names: Vec<String> = settings.iter().map(|c| setting_label(c, &device)).collect();
+        out.push(if settings.len() < SUMMARY_PER_DEVICE {
+            let plain: Vec<String> = settings
+                .iter()
+                .map(|c| first_sentence(&c.sentence))
+                .collect();
+            join_and(&plain, "; ", "; and ")
+        } else {
+            format!(
+                "{} settings of {device} change ({} and more)",
+                settings.len(),
+                names[..2].join(", ")
+            )
+        });
+    }
+    out
+}
+
+/// A link change as a phrase of [`summarize`]: `Rocker 1 on Hallway push
+/// button now switches Porch light`, named as [`link_sentence`] names it with
+/// the plain labels.
+fn plain_link(labels: &Labels<'_>, ia: IndividualAddress, change: &Change) -> Option<String> {
+    let object = change.object?;
+    let role = change.role?;
+    let ga = change.group.as_deref()?.parse::<GroupAddress>().ok()?;
+    let [new, old] = labels.models;
+    let mut names = object_names(old, ia);
+    names.extend(object_names(new, ia));
+    let device = new
+        .devices
+        .get(&ia)
+        .or_else(|| old.devices.get(&ia))
+        .map(|l| &l.device);
+    let sentence = link_sentence(
+        labels,
+        device,
+        ia,
+        names.get(&object).map(String::as_str),
+        object,
+        role,
+        ga,
+        change.kind == ChangeKind::LinkAdded,
+    );
+    Some(sentence.trim_end_matches('.').to_string())
+}
+
+/// The parameter's label in a parameter change's sentence: the text before
+/// ` on <device>`.
+fn setting_label(change: &Change, device: &str) -> String {
+    let marker = format!(" on {device}");
+    match change.sentence.find(&marker) {
+        Some(at) => change.sentence[..at].to_string(),
+        None => change
+            .field
+            .as_deref()
+            .map(parameter_label)
+            .unwrap_or_else(|| "a setting".to_string()),
+    }
+}
+
+/// The first sentence of `text` without its final period: what a summary
+/// quotes of a parameter change (the calculation note after it names an ETS
+/// id).
+fn first_sentence(text: &str) -> String {
+    let first = text.split(". ").next().unwrap_or(text);
+    first.trim_end_matches('.').to_string()
+}
+
+/// `a`, `a and b`, `a, b and c` with `sep` and `last` as the separators.
+fn join_and(items: &[String], sep: &str, last: &str) -> String {
+    match items.split_last() {
+        None => String::new(),
+        Some((only, [])) => only.clone(),
+        Some((tail, rest)) => format!("{}{last}{tail}", rest.join(sep)),
+    }
+}
+
+/// `text` with its first letter in upper case.
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Labels: how a thing is named in a sentence.
 // ---------------------------------------------------------------------------
 
-/// A group address as a human reads it: `Porch light (0/0/4)`, or just the
-/// address when the model has no name for it.
-fn ga_label(models: [&Model; 2], ga: GroupAddress) -> String {
-    for model in models {
-        if let Some(group) = model.groups.groups.get(&ga) {
-            let name = group.name.trim();
-            if !name.is_empty() {
-                return format!("{name} ({ga})");
-            }
-        }
-    }
-    ga.to_string()
+/// How the sentences of one comparison name group addresses and devices
+/// (issue #306): by name, with the address only for an unnamed, ambiguous or
+/// protected item.
+pub struct Labels<'a> {
+    /// The new side, then the old.
+    models: [&'a Model; 2],
+    /// How many distinct group addresses carry each name (trimmed,
+    /// lowercased) across both models.
+    group_names: BTreeMap<String, BTreeSet<GroupAddress>>,
+    /// How many distinct devices carry each name across both models.
+    device_names: BTreeMap<String, BTreeSet<IndividualAddress>>,
+    /// Whether a protected group address carries its address (the
+    /// sentences); the plain [`summarize`] leaves it out.
+    protect: bool,
 }
 
-/// A device's full label: `Hallway push button (1.1.5)`, or the bare address.
-fn device_label(models: [&Model; 2], ia: IndividualAddress) -> String {
-    for model in models {
-        if let Some(loaded) = model.devices.get(&ia) {
-            let name = loaded.device.name.trim();
-            if !name.is_empty() {
-                return format!("{name} ({ia})");
+impl<'a> Labels<'a> {
+    /// The labels of a comparison of `models` (new side first).
+    pub fn new(models: [&'a Model; 2]) -> Self {
+        let mut group_names: BTreeMap<String, BTreeSet<GroupAddress>> = BTreeMap::new();
+        let mut device_names: BTreeMap<String, BTreeSet<IndividualAddress>> = BTreeMap::new();
+        for model in models {
+            for (ga, group) in &model.groups.groups {
+                let name = name_key(&group.name);
+                if !name.is_empty() {
+                    group_names.entry(name).or_default().insert(*ga);
+                }
+            }
+            for (ia, loaded) in &model.devices {
+                let name = name_key(&loaded.device.name);
+                if !name.is_empty() {
+                    device_names.entry(name).or_default().insert(*ia);
+                }
             }
         }
+        Labels {
+            models,
+            group_names,
+            device_names,
+            protect: true,
+        }
     }
-    ia.to_string()
+
+    /// The labels of [`summarize`]: a protected group address is called by
+    /// its name alone too.
+    pub fn plain(models: [&'a Model; 2]) -> Self {
+        Labels {
+            protect: false,
+            ..Labels::new(models)
+        }
+    }
+
+    /// A group address as a human reads it: `Porch light`, `Porch light
+    /// (0/0/4)` when the name is not unique or the address is protected, or
+    /// just the address when the model has no name for it.
+    pub fn ga(&self, ga: GroupAddress) -> String {
+        for model in self.models {
+            if let Some(group) = model.groups.groups.get(&ga) {
+                let name = group.name.trim();
+                if !name.is_empty() {
+                    return self.group_named(ga, name);
+                }
+            }
+        }
+        ga.to_string()
+    }
+
+    /// Group address `ga` called `name` (or its address when `name` is
+    /// empty), with the address when the name is ambiguous or `ga` is
+    /// protected.
+    fn group_named(&self, ga: GroupAddress, name: &str) -> String {
+        let name = name.trim();
+        if name.is_empty() {
+            return ga.to_string();
+        }
+        let ambiguous = self
+            .group_names
+            .get(&name_key(name))
+            .is_some_and(|set| set.len() > 1);
+        if ambiguous || (self.protect && is_protected(self.models, ga)) {
+            format!("{name} ({ga})")
+        } else {
+            name.to_string()
+        }
+    }
+
+    /// A device as a human reads it: `Hallway push button`, `Hallway push
+    /// button (1.1.5)` when another device has the same name, or the bare
+    /// address when it has none.
+    pub fn device(&self, ia: IndividualAddress) -> String {
+        for model in self.models {
+            if let Some(loaded) = model.devices.get(&ia) {
+                let name = loaded.device.name.trim();
+                if !name.is_empty() {
+                    return self.device_named(ia, name);
+                }
+            }
+        }
+        ia.to_string()
+    }
+
+    /// Device `ia` called `name` (or its address when `name` is empty), with
+    /// the address when the name is ambiguous.
+    fn device_named(&self, ia: IndividualAddress, name: &str) -> String {
+        let name = name.trim();
+        if name.is_empty() {
+            return ia.to_string();
+        }
+        let ambiguous = self
+            .device_names
+            .get(&name_key(name))
+            .is_some_and(|set| set.len() > 1);
+        if ambiguous {
+            format!("{name} ({ia})")
+        } else {
+            name.to_string()
+        }
+    }
 }
 
-/// The channel name a com object belongs to, when both the com object and the
-/// named channel are known.
+/// The key two names are compared by: trimmed and lowercased.
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// What a com object is called in a sentence: the name the device file's
+/// link gives it, else the vendor's object text, else its function text. A
+/// vendor text that only repeats the channel's name or text is skipped for
+/// the next one ("Jalousie 1" on channel "Jalousie 1" reads as its function,
+/// "Langzeitbetrieb").
+fn object_label(device: Option<&Device>, link_name: Option<&str>, object: u16) -> Option<String> {
+    if let Some(name) = link_name.map(str::trim).filter(|s| !s.is_empty()) {
+        return Some(name.to_string());
+    }
+    let device = device?;
+    let co = device.com_objects.get(&object)?;
+    let channel: Vec<&str> = co
+        .channel
+        .as_deref()
+        .and_then(|id| device.channels.get(id))
+        .map(|ch| {
+            [Some(ch.name.as_str()), ch.text.as_deref()]
+                .into_iter()
+                .flatten()
+                .map(str::trim)
+                .collect()
+        })
+        .unwrap_or_default();
+    let texts: Vec<&str> = [co.text.as_deref(), co.function.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    texts
+        .iter()
+        .find(|t| !channel.contains(t))
+        .or_else(|| texts.first())
+        .map(|t| (*t).to_string())
+}
+
+/// The channel a com object belongs to, by the user's name, else the
+/// vendor's text; `None` when the channel has neither (its handle is an id,
+/// not a name).
 fn channel_of_object(device: Option<&Device>, object: u16) -> Option<String> {
     let device = device?;
     let key = device.com_objects.get(&object)?.channel.as_deref()?;
-    let name = device.channels.get(key)?.name.trim();
-    if name.is_empty() {
-        Some(key.to_string())
-    } else {
-        Some(name.to_string())
-    }
+    let channel = device.channels.get(key)?;
+    [Some(channel.name.as_str()), channel.text.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .find(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Whether a group address is protected in either model.
@@ -658,6 +1022,20 @@ pub(crate) fn parameter_label(key: &str) -> String {
     match chars.next() {
         Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
         None => key.to_string(),
+    }
+}
+
+/// The sentence of a rename: `Group address Porch light is now called "Porch
+/// lamp".` An item without a name so far is called by `address`; one whose
+/// name is cleared keeps its address in the sentence, the only thing that
+/// names it from now on.
+fn renamed_sentence(noun: &str, old: &str, address: &str, unnamed: bool, new: &str) -> String {
+    let new = new.trim();
+    match (unnamed, new.is_empty()) {
+        (true, _) => format!("{noun} {address} is now called {new:?}."),
+        (false, true) if old.contains(address) => format!("{noun} {old} no longer has a name."),
+        (false, true) => format!("{noun} {old} ({address}) no longer has a name."),
+        (false, false) => format!("{noun} {old} is now called {new:?}."),
     }
 }
 
@@ -745,7 +1123,7 @@ fn transport_label(transport: crate::schema::Transport) -> &'static str {
 // ---------------------------------------------------------------------------
 
 /// Renders every difference in `groups.toml`, by address.
-fn describe_groups(old: &Model, new: &Model, out: &mut Vec<Change>) {
+fn describe_groups(old: &Model, new: &Model, labels: &Labels<'_>, out: &mut Vec<Change>) {
     let models = [new, old];
     let addresses: BTreeSet<GroupAddress> = old
         .groups
@@ -761,45 +1139,46 @@ fn describe_groups(old: &Model, new: &Model, out: &mut Vec<Change>) {
         let protected = is_protected(models, ga);
         match (before, after) {
             (None, Some(group)) => out.push(
-                Change::new(ChangeKind::GroupAdded, added_group_sentence(ga, group))
-                    .with_group(ga)
-                    .protected_if(protected),
+                Change::new(
+                    ChangeKind::GroupAdded,
+                    added_group_sentence(labels, ga, group),
+                )
+                .with_group(ga)
+                .protected_if(protected),
             ),
             (Some(group), None) => out.push(
-                Change::new(ChangeKind::GroupRemoved, removed_group_sentence(ga, group))
-                    .with_group(ga)
-                    .protected_if(protected),
+                Change::new(
+                    ChangeKind::GroupRemoved,
+                    removed_group_sentence(labels, ga, group),
+                )
+                .with_group(ga)
+                .protected_if(protected),
             ),
-            (Some(a), Some(b)) => group_field_changes(ga, a, b, protected, out),
+            (Some(a), Some(b)) => group_field_changes(labels, ga, a, b, protected, out),
             (None, None) => {}
         }
     }
 }
 
-/// `Porch light (0/0/4)` for a group we have the definition of.
-fn label_for_group(ga: GroupAddress, group: &Group) -> String {
-    let name = group.name.trim();
-    if name.is_empty() {
-        ga.to_string()
-    } else {
-        format!("{name} ({ga})")
-    }
+/// `Porch light` for a group we have the definition of: its name, with the
+/// address when the name is ambiguous or the group is protected, or the
+/// address alone when it has no name.
+fn label_for_group(labels: &Labels<'_>, ga: GroupAddress, group: &Group) -> String {
+    labels.group_named(ga, &group.name)
 }
 
-/// The sentence for a removed group address: `Group address 0/0/4 (Porch
-/// light) removed.`, the address first because the name goes with it.
-fn removed_group_sentence(ga: GroupAddress, group: &Group) -> String {
-    let name = group.name.trim();
-    if name.is_empty() {
-        format!("Group address {ga} removed.")
-    } else {
-        format!("Group address {ga} ({name}) removed.")
-    }
+/// The sentence for a removed group address: `Group address Porch light
+/// removed.`, or the address when it had no name.
+fn removed_group_sentence(labels: &Labels<'_>, ga: GroupAddress, group: &Group) -> String {
+    format!(
+        "Group address {} removed.",
+        label_for_group(labels, ga, group)
+    )
 }
 
 /// The sentence for a newly added group address.
-fn added_group_sentence(ga: GroupAddress, group: &Group) -> String {
-    let label = label_for_group(ga, group);
+fn added_group_sentence(labels: &Labels<'_>, ga: GroupAddress, group: &Group) -> String {
+    let label = label_for_group(labels, ga, group);
     match group.dpt {
         Some(dpt) => format!("New group address {label}, type {dpt}."),
         None => format!("New group address {label}."),
@@ -808,6 +1187,7 @@ fn added_group_sentence(ga: GroupAddress, group: &Group) -> String {
 
 /// Renders the per-field differences of a group address present in both models.
 fn group_field_changes(
+    labels: &Labels<'_>,
     ga: GroupAddress,
     a: &Group,
     b: &Group,
@@ -818,10 +1198,12 @@ fn group_field_changes(
         out.push(
             Change::new(
                 ChangeKind::GroupRenamed,
-                format!(
-                    "Group address {ga} is now called {} (was {}).",
-                    value_or_nothing(Some(&b.name)),
-                    value_or_nothing(Some(&a.name))
+                renamed_sentence(
+                    "Group address",
+                    &label_for_group(labels, ga, a),
+                    &ga.to_string(),
+                    a.name.trim().is_empty(),
+                    &b.name,
                 ),
             )
             .with_group(ga)
@@ -830,7 +1212,7 @@ fn group_field_changes(
         );
     }
     if a.dpt != b.dpt {
-        let label = label_for_group(ga, b);
+        let label = label_for_group(labels, ga, b);
         let sentence = match (a.dpt, b.dpt) {
             (Some(from), Some(to)) => {
                 format!("{label} changes type from {from} to {to}.")
@@ -851,7 +1233,7 @@ fn group_field_changes(
         );
     }
     if a.description != b.description {
-        let label = label_for_group(ga, b);
+        let label = label_for_group(labels, ga, b);
         let sentence = match b
             .description
             .as_deref()
@@ -869,7 +1251,7 @@ fn group_field_changes(
         );
     }
     if a.secure != b.secure {
-        let label = label_for_group(ga, b);
+        let label = label_for_group(labels, ga, b);
         let sentence = if b.secure {
             format!("{label} now runs secured (KNX Data Secure on).")
         } else {
@@ -887,7 +1269,7 @@ fn group_field_changes(
         );
     }
     if a.protected != b.protected {
-        let label = label_for_group(ga, b);
+        let label = label_for_group(labels, ga, b);
         let sentence = if b.protected {
             format!("{label} is now protected against casual writes.")
         } else {
@@ -911,8 +1293,7 @@ fn group_field_changes(
 // ---------------------------------------------------------------------------
 
 /// Renders every difference in `devices/*.toml`, by individual address.
-fn describe_devices(old: &Model, new: &Model, out: &mut Vec<Change>) {
-    let models = [new, old];
+fn describe_devices(old: &Model, new: &Model, labels: &Labels<'_>, out: &mut Vec<Change>) {
     let addresses: BTreeSet<IndividualAddress> = old
         .devices
         .keys()
@@ -927,7 +1308,7 @@ fn describe_devices(old: &Model, new: &Model, out: &mut Vec<Change>) {
                     ChangeKind::DeviceAdded,
                     format!(
                         "New device {} in {}.",
-                        device_label(models, ia),
+                        labels.device(ia),
                         location_label(loaded.device.location.as_ref())
                     ),
                 )
@@ -936,14 +1317,11 @@ fn describe_devices(old: &Model, new: &Model, out: &mut Vec<Change>) {
             (Some(_), None) => out.push(
                 Change::new(
                     ChangeKind::DeviceRemoved,
-                    format!(
-                        "Device {} is gone from the model.",
-                        device_label(models, ia)
-                    ),
+                    format!("Device {} is gone from the model.", labels.device(ia)),
                 )
                 .with_device(ia),
             ),
-            (Some(a), Some(b)) => device_field_changes(ia, a, b, out),
+            (Some(a), Some(b)) => device_field_changes(labels, ia, a, b, out),
             (None, None) => {}
         }
     }
@@ -951,6 +1329,7 @@ fn describe_devices(old: &Model, new: &Model, out: &mut Vec<Change>) {
 
 /// Renders the per-field differences of a device present in both models.
 fn device_field_changes(
+    labels: &Labels<'_>,
     ia: IndividualAddress,
     a: &LoadedDevice,
     b: &LoadedDevice,
@@ -961,10 +1340,12 @@ fn device_field_changes(
         out.push(
             Change::new(
                 ChangeKind::DeviceRenamed,
-                format!(
-                    "Device {ia} is now called {} (was {}).",
-                    value_or_nothing(Some(&b.name)),
-                    value_or_nothing(Some(&a.name))
+                renamed_sentence(
+                    "Device",
+                    &labels.device_named(ia, &a.name),
+                    &ia.to_string(),
+                    a.name.trim().is_empty(),
+                    &b.name,
                 ),
             )
             .with_device(ia)
@@ -974,11 +1355,7 @@ fn device_field_changes(
     if a.location != b.location {
         let from = location_label(a.location.as_ref());
         let to = location_label(b.location.as_ref());
-        let name = if b.name.trim().is_empty() {
-            ia.to_string()
-        } else {
-            format!("{} ({ia})", b.name.trim())
-        };
+        let name = labels.device(ia);
         out.push(
             Change::new(
                 ChangeKind::DeviceMoved,
@@ -991,11 +1368,7 @@ fn device_field_changes(
     if a.product != b.product {
         let from = product_label(a.product.as_ref());
         let to = product_label(b.product.as_ref());
-        let name = if b.name.trim().is_empty() {
-            ia.to_string()
-        } else {
-            format!("{} ({ia})", b.name.trim())
-        };
+        let name = labels.device(ia);
         out.push(
             Change::new(
                 ChangeKind::DeviceProductChanged,
@@ -1005,25 +1378,28 @@ fn device_field_changes(
             .with_field("product", Some(from), Some(to)),
         );
     }
-    describe_channels(ia, a, b, out);
-    describe_parameters(ia, a, b, out);
-    describe_object_security(ia, a, b, out);
-    describe_knxnet(ia, a, b, out);
+    let device = labels.device(ia);
+    describe_channels(&device, ia, a, b, out);
+    describe_parameters(&device, ia, a, b, out);
+    describe_object_security(&device, ia, a, b, out);
+    describe_knxnet(&device, ia, a, b, out);
 }
 
 /// Renders the differences of the `[knxnet]` table of an IP interface (issue
-/// #391), one sentence each: `Interface KNX IP Interface (1.1.200): tunnel
-/// address 1.1.30 added.`
-fn describe_knxnet(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Vec<Change>) {
+/// #391), one sentence each: `Interface KNX IP Interface: tunnel address
+/// 1.1.30 added.` (`device` is the device's label).
+fn describe_knxnet(
+    device: &str,
+    ia: IndividualAddress,
+    a: &Device,
+    b: &Device,
+    out: &mut Vec<Change>,
+) {
     use crate::knxnet::{KnxnetConfig, join_addresses};
     if a.knxnet == b.knxnet {
         return;
     }
-    let head = if b.name.trim().is_empty() {
-        format!("Interface {ia}")
-    } else {
-        format!("Interface {} ({ia})", b.name.trim())
-    };
+    let head = format!("Interface {device}");
     let change = |field: &str, sentence: String, from: Option<String>, to: Option<String>| {
         Change::new(ChangeKind::InterfaceChanged, format!("{head}: {sentence}."))
             .with_device(ia)
@@ -1152,9 +1528,15 @@ fn describe_knxnet(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Vec<
 }
 
 /// Renders the com-objects whose `secure` flag changed (issue #331), one
-/// sentence per direction: `Kitchen actuator (1.1.5): object 12 now runs
-/// plain (KNX Data Secure off).`
-fn describe_object_security(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Vec<Change>) {
+/// sentence per direction: `Kitchen actuator: object 12 now runs plain (KNX
+/// Data Secure off).` (`device` is the device's label).
+fn describe_object_security(
+    device: &str,
+    ia: IndividualAddress,
+    a: &Device,
+    b: &Device,
+    out: &mut Vec<Change>,
+) {
     let mut on: Vec<u16> = Vec::new();
     let mut off: Vec<u16> = Vec::new();
     for (number, after) in &b.com_objects {
@@ -1167,11 +1549,6 @@ fn describe_object_security(ia: IndividualAddress, a: &Device, b: &Device, out: 
             _ => {}
         }
     }
-    let device = if b.name.trim().is_empty() {
-        ia.to_string()
-    } else {
-        format!("{} ({ia})", b.name.trim())
-    };
     for (objects, secure) in [(off, false), (on, true)] {
         if objects.is_empty() {
             continue;
@@ -1204,8 +1581,15 @@ fn describe_object_security(ia: IndividualAddress, a: &Device, b: &Device, out: 
 }
 
 /// Renders channel renames (a channel added or removed comes with the
-/// regenerated com-object table, which is not an edit).
-fn describe_channels(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Vec<Change>) {
+/// regenerated com-object table, which is not an edit). `device` is the
+/// device's label.
+fn describe_channels(
+    device: &str,
+    ia: IndividualAddress,
+    a: &Device,
+    b: &Device,
+    out: &mut Vec<Change>,
+) {
     for (key, after) in &b.channels {
         let Some(before) = a.channels.get(key) else {
             continue;
@@ -1213,19 +1597,20 @@ fn describe_channels(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Ve
         if before.name == after.name {
             continue;
         }
-        let device = if b.name.trim().is_empty() {
-            ia.to_string()
-        } else {
-            format!("{} ({ia})", b.name.trim())
-        };
+        // A channel is called by its old name, else the vendor's text, else
+        // its handle (issue #306).
+        let old = [Some(before.name.as_str()), before.text.as_deref()]
+            .into_iter()
+            .flatten()
+            .map(str::trim)
+            .find(|s| !s.is_empty())
+            .map_or_else(|| b.channel_handle(key), |s| format!("{s:?}"));
         out.push(
             Change::new(
                 ChangeKind::ChannelRenamed,
                 format!(
-                    "Channel {} on {device} is now called {} (was {}).",
-                    key,
+                    "Channel {old} on {device} is now called {}.",
                     value_or_nothing(Some(&after.name)),
-                    value_or_nothing(Some(&before.name))
                 ),
             )
             .with_device(ia)
@@ -1248,7 +1633,14 @@ fn describe_channels(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Ve
 /// addition. A ref with the same value on both sides is no change; different
 /// values are one change whose `field` is the shown spelling: the after
 /// side's visible key, else the before side's, else a `hidden@` one.
-fn describe_parameters(ia: IndividualAddress, a: &Device, b: &Device, out: &mut Vec<Change>) {
+/// `device` is the device's label.
+fn describe_parameters(
+    device: &str,
+    ia: IndividualAddress,
+    a: &Device,
+    b: &Device,
+    out: &mut Vec<Change>,
+) {
     let before_by_id = parameters_by_identity(&a.parameters);
     let after_by_id = parameters_by_identity(&b.parameters);
     let ids: BTreeSet<&str> = before_by_id
@@ -1256,11 +1648,6 @@ fn describe_parameters(ia: IndividualAddress, a: &Device, b: &Device, out: &mut 
         .chain(after_by_id.keys())
         .copied()
         .collect();
-    let device = if b.name.trim().is_empty() {
-        ia.to_string()
-    } else {
-        format!("{} ({ia})", b.name.trim())
-    };
     for id in ids {
         let before = before_by_id.get(id).copied();
         let after = after_by_id.get(id).copied();
@@ -1277,7 +1664,7 @@ fn describe_parameters(ia: IndividualAddress, a: &Device, b: &Device, out: &mut 
         };
         let Some(sentence) = parameter_sentence(
             &parameter_label(key),
-            &device,
+            device,
             before_value.map(String::as_str),
             after_value.map(String::as_str),
         ) else {
@@ -1370,7 +1757,7 @@ fn object_names(model: &Model, ia: IndividualAddress) -> BTreeMap<u16, String> {
 }
 
 /// Renders every link added or removed, by device, com object and GA.
-fn describe_links(old: &Model, new: &Model, out: &mut Vec<Change>) {
+fn describe_links(old: &Model, new: &Model, labels: &Labels<'_>, out: &mut Vec<Change>) {
     let models = [new, old];
     let devices: BTreeSet<IndividualAddress> = old
         .links
@@ -1410,7 +1797,7 @@ fn describe_links(old: &Model, new: &Model, out: &mut Vec<Change>) {
                 ChangeKind::LinkRemoved
             };
             let sentence = link_sentence(
-                models,
+                labels,
                 device,
                 ia,
                 names.get(&object).map(String::as_str),
@@ -1432,13 +1819,13 @@ fn describe_links(old: &Model, new: &Model, out: &mut Vec<Change>) {
 
 /// Builds the sentence for one link addition or removal.
 ///
-/// The subject is the com-object name (when the model has one) on the device,
-/// with the channel appended when the com object belongs to a named channel:
-/// "Living room blind actuator (1.1.4), channel B, no longer listens to Central down
-/// (3/0/1)."
+/// The subject is the com-object name (the link's, else the vendor's object
+/// text) on the device, with the channel appended when the com object belongs
+/// to a channel with a name or vendor text: "Living room blind actuator,
+/// channel B, no longer listens to Central down."
 #[allow(clippy::too_many_arguments)] // all of it is one sentence's worth of context
 fn link_sentence(
-    models: [&Model; 2],
+    labels: &Labels<'_>,
     device: Option<&Device>,
     ia: IndividualAddress,
     object_name: Option<&str>,
@@ -1447,10 +1834,12 @@ fn link_sentence(
     ga: GroupAddress,
     added: bool,
 ) -> String {
-    // The address goes with the name, so a sentence naming only a channel
-    // still says which device it is (issue #372).
-    let device_label = device_label(models, ia);
-    let mut subject = match object_name {
+    // The device's label carries its address when its name is not unique,
+    // so a sentence naming only a channel still says which device it is
+    // (issues #372, #306).
+    let device_label = labels.device(ia);
+    let object_name = object_label(device, object_name, object);
+    let mut subject = match &object_name {
         Some(name) => format!("{name} on {device_label}"),
         None => device_label,
     };
@@ -1475,10 +1864,7 @@ fn link_sentence(
         (LinkRole::Listen, true) => "now listens to",
         (LinkRole::Listen, false) => "no longer listens to",
     };
-    format!(
-        "{subject}{object_note}{separator}{verb} {}.",
-        ga_label(models, ga)
-    )
+    format!("{subject}{object_note}{separator}{verb} {}.", labels.ga(ga))
 }
 
 #[cfg(test)]
@@ -1638,8 +2024,90 @@ mod tests {
         let set = describe(&old, &new);
         assert_eq!(
             set.changes[0].sentence,
-            "Living room blind actuator (1.1.4), channel B, \
-             no longer listens to Central down (3/0/1)."
+            "Living room blind actuator, channel B, no longer listens to Central down."
+        );
+    }
+
+    #[test]
+    fn test_summarize_names_without_addresses() {
+        let old = empty();
+        let mut new = empty();
+        let mut wind = group("Wind alarm");
+        wind.protected = true;
+        new.groups.groups.insert(ga("3/2/0"), wind.clone());
+        let mut old = old;
+        old.groups.groups.insert(ga("3/2/0"), wind);
+        new.groups.groups.insert(ga("0/0/4"), group("Porch light"));
+        new.devices
+            .insert(ia("1.1.5"), device("1.1.5", "Hallway push button"));
+        old.devices
+            .insert(ia("1.1.5"), device("1.1.5", "Hallway push button"));
+        new.links.links.insert(
+            ia("1.1.5"),
+            vec![Link {
+                object: 1,
+                name: Some("Rocker 1".to_string()),
+                send: Some(ga("0/0/4")),
+                listen: vec![ga("3/2/0")],
+            }],
+        );
+        let set = describe(&old, &new);
+        let summary = summarize(&set, [&new, &old]);
+        assert_eq!(
+            summary,
+            "A new function Porch light is added; Rocker 1 on Hallway push button now switches \
+             Porch light; and Rocker 1 on Hallway push button now listens to Wind alarm. Part of \
+             this concerns a protected safety function, so it needs the human's explicit yes."
+        );
+        // The sentence of the protected link still names the address.
+        assert!(
+            set.changes
+                .iter()
+                .any(|c| c.touches_protected && c.sentence.contains("Wind alarm (3/2/0)")),
+            "{set:?}"
+        );
+        assert_eq!(
+            summarize(&ChangeSet::default(), [&new, &old]),
+            "Nothing changes."
+        );
+    }
+
+    #[test]
+    fn test_describe_names_carry_the_address_only_when_ambiguous() {
+        let old = empty();
+        let mut new = empty();
+        new.groups.groups.insert(ga("0/0/4"), group("Porch light"));
+        new.groups.groups.insert(ga("0/0/5"), group("Porch light"));
+        new.groups.groups.insert(ga("0/0/6"), group("Garden light"));
+        new.devices
+            .insert(ia("1.1.4"), device("1.1.4", "Push button"));
+        new.devices
+            .insert(ia("1.1.5"), device("1.1.5", "push button "));
+        new.devices.insert(ia("1.1.6"), device("1.1.6", "Dimmer"));
+        let sentences: Vec<String> = describe(&old, &new)
+            .changes
+            .into_iter()
+            .map(|c| c.sentence)
+            .collect();
+        assert!(
+            sentences.contains(&"New group address Porch light (0/0/4).".to_string()),
+            "{sentences:?}"
+        );
+        assert!(
+            sentences.contains(&"New group address Garden light.".to_string()),
+            "{sentences:?}"
+        );
+        assert!(
+            sentences
+                .iter()
+                .any(|s| s.starts_with("New device Push button (1.1.4) in")),
+            "{sentences:?}"
+        );
+        assert!(
+            sentences
+                .iter()
+                .any(|s| s.starts_with("New device Dimmer in")),
+            "{sentences:?}"
         );
     }
 
@@ -1744,11 +2212,11 @@ mod tests {
         assert_eq!(
             sentences,
             [
-                "Interface KNX IP Interface (1.1.200): IP assignment is now static (was dhcp).",
-                "Interface KNX IP Interface (1.1.200): static IP address set to 192.168.1.74.",
-                "Interface KNX IP Interface (1.1.200): friendly name is now \"Beta\" (was \"Alpha\").",
-                "Interface KNX IP Interface (1.1.200): tunnel address 1.1.30 added.",
-                "Interface KNX IP Interface (1.1.200): tunnel address 1.1.23 removed.",
+                "Interface KNX IP Interface: IP assignment is now static (was dhcp).",
+                "Interface KNX IP Interface: static IP address set to 192.168.1.74.",
+                "Interface KNX IP Interface: friendly name is now \"Beta\" (was \"Alpha\").",
+                "Interface KNX IP Interface: tunnel address 1.1.30 added.",
+                "Interface KNX IP Interface: tunnel address 1.1.23 removed.",
             ]
         );
         assert!(
@@ -1761,7 +2229,7 @@ mod tests {
         let added = describe(&with(None), &with(Some(before.clone())));
         assert_eq!(
             added.changes[0].sentence,
-            "Interface KNX IP Interface (1.1.200): KNXnet/IP settings added (assignment dhcp, \
+            "Interface KNX IP Interface: KNXnet/IP settings added (assignment dhcp, \
              tunnel addresses 1.1.22, 1.1.23)."
         );
         let mut reordered = before.clone();

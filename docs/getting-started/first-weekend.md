@@ -101,8 +101,8 @@ Assistant:  (calls knx_wait_for_telegram, then knx_infer_group)
             I would call it "Hallway light". OK?
 You:        Yes, and the device is the hallway push button.
 Assistant:  (calls knx_set_group, knx_add_link, knx_set_device)
-            New group address Hallway light (1/1/1), type 1.001.
-            Hallway push button now switches Hallway light (1/1/1).
+            New group address Hallway light, type 1.001.
+            Hallway push button now switches Hallway light.
 ```
 
 Every telegram on an address narrows the type candidates, so an uncertain one gets "press it again". `bussard learn` runs the same loop in a terminal. A house with a project file can skip this step, or use it for the 41 untyped addresses with `bussard learn --untyped`.

@@ -179,3 +179,47 @@ fn test_every_change_kind_has_at_least_one_golden() -> TestResult {
     }
     Ok(())
 }
+
+/// Whether `text` carries an id a homeowner should not have to read (issue
+/// #306): a group address (`1/2/3`), an individual address (`1.1.4`), an
+/// ETS reference (`MD-…`) or a parameter key (`key@ref`).
+fn carries_an_id(text: &str) -> Option<String> {
+    let words = text.split(|c: char| c.is_whitespace() || "(),;:\"".contains(c));
+    for word in words {
+        let word = word.trim_end_matches('.');
+        let parts = |sep: char| -> bool {
+            let p: Vec<&str> = word.split(sep).collect();
+            p.len() == 3
+                && p.iter()
+                    .all(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_digit()))
+        };
+        if parts('/') || parts('.') || word.contains("MD-") || word.contains('@') {
+            return Some(word.to_string());
+        }
+    }
+    None
+}
+
+#[test]
+fn test_summarize_names_every_golden_case_without_ids() -> TestResult {
+    for case in cases()? {
+        let name = case.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        let old = Model::load(&case.join("old"))?;
+        let new = Model::load(&case.join("new"))?;
+        let set = describe(&old, &new);
+        let summary = bussard_model::change::summarize(&set, [&new, &old]);
+        assert!(!summary.trim().is_empty(), "case {name}: empty summary");
+        if name == "unnamed-degrades-to-addresses" {
+            // Nothing degrades to silence: an item without a name is
+            // called by its address.
+            assert!(carries_an_id(&summary).is_some(), "case {name}: {summary}");
+            continue;
+        }
+        assert_eq!(
+            carries_an_id(&summary),
+            None,
+            "case {name}: the summary names an id: {summary}"
+        );
+    }
+    Ok(())
+}

@@ -192,7 +192,7 @@ Show what changed in the model since the last history snapshot, as plain sentenc
 
 ```console
 $ bussard status
-Rocker 1 on Hallway push button (1.1.5) now switches Porch light (0/0/4).
+Rocker 1 on Hallway push button now switches Porch light.
 ```
 
 | Flag | Default | Meaning |
