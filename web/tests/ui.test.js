@@ -14,6 +14,7 @@ import {
   LINK_KEY,
   countStatuses,
   endCounts,
+  endTone,
   forgetLinkFragment,
   readPref,
   sessionCheck,
@@ -275,4 +276,24 @@ test("test_sessionCheck_relay_failure_is_unreachable", () => {
   assert.equal(sessionCheck(400, { error: "bad" }), "unreachable");
   assert.equal(sessionCheck(200, null), "unreachable");
   assert.equal(sessionCheck(200, { closed: false }), "unreachable");
+});
+
+test("test_endTone_all_good_is_info", () => {
+  assert.equal(endTone([]), "info");
+  assert.equal(endTone(["stored", "already_stored", "unassigned"]), "info");
+});
+
+test("test_endTone_any_problem_is_warn", () => {
+  for (const bad of ["conflict", "invalid", "error", "rejected", "sent", "queued"]) {
+    assert.equal(endTone(["stored", "already_stored", bad]), "warn", bad);
+  }
+});
+
+test("test_endCounts_problem_order_matches_summary", () => {
+  const statuses = ["error", "invalid", "conflict", "unassigned", "already_stored", "stored"];
+  assert.equal(
+    endCounts(statuses),
+    "Sent 6 certificates to your bussard: 1 added, 1 already known, 1 no device yet, 1 conflict, 1 invalid, 1 failed.",
+  );
+  assert.equal(summaryText(statuses), "6 sent · 1 added · 1 already known · 1 no device yet · 1 conflict · 1 invalid · 1 failed");
 });

@@ -27,6 +27,7 @@ import {
   ScanGate,
   bottomInset,
   endCounts,
+  endTone,
   forgetLinkFragment,
   readPref,
   sessionCheck,
@@ -363,8 +364,10 @@ function setRelayDown(down) {
 }
 
 /**
- * The session is over: `title` says how it ended (`tone` `info` or `error`),
- * the page's own count follows below it.
+ * The session is over: `title` says how it ended, the page's own count
+ * follows below it. `tone` `error` is kept; otherwise the panel is green only
+ * when every certificate ended well, amber when any did not. The bottom bar
+ * goes away: the panel carries the same count.
  */
 function closed(title, tone = "info", stored) {
   if (state.phase === "closed") return;
@@ -385,7 +388,9 @@ function closed(title, tone = "info", stored) {
   }
   state.sendQueue.length = 0;
   updateSummary();
-  banner(tone, endCounts(itemStatuses(), stored), title);
+  const statuses = itemStatuses();
+  banner(tone === "error" ? "error" : endTone(statuses), endCounts(statuses, stored), title);
+  $("bar").hidden = true;
   window.scrollTo({ top: 0, behavior: "smooth" });
 }
 

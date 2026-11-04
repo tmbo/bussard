@@ -175,6 +175,22 @@ export function endCounts(statuses, stored) {
   return parts.length ? `${head}: ${parts.join(", ")}.` : `${head}.`;
 }
 
+/** Statuses a finished session counts as all good. */
+const ALL_GOOD = new Set(["stored", "already_stored", "unassigned"]);
+
+/**
+ * The tone of the end panel: `info` (success colour) when every certificate
+ * was added, already known or waits for its device, `warn` when any had a
+ * conflict, was invalid, failed, was not sent or got no answer.
+ *
+ * @param {Iterable<string>} statuses
+ * @returns {"info" | "warn"}
+ */
+export function endTone(statuses) {
+  for (const s of statuses) if (!ALL_GOOD.has(s)) return "warn";
+  return "info";
+}
+
 /** Milliseconds a certificate must be out of view before it counts as presented again. */
 export const SCAN_HOLD_MS = 2500;
 
