@@ -34,6 +34,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import sweep  # noqa: E402
 import vm  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
@@ -113,7 +114,8 @@ def triage_one(c, app: str, entry: dict, offset: timedelta) -> dict:
     run = CAPTURES / app / "plain-defaults"
     end = datetime.fromisoformat(entry["when"])
     start = end - timedelta(seconds=(entry.get("seconds") or 0) + 30)
-    history = entry.get("ets_history") or []
+    # Old results keep the pane's first four lines, new ones the newest entry.
+    history = sweep.newest_history_entry(entry.get("ets_history"))
     ets_lines = ets_log_lines(c, start, end + timedelta(seconds=30), offset) if entry["outcome"] == "ets-failed" else []
     rejects = sim_rejects(run)
     sig = None
@@ -127,7 +129,8 @@ def triage_one(c, app: str, entry: dict, offset: timedelta) -> dict:
         if not sig and rejects:
             sig = "sim rejected: " + norm(rejects[0])
         if not sig:
-            detail = next((h for h in history[3:] if h.strip()), "")
+            status = next((i for i, h in enumerate(history) if sweep.is_history_status(h)), len(history))
+            detail = next((h for h in history[status + 1:] if h.strip()), "")
             sig = "ets: " + norm(detail or "failed, no detail")
     return {
         "signature": sig,
@@ -135,7 +138,7 @@ def triage_one(c, app: str, entry: dict, offset: timedelta) -> dict:
         "mask": entry.get("mask"),
         "name": entry.get("name"),
         "when": entry["when"],
-        "ets_history": history[1:5],
+        "ets_history": history,
         "ets_log": ets_lines[-8:],
         "sim_rejects": rejects[:5],
         "last_ops": last_ops(run),

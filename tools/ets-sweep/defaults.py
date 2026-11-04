@@ -16,7 +16,7 @@ not play are recorded as `skipped-mask`. Outcomes go to
 tools/ets-sweep/results/defaults.json, keyed by application id:
 
     captured        ETS reported the download done and the capture has operations
-    ets-failed      ETS reported the download failed (its history line is kept)
+    ets-failed      ETS reported the download failed (its history entry is kept)
     driver-error    the driver could not complete a step (the error is kept)
     sim-refused     knx-sim did not start with this product (its message is kept)
     unknown         neither: look at the run directory
@@ -434,7 +434,8 @@ def main() -> int:
                 "search": job["order_numbers"][0],
                 "row": r.get("catalog_row"),
                 "error": r.get("error"),
-                "ets_history": [l for l in (r.get("history") or [])[:4]],
+                "ets_history": sweep.newest_history_entry(r.get("history")),
+                "ets_log": r.get("ets_log"),
                 "attempts": r.get("attempt"),
                 "end": r.get("end"),
                 "learned_properties": r.get("learned_properties"),
