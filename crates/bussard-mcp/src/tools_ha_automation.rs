@@ -193,7 +193,7 @@ impl BussardMcp {
         reload automations (issue #280). Call this ONLY after you showed the human the plan \
         from knx_ha_automation_plan and the human answered yes explicitly in this \
         conversation. Pass its plan_digest. Refuses a digest this session did not produce, an \
-        expired or used one, and one a fresh plan no longer reproduces (the model or the \
+        expired or used one, and one a fresh plan no longer reproduces (the project or the \
         automation in Home Assistant changed). Keeps the previous automation's JSON under \
         captures/backups/ha/, writes through the config API, calls automation.reload and \
         returns the backup path and the outcome. Only available with --allow-home-assistant."

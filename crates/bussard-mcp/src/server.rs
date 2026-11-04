@@ -231,7 +231,7 @@ impl BussardMcp {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LookupArgs {
     /// Case-insensitive substring to search for across GA names/addresses,
-    /// device names/individual addresses, room names and com-object names;
+    /// device names/addresses, room names and com-object names;
     /// for `capabilities`, the words of a function ("Helligkeit",
     /// "Dämmerung") searched in the devices' parameter and choice texts.
     pub query: String,
@@ -362,7 +362,7 @@ pub struct RecentArgs {
     /// Restrict to a group address or GA prefix (`"3/2/0"`, `"3/"`).
     #[serde(default)]
     pub ga: Option<String>,
-    /// Restrict to a source individual address (`"1.1.30"`).
+    /// Restrict to a source address (`"1.1.30"`).
     #[serde(default)]
     pub source: Option<String>,
     /// Only telegrams at or after this RFC3339 timestamp.
@@ -376,7 +376,7 @@ pub struct WaitArgs {
     /// Restrict to a group address or GA prefix.
     #[serde(default)]
     pub ga: Option<String>,
-    /// Restrict to a source individual address.
+    /// Restrict to a source address.
     #[serde(default)]
     pub source: Option<String>,
     /// How long to wait, in seconds (max 300).
@@ -429,7 +429,7 @@ impl BussardMcp {
 
     /// `knx_model_lookup`.
     #[tool(
-        description = "Search the KNX model by a case-insensitive substring. Matches group-address names and addresses, device names and individual addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link. `capabilities` searches what the installed devices could do: the parameter texts and enum choice texts of their product models (every word of the query must appear; umlauts may be spelled out). Each names the device, the ETS page or channel (`block_or_channel`, `handle`), the parameter, the matching choice and whether that page is active; `provides` matches come first, then `could provide` ones on inactive pages and channels (spare capacity, with `enable`: the parameters to set, and `needs`), then other choices of active pages; within each, a device whose com-objects send the measured value the query names (9.004 for \"Helligkeit\") leads and its first entry lists them in `sends`. An entry repeated on several channels of a device is one entry with `channels`, and one repeated on devices of one application one entry with `also_on`. Read knx_show_device with the `handle` for the candidates. Empty fields and the ETS references a key already names are left out; `technical: true` keeps them."
+        description = "Search the KNX project by a case-insensitive substring. Matches group-address names and addresses, device names and addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link. `capabilities` searches what the installed devices could do: the parameter texts and enum choice texts of their product models (every word of the query must appear; umlauts may be spelled out). Each names the device, the ETS page or channel (`block_or_channel`, `handle`), the parameter, the matching choice and whether that page is active; `provides` matches come first, then `could provide` ones on inactive pages and channels (spare capacity, with `enable`: the parameters to set, and `needs`), then other choices of active pages; within each, a device whose com-objects send the measured value the query names (9.004 for \"Helligkeit\") leads and its first entry lists them in `sends`. An entry repeated on several channels of a device is one entry with `channels`, and one repeated on devices of one application one entry with `also_on`. Read knx_show_device with the `handle` for the candidates. Empty fields and the ETS references a key already names are left out; `technical: true` keeps them."
     )]
     async fn knx_model_lookup(
         &self,
@@ -451,7 +451,7 @@ impl BussardMcp {
 
     /// `knx_get_group`.
     #[tool(
-        description = "Look up a single group address: its definition (name, DPT, description), every link that sends to or listens on it (device IA/name, com-object number/name, send|listen, and by default the device's `room` and `what` the object is in words), and the last telegram seen on it from the live buffer, if any. `technical: true` returns the raw shape (the telegram's wire detail, no `room`/`what`)."
+        description = "Look up a single group address: its definition (name, DPT, description), every link that sends to or listens on it (device address/name, com-object number/name, send|listen, and by default the device's `room` and `what` the object is in words), and the last telegram seen on it from the live buffer, if any. `technical: true` returns the raw shape (the telegram's wire detail, no `room`/`what`)."
     )]
     async fn knx_get_group(
         &self,
@@ -471,7 +471,7 @@ impl BussardMcp {
 
     /// `knx_get_device`.
     #[tool(
-        description = "Get the full definition of one device by its individual address: identity, product, location, channels, its parameters (by the keys the device file uses) and generated com-object table, plus every link (com-object -> group addresses) on it. ETS-internal values the user cannot set are left out and counted in `hidden_parameters`; `technical: true` includes them. Outputs of a <ParameterCalculation> that the configuration computes are listed in `computed_parameters` (key, the value a download writes, `computed_by`: the calculation id); they are not set in the file. This is the configured state; for what the device can do (inactive channels and pages, functions, choices) use knx_show_device."
+        description = "Get the full definition of one device by its address: identity, product, location, channels, its parameters (by the keys the device file uses) and generated com-object table, plus every link (com-object -> group addresses) on it. ETS-internal values the user cannot set are left out and counted in `hidden_parameters`; `technical: true` includes them. Outputs of a <ParameterCalculation> that the configuration computes are listed in `computed_parameters` (key, the value a download writes, `computed_by`: the calculation id); they are not set in the file. This is the configured state; for what the device can do (inactive channels and pages, functions, choices) use knx_show_device."
     )]
     async fn knx_get_device(
         &self,
@@ -524,7 +524,7 @@ impl BussardMcp {
         KNX IP interface `knxnet` (IP address in use and how it was assigned, MAC, friendly \
         name, tunnelling addresses, device state), `knxnet_lines`, `model_knxnet` and \
         `knxnet_drift`; `security` on a Data Secure device read with its tool key. The live \
-        read is read-only and refused in passive mode; it works for a device the model does \
+        read is read-only and refused in passive mode; it works for a device the project does \
         not have too (a `knx_find_devices` responder). \
         The ETS ids (`reference` where a key names the \
         parameter, page `id`s, `application`, `computed_by`) and object `flags` are left out; \
@@ -593,7 +593,7 @@ impl BussardMcp {
 
     /// `knx_recent_telegrams`.
     #[tool(
-        description = "Return recent decoded telegrams from the live buffer, oldest first and newest last. Optionally filter by group address (or GA prefix), source individual address, and an RFC3339 `since` cutoff. If a capture database is configured and the requested window predates the in-memory buffer, older telegrams are read from it too."
+        description = "Return recent decoded telegrams from the live buffer, oldest first and newest last. Optionally filter by group address (or GA prefix), source address, and an RFC3339 `since` cutoff. If a capture database is configured and the requested window predates the in-memory buffer, older telegrams are read from it too."
     )]
     async fn knx_recent_telegrams(
         &self,
@@ -661,7 +661,7 @@ impl BussardMcp {
 
     /// `knx_wait_for_telegram`.
     #[tool(
-        description = "Block until the next telegram matching the given group address and/or source arrives, or the timeout elapses. This is the 'ask the human to press the button now, then call this' workflow: tell the user which switch to press, then call this and read the resulting telegram. A timeout is a normal result (not an error). With the server's --keyring, a secured (KNX Data Secure) group telegram arrives decrypted and carries secured: true; one the keyring has no group key for keeps its ciphertext with secure_status no_key."
+        description = "Block until the next telegram matching the given group address and/or source arrives, or the timeout elapses. This is the 'ask the human to press the button now, then call this' workflow: tell the user which switch to press, then call this and read the resulting telegram. A timeout is a normal result (not an error). With the server's --keyring, a secured (KNX Data Secure) group telegram arrives decrypted and carries secured: true; one the server has no group key for keeps its ciphertext with secure_status no_key."
     )]
     async fn knx_wait_for_telegram(
         &self,
@@ -685,7 +685,7 @@ impl BussardMcp {
 
     /// `knx_bus_status` (issue #287).
     #[tool(
-        description = "The live bus connection in detail, read-only: state, interface, tunnelling user (while connected), the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this model directory on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh. A last_error saying the operating system refused access to the local network is a permission the user grants on their computer (macOS: Local Network); reconnecting cannot fix it until they do."
+        description = "The live bus connection in detail, read-only: state, interface, tunnelling user (while connected), the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this project folder on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh. A last_error saying the operating system refused access to the local network is a permission the user grants on their computer (macOS: Local Network); reconnecting cannot fix it until they do."
     )]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
         let mut out = self.state.bus.to_json();
@@ -752,7 +752,7 @@ impl BussardMcp {
 
     /// `knx_validate`.
     #[tool(
-        description = "Run the bussard model validator and return its diagnostics as JSON (code, severity, message, location). By default only errors and warnings; `severity: \"info\"` adds the infos (unlinked objects and similar notes), `severity: \"error\"` keeps errors only, and `address` (\"1.1.4\", or \"1.1.\" for a line) or `group` (\"3/2/0\", or \"3/\" for a range) narrow it to one device or group. `counts` always counts every error, warning and info in the model, and `note` says what the filter left out. Use this to check whether the model (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent, and, with the server's keyring, whether security-activated devices have a tool key and the groups' secure flags match the keyring's group keys (addresses only, never a key)."
+        description = "Run the bussard validator and return its diagnostics as JSON (code, severity, message, location). By default only errors and warnings; `severity: \"info\"` adds the infos (unlinked objects and similar notes), `severity: \"error\"` keeps errors only, and `address` (\"1.1.4\", or \"1.1.\" for a line) or `group` (\"3/2/0\", or \"3/\" for a range) narrow it to one device or group. `counts` always counts every error, warning and info in the project, and `note` says what the filter left out. Use this to check whether the project (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent, and, with the server's keys, whether secured devices have a tool key and the groups' secure flags match the group keys (addresses only, never a key)."
     )]
     async fn knx_validate(
         &self,
@@ -959,7 +959,7 @@ impl BussardMcp {
         error counts, the latest failure), the security report and whether the device \
         broadcasts it; read it after a secured write that did nothing. A device without a \
         tool key that refuses the plain walk and answers a secured read under its factory key \
-        (FDSK) from the key store is reported `ok: false, factory_key: true` with the reason, as \
+        from the key store is reported `ok: false, factory_key: true` with the reason, as \
         `bussard describe` does: tell the human it needs commissioning in ETS. Rate-limited and only \
         available when the server is NOT in passive mode, since it actively transmits \
         management traffic on the bus."

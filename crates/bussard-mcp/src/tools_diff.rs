@@ -33,8 +33,8 @@ pub const DIFF_TOOLS: [&str; 2] = ["knx_export_bundle", "knx_diff_project"];
 /// Arguments for `knx_export_bundle`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportBundleArgs {
-    /// Where to write the `.bussard` file. Defaults to next to the model
-    /// directory, named after it and today's date (e.g. `knx-2026-09-23.bussard`).
+    /// Where to write the `.bussard` file. Defaults to next to the project
+    /// folder, named after it and today's date (e.g. `knx-2026-09-23.bussard`).
     #[serde(default)]
     pub path: Option<String>,
     /// Include the `.bussard/history` snapshots (default true).
@@ -45,7 +45,7 @@ pub struct ExportBundleArgs {
 /// Arguments for `knx_diff_project`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct DiffProjectArgs {
-    /// The `.knxproj` or `.bussard` file to compare the working model against.
+    /// The `.knxproj` or `.bussard` file to compare the working project against.
     /// A password-protected `.knxproj` reads its password from the server's
     /// `BUSSARD_PROJECT_PASSWORD` environment variable.
     pub path: String,
@@ -59,11 +59,11 @@ impl BussardMcp {
     /// `knx_export_bundle`.
     #[tool(
         description = "The bundle form of knx_export, under its earlier name. Write the whole \
-        model (bussard.toml, groups.toml, bussard.lock, devices/) \
+        project (bussard.toml, groups.toml, bussard.lock, devices/) \
         and its history snapshots as ONE .bussard file: the handover file for an integrator, or \
         the owner's backup. It never contains vendor product data (models/, vendor/), captures, \
         keyrings, .knxproj/.knxprod files or .env. Returns the path and the manifest (counts, \
-        SHA-256, what was excluded). Reads the model, writes only the bundle; touches no device. \
+        SHA-256, what was excluded). Reads the project, writes only the bundle; touches no device. \
         Suggest it after the first working weekend and after changes the human wants to keep."
     )]
     async fn knx_export_bundle(
@@ -87,7 +87,7 @@ impl BussardMcp {
     /// `knx_diff_project`.
     #[tool(
         description = "Explain what a received ETS export (.knxproj) or bussard bundle (.bussard) \
-        would change compared with the working model, as plain sentences such as \"Group address \
+        would change compared with the working project, as plain sentences such as \"Group address \
         1/0/1 is now called \\\"Kitchen ceiling\\\" (was \\\"Light Kitchen\\\").\" A renamed \
         group address is one rename, not a removal and an addition. QUOTE THESE SENTENCES TO THE \
         HUMAN BEFORE SHE IMPORTS the file (knx_import_file, or `bussard import <file>`); a change marked \

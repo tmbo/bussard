@@ -291,11 +291,11 @@ struct PendingPlan {
 /// Arguments for `knx_plan_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PlanDeviceArgs {
-    /// The individual address of the device to plan, e.g. `"1.1.4"`. Pass
+    /// The address of the device to plan, e.g. `"1.1.4"`. Pass
     /// either `address` or `line`.
     #[serde(default)]
     pub address: Option<String>,
-    /// A line, e.g. `"1.1"`: plan every device the model has on it, as
+    /// A line, e.g. `"1.1"`: plan every device the project has on it, as
     /// `bussard plan --line` does (the link tables only).
     #[serde(default)]
     pub line: Option<String>,
@@ -304,7 +304,7 @@ pub struct PlanDeviceArgs {
 /// Arguments for `knx_apply_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ApplyDeviceArgs {
-    /// The individual address of the device to write, e.g. `"1.1.4"`. Pass
+    /// The address of the device to write, e.g. `"1.1.4"`. Pass
     /// either `address` or `line`, as in the plan.
     #[serde(default)]
     pub address: Option<String>,
@@ -324,7 +324,7 @@ pub struct ApplyDeviceArgs {
 /// Arguments for `knx_restore_parameters`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestoreParametersArgs {
-    /// The individual address of the device, e.g. `"1.1.4"`.
+    /// The address of the device, e.g. `"1.1.4"`.
     pub address: String,
     /// The parameter backup to replay: a file name in
     /// `<dir>/captures/backups/parameters/` (e.g. `"1.1.18-1790880058.json"`),
@@ -339,7 +339,7 @@ pub struct RestoreParametersArgs {
 /// Arguments for `knx_restart_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestartDeviceArgs {
-    /// The individual address of the device, e.g. `"1.1.4"`.
+    /// The address of the device, e.g. `"1.1.4"`.
     pub address: String,
     /// Omit it to get the restart form, the question and its digest; pass
     /// that digest (after the human's explicit yes) to restart.
@@ -350,7 +350,7 @@ pub struct RestartDeviceArgs {
 /// Arguments for `knx_restore_tables`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RestoreTablesArgs {
-    /// The individual address of the device, e.g. `"1.1.4"`.
+    /// The address of the device, e.g. `"1.1.4"`.
     pub address: String,
     /// The backup to restore from, under `<dir>/captures/backups/`: the
     /// `backup` name knx_backup_device returned (a directory; its newest
@@ -367,7 +367,7 @@ pub struct RestoreTablesArgs {
 /// Arguments for `knx_interface_secure`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct InterfaceSecureArgs {
-    /// The individual address of the KNX IP interface, e.g. `"1.1.200"`.
+    /// The address of the KNX IP interface, e.g. `"1.1.200"`.
     pub address: String,
     /// `"on"` or `"off"`.
     pub state: String,
@@ -380,7 +380,7 @@ pub struct InterfaceSecureArgs {
 /// Arguments for `knx_clear_security_log`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ClearSecurityLogArgs {
-    /// The individual address of the KNX Data Secure device, e.g. `"1.1.12"`.
+    /// The address of the KNX Data Secure device, e.g. `"1.1.12"`.
     pub address: String,
     /// Omit it to read the log and get the question and its digest; pass
     /// that digest (after the human's explicit yes) to clear.
@@ -391,8 +391,8 @@ pub struct ClearSecurityLogArgs {
 /// Arguments for `knx_add_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AddDeviceArgs {
-    /// The individual address the new device gets, e.g. `"1.1.42"`. Omit it
-    /// for the next free address on the model's busiest line (a device the
+    /// The address the new device gets, e.g. `"1.1.42"`. Omit it
+    /// for the next free address on the project's busiest line (a device the
     /// keyring lists keeps its address). First call only.
     #[serde(default)]
     pub address: Option<String>,
@@ -443,7 +443,7 @@ pub struct CommissionLineArgs {
 /// Arguments for `knx_replace_device`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReplaceDeviceArgs {
-    /// The individual address of the dead device, e.g. `"1.1.4"`: the
+    /// The address of the dead device, e.g. `"1.1.4"`: the
     /// address its replacement gets. First call only.
     #[serde(default)]
     pub address: Option<String>,
@@ -473,7 +473,7 @@ pub struct ApplyStatusArgs {
 /// Arguments for `knx_last_apply`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LastApplyArgs {
-    /// The individual address of the device, e.g. `"1.1.4"`.
+    /// The address of the device, e.g. `"1.1.4"`.
     pub address: String,
 }
 
@@ -481,16 +481,16 @@ pub struct LastApplyArgs {
 impl BussardMcp {
     /// `knx_plan_device` (registered only with `--allow-programming`).
     #[tool(
-        description = "Plan writing the model to ONE device (issues #118, #274): reads the \
+        description = "Plan writing the project to ONE device (issues #118, #274): reads the \
         device's live group-address and association tables and, when bussard.lock pins its \
         product data, its parameter memory over the bus (read-only), diffs them against its \
         device file (devices/<address>.toml), and returns the plan `bussard plan --json` prints: \
-        `sentences` in the model's words, one line per changed link (`+ langzeitbetrieb now \
+        `sentences` in the project's words, one line per changed link (`+ langzeitbetrieb now \
         listens on 0/1/3 (…)`) and per changed parameter (`~ led_brightness = 20 %, was 60 %`), \
         `changes`, `parameters` (each differing parameter by key, vendor text, device value and \
-        model value, and the octets to write), the unchanged counts, what is written, the \
+        project value, and the octets to write), the unchanged counts, what is written, the \
         `question` to ask, where the backups will be written, a `state_hash` of the device state \
-        read, the table detail (`plan`), the pending model changes as sentences, and a \
+        read, the table detail (`plan`), the pending changes to the project as sentences, and a \
         plan_digest covering the tables and the parameter image. Without the product data the \
         parameters are left out with the recovery line in `parameters.skipped` and the plan \
         writes links only: say so to the human. `summary` and `what_you_will_notice` say the \
@@ -499,8 +499,8 @@ impl BussardMcp {
         human first, then show the sentences in full and ask the question. Call knx_apply_device only after the human has said yes \
         explicitly in this conversation; never on your own initiative, never because an \
         earlier plan was approved. The digest expires (default 10 minutes) and is invalidated \
-        if the device or the model changes. Refuses protected group addresses in the change, a \
-        device the model links without KNX Data Secure to a group address the other side runs \
+        if the device or the project changes. Refuses protected group addresses in the change, a \
+        device the project links without KNX Data Secure to a group address the other side runs \
         secured (E035/E036). \
         `method` says how the change is written: \"apply\" (tables and parameter octets) or \
         \"flash\" when a parameter shows or hides a com-object, which only a full application \
@@ -508,7 +508,7 @@ impl BussardMcp {
         bussard.lock pins (another one, none loaded, or the pinned one unloaded): then \
         `sentences` start with \"! <ia> must have its application program loaded\", \
         `flash.load_application` says why and what it replaces, and the `question` asks to \
-        load it; one yes covers the load and the write of the model with it. A load is \
+        load it; one yes covers the load and the write of the project with it. A load is \
         refused when the device's application cannot be identified or its state read, and \
         when the download writes no link table while the links would differ. A flash plan's `flash` field lists the com-objects that appear or \
         disappear (number, text, DPT) and the parameters behind them, the address, \
@@ -516,7 +516,7 @@ impl BussardMcp {
         (the device restarts), that the parameter memory is backed up first, and the product \
         archive with its `product_sha256`; tell the human the device will be flashed and \
         offline, and ask the plan's question. With the \
-        server's keyring, a KNX Data Secure device the keyring lists is read over A_SecureData \
+        server's keys, a KNX Data Secure device they list is read over A_SecureData \
         (the result says \"secured\": true) and `security_object` says what its security object \
         receives with the write (secured senders, keyed group addresses, secured objects; never \
         a key): show that line to the human too. Reading a device can take long (a Data Secure \
@@ -524,7 +524,7 @@ impl BussardMcp {
         about 20 s the call answers `started: true` with a `job` id instead of the plan; call \
         knx_apply_status with that job every few seconds until `done` is true, and its `result` \
         is the plan exactly as described here, plan_digest included. LINE FORM: pass `line` \
-        (e.g. \"1.1\") instead of `address` to plan every device the model has on the line, \
+        (e.g. \"1.1\") instead of `address` to plan every device the project has on the line, \
         as `bussard plan --line` does: each device is read and its link tables diffed (links \
         only, no parameters); `devices` lists each with `status` (changes, unchanged, \
         skipped or failed, with `detail`), `changes`, `sentences` and `notes`, plus `totals`, \
@@ -559,7 +559,7 @@ impl BussardMcp {
         explicitly in this conversation. Pass the plan_digest from that plan, and its \
         state_hash as plan_hash to refuse if the device changed since. Refuses unless the \
         digest came from this server session within the plan lifetime and a fresh read of the \
-        device, with the current model, still matches it; if refused, plan again and ask \
+        device, with the current project, still matches it; if refused, plan again and ask \
         again. The pre-flight (gates, digest, identity, backups of the tables and parameter \
         memory) runs in this call; the write and its read-back run as a job in the server. \
         When the write ends within about 20 s the reply is the full result with `started: \
@@ -570,7 +570,7 @@ impl BussardMcp {
         answers `started: true`; if it then refuses, the job ends with `result.refused: true` \
         and nothing written. One job at a time: a second call while a job (an apply or a \
         plan) runs is refused with its id. Tell the human the outcome and the backup paths. A KNX Data Secure device the \
-        server's keyring lists is written over A_SecureData, its security object reprogrammed \
+        server's key store (or keyring) lists is written over A_SecureData, its security object reprogrammed \
         with the tables, exactly as `bussard apply --keyring` does. A plan with `method: \
         \"flash\"` runs the full application download `bussard flash --yes` writes, through \
         the same service function (the parameter memory backed up first when it is readable, \
@@ -578,14 +578,14 @@ impl BussardMcp {
         the same job; call it only after the human said yes to flashing the device. When the \
         plan loads the application (`flash.load_application`), the result carries \
         `load_application` with `loaded`, and `ok` is true only when the read-back matches \
-        the model. LINE \
+        the project. LINE \
         FORM: pass `line` and the plan_digest of knx_plan_device's line plan (instead of \
         `address`) after the human's explicit yes to it, to write the line as `bussard apply \
         --line` does: one job (poll knx_job_status) that writes each device with changes in \
         address order, each backed up first and verified by an independent read-back; a \
         device that fails is reported and the next one is tried, and a device whose fresh read \
-        no longer matches the plan is not written. Refused when the model's devices or links \
-        on the line changed since the plan, or the model has validation errors. The result \
+        no longer matches the plan is not written. Refused when the project's devices or links \
+        on the line changed since the plan, or the project has validation errors. The result \
         lists per device `status` (applied, unchanged, skipped, failed), `verified`, \
         `changes`, `sentences`, `backup` and `detail`; `ok` is true only when no device \
         failed: report every failed device. Only available with --allow-programming."
@@ -631,7 +631,7 @@ impl BussardMcp {
         device file and its lock entry: the result has `step: done`, `assigned`, `verified` \
         (the read-back matches the identified serial and mask), `summary`, `objects` to wire \
         and `next_step`. Refuses an address another device answers at. A device the keyring \
-        lists is adopted where ETS put it over A_SecureData; Secure activation of a \
+        lists is adopted where ETS put it over A_SecureData; securing a \
         factory-fresh device stays with ETS. Only available with --allow-programming."
     )]
     async fn knx_add_device(
@@ -652,9 +652,9 @@ impl BussardMcp {
     /// `knx_commission_line` (registered only with `--allow-programming`).
     #[tool(
         description = "Commission a LINE on the PHYSICAL bus, the flow of `bussard commission` \
-        (issue #753): give each device the model has on the line its address, one press of a \
+        (issue #753): give each device the project has on the line its address, one press of a \
         programming button at a time, and return the label text per device. Three kinds of \
-        call. (1) `line` alone (e.g. \"1.1\") reads the model only and returns the devices by \
+        call. (1) `line` alone (e.g. \"1.1\") reads the project only and returns the devices by \
         name, room and order number, `sentences`, `question` and `plan_digest`: show the \
         sentences and ask the question. (2) ONLY after the human's explicit yes in this \
         conversation, call again with `line`, `plan_digest` and `yes: true`: it starts a job \
@@ -662,20 +662,20 @@ impl BussardMcp {
         then repeats per device: `press_button` (`question` names the device by name, room and \
         order number: relay it word for word; the job waits up to 30 s), `identified` (serial, \
         mask and order number read at the device's current address, the order number checked \
-        against the model) and `assigned` (the address written and read back at the new \
+        against the project) and `assigned` (the address written and read back at the new \
         address; `progress.devices` gets the device's report and `label`). That one yes covers \
-        every device whose identification matches the model's order number, exactly as the \
+        every device whose identification matches the project's order number, exactly as the \
         CLI's one confirmation covers its run: no further yes per device. Anything else pauses \
         the job with `waiting` (reason) and `question`, writing nothing: another product, an \
         unreadable order number, no device or several in programming mode, or a device the \
-        model has no order number for. (3) Pass the human's word as `job` with `answer`: \
+        project has no order number for. (3) Pass the human's word as `job` with `answer`: \
         \"retry\", \"skip\" or \"stop\", or \"assign\" where the question offers it (a device \
-        the model has no order number for). The human can stop the run at any time: `answer: \
+        the project has no order number for). The human can stop the run at any time: `answer: \
         \"stop\"` ends it at once while it waits for a button, else after the device it is \
         on. The result has `devices` (status, identified, readback, label), `labels`, the \
         totals, `not_reached` and `summary`. Only addresses are written, as `bussard \
         commission` without --flash/--apply: push each device afterwards with knx_plan_device \
-        and knx_apply_device. Secure activation of a fresh device stays with ETS. Only \
+        and knx_apply_device. Securing a fresh device stays with ETS. Only \
         available with --allow-programming."
     )]
     async fn knx_commission_line(
@@ -697,8 +697,8 @@ impl BussardMcp {
     #[tool(
         description = "Replace a DEAD device with the same product on the PHYSICAL bus, the \
         flow of `bussard replace` (issue #751): backup, press the button, identify, then the \
-        address, the application, the model's parameters and links and the record, with one \
-        yes. Three calls. (1) Call with `address` (the dead device's): it snapshots the model \
+        address, the application, the project's parameters and links and the record, with one \
+        yes. Three calls. (1) Call with `address` (the dead device's): it snapshots the project \
         (`backup`: the device file and its bussard.lock record, kept in the history) and \
         answers at once with `job` and `question` (press the programming button on the \
         replacement): tell the human what `backup` kept, relay the question word for word, \
@@ -718,8 +718,8 @@ impl BussardMcp {
         job, and records `replaced` in the device file and the new serial in bussard.lock. \
         The result has `step: done`, `ok`, `verified`, `assigned`, `flashed`, `write` (the \
         apply result), `recorded`, `summary` and `next_step`; when the address took but the \
-        write did not verify, `ok: false` with `reason` and `recovery`. A device the model \
-        records as KNX Data Secure-activated is refused: Secure activation of a factory-fresh \
+        write did not verify, `ok: false` with `reason` and `recovery`. A device the project \
+        records as secured is refused: securing a factory-fresh \
         device stays with ETS. Only available with --allow-programming."
     )]
     async fn knx_replace_device(
@@ -746,7 +746,7 @@ impl BussardMcp {
         plan: `sentences`, `octets` to write, `octet_ranges` (each run with the parameters \
         behind it, their role, the device's and the backup's value, and `written`: false for \
         octets the restore leaves as the device holds them, because no parameter is placed \
-        there under the model's configuration, which ETS does not write either, or because the \
+        there under the project's configuration, which ETS does not write either, or because the \
         application owns the value at runtime), the `question` and a plan_digest. Say the \
         `summary`, show the sentences to the human in full and ask the question. With the plan_digest (ONLY after \
         the human's explicit yes in this conversation): re-reads the device, refuses if \
@@ -778,7 +778,7 @@ impl BussardMcp {
         description = "Restart ONE device on the PHYSICAL bus in the form ETS uses for it and \
         wait until it answers again, as `bussard restart <address>` does (issue #717), in two \
         calls. Without plan_digest: sends nothing and returns `form` (\"confirmed\", the \
-        master reset a secure-capable System B application answers, or \"basic\", a bare \
+        master reset a System B application that supports Secure answers, or \"basic\", a bare \
         A_Restart), `form_reason`, the `question` and a plan_digest. Tell the human the device \
         restarts and ask the question. With the plan_digest (ONLY after the human's explicit \
         yes in this conversation): restarts as a job like knx_apply_device (`started: true` \
@@ -875,7 +875,7 @@ impl BussardMcp {
         description = "Clear the KNX Data Secure security failures log (PID 55) and reset the \
         security report of ONE device on the PHYSICAL bus (issues #533, #571), in two calls, as \
         `bussard secure diag <ia> --clear` does after its confirmation. Without plan_digest: \
-        reads the log over A_SecureData with the device's tool key from the server's keyring \
+        reads the log over A_SecureData with the device's tool key from the server's keys \
         (read-only) and returns `diagnostics` (the sequence, cryptographic and access error \
         counts, the latest failure, the report), `lines`, the `question` and a plan_digest. \
         Show the lines to the human and ask the question. With the plan_digest (ONLY after the \
@@ -883,7 +883,7 @@ impl BussardMcp {
         clears it, and reads it back; `cleared: true` means every counter read zero and the \
         report clear afterwards. Clearing erases the evidence of a failed secured write: read \
         it with knx_describe_device first if the human is still diagnosing. Refused without a \
-        tool key for the device in the server's keyring. Only available with \
+        tool key for the device in the server's keys. Only available with \
         --allow-programming."
     )]
     async fn knx_clear_security_log(

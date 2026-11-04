@@ -78,7 +78,7 @@ impl BussardMcp {
                        existing ones. ALWAYS confirm the floor and room list, and the functions \
                        per room, with the human before calling this: it writes a file that the \
                        whole installation is then addressed against. Returns the addresses added \
-                       and the model's validation counts."
+                       and the project's validation counts."
     )]
     async fn knx_scaffold_groups(
         &self,
@@ -100,7 +100,7 @@ impl BussardMcp {
                        (`[lint.groups] scheme` in bussard.toml, written on first use). Existing \
                        addresses are never renumbered or renamed; a room and function that \
                        already have their block add nothing. Confirm the room and functions \
-                       with the human first. Returns the addresses added and the model's \
+                       with the human first. Returns the addresses added and the project's \
                        validation counts. Edits files only, never the bus."
     )]
     async fn knx_reserve_groups(
