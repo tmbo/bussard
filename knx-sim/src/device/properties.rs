@@ -386,7 +386,17 @@ impl Device {
         // with `LdCtrlWriteProp` before it streams the segment, and the real
         // device accepts that write. Accept it on a loadable object while it is
         // Loading, echo it, and keep computing the read from the stored bytes.
+        // One 8-octet entry is kept: its size, CRC control byte and access
+        // read back as written, with the CRC the device computes (bussard
+        // issue #840, `Device::mcb_entry_for`).
         if pid == PID_MCB_TABLE && self.load_state(object) == Some(LoadState::Loading) {
+            if start == 1
+                && count == 1
+                && let Ok(entry) = <[u8; super::MCB_ENTRY_LEN]>::try_from(value)
+                && let Some(state) = self.loadables.get_mut(&object)
+            {
+                state.mcb_written = Some(entry);
+            }
             let mut data = vec![
                 object,
                 pid,
@@ -548,7 +558,7 @@ mod tests {
         assert_eq!(payload[2], 0x01, "property index echoed");
         // PID_OBJECT_TYPE is read-only → write-enable bit clear, PDT generic.
         assert_eq!(payload[3] & 0x80, 0, "read-only property");
-        assert_eq!(payload[3] & 0x3F, PDT_GENERIC_01);
+        assert_eq!(payload[3] & 0x3F, PDT_VARIABLE_LENGTH);
         let max = u16::from_be_bytes([payload[4], payload[5]]);
         assert_eq!(max, 1, "one element");
         // read level 3 (high nibble), write level 15 (read-only, low nibble).
@@ -701,6 +711,67 @@ mod tests {
         let value = prop_response_value(&r);
         assert_eq!(value.len(), 10, "PID 78 is a 10-octet value");
         assert_eq!(value[4], 0x03, "byte 4 is the run-state marker");
+        Ok(())
+    }
+
+    /// One System B load of object 4: StartLoading, a 4-octet segment, the
+    /// MCB entry `mcb` written when given, the image, LoadCompleted; returns
+    /// the PID 27 read-back.
+    fn load_object_4(
+        dev: &mut Device,
+        mcb: Option<[u8; 8]>,
+    ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let event = |dev: &mut Device, e: &[u8]| -> Result<(), Box<dyn std::error::Error>> {
+            let mut payload = vec![0x04, PID_LOAD_STATE_CONTROL, 0x10, 0x01];
+            payload.extend_from_slice(e);
+            payload.resize(14, 0);
+            dev.handle_cemi(&data(dev, 0x3D7, &payload))?;
+            Ok(())
+        };
+        event(dev, &[0x04])?; // Unload
+        event(dev, &[0x01])?; // StartLoading
+        event(dev, &[0x03, 0x0b, 0x00, 0x00, 0x00, 0x04])?; // 4-octet segment
+        if let Some(entry) = mcb {
+            let mut write = vec![0x04, PID_MCB_TABLE, 0x10, 0x01];
+            write.extend_from_slice(&entry);
+            let r = dev.handle_cemi(&data(dev, 0x3D7, &write))?;
+            assert_eq!(prop_response_value(&r), entry.to_vec(), "write echoed");
+        }
+        dev.handle_cemi(&data(dev, 0x280 | 4, &[0x60, 0x00, 1, 2, 3, 4]))?;
+        event(dev, &[0x02])?; // LoadCompleted
+        let r = dev.handle_cemi(&data(dev, 0x3D5, &[0x04, PID_MCB_TABLE, 0x10, 0x01]))?;
+        Ok(prop_response_value(&r))
+    }
+
+    #[test]
+    fn test_on_property_write_mcb_entry_reads_back_with_device_crc()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // ETS writes object 4's MCB entry while Loading
+        // (`LdCtrlWriteProp ObjIdx="4" PropId="27"`, ekinex A-4945:
+        // `00000016 00 32 0000`) and reads it back after LoadCompleted. A
+        // device keeps size, CRC control byte and access, and computes the
+        // CRC on the way to Loaded (Resources 03.05.01 §4.2.27). The sim
+        // answered `00 ff 20ba` (2026-11-04, bussard issue #840).
+        let mut dev = Device::from_product_with_overrides(
+            crate::wire::IndividualAddress::new(1, 1, 1),
+            &crate::testfixtures::synthetic_system_b_product(),
+            LoadState::Loaded,
+            ProfileOverrides::default(),
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        )?;
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]))?;
+        let crc = crc16_aug_ccitt(&[1, 2, 3, 4]).to_be_bytes();
+        let mcb = load_object_4(&mut dev, Some([0, 0, 0, 4, 0x00, 0x32, 0, 0]))?;
+        assert_eq!(mcb, vec![0, 0, 0, 4, 0x00, 0x32, crc[0], crc[1]]);
+        // The entry covers the size written: two octets of the four.
+        let mcb = load_object_4(&mut dev, Some([0, 0, 0, 2, 0x01, 0x32, 0, 0]))?;
+        let crc2 = crc16_aug_ccitt(&[1, 2]).to_be_bytes();
+        assert_eq!(mcb, vec![0, 0, 0, 2, 0x01, 0x32, crc2[0], crc2[1]]);
+        // An Unload forgets it: a load without the write reads the
+        // device's own entry over the written span.
+        let mcb = load_object_4(&mut dev, None)?;
+        assert_eq!(mcb, vec![0, 0, 0, 4, 0x00, 0xff, crc[0], crc[1]]);
         Ok(())
     }
 

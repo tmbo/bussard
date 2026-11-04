@@ -93,14 +93,28 @@ pub mod iot {
     pub const GROUP_OBJECT_TABLE: u16 = 9;
 }
 
-/// `PDT_GENERIC_01` — the generic 1-octet property data type. The simulator
-/// reports this for every property it exposes: it stores each property as opaque
-/// bytes (see the module docs), so it does not track the real KNX PDT per PID and
-/// answers `A_PropertyDescription_Read` with a plausible generic type rather than
-/// inventing a specific one. A tool that introspects the device sees the property
-/// exists, its element count and access levels — the load-bearing facts — without
-/// the sim overclaiming a precise data type it does not model.
-pub const PDT_GENERIC_01: u8 = 0x10;
+/// `PDT_VARIABLE_LENGTH` (0x10, Resources 03.05.01 / Standardized
+/// Identifier Tables 03.07.03): the type the simulator reports for a property
+/// it stores as opaque bytes and carries no specific PDT for
+/// ([`Property::pdt`]). The device layer does not track the KNX PDT of every
+/// PID (see the module docs), so a tool that introspects the device sees the
+/// property exists, its element count and access levels without the sim
+/// claiming a data type it does not model. Before bussard issue #841 this
+/// constant was misnamed `PDT_GENERIC_01`, which is 0x11.
+pub const PDT_VARIABLE_LENGTH: u8 = 0x10;
+
+/// `PDT_GENERIC_01` (0x11): one octet of opaque data, the generic type of a
+/// one-octet property (`generic_pdt_for_len`).
+pub const PDT_GENERIC_01: u8 = 0x11;
+
+/// The write level a property seeded from a product's load procedure
+/// describes (bussard issue #841). The product names the property but not its
+/// access, so the sim describes it as the KNXnet/IP parameter object
+/// describes its writable properties (read level 3, write level 2): ETS wrote
+/// the Enertex IP interface's PIDs 204 and 205 of object type 11 under that
+/// description and skipped PID 211 of type 50001, described with write level
+/// 0 and `PDT_VARIABLE_LENGTH` (2026-11-04).
+pub const PRODUCT_WRITE_LEVEL: u8 = 2;
 
 /// The `PDT_GENERIC_nn` code for a property value of `len` octets, as a
 /// device describes a property it knows only by its size (Resources 03.05.01
@@ -147,8 +161,12 @@ pub struct Property {
     /// Whether writes are rejected.
     pub read_only: bool,
     /// The PDT an `A_PropertyDescription_Read` reports, when the property
-    /// carries a specific one; `None` reports [`PDT_GENERIC_01`].
+    /// carries a specific one; `None` reports [`PDT_VARIABLE_LENGTH`].
     pub pdt: Option<u8>,
+    /// The write level a description reports for a writable property, when
+    /// the property carries a specific one; `None` reports 0. A read-only
+    /// property always reports 15.
+    pub write_level: Option<u8>,
     /// The number of elements the value holds, which an
     /// `A_PropertyDescription_Read` reports as the maximum number of elements
     /// (Application Layer 3/3/7, `max_nr_of_elem`). 1 for a property the sim
@@ -166,6 +184,7 @@ impl Property {
             value,
             read_only: false,
             pdt: None,
+            write_level: None,
             max_elements: 1,
         }
     }
@@ -176,6 +195,7 @@ impl Property {
             value,
             read_only: true,
             pdt: None,
+            write_level: None,
             max_elements: 1,
         }
     }
@@ -205,6 +225,33 @@ impl Property {
             max_elements: count,
             ..self
         }
+    }
+
+    /// A writable property a product's load procedure writes (bussard issue
+    /// #841): `len` zero octets as `count` elements ([`Property::with_elements`],
+    /// the generic PDT of the element size), described with
+    /// [`PRODUCT_WRITE_LEVEL`]. `len` is what the product declares: the
+    /// step's `InlineData`, else the extent of the parameters it stores in
+    /// the property, else one octet per element.
+    pub fn product_written(len: usize, count: u16) -> Self {
+        Self::writable(vec![0x00; len.max(1)])
+            .with_elements(count)
+            .with_write_level(PRODUCT_WRITE_LEVEL)
+    }
+
+    /// The same property, described with `pdt` when given (a scalar type the
+    /// product's parameters declare, [`crate::prod::TypedProperty::pdt`]).
+    pub fn with_pdt(mut self, pdt: Option<u8>) -> Self {
+        if pdt.is_some() {
+            self.pdt = pdt;
+        }
+        self
+    }
+
+    /// The same property, described with write level `level`.
+    pub fn with_write_level(mut self, level: u8) -> Self {
+        self.write_level = Some(level);
+        self
     }
 
     /// The size of one element in octets: the whole value for a one-element
@@ -301,10 +348,11 @@ impl InterfaceObject {
     ///
     /// Returns `None` once the index runs past the object's property list — the
     /// terminating signal an enumerating tool reads as `max_elements == 0`. The
-    /// simulator reports every property as [`PDT_GENERIC_01`] (or the PDT the
-    /// property carries, [`Property::pdt`]) with [`Property::max_elements`]
+    /// simulator reports every property as [`PDT_VARIABLE_LENGTH`] (or the PDT
+    /// the property carries, [`Property::pdt`]) with [`Property::max_elements`]
     /// elements (1 unless a product's load procedure writes it as an array), a
-    /// read level of 3 (the ETS free-access default), and a write level of 0 for a
+    /// read level of 3 (the ETS free-access default), and a write level of 0
+    /// (or the one the property carries, [`Property::write_level`]) for a
     /// writable property or 15 for a read-only one.
     pub fn describe_at_index(&self, property_index: u8) -> Option<PropertyDescription> {
         if property_index == 0 {
@@ -314,11 +362,15 @@ impl InterfaceObject {
         let prop = self.property(pid)?;
         Some(PropertyDescription {
             pid,
-            pdt: prop.pdt.unwrap_or(PDT_GENERIC_01),
+            pdt: prop.pdt.unwrap_or(PDT_VARIABLE_LENGTH),
             writable: !prop.read_only,
             max_elements: prop.max_elements,
             read_level: 3,
-            write_level: if prop.read_only { 15 } else { 0 },
+            write_level: if prop.read_only {
+                15
+            } else {
+                prop.write_level.unwrap_or(0)
+            },
         })
     }
 
@@ -362,7 +414,7 @@ mod tests {
 
         let d1 = obj.describe_at_index(1).expect("index 1 present");
         assert_eq!(d1.pid, PID_OBJECT_TYPE);
-        assert_eq!(d1.pdt, PDT_GENERIC_01);
+        assert_eq!(d1.pdt, PDT_VARIABLE_LENGTH);
         assert!(!d1.writable);
         assert_eq!(d1.max_elements, 1);
         assert_eq!(d1.read_level, 3);
@@ -403,6 +455,36 @@ mod tests {
         assert_eq!(d.max_elements, 2);
         assert!(d.writable);
         assert_eq!(d.write_level, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn test_pdt_constants_match_the_identifier_tables() {
+        // 03.07.03: PDT_VARIABLE_LENGTH 0x10, PDT_GENERIC_01 0x11 .. _20 0x24.
+        assert_eq!(PDT_VARIABLE_LENGTH, 0x10);
+        assert_eq!(PDT_GENERIC_01, 0x11);
+        assert_eq!(generic_pdt_for_len(1), PDT_GENERIC_01);
+        assert_eq!(generic_pdt_for_len(20), 0x24);
+        assert_eq!(generic_pdt_for_len(21), PDT_VARIABLE_LENGTH);
+    }
+
+    #[test]
+    fn test_describe_pid_product_written_property() -> Result<(), String> {
+        // Enertex PID 211 on object type 50001: one octet the product stores
+        // a parameter in, written by an `LdCtrlWriteProp` without InlineData
+        // (bussard issue #841): PDT_GENERIC_01, writable, write level 2.
+        let mut obj = InterfaceObject::new();
+        obj.set_property(PID_OBJECT_TYPE, Property::read_only(vec![0xC3, 0x51]));
+        obj.set_property(211, Property::product_written(1, 1));
+        let d = obj.describe_pid(211).ok_or("PID 211 described")?;
+        assert_eq!(d.pdt, PDT_GENERIC_01);
+        assert_eq!(d.max_elements, 1);
+        assert!(d.writable);
+        assert_eq!((d.read_level, d.write_level), (3, PRODUCT_WRITE_LEVEL));
+        // Eight elements of four octets (`Count="8"`, 32 declared octets).
+        obj.set_property(205, Property::product_written(32, 8));
+        let d = obj.describe_pid(205).ok_or("PID 205 described")?;
+        assert_eq!((d.pdt, d.max_elements), (0x14, 8));
         Ok(())
     }
 

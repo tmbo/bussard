@@ -156,7 +156,9 @@ fn procedure_object_type(product: &ProductData, object_index: u8) -> u16 {
 /// ([`Property::sized`]), the one fact the procedure gives about them; a
 /// property a step writes with `Count` > 1 is that many elements of the
 /// generic PDT of `len / Count` octets ([`Property::with_elements`], bussard
-/// issue #692), so ETS, which reads the description first, writes it.
+/// issue #692), so ETS, which reads the description first, writes it. A
+/// written property describes [`super::PRODUCT_WRITE_LEVEL`] (bussard issue
+/// #841, [`Property::product_written`]).
 fn seed_procedure_props(
     objects: &mut BTreeMap<u8, InterfaceObject>,
     product: &ProductData,
@@ -193,7 +195,9 @@ fn seed_procedure_props(
             .find(|&&(o, p, _, _)| o == *object && p == *pid);
         if let Some(io) = objects.get_mut(object) {
             let prop = match written {
-                Some(&(_, _, _, count)) => Property::writable(value.clone()).with_elements(count),
+                Some(&(_, _, _, count)) => Property::writable(value.clone())
+                    .with_elements(count)
+                    .with_write_level(super::PRODUCT_WRITE_LEVEL),
                 // The program version (PID 13) is stamped by the tool at the
                 // end of every download whether or not the procedure compares
                 // it first: an Enertex IP system device compares object 4's
@@ -209,10 +213,12 @@ fn seed_procedure_props(
         if let Some(io) = objects.get_mut(&object)
             && !io.has_property(pid)
         {
-            io.set_property(
-                pid,
-                Property::writable(vec![0x00; len]).with_elements(count),
-            );
+            let pdt = product
+                .written_prop_pdts
+                .iter()
+                .find(|&&(o, p, _)| o == object && p == pid)
+                .map(|&(_, _, pdt)| pdt);
+            io.set_property(pid, Property::product_written(len, count).with_pdt(pdt));
         }
     }
 }
@@ -333,6 +339,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base,
                     descriptor: obj.clone(),
+                    mcb_written: None,
                 },
             );
         }
@@ -494,6 +501,7 @@ impl Device {
                     lsm: LoadStateMachine::new(initial_state),
                     base: u32::from(sys7_region_base(&s7, lsm_index)),
                     descriptor,
+                    mcb_written: None,
                 },
             );
         }
@@ -641,7 +649,12 @@ impl Device {
 /// `with_knxnet`: a System B or System 7 device gets that one from its
 /// `knxnet` option. A vendor object such as the ABB Modbus RTU gateway's type
 /// 65281 (PID 207 compared with 01) is seeded on every device kind; ETS
-/// describes and reads it before the download (2026-10-28).
+/// describes and reads it before the download (2026-10-28). A property of a
+/// vendor object a step writes is described as the product declares it
+/// ([`Property::product_written`], bussard issue #841): the Enertex PID 211
+/// of type 50001 was one octet of `PDT_VARIABLE_LENGTH` at write level 0,
+/// and ETS wrote nothing to it (2026-11-04). The KNXnet/IP object describes
+/// its own properties (`knxnet_object::refine`).
 fn typed_objects_for(
     product: &ProductData,
     address: IndividualAddress,
@@ -667,13 +680,28 @@ fn typed_objects_for(
                 io
             })
         };
+        let knxnet_object = typed.object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER;
         if let Some(value) = &typed.compare {
-            obj.set_property(typed.pid, Property::read_only(value.clone()));
+            let prop = Property::read_only(value.clone());
+            obj.set_property(typed.pid, if knxnet_object { prop } else { prop.sized() });
         }
         if typed.written {
             match obj.property_mut(typed.pid) {
-                Some(prop) => prop.read_only = false,
-                None => obj.set_property(typed.pid, Property::writable(vec![0x00])),
+                Some(prop) if knxnet_object => prop.read_only = false,
+                Some(prop) => {
+                    // A compared value is the property's size.
+                    let count = typed.count;
+                    *prop = Property::writable(std::mem::take(&mut prop.value))
+                        .with_elements(count)
+                        .with_write_level(super::PRODUCT_WRITE_LEVEL);
+                }
+                None if knxnet_object => {
+                    obj.set_property(typed.pid, Property::writable(vec![0x00]))
+                }
+                None => obj.set_property(
+                    typed.pid,
+                    Property::product_written(typed.len, typed.count).with_pdt(typed.pdt),
+                ),
             }
         }
     }
@@ -767,13 +795,14 @@ mod tests {
         // The object answers the object-type probe with a manufacturer type.
         let r = dev.handle_cemi(&data(dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
         assert_eq!(prop_response_value(&r), 50007u16.to_be_bytes().to_vec());
-        // PID 161: writable, PDT_GENERIC_01, one element, read 3 / write 0.
+        // PID 161: writable, PDT_GENERIC_01, one element, read 3 / write 2
+        // (PRODUCT_WRITE_LEVEL, bussard issue #841).
         let d = describe(dev, 7, 161)?;
         assert_eq!(d[0..2], [7, 161]);
         assert_ne!(d[2], 0, "the property index is reported");
         assert_eq!(d[3], 0x80 | 0x11, "writable, PDT_GENERIC_01");
         assert_eq!(d[4..6], [0, 1], "one element");
-        assert_eq!(d[6], 0x30, "read level 3, write level 0");
+        assert_eq!(d[6], 0x32, "read level 3, write level 2");
         // By index too: the walk reaches PID 161.
         let r = dev.handle_cemi(&data(dev, 0x3D8, &[7, 0, d[2]]))?;
         assert_eq!(r.responses[0].tpdu[2..], d[..]);
@@ -845,11 +874,11 @@ mod tests {
         let pd = app_product(&xml)?;
         assert!(pd.written_props.contains(&(7, 204, 10, 2)));
         let mut dev = connected_device(&pd)?;
-        // Writable PDT_GENERIC_05 (0x15), two elements, read 3 / write 0.
+        // Writable PDT_GENERIC_05 (0x15), two elements, read 3 / write 2.
         let d = describe(&mut dev, 7, 204)?;
         assert_eq!(d[3], 0x80 | 0x15, "writable, PDT_GENERIC_05");
         assert_eq!(d[4..6], [0, 2], "two elements");
-        assert_eq!(d[6], 0x30);
+        assert_eq!(d[6], 0x32);
         // ETS's write: count 2 from index 1, 10 octets, echoed and stored.
         let value = [0x00, 0x00, 0x44, 0x40, 0x00, 0x00, 0x00, 0x44, 0x80, 0x00];
         let mut write = vec![7, 204, 0x20, 0x01];
