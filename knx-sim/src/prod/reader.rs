@@ -356,6 +356,7 @@ fn parse_application_program(
     let mut task_segment_lsms: Vec<u8> = Vec::new();
     let mut completes_loads = false;
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
+    let mut function_props: Vec<(u8, u8)> = Vec::new();
     let mut typed_props: Vec<crate::prod::TypedProperty> = Vec::new();
     let mut object_types: Vec<(u8, u16)> = Vec::new();
     // The `InlineData` length (when any) and `Count` of each property write,
@@ -599,6 +600,15 @@ fn parse_application_program(
                         && !task_segment_lsms.contains(&lsm)
                     {
                         task_segment_lsms.push(lsm);
+                    }
+                }
+                b"LdCtrlInvokeFunctionProp" if in_app => {
+                    let object = parse_u32(&e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok());
+                    let pid = parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok());
+                    if let (Some(object), Some(pid)) = (object, pid)
+                        && !function_props.contains(&(object, pid))
+                    {
+                        function_props.push((object, pid));
                     }
                 }
                 b"LdCtrlCompareMem" if in_app => {
@@ -854,6 +864,7 @@ fn parse_application_program(
         written_prop_pdts,
         task_segment_lsms: completes_loads.then_some(task_segment_lsms),
         compare_mems,
+        function_props,
         object_compare_props,
         typed_props,
         object_types,
@@ -1317,6 +1328,24 @@ mod tests {
             Some(&[0x04, 0x45, 0x00, 0x01, 0x00, 0x03][..])
         );
         assert_eq!(typed.compare_elements, 6);
+        Ok(())
+    }
+
+    /// Bussard issue #422: the function properties a procedure calls.
+    #[test]
+    fn test_parse_application_program_records_function_props()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ApplicationProgram Id="M-0006_A-E01D-01-9030-O0009" ApplicationNumber="57373" ApplicationVersion="1" MaskVersion="MV-0701">
+           <Static><LoadProcedures><LoadProcedure>
+            <LdCtrlConnect />
+            <LdCtrlWriteProp ObjIdx="5" PropId="51" Verify="false" InlineData="01000000000000000000" />
+            <LdCtrlInvokeFunctionProp ObjIdx="5" PropId="52" InlineData="04" AppliesTo="full,grp" />
+            <LdCtrlInvokeFunctionProp ObjIdx="5" PropId="52" InlineData="10" AppliesTo="full,par" />
+            <LdCtrlUnload LsmIdx="1" />
+           </LoadProcedure></LoadProcedures></Static>
+          </ApplicationProgram></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        assert_eq!(pd.function_props, vec![(5, 52)]);
         Ok(())
     }
 

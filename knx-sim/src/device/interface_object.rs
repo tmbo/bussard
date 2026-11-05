@@ -93,6 +93,9 @@ pub mod iot {
     pub const GROUP_OBJECT_TABLE: u16 = 9;
 }
 
+/// `PDT_FUNCTION`: a function property (KNX 3/3/7 §3.4.7.3).
+pub const PDT_FUNCTION: u8 = 0x3E;
+
 /// `PDT_VARIABLE_LENGTH` (0x10, Resources 03.05.01 / Standardized
 /// Identifier Tables 03.07.03): the type the simulator reports for a property
 /// it stores as opaque bytes and carries no specific PDT for
@@ -246,6 +249,17 @@ impl Property {
             self.pdt = pdt;
         }
         self
+    }
+
+    /// A function property (`PDT_FUNCTION`, one element, KNX 3/3/7
+    /// §3.4.7.3): called with `A_FunctionPropertyCommand`, it holds no value.
+    pub fn function() -> Self {
+        Self::writable(Vec::new()).with_pdt(Some(PDT_FUNCTION))
+    }
+
+    /// Whether this is a function property ([`Property::function`]).
+    pub fn is_function(&self) -> bool {
+        self.pdt == Some(PDT_FUNCTION)
     }
 
     /// The same property, described with write level `level`.

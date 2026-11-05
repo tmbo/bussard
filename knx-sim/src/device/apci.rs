@@ -108,6 +108,9 @@ impl Device {
                 | Apci::PropertyExtDescriptionRead
                 | Apci::FunctionPropertyExtCommand
                 | Apci::FunctionPropertyExtStateRead => self.on_extended_property(tool, apdu),
+                Apci::FunctionPropertyCommand | Apci::FunctionPropertyStateRead => {
+                    self.on_function_property(tool, apdu)
+                }
                 _ => return Err(DeviceError::NotConnected),
             };
             self.tx_seq = saved;
@@ -168,6 +171,9 @@ impl Device {
             | Apci::PropertyExtDescriptionRead
             | Apci::FunctionPropertyExtCommand
             | Apci::FunctionPropertyExtStateRead => self.on_extended_property(tool, apdu),
+            Apci::FunctionPropertyCommand | Apci::FunctionPropertyStateRead => {
+                self.on_function_property(tool, apdu)
+            }
             _ => Ok(DeviceReaction::default()),
         }
     }
@@ -235,6 +241,8 @@ impl Device {
                 | Apci::PropertyExtDescriptionRead
                 | Apci::FunctionPropertyExtCommand
                 | Apci::FunctionPropertyExtStateRead
+                | Apci::FunctionPropertyCommand
+                | Apci::FunctionPropertyStateRead
                 | Apci::MemoryRead(_)
                 | Apci::MemoryWrite(_)
                 | Apci::MemoryExtendedRead

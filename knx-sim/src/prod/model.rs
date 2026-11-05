@@ -135,6 +135,12 @@ pub struct ProductData {
     /// compares its hardware id at `0xB610`. A factory device of that hardware
     /// holds exactly these octets, so the simulated device serves them.
     pub compare_mems: Vec<(u16, Vec<u8>)>,
+    /// The function properties the application's `LdCtrlInvokeFunctionProp`
+    /// steps call, as `(object index, PID)` (bussard issue #422: the Siemens
+    /// 0701 programs `M-0006_A-E0xx` call object 5's PID 52 before the
+    /// download). A device of that hardware has them, so the simulated device
+    /// declares them as `PDT_FUNCTION` and runs them.
+    pub function_props: Vec<(u8, u8)>,
     /// The properties of interface objects other than the device object that
     /// the application's own `LdCtrlCompareProp` preflights expect, as
     /// `(object index, PID, value, element count)` (bussard issue #390: the

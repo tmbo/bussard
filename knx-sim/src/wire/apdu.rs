@@ -138,6 +138,13 @@ pub enum Apci {
     PropertyExtDescriptionRead,
     /// `A_PropertyExtDescription_Response` (0x1D3).
     PropertyExtDescriptionResponse,
+    /// `A_FunctionPropertyCommand` (0x2C7): call a function property by
+    /// object index (KNX 3/3/7 §3.4.7.1).
+    FunctionPropertyCommand,
+    /// `A_FunctionPropertyState_Read` (0x2C8).
+    FunctionPropertyStateRead,
+    /// `A_FunctionPropertyState_Response` (0x2C9).
+    FunctionPropertyStateResponse,
     /// `A_FunctionPropertyExt_Command` (0x1D4).
     FunctionPropertyExtCommand,
     /// `A_FunctionPropertyExt_State_Read` (0x1D5).
@@ -208,6 +215,9 @@ impl Apci {
             0x1D4 => Apci::FunctionPropertyExtCommand,
             0x1D5 => Apci::FunctionPropertyExtStateRead,
             0x1D6 => Apci::FunctionPropertyExtStateResponse,
+            0x2C7 => Apci::FunctionPropertyCommand,
+            0x2C8 => Apci::FunctionPropertyStateRead,
+            0x2C9 => Apci::FunctionPropertyStateResponse,
             0x2C0 => Apci::UserMemoryRead,
             0x2C1 => Apci::UserMemoryResponse,
             0x2C2 => Apci::UserMemoryWrite,
@@ -250,6 +260,9 @@ impl Apci {
             Apci::FunctionPropertyExtCommand => 0x1D4,
             Apci::FunctionPropertyExtStateRead => 0x1D5,
             Apci::FunctionPropertyExtStateResponse => 0x1D6,
+            Apci::FunctionPropertyCommand => 0x2C7,
+            Apci::FunctionPropertyStateRead => 0x2C8,
+            Apci::FunctionPropertyStateResponse => 0x2C9,
             Apci::UserMemoryRead => 0x2C0,
             Apci::UserMemoryResponse => 0x2C1,
             Apci::UserMemoryWrite => 0x2C2,
