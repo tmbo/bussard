@@ -60,6 +60,8 @@ RESULTS = HERE / "results" / "defaults.json"
 # The sweep variants: the run directory name and the results file.
 # Consecutive failed imports after which the sweep stops (a stuck ETS dialog).
 MAX_IMPORT_ERRORS = 5
+# Consecutive jobs ending in a driver error after which the sweep stops.
+MAX_JOB_ERRORS = 8
 
 VARIANTS = {"plain-defaults": "defaults.json", "links": "links.json"}
 
@@ -367,6 +369,7 @@ def main() -> int:
         all_orders.setdefault(job["file"], set()).update(str(o) for o in job["order_numbers"])
     in_catalog = args.in_catalog
     import_errors = 0
+    job_errors = 0
     for file, file_jobs in by_file.items():
         if stop:
             break
@@ -458,6 +461,14 @@ def main() -> int:
                   + (f"  {r.get('error', '')[:100]}" if r.get("error") else ""), flush=True)
             if any(k in (r.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
                 print(f"stopping: the VM desktop is not usable: {r.get('error', '')[:160]}", flush=True)
+                stop = True
+                break
+            # The same driver failure job after job is a broken layout or a
+            # dialog, not the products: 128 adds failed on a moved catalog
+            # splitter (2026-11-05). Stop and let a person look.
+            job_errors = job_errors + 1 if r["outcome"] == "driver-error" else 0
+            if job_errors >= MAX_JOB_ERRORS:
+                print(f"stopping: {job_errors} jobs in a row ended in driver errors: {r.get('error', '')[:160]}", flush=True)
                 stop = True
                 break
             if r.get("outcome") == "skipped-compat-mode":

@@ -1184,7 +1184,11 @@ def flow_catalog_add(req: dict) -> dict:
         raise RuntimeError(f"not found in catalog search: {req['search']!r}; rows {rows[:4]}")
     click(1300, row["y"])
     time.sleep(1)
-    bar = (LAYOUT["catalog_bar"][0], LAYOUT["catalog_bar"][1] + dy, LAYOUT["catalog_bar"][2], min(LAYOUT["catalog_bar"][3] + dy, 2484))
+    # The add bar, its line dropdown, the count and Hinzufügen sit at the
+    # window's bottom edge: only the panel's top moves with its splitter
+    # (Import at y 971 instead of 1354 after ETS restored another layout,
+    # 2026-11-05), so they take no `dy`.
+    bar = LAYOUT["catalog_bar"]
     if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
         # The add bar's target line follows the tree selection: select the
         # line, then the catalog row again.
@@ -1194,7 +1198,7 @@ def flow_catalog_add(req: dict) -> dict:
         time.sleep(1)
     if not find_text("1.1 TP Linie", bar, min_ratio=0.75):
         lx, ly = LAYOUT["catalog_line_dropdown"]
-        click(lx, ly + dy)
+        click(lx, ly)
         time.sleep(1)
         choose("1.1 TP Linie", (600, 1600, 1300, 2484))
         time.sleep(0.8)
@@ -1202,15 +1206,15 @@ def flow_catalog_add(req: dict) -> dict:
         raise RuntimeError(f"the add bar does not target 1.1 TP Linie: {[l['text'] for l in ocr(bar)]}")
     # The 'Elemente' count left of the add bar must be 1; an interrupted
     # flow once left it empty (marked red), and Hinzufügen then adds nothing.
-    count = (130, LAYOUT["catalog_add"][1] + dy - 25, 300, LAYOUT["catalog_add"][1] + dy + 25)
+    count = (130, LAYOUT["catalog_add"][1] - 25, 300, LAYOUT["catalog_add"][1] + 25)
     if not any(l["text"].strip() == "1" for l in ocr(count, zoom=3)):
-        click(200, LAYOUT["catalog_add"][1] + dy)
+        click(200, LAYOUT["catalog_add"][1])
         time.sleep(0.3)
         keys("^a")
         keys("1{TAB}")
         time.sleep(0.5)
     ax, ay = LAYOUT["catalog_add"]
-    click(ax, ay + dy)
+    click(ax, ay)
     time.sleep(3)
     wait_busy()
     # A KNX Secure capable product raises 'Projektpasswort setzen' a few
