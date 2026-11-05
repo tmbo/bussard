@@ -101,6 +101,11 @@ const MANUFACTURER_OBJECT_TYPE_BASE: u16 = 50000;
 /// table).
 const FIRST_APPLICATION_OBJECT: u8 = 6;
 
+/// The last standardized property identifier: PIDs 201
+/// to 255 are manufacturer specific (KNX 3/7/3 Standardized Identifier
+/// Tables §3.1).
+const LAST_STANDARD_PID: u8 = 200;
+
 /// The system objects with a load-state machine every System B device has,
 /// as `(index, name)`.
 const SYSTEM_B_LSM_OBJECTS: [(u8, &str); 5] = [
@@ -388,8 +393,12 @@ impl Device {
         }
 
         seed_procedure_props(&mut objects, product, FIRST_APPLICATION_OBJECT);
-        let typed_objects =
-            index_typed_objects(&mut objects, typed_objects_for(product, address, false).1);
+        // The KNXnet/IP parameter object the procedure writes by type keeps
+        // the product's properties on it (a manufacturer PID such as the
+        // Siemens IP interfaces' 236); a `knxnet` device option adds them to
+        // the object it configures (`Device::with_knxnet`).
+        let (knxnet_by_type, typed) = typed_objects_for(product, address, true);
+        let typed_objects = index_typed_objects(&mut objects, typed);
         let mut device = Self {
             address,
             profile,
@@ -409,7 +418,7 @@ impl Device {
             security_object: secure
                 .as_ref()
                 .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
-            knxnet_by_type: None,
+            knxnet_by_type,
             typed_objects,
             knxnet_slots: 0,
             ip_secure: None,
@@ -774,6 +783,16 @@ fn typed_objects_for(
                         .with_elements(count)
                         .with_write_level(super::PRODUCT_WRITE_LEVEL);
                 }
+                // A non-standardized PID (201 to 255, KNX 3/7/3 Standardized
+                // Identifier Tables §3.1) is the manufacturer's: described as
+                // the product declares it. The Siemens IP Interface Secure
+                // `M-0001_A-7205-03` stores its unicast TTL (8 bit) in PID
+                // 236 of object type 11; ETS describes it first and stopped
+                // on the empty description (ETS sweep, 2026-11-05).
+                None if knxnet_object && typed.pid > LAST_STANDARD_PID => obj.set_property(
+                    typed.pid,
+                    Property::product_written(typed.len, typed.count).with_pdt(typed.pdt),
+                ),
                 None if knxnet_object => {
                     obj.set_property(typed.pid, Property::writable(vec![0x00]))
                 }
@@ -1130,6 +1149,57 @@ mod tests {
             r.responses[0].tpdu[4], 0x10,
             "object 8 has its load-state machine"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_ip_interface_keeps_the_manufacturer_pid()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Siemens IP Interface Secure
+        // (`M-0001_A-7205-03`) writes its unicast TTL, an 8-bit parameter, to
+        // PID 236 of object type 11. ETS described it first
+        // `[d2 00 0b 00 10 ec 00 00]` and stopped on the empty answer.
+        let xml = glass_touch_app("1")
+            .replace(
+                "<Parameters>",
+                r#"<ParameterTypes><ParameterType Id="M-0083_A-018C-23-81D7_PT-8bit" Name="8bit"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-0083_A-018C-23-81D7_P-1" Name="Unicast_TTL" ParameterType="M-0083_A-018C-23-81D7_PT-8bit" Value="128"><Property ObjectType="11" PropertyId="236" Offset="0" BitOffset="0" /></Parameter>"#,
+            )
+            .replace(
+                r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+                r#"<LdCtrlWriteProp AppliesTo="all" ObjType="11" PropId="236" Verify="true" />"#,
+            );
+        let pd = app_product(&xml)?;
+        let params = crate::device::knxnet_object::KnxnetParameters::dhcp(0x1101, Vec::new());
+        let mut dev = connected_device(&pd)?.with_knxnet_object(&params);
+        // ETS's description read: writable, one element, a PDT.
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1D2,
+            &[0x00, 0x0B, 0x00, 0x10, 0xEC, 0x00, 0x00],
+        ))?;
+        let d = &r.responses[0].tpdu;
+        assert_eq!(d[1], 0xD3);
+        assert_eq!(d[13] & 0x80, 0x80, "writable");
+        assert_ne!(d[13] & 0x3F, 0, "a data type");
+        assert_eq!(u16::from_be_bytes([d[14], d[15]]), 1, "one element");
+        // The write that follows (Verify="true": read back).
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1CE,
+            &[0x00, 0x0B, 0x00, 0x10, 0xEC, 0x01, 0x00, 0x01, 0x80],
+        ))?;
+        assert_eq!(r.responses[0].tpdu.last(), Some(&0), "return code 0");
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1CC,
+            &[0x00, 0x0B, 0x00, 0x10, 0xEC, 0x01, 0x00, 0x01],
+        ))?;
+        assert_eq!(r.responses[0].tpdu.last(), Some(&0x80));
+        // The listed copy has it too.
+        let index = dev.knxnet_index().ok_or("listed")?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[index, 236, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0x80]);
         Ok(())
     }
 

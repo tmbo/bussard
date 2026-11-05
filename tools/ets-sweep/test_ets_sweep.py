@@ -631,6 +631,37 @@ class TestCaptureRows(unittest.TestCase):
                          "expect=not-comparable confirmed=identical loadctl=differs")
 
 
+class TestIpEnabled(unittest.TestCase):
+    """sweep.ip_enabled reads IsIPEnabled as an xs:boolean (#422)."""
+
+    def _product(self, tmp: Path, attrs: str) -> Path:
+        import zipfile
+
+        path = tmp / "p.knxprod"
+        hw = (f'<Hardware Id="M-0004_H-JUSOCOKX01-1-O007C" Name="KIM Sonos" {attrs}>'
+              '<Hardware2Programs><Hardware2Program Id="M-0004_H-JUSOCOKX01-1-O007C_HP-B015-21-F7AD-O007C">'
+              '<ApplicationProgramRef RefId="M-0004_A-B015-21-F7AD-O007C" /></Hardware2Program>'
+              '</Hardware2Programs></Hardware>')
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("M-0004/Hardware.xml", f"<KNX><Hardwares>{hw}</Hardwares></KNX>")
+        return path
+
+    def test_ip_enabled_true_or_one(self):
+        import sweep
+
+        app = "M-0004_A-B015-21-F7AD-O007C"
+        # The Jung Sonos gateway's start tag: older schema, "1", past 600 characters.
+        long_attrs = " ".join(f'Is{i}="0"' for i in range(60)) + ' IsIPEnabled="1"'
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(sweep.ip_enabled(self._product(Path(tmp), long_attrs), app))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(sweep.ip_enabled(self._product(Path(tmp), 'IsIPEnabled="true"'), app))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(sweep.ip_enabled(self._product(Path(tmp), 'IsIPEnabled="0"'), app))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertFalse(sweep.ip_enabled(self._product(Path(tmp), 'IsIPEnabled="false"'), app))
+
+
 class TestCaptureIpEnabled(unittest.TestCase):
     """An IP-enabled TP product (syn-ip-enabled-tp, #455): the sim gets the
     KNXnet/IP object, the row plans with the sweep project's [knxnet] table."""

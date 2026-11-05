@@ -496,12 +496,11 @@ impl Device {
     /// #391), whose object-index walk shows a device object and an address
     /// table only while ETS programs the KNXnet/IP parameters by object type.
     pub fn with_knxnet(mut self, params: &knxnet_object::KnxnetParameters, listed: bool) -> Self {
-        if listed && let Some(index) = (0..=u8::MAX).find(|i| !self.objects.contains_key(i)) {
-            self.objects.insert(index, params.object());
-        }
-        // A property-only device (bussard issue #390) already has the object
-        // with the properties its procedure writes: those stay, next to the
-        // configured KNXnet/IP values.
+        // A device built from a product whose procedure writes the object by
+        // type (a property-only device, bussard issue #390; a System B IP
+        // interface's manufacturer PID, #422) already has the object with the
+        // properties the procedure writes: those stay, next to the configured
+        // KNXnet/IP values, in both the listed and the by-type copy.
         let mut object = params.object();
         if let Some(existing) = &self.knxnet_by_type {
             for pid in existing.pids() {
@@ -511,6 +510,9 @@ impl Device {
                     object.set_property(pid, prop.clone());
                 }
             }
+        }
+        if listed && let Some(index) = (0..=u8::MAX).find(|i| !self.objects.contains_key(i)) {
+            self.objects.insert(index, object.clone());
         }
         self.knxnet_by_type = Some(object);
         self.knxnet_slots = params.tunnel_slots;
