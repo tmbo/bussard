@@ -27,6 +27,47 @@ impl Device {
         Ok((object, pid, count, start, 4))
     }
 
+    /// `A_FunctionPropertyCommand` / `A_FunctionPropertyState_Read` by
+    /// object index (KNX 3/3/7 §3.4.7): a property of `PDT_FUNCTION` runs and
+    /// answers `A_FunctionPropertyState_Response` with return code 00h
+    /// (success) and no output data; any other property, or none, answers
+    /// without return code and data (§3.4.7.3). The Siemens 0701 programs
+    /// (`M-0006_A-E01D-01`) call object 5's PID 52 with `04` before the
+    /// download; the sim did not answer and ETS reported "Das Gerät antwortet
+    /// nicht" (ETS sweep, 2026-11-05).
+    pub(super) fn on_function_property(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+    ) -> Result<DeviceReaction, DeviceError> {
+        let (Some(&object), Some(&pid)) = (apdu.data.first(), apdu.data.get(1)) else {
+            return Err(DeviceError::Malformed {
+                service: "A_FunctionPropertyCommand".into(),
+                detail: format!("{} octet(s), need object index and PID", apdu.data.len()),
+            });
+        };
+        let function = self
+            .objects
+            .get(&object)
+            .and_then(|o| o.property(pid))
+            .is_some_and(|p| p.is_function());
+        let mut data = vec![object, pid];
+        if function {
+            data.push(0x00);
+            if apdu.apci == Apci::FunctionPropertyCommand {
+                self.emit(Event::PropertyWritten {
+                    device: self.address,
+                    object,
+                    pid,
+                });
+            }
+        }
+        Ok(DeviceReaction {
+            responses: vec![self.respond(tool, 0x2C9, &data)],
+            did_master_reset: false,
+        })
+    }
+
     /// Answer an `A_PropertyDescription_Read` (issue #72).
     ///
     /// Request payload: `[object_index][property_id][property_index]`. A
@@ -207,6 +248,9 @@ impl Device {
             self.objects
                 .get(&object)
                 .and_then(|o| o.property(pid))
+                // A function property holds no value: the zero-count answer
+                // (KNX 3/3/7 §3.4.7.3).
+                .filter(|p| !p.is_function())
                 .and_then(|p| {
                     // An array property (a product's `Count` > 1 write, issue
                     // #692) answers the elements asked for; a range past its
@@ -477,6 +521,55 @@ impl Device {
 mod tests {
     use crate::device::test_support::*;
     use crate::device::*;
+
+    /// Bussard issue #422: the Siemens 0701 program `M-0006_A-E01D-01`
+    /// writes object 5's PID 51 and calls its function property PID 52 with
+    /// `04` (`LdCtrlInvokeFunctionProp`), the frames ETS sent in the sweep
+    /// capture of 2026-11-05.
+    #[test]
+    fn test_function_property_command_answers_the_state() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut product = crate::testfixtures::synthetic_mdt_sys7_product();
+        product.mask_version = "MV-0701".into();
+        product.written_props.push((5, 51, 10, 1));
+        product.function_props.push((5, 52));
+        let mut dev = Device::from_product(
+            IndividualAddress::new(1, 1, 1),
+            &product,
+            LoadState::Unloaded,
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        );
+        connect(&mut dev)?;
+        dev.handle_cemi(&data(&dev, 0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF]))?;
+        // [c7 05 34 04]: A_FunctionPropertyState_Response [c9 05 34 00].
+        let r = dev.handle_cemi(&data(&dev, 0x2C7, &[0x05, 0x34, 0x04]))?;
+        let resp = r.responses.last().ok_or("an answer")?;
+        assert_eq!(resp.tpdu[0] & 0x03, 0x02);
+        assert_eq!(resp.tpdu[1..], [0xC9, 0x05, 0x34, 0x00]);
+        // The full,par variant calls it with 10; the state read answers too.
+        let r = dev.handle_cemi(&data(&dev, 0x2C7, &[0x05, 0x34, 0x10]))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu[1..],
+            [0xC9, 0x05, 0x34, 0x00]
+        );
+        let r = dev.handle_cemi(&data(&dev, 0x2C8, &[0x05, 0x34]))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu[1..],
+            [0xC9, 0x05, 0x34, 0x00]
+        );
+        // Described as PDT_FUNCTION, one element (KNX 3/3/7 §3.4.7.3).
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x05, 0x34, 0x00]))?;
+        let d = &r.responses.last().ok_or("a description")?.tpdu;
+        assert_eq!(d[5] & 0x3F, 0x3E);
+        assert_eq!(u16::from_be_bytes([d[6], d[7]]) & 0x0FFF, 1);
+        // A data property: no return code, no data.
+        let r = dev.handle_cemi(&data(&dev, 0x2C7, &[0x05, 0x33, 0x01]))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu[1..],
+            [0xC9, 0x05, 0x33]
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_object_type_discovery_returns_iot_per_index() -> Result<(), Box<dyn std::error::Error>>

@@ -188,7 +188,8 @@ fn seed_procedure_props(
                 .written_props
                 .iter()
                 .map(|&(object, _, _, _)| object),
-        );
+        )
+        .chain(product.function_props.iter().map(|&(object, _)| object));
     for object in addressed {
         if object >= first_new_object && !objects.contains_key(&object) {
             let mut io = InterfaceObject::new();
@@ -227,6 +228,15 @@ fn seed_procedure_props(
                 None => Property::read_only(value.clone()).with_elements(*elements),
             };
             io.set_property(*pid, prop);
+        }
+    }
+    // A function property the procedure calls (`LdCtrlInvokeFunctionProp`)
+    // is `PDT_FUNCTION` (KNX 3/3/7 §3.4.7.3).
+    for &(object, pid) in &product.function_props {
+        if let Some(io) = objects.get_mut(&object)
+            && !io.has_property(pid)
+        {
+            io.set_property(pid, Property::function());
         }
     }
     for &(object, pid, len, count) in &product.written_props {
