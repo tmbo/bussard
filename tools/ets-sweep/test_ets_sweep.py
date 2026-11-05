@@ -393,16 +393,24 @@ class TestRowVersion(unittest.TestCase):
         self.assertIsNone(defaults.row_version_mismatch("M-0007_A-6109-50-71A0", {"version": ""}))
         self.assertIsNone(defaults.row_version_mismatch("M-0007_A-6109-50-71A0", None))
 
-    def test_relabel_wrong_rows_only_captured(self):
+    def test_relabel_wrong_rows_captured_and_failed(self):
         results = {
             "M-0007_A-6109-50-71A0": {"outcome": "captured", "row": {"version": "1.1"}},
             "M-0002_A-6109-50-8FF2-O0007": {"outcome": "captured", "row": {"version": "5.0"}},
-            "M-0007_A-6109-40-0000": {"outcome": "ets-failed", "row": {"version": "1.1"}},
+            # The Theben MIX 2 secure (2.2) ran its 0701 sibling's row (1.12):
+            # ETS refused the mask, a failure of the other application.
+            "M-0048_A-493B-22-1E4D": {"outcome": "ets-failed", "row": {"version": "1.12"}},
+            # A failure on the job's own row stays.
+            "M-0001_A-9A01-03-E6C8": {"outcome": "ets-failed", "row": {"version": ". 0.3"}},
+            "M-0007_A-6109-40-0000": {"outcome": "bus-failed", "row": {"version": "1.1"}},
         }
-        self.assertEqual(defaults.relabel_wrong_rows(results), ["M-0007_A-6109-50-71A0"])
+        self.assertEqual(defaults.relabel_wrong_rows(results),
+                         ["M-0007_A-6109-50-71A0", "M-0048_A-493B-22-1E4D"])
         self.assertEqual(results["M-0007_A-6109-50-71A0"]["outcome"], "skipped-catalog-version")
+        self.assertEqual(results["M-0048_A-493B-22-1E4D"]["outcome"], "skipped-catalog-version")
         self.assertEqual(results["M-0002_A-6109-50-8FF2-O0007"]["outcome"], "captured")
-        self.assertEqual(results["M-0007_A-6109-40-0000"]["outcome"], "ets-failed")
+        self.assertEqual(results["M-0001_A-9A01-03-E6C8"]["outcome"], "ets-failed")
+        self.assertEqual(results["M-0007_A-6109-40-0000"]["outcome"], "bus-failed")
 
 
 LOCK = """# @generated
