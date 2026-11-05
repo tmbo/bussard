@@ -101,6 +101,16 @@ const MANUFACTURER_OBJECT_TYPE_BASE: u16 = 50000;
 /// table).
 const FIRST_APPLICATION_OBJECT: u8 = 6;
 
+/// The system objects with a load-state machine every System B device has,
+/// as `(index, name)`.
+const SYSTEM_B_LSM_OBJECTS: [(u8, &str); 5] = [
+    (1, "address table"),
+    (2, "association table"),
+    (3, "group object table"),
+    (4, "application program"),
+    (5, "knx-object association table"),
+];
+
 /// The `PID_OBJECT_TYPE` of an interface object the device creates only
 /// because the application's load procedure addresses it (bussard issue
 /// #422). The type a procedure step declares for that index (`ObjType`
@@ -194,6 +204,11 @@ fn seed_procedure_props(
             .iter()
             .find(|&&(o, p, _, _)| o == *object && p == *pid);
         if let Some(io) = objects.get_mut(object) {
+            // The state a procedure compares after a load event is the
+            // load-state machine's, not a stored value.
+            if *pid == PID_LOAD_STATE_CONTROL && io.has_property(PID_LOAD_STATE_CONTROL) {
+                continue;
+            }
             let prop = match written {
                 Some(&(_, _, _, count)) => Property::writable(value.clone())
                     .with_elements(count)
@@ -291,19 +306,43 @@ impl Device {
         }
         objects.insert(0, device_object);
 
-        // A System B device also exposes a KNX-object association table
-        // (interface-object type 5). ETS issues Unload on object 5 during a
-        // flash even when the product's tables leave it empty, so the device
-        // must have a load-state machine for it. Add it if the product did not.
+        // A System B device has its system objects with their load-state
+        // machines whatever the product loads into them (KNX 6 Profiles
+        // §4.2.10 f: the address table, association table, group object table
+        // and application objects of System B), and a KNX-object association
+        // table (interface-object type 5). ETS's 07B0 procedure unloads
+        // objects 5 to 1 even when the product's tables leave them empty: the
+        // Siemens IP Interface Secure (`M-0001_A-7205-03`, no code segment)
+        // stopped at "no property: object 4 pid 5" (ETS sweep, 2026-11-05).
         let mut all_objects: Vec<LoadableObject> = product.objects.clone();
-        if !all_objects.iter().any(|o| o.lsm_index == 5) {
-            all_objects.push(LoadableObject {
-                lsm_index: 5,
-                name: "knx-object association table".into(),
-                max_size: None,
-                image: Vec::new(),
-            });
+        for (lsm_index, name) in SYSTEM_B_LSM_OBJECTS {
+            if !all_objects.iter().any(|o| o.lsm_index == lsm_index) {
+                all_objects.push(LoadableObject {
+                    lsm_index,
+                    name: name.into(),
+                    max_size: None,
+                    image: Vec::new(),
+                });
+            }
         }
+        // An application object the procedure drives through
+        // PID_LOAD_STATE_CONTROL events (`LdCtrlWriteProp ObjIdx="8"
+        // PropId="5"`, then `LdCtrlCompareProp` of the state it reaches: the
+        // Jung Sonos gateway `M-0004_A-B015-21`) has a load-state machine too.
+        for &(object, pid, _, _) in &product.written_props {
+            if pid == PID_LOAD_STATE_CONTROL
+                && object >= FIRST_APPLICATION_OBJECT
+                && !all_objects.iter().any(|o| o.lsm_index == object)
+            {
+                all_objects.push(LoadableObject {
+                    lsm_index: object,
+                    name: "application object".into(),
+                    max_size: None,
+                    image: Vec::new(),
+                });
+            }
+        }
+        all_objects.sort_by_key(|o| o.lsm_index);
 
         for obj in &all_objects {
             let base = default_base_for(obj.lsm_index);
@@ -312,7 +351,11 @@ impl Device {
             // type so a tool can discover the object table by index.
             io.set_property(
                 PID_OBJECT_TYPE,
-                Property::read_only(object_type_for(obj.lsm_index).to_be_bytes().to_vec()),
+                Property::read_only(
+                    procedure_object_type(product, obj.lsm_index)
+                        .to_be_bytes()
+                        .to_vec(),
+                ),
             );
             io.set_property(
                 PID_LOAD_STATE_CONTROL,
@@ -345,6 +388,8 @@ impl Device {
         }
 
         seed_procedure_props(&mut objects, product, FIRST_APPLICATION_OBJECT);
+        let typed_objects =
+            index_typed_objects(&mut objects, typed_objects_for(product, address, false).1);
         let mut device = Self {
             address,
             profile,
@@ -365,7 +410,7 @@ impl Device {
                 .as_ref()
                 .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
             knxnet_by_type: None,
-            typed_objects: typed_objects_for(product, address, false).1,
+            typed_objects,
             knxnet_slots: 0,
             ip_secure: None,
             secure,
@@ -641,6 +686,33 @@ impl Device {
             events,
         }
     }
+}
+
+/// Places the objects a System B procedure reaches by type at the lowest free
+/// indices from [`FIRST_APPLICATION_OBJECT`] on, and returns what is left
+/// (none unless every index is taken). A tool with only the standard
+/// property services finds an object of a type by reading `PID_OBJECT_TYPE`
+/// of the indices past the system objects: ETS read object 6's PID 1 for the
+/// Siemens dimmer `M-0001_A-9839-01`'s type 50215 and stopped when object 6
+/// was absent ("Die ausgewählte Geräte-Ressource ist zurzeit nicht
+/// verfügbar", ETS sweep, 2026-11-05). The extended property services still
+/// reach them by type, as an indexed object whose `PID_OBJECT_TYPE` names it.
+fn index_typed_objects(
+    objects: &mut BTreeMap<u8, InterfaceObject>,
+    typed: BTreeMap<u16, InterfaceObject>,
+) -> BTreeMap<u16, InterfaceObject> {
+    let mut left = BTreeMap::new();
+    for (object_type, io) in typed {
+        match (FIRST_APPLICATION_OBJECT..=u8::MAX).find(|i| !objects.contains_key(i)) {
+            Some(index) => {
+                objects.insert(index, io);
+            }
+            None => {
+                left.insert(object_type, io);
+            }
+        }
+    }
+    left
 }
 
 /// The objects a product's load procedure reaches by type (`ObjType`), with
@@ -970,19 +1042,84 @@ mod tests {
     }
 
     #[test]
-    fn test_build_system_b_keeps_absent_system_objects() -> Result<(), Box<dyn std::error::Error>> {
-        // A write to a system object the product does not load (object 4 here,
-        // with no application segment) creates nothing, as before.
+    fn test_build_system_b_has_every_system_lsm_object() -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: a product that loads nothing into object 4 (the
+        // Siemens IP Interface Secure has no code segment) still has its
+        // load-state machine. ETS's Unload [d7 04 05 10 01 04 00 ..] was
+        // refused before (ETS sweep, 2026-11-05).
         let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
         pd.mask_version = "MV-07B0".into();
+        pd.objects.retain(|o| o.lsm_index != 4);
         pd.written_props.push((4, 16, 1, 1));
-        let dev = Device::from_product(
-            IndividualAddress::new(1, 1, 2),
-            &pd,
-            LoadState::Unloaded,
-            std::sync::Arc::new(RecordingSink::new()),
+        let mut dev = connected_device(&pd)?;
+        for object in 1..=5u8 {
+            let mut unload = vec![object, 5, 0x10, 0x01, 0x04];
+            unload.extend_from_slice(&[0; 9]);
+            let r = dev.handle_cemi(&data(&dev, 0x3D7, &unload))?;
+            assert_eq!(
+                prop_response_value(&r),
+                vec![0x00],
+                "object {object} unloaded"
+            );
+        }
+        // The procedure's write to object 4 is taken.
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &[4, 16, 0x10, 0x01, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0x01]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_application_object_with_a_load_state_machine()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Jung Sonos gateway (`M-0004_A-B015-21`)
+        // drives object 8 through PID 5 load events and compares the state
+        // each one reaches. ETS's first event was refused ("no property:
+        // object 8 pid 5", ETS sweep 2026-11-05).
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlWriteProp ObjIdx="8" PropId="5" Verify="false" InlineData="04000000000000000000" AppliesTo="full,par" />
+              <LdCtrlCompareProp ObjIdx="8" PropId="5" InlineData="00" AppliesTo="full,par" />
+              <LdCtrlWriteProp ObjIdx="8" PropId="5" Verify="false" InlineData="01000000000000000000" AppliesTo="full,par" />
+              <LdCtrlCompareProp ObjIdx="8" PropId="5" InlineData="02" AppliesTo="full,par" />
+              <LdCtrlWriteProp ObjIdx="8" PropId="71" Count="3" Verify="false" AppliesTo="full,par" />
+              <LdCtrlWriteProp ObjIdx="8" PropId="5" Verify="false" InlineData="02000000000000000000" AppliesTo="full,par" />
+              <LdCtrlCompareProp ObjIdx="8" PropId="5" InlineData="01" AppliesTo="full,par" />"#,
         );
-        assert!(!dev.objects.contains_key(&4));
+        let pd = app_product(&xml)?;
+        let mut dev = connected_device(&pd)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[8, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50008u16.to_be_bytes().to_vec());
+        for (event, state) in [(0x04u8, 0x00u8), (0x01, 0x02), (0x02, 0x01)] {
+            let mut write = vec![8, 5, 0x10, 0x01, event];
+            write.extend_from_slice(&[0; 9]);
+            let r = dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+            assert_eq!(prop_response_value(&r), vec![state], "event {event}");
+            // The compare that follows reads the state.
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[8, 5, 0x10, 0x01]))?;
+            assert_eq!(prop_response_value(&r), vec![state]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_vendor_object_by_index() -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Siemens dimmer `M-0001_A-9839-01` writes
+        // PID 205 of object type 50215. ETS looked for it with the standard
+        // property services, reading object 6's PID 1 [d5 06 01 10 01], and
+        // gave up on the zero-count answer (ETS sweep, 2026-11-05).
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlWriteProp ObjType="50215" PropId="205" Verify="false" InlineData="5A" AppliesTo="all" />"#,
+        );
+        let pd = app_product(&xml)?;
+        let mut dev = connected_device(&pd)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[6, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50215u16.to_be_bytes().to_vec());
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &[6, 205, 0x10, 0x01, 0x5A]))?;
+        assert_eq!(prop_response_value(&r), vec![0x5A]);
+        // The application object the compares name keeps its index.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50007u16.to_be_bytes().to_vec());
         Ok(())
     }
 
