@@ -1284,10 +1284,14 @@ def flow_delete_device(req: dict) -> dict:
     y = hit[0]["y"]
     click(1000, y)
     time.sleep(0.8)
-    # From the address column on: the 'Sic' column's shield icon of a secure
-    # device read as part of the address ('06M.1.1' for 1.1.1, Theben SM 4,
-    # 2026-11-05).
-    band = " ".join(l["text"] for l in ocr((750, y - 20, 1700, y + 20), zoom=2))
+    # Three readings of the same row, any of which may show the address: OCR
+    # read a secure device's shield icon into it from x 680 ('06M.1.1' for
+    # 1.1.1, Theben SM 4) and dropped it from x 750 ('JU 1 secure' only),
+    # 2026-11-05; the address column alone, magnified, read it both times.
+    band = " ".join(l["text"] for crop, zoom in (((680, y - 20, 1700, y + 20), 2),
+                                                 ((750, y - 20, 1700, y + 20), 2),
+                                                 ((750, y - 20, 1000, y + 20), 3))
+                    for l in ocr(crop, zoom=zoom))
     # OCR reads the address's ones as 'l' at times ('l.l.l', 2026-11-04).
     band = " ".join(t.translate(str.maketrans("lI|", "111")) if re.fullmatch(r"[\dlI|]+\.[\dlI|]+\.[\dlI|-]+", t) else t
                     for t in band.split())
