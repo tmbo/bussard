@@ -338,6 +338,15 @@ impl Device {
                         .map(|data| (0x1CF, data))
                 }
             });
+            // A product's own PID of the KNXnet/IP object (bussard issue
+            // #422) is written here: the listed copy follows.
+            if object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER
+                && let Some((0x1CF, data)) = &reply
+                && data.last() == Some(&0)
+                && let Some(pid) = super::knxnet_object::ext_pid(&apdu.data)
+            {
+                self.knxnet_sync(pid, false);
+            }
             if let Some((apci, data)) = reply {
                 let resp = self.respond(tool, apci, &data);
                 return Ok(DeviceReaction {

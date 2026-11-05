@@ -105,7 +105,11 @@ class Sim:
 
 
 def ip_enabled(knxprod: Path, app: str) -> bool:
-    """Whether the hardware that carries `app` declares IsIPEnabled="true"."""
+    """Whether the hardware that carries `app` declares IsIPEnabled. The
+    attribute is an xs:boolean, "true" or "1": the older-schema files write
+    "1" (the Jung Sonos gateway `M-0004_A-B015-21` in Gesamt_JUNG_ETS5_EN,
+    whose sim then lacked the KNXnet/IP object ETS looks for at index 6,
+    2026-11-05), and the start tag can run past 600 characters."""
     import zipfile
 
     m = re.match(r"(M-[0-9A-F]{4})_A-(.+)$", app)
@@ -118,7 +122,8 @@ def ip_enabled(knxprod: Path, app: str) -> bool:
             if name.endswith("Hardware.xml"):
                 xml = z.read(name).decode("utf-8", "replace")
                 for hw in re.finditer(r"<Hardware [^>]*>.*?</Hardware>", xml, re.S):
-                    if hp in hw.group(0) and 'IsIPEnabled="true"' in hw.group(0)[:600]:
+                    start = re.match(r"<Hardware [^>]*>", hw.group(0))
+                    if hp in hw.group(0) and start and re.search(r'\bIsIPEnabled="(?:true|1)"', start.group(0)):
                         return True
     except (OSError, zipfile.BadZipFile):
         return False
