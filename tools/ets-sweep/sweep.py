@@ -104,6 +104,16 @@ class Sim:
             self.proc.kill()
 
 
+def stale_compat_prompt(error: str) -> bool:
+    """Whether ETS's compatibility-mode prompt came before a flow of the
+    sweep's own (project_tab, catalog_import, ...) rather than on this
+    product's download: the prompt belongs to a device the previous product
+    left in the project. The driver checks before every flow; a prompt before
+    `catalog_import` went unrecovered and failed ten products in a row within
+    seconds (2026-11-05, `M-0006_A-D013-10` onwards)."""
+    return "compatibility mode before " in error
+
+
 def ip_enabled(knxprod: Path, app: str) -> bool:
     """Whether the hardware that carries `app` declares IsIPEnabled. The
     attribute is an xs:boolean, "true" or "1": the older-schema files write
@@ -585,7 +595,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # A prompt met before this product was even added belongs to the
         # previous one (it kept coming back for a device left in the project,
         # 2026-10-29): retry, do not skip.
-        "driver-error" if "compatibility mode before project_tab" in err
+        "driver-error" if stale_compat_prompt(err)
         else "skipped-compat-mode" if "compatibility mode" in err
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err

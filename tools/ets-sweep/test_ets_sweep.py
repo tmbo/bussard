@@ -662,6 +662,22 @@ class TestIpEnabled(unittest.TestCase):
             self.assertFalse(sweep.ip_enabled(self._product(Path(tmp), 'IsIPEnabled="false"'), app))
 
 
+class TestStaleCompatPrompt(unittest.TestCase):
+    """A compatibility prompt before one of the sweep's own flows belongs to
+    the previous product (#422)."""
+
+    def test_stale_compat_prompt_before_any_flow(self):
+        import sweep
+
+        for flow in ("project_tab", "catalog_import", "devices"):
+            self.assertTrue(sweep.stale_compat_prompt(
+                f"CompatModeRequired('ETS asked for compatibility mode before {flow}: Herunterladen')"))
+        # The product's own download prompt is a skip, not a stale prompt.
+        self.assertFalse(sweep.stale_compat_prompt(
+            "download: CompatModeRequired('ETS asked for compatibility mode on download: Herunterladen')"))
+        self.assertFalse(sweep.stale_compat_prompt(""))
+
+
 class TestCaptureIpEnabled(unittest.TestCase):
     """An IP-enabled TP product (syn-ip-enabled-tp, #455): the sim gets the
     KNXnet/IP object, the row plans with the sweep project's [knxnet] table."""
