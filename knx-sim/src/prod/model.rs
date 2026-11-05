@@ -137,11 +137,14 @@ pub struct ProductData {
     pub compare_mems: Vec<(u16, Vec<u8>)>,
     /// The properties of interface objects other than the device object that
     /// the application's own `LdCtrlCompareProp` preflights expect, as
-    /// `(object index, PID, value)` (bussard issue #390: the ABB 0701 programs
-    /// compare the application object's `PID_PROGRAM_VERSION`, object 3 PID
-    /// 13, with their application number). A device of that hardware holds
-    /// them, so the simulated device serves them.
-    pub object_compare_props: Vec<(u8, u8, Vec<u8>)>,
+    /// `(object index, PID, value, element count)` (bussard issue #390: the
+    /// ABB 0701 programs compare the application object's
+    /// `PID_PROGRAM_VERSION`, object 3 PID 13, with their application number).
+    /// A device of that hardware holds them, so the simulated device serves
+    /// them. Compares of single elements (`StartElement`, `Count`) are merged
+    /// into one array of that many elements (bussard issue #422: a Siemens
+    /// 07B0 program compares elements 1 to 6 of object 4's PID 246 one by one).
+    pub object_compare_props: Vec<(u8, u8, Vec<u8>, u16)>,
     /// The properties the procedure compares or writes on an object it names by
     /// type (`ObjType`, bussard issue #390: the IPS 300 SREG's KNXnet/IP
     /// parameter object, type 11, and a vendor object, type 50001).
@@ -184,6 +187,10 @@ pub struct TypedProperty {
     pub pid: u8,
     /// The value an `LdCtrlCompareProp` expects, when the procedure compares it.
     pub compare: Option<Vec<u8>>,
+    /// The elements [`TypedProperty::compare`] holds: the compares'
+    /// `StartElement` and `Count` merged (bussard issue #422), 1 when the
+    /// value is one element.
+    pub compare_elements: u16,
     /// Whether an `LdCtrlWriteProp` writes it.
     pub written: bool,
     /// The octets the write declares (bussard issue #841): the step's

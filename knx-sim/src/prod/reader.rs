@@ -209,6 +209,59 @@ fn record_object_type(
     Ok(())
 }
 
+/// A compare's target as `(object, PID, StartElement, Count)`.
+type ElementCompare<K> = (K, u8, u16, u16);
+
+/// The compares of one property merged into its element array, as
+/// `(key, value, element count)` (bussard issue #422).
+///
+/// An `LdCtrlCompareProp` checks `Count` elements (default 1) from
+/// `StartElement` (default 1), the `InlineData` holding them back to back.
+/// A Siemens 07B0 program checks object 4's PID 246 one element at a time
+/// (elements 1, 2, 3, 5 and 6 of one octet each); its IP interfaces check
+/// elements 1 to 4 and 5 to 6 of a type-50100 object in two steps. A device of
+/// that hardware holds all of them in one property, so the value is the
+/// elements in order, an element no compare names left 0. The element size is
+/// that of the first compare (its `InlineData` over its `Count`); a compare of
+/// another size, or of a length `Count` does not divide, keeps the property
+/// one element of that compare's value, as before.
+fn merge_element_compares<K: PartialEq + Clone>(
+    picked: Vec<(ElementCompare<K>, Vec<u8>)>,
+) -> Vec<((K, u8), Vec<u8>, u16)> {
+    let mut keys: Vec<(K, u8)> = Vec::new();
+    for ((k, pid, _, _), _) in &picked {
+        if !keys.iter().any(|(kk, p)| kk == k && p == pid) {
+            keys.push((k.clone(), *pid));
+        }
+    }
+    keys.into_iter()
+        .filter_map(|(k, pid)| {
+            let parts: Vec<(usize, usize, &Vec<u8>)> = picked
+                .iter()
+                .filter(|((kk, p, _, _), _)| *kk == k && *p == pid)
+                .map(|((_, _, start, count), v)| (usize::from(*start), usize::from(*count), v))
+                .collect();
+            let &(_, count, first) = parts.first()?;
+            if first.is_empty() || !first.len().is_multiple_of(count) {
+                return Some(((k, pid), first.clone(), 1));
+            }
+            let size = first.len() / count;
+            let fits = |&&(_, n, v): &&(usize, usize, &Vec<u8>)| v.len() == n * size;
+            let elements = parts
+                .iter()
+                .filter(fits)
+                .map(|&(start, n, _)| start + n - 1)
+                .max()?;
+            let mut value = vec![0u8; elements * size];
+            for &(start, _, v) in parts.iter().filter(fits) {
+                let from = (start - 1) * size;
+                value.get_mut(from..from + v.len())?.copy_from_slice(v);
+            }
+            Some(((k, pid), value, u16::try_from(elements).ok()?))
+        })
+        .collect()
+}
+
 /// Decode an even-length hex string (as used by `InlineData`); `None` on any
 /// malformed input rather than a partial value.
 ///
@@ -293,8 +346,10 @@ fn parse_application_program(
     // defaults pick one value per property after the parse (issue #400).
     let mut marker_cands: Candidates<()> = Vec::new();
     let mut device_cands: Candidates<u8> = Vec::new();
-    let mut object_cands: Candidates<(u8, u8)> = Vec::new();
-    let mut typed_cands: Candidates<(u16, u8)> = Vec::new();
+    // Keyed with the compare's `StartElement` and `Count`: the compares of
+    // one property may each check a few of its elements (bussard issue #422).
+    let mut object_cands: Candidates<(u8, u8, u16, u16)> = Vec::new();
+    let mut typed_cands: Candidates<(u16, u8, u16, u16)> = Vec::new();
     let mut chooses = ChooseStack::default();
     let mut defaults = Defaults::default();
     let mut written_props: Vec<(u8, u8, usize, u16)> = Vec::new();
@@ -511,6 +566,7 @@ fn parse_application_program(
                                 len: 0,
                                 count: 1,
                                 pdt: None,
+                                compare_elements: 1,
                             }),
                         }
                     }
@@ -578,13 +634,25 @@ fn parse_application_program(
                     let device_object =
                         obj_idx == Some(0) || (obj_idx.is_none() && obj_type == Some(0));
                     let value = attr(&e, "InlineData").and_then(|hex| decode_hex(&hex));
+                    let start = parse_u32(&e, "StartElement")?
+                        .and_then(|v| u16::try_from(v).ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    let count = parse_u32(&e, "Count")?
+                        .and_then(|v| u16::try_from(v).ok())
+                        .unwrap_or(1)
+                        .max(1);
                     if in_app
                         && !device_object
                         && let (Some(value), Ok(pid)) = (value.clone(), u8::try_from(pid))
                     {
                         match (obj_idx.and_then(|o| u8::try_from(o).ok()), obj_type) {
                             (Some(object), _) => {
-                                object_cands.push(((object, pid), value, chooses.guards()));
+                                object_cands.push((
+                                    (object, pid, start, count),
+                                    value,
+                                    chooses.guards(),
+                                ));
                             }
                             (None, Some(object_type)) => {
                                 if let Ok(object_type) = u16::try_from(object_type) {
@@ -600,9 +668,14 @@ fn parse_application_program(
                                             len: 0,
                                             count: 1,
                                             pdt: None,
+                                            compare_elements: 1,
                                         });
                                     }
-                                    typed_cands.push(((object_type, pid), value, chooses.guards()));
+                                    typed_cands.push((
+                                        (object_type, pid, start, count),
+                                        value,
+                                        chooses.guards(),
+                                    ));
                                 }
                             }
                             (None, None) => {}
@@ -673,27 +746,29 @@ fn parse_application_program(
     // (ABB A-A001, 2026-10-28): a device of that hardware holds its own, the
     // application id's `M-xxxx`, and the version.
     let manufacturer = program_manufacturer(&app_id);
-    let object_compare_props: Vec<(u8, u8, Vec<u8>)> = defaults
-        .pick(&object_cands)
-        .into_iter()
-        .map(|((o, p), mut v)| {
-            if p == 13 && v.len() == 5 && v[..2] == [0, 0] {
-                if let Some(m) = manufacturer {
-                    v[..2].copy_from_slice(&m.to_be_bytes());
+    let object_compare_props: Vec<(u8, u8, Vec<u8>, u16)> =
+        merge_element_compares(defaults.pick(&object_cands))
+            .into_iter()
+            .map(|((o, p), mut v, elements)| {
+                if p == 13 && v.len() == 5 && v[..2] == [0, 0] {
+                    if let Some(m) = manufacturer {
+                        v[..2].copy_from_slice(&m.to_be_bytes());
+                    }
+                    if v[4] == 0 {
+                        v[4] = u8::try_from(app_version).unwrap_or(0);
+                    }
                 }
-                if v[4] == 0 {
-                    v[4] = u8::try_from(app_version).unwrap_or(0);
-                }
-            }
-            (o, p, v)
-        })
-        .collect();
-    for ((object_type, pid), value) in defaults.pick(&typed_cands) {
+                (o, p, v, elements)
+            })
+            .collect();
+    for ((object_type, pid), value, elements) in merge_element_compares(defaults.pick(&typed_cands))
+    {
         if let Some(t) = typed_props
             .iter_mut()
             .find(|t| t.object_type == object_type && t.pid == pid)
         {
             t.compare = Some(value);
+            t.compare_elements = elements;
         }
     }
 
@@ -1144,7 +1219,7 @@ mod tests {
                 (19, vec![0x01, 0x00, 0x00, 0x00])
             ]
         );
-        assert_eq!(pd.object_compare_props, vec![(3, 13, vec![0xBB])]);
+        assert_eq!(pd.object_compare_props, vec![(3, 13, vec![0xBB], 1)]);
         assert_eq!(
             pd.hardware_type_marker,
             Some(vec![0, 0, 0, 0, 0x01, 0x4A, 0, 0, 0, 0])
@@ -1152,7 +1227,7 @@ mod tests {
         // Default "to R1.9" (0): the other branch.
         let pd = parse_application_program(&branch_app("0", ""), None)?.ok_or("parsed")?;
         assert_eq!(pd.device_compare_props[1], (19, vec![0x00; 4]));
-        assert_eq!(pd.object_compare_props, vec![(3, 13, vec![0xAA])]);
+        assert_eq!(pd.object_compare_props, vec![(3, 13, vec![0xAA], 1)]);
         // A ParameterRef value overrides its Parameter's.
         let pd =
             parse_application_program(&branch_app("0", r#" Value="1""#), None)?.ok_or("parsed")?;
@@ -1195,12 +1270,53 @@ mod tests {
         assert_eq!(
             pd.object_compare_props,
             // Masked compare: the manufacturer and version filled in.
-            vec![(3, 13, vec![0x00, 0x04, 0xA0, 0x42, 0x10])]
+            vec![(3, 13, vec![0x00, 0x04, 0xA0, 0x42, 0x10], 1)]
         );
         assert_eq!(pd.typed_props.len(), 2);
         assert!(pd.typed_props.iter().all(|t| t.written));
         assert_eq!(pd.typed_props[0].object_type, 11);
         assert_eq!(pd.typed_props[1].object_type, 50001);
+        Ok(())
+    }
+
+    /// Bussard issue #422: compares of single elements of one property merge
+    /// into its element array. The steps are those of the Siemens
+    /// `M-0001_A-9A01-03-E6C8` (object 4 PID 246, elements 1, 2, 3, 5, 6) and
+    /// `M-0001_A-7205-03-6FCB` (type 50100 PID 246, elements 5-6 then 1-4).
+    #[test]
+    fn test_parse_application_program_merges_element_compares()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ApplicationProgram Id="M-0001_A-9A01-03-E6C8" ApplicationNumber="39425" ApplicationVersion="3" MaskVersion="MV-07B0">
+           <Static><LoadProcedures><LoadProcedure>
+            <LdCtrlConnect AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="246" InlineData="05" AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="2" InlineData="93" AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="3" InlineData="04" AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="5" InlineData="00" AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="6" InlineData="51" AppliesTo="all" />
+            <LdCtrlCompareProp ObjIdx="4" PropId="202" InlineData="01" AppliesTo="all" />
+            <LdCtrlCompareProp InlineData="0003" ObjType="50100" PropId="246" StartElement="5" Count="2" />
+            <LdCtrlCompareProp InlineData="04450001" ObjType="50100" PropId="246" Count="4" />
+           </LoadProcedure></LoadProcedures></Static>
+          </ApplicationProgram></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        assert_eq!(
+            pd.object_compare_props,
+            vec![
+                (4, 246, vec![0x05, 0x93, 0x04, 0x00, 0x00, 0x51], 6),
+                (4, 202, vec![0x01], 1)
+            ]
+        );
+        let typed = pd
+            .typed_props
+            .iter()
+            .find(|t| t.object_type == 50100 && t.pid == 246)
+            .ok_or("type 50100 PID 246")?;
+        assert_eq!(
+            typed.compare.as_deref(),
+            Some(&[0x04, 0x45, 0x00, 0x01, 0x00, 0x03][..])
+        );
+        assert_eq!(typed.compare_elements, 6);
         Ok(())
     }
 

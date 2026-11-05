@@ -167,7 +167,7 @@ fn seed_procedure_props(
     let addressed = product
         .object_compare_props
         .iter()
-        .map(|(object, _, _)| *object)
+        .map(|(object, _, _, _)| *object)
         .chain(
             product
                 .written_props
@@ -188,7 +188,7 @@ fn seed_procedure_props(
             objects.insert(object, io);
         }
     }
-    for (object, pid, value) in &product.object_compare_props {
+    for (object, pid, value, elements) in &product.object_compare_props {
         let written = product
             .written_props
             .iter()
@@ -204,7 +204,7 @@ fn seed_procedure_props(
                 // PID 13 and ETS then writes it (refused as read-only,
                 // 2026-11-04).
                 None if *pid == PID_PROGRAM_VERSION => Property::writable(value.clone()),
-                None => Property::read_only(value.clone()).sized(),
+                None => Property::read_only(value.clone()).with_elements(*elements),
             };
             io.set_property(*pid, prop);
         }
@@ -683,7 +683,14 @@ fn typed_objects_for(
         let knxnet_object = typed.object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER;
         if let Some(value) = &typed.compare {
             let prop = Property::read_only(value.clone());
-            obj.set_property(typed.pid, if knxnet_object { prop } else { prop.sized() });
+            obj.set_property(
+                typed.pid,
+                if knxnet_object {
+                    prop
+                } else {
+                    prop.with_elements(typed.compare_elements)
+                },
+            );
         }
         if typed.written {
             match obj.property_mut(typed.pid) {
@@ -898,6 +905,40 @@ mod tests {
         assert_eq!(r.responses[0].tpdu[4], 0x00, "zero-count refusal");
         let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 204, 0x20, 0x01]))?;
         assert_eq!(prop_response_value(&r), value.to_vec(), "unchanged");
+        Ok(())
+    }
+
+    /// Bussard issue #422: the Siemens `M-0001_A-9A01-03-E6C8` procedure
+    /// compares object 4's PID 246 element by element. The sim answered
+    /// element 2 with the first compare's 05 (ETS sweep capture
+    /// `plain-defaults`, 2026-11-05) and ETS refused the download.
+    #[test]
+    fn test_build_merges_element_compares_into_an_array() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4""#,
+            r#"<LdCtrlCompareProp ObjIdx="4" PropId="246" InlineData="05" AppliesTo="all" />
+              <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="2" InlineData="93" AppliesTo="all" />
+              <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="3" InlineData="04" AppliesTo="all" />
+              <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="5" InlineData="00" AppliesTo="all" />
+              <LdCtrlCompareProp ObjIdx="4" PropId="246" StartElement="6" InlineData="51" AppliesTo="all" />
+              <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4""#,
+        );
+        let pd = app_product(&xml)?;
+        let mut dev = connected_device(&pd)?;
+        // ETS's description read [d8 04 f6 00]: read-only PDT_GENERIC_01, six
+        // elements.
+        let d = describe(&mut dev, 4, 246)?;
+        assert_eq!(d[3], 0x11, "read-only, PDT_GENERIC_01");
+        assert_eq!(d[4..6], [0, 6], "six elements");
+        // ETS's reads [d5 04 f6 10 01] and [d5 04 f6 10 02], then the rest.
+        for (start, want) in [(1u8, 0x05u8), (2, 0x93), (3, 0x04), (5, 0x00), (6, 0x51)] {
+            let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 246, 0x10, start]))?;
+            assert_eq!(prop_response_value(&r), vec![want], "element {start}");
+        }
+        // Past the sixth element: the zero-count refusal.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 246, 0x10, 7]))?;
+        assert_eq!(r.responses[0].tpdu[4], 0x00);
         Ok(())
     }
 
