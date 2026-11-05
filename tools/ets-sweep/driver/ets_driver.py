@@ -1870,6 +1870,19 @@ def flow_catalog_import(req: dict) -> dict:
     timeout = float(req.get("timeout", 900))
     region = (1500, 400, 3500, 1600)
     ets_error = dismiss_ets_error()
+    # A file dialog a failed import left open (a COMError right after it
+    # opened, 2026-11-05) covers the Import button: every later import failed.
+    for w in ets_popups():
+        try:
+            if w.window_text() != "Produktdatei öffnen":
+                continue
+            for b in w.descendants(control_type="Button"):
+                if b.window_text() == "Abbrechen":
+                    b.click_input()
+                    time.sleep(1.5)
+                    break
+        except Exception:  # noqa: BLE001 - a closing popup is gone already
+            pass
     # Removing a large product (ALLinBOX 1612) keeps ETS busy after the remove
     # flow returned; three imports in a row found no button (2026-10-28).
     wait_busy()
