@@ -58,6 +58,9 @@ APPS = HERE / "catalog-apps.json"
 CATALOG = HERE / "catalog.json"
 RESULTS = HERE / "results" / "defaults.json"
 # The sweep variants: the run directory name and the results file.
+# Consecutive failed imports after which the sweep stops (a stuck ETS dialog).
+MAX_IMPORT_ERRORS = 5
+
 VARIANTS = {"plain-defaults": "defaults.json", "links": "links.json"}
 
 
@@ -363,6 +366,7 @@ def main() -> int:
     for job in jobs():
         all_orders.setdefault(job["file"], set()).update(str(o) for o in job["order_numbers"])
     in_catalog = args.in_catalog
+    import_errors = 0
     for file, file_jobs in by_file.items():
         if stop:
             break
@@ -406,7 +410,15 @@ def main() -> int:
             if any(k in (imp.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
                 print(f"stopping: the VM desktop is not usable: {imp.get('error', '')[:160]}", flush=True)
                 break
+            # A dialog ETS left open fails every import after it: an unanswered
+            # delete confirmation turned 229 files into driver errors, resets
+            # included (2026-11-05). Stop and let a person look.
+            import_errors += imp.get("outcome") != "refused"
+            if import_errors >= MAX_IMPORT_ERRORS:
+                print(f"stopping: {import_errors} imports in a row failed: {imp.get('error', '')[:160]}", flush=True)
+                break
             continue
+        import_errors = 0
         queue = list(file_jobs)
         while queue:
             job = queue.pop(0)
