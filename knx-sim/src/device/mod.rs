@@ -1192,6 +1192,7 @@ mod tests {
                 len: 32,
                 count: 8,
                 pdt: Some(0x09),
+                compare_elements: 1,
             },
             crate::prod::TypedProperty {
                 object_type: 50001,
@@ -1201,6 +1202,7 @@ mod tests {
                 len: 1,
                 count: 1,
                 pdt: Some(0x02),
+                compare_elements: 1,
             },
         ];
         pd.property_only = true;

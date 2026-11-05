@@ -402,13 +402,18 @@ pub fn ext_read(obj: &InterfaceObject, request: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The element size of property `pid` of an object of `object_type` reached
-/// by type: the KNXnet/IP parameter object's own sizes, else one element of
-/// the whole value.
-fn typed_element_size(object_type: u16, pid: u8, value_len: usize) -> usize {
+/// by type: the KNXnet/IP parameter object's own sizes, else the size of one
+/// of the elements the property describes, else the whole value.
+fn typed_element_size(object_type: u16, pid: u8, prop: &Property) -> usize {
+    let len = prop.value.len();
+    let elements = usize::from(prop.max_elements);
     if object_type == IOT_KNXNET_IP_PARAMETER {
         element_size(pid)
+    } else if elements > 1 && len.is_multiple_of(elements) {
+        // An array the product describes (bussard issue #422).
+        len / elements
     } else {
-        value_len.max(1)
+        len.max(1)
     }
 }
 
@@ -425,7 +430,7 @@ pub fn typed_ext_read(object_type: u16, obj: &InterfaceObject, request: &[u8]) -
     let start = u16::from_be_bytes([h[6], h[7]]);
     let answer = match (instance, pid) {
         (1, Some(pid)) => obj.property(pid).and_then(|p| {
-            let size = typed_element_size(object_type, pid, p.value.len());
+            let size = typed_element_size(object_type, pid, p);
             let total = p.value.len() / size;
             if start == 0 {
                 return Some((1, u16::try_from(total).ok()?.to_be_bytes().to_vec()));
@@ -505,6 +510,37 @@ mod tests {
             0,
             "max elements set"
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_typed_ext_read_serves_the_elements_of_an_array()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Siemens IP interfaces compare elements 1-4
+        // and 5-6 of type 50100's PID 246, one octet each.
+        let mut obj = InterfaceObject::new();
+        obj.set_property(
+            246,
+            Property::read_only(vec![0x04, 0x45, 0x00, 0x01, 0x00, 0x03]).with_elements(6),
+        );
+        // [type 50100][instance 1 | PID 246][count][start]
+        let read = |count: u8, start: u8| {
+            typed_ext_read(
+                50100,
+                &obj,
+                &[0xC3, 0xB4, 0x00, 0x10, 0xF6, count, 0x00, start],
+            )
+        };
+        let out = read(4, 1).ok_or("an answer")?;
+        assert_eq!(out[5], 4, "four elements served");
+        assert_eq!(&out[8..], &[0x04, 0x45, 0x00, 0x01]);
+        let out = read(2, 5).ok_or("an answer")?;
+        assert_eq!(out[5], 2);
+        assert_eq!(&out[8..], &[0x00, 0x03]);
+        let out = read(1, 0).ok_or("an answer")?;
+        assert_eq!(&out[8..], &[0x00, 0x06], "the element count");
+        let out = read(2, 6).ok_or("an answer")?;
+        assert_eq!(out[5], 0, "past the end");
         Ok(())
     }
 
