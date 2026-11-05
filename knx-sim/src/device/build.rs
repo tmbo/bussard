@@ -1102,6 +1102,38 @@ mod tests {
     }
 
     #[test]
+    fn test_build_system_b_knxnet_object_fills_the_first_free_index()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: an ise smart connect device (`M-007C_A-0001-10`,
+        // IsIPEnabled hardware) has application object 8 from its procedure.
+        // The KNXnet/IP parameter object went after it, to 9, and ETS's walk
+        // `[d5 06 01 10 01]` met an absent object 6 (ETS sweep, 2026-11-05).
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlWriteProp ObjIdx="8" PropId="5" Verify="false" InlineData="04000000000000000000" AppliesTo="full,par" />
+              <LdCtrlWriteProp ObjIdx="8" PropId="71" Count="3" Verify="false" AppliesTo="full,par" />"#,
+        );
+        let pd = app_product(&xml)?;
+        let params = crate::device::knxnet_object::KnxnetParameters::dhcp(0x1101, Vec::new());
+        let mut dev = connected_device(&pd)?.with_knxnet_object(&params);
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[6, 1, 0x10, 0x01]))?;
+        assert_eq!(
+            prop_response_value(&r),
+            vec![0x00, 0x0B],
+            "object 6 is type 11"
+        );
+        // The procedure's objects keep their indices.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[7, 1, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), 50007u16.to_be_bytes().to_vec());
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[8, 5, 0x10, 0x01]))?;
+        assert_eq!(
+            r.responses[0].tpdu[4], 0x10,
+            "object 8 has its load-state machine"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_build_system_b_vendor_object_by_index() -> Result<(), Box<dyn std::error::Error>> {
         // Bussard issue #422: the Siemens dimmer `M-0001_A-9839-01` writes
         // PID 205 of object type 50215. ETS looked for it with the standard
