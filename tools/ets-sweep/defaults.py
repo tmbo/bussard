@@ -170,13 +170,20 @@ def row_version_mismatch(app: str, row: dict | None) -> str | None:
     return f"catalog row shows version {have}, the job is {want}"
 
 
+# The outcomes a run of another application's catalog row cannot stand for:
+# a capture of that application, or ETS failing on it (the Theben
+# `M-0048_A-493B-22` MIX 2 secure ran the row of its 0701 sibling 1.12 and
+# ETS refused the sim's 07B0 mask, 2026-11-05).
+WRONG_ROW_OUTCOMES = ("captured", "ets-failed")
+
+
 def relabel_wrong_rows(results: dict) -> list[str]:
-    """Marks every `captured` result whose catalog row shows another
-    application version as `skipped-catalog-version` (no VM needed);
+    """Marks every `captured` or `ets-failed` result whose catalog row shows
+    another application version as `skipped-catalog-version` (no VM needed);
     returns the application ids it changed."""
     changed = []
     for app, r in results.items():
-        if r.get("outcome") != "captured":
+        if r.get("outcome") not in WRONG_ROW_OUTCOMES:
             continue
         why = row_version_mismatch(app, r.get("row"))
         if why:
@@ -499,9 +506,9 @@ def main() -> int:
                     continue
             sibling = catalog_sibling(job, r, everything)
             wrong_row = row_version_mismatch(job["id"], r.get("catalog_row"))
-            if not sibling and wrong_row and r["outcome"] == "captured":
+            if not sibling and wrong_row and r["outcome"] in WRONG_ROW_OUTCOMES:
                 # ETS downloaded another version of the application than the
-                # sim plays: the capture is not this job's.
+                # sim plays: the capture, or the failure, is not this job's.
                 results[job["id"]].update(outcome="skipped-catalog-version", error=wrong_row)
                 save()
                 print(f"refused {job['id']}: {wrong_row}", flush=True)
