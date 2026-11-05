@@ -487,7 +487,7 @@ def main() -> int:
                         vm.driver(c, "POST", "/ets/delete_device", {"project": "ets-sweep", "ia": d["ia"]}, timeout=300)
                 except Exception as exc:  # noqa: BLE001 - the stale-prompt recovery below still applies
                     print(f"cleanup after compat skip failed: {exc}", flush=True)
-            if "compatibility mode before project_tab" in (r.get("error") or "") and not job.get("retried"):
+            if sweep.stale_compat_prompt(r.get("error") or "") and not job.get("retried"):
                 # A compatibility prompt that keeps coming back for a device the
                 # previous product left in the project: restart ETS (with a
                 # cleared store) and run this product again once.
