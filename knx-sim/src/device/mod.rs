@@ -595,7 +595,16 @@ impl Device {
                 }
             }
             None => {
-                let obj = self.typed_objects.get_mut(&object_type)?;
+                // A System B device holds its vendor objects by index
+                // (`build::index_typed_objects`): found by their type.
+                let obj = if self.typed_objects.contains_key(&object_type) {
+                    self.typed_objects.get_mut(&object_type)?
+                } else {
+                    self.objects.values_mut().find(|o| {
+                        o.property(PID_OBJECT_TYPE)
+                            .is_some_and(|p| p.value.as_slice() == object_type.to_be_bytes())
+                    })?
+                };
                 if write {
                     knxnet_object::typed_ext_write(object_type, obj, &request)
                 } else {
