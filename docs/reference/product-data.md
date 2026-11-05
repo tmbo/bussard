@@ -132,7 +132,7 @@ With `--order-number`, bussard:
 5. verifies the download's byte size and SHA-256 against the index. A mismatch is a hard error: the file is not the one the index vouches for, perhaps because the vendor re-published it;
 6. stores the verified file under `products/` and runs the normal import on it. When the entry names an `inner` file of a ZIP download, that `.knxprod` is stored instead of the ZIP.
 
-The index covers about 900 product databases from MDT, Zennio, Lingg & Janke, Theben, Elsner, Siemens, ABB, Busch-Jaeger, Ekinex, Weinzierl and others, each verified by downloading it and computing its checksum. Most point at a bare `.knxprod`; some vendors serve a ZIP around it, and the checksum then covers the ZIP, which also covers the `.knxprod` inside. `BUSSARD_PRODUCT_INDEX` replaces the built-in index with your own, for a private mirror.
+The index covers about 1700 product databases from Zennio, Hager, Berker, MDT, Elsner, Schneider Electric (Merten), Siemens, Weinzierl, Ekinex, B.E.G., Gira, Lingg & Janke, Theben, ABB, Busch-Jaeger and others, each verified by downloading it and computing its checksum. Most point at a bare `.knxprod`; some vendors serve a ZIP around it, and the checksum then covers the ZIP, which also covers the `.knxprod` inside. `BUSSARD_PRODUCT_INDEX` replaces the built-in index with your own, for a private mirror.
 
 ### Index schema
 

@@ -3,7 +3,7 @@
 A repeatable, network-backed check of one question across a shelf of real vendor
 devices: **can bussard flash this today?**
 
-It downloads about 900 real `.knxprod` product databases from a range of manufacturers
+It downloads about 1700 real `.knxprod` product databases from a range of manufacturers
 and device types, then dry-runs each application program through the flash
 engine's planner (`plan_flash`, no device, no bus) and reports which ones lower
 to an executable plan, which are refused, and — for the refused System B ones —

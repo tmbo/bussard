@@ -72,6 +72,20 @@ for e in data.get("entries", []):
 PY
 }
 
+# Copies the vendor archives import-product stored into the cache. The store
+# also holds the model's manufacturer list (products/manufacturers.toml, #788),
+# which is not corpus data and is skipped; an archive already in the cache is
+# left in place (byte-identical by construction: the index pins its checksum).
+copy_products() {
+    local src="$1" f
+    for f in "$src"/*; do
+        case "$(basename "$f")" in
+            manufacturers.toml) continue ;;
+        esac
+        [[ -e "$CACHE_DIR/vendor/$(basename "$f")" ]] || cp "$f" "$CACHE_DIR/vendor/" || return 1
+    done
+}
+
 # Locate (or build) the bussard binary. Honour an explicit $BUSSARD override.
 if [[ -n "${BUSSARD:-}" ]]; then
     BUSSARD_BIN="$BUSSARD"
@@ -125,8 +139,8 @@ while IFS= read -r raw || [[ -n "$raw" ]]; do
         --order-number "$order" \
         --yes-download \
         --dir "$work" >"$work.log" 2>&1 \
-        && cp -n "$work/products/"* "$CACHE_DIR/vendor/"; then
-        echo "  cached: vendor/$(ls "$work/products/" | head -1)"
+        && copy_products "$work/products"; then
+        echo "  cached: vendor/$(ls "$work/products/" | grep -iv '^manufacturers\.toml$' | head -1)"
         fetched=$((fetched + 1))
     else
         sed 's/^/  /' "$work.log" | tail -5 >&2
