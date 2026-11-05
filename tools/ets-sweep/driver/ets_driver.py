@@ -396,7 +396,9 @@ LAYOUT = {
     "catalog_line_dropdown": (948, 2453),
     "catalog_bar": (0, 2420, 1600, 2484),
     "delete_dialog": (1200, 800, 2900, 1700),
-    "delete_yes": (2300, 1420, 2500, 1480),
+    # The dialog grows with a two-line device name (Dinuy ITKNT, 2026-11-05):
+    # its Ja moved to y 1476.
+    "delete_yes": (1300, 1380, 2800, 1580),  # OCR reads nothing in a narrow crop
     "medium_dialog": (1200, 900, 3000, 1100),
     "medium_keep": (2250, 1477),
     "ops_header": (3500, 2348),
@@ -1345,7 +1347,7 @@ def flow_delete_device(req: dict) -> dict:
                 click_text("Ja", LAYOUT["delete_yes"])
                 confirmed = True
             else:
-                click_text("Nein", (2450, 1420, 2700, 1480))
+                click_text("Nein", (1300, 1380, 2800, 1580))
                 raise RuntimeError(f"delete dialog does not name {req['ia']}: {named[:200]}")
             break
     time.sleep(2)
