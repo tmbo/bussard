@@ -565,9 +565,13 @@ def decline_compat_mode() -> str | None:
     joined = " ".join(l["text"] for l in lines)
     if "ompatibilit" not in joined:
         return None
-    for label in ("Nein", "Abbrechen", "Nicht", "Schließen"):
+    # 'Abbrechen' first, and no 'Nicht': that one matched the warning's own
+    # text ('konnten nicht programmiert werden') and the click missed the
+    # button, so the prompt stayed and five imports failed (Berker Funk
+    # Taster, 2026-11-05). Never the restart button.
+    for label in ("Abbrechen", "Nein", "Schließen"):
         hit = find_text(label, (1500, 900, 3300, 2000), min_ratio=0.9)
-        if hit and "ompatibilit" not in hit["text"]:
+        if hit and "ompatibilit" not in hit["text"] and "neu starten" not in hit["text"]:
             click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
             break
     else:
