@@ -476,7 +476,7 @@ impl Device {
     }
 
     /// Gives the device a KNXnet/IP parameter object (interface object type
-    /// 11) at the next free object index, serving `params`: the simulated KNX
+    /// 11) at the lowest free object index, serving `params`: the simulated KNX
     /// IP interface of bussard issue #391.
     pub fn with_knxnet_object(self, params: &knxnet_object::KnxnetParameters) -> Self {
         self.with_knxnet(params, true)
@@ -484,17 +484,19 @@ impl Device {
 
     /// Gives the device a KNXnet/IP parameter object, reachable by object
     /// type 11 and instance 1 through `A_PropertyExtValue_Read` and, when
-    /// `listed`, also at the next object index for the plain services. An
+    /// `listed`, also at the lowest free object index for the plain services:
+    /// ETS finds it by reading `PID_OBJECT_TYPE` of the indices in turn and
+    /// stops at the first absent one. The ise smart connect devices
+    /// (`M-007C_A-0001-10`, mask 07B0) also have application object 8, and
+    /// the object placed after it at 9 left ETS's read of object 6
+    /// `[d5 06 01 10 01]` without an answer ("Die ausgewählte
+    /// Geräte-Ressource ist zurzeit nicht verfügbar", ETS sweep 2026-11-05,
+    /// bussard issue #422). An
     /// unlisted object models the Jung IPS 300 SREG (mask 0021, bussard issue
     /// #391), whose object-index walk shows a device object and an address
     /// table only while ETS programs the KNXnet/IP parameters by object type.
     pub fn with_knxnet(mut self, params: &knxnet_object::KnxnetParameters, listed: bool) -> Self {
-        if listed {
-            let index = self
-                .objects
-                .keys()
-                .next_back()
-                .map_or(0, |last| last.saturating_add(1));
+        if listed && let Some(index) = (0..=u8::MAX).find(|i| !self.objects.contains_key(i)) {
             self.objects.insert(index, params.object());
         }
         // A property-only device (bussard issue #390) already has the object
