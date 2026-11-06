@@ -112,6 +112,7 @@ mod plan_sys7;
 mod props;
 mod restart_form;
 mod session;
+mod steps;
 #[cfg(test)]
 mod test_support;
 mod verify;
