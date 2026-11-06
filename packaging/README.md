@@ -89,7 +89,7 @@ Locally:
 $ shellcheck --shell=sh install.sh
 $ sh -n install.sh
 $ BUSSARD_INSTALL_DIR=/tmp/bussard-test sh ./install.sh
-$ BUSSARD_VERSION=0.1.0 BUSSARD_INSTALL_DIR=/tmp/bussard-test sh ./install.sh
+$ BUSSARD_VERSION=0.9.0 BUSSARD_INSTALL_DIR=/tmp/bussard-test sh ./install.sh
 ```
 
 Notes:

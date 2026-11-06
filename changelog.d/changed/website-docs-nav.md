@@ -1,1 +1,0 @@
-- The website's top navigation links "Docs" to the documentation site instead of the docs section of the landing page.
