@@ -87,7 +87,7 @@ pub struct GroupsLint {
 ///
 /// Returns an empty list when `bussard.toml` has no `lint:` block. `models` is
 /// the product cache; without it the bus-current lint (`L002`) is skipped, since
-/// the per-device current lives only in the generated `models/*.yaml`.
+/// the per-device current lives only in the generated product models.
 pub fn lint(model: &Model, models: Option<&ProductModels>) -> Vec<Diagnostic> {
     let Some(config) = &model.config.lint else {
         return Vec::new();

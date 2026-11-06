@@ -44,13 +44,44 @@ use crate::flash::{FlashPlan, FlashStep, ImageKind, ImageRef};
 /// Interface-object type 3: the application-program object.
 const OT_APPLICATION_PROGRAM: u16 = 3;
 
-/// A parameter value as the plan shows it.
+/// A parameter value as the plan shows it. Serialized as the value, `null`
+/// when unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamValue {
     /// A value, already rendered for a human (an enumeration shows its text).
     Known(String),
     /// The value could not be read back from the device.
     Unknown,
+}
+
+impl ParamValue {
+    /// The value, `None` when unknown.
+    pub fn known(&self) -> Option<&str> {
+        match self {
+            ParamValue::Known(v) => Some(v),
+            ParamValue::Unknown => None,
+        }
+    }
+}
+
+impl serde::Serialize for ParamValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.known().serialize(serializer)
+    }
+}
+
+/// `value` followed by `unit` when there is one.
+fn with_unit(value: &str, unit: Option<&str>) -> String {
+    match unit.filter(|u| !u.is_empty()) {
+        Some(u) => format!("{value} {u}"),
+        None => value.to_string(),
+    }
+}
+
+/// Serializes a value as its text (`ParamChange::new`, always known in a
+/// report).
+fn as_text<S: serde::Serializer>(value: &ParamValue, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
 }
 
 impl std::fmt::Display for ParamValue {
@@ -62,8 +93,10 @@ impl std::fmt::Display for ParamValue {
     }
 }
 
-/// One parameter the flash would change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One parameter the flash would change. Serialized as a report row: `key`,
+/// `name`, `device` (what it holds, `null` when unreadable), `model` and
+/// `unit`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ParamChange {
     /// The app-relative `ParameterRef` id that identifies the parameter (the
     /// part after `@` in a device-file parameter key).
@@ -72,14 +105,26 @@ pub struct ParamChange {
     /// to its `Name` and then its id.
     pub name: String,
     /// What the device holds now.
+    #[serde(rename = "device")]
     pub old: ParamValue,
     /// What the flash would write.
+    #[serde(rename = "model", serialize_with = "as_text")]
     pub new: ParamValue,
     /// The unit the vendor shows after the value (`SuffixText`), when declared.
     pub unit: Option<String>,
 }
 
 impl ParamChange {
+    /// What the device holds, with the unit; `None` when unreadable.
+    pub fn old_with_unit(&self) -> Option<String> {
+        self.old.known().map(|v| with_unit(v, self.unit.as_deref()))
+    }
+
+    /// What the flash writes, with the unit.
+    pub fn new_with_unit(&self) -> String {
+        with_unit(&self.new.to_string(), self.unit.as_deref())
+    }
+
     /// The one-line rendering used by the CLI pre-flight and the `--json`
     /// fallback text: `night setback: 18 to 17 °C`.
     pub fn line(&self) -> String {
@@ -182,7 +227,7 @@ pub fn param_plan(
 
 /// One parameter value decoded out of a device's parameter memory, next to the
 /// vendor default (issue #119, `reconstruct` / `plan` read-back).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ParamReading {
     /// The app-relative parameter id (`P-…`).
     pub key: String,

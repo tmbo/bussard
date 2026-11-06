@@ -32,7 +32,7 @@ use crate::value_sets::{
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// The product model the importer writes for `app`.
+/// The product model the importer writes for `app`, read back from disk.
 fn product_model(app: &ApplicationProgram) -> Result<ProductModel, Box<dyn std::error::Error>> {
     let dir = tempfile::tempdir()?;
     let product = ProductData {
@@ -40,12 +40,10 @@ fn product_model(app: &ApplicationProgram) -> Result<ProductModel, Box<dyn std::
         ..ProductData::default()
     };
     write_product_models(&product, dir.path())?;
-    let path = dir
-        .path()
-        .join(".bussard/models")
-        .join(format!("{}.yaml", app.id));
-    let text = std::fs::read_to_string(&path)?;
-    Ok(ProductModel::from_yaml(&text, &app.id)?)
+    Ok(
+        bussard_model::param_model::cached_product_model(dir.path(), &app.id)
+            .ok_or("the written model reads back")?,
+    )
 }
 
 /// The refs the download side reaches at the application level with
@@ -403,8 +401,10 @@ fn check_round_trip(
     app: &ApplicationProgram,
     product: &ProductData,
 ) -> Result<(usize, usize), String> {
-    let yaml = bussard_prod::product_model::model_yaml(app, product).map_err(|e| e.to_string())?;
-    let model = ProductModel::from_yaml(&yaml, &app.id).map_err(|e| e.to_string())?;
+    // Through the stored form, as a command reads it.
+    let json = serde_json::to_string(&bussard_prod::product_model::product_model(app, product))
+        .map_err(|e| e.to_string())?;
+    let model: ProductModel = serde_json::from_str(&json).map_err(|e| e.to_string())?;
     if bussard_model::dynamic::RefIndex::new(app) != bussard_model::dynamic::RefIndex::new(&model) {
         return Err("the ref index differs".to_string());
     }

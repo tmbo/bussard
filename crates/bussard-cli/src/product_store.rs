@@ -8,7 +8,7 @@
 //! `sha256`, `origin`), and every use verifies the SHA-256 first.
 //!
 //! What regenerates lives under `.bussard/`: the product models
-//! (`.bussard/models/<app>.yaml`) are rebuilt from the archives here when they
+//! (`.bussard/model-cache/<app>.json`) are rebuilt from the archives here when they
 //! are missing.
 
 use std::path::{Path, PathBuf};

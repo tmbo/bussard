@@ -13,7 +13,7 @@
 //! plain "mcp: serving on stdio" line and not the terminal-only connect hint.
 //!
 //! A second test (issue #267) starts the server on a model whose
-//! `.bussard/models/` is empty although `bussard.lock` pins the archive in
+//! `.bussard/model-cache/` is empty although `bussard.lock` pins the archive in
 //! `products/`: `knx_show_device` must see the product data, also after the
 //! model file is deleted mid-session and the model reloads.
 
@@ -197,14 +197,14 @@ const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 </KNX>"#;
 
 /// A model with device 1.1.4 whose archive `products/taster.knxprod` the
-/// lock pins, and an empty `.bussard/models/`.
+/// lock pins, and an empty `.bussard/model-cache/`.
 fn write_pinned_model(dir: &std::path::Path) -> TestResult {
     use sha2::Digest as _;
     use zip::write::SimpleFileOptions;
 
     std::fs::create_dir_all(dir.join("devices"))?;
     std::fs::create_dir_all(dir.join("products"))?;
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
+    std::fs::create_dir_all(dir.join(".bussard/model-cache"))?;
     let archive = dir.join("products/taster.knxprod");
     let mut zip = zip::ZipWriter::new(std::fs::File::create(&archive)?);
     for (name, body) in [
@@ -284,7 +284,7 @@ fn test_mcp_show_device_sees_product_data_with_an_empty_models_directory() -> Te
     let _ = std::fs::remove_dir_all(&tmp);
     let knx = tmp.join("knx");
     write_pinned_model(&knx)?;
-    let model_file = knx.join(format!(".bussard/models/{APP_ID}.yaml"));
+    let model_file = knx.join(format!(".bussard/model-cache/{APP_ID}.json"));
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .args(["mcp", "--dir"])

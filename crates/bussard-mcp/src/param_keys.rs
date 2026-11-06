@@ -803,7 +803,7 @@ mod tests {
 
     const APP: &str = "M-00FA_A-0298-10-0000";
 
-    const PRODUCT: &str = include_str!("../../bussard-model/tests/fixtures/blocks_app.yaml");
+    const PRODUCT: &str = include_str!("../../bussard-model/tests/fixtures/blocks_app.json");
 
     /// The #298 weather station, channel A enabled, with a second parameter
     /// on A's page and a page-qualified key.
@@ -860,7 +860,7 @@ brightness.send = "4/1/5"
         .collect();
         let model = Model::from_texts(&files)?;
         let mut products = ProductModels::default();
-        let mut product = ProductModel::from_yaml(PRODUCT, APP)?;
+        let mut product: ProductModel = serde_json::from_str(PRODUCT)?;
         change(&mut product);
         products.insert(APP.to_string(), product);
         let ia: IndividualAddress = "1.1.30".parse()?;

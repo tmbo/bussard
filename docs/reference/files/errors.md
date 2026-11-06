@@ -50,7 +50,7 @@ A group address a device file mentions but `groups.toml` does not define is a wa
 
 Earlier versions stored the project as YAML: `bussard.yaml`, `groups.yaml`, `links.yaml`, `devices/*.yaml`. bussard does not read those files. A directory that holds only them is refused with a message; re-import the ETS project into an empty directory to get the TOML files.
 
-Product models keep their YAML format. They live under `.bussard/models/` and regenerate from `products/`.
+Product models are generated JSON files under `.bussard/model-cache/` and regenerate from `products/`.
 
 ## Related
 

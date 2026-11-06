@@ -1,17 +1,14 @@
-//! Reading the generated product model YAML (`models/<application_ref>.yaml`)
-//! for parameter validation.
+//! The product model: one application program's parameters, com-objects
+//! and Dynamic section, reduced to what the views, the validator and the
+//! Dynamic evaluator read ([`ProductModel`]).
 //!
-//! The product models are written by `bussard import-product` from vendor
-//! `.knxprod` data; they are the derived, human-readable description of one
-//! application program's parameters (id, type, default, memory). They are the
-//! *only* on-disk source of the parameter definitions the validator needs to
-//! check a device's `parameters:` block against, so validation parses them back
-//! here — lazily, and only for validation. Nothing else in the model depends on
-//! them, and their absence is not an error (validation degrades to an info note).
-//!
-//! Only the fields the validator uses are deserialized. The file carries more
-//! (com-objects, load procedure, identity); `#[serde(default)]` and an untagged
-//! catch-all keep parsing tolerant of everything else.
+//! `bussard-prod` builds it from the parsed application program and stores it
+//! as JSON under `<model dir>/.bussard/model-cache/<application_ref>.json`
+//! ([`write_product_model`]). Commands read it back here ([`ProductModels`]),
+//! at most once per process and file change. The directory is regenerated
+//! data: a missing or outdated file is rebuilt from the archive `bussard.lock`
+//! pins, and its absence is not an error (validation degrades to an info
+//! note).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -21,23 +18,28 @@ use serde::Deserialize;
 
 /// One parsed product model file: its parameter definitions, indexed for lookup.
 #[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct ProductModel {
     /// The bus current this product draws, in mA, as declared by the vendor's
     /// `Hardware.xml` (`BusCurrent`). Used by the `L002` topology lint to total
     /// a line's draw against its power supply. `None` when the cached model
     /// predates the field or the vendor omitted it.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bus_current_ma: Option<u32>,
     /// Parameter definitions keyed by their **application-relative** id
     /// (the full id with the `<application_ref>_` prefix stripped, e.g.
     /// `MD-1_P-3` or `P-1312`). A device parameter key resolves to this id by
     /// dropping its `_M-<m>_MI-<n>` module-instance selector and `_R-<r>`
     /// suffix; indexing app-relative lets the lookup ignore the app prefix.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub parameters: BTreeMap<String, ParamDef>,
     /// The com-objects by number: the vendor's text, function and DPT.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub com_objects: BTreeMap<u16, ObjectDef>,
     /// The com-object refs of the application's Dynamic section that
     /// [`Self::com_objects`] describes through another ref of the same
     /// number, keyed by app-relative ref id (`O-32_R-454`).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub com_object_refs: BTreeMap<String, ObjectDef>,
     /// The application program id (`M-0002_A-A0ED-10-9B4E`), the prefix the
     /// app-relative ids drop.
@@ -45,44 +47,46 @@ pub struct ProductModel {
     /// The Data Secure table capacities of a Data-Secure-capable application
     /// (`data_secure:`, format 9, issue #537); `None` for an application that
     /// does not declare `IsSecureEnabled`.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub data_secure: Option<DataSecureCapacity>,
     /// The application's own Dynamic section (`dynamic:`, format 5, issue
     /// #345), app-relative ids throughout: what [`crate::dynamic::evaluate_dynamic`]
     /// walks through this model's [`crate::dynamic::DynamicSource`] impl.
-    #[serde(with = "crate::dynamic_compact::nodes")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dynamic: Vec<crate::dynamic::DynamicNode>,
     /// The Dynamic section of every module definition, keyed by app-relative
     /// module definition id (`MD-1`) (`module_dynamics:`, format 5).
-    #[serde(with = "crate::dynamic_compact::module_nodes")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub module_dynamics: BTreeMap<String, Vec<crate::dynamic::DynamicNode>>,
     /// The application's `<Union>`s, in document order, each with its size
     /// and its members' app-relative parameter ids and positions (`unions:`,
     /// format 5).
-    #[serde(with = "crate::dynamic_compact::unions")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unions: Vec<crate::dynamic::Union>,
     /// Every parameter ref of the application, keyed by app-relative ref id:
     /// its parameter, its `Value` where it matters and whether it is internal
     /// (the `refs:` of each parameter, format 5).
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub parameter_refs: BTreeMap<String, RefDef>,
     /// The application's and the module definitions' `<Allocator>`s, keyed
     /// by app-relative id (`L-2`, `MD-1_L-1`) (`allocators:`, format 10,
     /// issue #449).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub allocators: BTreeMap<String, crate::dynamic::Allocator>,
     /// The `Allocates` of every module `<Argument>` that declares one, keyed
     /// by app-relative argument id (`argument_allocates:`, format 10).
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub argument_allocates: BTreeMap<String, i64>,
     /// Whether the application is a System B one: its
     /// `identity.mask_version` is `xxB0` (issue #474).
-    #[serde(default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub system_b: bool,
     /// The application's `<ParameterCalculation>`s, in document order, ids
     /// and refs app-relative (`calculations:`, format 13, issue #712): what
     /// the Dynamic evaluation runs through this model's
     /// [`crate::dynamic::DynamicSource`] impl, so the views show the value a
     /// download computes and writes.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub calculations: Vec<crate::dynamic::ParameterCalculation>,
     /// The ETS parameter pages and channels, derived from [`Self::dynamic`]
     /// on first use ([`Self::blocks`]).
@@ -128,125 +132,117 @@ pub struct DataSecureCapacity {
 
 /// One `ParameterRef` of a product model (an entry of a parameter's `refs:`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct RefDef {
     /// The app-relative id of the parameter it points at.
     pub parameter: String,
     /// The ref's `Value`, where the model's parameter `default` does not give
     /// it already: the value the ref has when nothing is stored.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
     /// Whether the ref's effective `Access` is `None`: ETS keeps the value
     /// to itself and never shows it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub internal: bool,
     /// The ref's own `Text`, where it differs from its parameter's: what
     /// titles a page whose `ParamRefId` names the ref.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
 }
 
 /// One com-object of a product model, reduced to what a view shows.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct ObjectDef {
     /// The vendor's object text.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// The vendor's function text.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub function: Option<String>,
     /// The datapoint type, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub dpt: Option<String>,
     /// The communication flags, as written.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub flags: Option<String>,
     /// The transmission priority the product declares, where it is not Low
     /// (format 8, issue #541).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub priority: Option<crate::flags::Priority>,
 }
 
-/// The product-model format this build writes: `model_format:` at the top of
-/// the file. A model of an older format regenerates from its archive
-/// (format 2 adds `blocks:`, issue #298; format 3 the conditions inside a
-/// block, `parameter_when:`, issue #315; format 4 the `ParameterRef` values,
-/// `ref_values:`, issue #326; format 5 the Dynamic tree, `dynamic:`,
-/// `module_dynamics:`, `unions:` and each parameter's `refs:`, `base_value`
-/// and integer width, issue #345; format 6 drops `blocks:`,
-/// `parameter_when:` and `ref_values:`, which the tree gives, and writes a
-/// parameter's own default, issue #345; format 7 a text type's
-/// `encoding:`, issue #401; format 8 a com-object's `priority:` where it is
-/// not Low, issue #541; format 9 a Data-Secure-capable application's table
-/// capacities, `data_secure:`, issue #537; format 10 `<Repeat>` nodes, a
-/// module's computed arguments, `allocators:` and `argument_allocates:`,
-/// issue #449, and a text
-/// parameter's `initial_value:`, issue #473; format 11 a colour type,
-/// `color: { space: RGB }`, issue #616; format 12 a virtual parameter's
-/// `virtual: true`, issue #474; format 13 the `<ParameterCalculation>`s,
-/// `calculations:`, issue #712).
-pub const MODEL_FORMAT: u32 = 13;
-
-/// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
-/// only the head of the file, where the emitter puts the key.
-pub fn model_is_current(path: &Path) -> bool {
-    use std::io::Read;
-    let Ok(file) = std::fs::File::open(path) else {
-        return false;
-    };
-    let mut bytes = Vec::with_capacity(4096);
-    if file.take(4096).read_to_end(&mut bytes).is_err() {
-        return false;
-    }
-    let head = String::from_utf8_lossy(&bytes);
-    let wanted = format!("model_format: {MODEL_FORMAT}");
-    head.lines().any(|l| l.trim_end() == wanted)
-}
+/// The product-model format this build writes, in the header of each
+/// model file: a file of another format is rebuilt from its archive. Format
+/// 14 is the first JSON one (issue #906); formats 1 to 13 were YAML files
+/// under `.bussard/models/`.
+pub const MODEL_FORMAT: u32 = 14;
 
 /// A single parameter definition, reduced to what validation needs.
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
+#[serde(default)]
 pub struct ParamDef {
     /// The parameter type/shape.
     pub kind: ParamKind,
     /// The vendor default value, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     /// The parameter's human-readable text as ETS shows it (e.g. "Night
     /// setback"), when the product model carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// For an enumeration, its `(code, text)` pairs in document order: the
     /// labels a device file may write instead of the code (see
     /// [`enum_label`] and [`enum_code`]). Empty for other kinds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<(i64, String)>,
     /// The parameter's `Name`, when the product model carries one.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// The parameter refs that point at this parameter, app-relative
     /// (`MD-1_P-3_R-45` without the module-instance selector), when the
     /// product model lists them (`refs:`). A device-file key the lock does not
     /// list resolves through them (see [`ProductModel::resolve_key`]).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub refs: Vec<String>,
     /// The `BaseValue` argument id: a module parameter whose default has the
     /// instance's value of this argument added to it (issue #126).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub base_value: Option<String>,
     /// Width in bits and signedness of an integer or plain enumeration
     /// parameter (`bits:`, `signed:`), `None` for any other type: what a
     /// shared `<Union>` memory is read back with.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub integer_width: Option<(u32, bool)>,
     /// For an enumeration, its members (code and label): what an override
     /// written as a label is matched against. Empty for other kinds.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub enum_values: Vec<crate::dynamic::EnumValue>,
     /// A text parameter's `InitialValue` in the model's language
     /// (`initial_value:`, format 10, issue #473): the value a new device
     /// starts with, which wins over the `Value`s as the default.
-    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub initial_value: Option<String>,
     /// Whether the parameter is virtual: no memory, no property and no
     /// union place, so it only ever has its value (`virtual: true`, format
     /// 12, issue #474).
-    #[serde(default)]
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub is_virtual: bool,
 }
 
-/// A parameter's type, mirroring the `type:` tag in the model YAML.
-#[derive(Debug, Clone, serde::Serialize, Deserialize)]
+/// A parameter's type.
+#[derive(Debug, Clone, Default, serde::Serialize, Deserialize)]
 pub enum ParamKind {
     /// A bounded integer (`int`).
     Int {
         /// Inclusive minimum, if declared.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         min: Option<i64>,
         /// Inclusive maximum, if declared.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         max: Option<i64>,
         /// Whether the encoding is signed.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         signed: bool,
     },
     /// An enumeration (`enum`) of declared numeric values.
@@ -257,10 +253,11 @@ pub enum ParamKind {
     /// A fixed-length text field (`text`); `size` is the byte length.
     Text {
         /// The field length in bytes, if declared (`size_bits / 8`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         len: Option<usize>,
         /// The program's `TextParameterEncoding`, the code page the text is
         /// written in (issue #401); `None` when undeclared.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         encoding: Option<String>,
     },
     /// A float (`float`).
@@ -274,147 +271,8 @@ pub enum ParamKind {
         space: crate::color_codec::ColorSpace,
     },
     /// Any other shape (`other`), not range-checked.
+    #[default]
     Other,
-}
-
-// ---------------------------------------------------------------------------
-// Deserialization shapes (mirror the emitter in `import_product_cmd`).
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize)]
-struct RawModel {
-    #[serde(default)]
-    bus_current_ma: Option<u32>,
-    #[serde(default)]
-    parameters: Vec<RawParam>,
-    #[serde(default)]
-    com_objects: BTreeMap<u16, RawComObject>,
-    #[serde(default)]
-    com_object_refs: BTreeMap<String, RawComObject>,
-    #[serde(default, with = "crate::dynamic_compact::nodes")]
-    dynamic: Vec<crate::dynamic::DynamicNode>,
-    #[serde(default, with = "crate::dynamic_compact::module_nodes")]
-    module_dynamics: BTreeMap<String, Vec<crate::dynamic::DynamicNode>>,
-    #[serde(default, with = "crate::dynamic_compact::unions")]
-    unions: Vec<crate::dynamic::Union>,
-    #[serde(default)]
-    data_secure: Option<DataSecureCapacity>,
-    #[serde(default)]
-    allocators: BTreeMap<String, crate::dynamic::Allocator>,
-    #[serde(default)]
-    argument_allocates: BTreeMap<String, i64>,
-    #[serde(default)]
-    identity: Option<RawIdentity>,
-    #[serde(default)]
-    calculations: Vec<crate::dynamic::ParameterCalculation>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawIdentity {
-    #[serde(default)]
-    mask_version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawComObject {
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    function_text: Option<String>,
-    #[serde(default)]
-    dpt: Option<String>,
-    #[serde(default)]
-    flags: Option<String>,
-    #[serde(default)]
-    priority: Option<crate::flags::Priority>,
-}
-
-#[derive(Debug, Deserialize)]
-struct RawParam {
-    id: String,
-    #[serde(rename = "type")]
-    param_type: RawType,
-    #[serde(default)]
-    default: Option<String>,
-    #[serde(default)]
-    text: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    refs: BTreeMap<String, Option<RawRef>>,
-    #[serde(default)]
-    base_value: Option<String>,
-    #[serde(default)]
-    bits: Option<u32>,
-    #[serde(default)]
-    signed: bool,
-    #[serde(default)]
-    initial_value: Option<String>,
-    #[serde(default, rename = "virtual")]
-    is_virtual: bool,
-}
-
-#[derive(Debug, Default, Deserialize)]
-struct RawRef {
-    #[serde(default)]
-    value: Option<String>,
-    #[serde(default)]
-    internal: bool,
-    #[serde(default)]
-    text: Option<String>,
-}
-
-// Some fields exist only to consume the YAML shape faithfully; the validator
-// reads a subset. `allow(dead_code)` keeps the full shape without warnings.
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-#[allow(dead_code)]
-enum RawType {
-    Int {
-        #[serde(default)]
-        min: Option<i64>,
-        #[serde(default)]
-        max: Option<i64>,
-        #[serde(default)]
-        size: Option<u32>,
-        #[serde(default)]
-        signed: bool,
-    },
-    Enum {
-        #[serde(default)]
-        values: Vec<RawEnumValue>,
-    },
-    Text {
-        #[serde(default)]
-        size: Option<u32>,
-        #[serde(default)]
-        encoding: Option<String>,
-    },
-    Float {
-        #[serde(default)]
-        encoding: Option<String>,
-        #[serde(default)]
-        min: Option<f64>,
-        #[serde(default)]
-        max: Option<f64>,
-    },
-    None,
-    Color {
-        space: crate::color_codec::ColorSpace,
-    },
-    Other {
-        #[serde(default)]
-        kind: Option<String>,
-        #[serde(default)]
-        size: Option<u32>,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-struct RawEnumValue {
-    value: i64,
-    #[serde(default)]
-    text: Option<String>,
 }
 
 impl ProductModel {
@@ -424,113 +282,6 @@ impl ProductModel {
     pub fn object_def(&self, reference: &str) -> Option<&ObjectDef> {
         self.com_object_refs.get(reference).or_else(|| {
             crate::blocks::object_number(reference).and_then(|n| self.com_objects.get(&n))
-        })
-    }
-
-    /// Parses a product model from YAML text (the emitter's banner is a comment
-    /// and is ignored). `app_ref` is the application id, used to strip the
-    /// prefix from each parameter id so lookups are app-relative.
-    pub fn from_yaml(text: &str, app_ref: &str) -> Result<Self, serde_norway::Error> {
-        let raw: RawModel = serde_norway::from_str(text)?;
-        let mut parameters = BTreeMap::new();
-        let mut parameter_refs = BTreeMap::new();
-        let prefix = format!("{app_ref}_");
-        let relative = |id: &str| id.strip_prefix(&prefix).unwrap_or(id).to_string();
-        for p in raw.parameters {
-            let rel = relative(&p.id);
-            let (labels, enum_values) = match &p.param_type {
-                RawType::Enum { values } => (
-                    values
-                        .iter()
-                        .filter_map(|v| v.text.clone().map(|t| (v.value, t)))
-                        .collect(),
-                    values
-                        .iter()
-                        .map(|v| {
-                            let text = v.text.clone().unwrap_or_default();
-                            crate::dynamic::EnumValue {
-                                value: v.value,
-                                default_text: text.clone(),
-                                text,
-                                translations: BTreeMap::new(),
-                                id: None,
-                                binary_value: None,
-                            }
-                        })
-                        .collect(),
-                ),
-                _ => (Vec::new(), Vec::new()),
-            };
-            let mut refs = Vec::with_capacity(p.refs.len());
-            for (reference, def) in p.refs {
-                let def = def.unwrap_or_default();
-                let reference = relative(&reference);
-                refs.push(reference.clone());
-                parameter_refs.insert(
-                    reference,
-                    RefDef {
-                        parameter: rel.clone(),
-                        value: def.value,
-                        internal: def.internal,
-                        text: def.text,
-                    },
-                );
-            }
-            parameters.insert(
-                rel,
-                ParamDef {
-                    labels,
-                    kind: p.param_type.into_kind(),
-                    default: p.default,
-                    text: p.text.filter(|t| !t.trim().is_empty()),
-                    name: p.name.filter(|n| !n.trim().is_empty()),
-                    refs,
-                    base_value: p.base_value,
-                    integer_width: p.bits.map(|bits| (bits, p.signed)),
-                    enum_values,
-                    initial_value: p.initial_value,
-                    is_virtual: p.is_virtual,
-                },
-            );
-        }
-        let object = |o: RawComObject| ObjectDef {
-            text: o.text,
-            function: o.function_text,
-            dpt: o.dpt,
-            flags: o.flags,
-            priority: o.priority,
-        };
-        let com_objects = raw
-            .com_objects
-            .into_iter()
-            .map(|(n, o)| (n, object(o)))
-            .collect();
-        let com_object_refs = raw
-            .com_object_refs
-            .into_iter()
-            .map(|(r, o)| (r, object(o)))
-            .collect();
-        Ok(ProductModel {
-            bus_current_ma: raw.bus_current_ma,
-            parameters,
-            com_objects,
-            com_object_refs,
-            program_id: app_ref.to_string(),
-            data_secure: raw.data_secure,
-            dynamic: raw.dynamic,
-            module_dynamics: raw.module_dynamics,
-            unions: raw.unions,
-            parameter_refs,
-            allocators: raw.allocators,
-            argument_allocates: raw.argument_allocates,
-            system_b: raw
-                .identity
-                .and_then(|i| i.mask_version)
-                .is_some_and(|m| is_system_b_mask(&m)),
-            calculations: raw.calculations,
-            pages: std::sync::OnceLock::new(),
-            pages_with_modules: std::sync::OnceLock::new(),
-            ref_index: std::sync::OnceLock::new(),
         })
     }
 
@@ -743,48 +494,77 @@ pub fn is_system_b_mask(mask: &str) -> bool {
     u16::from_str_radix(digits, 16).is_ok_and(|m| m & 0x0FFF == 0x07B0)
 }
 
-impl RawType {
-    fn into_kind(self) -> ParamKind {
-        match self {
-            RawType::Int {
-                min, max, signed, ..
-            } => ParamKind::Int { min, max, signed },
-            RawType::Enum { values } => ParamKind::Enum {
-                values: values.into_iter().map(|v| v.value).collect(),
-            },
-            RawType::Text { size, encoding } => ParamKind::Text {
-                len: size.map(|b| (b / 8) as usize),
-                encoding,
-            },
-            RawType::Float { .. } => ParamKind::Float,
-            RawType::None => ParamKind::None,
-            RawType::Color { space } => ParamKind::Color { space },
-            RawType::Other { .. } => ParamKind::Other,
-        }
-    }
-}
-
 /// Where the product models live under a model directory: regenerated data
-/// under `.bussard/` (issue #228), derived from the archives in `products/`.
-pub const MODELS_DIR: &str = ".bussard/models";
+/// under `.bussard/` (issue #228), one JSON file per application program,
+/// built from the archives in `products/` (issue #906).
+pub const MODEL_CACHE_DIR: &str = ".bussard/model-cache";
 
-/// The product-model directories of `dir`, in lookup order. The location
-/// earlier versions used (`<dir>/models/`) is not read: those models
-/// regenerate from `products/`.
-pub fn models_dirs(dir: &Path) -> [std::path::PathBuf; 1] {
-    [dir.join(MODELS_DIR)]
+/// The model file of application `app_ref` under model directory `dir`.
+pub fn model_cache_path(dir: &Path, app_ref: &str) -> PathBuf {
+    dir.join(MODEL_CACHE_DIR).join(format!("{app_ref}.json"))
 }
 
-/// The product models available for validation, keyed by application ref, loaded
-/// lazily from `<dir>/models/*.yaml`.
+/// Whether an application ref can name a file (no path separator).
+fn plain_app_ref(app_ref: &str) -> bool {
+    !app_ref.is_empty() && !app_ref.contains(['/', '\\'])
+}
+
+/// Whether `dir` holds the model of `app_ref` in the current
+/// [`MODEL_FORMAT`]. Reads only the head of the file, where the header is.
+pub fn product_model_is_current(dir: &Path, app_ref: &str) -> bool {
+    use std::io::Read;
+    if !plain_app_ref(app_ref) {
+        return false;
+    }
+    let Some(wanted) = cache::header_prefix(app_ref) else {
+        return false;
+    };
+    let Ok(file) = std::fs::File::open(model_cache_path(dir, app_ref)) else {
+        return false;
+    };
+    let mut head = Vec::with_capacity(wanted.len());
+    file.take(wanted.len() as u64)
+        .read_to_end(&mut head)
+        .is_ok()
+        && head == wanted.as_bytes()
+}
+
+/// Stores `model` as the model of its application (`program_id`) under
+/// model directory `dir`, atomically (a temporary file and a rename), and
+/// memoizes it so the command that wrote it does not read it back.
 ///
-/// Missing or unparsable files are simply absent from the map (a missing model
-/// is an info-level note during validation, never a hard error). The `models/`
-/// directory is local-only vendor-derived data, so it is often absent entirely.
+/// # Errors
 ///
-/// Each model is shared ([`Arc`]): a load is served from a process-wide memo
-/// and the JSON cache under [`MODEL_CACHE_DIR`] (issue #339), so a model file
-/// is parsed at most once per process and per change.
+/// The program id cannot name a file, or the file cannot be written.
+pub fn write_product_model(dir: &Path, model: ProductModel) -> std::io::Result<()> {
+    if !plain_app_ref(&model.program_id) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            format!("no file name for application {:?}", model.program_id),
+        ));
+    }
+    cache::store(&model_cache_path(dir, &model.program_id), model)
+}
+
+/// The model `dir` holds for `app_ref`, when the file is of this build's
+/// format; `None` when it is missing, outdated or unreadable. Bypasses the
+/// memo: what a test or a diagnostic checks the file with.
+pub fn cached_product_model(dir: &Path, app_ref: &str) -> Option<ProductModel> {
+    if !plain_app_ref(app_ref) {
+        return None;
+    }
+    cache::read(&model_cache_path(dir, app_ref), app_ref)
+}
+
+/// The product models available for validation and the views, keyed by
+/// application ref, loaded lazily from `<dir>/.bussard/model-cache/*.json`.
+///
+/// Missing, outdated or unparsable files are simply absent from the map (a
+/// missing model is an info-level note during validation, never a hard
+/// error). The directory is regenerated data, so it is often absent entirely.
+///
+/// Each model is shared ([`Arc`]) and served from a process-wide memo (issue
+/// #339), so a model file is read at most once per process and per change.
 #[derive(Debug, Clone, Default)]
 pub struct ProductModels {
     /// Parsed models keyed by application ref (the file stem).
@@ -792,51 +572,39 @@ pub struct ProductModels {
 }
 
 impl ProductModels {
-    /// Loads every `models/*.yaml` under `dir` (best-effort). Returns an empty
-    /// set when the directory is absent. Individual files that fail to parse are
+    /// Loads every model under `dir` (best-effort). Returns an empty set when
+    /// the directory is absent. Individual files that fail to load are
     /// skipped (their app then reads as "no model", an info-level note).
     pub fn load(dir: &Path) -> Self {
         let mut by_app_ref = BTreeMap::new();
-        let entries = models_dirs(dir)
-            .into_iter()
-            .filter_map(|d| std::fs::read_dir(d).ok())
-            .flat_map(|rd| rd.flatten());
-        for entry in entries {
+        let Ok(entries) = std::fs::read_dir(dir.join(MODEL_CACHE_DIR)) else {
+            return Self { by_app_ref };
+        };
+        for entry in entries.flatten() {
             let path = entry.path();
-            let is_yaml = path
-                .extension()
-                .and_then(|e| e.to_str())
-                .is_some_and(|e| e == "yaml" || e == "yml");
-            if !is_yaml {
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
             let Some(app_ref) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            if by_app_ref.contains_key(app_ref) {
-                continue;
-            }
-            if let Some(model) = cache::load(dir, &path, app_ref) {
+            if let Some(model) = cache::load(&path, app_ref) {
                 by_app_ref.insert(app_ref.to_string(), model);
             }
         }
         Self { by_app_ref }
     }
 
-    /// Loads only `models/<app_ref>.yaml` for each of `app_refs` (best-effort,
-    /// like [`ProductModels::load`]): what a model load or save needs to
-    /// translate enum labels, without parsing every cached model.
+    /// Loads only the models of `app_refs` (best-effort, like
+    /// [`ProductModels::load`]): what a model load or save needs to translate
+    /// enum labels, without reading every stored model.
     pub fn load_apps<'a>(dir: &Path, app_refs: impl IntoIterator<Item = &'a str>) -> Self {
-        let dirs = models_dirs(dir);
         let mut by_app_ref = BTreeMap::new();
         for app_ref in app_refs {
-            if by_app_ref.contains_key(app_ref) || app_ref.contains(['/', '\\']) {
+            if by_app_ref.contains_key(app_ref) || !plain_app_ref(app_ref) {
                 continue;
             }
-            let model = dirs
-                .iter()
-                .find_map(|d| cache::load(dir, &d.join(format!("{app_ref}.yaml")), app_ref));
-            if let Some(model) = model {
+            if let Some(model) = cache::load(&model_cache_path(dir, app_ref), app_ref) {
                 by_app_ref.insert(app_ref.to_string(), model);
             }
         }
@@ -860,97 +628,53 @@ impl ProductModels {
         self.get(app_ref)?.parameters.get(&id)
     }
 
-    /// How many product-model files this process has parsed from YAML (a
-    /// memo and JSON-cache miss) and read from the JSON cache: what
-    /// `--timing` reports.
-    pub fn load_counts() -> (usize, usize) {
-        cache::counts()
+    /// How many product-model files this process has read (memo misses):
+    /// what `--timing` reports.
+    pub fn load_count() -> usize {
+        cache::reads()
     }
 }
 
-/// Where the converted product models are cached as JSON under a model
-/// directory (issue #339), next to [`MODELS_DIR`] rather than inside it: the
-/// model loader fingerprints `models/`, and a cache written there would
-/// invalidate its memo. `.bussard/` is disposable, so a missing cache only
-/// costs a parse.
-pub const MODEL_CACHE_DIR: &str = ".bussard/model-cache";
-
-/// The JSON cache file of application `app_ref` under model directory `dir`.
-pub fn model_cache_path(dir: &Path, app_ref: &str) -> PathBuf {
-    dir.join(MODEL_CACHE_DIR).join(format!("{app_ref}.json"))
-}
-
-/// Converts the product model YAML `yaml`, just written to
-/// `<dir>/.bussard/models/<app_ref>.yaml`, and stores the result in the JSON
-/// cache and the process memo, so the first command after an import does not
-/// parse it. The conversion is [`ProductModel::from_yaml`], the same as a
-/// load's. Best effort: a text that does not parse or does not match the file
-/// on disk, or a cache that cannot be written, is skipped.
-pub fn cache_written_model(dir: &Path, app_ref: &str, yaml: &str) {
-    if app_ref.contains(['/', '\\']) {
-        return;
-    }
-    let path = dir.join(MODELS_DIR).join(format!("{app_ref}.yaml"));
-    cache::store_written(dir, &path, app_ref, yaml);
-}
-
-/// The model the JSON cache holds for `app_ref` under model directory `dir`,
-/// when its header matches `.bussard/models/<app_ref>.yaml` on disk and this
-/// build; `None` when it is missing, stale or unreadable. Bypasses the memo:
-/// what a test or a diagnostic checks the cache with.
-pub fn cached_product_model(dir: &Path, app_ref: &str) -> Option<ProductModel> {
-    if app_ref.contains(['/', '\\']) {
-        return None;
-    }
-    let path = dir.join(MODELS_DIR).join(format!("{app_ref}.yaml"));
-    cache::read_cache(dir, app_ref, cache::Stamp::of(&path)?)
-}
-
-/// The process-wide memo and the JSON cache behind [`ProductModels`] (issue
-/// #339): a product model is parsed from YAML once per process and change,
-/// and across processes only when its JSON cache is missing or stale.
+/// The process-wide memo behind [`ProductModels`] (issue #339) and the file
+/// layout: a header, then the model.
 mod cache {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
 
     use serde::{Deserialize, Serialize};
 
-    use super::{MODEL_FORMAT, ProductModel, model_cache_path};
+    use super::{MODEL_FORMAT, ProductModel};
 
-    /// The cache file layout; a cache of another one is ignored and rewritten.
-    pub(super) const CACHE_SCHEMA: u32 = 1;
+    /// The file layout; a file of another one is ignored and rebuilt.
+    pub(super) const SCHEMA: u32 = 2;
 
-    /// YAML parses so far (memo and cache misses).
-    static YAML_PARSES: AtomicUsize = AtomicUsize::new(0);
-    /// JSON cache reads so far.
-    static CACHE_READS: AtomicUsize = AtomicUsize::new(0);
+    /// Model files read so far (memo misses).
+    static READS: AtomicUsize = AtomicUsize::new(0);
 
     #[cfg(test)]
     thread_local! {
-        /// This thread's (YAML parses, cache reads): what a unit test counts,
-        /// unaffected by tests running in parallel threads.
-        pub(super) static THREAD_COUNTS: std::cell::Cell<(usize, usize)> =
-            const { std::cell::Cell::new((0, 0)) };
+        /// This thread's reads: what a unit test counts, unaffected by tests
+        /// running in parallel threads.
+        pub(super) static THREAD_READS: std::cell::Cell<usize> =
+            const { std::cell::Cell::new(0) };
     }
 
-    /// Counts one YAML parse.
-    fn count_parse() {
-        YAML_PARSES.fetch_add(1, Ordering::Relaxed);
+    /// Counts one read.
+    fn count_read() {
+        READS.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
-        THREAD_COUNTS.with(|c| c.set((c.get().0 + 1, c.get().1)));
+        THREAD_READS.with(|c| c.set(c.get() + 1));
     }
 
-    /// Counts one cache read.
-    fn count_cache_read() {
-        CACHE_READS.fetch_add(1, Ordering::Relaxed);
-        #[cfg(test)]
-        THREAD_COUNTS.with(|c| c.set((c.get().0, c.get().1 + 1)));
+    /// Model files read so far.
+    pub(super) fn reads() -> usize {
+        READS.load(Ordering::Relaxed)
     }
 
-    /// Drops the memo entry of `path`, so the next load goes to the cache.
+    /// Drops the memo entry of `path`, so the next load reads the file.
     #[cfg(test)]
     pub(super) fn forget(path: &Path) {
         if let Ok(mut memo) = MEMO.lock()
@@ -963,82 +687,66 @@ mod cache {
     /// The identity of a model file on disk: its length and modification
     /// time. A rewrite changes at least one of them.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(super) struct Stamp {
+    struct Stamp {
         len: u64,
         mtime: SystemTime,
     }
 
     impl Stamp {
         /// The stamp of the file at `path`, if it exists and has a time.
-        pub(super) fn of(path: &Path) -> Option<Self> {
+        fn of(path: &Path) -> Option<Self> {
             let meta = std::fs::metadata(path).ok()?;
             Some(Self {
                 len: meta.len(),
                 mtime: meta.modified().ok()?,
             })
         }
-
-        /// The modification time as (seconds, nanoseconds) since the epoch,
-        /// which round-trips a `SystemTime` exactly. `None` before the epoch.
-        fn mtime_parts(self) -> Option<(u64, u32)> {
-            let d = self.mtime.duration_since(UNIX_EPOCH).ok()?;
-            Some((d.as_secs(), d.subsec_nanos()))
-        }
     }
 
-    /// One memoized model: the stamp it was parsed at and the model.
+    /// One memoized model: the stamp it was read at and the model.
     type MemoEntry = (Stamp, Arc<ProductModel>);
 
     /// The memo, keyed by the model file's path.
     static MEMO: Mutex<Option<HashMap<PathBuf, MemoEntry>>> = Mutex::new(None);
 
-    /// The cache file's header: everything that must match the YAML on disk
-    /// and this build for the cached model to stand for it.
+    /// A model file's header: what must match this build and the file name
+    /// for the model to be used.
     #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
     struct Header {
         schema: u32,
         model_format: u32,
         application: String,
-        yaml_len: u64,
-        yaml_mtime_secs: u64,
-        yaml_mtime_nanos: u32,
     }
 
     impl Header {
-        /// The header a cache of `app_ref` at `stamp` must carry.
-        fn expected(app_ref: &str, stamp: Stamp) -> Option<Self> {
-            let (secs, nanos) = stamp.mtime_parts()?;
-            Some(Self {
-                schema: CACHE_SCHEMA,
+        /// The header a model file of `app_ref` must carry.
+        fn expected(app_ref: &str) -> Self {
+            Self {
+                schema: SCHEMA,
                 model_format: MODEL_FORMAT,
                 application: app_ref.to_string(),
-                yaml_len: stamp.len,
-                yaml_mtime_secs: secs,
-                yaml_mtime_nanos: nanos,
-            })
+            }
         }
     }
 
-    /// A cache file as read: the header, then the model.
+    /// A model file as read: the header, then the model.
     #[derive(Deserialize)]
-    struct CacheFileIn {
+    struct FileIn {
         header: Header,
         model: ProductModel,
     }
 
-    /// A cache file as written.
+    /// A model file as written.
     #[derive(Serialize)]
-    struct CacheFileOut<'a> {
+    struct FileOut<'a> {
         header: &'a Header,
         model: &'a ProductModel,
     }
 
-    /// (YAML parses, JSON cache reads) so far.
-    pub(super) fn counts() -> (usize, usize) {
-        (
-            YAML_PARSES.load(Ordering::Relaxed),
-            CACHE_READS.load(Ordering::Relaxed),
-        )
+    /// The bytes a current model file of `app_ref` starts with.
+    pub(super) fn header_prefix(app_ref: &str) -> Option<String> {
+        let header = serde_json::to_string(&Header::expected(app_ref)).ok()?;
+        Some(format!("{{\"header\":{header}"))
     }
 
     /// The memoized model of `path`, if memoized at `stamp`.
@@ -1056,77 +764,51 @@ mod cache {
         }
     }
 
-    /// The model the JSON cache holds for `app_ref`, if its header matches.
-    pub(super) fn read_cache(dir: &Path, app_ref: &str, stamp: Stamp) -> Option<ProductModel> {
-        let expected = Header::expected(app_ref, stamp)?;
-        let bytes = std::fs::read(model_cache_path(dir, app_ref)).ok()?;
-        let file: CacheFileIn = serde_json::from_slice(&bytes).ok()?;
-        (file.header == expected).then_some(file.model)
+    /// The model the file at `path` holds for `app_ref`, if its header
+    /// matches.
+    pub(super) fn read(path: &Path, app_ref: &str) -> Option<ProductModel> {
+        let bytes = std::fs::read(path).ok()?;
+        let file: FileIn = serde_json::from_slice(&bytes).ok()?;
+        (file.header == Header::expected(app_ref)).then_some(file.model)
     }
 
-    /// Writes the JSON cache of `app_ref` atomically (temp file and rename).
-    /// Errors are ignored: the cache is an optimization.
-    fn write_cache(dir: &Path, app_ref: &str, stamp: Stamp, model: &ProductModel) {
-        let Some(header) = Header::expected(app_ref, stamp) else {
-            return;
-        };
-        let cache = model_cache_path(dir, app_ref);
-        let Ok(json) = serde_json::to_vec(&CacheFileOut {
+    /// Writes `model` to `path` through a temporary file, and memoizes it.
+    pub(super) fn store(path: &Path, model: ProductModel) -> std::io::Result<()> {
+        let header = Header::expected(&model.program_id);
+        let json = serde_json::to_vec(&FileOut {
             header: &header,
-            model,
-        }) else {
-            return;
-        };
-        let Some(parent) = cache.parent() else {
-            return;
-        };
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
+            model: &model,
+        })
+        .map_err(std::io::Error::other)?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
-        let tmp = cache.with_extension(format!("json.{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, json).is_err() || std::fs::rename(&tmp, &cache).is_err() {
+        let tmp = path.with_extension(format!("json.{}.tmp", std::process::id()));
+        if let Err(err) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, path)) {
             let _ = std::fs::remove_file(&tmp);
+            return Err(err);
         }
+        if let Some(stamp) = Stamp::of(path) {
+            memo_put(path, stamp, &Arc::new(model));
+        }
+        Ok(())
     }
 
-    /// The product model in file `path` (application `app_ref`, under model
-    /// directory `dir`): from the memo, else the JSON cache, else parsed from
-    /// the YAML (and cached). `None` when the file is missing or unparsable.
-    pub(super) fn load(dir: &Path, path: &Path, app_ref: &str) -> Option<Arc<ProductModel>> {
+    /// The product model in file `path` (application `app_ref`): from the
+    /// memo, else read. `None` when the file is missing, outdated or
+    /// unparsable.
+    pub(super) fn load(path: &Path, app_ref: &str) -> Option<Arc<ProductModel>> {
         let stamp = Stamp::of(path)?;
         if let Some(model) = memo_get(path, stamp) {
             return Some(model);
         }
-        if let Some(model) = read_cache(dir, app_ref, stamp) {
-            count_cache_read();
-            let model = Arc::new(model);
-            memo_put(path, stamp, &model);
-            return Some(model);
-        }
-        let text = std::fs::read_to_string(path).ok()?;
-        count_parse();
-        let model = Arc::new(ProductModel::from_yaml(&text, app_ref).ok()?);
+        let model = Arc::new(read(path, app_ref)?);
+        count_read();
         // Remember it only when the file did not change under the read.
         if Stamp::of(path) == Some(stamp) {
-            write_cache(dir, app_ref, stamp, &model);
             memo_put(path, stamp, &model);
         }
         Some(model)
-    }
-
-    /// Converts `yaml`, the text just written to `path`, and caches it.
-    pub(super) fn store_written(dir: &Path, path: &Path, app_ref: &str, yaml: &str) {
-        let Some(stamp) = Stamp::of(path) else {
-            return;
-        };
-        if stamp.len != yaml.len() as u64 {
-            return;
-        }
-        let Ok(model) = ProductModel::from_yaml(yaml, app_ref) else {
-            return;
-        };
-        write_cache(dir, app_ref, stamp, &model);
-        memo_put(path, stamp, &Arc::new(model));
     }
 }
 
@@ -1232,32 +914,38 @@ mod tests {
         assert_eq!(key_to_param_id("slug@P-1"), None);
     }
 
-    const REFS_YAML: &str = "\
-parameters:
-  - id: M-1_A-1_MD-3_P-14
-    text: Betriebsart
-    type: !int
-      min: 0
-    refs: {M-1_A-1_MD-3_P-14_R-14: {}}
-  - id: M-1_A-1_P-19
-    text: Regenalarm
-    type: !int
-      min: 0
-    refs: {M-1_A-1_P-19_R-38: {}}
-  - id: M-1_A-1_P-20
-    text: Zwei Refs
-    type: !int
-      min: 0
-    refs: {M-1_A-1_P-20_R-1: {}, M-1_A-1_P-20_R-2: {}}
-  - id: M-1_A-1_P-21
-    name: OhneRefs
-    type: !int
-      min: 0
-";
+    /// A model with four parameters: one of a module, two with refs, one
+    /// with two refs and one without.
+    fn refs_model() -> ProductModel {
+        let mut model = ProductModel {
+            program_id: "M-1_A-1".to_string(),
+            ..ProductModel::default()
+        };
+        for (id, text, refs) in [
+            ("MD-3_P-14", Some("Betriebsart"), &["MD-3_P-14_R-14"][..]),
+            ("P-19", Some("Regenalarm"), &["P-19_R-38"][..]),
+            ("P-20", Some("Zwei Refs"), &["P-20_R-1", "P-20_R-2"][..]),
+            ("P-21", None, &[][..]),
+        ] {
+            let def = ParamDef {
+                kind: ParamKind::Int {
+                    min: Some(0),
+                    max: None,
+                    signed: false,
+                },
+                text: text.map(str::to_string),
+                name: text.is_none().then(|| "OhneRefs".to_string()),
+                refs: refs.iter().map(|r| r.to_string()).collect(),
+                ..ParamDef::default()
+            };
+            model.parameters.insert(id.to_string(), def);
+        }
+        model
+    }
 
     #[test]
-    fn test_resolve_key_through_text_and_refs() -> Result<(), serde_norway::Error> {
-        let model = ProductModel::from_yaml(REFS_YAML, "M-1_A-1")?;
+    fn test_resolve_key_through_text_and_refs() {
+        let model = refs_model();
         assert_eq!(
             model
                 .resolve_key(Some("MD-3_M-18_MI-1"), "betriebsart")
@@ -1278,77 +966,6 @@ parameters:
         assert_eq!(model.resolve_key(None, "zwei-refs"), None);
         assert_eq!(model.resolve_key(None, "ohnerefs"), None);
         assert_eq!(model.resolve_key(None, "unbekannt"), None);
-        Ok(())
-    }
-
-    /// Issue #616: format 11 writes a `<TypeColor>` as `!color {space}`.
-    #[test]
-    fn test_from_yaml_color_type() -> Result<(), Box<dyn std::error::Error>> {
-        let yaml = "\
-identity:
-  id: M-00FA_A-1
-parameters:
-  - id: M-00FA_A-1_P-1
-    type: !color
-      space: HSV
-    default: '#FF0000'
-";
-        let m = ProductModel::from_yaml(yaml, "M-00FA_A-1")?;
-        let p = m.parameters.get("P-1").ok_or("no P-1")?;
-        assert!(matches!(
-            p.kind,
-            ParamKind::Color {
-                space: crate::color_codec::ColorSpace::Hsv
-            }
-        ));
-        assert_eq!(p.default.as_deref(), Some("#FF0000"));
-        Ok(())
-    }
-
-    #[test]
-    fn parses_model_yaml_indexed_app_relative() -> Result<(), Box<dyn std::error::Error>> {
-        let app = "M-00FA_A-1";
-        let yaml = "\
-identity:
-  id: M-00FA_A-1
-parameters:
-  - id: M-00FA_A-1_MD-1_P-3
-    name: _xJA_Windalarm
-    type: !int
-      min: 0
-      max: 3
-      size: 2
-    default: '0'
-  - id: M-00FA_A-1_P-9
-    type: !enum
-      values:
-        - value: 0
-          text: Off
-        - value: 7
-          text: On
-    default: '0'
-";
-        let m = ProductModel::from_yaml(yaml, app)?;
-        assert!(m.parameters.contains_key("MD-1_P-3"));
-        let p = &m.parameters["MD-1_P-3"];
-        assert!(matches!(
-            p.kind,
-            ParamKind::Int {
-                min: Some(0),
-                max: Some(3),
-                ..
-            }
-        ));
-        assert_eq!(p.default.as_deref(), Some("0"));
-        match &m.parameters["P-9"].kind {
-            ParamKind::Enum { values } => assert_eq!(values, &[0, 7]),
-            other => panic!("expected enum, got {other:?}"),
-        }
-        assert_eq!(
-            m.parameters["P-9"].labels,
-            vec![(0, "Off".to_string()), (7, "On".to_string())]
-        );
-        Ok(())
     }
 
     fn labels(pairs: &[(i64, &str)]) -> Vec<(i64, String)> {
@@ -1376,21 +993,14 @@ parameters:
     }
 
     type TestErr = Box<dyn std::error::Error>;
-    /// (YAML parses, cache reads) a load cost.
-    type Cost = (usize, usize);
-    /// One way to break the cache file.
-    type Breaker = Box<dyn Fn(&CacheScratch) -> Result<(), TestErr>>;
 
-    /// A scratch model directory holding `.bussard/models/<app>.yaml`.
-    struct CacheScratch {
-        dir: PathBuf,
-        yaml: PathBuf,
-    }
+    /// A scratch model directory, removed on drop.
+    struct Scratch(PathBuf);
 
-    impl CacheScratch {
+    impl Scratch {
         const APP: &'static str = "M-1_A-1";
 
-        fn new(tag: &str) -> Result<Self, Box<dyn std::error::Error>> {
+        fn new(tag: &str) -> Result<Self, TestErr> {
             // Only portable file-name characters: a Debug-formatted
             // SystemTime holds braces and colons, which Windows rejects.
             let nanos = std::time::SystemTime::now()
@@ -1401,170 +1011,94 @@ parameters:
                 "bussard-model-cache-{tag}-{}-{nanos}",
                 std::process::id()
             ));
-            std::fs::create_dir_all(dir.join(MODELS_DIR))?;
-            let yaml = dir.join(MODELS_DIR).join(format!("{}.yaml", Self::APP));
-            std::fs::write(&yaml, REFS_YAML)?;
-            Ok(Self { dir, yaml })
+            std::fs::create_dir_all(&dir)?;
+            Ok(Self(dir))
         }
 
-        /// Loads the model; returns it with the (parses, cache reads) it cost.
-        fn load(&self) -> Result<(Arc<ProductModel>, Cost), TestErr> {
-            let before = cache::THREAD_COUNTS.with(std::cell::Cell::get);
-            let models = ProductModels::load_apps(&self.dir, [Self::APP]);
-            let after = cache::THREAD_COUNTS.with(std::cell::Cell::get);
+        fn file(&self) -> PathBuf {
+            model_cache_path(&self.0, Self::APP)
+        }
+
+        /// Loads the model; returns it with the file reads it cost.
+        fn load(&self) -> Result<(Arc<ProductModel>, usize), TestErr> {
+            let before = cache::THREAD_READS.with(std::cell::Cell::get);
+            let models = ProductModels::load_apps(&self.0, [Self::APP]);
+            let after = cache::THREAD_READS.with(std::cell::Cell::get);
             let model = models
                 .by_app_ref
                 .get(Self::APP)
                 .cloned()
                 .ok_or("the model loads")?;
-            Ok((model, (after.0 - before.0, after.1 - before.1)))
+            Ok((model, after - before))
         }
 
-        fn cache(&self) -> PathBuf {
-            model_cache_path(&self.dir, Self::APP)
-        }
-
-        /// Rewrites one field of the cache file's header.
-        fn edit_header(
-            &self,
-            field: &str,
-            value: serde_json::Value,
-        ) -> Result<(), Box<dyn std::error::Error>> {
-            let mut json: serde_json::Value =
-                serde_json::from_slice(&std::fs::read(self.cache())?)?;
+        /// Rewrites one field of the file's header.
+        fn edit_header(&self, field: &str, value: serde_json::Value) -> Result<(), TestErr> {
+            let mut json: serde_json::Value = serde_json::from_slice(&std::fs::read(self.file())?)?;
             json["header"][field] = value;
-            std::fs::write(self.cache(), serde_json::to_vec(&json)?)?;
-            Ok(())
-        }
-
-        /// Sets the YAML's modification time `secs` seconds into the future.
-        fn touch(&self, secs: u64) -> Result<(), Box<dyn std::error::Error>> {
-            let at = std::time::SystemTime::now() + std::time::Duration::from_secs(secs);
-            std::fs::File::options()
-                .write(true)
-                .open(&self.yaml)?
-                .set_modified(at)?;
+            std::fs::write(self.file(), serde_json::to_vec(&json)?)?;
             Ok(())
         }
     }
 
-    impl Drop for CacheScratch {
+    impl Drop for Scratch {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.dir);
+            let _ = std::fs::remove_dir_all(&self.0);
         }
     }
 
     #[test]
-    fn test_load_apps_memo_hit_and_miss() -> Result<(), Box<dyn std::error::Error>> {
-        let s = CacheScratch::new("memo")?;
-        let (first, cost) = s.load()?;
-        assert_eq!(cost, (1, 0), "a cold load parses the YAML");
-        assert!(s.cache().is_file(), "and writes the cache");
-        let (again, cost) = s.load()?;
-        assert_eq!(cost, (0, 0), "a second load is a memo hit");
-        assert!(Arc::ptr_eq(&first, &again), "sharing the parsed model");
-        let all = ProductModels::load(&s.dir);
-        assert!(Arc::ptr_eq(&first, &all.by_app_ref[CacheScratch::APP]));
+    fn test_load_apps_memo_hit_and_miss() -> Result<(), TestErr> {
+        let s = Scratch::new("memo")?;
+        write_product_model(&s.0, refs_model())?;
+        assert!(product_model_is_current(&s.0, Scratch::APP));
+        let (first, reads) = s.load()?;
+        assert_eq!(reads, 0, "the write memoized the model");
+        cache::forget(&s.file());
+        let (again, reads) = s.load()?;
+        assert_eq!(reads, 1, "a new process reads the file");
+        assert_eq!(format!("{first:?}"), format!("{again:?}"));
+        let (third, reads) = s.load()?;
+        assert_eq!(reads, 0, "a second load is a memo hit");
+        assert!(Arc::ptr_eq(&again, &third), "sharing the parsed model");
+        let all = ProductModels::load(&s.0);
+        assert!(Arc::ptr_eq(&again, &all.by_app_ref[Scratch::APP]));
 
-        // A rewrite of another length is parsed again.
-        std::fs::write(&s.yaml, REFS_YAML.replace("Regenalarm", "Regenalarm2"))?;
-        let (changed, cost) = s.load()?;
-        assert_eq!(cost, (1, 0));
-        assert!(
-            changed
-                .parameters
-                .values()
-                .any(|p| p.text.as_deref() == Some("Regenalarm2"))
-        );
-
-        // A rewrite of the same length is parsed again by its new mtime.
-        std::fs::write(&s.yaml, REFS_YAML.replace("Regenalarm", "Regenalarx"))?;
-        s.touch(5)?;
-        let (changed, cost) = s.load()?;
-        assert_eq!(cost, (1, 0));
-        assert!(
-            changed
-                .parameters
-                .values()
-                .any(|p| p.text.as_deref() == Some("Regenalarx"))
-        );
+        // A rewrite by another process is read again.
+        let mut changed = refs_model();
+        changed.system_b = true;
+        let json = std::fs::read_to_string(s.file())?;
+        std::fs::write(
+            s.file(),
+            json.replacen("\"program_id\"", "\"system_b\":true,\"program_id\"", 1),
+        )?;
+        let (reread, reads) = s.load()?;
+        assert_eq!(reads, 1);
+        assert!(reread.system_b);
         Ok(())
     }
 
+    /// Every header mismatch and a corrupt file make the file unusable.
     #[test]
-    fn test_load_apps_reads_a_matching_cache() -> Result<(), Box<dyn std::error::Error>> {
-        let s = CacheScratch::new("hit")?;
-        let (parsed, _) = s.load()?;
-        cache::forget(&s.yaml);
-        let (cached, cost) = s.load()?;
-        assert_eq!(cost, (0, 1), "a new process reads the JSON cache");
-        assert_eq!(format!("{parsed:?}"), format!("{cached:?}"));
-        Ok(())
-    }
-
-    /// Every header mismatch and a corrupt file fall back to the YAML and
-    /// rewrite the cache.
-    #[test]
-    fn test_load_apps_rejects_a_stale_cache() -> Result<(), Box<dyn std::error::Error>> {
-        let s = CacheScratch::new("stale")?;
-        s.load()?;
-        let breaks: [(&str, Breaker); 6] = [
-            ("len", Box::new(|s| s.edit_header("yaml_len", 1.into()))),
-            (
-                "mtime secs",
-                Box::new(|s| s.edit_header("yaml_mtime_secs", 1.into())),
-            ),
-            (
-                "mtime nanos",
-                Box::new(|s| s.edit_header("yaml_mtime_nanos", 7.into())),
-            ),
-            (
-                "schema",
-                Box::new(|s| s.edit_header("schema", (cache::CACHE_SCHEMA + 1).into())),
-            ),
-            (
-                "model format",
-                Box::new(|s| s.edit_header("model_format", (MODEL_FORMAT - 1).into())),
-            ),
-            (
-                "corrupt",
-                Box::new(|s| Ok(std::fs::write(s.cache(), b"{\"header\": nope")?)),
-            ),
+    fn test_load_apps_rejects_an_outdated_file() -> Result<(), TestErr> {
+        let s = Scratch::new("stale")?;
+        let breaks: [(&str, &str, serde_json::Value); 3] = [
+            ("schema", "schema", (cache::SCHEMA + 1).into()),
+            ("model format", "model_format", (MODEL_FORMAT - 1).into()),
+            ("application", "application", "M-2_A-2".into()),
         ];
-        for (what, break_it) in breaks {
-            break_it(&s)?;
-            assert!(
-                cached_product_model(&s.dir, CacheScratch::APP).is_none(),
-                "{what}"
-            );
-            cache::forget(&s.yaml);
-            let (_, cost) = s.load()?;
-            assert_eq!(cost, (1, 0), "{what}: parsed from YAML");
-            assert!(
-                cached_product_model(&s.dir, CacheScratch::APP).is_some(),
-                "{what}: rewritten"
-            );
+        for (what, field, value) in breaks {
+            write_product_model(&s.0, refs_model())?;
+            s.edit_header(field, value)?;
+            assert!(!product_model_is_current(&s.0, Scratch::APP), "{what}");
+            assert!(cached_product_model(&s.0, Scratch::APP).is_none(), "{what}");
+            cache::forget(&s.file());
+            assert!(s.load().is_err(), "{what}");
         }
-
-        // A YAML touched after the cache was written makes it stale too.
-        s.touch(10)?;
-        assert!(cached_product_model(&s.dir, CacheScratch::APP).is_none());
-        cache::forget(&s.yaml);
-        let (_, cost) = s.load()?;
-        assert_eq!(cost, (1, 0));
-        Ok(())
-    }
-
-    #[test]
-    fn test_cache_written_model_seeds_the_cache() -> Result<(), Box<dyn std::error::Error>> {
-        let s = CacheScratch::new("written")?;
-        cache_written_model(&s.dir, CacheScratch::APP, REFS_YAML);
-        assert!(cached_product_model(&s.dir, CacheScratch::APP).is_some());
-        let (_, cost) = s.load()?;
-        assert_eq!(cost, (0, 0), "the write seeded the memo");
-        cache::forget(&s.yaml);
-        let (_, cost) = s.load()?;
-        assert_eq!(cost, (0, 1), "and the cache");
+        std::fs::write(s.file(), b"{\"header\": nope")?;
+        assert!(cached_product_model(&s.0, Scratch::APP).is_none());
+        write_product_model(&s.0, refs_model())?;
+        assert!(cached_product_model(&s.0, Scratch::APP).is_some());
         Ok(())
     }
 }

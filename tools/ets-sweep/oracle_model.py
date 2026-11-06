@@ -18,7 +18,7 @@ the same shape the sim catalog loop uses (bussard-cli tests/it/sim_catalog_loop.
 
 A product file is imported once (`shared_import`): every row of the same file
 gets a small model of its own whose `products/` and the product caches under
-`.bussard/` (`products`, `models`, `model-cache`) are links into the shared
+`.bussard/` (`products`, `model-cache`) are links into the shared
 import, and whose lock is the shared lock plus its device. The ABB and
 Busch-Jaeger catalogue files (152 MB) cost about 3.5 minutes and 1.6 GB per
 row when every row imported the file itself (2026-10-29).
@@ -44,7 +44,7 @@ LANGUAGE = "de-DE"
 BUSSARD = Path(os.environ.get("BUSSARD_BIN", REPO / "target" / "debug" / "bussard"))
 # The caches under `.bussard/` that depend on the product data only. A row's
 # history and device facts stay its own.
-SHARED_CACHES = ("products", "models", "model-cache")
+SHARED_CACHES = ("products", "model-cache")
 _SHA: dict[tuple, str] = {}
 
 

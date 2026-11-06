@@ -28,7 +28,7 @@
 //!   `value` (the choice label for an enumeration, when the product model
 //!   has one), the vendor `default` and `non_default`. The rows come from
 //!   [`bussard_model::device_view`], the same data `bussard device` prints;
-//!   without the product model (`.bussard/models/<application>.yaml`) `text`,
+//!   without the product model (`.bussard/model-cache/<application>.json`) `text`,
 //!   `default` and `non_default` are `null`. A parameter a
 //!   `<ParameterCalculation>` computes has the computed `value` and the
 //!   calculation's id in `computed_by` (issue #712).
@@ -55,7 +55,7 @@ pub fn project_model(model: &Model) -> Value {
 }
 
 /// The product models the devices of `model` pin, read from the model
-/// directory `dir` (`.bussard/models/<application>.yaml`). Missing or
+/// directory `dir` (`.bussard/model-cache/<application>.json`). Missing or
 /// unreadable files are simply absent. `import-product` writes these files in
 /// the lock's language, so their texts and choice labels match the device
 /// files.
@@ -853,32 +853,24 @@ fahren.listen = ["0/1/0"]
     }
 
     fn param_products() -> Result<ProductModels, Box<dyn std::error::Error>> {
-        let yaml = format!(
-            r#"parameters:
-  - id: {PARAM_APP}_P-1
-    text: "Sendeverzoegerung"
-    type: !int
-      min: 0
-      max: 255
-    default: "10"
-    refs:
-      P-1_R-1: {{}}
-  - id: {PARAM_APP}_P-2
-    text: "Betriebsart"
-    type: !enum
-      values:
-        - {{ value: 1, text: "Rollladen" }}
-        - {{ value: 2, text: "Jalousie mit Lamellenverstellung" }}
-    default: "1"
-    refs:
-      P-2_R-2: {{}}
-"#
-        );
+        let product = r#"{"parameters": {
+            "P-1": {"kind": {"Int": {"min": 0, "max": 255, "signed": false}}, "default": "10",
+                    "text": "Sendeverzoegerung", "refs": ["P-1_R-1"]},
+            "P-2": {"kind": {"Enum": {"values": [1, 2]}}, "default": "1", "text": "Betriebsart",
+                    "labels": [[1, "Rollladen"], [2, "Jalousie mit Lamellenverstellung"]],
+                    "refs": ["P-2_R-2"],
+                    "enum_values": [
+                      {"value": 1, "text": "Rollladen", "default_text": "Rollladen"},
+                      {"value": 2, "text": "Jalousie mit Lamellenverstellung",
+                       "default_text": "Jalousie mit Lamellenverstellung"}
+                    ]}
+          },
+          "parameter_refs": {"P-1_R-1": {"parameter": "P-1"}, "P-2_R-2": {"parameter": "P-2"}}
+        }"#;
+        let mut product: bussard_model::ProductModel = serde_json::from_str(product)?;
+        product.program_id = PARAM_APP.to_string();
         let mut products = ProductModels::default();
-        products.insert(
-            PARAM_APP.to_string(),
-            bussard_model::ProductModel::from_yaml(&yaml, PARAM_APP)?,
-        );
+        products.insert(PARAM_APP.to_string(), product);
         Ok(products)
     }
 

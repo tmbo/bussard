@@ -260,8 +260,7 @@ struct Tally {
 /// and [`RANDOM_SETS`] random value sets, adding what it compared to
 /// `tally` (nothing for an application without pages).
 fn check(app: &ApplicationProgram, product: &ProductData, tally: &mut Tally) -> Result<(), String> {
-    let yaml = bussard_prod::product_model::model_yaml(app, product).map_err(|e| e.to_string())?;
-    let model = ProductModel::from_yaml(&yaml, &app.id).map_err(|e| e.to_string())?;
+    let model = bussard_prod::product_model::product_model(app, product);
     if model.blocks().is_empty() {
         return Ok(());
     }
@@ -428,8 +427,7 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
                 applications: vec![app.clone()],
                 ..ProductData::default()
             };
-            let yaml = bussard_prod::product_model::model_yaml(&app, &product)?;
-            let product = ProductModel::from_yaml(&yaml, &app.id)?;
+            let product = bussard_prod::product_model::product_model(&app, &product);
             let mut products = ProductModels::default();
             products.insert(app.id.clone(), product.clone());
             let visibility = parameter_visibility(&indexed, &products, address)?;

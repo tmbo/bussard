@@ -74,9 +74,9 @@ pub fn report() -> Vec<String> {
         "  model parses     {}   keyring decrypts {decrypts}",
         bussard_model::Model::parse_count(),
     ));
-    let (yaml, cached) = bussard_model::ProductModels::load_counts();
     lines.push(format!(
-        "  product models   {yaml} parsed from YAML, {cached} read from cache"
+        "  product models   {} read",
+        bussard_model::ProductModels::load_count()
     ));
     lines
 }

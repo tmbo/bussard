@@ -45,35 +45,44 @@ betriebsart = "2"
 langzeitbetrieb.listen = ["0/1/3"]
 "#;
 
-const PRODUCT: &str = r#"identity:
-  id: M-0004_A-20DE-22-C7D8-O000A
-parameters:
-  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-14
-    text: Betriebsart
-    type: !enum
-      values:
-        - { value: 1, text: Rollladen }
-        - { value: 2, text: Jalousie }
-    default: "1"
-    refs:
-      MD-3_P-14_R-14: {}
-  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-15
-    text: Fahrzeit
-    type: !int
-      min: 1
-      max: 600
-    default: "60"
-    refs:
-      MD-3_P-15_R-15: {}
-  - id: M-0004_A-20DE-22-C7D8-O000A_P-19
-    text: Regenalarm
-    type: !enum
-      values:
-        - { value: 0, text: Nein }
-        - { value: 1, text: Ja }
-    default: "0"
-    refs:
-      P-19_R-38: {}
+const PRODUCT: &str = r#"{
+  "parameters": {
+    "MD-3_P-14": {
+      "kind": {"Enum": {"values": [1, 2]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [[1, "Rollladen"], [2, "Jalousie"]],
+      "refs": ["MD-3_P-14_R-14"],
+      "enum_values": [
+        {"value": 1, "text": "Rollladen", "default_text": "Rollladen"},
+        {"value": 2, "text": "Jalousie", "default_text": "Jalousie"}
+      ]
+    },
+    "MD-3_P-15": {
+      "kind": {"Int": {"min": 1, "max": 600, "signed": false}},
+      "default": "60",
+      "text": "Fahrzeit",
+      "refs": ["MD-3_P-15_R-15"]
+    },
+    "P-19": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Regenalarm",
+      "labels": [[0, "Nein"], [1, "Ja"]],
+      "refs": ["P-19_R-38"],
+      "enum_values": [
+        {"value": 0, "text": "Nein", "default_text": "Nein"},
+        {"value": 1, "text": "Ja", "default_text": "Ja"}
+      ]
+    }
+  },
+  "program_id": "M-0004_A-20DE-22-C7D8-O000A",
+  "parameter_refs": {
+    "MD-3_P-14_R-14": {"parameter": "MD-3_P-14"},
+    "MD-3_P-15_R-15": {"parameter": "MD-3_P-15"},
+    "P-19_R-38": {"parameter": "P-19"}
+  }
+}
 "#;
 
 fn model() -> Result<Model, Box<dyn std::error::Error>> {
@@ -90,7 +99,10 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
 
 fn products() -> Result<ProductModels, Box<dyn std::error::Error>> {
     let mut products = ProductModels::default();
-    products.insert(APP.to_string(), ProductModel::from_yaml(PRODUCT, APP)?);
+    products.insert(
+        APP.to_string(),
+        serde_json::from_str::<ProductModel>(PRODUCT)?,
+    );
     Ok(products)
 }
 

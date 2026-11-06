@@ -38,7 +38,7 @@ names and the full group-address plan of that building.
   `secure = true` GA (0/2/1), so the inspector and the projection show both;
 * parameter values (issue #259): the blind actuator 1.1.4 sets device-level
   and per-channel parameters with long German labels, and
-  `.bussard/models/M-00FA_A-0B44-11-0001.yaml` is its invented product model
+  `.bussard/model-cache/M-00FA_A-0B44-11-0001.json` is its invented product model
   (vendor texts, enum choices, defaults), so the inspector shows choice
   labels and non-default markers;
 * a spread of DPTs: 1.001, 1.005, 1.008, 1.011, 3.007, 5.001, 5.010, 9.001,

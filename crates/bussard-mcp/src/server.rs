@@ -512,7 +512,7 @@ impl BussardMcp {
     /// `knx_show_device`.
     #[tool(
         description = "Show what one device can do, in its device file's words, from the lock and \
-        the product model under .bussard/models/ (no bus access): its channels (handle, vendor text, the \
+        the product model under .bussard/model-cache/ (no bus access): its channels (handle, vendor text, the \
         user's name, counts); for an application without channels of its own, its ETS parameter \
         pages (`blocks`, in ETS order); inactive pages and channels marked `inactive` with the \
         parameters that enable them and the objects they would show, and a `summary` counting \

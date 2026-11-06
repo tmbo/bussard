@@ -156,7 +156,7 @@ pub fn validate_in_dir(model: &Model, dir: &Path) -> Vec<Diagnostic> {
 /// the on-disk `models/`:
 ///
 /// * **E026** — a device carries parameters but its application has no model
-///   file under `.bussard/models/`, so its values cannot be normalized or
+///   file under `.bussard/model-cache/`, so its values cannot be normalized or
 ///   checked (warning). The models regenerate automatically from the archives
 ///   the lock pins; the message names `bussard import-product` only when no
 ///   stored archive carries the application.
@@ -1177,33 +1177,19 @@ mod tests {
         }
     }
 
-    /// Writes `models/<APP_REF>.yaml` with an int (`MD-1_P-3`, 0..=3), an enum
-    /// (`P-9`, {0,7}) and a text (`P-20`, 6 bytes) parameter.
+    /// Writes the product model of `APP_REF` with an int (`MD-1_P-3`,
+    /// 0..=3), an enum (`P-9`, {0,7}) and a text (`P-20`, 6 bytes) parameter.
     fn write_model(dir: &std::path::Path) {
-        let models = dir.join(".bussard/models");
-        std::fs::create_dir_all(&models).expect("test fixture");
-        let yaml = "\
-identity:
-  id: M-00FA_A-1
-parameters:
-  - id: M-00FA_A-1_MD-1_P-3
-    type: !int
-      min: 0
-      max: 3
-    default: '0'
-  - id: M-00FA_A-1_P-9
-    type: !enum
-      values:
-        - value: 0
-          text: Off
-        - value: 7
-          text: On
-    default: '0'
-  - id: M-00FA_A-1_P-20
-    type: !text
-      size: 48
-";
-        std::fs::write(models.join(format!("{APP_REF}.yaml")), yaml).expect("test fixture");
+        let json = r#"{"program_id": "M-00FA_A-1", "parameters": {
+            "MD-1_P-3": {"kind": {"Int": {"min": 0, "max": 3, "signed": false}}, "default": "0"},
+            "P-9": {"kind": {"Enum": {"values": [0, 7]}}, "default": "0",
+                    "labels": [[0, "Off"], [7, "On"]],
+                    "enum_values": [{"value": 0, "text": "Off", "default_text": "Off"},
+                                    {"value": 7, "text": "On", "default_text": "On"}]},
+            "P-20": {"kind": {"Text": {"len": 6, "encoding": null}}}
+        }}"#;
+        let model = serde_json::from_str(json).expect("test fixture");
+        crate::param_model::write_product_model(dir, model).expect("test fixture");
     }
 
     fn codes_at<'a>(diags: &'a [Diagnostic], key_frag: &str) -> Vec<(&'a str, Severity)> {
