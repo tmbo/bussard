@@ -2,7 +2,7 @@
 //!
 //! Given a directory of real vendor `.knxprod` files (set
 //! `BUSSARD_PRODUCT_CORPUS=<dir>`), [`corpus_flashability_sweep`] runs every
-//! application in every product through the shared [`bussard_download::sweep`]
+//! application in every product through the shared [`crate::support::sweep`]
 //! engine — parse -> image-synthesis -> plan-lowering — bucketing and ranking the
 //! outcomes into a [`SweepManifest`]. No device is touched: everything is a pure
 //! function of the product data and each app's own declared mask, so this answers
@@ -27,8 +27,10 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_download::sweep::knxprod_files;
-use bussard_download::{FlashStep, SweepManifest, plan_flash, sweep_corpus};
+use bussard_download::{FlashStep, plan_flash};
+
+use crate::support::corpus::knxprod_files;
+use crate::support::sweep::{SweepManifest, sweep_corpus};
 
 /// The minimum number of applications across the corpus that must lower to an
 /// executable plan. The seeded corpus yields 12 (all the Zennio 07B0 devices,

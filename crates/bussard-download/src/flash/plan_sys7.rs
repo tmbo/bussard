@@ -4350,7 +4350,7 @@ mod tests {
         let mut seen = BTreeSet::new();
         let (mut sys7, mut sys_b, mut sys7_choose, mut sys_b_choose) = (0, 0, 0, 0);
         let mut default_splits = Vec::new();
-        for path in crate::sweep::knxprod_files(&dir) {
+        for path in crate::corpus::knxprod_files(&dir) {
             let Ok(product) = bussard_prod::read_knxprod(&path) else {
                 continue;
             };

@@ -4,7 +4,7 @@
 //! vendor cache and only runs when `BUSSARD_PRODUCT_CORPUS` is set. This test
 //! runs in *normal* CI with no cache: it assembles the committed, fabricated
 //! fixtures under `tests/fixtures/corpus/` into `.knxprod` ZIPs in a temp dir,
-//! runs the real `read_knxprod` + [`bussard_download::sweep_corpus`] pipeline over
+//! runs the real `read_knxprod` + [`crate::support::sweep::sweep_corpus`] pipeline over
 //! them, and asserts:
 //!
 //! 1. each fixture lands in the bucket its shape implies (multi-app System 7,
@@ -21,7 +21,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{ImageClass, ParseClass, PlanClass, SweepManifest, sweep_corpus};
+use crate::support::sweep::{ImageClass, ParseClass, PlanClass, SweepManifest, sweep_corpus};
 use zip::write::SimpleFileOptions;
 
 /// Repo root (two levels up from this crate's manifest dir).

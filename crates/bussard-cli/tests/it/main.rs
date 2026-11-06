@@ -57,6 +57,9 @@ mod secure_factory_key_mock;
 mod secure_group_mock;
 mod sim_assign_occupied;
 mod sim_catalog_loop;
+// The product-corpus file walk shared with bussard-download's corpus tests.
+#[path = "../../../bussard-download/tests/it/support/corpus.rs"]
+mod corpus;
 mod sim_interface_loop;
 mod sim_interface_secure;
 mod status_device_mock;

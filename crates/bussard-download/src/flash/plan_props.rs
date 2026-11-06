@@ -1037,7 +1037,7 @@ mod tests {
         let mut seen = std::collections::BTreeSet::new();
         let mut failures = Vec::new();
         let (mut with_choose, mut nested, mut changed) = (0, 0, 0);
-        for path in crate::sweep::knxprod_files(&dir) {
+        for path in crate::corpus::knxprod_files(&dir) {
             let Ok(product) = bussard_prod::read_knxprod(&path) else {
                 continue;
             };
@@ -1087,7 +1087,7 @@ mod tests {
                         failures.push(format!("{}: {e}", app.id));
                         continue;
                     }
-                    Err(e) => format!("refused {}", crate::sweep::normalize_plan_error(&e)),
+                    Err(e) => format!("refused {}", e.to_string().split(':').next().unwrap_or("")),
                 };
                 let system_b = profile.capabilities().flash && !profile.is_system_7();
                 let differs = taken != every_branch;
@@ -1097,7 +1097,7 @@ mod tests {
                 println!(
                     "LOAD-CHOOSE|{}|{mask}|{}|depth {depth}|ops {every_branch}->{taken}|{plan}|{}",
                     app.id,
-                    crate::sweep::family_label(app.mask_version.as_deref()),
+                    bussard_mgmt::system_type(device_mask),
                     if system_b && differs {
                         "changed"
                     } else {

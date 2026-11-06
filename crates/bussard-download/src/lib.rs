@@ -39,8 +39,13 @@ pub mod preflight;
 pub mod program;
 pub mod security;
 pub mod security_diag;
-pub mod sweep;
 pub mod tables_sys7;
+
+// The corpus file walk of the integration tests' sweep, for the env-gated
+// corpus unit tests in `flash`.
+#[cfg(test)]
+#[path = "../tests/it/support/corpus.rs"]
+mod corpus;
 
 pub use apply::{
     SystemBLoad, TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured,
@@ -136,10 +141,5 @@ pub use security::{
 pub use security_diag::{
     FailureCounters, FailureKind, LatestFailure, SecurityDiagnostics, clear_security_diagnostics,
     read_security_diagnostics,
-};
-pub use sweep::{
-    AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,
-    SweepManifest, SweepTotals, classify_application, family_label, manifest_from_products,
-    sweep_corpus, sweep_file,
 };
 pub use tables_sys7::{Sys7LiveTables, Sys7TablesError, read_sys7_tables, read_sys7_tables_at};

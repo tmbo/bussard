@@ -33,12 +33,14 @@
 
 use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bussard_prod::ApplicationProgram;
 use serde::{Deserialize, Serialize};
 
-use crate::flash::PlanError;
+use bussard_download::PlanError;
+
+use super::corpus::knxprod_files;
 
 /// Outcome of reading a single `.knxprod` container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,14 +335,14 @@ pub fn classify_application(app: &ApplicationProgram) -> AppSweep {
                 // itself needs them to plan).
                 // One Dynamic evaluation serves both (issue #367).
                 let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-                let tables = crate::build_table_images_with(
+                let tables = bussard_download::build_table_images_with(
                     None,
                     bussard_model::IndividualAddress::from_raw(0x1101),
                     app,
                     &BTreeMap::new(),
                     &memo,
                 );
-                crate::flash::plan_flash_with_memo(
+                bussard_download::plan_flash_with_memo(
                     app,
                     "1.1.1",
                     device_mask,
@@ -569,38 +571,6 @@ pub fn normalize_parse_error(msg: &str) -> String {
 fn first_clause(s: &str) -> String {
     let head = s.split(':').next().unwrap_or(s).trim();
     head.chars().take(64).collect()
-}
-
-/// Collects the `.knxprod` files at or under `dir` (one level of nesting is
-/// enough: `bussard import-product` caches downloads under `<dir>/vendor/`).
-/// The extension matches in any case: some vendors ship `.KNXPROD`.
-/// Sorted and de-duplicated for stable output.
-pub fn knxprod_files(dir: &Path) -> Vec<PathBuf> {
-    fn is_knxprod(p: &Path) -> bool {
-        p.extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("knxprod"))
-    }
-    let mut out: Vec<PathBuf> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(dir) {
-        for entry in rd.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                if let Ok(sub) = std::fs::read_dir(&path) {
-                    for e2 in sub.flatten() {
-                        let p2 = e2.path();
-                        if is_knxprod(&p2) {
-                            out.push(p2);
-                        }
-                    }
-                }
-            } else if is_knxprod(&path) {
-                out.push(path);
-            }
-        }
-    }
-    out.sort();
-    out.dedup();
-    out
 }
 
 #[cfg(test)]

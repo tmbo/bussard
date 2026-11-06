@@ -45,7 +45,6 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use bussard_download::sweep::knxprod_files;
 use bussard_download::{GroupObjectDescriptor, dynamic_group_object_descriptors, plan_flash};
 use bussard_model::Flags;
 use bussard_model::text_codec::TextCodec;
@@ -53,6 +52,8 @@ use bussard_prod::application::LoadOp;
 use bussard_prod::dynamic::{DynamicConfig, evaluate_dynamic, visible_parameter_refs};
 use bussard_prod::{AppSelection, ApplicationProgram, ParameterType};
 use sha2::{Digest as _, Sha256};
+
+use crate::corpus::knxprod_files;
 
 type BoxError = Box<dyn std::error::Error>;
 type TestResult = Result<(), BoxError>;
