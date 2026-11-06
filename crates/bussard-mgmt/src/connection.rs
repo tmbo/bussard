@@ -300,19 +300,11 @@ pub struct Timeouts {
 /// values apply. The repetition and attempt counts are unchanged.
 pub const MGMT_TIMEOUT_MS_ENV: &str = "BUSSARD_MGMT_TIMEOUT_MS";
 
-/// The [`MGMT_TIMEOUT_MS_ENV`] override, when set to a whole number.
-fn mgmt_timeout_override() -> Option<Duration> {
-    bussard_model::dotenv::var(MGMT_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-}
-
 impl Default for Timeouts {
     /// The KNX-standard budget, or the [`MGMT_TIMEOUT_MS_ENV`] timeouts when
     /// that test knob is set.
     fn default() -> Self {
-        let wait = mgmt_timeout_override();
+        let wait = bussard_model::dotenv::duration_ms(MGMT_TIMEOUT_MS_ENV);
         Timeouts {
             ack_timeout: wait.unwrap_or(ACK_TIMEOUT),
             max_repetitions: MAX_REPETITIONS,
@@ -323,6 +315,22 @@ impl Default for Timeouts {
 }
 
 impl Timeouts {
+    /// One `wait` for both the ACK and the response, `max_repetitions`
+    /// repetitions, and whether a negative `L_Data.con` classifies absent:
+    /// the shape of every millisecond test knob's budget.
+    pub fn uniform(
+        wait: Duration,
+        max_repetitions: u32,
+        absent_on_negative_confirmation: bool,
+    ) -> Timeouts {
+        Timeouts {
+            ack_timeout: wait,
+            max_repetitions,
+            response_timeout: wait,
+            absent_on_negative_confirmation,
+        }
+    }
+
     /// A tight budget for discovery: a short per-attempt timeout with a single
     /// retry, so an absent address is ruled out in roughly `2 × ack_timeout`.
     /// Used by `bussard scan`.
@@ -452,7 +460,7 @@ impl SyncRetry {
 
     /// Caps the backoff with [`MGMT_TIMEOUT_MS_ENV`] when that test knob is set.
     fn with_env_cap(self) -> Self {
-        match mgmt_timeout_override() {
+        match bussard_model::dotenv::duration_ms(MGMT_TIMEOUT_MS_ENV) {
             Some(cap) => self.with_backoff_cap(cap),
             None => self,
         }

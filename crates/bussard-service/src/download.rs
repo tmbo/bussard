@@ -30,15 +30,8 @@ pub const FLASH_L4_TIMEOUT_MS_ENV: &str = "BUSSARD_FLASH_L4_TIMEOUT_MS";
 /// The L4 timeout budget for a flash connection, honouring
 /// [`FLASH_L4_TIMEOUT_MS_ENV`].
 pub fn flash_l4_timeouts() -> Option<Timeouts> {
-    bussard_model::dotenv::var(FLASH_L4_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(|ms| Timeouts {
-            ack_timeout: std::time::Duration::from_millis(ms),
-            max_repetitions: 1,
-            response_timeout: std::time::Duration::from_millis(ms),
-            absent_on_negative_confirmation: false,
-        })
+    bussard_model::dotenv::duration_ms(FLASH_L4_TIMEOUT_MS_ENV)
+        .map(|wait| Timeouts::uniform(wait, 1, false))
 }
 
 /// Opens the L4 connection to the flash target through the service.

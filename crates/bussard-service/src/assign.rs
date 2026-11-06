@@ -77,19 +77,11 @@ pub enum AssignError {
     },
 }
 
-/// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
-fn wait_ms_override() -> Option<Duration> {
-    bussard_model::dotenv::var(WAIT_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_millis)
-}
-
 /// The (reminder, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
 /// With the override set, the reminder budget scales to half the total so
 /// [`INITIAL_POLL_TOTAL`] is gated under the same variable as the total.
 pub fn wait_budgets() -> (Duration, Duration) {
-    match wait_ms_override() {
+    match bussard_model::dotenv::duration_ms(WAIT_MS_ENV) {
         Some(total) => (total / 2, total),
         None => (INITIAL_POLL_TOTAL, PROGRAMMING_WAIT_TOTAL),
     }
@@ -99,7 +91,7 @@ pub fn wait_budgets() -> (Duration, Duration) {
 /// Without the override the mgmt default
 /// ([`broadcast::PROGRAMMING_MODE_WINDOW`]) applies.
 pub fn collection_window() -> Duration {
-    wait_ms_override().unwrap_or(broadcast::PROGRAMMING_MODE_WINDOW)
+    bussard_model::dotenv::duration_ms(WAIT_MS_ENV).unwrap_or(broadcast::PROGRAMMING_MODE_WINDOW)
 }
 
 // ---------------------------------------------------------------------------

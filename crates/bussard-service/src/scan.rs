@@ -40,19 +40,9 @@ pub const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
 
 /// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set.
 pub fn discovery_timeouts() -> Timeouts {
-    match bussard_model::dotenv::var(DISCOVERY_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: Duration::from_millis(ms),
-            // Discovery: a negative con classifies absent (issue #45).
-            absent_on_negative_confirmation: true,
-        },
-        None => Timeouts::discovery(),
-    }
+    // Discovery: a negative con classifies absent (issue #45).
+    bussard_model::dotenv::duration_ms(DISCOVERY_MS_ENV)
+        .map_or_else(Timeouts::discovery, |wait| Timeouts::uniform(wait, 0, true))
 }
 
 /// The addresses one sweep probes: `area.line.from` … `area.line.to`.
