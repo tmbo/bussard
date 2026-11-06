@@ -678,6 +678,32 @@ class TestStaleCompatPrompt(unittest.TestCase):
         self.assertFalse(sweep.stale_compat_prompt(""))
 
 
+class TestProductProperties(unittest.TestCase):
+    """sweep.product_properties takes a device-object property named by type
+    (ObjectType="0") as object 0 (#422)."""
+
+    def test_product_properties_object_type_zero(self):
+        import zipfile
+
+        import sweep
+
+        app = "M-0008_A-E000-10-89B0-O0077"
+        xml = f"""<KNX><ApplicationProgram Id="{app}"><Static>
+          <ParameterTypes><ParameterType Id="{app}_PT-hw" Name="t_u8_array_6_hw_id">
+            <TypeRestriction Base="BinaryValue" SizeInBit="48">
+              <Enumeration Text="INKNXUNI001I2" Value="1" Id="{app}_PT-hw_EN-1" BinaryValue="AAAAIAAD" />
+            </TypeRestriction></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="{app}_P-311" Name="target_hw_id" ParameterType="{app}_PT-hw" Value="1">
+            <Property ObjectType="0" PropertyId="78" Offset="0" BitOffset="0" />
+          </Parameter></Parameters></Static></ApplicationProgram></KNX>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr(f"M-0008/{app}.xml", xml)
+            self.assertEqual(sweep.product_properties(path, app),
+                             [{"object": 0, "pid": 78, "value": "000000200003"}])
+
+
 class TestCaptureIpEnabled(unittest.TestCase):
     """An IP-enabled TP product (syn-ip-enabled-tp, #455): the sim gets the
     KNXnet/IP object, the row plans with the sweep project's [knxnet] table."""
