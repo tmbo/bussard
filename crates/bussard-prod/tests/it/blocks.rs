@@ -83,8 +83,8 @@ fn test_model_blocks_records_pages_gates_and_objects() -> TestResult {
     assert_eq!(a.channel.as_deref(), Some("CH-0"));
     assert_eq!(a.when.len(), 1);
     assert_eq!(
-        (a.when[0].reference.as_str(), a.when[0].test.as_str()),
-        ("P-1_R-1", "1")
+        (a.when[0].param_ref_id.as_str(), a.when[0].test_text()),
+        ("P-1_R-1", "1".to_string())
     );
     assert_eq!(
         a.parameters,
@@ -122,12 +122,15 @@ fn test_model_blocks_records_pages_gates_and_objects() -> TestResult {
 
     // Channel C sits behind both B's and C's switches.
     let c = &blocks[5];
-    let gates: Vec<(&str, &str)> = c
+    let gates: Vec<(&str, String)> = c
         .when
         .iter()
-        .map(|g| (g.reference.as_str(), g.test.as_str()))
+        .map(|g| (g.param_ref_id.as_str(), g.test_text()))
         .collect();
-    assert_eq!(gates, [("P-2_R-2", "1"), ("P-3_R-3", "1")]);
+    assert_eq!(
+        gates,
+        [("P-2_R-2", "1".to_string()), ("P-3_R-3", "1".to_string())]
+    );
     Ok(())
 }
 

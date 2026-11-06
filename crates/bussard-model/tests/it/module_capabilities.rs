@@ -431,8 +431,8 @@ fn test_module_channels_of_keys_instance_channels_by_selector() -> TestResult {
     let switch = &channels[1];
     assert_eq!(switch.parameters, ["MD-4_M-19_MI-1_P-12_R-12"]);
     assert_eq!(switch.when.len(), 1);
-    assert_eq!(switch.when[0].reference, "P-747_R-84");
-    assert_eq!(switch.when[0].test, "1");
+    assert_eq!(switch.when[0].param_ref_id, "P-747_R-84");
+    assert_eq!(switch.when[0].test_text(), "1");
     // The application's own pages come first, unchanged.
     let all = product.blocks_with_module_channels();
     assert_eq!(all.len(), product.blocks().len() + channels.len());

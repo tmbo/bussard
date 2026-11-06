@@ -48,7 +48,7 @@ use serde::Serialize;
 
 use crate::address::IndividualAddress;
 use crate::blocks::{
-    BlockDef, BlockKind, Gate, def_ref, object_number, parent_indexes, ref_param_id, subtree,
+    BlockDef, BlockKind, def_ref, object_number, parent_indexes, ref_param_id, subtree,
 };
 use crate::dynamic::{
     ChannelRef, CompareOp, DynamicConfig, RefGate, RefIndex, RefOccurrence, WhenTest,
@@ -627,36 +627,6 @@ fn enum_codes(def: &ParamDef) -> Vec<i64> {
     }
 }
 
-/// A page condition as the evaluator's [`RefGate`], to test it.
-fn ref_gate(gate: &Gate) -> RefGate {
-    let parse = |t: &str| {
-        if t.trim() == "default" {
-            WhenTest::Default
-        } else {
-            WhenTest::parse(Some(t), None)
-        }
-    };
-    RefGate {
-        param_ref_id: gate.reference.clone(),
-        test: parse(&gate.test),
-        siblings: gate.others.iter().map(|o| parse(o)).collect(),
-    }
-}
-
-/// An evaluator [`RefGate`] as the page condition words take it.
-fn words_gate(gate: &RefGate) -> Gate {
-    let is_default = gate.test == WhenTest::Default;
-    Gate {
-        reference: gate.param_ref_id.clone(),
-        test: gate.test.text().unwrap_or_else(|| "default".to_string()),
-        others: if is_default {
-            gate.siblings.iter().filter_map(WhenTest::text).collect()
-        } else {
-            Vec::new()
-        },
-    }
-}
-
 /// The value to set the controlling parameter of `gate` to so its branch is
 /// taken, out of the parameter's enum `codes`; else the first exact value
 /// the test names. `None` when neither gives one.
@@ -826,8 +796,7 @@ impl<'a> Pages<'a> {
         };
         for (i, b) in blocks.iter().enumerate() {
             if !pages.states[i].active && !pages.states[i].parent_inactive {
-                let gates: Vec<RefGate> = b.when.iter().map(ref_gate).collect();
-                pages.states[i].failing = pages.failing_gates(&gates);
+                pages.states[i].failing = pages.failing_gates(&b.when);
             }
         }
         pages.reached_at = reached_place
@@ -1000,19 +969,19 @@ impl<'a> Pages<'a> {
 
     /// The failing conditions of inactive block `i` with the values that
     /// make them hold: (gate, value to show, value to evaluate).
-    fn enable_values(&self, i: usize) -> Vec<(&'a Gate, String, Option<i64>)> {
+    fn enable_values(&self, i: usize) -> Vec<(&'a RefGate, String, Option<i64>)> {
         let blocks: &'a [BlockDef] = self.blocks;
         self.states[i]
             .failing
             .iter()
             .filter_map(|n| blocks[i].when.get(*n))
             .map(|g| {
-                let def = self.def_of(&g.reference);
+                let def = self.def_of(&g.param_ref_id);
                 let codes = def.map(enum_codes).unwrap_or_default();
-                let code = enabling_code(&ref_gate(g), &codes);
+                let code = enabling_code(g, &codes);
                 let set_to = code
                     .map(|c| display_value(def, &c.to_string()))
-                    .unwrap_or_else(|| g.test.clone());
+                    .unwrap_or_else(|| g.test_text());
                 (g, set_to, code)
             })
             .collect()
@@ -1024,8 +993,7 @@ impl<'a> Pages<'a> {
         self.enabled[i].get_or_init(|| {
             let mut values: EnablingValues = Vec::new();
             for (g, _, code) in self.enable_values(i) {
-                let test = ref_gate(g);
-                let value = code.or_else(|| match test.test {
+                let value = code.or_else(|| match g.test {
                     WhenTest::Compare { op, value } => Some(match op {
                         CompareOp::Ne | CompareOp::Gt => value.saturating_add(1),
                         CompareOp::Lt => value.saturating_sub(1),
@@ -1034,7 +1002,7 @@ impl<'a> Pages<'a> {
                     _ => None,
                 });
                 if let Some(v) = value {
-                    values.push((g.reference.clone(), v.to_string()));
+                    values.push((g.param_ref_id.clone(), v.to_string()));
                 }
             }
             if let Some(done) = self.by_values.borrow().get(&values) {
@@ -1236,7 +1204,7 @@ impl<'a> Pages<'a> {
             {
                 page = p;
             }
-            let mut failing: Vec<Gate> = if self.states[page].active {
+            let mut failing: Vec<RefGate> = if self.states[page].active {
                 Vec::new()
             } else {
                 self.states[page]
@@ -1250,7 +1218,7 @@ impl<'a> Pages<'a> {
             failing.extend(
                 self.failing_gates(inner)
                     .into_iter()
-                    .map(|n| words_gate(&inner[n])),
+                    .map(|n| inner[n].clone()),
             );
             let mut needs: Vec<String> = Vec::new();
             let mut now: Vec<String> = Vec::new();
@@ -1259,13 +1227,13 @@ impl<'a> Pages<'a> {
                 if !needs.contains(&words) {
                     needs.push(words);
                 }
-                let def = self.def_of(&g.reference);
+                let def = self.def_of(&g.param_ref_id);
                 let name = def
                     .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
-                    .unwrap_or_else(|| g.reference.clone());
+                    .unwrap_or_else(|| g.param_ref_id.clone());
                 let line = format!(
                     "{name} is {}",
-                    self.current(&g.reference)
+                    self.current(&g.param_ref_id)
                         .unwrap_or_else(|| "unset".to_string())
                 );
                 if !now.contains(&line) {
@@ -1290,7 +1258,7 @@ impl<'a> Pages<'a> {
             condition: inner.filter(|gates| !gates.is_empty()).map(|gates| {
                 gates
                     .iter()
-                    .map(|g| self.gate_words(&words_gate(g)))
+                    .map(|g| self.gate_words(g))
                     .collect::<Vec<_>>()
                     .join(" and ")
             }),
@@ -1302,11 +1270,11 @@ impl<'a> Pages<'a> {
     /// A condition in words: the controlling parameter's text and the values
     /// that satisfy the test, as the device file writes them ("Funktion des
     /// Kanals = Helligkeit").
-    fn gate_words(&self, gate: &Gate) -> String {
-        let def = self.def_of(&gate.reference);
+    fn gate_words(&self, gate: &RefGate) -> String {
+        let def = self.def_of(&gate.param_ref_id);
         let name = def
             .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
-            .unwrap_or_else(|| gate.reference.clone());
+            .unwrap_or_else(|| gate.param_ref_id.clone());
         // `1 2` becomes "A or B", `!=0` becomes "!= A".
         let plain = |test: &str, join: &str| -> String {
             let t = test.trim();
@@ -1320,12 +1288,14 @@ impl<'a> Pages<'a> {
                 .collect::<Vec<_>>()
                 .join(join)
         };
-        let test = gate.test.trim();
+        let test = gate.test_text();
+        let test = test.trim();
         if test == "default" {
-            if gate.others.is_empty() {
+            let others = gate.others_text();
+            if others.is_empty() {
                 return format!("{name} at any value");
             }
-            let others: Vec<String> = gate.others.iter().map(|o| plain(o, ", ")).collect();
+            let others: Vec<String> = others.iter().map(|o| plain(o, ", ")).collect();
             return format!("{name} is none of {}", others.join(", "));
         }
         if test.starts_with(['!', '<', '>', '?']) {
@@ -1366,7 +1336,7 @@ impl<'a> Pages<'a> {
     /// copies into it, else the controlling parameter of the nearest
     /// `<choose>` in front of an `<Assign>` of a value that enables it; with
     /// neither the step says "enabled by ETS only".
-    fn enable_step(&self, gate: &Gate, set_to: String, code: Option<i64>) -> EnableStep {
+    fn enable_step(&self, gate: &RefGate, set_to: String, code: Option<i64>) -> EnableStep {
         let step = |reference: &str, set_to: String| {
             let def = self.def_of(reference);
             EnableStep {
@@ -1382,18 +1352,17 @@ impl<'a> Pages<'a> {
                 ets_only: false,
             }
         };
-        if !self.internal(&gate.reference) {
-            return step(&gate.reference, set_to);
+        if !self.internal(&gate.param_ref_id) {
+            return step(&gate.param_ref_id, set_to);
         }
-        let (instance, _) = split_selector(&gate.reference);
+        let (instance, _) = split_selector(&gate.param_ref_id);
         let in_scope = |r: &str| match instance.as_deref() {
             Some(i) if r.starts_with("MD-") => crate::dynamic::selector_key(Some(i), r),
             _ => r.to_string(),
         };
-        let test = ref_gate(gate);
         let assigns = self.assigns.get_or_init(|| assign_sites(self.product));
         let none = Vec::new();
-        let sites = assigns.get(&def_ref(&gate.reference)).unwrap_or(&none);
+        let sites = assigns.get(&def_ref(&gate.param_ref_id)).unwrap_or(&none);
         for assign in sites {
             if let Some(source) = assign.source.as_deref().map(in_scope)
                 && !self.internal(&source)
@@ -1408,7 +1377,7 @@ impl<'a> Pages<'a> {
                 .value
                 .as_deref()
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .is_some_and(|v| test.holds(Some(v)));
+                .is_some_and(|v| gate.holds(Some(v)));
             if !enables {
                 continue;
             }
@@ -1426,11 +1395,11 @@ impl<'a> Pages<'a> {
         }
         EnableStep {
             key: None,
-            reference: gate.reference.clone(),
+            reference: gate.param_ref_id.clone(),
             text: Some("enabled by ETS only".to_string()),
             set_to,
             default: None,
-            current: self.current(&gate.reference),
+            current: self.current(&gate.param_ref_id),
             ets_only: true,
         }
     }
@@ -1545,12 +1514,12 @@ impl<'a> Pages<'a> {
     }
 
     /// The failing conditions of inactive block `i`, as (ref, test) pairs.
-    fn failing(&self, i: usize) -> Vec<(&str, &str)> {
+    fn failing(&self, i: usize) -> Vec<(&str, &WhenTest)> {
         self.states[i]
             .failing
             .iter()
             .filter_map(|n| self.blocks[i].when.get(*n))
-            .map(|g| (g.reference.as_str(), g.test.as_str()))
+            .map(|g| (g.param_ref_id.as_str(), &g.test))
             .collect()
     }
 
@@ -1646,53 +1615,22 @@ struct AssignSite {
 /// The `<Assign>`s of the application's Dynamic section and the module
 /// definitions' bodies, by app-relative target ref.
 fn assign_sites(product: &ProductModel) -> HashMap<String, Vec<AssignSite>> {
-    fn walk(
-        nodes: &[crate::dynamic::DynamicNode],
-        gates: &mut Vec<RefGate>,
-        out: &mut HashMap<String, Vec<AssignSite>>,
-    ) {
-        use crate::dynamic::DynamicNode;
-        for node in nodes {
-            match node {
-                DynamicNode::Assign {
-                    target,
-                    source,
-                    value,
-                } => out.entry(target.clone()).or_default().push(AssignSite {
-                    source: source.clone(),
-                    value: value.clone(),
-                    gates: gates.clone(),
-                }),
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => walk(children, gates, out),
-                DynamicNode::Choose {
-                    param_ref_id,
-                    whens,
-                } => {
-                    for when in whens {
-                        gates.push(RefGate {
-                            param_ref_id: param_ref_id.clone(),
-                            test: when.test.clone(),
-                            siblings: whens
-                                .iter()
-                                .filter(|w| !std::ptr::eq(*w, when))
-                                .map(|w| w.test.clone())
-                                .collect(),
-                        });
-                        walk(&when.children, gates, out);
-                        gates.pop();
-                    }
-                }
-                _ => {}
-            }
+    let mut out: HashMap<String, Vec<AssignSite>> = HashMap::new();
+    crate::dynamic::walk_all(product, &mut |node, path| {
+        if let crate::dynamic::DynamicNode::Assign {
+            target,
+            source,
+            value,
+        } = node
+        {
+            out.entry(target.clone()).or_default().push(AssignSite {
+                source: source.clone(),
+                value: value.clone(),
+                gates: path.gates(),
+            });
         }
-    }
-    let mut out = HashMap::new();
-    walk(&product.dynamic, &mut Vec::new(), &mut out);
-    for body in product.module_dynamics.values() {
-        walk(body, &mut Vec::new(), &mut out);
-    }
+        true
+    });
     out
 }
 
