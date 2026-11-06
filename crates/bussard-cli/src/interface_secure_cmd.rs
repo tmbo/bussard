@@ -258,7 +258,7 @@ fn run(inputs: &SecureArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         }
     };
     let verified = outcome.verified(switch);
-    let mut mismatches = outcome.verification.mismatches.clone();
+    let mut mismatches = outcome.verification.mismatches();
     if let Some(secure) = outcome.gateway_secure_only
         && secure != (switch == Switch::On)
     {

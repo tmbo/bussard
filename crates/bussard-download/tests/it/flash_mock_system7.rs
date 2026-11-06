@@ -1066,7 +1066,13 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
         "MDT canonical app must lower to a System 7 plan"
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -1136,7 +1142,13 @@ async fn run_intermediate_flash(mode: LsmMode) -> Result<Shared, Box<dyn std::er
         None,
         &std::collections::BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let started = std::time::Instant::now();
     let outcome = flash(
@@ -1227,7 +1239,13 @@ async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn 
         .ok_or("the delay lowers to a step")?;
     assert_eq!(plan.steps.get(delay + 1), Some(&FlashStep::Restart));
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let mut started: Vec<(std::time::Instant, String)> = Vec::new();
     let outcome = flash(
@@ -1278,7 +1296,13 @@ async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error:
         None,
         &std::collections::BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let result = flash(
         &mut session,
@@ -1692,7 +1716,7 @@ impl bussard_download::Connector for LeaseConnector {
         })?;
         let channel = bussard_mgmt::LeaseChannel::new(lease);
         let timeouts = self.timeouts.unwrap_or_default();
-        Layer4Connection::connect_with(channel, self.target, self.source, timeouts)
+        Layer4Connection::connect(channel, self.target, self.source, timeouts.into())
             .await
             .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
@@ -1710,7 +1734,13 @@ async fn lsm_access_property_drives_state() -> Result<(), Box<dyn std::error::Er
     let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let lsm = LsmAccess::Property;
     lsm.drive(&mut l4, 1, bussard_mgmt::LoadControl::StartLoading)
@@ -1762,7 +1792,13 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
         plan.steps.last()
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -1808,7 +1844,13 @@ async fn test_lsm_access_read_state_count_zero_is_object_absent()
     state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let lsm = LsmAccess::Property;
 
@@ -1887,7 +1929,13 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
     });
     plan.steps.push(FlashStep::Sys7StartLoading { lsm: 5 });
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2005,7 +2053,13 @@ async fn run_read_compare_flash(
         &std::collections::BTreeMap::new(),
     )?;
     prepare(&state, &plan);
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2178,7 +2232,13 @@ async fn run_masked_param_flash(
         &BTreeMap::new(),
     )?;
     prepare(&state);
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2320,7 +2380,9 @@ async fn sys7_probe(
 ) -> Result<bussard_download::ResidentState, Box<dyn std::error::Error>> {
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    let mut l4 =
+        Layer4Connection::connect(bus, target, source, bussard_mgmt::ConnectOptions::default())
+            .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let resident = bussard_download::probe_resident_state(
         &mut l4,
@@ -2438,7 +2500,13 @@ async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisati
 
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let resident = bussard_download::probe_resident_state(
         &mut l4,
@@ -2544,7 +2612,9 @@ async fn authed_connection<'a>(
     target: bussard_model::IndividualAddress,
 ) -> Result<Layer4Connection<impl bussard_mgmt::L4Channel + 'a>, Box<dyn std::error::Error>> {
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    let mut l4 =
+        Layer4Connection::connect(bus, target, source, bussard_mgmt::ConnectOptions::default())
+            .await?;
     // The mock grants the free-access key.
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     Ok(l4)
@@ -3417,7 +3487,13 @@ async fn run_parameters_only_refuses_unloaded_lsm3(
     let (_app, full) = parameters_only_fixture(&state, LS_ERROR)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let partial = full.parameters_only(&regions)?;
@@ -3476,7 +3552,13 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
     let (app, full) = parameters_only_fixture(&state, LS_LOADED)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let region = regions
@@ -3586,7 +3668,13 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
     let (_app, full) = parameters_only_fixture(&state, LS_LOADED)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
 
     // The read of the plan: the gate, the code sample, the regions.
@@ -3676,7 +3764,13 @@ async fn run_sys7_identity(mode: LsmMode) -> Result<(), Box<dyn std::error::Erro
     let (_app, full) = parameters_only_fixture(&state, LS_LOADED)?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let access = full.sys7_lsm_access();
     let resident = bussard_download::probe_resident_state(
@@ -3929,7 +4023,13 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
         None,
         &BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, "1.1.99".parse()?, "0.0.255".parse()?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.99".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -4200,7 +4300,13 @@ async fn test_flash_system7_streams_each_allocation_its_part()
         None,
         &BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -4374,7 +4480,13 @@ async fn test_flash_sys7_skip_prelude_unloads_only_the_procedure_lsms()
             !skip
         );
         let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
-        let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+        let l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            source,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let mut session = authed_session(l4).await?;
         let outcome = flash(
             &mut session,

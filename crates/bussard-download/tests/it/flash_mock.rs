@@ -2157,7 +2157,13 @@ async fn flash_happy_path_loads_and_verifies() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2215,7 +2221,13 @@ async fn test_flash_delay_pauses_before_restart() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let mut started: Vec<(std::time::Instant, String)> = Vec::new();
     let outcome = flash(
@@ -2276,7 +2288,13 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() -> TestResult {
         .count();
     assert_eq!(checks, 4);
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2349,7 +2367,13 @@ async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2410,7 +2434,13 @@ async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2462,7 +2492,13 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() -> Test
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2516,7 +2552,13 @@ async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() -> TestResu
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2562,7 +2604,13 @@ async fn flash_image_prop_catches_corrupted_stored_image() -> TestResult {
     // `--no-factory-reset` path.
     plan.skip_factory_reset();
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
@@ -2602,7 +2650,13 @@ async fn flash_surfaces_load_error_on_completed() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
@@ -2639,7 +2693,13 @@ async fn flash_aborts_on_memory_write_nak() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
@@ -2682,7 +2742,13 @@ async fn flash_disconnects_even_when_it_fails_mid_procedure() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     // The device never opens the object, so the load-state check fails.
     let err = flash(
@@ -2748,7 +2814,13 @@ async fn flash_unexpected_load_state_names_object_and_table() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
@@ -2819,7 +2891,13 @@ async fn flash_tolerates_snap_to_loaded() -> TestResult {
             &BTreeMap::new(),
         )?;
 
-        let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+        let l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            source,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let mut session = authed_session(l4).await?;
         let outcome = flash(
             &mut session,
@@ -2920,7 +2998,13 @@ async fn flash_applies_device_file_parameter_override() -> TestResult {
         "the override must change the computed parameter image"
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -2977,7 +3061,13 @@ async fn flash_compare_prop_passes_when_property_matches() -> TestResult {
         1
     );
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3029,7 +3119,13 @@ async fn flash_write_prop_value_lands_on_the_device() -> TestResult {
         other => panic!("expected WriteProp, got {other:?}"),
     }
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3079,7 +3175,13 @@ async fn flash_compare_prop_aborts_when_property_differs() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let err = flash(
         &mut session,
@@ -3134,7 +3236,13 @@ async fn flash_compare_prop_mask_ignores_don_t_care_bytes() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3175,7 +3283,13 @@ async fn flash_reports_progress_for_every_step() -> TestResult {
     let steps_seen = Arc::new(Mutex::new(0usize));
     let seen = Arc::clone(&steps_seen);
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3234,7 +3348,13 @@ async fn flash_sends_free_access_authorize_and_the_gate_opens() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3279,7 +3399,13 @@ async fn flash_without_authorize_is_refused_by_the_gate() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     // Deliberately skip the authorize step.
     let mut session = Session::from_connection(l4);
     let err = flash(
@@ -3327,7 +3453,13 @@ async fn flash_tolerates_a_device_without_authorize() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -3360,7 +3492,13 @@ async fn flash_surfaces_access_denied_on_a_nonzero_level() -> TestResult {
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     // authorize_or_fail must map the non-zero grant to AccessDenied.
     let err = {
         let mut l4 = l4;
@@ -3472,9 +3610,14 @@ impl bussard_download::Connector for LeaseConnector {
             ),
         };
         let timeouts = self.timeouts.unwrap_or_default();
-        Layer4Connection::connect_with_secure(channel, self.target, self.source, timeouts, secure)
-            .await
-            .map_err(bussard_mgmt::load::WriteError::Mgmt)
+        Layer4Connection::connect(
+            channel,
+            self.target,
+            self.source,
+            bussard_mgmt::ConnectOptions { timeouts, secure },
+        )
+        .await
+        .map_err(bussard_mgmt::load::WriteError::Mgmt)
     }
 
     fn link_losses(&self) -> u64 {
@@ -4906,7 +5049,13 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     // The flash routes every load-control write, the PID7 base read, and the memory
     // write to object 4 (the ObjIdx). The final verify re-reads the
@@ -5699,7 +5848,13 @@ async fn flash_extended_memory_segment_above_64k_loads_and_verifies() -> TestRes
         &BTreeMap::new(),
     )?;
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     // Negotiate PID_MAX_APDU on the connection so extended writes scale to 228,
     // exactly as `Session::open` does for the real connector-backed flow.
     let negotiated = l4.negotiate_max_apdu().await?;
@@ -5774,7 +5929,13 @@ async fn test_flash_user_memory_above_64k_without_extended_services() -> TestRes
     )?;
     assert!(plan.user_memory_above_64k());
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.negotiate_max_apdu().await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
@@ -5826,7 +5987,13 @@ async fn flash_small_image_stays_on_the_plain_write_path() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -5922,7 +6089,9 @@ async fn probe_scoped(
 ) -> TestResult<bussard_download::ResidentState> {
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(bus, target, source).await?;
+    let mut l4 =
+        Layer4Connection::connect(bus, target, source, bussard_mgmt::ConnectOptions::default())
+            .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let resident = if full {
         bussard_download::probe_resident_state(
@@ -6219,7 +6388,13 @@ async fn test_flash_after_a_fresh_probe_is_unchanged() -> TestResult {
 
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -6549,7 +6724,13 @@ async fn test_param_plan_one_changed_parameter_on_mock_device() -> TestResult {
         None,
         &BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -6574,7 +6755,13 @@ async fn test_param_plan_one_changed_parameter_on_mock_device() -> TestResult {
     )?;
 
     // 3. Read the current parameter memory back (read-only) and diff.
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let current = bussard_download::read_current_parameter_memory(&mut l4, &plan, &[]).await;
     let _ = l4.disconnect().await;
@@ -6611,7 +6798,13 @@ async fn test_param_plan_fresh_mock_device_reports_unknown() -> TestResult {
         &BTreeMap::new(),
     )?;
 
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     let current = bussard_download::read_current_parameter_memory(&mut l4, &plan, &[]).await;
     let _ = l4.disconnect().await;
@@ -7135,7 +7328,13 @@ async fn test_parameters_only_download_writes_only_the_changed_parameter() -> Te
         &BTreeMap::new(),
     )?;
 
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let region = regions
@@ -7236,7 +7435,13 @@ async fn run_partial_download(
         None,
         &BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.4".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let partial = full.parameters_only(&regions)?;
@@ -7318,7 +7523,13 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing() -> 
         None,
         &BTreeMap::new(),
     )?;
-    let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let _ = session.into_disconnect().await;
@@ -8122,7 +8333,13 @@ async fn test_flash_mapped_unload_of_an_absent_object_succeeds() -> TestResult {
     let (mut bus, state, handle) = setup(Fault::None).await?;
     lock(&state)?.load_state_absent = vec![5];
     let plan = plan_with_mapped_unload()?;
-    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.4".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let outcome = flash(
         &mut session,
@@ -8159,7 +8376,13 @@ async fn test_flash_mapped_unload_still_fails_on_another_error() -> TestResult {
     let (mut bus, state, handle) = setup(Fault::None).await?;
     lock(&state)?.unload_error = vec![5];
     let plan = plan_with_mapped_unload()?;
-    let l4 = Layer4Connection::connect(&mut bus, "1.1.4".parse()?, "0.0.255".parse()?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.4".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = authed_session(l4).await?;
     let result = flash(
         &mut session,

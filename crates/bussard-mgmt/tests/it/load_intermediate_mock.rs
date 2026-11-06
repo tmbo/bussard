@@ -58,7 +58,13 @@ fn pid5_reads(gw: &MockGateway, target: IndividualAddress) -> Result<usize, BoxE
 async fn test_write_load_control_with_poll_reads_through_load_completing() -> TestResult {
     let device = MockDevice::system_b("1.1.4".parse()?).with_intermediate_load_states(3);
     let (gw, mut bus, target) = connect(device).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let opened =
         load::write_load_control_with_poll(&mut l4, 1, LoadControl::StartLoading, FAST).await?;
     assert_eq!(opened, LoadState::Loading);
@@ -83,7 +89,13 @@ async fn test_write_load_control_with_poll_reads_through_load_completing() -> Te
 async fn test_write_load_control_with_poll_times_out_on_load_completing() -> TestResult {
     let device = MockDevice::system_b("1.1.4".parse()?).with_intermediate_load_states(u32::MAX);
     let (_gw, mut bus, target) = connect(device).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     load::write_load_control_with_poll(&mut l4, 1, LoadControl::StartLoading, FAST).await?;
     let err = load::write_load_control_with_poll(&mut l4, 1, LoadControl::LoadCompleted, FAST)
         .await
@@ -116,7 +128,13 @@ async fn test_write_load_control_with_poll_times_out_on_load_completing() -> Tes
 async fn test_write_load_control_pauses_the_standard_period() -> TestResult {
     let device = MockDevice::system_b("1.1.4".parse()?).with_intermediate_load_states(1);
     let (gw, mut bus, target) = connect(device).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
     let started = Instant::now();
     let done = load::write_load_control(&mut l4, 1, LoadControl::LoadCompleted).await?;
@@ -137,7 +155,13 @@ async fn test_drive_with_poll_property_reads_through_both_states() -> TestResult
     // The 0705 form: a System 7 device whose LSMs start Loaded.
     let device = system7_device("1.1.7".parse()?, &SYS7_CODE).with_intermediate_load_states(2);
     let (gw, mut bus, target) = connect(device).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let lsm = LsmAccess::Property;
     let unloaded = lsm
         .drive_with_poll(&mut l4, 3, LoadControl::Unload, FAST)
@@ -164,7 +188,13 @@ async fn test_drive_with_poll_property_times_out_on_unloading() -> TestResult {
     let device =
         system7_device("1.1.7".parse()?, &SYS7_CODE).with_intermediate_load_states(u32::MAX);
     let (_gw, mut bus, target) = connect(device).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let result = LsmAccess::Property
         .drive_with_poll(&mut l4, 1, LoadControl::Unload, FAST)
         .await;
@@ -215,7 +245,13 @@ const MEMORY_MAPPED: LsmAccess = LsmAccess::MemoryMapped {
 async fn test_drive_with_poll_memory_mapped_reads_through_load_completing() -> TestResult {
     let completing = Arc::new(AtomicU32::new(3));
     let (_gw, mut bus, target) = connect(memory_mapped_device(Arc::clone(&completing))?).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let loaded = MEMORY_MAPPED
         .drive_with_poll(&mut l4, 3, LoadControl::LoadCompleted, FAST)
         .await?;
@@ -233,7 +269,13 @@ async fn test_drive_with_poll_memory_mapped_reads_through_load_completing() -> T
 async fn test_drive_with_poll_memory_mapped_times_out_on_load_completing() -> TestResult {
     let completing = Arc::new(AtomicU32::new(u32::MAX));
     let (_gw, mut bus, target) = connect(memory_mapped_device(completing)?).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let result = MEMORY_MAPPED
         .drive_with_poll(&mut l4, 3, LoadControl::LoadCompleted, FAST)
         .await;

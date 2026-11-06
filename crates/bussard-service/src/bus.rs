@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::{
-    DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, ProbeMemo, Timeouts,
+    ConnectOptions, Layer4Connection, LeaseChannel, MgmtError, ProbeMemo, Timeouts,
 };
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
@@ -23,10 +23,6 @@ use crate::policy::WritePolicy;
 
 /// A management (layer-4, connection-oriented) session over a leased bus.
 pub type Management = Layer4Connection<LeaseChannel>;
-
-/// A management session over a leased bus, wrapped in the typed
-/// [`DeviceConnection`] client (property, memory and descriptor procedures).
-pub type Device = DeviceConnection<LeaseChannel>;
 
 /// Where a management session's source individual address comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +36,13 @@ pub enum SourcePolicy {
     },
     /// A source the caller already checked, e.g. once per sweep in `scan`.
     Known(IndividualAddress),
+}
+
+impl From<IndividualAddress> for SourcePolicy {
+    /// A source the caller already checked: [`SourcePolicy::Known`].
+    fn from(source: IndividualAddress) -> Self {
+        SourcePolicy::Known(source)
+    }
 }
 
 /// How a management session authorizes after `T_Connect`.
@@ -87,6 +90,66 @@ impl Default for L4Options {
             timeouts: Timeouts::default(),
             authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
         }
+    }
+}
+
+impl L4Options {
+    /// Plain management from `source` on the default budget with a
+    /// best-effort free-access authorize: what a read-only device command
+    /// wants.
+    pub fn read_only(source: impl Into<SourcePolicy>) -> L4Options {
+        L4Options {
+            source: source.into(),
+            ..L4Options::default()
+        }
+    }
+
+    /// A presence probe from `source`: the discovery budget
+    /// ([`crate::scan::discovery_timeouts`]) and no authorize at connect (a
+    /// probe authorizes after the descriptor read, as ETS does).
+    pub fn discovery(source: impl Into<SourcePolicy>) -> L4Options {
+        L4Options {
+            timeouts: crate::scan::discovery_timeouts(),
+            authorize: Authorize::Skip,
+            ..L4Options::read_only(source)
+        }
+    }
+
+    /// [`read_only`](Self::read_only) over KNX Data Secure with `tool_key`
+    /// (plain when `None`), sharing the command's sequence `high_water`.
+    pub fn secured(
+        source: impl Into<SourcePolicy>,
+        tool_key: Option<Key16>,
+        high_water: SequenceHighWater,
+    ) -> L4Options {
+        L4Options {
+            tool_key,
+            high_water,
+            ..L4Options::read_only(source)
+        }
+    }
+
+    /// These options with the authorize step `authorize`.
+    pub fn with_authorize(self, authorize: Authorize) -> L4Options {
+        L4Options { authorize, ..self }
+    }
+
+    /// These options with the tool key `tool_key` (plain when `None`).
+    pub fn with_tool_key(self, tool_key: Option<Key16>) -> L4Options {
+        L4Options { tool_key, ..self }
+    }
+
+    /// These options with the factory default setup key `factory_key`.
+    pub fn with_factory_key(self, factory_key: Option<Key16>) -> L4Options {
+        L4Options {
+            factory_key,
+            ..self
+        }
+    }
+
+    /// These options on the timeout budget `timeouts`.
+    pub fn with_timeouts(self, timeouts: Timeouts) -> L4Options {
+        L4Options { timeouts, ..self }
     }
 }
 
@@ -140,16 +203,10 @@ impl BusService {
     ///
     /// [`ServiceError::Gate`] when the gate refuses; nothing is connected then.
     pub fn open(config: ConnectionConfig, policy: WritePolicy) -> Result<BusService, ServiceError> {
-        let gate = policy.check(&config)?;
+        // The gate refuses before anything is spawned.
+        policy.check(&config)?;
         let (handle, _task) = Bus::connect(config.clone());
-        Ok(BusService {
-            config,
-            handle,
-            policy,
-            gate,
-            group_high_water: SequenceHighWater::new(),
-            probe_memo: ProbeMemo::new(),
-        })
+        BusService::from_handle(config, handle, policy)
     }
 
     /// Wraps a bus actor the caller already spawned, applying the same gate as
@@ -276,12 +333,14 @@ impl BusService {
             &options.factory_key,
             &options.high_water,
         );
-        let mut l4 = Layer4Connection::connect_with_secure(
+        let mut l4 = Layer4Connection::connect(
             channel,
             target,
             source,
-            options.timeouts,
-            secure,
+            ConnectOptions {
+                timeouts: options.timeouts,
+                secure,
+            },
         )
         .await?;
         match options.authorize {
@@ -317,7 +376,11 @@ impl BusService {
     /// so it is retried up to [`CONNECT_ATTEMPTS`] times: on a lost-link
     /// transport error, or on a connection death while the bus reported a link
     /// loss. Each retry first waits for the bus to be connected again.
-    async fn connect_l4_retrying(
+    ///
+    /// For a caller that decides only after its reads whether the session ends
+    /// or is handed on (the `bussard flash` pre-flight, issue #213); prefer
+    /// [`with_l4`](Self::with_l4) otherwise.
+    pub(crate) async fn connect_l4_retrying(
         &self,
         target: IndividualAddress,
         options: &L4Options,
@@ -367,56 +430,35 @@ impl BusService {
         F: AsyncFnOnce(&mut Management) -> Result<T, E>,
         E: From<ServiceError>,
     {
-        let mut l4 = self.connect_l4_retrying(target, options).await?;
-        let result = body(&mut l4).await;
-        let _ = l4.disconnect().await;
-        result
+        self.with_l4_keep_open(target, options, body, |_| false)
+            .await
     }
 
-    /// [`with_l4`](Self::with_l4) with the session wrapped in the typed
-    /// [`DeviceConnection`] client, for a body that uses its procedures
-    /// (`read_device_property`, `read_memory`, ...). Same connect, retry,
-    /// authorize and disconnect on every path.
+    /// [`with_l4`](Self::with_l4), except that the `T_Disconnect` is skipped
+    /// when `keep_open_after` says so for the body's result: a body that
+    /// ended with the device's restart (the device dropped the connection
+    /// and is rebooting, so a `T_Disconnect` would go unanswered).
     ///
     /// # Errors
     ///
     /// Whatever [`connect_l4`](Self::connect_l4) or `body` returns.
-    pub async fn with_device<T, E, F>(
+    pub async fn with_l4_keep_open<T, E, F>(
         &self,
         target: IndividualAddress,
         options: &L4Options,
         body: F,
+        keep_open_after: impl FnOnce(&Result<T, E>) -> bool,
     ) -> Result<T, E>
     where
-        F: AsyncFnOnce(&mut Device) -> Result<T, E>,
+        F: AsyncFnOnce(&mut Management) -> Result<T, E>,
         E: From<ServiceError>,
     {
-        let mut dev = self.connect_device(target, options).await?;
-        let result = body(&mut dev).await;
-        let _ = dev.disconnect().await;
+        let mut l4 = self.connect_l4_retrying(target, options).await?;
+        let result = body(&mut l4).await;
+        if !keep_open_after(&result) {
+            let _ = l4.disconnect().await;
+        }
         result
-    }
-
-    /// Opens a management session to `target` wrapped in the typed
-    /// [`DeviceConnection`] client, with the same connect, retry and authorize
-    /// as [`with_device`](Self::with_device), and hands it to the caller.
-    ///
-    /// For a caller that decides only after its reads whether the session ends
-    /// or is handed on (the `bussard flash` pre-flight under `--yes`, issue
-    /// #213). The caller owns the session and must `disconnect` it or pass it
-    /// to something that does; prefer [`with_device`](Self::with_device)
-    /// otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`connect_l4`](Self::connect_l4) returns.
-    pub async fn connect_device(
-        &self,
-        target: IndividualAddress,
-        options: &L4Options,
-    ) -> Result<Device, ServiceError> {
-        let l4 = self.connect_l4_retrying(target, options).await?;
-        Ok(DeviceConnection::from_l4(l4))
     }
 
     /// Takes the exclusive layer-4 lease as a frame channel, for a procedure

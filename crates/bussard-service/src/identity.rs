@@ -19,9 +19,10 @@ use bussard_mgmt::apci::{FREE_ACCESS_KEY, PID_MANUFACTURER_ID, PID_ORDER_INFO, P
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 
-use crate::bus::{BusService, Device, L4Options};
+use crate::bus::{BusService, L4Options};
 use crate::error::ServiceError;
-use bussard_mgmt::MgmtError;
+use crate::util::clean_ascii;
+use bussard_mgmt::{L4Channel, Layer4Connection, MgmtError, read_device_descriptor};
 
 /// The mask a Data Secure-activated device reports to a plain descriptor read.
 pub const HIDDEN_MASK: u16 = 0xFFFF;
@@ -97,10 +98,7 @@ pub async fn identify_plain(
     address: IndividualAddress,
     options: &L4Options,
 ) -> Option<Identity> {
-    let options = L4Options {
-        tool_key: None,
-        ..options.clone()
-    };
+    let options = options.clone().with_tool_key(None);
     session(service, address, &options, true).await.ok()
 }
 
@@ -113,10 +111,7 @@ pub async fn identify_secured(
     options: &L4Options,
     tool_key: Key16,
 ) -> Option<Identity> {
-    let options = L4Options {
-        tool_key: Some(tool_key),
-        ..options.clone()
-    };
+    let options = options.clone().with_tool_key(Some(tool_key));
     session(service, address, &options, false).await.ok()
 }
 
@@ -136,11 +131,10 @@ pub async fn answers_under_factory_key(
     options: &L4Options,
     fdsk: Key16,
 ) -> bool {
-    let options = L4Options {
-        factory_key: None,
-        authorize: crate::Authorize::Skip,
-        ..options.clone()
-    };
+    let options = options
+        .clone()
+        .with_factory_key(None)
+        .with_authorize(crate::Authorize::Skip);
     identify_secured(service, address, &options, fdsk)
         .await
         .is_some()
@@ -250,10 +244,7 @@ pub async fn probe_classified(
 ) -> Result<(Identity, SecureStatus), ProbeMiss> {
     let had_key = tool_key.is_some();
     if let Some(key) = tool_key {
-        let secured = L4Options {
-            tool_key: Some(key),
-            ..options.clone()
-        };
+        let secured = options.clone().with_tool_key(Some(key));
         match session(service, address, &secured, false).await {
             Ok(identity) => return Ok((identity, SecureStatus::Activated)),
             Err(ProbeMiss::NegativeConfirmation) => return Err(ProbeMiss::NegativeConfirmation),
@@ -261,10 +252,7 @@ pub async fn probe_classified(
         }
         tracing::debug!("{address} did not answer the secured probe; trying the plain probe");
     }
-    let plain = L4Options {
-        tool_key: None,
-        ..options.clone()
-    };
+    let plain = options.clone().with_tool_key(None);
     let identity = session(service, address, &plain, true).await?;
     let status = match (identity.mask_hidden(), had_key) {
         (false, _) => SecureStatus::Plain,
@@ -282,92 +270,86 @@ async fn session(
     plain: bool,
 ) -> Result<Identity, ProbeMiss> {
     let outcome = service
-        .with_device(address, options, async |dev| {
-            Ok::<_, ServiceError>(identify(dev, address, plain).await)
+        .with_l4(address, options, async |l4| {
+            Ok::<_, ServiceError>(read_identity(l4, plain).await)
         })
         .await;
     match outcome {
-        Ok(result) => result,
-        Err(ServiceError::Mgmt(err)) => Err(ProbeMiss::from_error(&err)),
+        Ok(Ok(identity)) => Ok(identity),
+        Ok(Err(err)) | Err(ServiceError::Mgmt(err)) => Err(ProbeMiss::from_error(&err)),
         Err(_) => Err(ProbeMiss::Refused),
     }
 }
 
-/// The reads of one probe on its open session.
-async fn identify(
-    dev: &mut Device,
-    address: IndividualAddress,
+/// Reads a device's identity on an open session: the descriptor, then a
+/// best-effort free-access authorize (as ETS does right after the descriptor
+/// read, issue #52 finding #1) and the manufacturer, serial number and order
+/// info, each best-effort.
+///
+/// With `plain`, a [`HIDDEN_MASK`] answer ends the reads there: a Data
+/// Secure-activated device drops every further plain request, each costing a
+/// timeout.
+///
+/// # Errors
+///
+/// The descriptor read failed (absent, refusing, disconnected).
+pub async fn read_identity<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
     plain: bool,
-) -> Result<Identity, ProbeMiss> {
-    let mask = match dev.device_descriptor().await {
-        Ok(mask) => mask,
-        Err(err) => {
-            if err.device_present() {
-                tracing::debug!("{address} is present but refused the descriptor read: {err}");
-            }
-            return Err(ProbeMiss::from_error(&err));
+) -> Result<Identity, MgmtError> {
+    let address = l4.target();
+    let mask = read_device_descriptor(l4).await.inspect_err(|err| {
+        if err.device_present() {
+            tracing::debug!("{address} is present but refused the descriptor read: {err}");
         }
+    })?;
+    let mut identity = Identity {
+        address,
+        mask,
+        manufacturer_id: None,
+        serial: None,
+        order: None,
     };
     if plain && mask == HIDDEN_MASK {
-        // Data Secure-activated: every further plain read is dropped.
-        return Ok(Identity {
-            address,
-            mask,
-            manufacturer_id: None,
-            serial: None,
-            order: None,
-        });
+        return Ok(identity);
     }
-    // Authorize with the free-access key right after the descriptor read, as
-    // ETS does (issue #52 finding #1). Best-effort.
-    if let Err(err) = dev.authorize(FREE_ACCESS_KEY).await {
+    if let Err(err) = l4.authorize_or_fail(FREE_ACCESS_KEY).await {
         tracing::debug!("{address} authorize (free access) did not grant: {err}");
     }
-    let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {
+    identity.manufacturer_id = read_manufacturer(l4).await;
+    identity.serial = read_serial(l4).await;
+    identity.order = read_order(l4).await;
+    Ok(identity)
+}
+
+/// `PID_MANUFACTURER_ID`, when readable (two octets or more).
+pub async fn read_manufacturer<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Option<u16> {
+    match l4.read_device_property(PID_MANUFACTURER_ID).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
         _ => None,
-    };
-    let serial = dev
-        .read_device_property(PID_SERIAL_NUMBER)
+    }
+}
+
+/// `PID_SERIAL_NUMBER`, when readable and not empty.
+pub async fn read_serial<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Option<Vec<u8>> {
+    l4.read_device_property(PID_SERIAL_NUMBER)
         .await
         .ok()
-        .filter(|v| !v.is_empty());
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
+        .filter(|v| !v.is_empty())
+}
+
+/// `PID_ORDER_INFO` as printable ASCII, when readable and not empty.
+pub async fn read_order<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Option<String> {
+    l4.read_device_property(PID_ORDER_INFO)
         .await
         .ok()
         .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
-    Ok(Identity {
-        address,
-        mask,
-        manufacturer_id,
-        serial,
-        order,
-    })
-}
-
-/// Cleans a raw property value to printable ASCII, up to the first NUL,
-/// trimmed.
-pub fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| char::from(*b))
-        .collect();
-    s.trim().to_string()
+        .filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_clean_ascii_strips_nul_and_control() {
-        assert_eq!(clean_ascii(b"ABB/S 1.1\0\0"), "ABB/S 1.1");
-        assert_eq!(clean_ascii(&[0x01, 0x02]), "");
-    }
 
     #[test]
     fn test_secure_status_as_str_is_stable() {

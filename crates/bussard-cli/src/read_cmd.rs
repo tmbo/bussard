@@ -132,7 +132,7 @@ fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
             let mut live = admission::LiveTables::new();
             Some(
                 admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
-                    admission::check_sender_admission_with(model_ref, ga, source, &evidence, live)
+                    admission::check_sender_admission(model_ref, ga, source, &evidence, live)
                 })
                 .await,
             )

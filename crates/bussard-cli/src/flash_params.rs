@@ -35,7 +35,7 @@ use bussard_download::{
 use bussard_mgmt::memory::read_memory_range;
 use bussard_model::IndividualAddress;
 use bussard_prod::ApplicationProgram;
-use bussard_service::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use bussard_service::{Authorize, BusService, L4Options, ServiceError};
 
 pub(crate) use bussard_download::{
     describe_group_object_change, identity_gate, region_rows, runtime_segments, sys7_code_mismatch,
@@ -330,23 +330,22 @@ pub(crate) struct DeviceRead {
 /// Opens a read-only session and reads the parameter regions (plus, on System
 /// 7, the code-segment samples).
 async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
-    let options = L4Options {
-        source: SourcePolicy::Known(ops::group_source(ctx.service.handle())),
-        tool_key: ctx.tool_key.clone(),
-        high_water: ctx.secure_seq.clone(),
-        // Best-effort: a denial or a device without authorize still reads.
-        authorize: Authorize::BestEffort(
-            ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ),
-        ..L4Options::default()
-    };
+    // Best-effort: a denial or a device without authorize still reads.
+    let options = L4Options::secured(
+        ops::group_source(ctx.service.handle()),
+        ctx.tool_key.clone(),
+        ctx.secure_seq.clone(),
+    )
+    .with_authorize(Authorize::BestEffort(
+        ctx.bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
+    ));
     ctx.service
-        .with_device(ctx.target, &options, async |dev| {
+        .with_l4(ctx.target, &options, async |dev| {
             // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
             // read-back goes out in APDU-sized chunks without re-reading it
             // (issue #194).
-            dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), ctx.plan, ctx.app).await)
+            dev.set_max_apdu(ctx.facts.max_apdu);
+            Ok::<_, ServiceError>(read_parameters_on(dev, ctx.plan, ctx.app).await)
         })
         .await
         .with_context(|| format!("connecting to {} to read its parameters", ctx.target))

@@ -48,7 +48,13 @@ async fn test_send_data_reconnects_after_the_connection_timeout() -> TestResult 
         .with_connection_timeout(IDLE);
     let gw = start(device).await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.set_connection_timeout(IDLE);
     l4.authorize_or_fail(0x1122_3344).await?;
     assert_eq!(read_device_descriptor(&mut l4).await?, 0x07B0);
@@ -92,7 +98,13 @@ async fn test_idle_connection_without_reconnect_meets_t_disconnect() -> TestResu
     let target: IndividualAddress = "1.1.7".parse()?;
     let gw = start(MockDevice::new(target).with_connection_timeout(IDLE)).await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     assert_eq!(read_device_descriptor(&mut l4).await?, 0x07B0);
     tokio::time::sleep(IDLE * 2).await;
     let Err(err) = read_device_descriptor(&mut l4).await else {
@@ -126,12 +138,14 @@ async fn test_sync_backoff_stays_inside_the_connection_timeout() -> TestResult {
         response_timeout: Duration::from_millis(100),
         absent_on_negative_confirmation: false,
     };
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target,
         "0.0.255".parse()?,
-        timeouts,
-        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        bussard_mgmt::ConnectOptions {
+            timeouts,
+            secure: SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        },
     )
     .await?;
     l4.set_connection_timeout(IDLE * 2);
@@ -187,8 +201,13 @@ async fn extended_write(
     let device = MockDevice::new(target).with_ext_write_confirmation(confirmation);
     let gw = start(device).await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 =
-        Layer4Connection::connect(&mut bus, target, IndividualAddress::from_raw(0x00FF)).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        IndividualAddress::from_raw(0x00FF),
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let data: Vec<u8> = (0..40u8).collect();
     let result = bussard_mgmt::write_memory_chunked(&mut l4, 0x01_6000, &data, |_| {}).await;
     let _ = l4.disconnect().await;

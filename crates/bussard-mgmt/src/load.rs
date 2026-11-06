@@ -628,6 +628,21 @@ pub enum WriteError {
     Mgmt(#[from] MgmtError),
 }
 
+impl WriteError {
+    /// This error as a [`MgmtError`]: a management error passes through, any
+    /// other (an out-of-range span, a refused write) becomes a
+    /// malformed-response description at `address`.
+    pub fn into_mgmt(self, address: IndividualAddress) -> MgmtError {
+        match self {
+            WriteError::Mgmt(m) => m,
+            other => MgmtError::MalformedResponse {
+                address,
+                reason: other.to_string(),
+            },
+        }
+    }
+}
+
 /// A readable name for an `A_Restart_Response` error code (KNX spec values).
 fn restart_error_meaning(error_code: u8) -> &'static str {
     match error_code {
@@ -1391,7 +1406,7 @@ pub struct SegmentAllocation {
 ///    successful allocation is the segment's start address (a device reports `0`
 ///    while `Unloaded`). ETS reads it here too. That address is where the caller
 ///    writes the table content with
-///    [`crate::device::DeviceConnection::write_memory`].
+///    [`Layer4Connection::write_memory_read_back`].
 ///
 /// `mode` and `fill` are the structure's `Mode` and `Fill` octets (see
 /// [`encode_rel_segment`]): bit 0 of `mode` asks the device to pre-fill the

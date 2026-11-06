@@ -110,7 +110,13 @@ async fn run_sequence(answer: Answer) -> Result<Run, BoxError> {
         .start()
         .await?;
     let mut bus = open(&gw).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut states = Vec::new();
     states.push(load::write_load_control(&mut l4, OBJ, LoadControl::Unload).await?);
     states.push(load::write_load_control(&mut l4, OBJ, LoadControl::StartLoading).await?);
@@ -206,7 +212,13 @@ async fn test_allocate_segment_error_answer_is_confirmed_by_a_read() -> TestResu
         .start()
         .await?;
     let mut bus = open(&gw).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     load::write_load_control(&mut l4, OBJ, LoadControl::StartLoading).await?;
     let err = load::allocate_segment(&mut l4, OBJ, 0xFFFF_FFF0, 0x00, 0x00)
         .await

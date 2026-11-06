@@ -38,7 +38,13 @@ fn allinbox_program() -> TestResult<KnxnetIpProgram> {
 async fn run(device: MockDevice, program: &KnxnetIpProgram) -> TestResult<(MockDevice, String)> {
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let result = write_knxnet_ip(&mut l4, program).await;
     let _ = l4.disconnect().await;
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;

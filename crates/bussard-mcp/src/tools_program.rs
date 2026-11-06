@@ -107,7 +107,7 @@ use bussard_service::params::{
     resolve_product,
 };
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
-use bussard_service::{Authorize, BusService, FactsCache, L4Options, SourcePolicy};
+use bussard_service::{Authorize, BusService, FactsCache, L4Options};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -2382,15 +2382,8 @@ impl BussardMcp {
                     tier.jobs.step(job, "waiting for the device to restart");
                     let back = match self.state().bus.service() {
                         Some(service) => {
-                            let options = L4Options {
-                                source: SourcePolicy::Known(source),
-                                tool_key: tool_key.clone(),
-                                high_water: high_water.clone(),
-                                authorize: Authorize::BestEffort(
-                                    bussard_mgmt::apci::FREE_ACCESS_KEY,
-                                ),
-                                ..L4Options::default()
-                            };
+                            let options =
+                                L4Options::secured(source, tool_key.clone(), high_water.clone());
                             bussard_service::restart::wait_until_back(
                                 service,
                                 target,
@@ -2479,13 +2472,8 @@ impl BussardMcp {
                         built.plan.writes.parameter_octets
                     ),
                 );
-                let read_options = L4Options {
-                    source: SourcePolicy::Known(source),
-                    tool_key: tool_key.clone(),
-                    high_water: high_water.clone(),
-                    authorize,
-                    ..L4Options::default()
-                };
+                let read_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+                    .with_authorize(authorize);
                 let mut observer = JobObserver {
                     jobs: &tier.jobs,
                     job,
@@ -2568,13 +2556,8 @@ impl BussardMcp {
                     origin.truth()
                 ),
             );
-            let read_options = L4Options {
-                source: SourcePolicy::Known(source),
-                tool_key: tool_key.clone(),
-                high_water: high_water.clone(),
-                authorize,
-                ..L4Options::default()
-            };
+            let read_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+                .with_authorize(authorize);
             let readback = bussard_service::verify::read_back_on(
                 service,
                 target,
@@ -3155,12 +3138,14 @@ async fn read_device(
         .map_err(|e| format!("could not lease the bus: {e}"))?;
     // A device reset to default is named, not read under its FDSK (#532).
     let secure = bussard_service::secure::layer_with_factory_key(tool_key, factory_key, high_water);
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         LeaseChannel::new(lease),
         target,
         source,
-        Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;
@@ -3254,12 +3239,14 @@ async fn read_property_rows(
         .await
         .map_err(|e| format!("could not lease the bus: {e}"))?;
     let secure = bussard_service::secure::layer(tool_key, &SequenceHighWater::new());
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         LeaseChannel::new(lease),
         target,
         source,
-        Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;

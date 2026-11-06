@@ -679,7 +679,13 @@ async fn run_apply(
     let source: IndividualAddress = SOURCE.parse()?;
 
     let desired = compute_tables(&model_links()?);
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let objects = discover_table_objects(&mut l4).await?;
     let outcome = apply_tables(&mut l4, objects, &desired, SystemBLoad::default()).await;
     let _ = l4.disconnect().await;
@@ -984,7 +990,13 @@ async fn plan_only_read_touches_no_load_state() -> TestResult {
     let source: IndividualAddress = SOURCE.parse()?;
 
     // A plan is a read-only `read_tables` — it must never write a load control.
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let _ = bussard_mgmt::tables::read_tables(&mut l4).await?;
     let _ = l4.disconnect().await;
 

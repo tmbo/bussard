@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bussard_bus::{BusHandle, BusState, ops};
 use bussard_mgmt::LeaseChannel;
-use bussard_mgmt::broadcast::devices_in_programming_mode_within;
+use bussard_mgmt::broadcast::devices_in_programming_mode;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, GroupKeyring, json_value};
@@ -479,7 +479,7 @@ pub async fn watch_prog(hub: TrafficHub, handle: BusHandle) {
             Err(_) => break,
         };
         let channel = LeaseChannel::new(lease);
-        match devices_in_programming_mode_within(channel, source, PROG_COLLECTION_WINDOW).await {
+        match devices_in_programming_mode(channel, source, PROG_COLLECTION_WINDOW).await {
             Ok(found) => {
                 let set: BTreeSet<IndividualAddress> = found.into_iter().collect();
                 hub.set_prog_if_changed(set);

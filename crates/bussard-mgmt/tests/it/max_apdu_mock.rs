@@ -53,7 +53,7 @@ async fn negotiate_thrice(
         ..Timeouts::default()
     };
     let mut l4 =
-        Layer4Connection::connect_with(&mut bus, target()?, "0.0.255".parse()?, timeouts).await?;
+        Layer4Connection::connect(&mut bus, target()?, "0.0.255".parse()?, timeouts.into()).await?;
     let first = l4.negotiate_max_apdu().await?;
     let second = l4.negotiate_max_apdu().await?;
     let third = l4.negotiate_max_apdu().await?;
@@ -114,7 +114,13 @@ async fn test_set_max_apdu_absent_skips_the_read() -> TestResult {
         .start()
         .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.set_max_apdu_absent();
     assert_eq!(l4.negotiate_max_apdu().await?, None);
     assert_eq!(l4.max_memory_chunk(), 12, "the conservative chunk stays");

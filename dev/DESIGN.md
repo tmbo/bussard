@@ -180,8 +180,9 @@ copy of each safety rule:
   without it, so a new surface inherits the gate by construction.
 - `with_l4` / `connect_l4` run the management-session skeleton (source-address check,
   lease, `T_Connect`, the KNX Data Secure layer from a keyring or tool key, authorize,
-  disconnect) that device commands used to copy; `with_device` hands the body the typed
-  `DeviceConnection` instead. Every CLI device command opens its sessions this way. A
+  disconnect) that device commands used to copy; the body gets the `Layer4Connection`,
+  whose typed procedures (`read_device_property`, `read_memory`, ...) are inherent
+  methods. Every CLI device command opens its sessions this way. A
   command that must authorize at a specific point in its frame sequence (after the
   descriptor read, as `scan` and `assign` do) passes `Authorize::Skip` and authorizes in
   the body. The download engine opens its own connections, so `flash` and `apply` hand
