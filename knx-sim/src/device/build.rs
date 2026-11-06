@@ -1387,6 +1387,62 @@ mod tests {
         Ok(())
     }
 
+    /// The Schneider STXF121 shape (`M-0009_A-E0EE-10-ADF8`): a module
+    /// definition writes `ObjIdx="0" PropId="208" Count="164"` relative to its
+    /// `BaseObjIdx` argument, instantiated with bases 6 and 7.
+    pub(super) const MODULE_APP: &str = r#"<KNX><ApplicationProgram Id="M-0009_A-E0EE-10-ADF8" ApplicationNumber="57582" ApplicationVersion="16" MaskVersion="MV-07B0"><Static>
+          <Code><RelativeSegment Id="RS-04" Offset="0" Size="16" LoadStateMachine="4" /></Code>
+          <AddressTable /><AssociationTable /><ComObjectTable />
+          <LoadProcedures><LoadProcedure MergeId="4">
+            <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="12" PropId="208" PropType="PDT_GENERIC_01" MaxElements="46" ReadAccess="0" WriteAccess="0" Writable="true" />
+            <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" Count="11" Verify="false" />
+          </LoadProcedure></LoadProcedures></Static>
+          <ModuleDefs><ModuleDef Id="M-0009_A-E0EE-10-ADF8_MD-1" Name="MeteringSensor">
+            <Arguments><Argument Id="M-0009_A-E0EE-10-ADF8_MD-1_A-1" Name="BaseObjectIndex" /><Argument Id="M-0009_A-E0EE-10-ADF8_MD-1_A-4" Name="MeteringSensorId" /></Arguments>
+            <Static><LoadProcedures><LoadProcedure MergeId="4">
+              <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="0" PropId="208" Count="164" Verify="false" InlineData="" BaseObjIdx="M-0009_A-E0EE-10-ADF8_MD-1_A-1" />
+              <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" StartElement="12" Verify="false" BaseStartElement="M-0009_A-E0EE-10-ADF8_MD-1_A-4" />
+            </LoadProcedure></LoadProcedures></Static>
+          </ModuleDef></ModuleDefs>
+          <Dynamic>
+            <Module Id="M-0009_A-E0EE-10-ADF8_MD-1_M-5" RefId="M-0009_A-E0EE-10-ADF8_MD-1" Name="MS1">
+              <NumericArg RefId="M-0009_A-E0EE-10-ADF8_MD-1_A-1" Value="6" /><NumericArg RefId="M-0009_A-E0EE-10-ADF8_MD-1_A-4" Value="0" />
+            </Module>
+            <Module Id="M-0009_A-E0EE-10-ADF8_MD-1_M-1" RefId="M-0009_A-E0EE-10-ADF8_MD-1" Name="MS2">
+              <NumericArg RefId="M-0009_A-E0EE-10-ADF8_MD-1_A-1" Value="7" /><NumericArg RefId="M-0009_A-E0EE-10-ADF8_MD-1_A-4" Value="1" />
+            </Module>
+          </Dynamic></ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_build_system_b_module_instance_objects() -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: ETS described object 6's PID 208
+        // `[d8 06 d0 00]` and stopped on the empty description (ETS sweep,
+        // 2026-11-06).
+        let pd = app_product(MODULE_APP)?;
+        assert!(pd.written_props.contains(&(6, 208, 164, 164)));
+        assert!(pd.written_props.contains(&(7, 208, 164, 164)));
+        assert!(
+            !pd.written_props
+                .iter()
+                .any(|&(o, p, _, _)| o == 0 && p == 208)
+        );
+        let mut dev = connected_device(&pd)?;
+        for object in [6u8, 7] {
+            let d = describe(&mut dev, object, 208)?;
+            assert_eq!(d[3], 0x80 | 0x11, "writable, PDT_GENERIC_01");
+            assert_eq!(u16::from_be_bytes([d[4], d[5]]), 164);
+        }
+        // ETS's chunked write, 15 elements from 1.
+        let mut write = vec![6, 208, 0xF0, 0x01];
+        write.extend_from_slice(&[0x5A; 15]);
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        assert_eq!(r.responses[0].tpdu[4] >> 4, 15);
+        // Object 12 reaches element 13 (12 plus MS2's MeteringSensorId 1).
+        let d = describe(&mut dev, 12, 208)?;
+        assert!(u16::from_be_bytes([d[4], d[5]]) >= 13);
+        Ok(())
+    }
+
     #[test]
     fn test_build_system_b_vendor_object_by_index() -> Result<(), Box<dyn std::error::Error>> {
         // Bussard issue #422: the Siemens dimmer `M-0001_A-9839-01` writes
