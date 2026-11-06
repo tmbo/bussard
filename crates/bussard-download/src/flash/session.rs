@@ -1071,24 +1071,11 @@ impl<C: Connector> Session<C> {
         tokio::time::sleep(quiet.min(bound)).await;
         // Only a session that owns a connector can probe; one built from a single
         // open connection falls straight through to `reconnect`'s error.
-        if self.connector.is_some() {
-            let deadline = started + bound;
-            loop {
-                let probe_started = tokio::time::Instant::now();
-                if self.probe_rebooted_device().await {
-                    break;
-                }
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    tracing::debug!(
-                        "device did not answer a liveness probe within the reboot bound; \
-                         reconnecting anyway"
-                    );
-                    break;
-                }
-                sleep_rest_of_interval(probe_started, deadline).await;
-            }
-        }
+        self.probe_until(
+            started + bound,
+            "device did not answer a liveness probe within the reboot bound; reconnecting anyway",
+        )
+        .await;
         self.reconnect_once().await
     }
 
@@ -1153,25 +1140,14 @@ impl<C: Connector> Session<C> {
         let started = tokio::time::Instant::now();
         let deadline = started + bound;
         tokio::time::sleep(quiet.min(bound)).await;
-        let mut ready = None;
-        if self.connector.is_some() {
-            loop {
-                let probe_started = tokio::time::Instant::now();
-                if let Some(l4) = self.probe_secure_device().await {
-                    ready = Some(l4);
-                    break;
-                }
-                let now = tokio::time::Instant::now();
-                if now >= deadline {
-                    tracing::debug!(
-                        "Secure device did not answer the plain descriptor probe within \
-                         the reboot bound; reconnecting anyway"
-                    );
-                    break;
-                }
-                sleep_rest_of_interval(probe_started, deadline).await;
-            }
-        }
+        let ready = self
+            .probe_until(
+                deadline,
+                "Secure device did not answer the plain descriptor probe within the reboot \
+                 bound; reconnecting anyway",
+            )
+            .await
+            .flatten();
         let (mut l4, losses) = match ready {
             Some(ready) => ready,
             None => {
@@ -1211,6 +1187,42 @@ impl<C: Connector> Session<C> {
         }
     }
 
+    /// One readiness probe of the kind the session needs: the Secure probe
+    /// ([`probe_secure_device`](Session::probe_secure_device)) keeps the
+    /// connection that answered, the plain one
+    /// ([`probe_rebooted_device`](Session::probe_rebooted_device)) closes it.
+    /// `None` when the device did not answer.
+    async fn probe_ready(&mut self) -> Option<ProbeAnswer<C::Channel>> {
+        if self.secure {
+            self.probe_secure_device().await.map(Some)
+        } else {
+            self.probe_rebooted_device().await.then_some(None)
+        }
+    }
+
+    /// Probes the rebooting device every [`REBOOT_PROBE_INTERVAL`] until a
+    /// probe answers or `deadline` has passed after one that did not (then
+    /// logs `silent` and returns `None`). A session without a connector
+    /// cannot probe and returns `None` at once.
+    async fn probe_until(
+        &mut self,
+        deadline: tokio::time::Instant,
+        silent: &str,
+    ) -> Option<ProbeAnswer<C::Channel>> {
+        self.connector.as_ref()?;
+        loop {
+            let probe_started = tokio::time::Instant::now();
+            if let Some(answer) = self.probe_ready().await {
+                return Some(answer);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                tracing::debug!("{silent}");
+                return None;
+            }
+            sleep_rest_of_interval(probe_started, deadline).await;
+        }
+    }
+
     /// Records that a readiness probe was answered now, for the
     /// [`RebootReadiness`] of the restart being waited out (the first answer
     /// wins).
@@ -1237,19 +1249,13 @@ impl<C: Connector> Session<C> {
         tokio::time::sleep_until(accepted + FACTORY_RESET_PROBE_FROM).await;
         while tokio::time::Instant::now() < until {
             let probe_started = tokio::time::Instant::now();
-            let answered = if self.secure {
-                match self.probe_secure_device().await {
-                    Some((l4, _)) => {
-                        let _ = l4.disconnect().await;
-                        true
-                    }
-                    None => false,
+            match self.probe_ready().await {
+                Some(Some((l4, _))) => {
+                    let _ = l4.disconnect().await;
+                    return;
                 }
-            } else {
-                self.probe_rebooted_device().await
-            };
-            if answered {
-                return;
+                Some(None) => return,
+                None => {}
             }
             sleep_rest_of_interval(probe_started, until).await;
         }
@@ -1379,6 +1385,11 @@ async fn sleep_rest_of_interval(
     let next = (probe_started + REBOOT_PROBE_INTERVAL).min(deadline);
     tokio::time::sleep_until(next).await;
 }
+
+/// What an answered readiness probe leaves: the Secure probe's connection and
+/// the connector's link-loss count from before it was opened, kept for the
+/// session (issue #166); nothing for a plain probe, whose connection is closed.
+type ProbeAnswer<Ch> = Option<(Layer4Connection<Ch>, u64)>;
 
 /// Which confirmed restart a [`RebootReadiness`] measured.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1631,17 +1642,7 @@ pub(super) async fn read_load_state_resumable<C: Connector>(
     session: &mut Session<C>,
     obj: u8,
 ) -> Result<LoadState, WriteError> {
-    let mut reconnects = 0u32;
-    loop {
-        match read_load_state(session.l4(), obj).await {
-            Ok(state) => return Ok(state),
-            Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
-                reconnects += 1;
-                session.reconnect().await?;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    resume!(session, read_load_state(session.l4(), obj).await)
 }
 
 /// Reads `len` octets at `addr`, resuming at read granularity over the session
@@ -1651,17 +1652,7 @@ pub(super) async fn read_memory_resumable<C: Connector>(
     addr: u32,
     len: u8,
 ) -> Result<Vec<u8>, WriteError> {
-    let mut reconnects = 0u32;
-    loop {
-        match load::read_memory(session.l4(), addr, len).await {
-            Ok(got) => return Ok(got),
-            Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
-                reconnects += 1;
-                session.reconnect().await?;
-            }
-            Err(e) => return Err(e),
-        }
-    }
+    resume!(session, load::read_memory(session.l4(), addr, len).await)
 }
 
 #[cfg(test)]
