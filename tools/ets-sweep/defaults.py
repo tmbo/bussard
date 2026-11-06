@@ -200,12 +200,22 @@ def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | Non
     # The device object only: its PIDs 78 and 25 are what ETS checks; a
     # property on an object the sim does not build would refuse the config.
     merged = {(p["object"], p["pid"]): p for p in sweep.product_properties(path, app) if p["object"] == 0}
-    for p in (prev or {}).get("learned_properties") or []:
+    for p in learned_from_ets(path, app, prev):
         merged[(p["object"], p["pid"])] = p
     if (0, 78) not in merged:
         for p in guessed_identity(app) or []:
             merged[(p["object"], p["pid"])] = p
     return list(merged.values()) or None
+
+
+def learned_from_ets(path: Path, app: str, prev: dict | None) -> list[dict]:
+    """The `learned_properties` of an earlier result that ETS's log can have
+    taught: those a seed supplies by itself are dropped. Until 2026-11-06 a
+    run recorded its whole seed as learned (product parameters, guessed
+    identities); such an entry equals the seed and goes, so a corrected seed
+    is not overridden by its stale copy."""
+    seeds = [p for p in sweep.product_properties(path, app) if p["object"] == 0] + (guessed_identity(app) or [])
+    return [p for p in (prev or {}).get("learned_properties") or [] if p not in seeds]
 
 
 OFFERED = HERE / "results" / "offered.json"
@@ -439,10 +449,12 @@ def main() -> int:
                 # when the order number does not list the wanted version.
                 fallback = re.sub(r"\s+v?\d+(\.\d+)*$", "", job["name"] or "").strip()
                 # Start from the identity a previous run learned from ETS.
+                earlier = prev or captured.get(job["id"])
                 r = sweep.run_learning(c, path, job["id"], str(job["order_numbers"][0]),
                                        mask=job["mask"], fallback_search=fallback, variant=args.variant,
                                        before_download=hook,
-                                       properties=seed_properties(path, job["id"], prev or captured.get(job["id"])))
+                                       properties=seed_properties(path, job["id"], earlier),
+                                       learned=learned_from_ets(path, job["id"], earlier))
             except Exception as exc:  # noqa: BLE001 - a lost ssh link: reconnect and go on
                 r = {"outcome": "driver-error", "error": f"{type(exc).__name__}: {exc}"[:600]}
                 c = vm.connect()
