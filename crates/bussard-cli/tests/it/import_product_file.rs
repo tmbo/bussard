@@ -3,7 +3,7 @@
 //! (`.knxproj`, detected by extension or by its `P-XXXX` project folder) each
 //! application program is extracted once into its own archive there; the
 //! export itself is never copied. Both pin the archive in `bussard.lock` and
-//! write the product models under `.bussard/models/`.
+//! write the product models under `.bussard/model-cache/`.
 //!
 //! The fixtures are tiny fabricated archives (no vendor data committed).
 
@@ -141,8 +141,8 @@ fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
         "expected the extraction note; stdout:\n{stdout}"
     );
     assert!(
-        dir.join(".bussard/models")
-            .join(format!("{APP_ID}.yaml"))
+        dir.join(".bussard/model-cache")
+            .join(format!("{APP_ID}.json"))
             .is_file(),
         "expected the generated model; stdout:\n{stdout}"
     );
@@ -200,8 +200,8 @@ fn test_import_product_knxprod_is_cached_byte_identical() -> TestResult {
     assert!(!dir.join("products").join(".gitignore").exists());
     assert!(!dir.join("vendor").exists());
     assert!(
-        dir.join(".bussard/models")
-            .join(format!("{APP_ID}.yaml"))
+        dir.join(".bussard/model-cache")
+            .join(format!("{APP_ID}.json"))
             .is_file()
     );
     std::fs::remove_dir_all(&tmp)?;

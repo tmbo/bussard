@@ -456,29 +456,36 @@ betriebsart = "2"
 langzeitbetrieb.listen = ["0/1/3"]
 "#;
 
-const KEYED_PRODUCT: &str = r#"identity:
-  id: M-0004_A-20DE-22-C7D8-O000A
-parameters:
-  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-14
-    text: Betriebsart
-    type: !enum
-      values:
-        - { value: 1, text: Rollladen }
-        - { value: 2, text: Jalousie }
-    default: "1"
-  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-15
-    text: Fahrzeit
-    type: !int
-      min: 1
-      max: 600
-    default: "60"
-  - id: M-0004_A-20DE-22-C7D8-O000A_P-19
-    text: Regenalarm
-    type: !enum
-      values:
-        - { value: 0, text: Nein }
-        - { value: 1, text: Ja }
-    default: "0"
+const KEYED_PRODUCT: &str = r#"{
+  "parameters": {
+    "MD-3_P-14": {
+      "kind": {"Enum": {"values": [1, 2]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [[1, "Rollladen"], [2, "Jalousie"]],
+      "enum_values": [
+        {"value": 1, "text": "Rollladen", "default_text": "Rollladen"},
+        {"value": 2, "text": "Jalousie", "default_text": "Jalousie"}
+      ]
+    },
+    "MD-3_P-15": {
+      "kind": {"Int": {"min": 1, "max": 600, "signed": false}},
+      "default": "60",
+      "text": "Fahrzeit"
+    },
+    "P-19": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Regenalarm",
+      "labels": [[0, "Nein"], [1, "Ja"]],
+      "enum_values": [
+        {"value": 0, "text": "Nein", "default_text": "Nein"},
+        {"value": 1, "text": "Ja", "default_text": "Ja"}
+      ]
+    }
+  },
+  "program_id": "M-0004_A-20DE-22-C7D8-O000A"
+}
 "#;
 
 /// `knx_set_parameter` takes the key the device file uses and an enum label,
@@ -486,12 +493,7 @@ parameters:
 #[tokio::test]
 async fn test_set_parameter_takes_the_file_key_and_a_label() -> TestResult {
     let dir = model_dir("keyed")?;
-    let app = "M-0004_A-20DE-22-C7D8-O000A";
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
-    std::fs::write(
-        dir.join(".bussard/models").join(format!("{app}.yaml")),
-        KEYED_PRODUCT,
-    )?;
+    bussard_model::param_model::write_product_model(&dir, serde_json::from_str(KEYED_PRODUCT)?)?;
     std::fs::write(dir.join("bussard.lock"), KEYED_LOCK)?;
     std::fs::remove_file(dir.join("devices").join("1.1.4.toml"))?;
     std::fs::write(dir.join("devices").join("1.1.47.toml"), KEYED_DEVICE)?;
@@ -699,12 +701,7 @@ async fn test_link_tools_describe_the_address_field() -> TestResult {
 /// (as `bussard import` does) and groups.toml defining the linked addresses.
 fn labelled_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let dir = model_dir(tag)?;
-    let app = "M-0004_A-20DE-22-C7D8-O000A";
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
-    std::fs::write(
-        dir.join(".bussard/models").join(format!("{app}.yaml")),
-        KEYED_PRODUCT,
-    )?;
+    bussard_model::param_model::write_product_model(&dir, serde_json::from_str(KEYED_PRODUCT)?)?;
     std::fs::write(dir.join("bussard.lock"), KEYED_LOCK)?;
     std::fs::remove_file(dir.join("devices").join("1.1.4.toml"))?;
     std::fs::write(
@@ -1075,11 +1072,7 @@ fn param_calculation_dir()
     let data = bussard_prod::read_knxprod(&knxprod)?;
     std::fs::remove_file(&knxprod)?;
     let app = data.applications.first().ok_or("no application")?.clone();
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
-    std::fs::write(
-        dir.join(".bussard/models").join(format!("{}.yaml", app.id)),
-        bussard_prod::product_model::model_yaml(&app, &data)?,
-    )?;
+    bussard_prod::product_model::write_product_models(&data, &dir)?;
     std::fs::write(
         dir.join("bussard.lock"),
         format!(

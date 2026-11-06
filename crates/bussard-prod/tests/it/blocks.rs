@@ -4,7 +4,7 @@
 //! objects on a page of their own.
 //!
 //! The written model is pinned in
-//! `crates/bussard-model/tests/fixtures/blocks_app.yaml`, which the
+//! `crates/bussard-model/tests/fixtures/blocks_app.json`, which the
 //! device-view, lookup and MCP tests read. Regenerate it with
 //! `BUSSARD_BLESS=1 cargo nextest run -p bussard-prod -E 'test(written_model)'`.
 
@@ -12,10 +12,8 @@ use std::path::PathBuf;
 
 use bussard_model::blocks::BlockKind;
 use bussard_model::dynamic::{RefIndex, WhenTest};
-use bussard_model::param_model::{
-    MODEL_FORMAT, cached_product_model, model_cache_path, model_is_current,
-};
-use bussard_prod::product_model::write_product_models;
+use bussard_model::param_model::{cached_product_model, product_model_is_current};
+use bussard_prod::product_model::{product_model, write_product_models};
 use bussard_prod::{ApplicationProgram, ProductData, parse_application_program};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -35,8 +33,7 @@ fn written_model() -> Result<bussard_model::ProductModel, Box<dyn std::error::Er
         applications: vec![app()?],
         ..ProductData::default()
     };
-    let yaml = bussard_prod::product_model::model_yaml(&product.applications[0], &product)?;
-    Ok(bussard_model::ProductModel::from_yaml(&yaml, APP)?)
+    Ok(product_model(&product.applications[0], &product))
 }
 
 /// The conditions in front of the one app-level occurrence of `reference`
@@ -150,55 +147,42 @@ fn test_model_carries_ref_level_values() -> TestResult {
     Ok(())
 }
 
-/// Issue #339: the import writes each model's JSON cache from the YAML it
-/// just wrote, so the first load after it reads JSON instead of YAML.
+/// The import writes each model where the next command reads it.
 #[test]
-fn test_write_product_models_leaves_a_valid_cache() -> TestResult {
+fn test_write_product_models_leaves_a_current_model() -> TestResult {
     let dir = tempfile::tempdir()?;
     let product = ProductData {
         applications: vec![app()?],
         ..ProductData::default()
     };
-    write_product_models(&product, dir.path())?;
-    assert!(model_cache_path(dir.path(), APP).is_file());
-    let cached = cached_product_model(dir.path(), APP).ok_or("the cache matches the YAML")?;
-    let yaml = std::fs::read_to_string(
-        dir.path()
-            .join(".bussard/models")
-            .join(format!("{APP}.yaml")),
-    )?;
-    let parsed = bussard_model::ProductModel::from_yaml(&yaml, APP)?;
-    assert_eq!(format!("{cached:?}"), format!("{parsed:?}"));
+    assert_eq!(
+        write_product_models(&product, dir.path())?,
+        [format!("{APP}.json")]
+    );
+    assert!(product_model_is_current(dir.path(), APP));
+    let stored = cached_product_model(dir.path(), APP).ok_or("the model reads back")?;
+    assert_eq!(
+        format!("{stored:?}"),
+        format!("{:?}", product_model(&product.applications[0], &product))
+    );
     Ok(())
 }
 
 #[test]
 fn test_written_model_matches_the_fixture() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let product = ProductData {
-        applications: vec![app()?],
-        ..ProductData::default()
-    };
-    write_product_models(&product, dir.path())?;
-    let path = dir
-        .path()
-        .join(".bussard/models")
-        .join(format!("{APP}.yaml"));
-    assert!(model_is_current(&path), "model_format: {MODEL_FORMAT}");
-    let written = std::fs::read_to_string(&path)?;
-
+    let written = serde_json::to_value(written_model()?)?;
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../bussard-model/tests/fixtures/blocks_app.yaml");
+        .join("../bussard-model/tests/fixtures/blocks_app.json");
     if std::env::var_os("BUSSARD_BLESS").is_some() {
-        std::fs::write(&fixture, &written)?;
+        std::fs::write(&fixture, serde_json::to_string_pretty(&written)? + "\n")?;
     }
-    let pinned = std::fs::read_to_string(&fixture)?;
+    let pinned: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&fixture)?)?;
     assert_eq!(
         written, pinned,
-        "the emitter changed; regenerate the fixture with BUSSARD_BLESS=1"
+        "the model changed; regenerate the fixture with BUSSARD_BLESS=1"
     );
 
-    let model = bussard_model::ProductModel::from_yaml(&written, APP)?;
+    let model: bussard_model::ProductModel = serde_json::from_value(pinned)?;
     assert_eq!(model.blocks().len(), 6);
     assert_eq!(model.ref_default("P-13_R-13"), Some("4"));
     assert_eq!(model.ref_default("P-13_R-15"), Some("2"));
@@ -209,16 +193,5 @@ fn test_written_model_matches_the_fixture() -> TestResult {
             .and_then(|o| o.function.as_deref()),
         Some("Value")
     );
-    Ok(())
-}
-
-#[test]
-fn test_model_of_an_older_format_is_not_current() -> TestResult {
-    let dir = tempfile::tempdir()?;
-    let path = dir.path().join("old.yaml");
-    std::fs::write(&path, "# banner\nidentity:\n  id: X\n")?;
-    assert!(!model_is_current(&path));
-    std::fs::write(&path, format!("# banner\nmodel_format: {MODEL_FORMAT}\n"))?;
-    assert!(model_is_current(&path));
     Ok(())
 }

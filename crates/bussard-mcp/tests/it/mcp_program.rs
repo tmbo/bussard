@@ -1108,7 +1108,6 @@ async fn test_knx_plan_device_lists_a_value_on_an_unshown_ref_as_ignored() -> an
     let h = Harness::start(Duration::from_secs(600)).await?;
     let app = "M-00FA_A-0321-10-0000";
     let dir = h.dir.path();
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     // The product model, written by the importer from this application XML
     // (issue #345): the threshold's `P-2_R-2` under "Helligkeit", its
     // `P-2_R-5` under "Wind".
@@ -1142,10 +1141,7 @@ async fn test_knx_plan_device_lists_a_value_on_an_unshown_ref_as_ignored() -> an
         applications: vec![program.clone()],
         ..bussard_prod::ProductData::default()
     };
-    std::fs::write(
-        dir.join(format!(".bussard/models/{app}.yaml")),
-        bussard_prod::product_model::model_yaml(&program, &product)?,
-    )?;
+    bussard_prod::product_model::write_product_models(&product, dir)?;
     std::fs::write(
         dir.join("bussard.lock"),
         format!(

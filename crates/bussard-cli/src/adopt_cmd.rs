@@ -253,7 +253,8 @@ fn resolve_product(
         println!(
             "  no --product given and no cached product data under {}; continuing without \
              product data.",
-            dir.join(bussard_model::param_model::MODELS_DIR).display()
+            dir.join(bussard_model::param_model::MODEL_CACHE_DIR)
+                .display()
         );
         return Ok(None);
     }
@@ -270,7 +271,8 @@ fn resolve_product(
 
     println!(
         "  cached product models under {}:",
-        dir.join(bussard_model::param_model::MODELS_DIR).display()
+        dir.join(bussard_model::param_model::MODEL_CACHE_DIR)
+            .display()
     );
     for (i, name) in models.iter().enumerate() {
         println!("    [{}] {name}", i + 1);
@@ -280,7 +282,7 @@ fn resolve_product(
     if pick == 0 {
         return Ok(None);
     }
-    // The cached model YAML is our own generated shape; but for the read-back
+    // The cached product model is our own generated shape; but for the read-back
     // cross-check and com-object table we want the parsed application. We do not
     // keep the source .knxprod path here, so a cached-model pick attaches the
     // identity/order-number metadata we can recover from the model file name and
@@ -289,7 +291,7 @@ fn resolve_product(
         "  note: adopting from a cached model file carries product identity only; \
          re-run with --product <file.knxprod> to also generate the com-object table."
     );
-    let id = models[pick - 1].trim_end_matches(".yaml").to_string();
+    let id = models[pick - 1].trim_end_matches(".json").to_string();
     Ok(Some(SelectedProduct {
         manufacturer_ref: id.split('_').next().map(str::to_string),
         application_ref: id.clone(),
@@ -966,13 +968,10 @@ fn objects_are(n: usize) -> (&'static str, &'static str) {
 // ---------------------------------------------------------------------------
 
 /// Imports a `.knxprod`: caches it under `<dir>/vendor/` and writes one
-/// generated model YAML per application program under `<dir>/models/`, then
+/// product model per application program under `<dir>/.bussard/model-cache/`, then
 /// returns the parsed product data.
-// DUP: mirrors the file-writing half of `import_product_cmd::run`. The model
-// Product-model shaping (Identity/ComObjectModel/etc.) is NOT duplicated — adopt only
-// needs the parsed `ProductData`, and re-serialising the full model would mean
-// copying ~400 lines. We instead reuse `import_product_cmd::run` indirectly by
-// re-reading, but keep it self-contained here per file-set discipline.
+// DUP: mirrors the file-writing half of `import_product_cmd::run`; the product
+// models themselves come from `bussard_prod::product_model`, not duplicated here.
 fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
     if !file.exists() {
         bail!("product file not found: {}", file.display());
@@ -1029,17 +1028,18 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
 // Small local helpers
 // ---------------------------------------------------------------------------
 
-/// The cached model file names under `<dir>/models/`, sorted.
+/// The cached product model file names under `<dir>/.bussard/model-cache/`, sorted.
 fn cached_models(dir: &Path) -> Vec<String> {
-    let mut out: Vec<String> = std::fs::read_dir(dir.join(bussard_model::param_model::MODELS_DIR))
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| {
-            let name = e.file_name().to_string_lossy().into_owned();
-            name.ends_with(".yaml").then_some(name)
-        })
-        .collect();
+    let mut out: Vec<String> =
+        std::fs::read_dir(dir.join(bussard_model::param_model::MODEL_CACHE_DIR))
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.ends_with(".json").then_some(name)
+            })
+            .collect();
     out.sort();
     out
 }

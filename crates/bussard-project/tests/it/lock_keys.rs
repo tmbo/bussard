@@ -192,25 +192,26 @@ fn test_import_with_language_records_it_for_the_reimport() -> TestResult {
 
 /// A product model for the fixture program, as `import-product` writes it
 /// (only the enum the device sets).
-const MODEL_YAML: &str = "parameters:
-  - id: M-00FA_A-00D1-10-0001_MD-1_P-2
-    type: !enum
-      values:
-        - value: 0
-          text: Off
-        - value: 1
-          text: Heating
-    default: '0'
-";
+const MODEL_JSON: &str = r#"{
+  "parameters": {
+    "MD-1_P-2": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "labels": [[0, "Off"], [1, "Heating"]],
+      "enum_values": [
+        {"value": 0, "text": "Off", "default_text": "Off"},
+        {"value": 1, "text": "Heating", "default_text": "Heating"}
+      ]
+    }
+  },
+  "program_id": "M-00FA_A-00D1-10-0001"
+}
+"#;
 
 #[test]
 fn test_import_load_save_round_trip_with_product_model() -> TestResult {
     let (dir, model) = imported()?;
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
-    std::fs::write(
-        dir.join(format!(".bussard/models/{APP_ID}.yaml")),
-        MODEL_YAML,
-    )?;
+    bussard_model::param_model::write_product_model(&dir, serde_json::from_str(MODEL_JSON)?)?;
     let before_file = read(&dir, "devices/1.1.30.toml")?;
     let before_lock = read(&dir, "bussard.lock")?;
     let loaded = Model::load(&dir)?;
@@ -245,23 +246,29 @@ fn test_import_load_save_round_trip_with_product_model() -> TestResult {
 
 /// The fixture's product model with the parameter refs listed, so a key the
 /// lock does not list resolves through it.
-const MODEL_WITH_REFS_YAML: &str = "parameters:
-  - id: M-00FA_A-00D1-10-0001_MD-1_P-2
-    text: Output mode
-    type: !enum
-      values:
-        - value: 0
-          text: Off
-        - value: 1
-          text: Heating
-    default: '0'
-    refs: {M-00FA_A-00D1-10-0001_MD-1_P-2_R-2: {}}
-  - id: M-00FA_A-00D1-10-0001_P-3
-    text: Mode
-    type: !int
-      min: 0
-    refs: {M-00FA_A-00D1-10-0001_P-3_R-4: {}}
-";
+const MODEL_WITH_REFS: &str = r#"{
+  "parameters": {
+    "MD-1_P-2": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Output mode",
+      "labels": [[0, "Off"], [1, "Heating"]],
+      "refs": ["MD-1_P-2_R-2"],
+      "enum_values": [
+        {"value": 0, "text": "Off", "default_text": "Off"},
+        {"value": 1, "text": "Heating", "default_text": "Heating"}
+      ]
+    },
+    "P-3": {
+      "kind": {"Int": {"min": 0, "max": null, "signed": false}},
+      "text": "Mode",
+      "refs": ["P-3_R-4"]
+    }
+  },
+  "program_id": "M-00FA_A-00D1-10-0001",
+  "parameter_refs": {"MD-1_P-2_R-2": {"parameter": "MD-1_P-2"}, "P-3_R-4": {"parameter": "P-3"}}
+}
+"#;
 
 #[test]
 fn test_unlisted_key_resolves_through_the_product_model_else_e023() -> TestResult {
@@ -289,11 +296,7 @@ fn test_unlisted_key_resolves_through_the_product_model_else_e023() -> TestResul
     assert_eq!(e023, 0);
 
     // With one they resolve, and a save lists them in the lock.
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
-    std::fs::write(
-        dir.join(format!(".bussard/models/{APP_ID}.yaml")),
-        MODEL_WITH_REFS_YAML,
-    )?;
+    bussard_model::param_model::write_product_model(&dir, serde_json::from_str(MODEL_WITH_REFS)?)?;
     let model = Model::load(&dir)?;
     let e023 = bussard_model::validate::validate_in_dir(&model, &dir)
         .into_iter()

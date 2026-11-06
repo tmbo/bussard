@@ -37,11 +37,14 @@ fn test_name_parameters_uses_the_product_model_text() -> TestResult {
     name_parameters(&mut changes, [&new, &old], &ProductModels::default());
     assert!(changes.changes[0].sentence.starts_with("Nachtabsenkung on"));
 
-    let yaml = format!(
-        "parameters:\n  - id: {APP}_P-1312\n    text: Night setback\n    type: !int\n      min: 0\n"
-    );
     let mut products = ProductModels::default();
-    products.insert(APP.to_string(), ProductModel::from_yaml(&yaml, APP)?);
+    products.insert(
+        APP.to_string(),
+        serde_json::from_str::<ProductModel>(
+            r#"{"parameters": {"P-1312": {"kind": {"Int": {"min": 0, "max": null, "signed": false}},
+                "text": "Night setback"}}}"#,
+        )?,
+    );
     name_parameters(&mut changes, [&new, &old], &products);
     assert_eq!(
         changes.changes[0].sentence,
@@ -52,13 +55,21 @@ fn test_name_parameters_uses_the_product_model_text() -> TestResult {
 
 /// An enum product model for [`APP`]: parameter `P-1312` with two members.
 fn enum_products() -> Result<ProductModels, Box<dyn std::error::Error>> {
-    let yaml = format!(
-        "parameters:\n  - id: {APP}_P-1312\n    text: Funktion\n    type: !enum\n      values:\n        \
-         - {{ value: 0, text: Kurzer Tastendruck }}\n        \
-         - {{ value: 5, text: Kurzer und langer Tastendruck }}\n"
-    );
     let mut products = ProductModels::default();
-    products.insert(APP.to_string(), ProductModel::from_yaml(&yaml, APP)?);
+    products.insert(
+        APP.to_string(),
+        serde_json::from_str::<ProductModel>(
+            r#"{"parameters": {"P-1312": {
+                "kind": {"Enum": {"values": [0, 5]}},
+                "text": "Funktion",
+                "labels": [[0, "Kurzer Tastendruck"], [5, "Kurzer und langer Tastendruck"]],
+                "enum_values": [
+                  {"value": 0, "text": "Kurzer Tastendruck", "default_text": "Kurzer Tastendruck"},
+                  {"value": 5, "text": "Kurzer und langer Tastendruck",
+                   "default_text": "Kurzer und langer Tastendruck"}
+                ]}}}"#,
+        )?,
+    );
     Ok(products)
 }
 

@@ -7,7 +7,7 @@
 //!
 //! Group addresses are keyed by address, so an integrator renaming a GA shows
 //! as one rename, not a removal and an addition. Parameter changes use the
-//! parameter's text from a model directory's cached `models/*.yaml` when there
+//! parameter's text from a model directory's product models (`.bussard/model-cache/`) when there
 //! is one, and the key otherwise.
 //!
 //! `--checklist` prints the same changes as a per-device Markdown checklist

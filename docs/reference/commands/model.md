@@ -89,7 +89,7 @@ Behaviour:
 **Product data.** After the write, `import` looks up every device's order number that `bussard.lock` does not yet pin in `<dir>/products/` in bussard's pointer index, the one `import-product --order-number` uses.
 
 - The downloads it finds are listed with size and origin and fetched after one confirmation for the whole list (`--yes-download` for scripts).
-- Each download is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`.
+- Each download is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/model-cache/`.
 - An application program no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod`. See [Product data](../product-data.md).
 - A device without product data still gets its file (identity, location, links by number). `apply` writes its links but not its parameters.
 - `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape.
@@ -240,7 +240,7 @@ Behaviour:
 
 ## `bussard doc`
 
-Render the handover documentation folder the KNX guidelines prescribe, from the project and the product models in `.bussard/models/`. Offline; never touches the bus.
+Render the handover documentation folder the KNX guidelines prescribe, from the project and the product models in `.bussard/model-cache/`. Offline; never touches the bus.
 
 ```console
 $ bussard doc [--out <DIR>] [--format md|html]

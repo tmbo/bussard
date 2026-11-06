@@ -1000,7 +1000,7 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const APP: &str = "M-00FA_A-0298-10-0000";
-    const PRODUCT: &str = include_str!("../tests/fixtures/blocks_app.yaml");
+    const PRODUCT: &str = include_str!("../tests/fixtures/blocks_app.json");
 
     const LOCK: &str = r#"version = 3
 
@@ -1054,7 +1054,7 @@ parameters = [
 
     fn products() -> Result<ProductModels, Box<dyn std::error::Error>> {
         let mut products = ProductModels::default();
-        products.insert(APP.to_string(), ProductModel::from_yaml(PRODUCT, APP)?);
+        products.insert(APP.to_string(), serde_json::from_str(PRODUCT)?);
         Ok(products)
     }
 
@@ -1279,12 +1279,10 @@ parameters = [
     #[test]
     fn test_checklist_notes_a_product_model_without_pages() -> TestResult {
         let (old, new, set, _) = pair()?;
-        let cut = PRODUCT.find("\ndynamic:").ok_or("no dynamic section")?;
+        let mut product: ProductModel = serde_json::from_str(PRODUCT)?;
+        product.dynamic.clear();
         let mut products = ProductModels::default();
-        products.insert(
-            APP.to_string(),
-            ProductModel::from_yaml(&PRODUCT[..cut], APP)?,
-        );
+        products.insert(APP.to_string(), product);
         let list = checklist(&set, &old, &new, &products);
         assert!(
             list.notes

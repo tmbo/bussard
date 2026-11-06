@@ -97,7 +97,7 @@ An archive whose SHA-256 differs from the lock's is refused, naming both hashes;
 - `adopt` given an export stores it the way `import-product` does.
 
 !!! note
-    A project folder from an earlier bussard kept its archives in `vendor/`. The first command that reads the project moves every `vendor/*.knxprod` into `products/`, pins it (origin `index` when the pointer index knows its hash, else `file`), links the devices whose order number its catalogue carries, removes the empty `vendor/` with its old `.gitignore`, and generates `.bussard/models/`. A device whose product data only existed in an ETS export gets its archive on the next `bussard import` of that export.
+    A project folder from an earlier bussard kept its archives in `vendor/`. The first command that reads the project moves every `vendor/*.knxprod` into `products/`, pins it (origin `index` when the pointer index knows its hash, else `file`), links the devices whose order number its catalogue carries, removes the empty `vendor/` with its old `.gitignore`, and generates `.bussard/model-cache/`. A device whose product data only existed in an ETS export gets its archive on the next `bussard import` of that export.
 
 ## What `import-product` writes
 
@@ -106,7 +106,7 @@ An archive whose SHA-256 differs from the lock's is refused, naming both hashes;
 1. reads the `.knxprod`, or the `.knxproj` export;
 2. stores a `.knxprod` byte-identically under `products/<original-name>` (an identical file already there is kept); from an export it extracts every application program into `products/<application-id>.knxprod`;
 3. pins each archive in `bussard.lock` and links the devices it serves;
-4. writes one product model per application program to `.bussard/models/<application-id>.yaml`.
+4. writes one product model per application program to `.bussard/model-cache/<application-id>.json`.
 
 With `--order-number` the downloaded file is stored the same way, with origin `index`. Running the command twice on the same file produces byte-identical archives, lock and product models.
 
@@ -114,7 +114,7 @@ With `--order-number` the downloaded file is stored the same way, with origin `i
 
 The texts that make a device file readable come from the product data, not from the ETS project: the channel names, the parameter texts and enum labels, and the object functions. `import` and `adopt` derive the keys from them and record the mapping in `bussard.lock`, so a channel reads `betriebsart = "Jalousie"` and `langzeitbetrieb.listen = ["0/1/3"]`.
 
-Without the product model, a device file still holds the device's name, location and links, but its channels are keyed by vendor ids and its objects by number, and its parameters can be neither checked nor flashed (see [Device files](files/device-files.md#without-product-data)). The lock carries what the rest of bussard needs (the object table, DPTs, flags, module offsets), so a checkout without `.bussard/models/` still validates, plans and decodes.
+Without the product model, a device file still holds the device's name, location and links, but its channels are keyed by vendor ids and its objects by number, and its parameters can be neither checked nor flashed (see [Device files](files/device-files.md#without-product-data)). The lock carries what the rest of bussard needs (the object table, DPTs, flags, module offsets), so a checkout without `.bussard/model-cache/` still validates, plans and decodes.
 
 ## The pointer index
 
@@ -157,11 +157,11 @@ Order-number matching ignores case and surrounding whitespace but keeps interior
 
 ## The generated product model files
 
-`import-product` turns each application program into a product model file under `.bussard/models/`: the object table, the parameters with their types, defaults and memory locations, the download procedure and the ETS dialog structure. The files are generated and carry a banner saying so; do not edit them. When the directory is missing, or a file is of an older format, the next command rebuilds it from the archives in `products/`.
+`import-product` turns each application program into a product model file under `.bussard/model-cache/`: the object table, the parameters with their types and defaults, and the ETS dialog structure, as JSON. The files are generated; do not edit them. When the directory is missing, or a file is of an older format, the next command rebuilds it from the archives in `products/`. Earlier versions wrote YAML files under `.bussard/models/`; bussard no longer reads or writes them, and the folder can be deleted.
 
 ## The never-redistribute rule
 
-bussard never hosts, ships or mirrors vendor product data. `products/` holds the copyrighted `.knxprod` files you obtained or extracted from your own export, and `.bussard/models/` holds files derived from them. Whether `products/` is committed is your decision: a private repository is the usual case, and a public one should leave it out. This is the same footing as any interoperability tool: bussard reads legitimately obtained vendor files to interoperate.
+bussard never hosts, ships or mirrors vendor product data. `products/` holds the copyrighted `.knxprod` files you obtained or extracted from your own export, and `.bussard/model-cache/` holds files derived from them. Whether `products/` is committed is your decision: a private repository is the usual case, and a public one should leave it out. This is the same footing as any interoperability tool: bussard reads legitimately obtained vendor files to interoperate.
 
 ## ETS version caveats
 
@@ -174,5 +174,5 @@ bussard never hosts, ships or mirrors vendor product data. `products/` holds the
 
 - [Device commands](commands/devices.md): `import-product`, `adopt` and their flags.
 - [bussard.lock](files/bussard-lock.md): the `[[product]]` entries that pin each archive.
-- [Project folder](model-directory.md): `products/`, `.bussard/models/` and the parsed-product cache.
+- [Project folder](model-directory.md): `products/`, `.bussard/model-cache/` and the parsed-product cache.
 - [How it works](../explanation/how-it-works.md): why product data matters to every write.

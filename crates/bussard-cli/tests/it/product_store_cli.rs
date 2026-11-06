@@ -1,6 +1,6 @@
 //! The retained product store `<dir>/products/` (issue #228, item 3): the
 //! one-shot move of an earlier `vendor/`, the regeneration of
-//! `.bussard/models/` when it is absent, empty or incomplete (#267), and the
+//! `.bussard/model-cache/` when it is absent, empty or incomplete (#267), and the
 //! refusals when an archive the
 //! lock pins is missing or changed. No bus: every refusal happens before a
 //! connection is opened (the configured gateway is a closed loopback port).
@@ -161,7 +161,10 @@ fn test_vendor_directory_moves_into_products_and_is_pinned() -> TestResult {
         lock.contains(&format!("product_sha256 = \"{sha}\"")),
         "{lock}"
     );
-    assert!(dir.join(format!(".bussard/models/{APP_ID}.yaml")).is_file());
+    assert!(
+        dir.join(format!(".bussard/model-cache/{APP_ID}.json"))
+            .is_file()
+    );
 
     // Idempotent: the second run has nothing to move.
     let out = bussard(&dir, &["validate"])?;
@@ -177,7 +180,7 @@ fn test_absent_dot_bussard_regenerates_the_product_models() -> TestResult {
     write_knxprod(&src)?;
     let out = bussard(&dir, &["import-product", src.to_str().ok_or("path")?])?;
     assert!(out.status.success(), "{}", text(&out));
-    let model_file = dir.join(format!(".bussard/models/{APP_ID}.yaml"));
+    let model_file = dir.join(format!(".bussard/model-cache/{APP_ID}.json"));
     assert!(model_file.is_file());
 
     std::fs::remove_dir_all(dir.join(".bussard"))?;
@@ -191,7 +194,7 @@ fn test_absent_dot_bussard_regenerates_the_product_models() -> TestResult {
     Ok(())
 }
 
-/// Issue #267: an existing but empty `.bussard/models/` is filled by the
+/// Issue #267: an existing but empty `.bussard/model-cache/` is filled by the
 /// next command, and E026 does not tell the user to fetch anything.
 #[test]
 fn test_empty_models_directory_is_filled_by_the_next_command() -> TestResult {
@@ -201,12 +204,12 @@ fn test_empty_models_directory_is_filled_by_the_next_command() -> TestResult {
         "address = \"1.1.4\"\nname = \"Taster\"\nproduct = \"MDT-BE-04001.02\"\n\n\
          [parameters]\n\"x@P-1\" = \"1\"\n\n[links]\n0.send = \"1/0/0\"\n",
     )?;
-    let models = dir.join(".bussard/models");
+    let models = dir.join(".bussard/model-cache");
     std::fs::create_dir_all(&models)?;
     let out = bussard(&dir, &["validate"])?;
     let said = text(&out);
     assert!(
-        models.join(format!("{APP_ID}.yaml")).is_file(),
+        models.join(format!("{APP_ID}.json")).is_file(),
         "validate fills the empty directory: {said}"
     );
     assert!(!said.contains("E026"), "{said}");
@@ -219,10 +222,10 @@ fn test_empty_models_directory_is_filled_by_the_next_command() -> TestResult {
 #[test]
 fn test_deleted_model_file_is_restored() -> TestResult {
     let dir = pinned_model("regen-one", false, true)?;
-    let model_file = dir.join(format!(".bussard/models/{APP_ID}.yaml"));
+    let model_file = dir.join(format!(".bussard/model-cache/{APP_ID}.json"));
     let out = bussard(&dir, &["validate"])?;
     assert!(model_file.is_file(), "{}", text(&out));
-    let other = dir.join(".bussard/models/M-0001_A-0000-10-0000.yaml");
+    let other = dir.join(".bussard/model-cache/M-0001_A-0000-10-0000.json");
     std::fs::write(&other, "# another application\n")?;
     std::fs::remove_file(&model_file)?;
     let out = bussard(&dir, &["status"])?;
@@ -620,7 +623,8 @@ fn test_regenerated_models_follow_the_lock_language() -> TestResult {
     )?;
 
     let out = bussard(&dir, &["validate", "--json"])?;
-    let model = std::fs::read_to_string(dir.join(format!(".bussard/models/{BILINGUAL_APP}.yaml")))?;
+    let model =
+        std::fs::read_to_string(dir.join(format!(".bussard/model-cache/{BILINGUAL_APP}.json")))?;
     assert!(model.contains("K\u{fc}hlen"), "{model}");
     assert!(!model.contains("Cooling"), "{model}");
     let errors = e017(&out)?;
@@ -630,7 +634,7 @@ fn test_regenerated_models_follow_the_lock_language() -> TestResult {
 }
 
 /// Issue #255: a fresh import into a model whose `[import] language` is
-/// de-DE leaves `.bussard/models/` written in German, and the next
+/// de-DE leaves `.bussard/model-cache/` written in German, and the next
 /// `validate` reports no E017.
 #[test]
 fn test_fresh_import_writes_the_models_in_the_lock_language() -> TestResult {
@@ -678,7 +682,8 @@ fn test_fresh_import_writes_the_models_in_the_lock_language() -> TestResult {
     assert!(out.status.success(), "{}", text(&out));
     // An xknxproject dump records no lock language; the model's language is
     // then `[import] language` (`bussard_service::params::model_language`).
-    let model = std::fs::read_to_string(dir.join(format!(".bussard/models/{BILINGUAL_APP}.yaml")))?;
+    let model =
+        std::fs::read_to_string(dir.join(format!(".bussard/model-cache/{BILINGUAL_APP}.json")))?;
     assert!(model.contains("K\u{fc}hlen"), "{model}");
 
     let out = bussard(&dir, &["validate", "--json"])?;

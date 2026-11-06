@@ -2,7 +2,7 @@
 //! of its own (issue #298), and the capability lookup over the product
 //! model's parameter and choice texts.
 //!
-//! The product model is `fixtures/blocks_app.yaml`, written by the importer
+//! The product model is `fixtures/blocks_app.json`, written by the importer
 //! from the fabricated System 7 application in
 //! `crates/bussard-prod/tests/fixtures/blocks_app.xml`: universal channels A,
 //! B and C are ETS pages behind "enable" parameters (C behind B), each with a
@@ -16,14 +16,14 @@ use bussard_model::capabilities::capability_lookup;
 use bussard_model::device_view::{
     device_view, ignored_overrides, parameter_pages, parameter_visibility, unindexed_parameters,
 };
-use bussard_model::param_model::model_cache_path;
+use bussard_model::param_model::{model_cache_path, write_product_model};
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP: &str = "M-00FA_A-0298-10-0000";
 
-const PRODUCT: &str = include_str!("../fixtures/blocks_app.yaml");
+const PRODUCT: &str = include_str!("../fixtures/blocks_app.json");
 
 const LOCK: &str = r#"version = 3
 
@@ -77,7 +77,10 @@ fn model() -> Result<Model, Box<dyn std::error::Error>> {
 
 fn products() -> Result<ProductModels, Box<dyn std::error::Error>> {
     let mut products = ProductModels::default();
-    products.insert(APP.to_string(), ProductModel::from_yaml(PRODUCT, APP)?);
+    products.insert(
+        APP.to_string(),
+        serde_json::from_str::<ProductModel>(PRODUCT)?,
+    );
     Ok(products)
 }
 
@@ -97,11 +100,10 @@ impl Scratch {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("devices"))?;
-        std::fs::create_dir_all(dir.join(".bussard/models"))?;
         for (name, text) in files() {
             std::fs::write(dir.join(name), text)?;
         }
-        std::fs::write(dir.join(format!(".bussard/models/{APP}.yaml")), PRODUCT)?;
+        write_product_model(&dir, serde_json::from_str(PRODUCT)?)?;
         Ok(Scratch(dir))
     }
 
@@ -330,27 +332,22 @@ fn test_capability_lookup_finds_a_choice_on_an_inactive_page() -> TestResult {
 }
 
 #[test]
-fn test_capability_lookup_caches_the_model_and_rebuilds_a_stale_cache() -> TestResult {
+fn test_capability_lookup_reads_a_rewritten_product_model() -> TestResult {
     let scratch = Scratch::new("cache")?;
     let model = Model::load(scratch.path())?;
-    // The model load already read the product model, through the cache.
-    let cache = model_cache_path(scratch.path(), APP);
     let first = capability_lookup(&model, scratch.path(), "brightness", 50);
-    assert!(cache.is_file(), "the lookup caches the parsed model");
-
-    // A cache read gives the same answer.
+    // A memoized read gives the same answer.
     let again = capability_lookup(&model, scratch.path(), "brightness", 50);
     assert_eq!(first, again);
 
-    // A model file newer than the cache is parsed again: rename a choice.
-    std::thread::sleep(std::time::Duration::from_millis(20));
+    // A rewritten product model is read again: rename a choice.
     let renamed = PRODUCT.replace("Wind sensor", "Anemometer");
-    let yaml = scratch.path().join(format!(".bussard/models/{APP}.yaml"));
-    std::fs::write(&yaml, renamed)?;
+    let file = model_cache_path(scratch.path(), APP);
+    write_product_model(scratch.path(), serde_json::from_str(&renamed)?)?;
     let future = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
     std::fs::File::options()
         .write(true)
-        .open(&yaml)?
+        .open(&file)?
         .set_modified(future)?;
     let hits = capability_lookup(&model, scratch.path(), "anemometer", 50);
     assert_eq!(hits.len(), 3, "{hits:?}");

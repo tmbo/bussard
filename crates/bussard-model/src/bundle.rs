@@ -74,7 +74,7 @@ pub const LAST_EXPORT: &str = ".bussard/last_export.json";
 
 /// What an export leaves out, listed in every manifest.
 pub const EXCLUDED: [&str; 7] = [
-    ".bussard/models/ (product models, regenerated from products/)",
+    ".bussard/model-cache/ (product models, regenerated from products/)",
     "products/ (vendor product data)",
     "captures/ (bus recordings)",
     "keyrings (*.knxkeys and tool keys)",

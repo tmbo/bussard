@@ -2134,7 +2134,7 @@ fn build_view(
                 app,
             ) {
                 Some(archive) => format!(
-                    "no product data: .bussard/models/{app}.yaml is missing, so there are no \
+                    "no product data: .bussard/model-cache/{app}.json is missing, so there are no \
                      choices, ranges or defaults. It regenerates automatically from {archive}; \
                      if this note stays, that archive could not be read (bussard warns why). \
                      Showing what the lock has"

@@ -875,15 +875,15 @@ mod tests {
     {
         let dir = model_dir("labels")?;
         let app = "M-0004_A-1";
-        fs::create_dir_all(dir.join(".bussard/models"))?;
-        fs::write(
-            dir.join(".bussard/models").join(format!("{app}.yaml")),
-            format!(
-                "parameters:\n  - id: {app}_P-14\n    text: Betriebsart\n    type: !enum\n      \
-                 values:\n        - {{ value: 1, text: Rollladen }}\n        \
-                 - {{ value: 2, text: Jalousie }}\n"
-            ),
-        )?;
+        let product = format!(
+            r#"{{"program_id": "{app}", "parameters": {{"P-14": {{
+                "kind": {{"Enum": {{"values": [1, 2]}}}}, "text": "Betriebsart",
+                "labels": [[1, "Rollladen"], [2, "Jalousie"]],
+                "enum_values": [{{"value": 1, "text": "Rollladen", "default_text": "Rollladen"}},
+                                {{"value": 2, "text": "Jalousie", "default_text": "Jalousie"}}]
+            }}}}}}"#
+        );
+        crate::param_model::write_product_model(&dir, serde_json::from_str(&product)?)?;
         fs::write(
             dir.join("devices").join("1.1.4.toml"),
             format!(

@@ -1,0 +1,279 @@
+{"header":{"schema":2,"model_format":14,"application":"M-00FA_A-0B44-11-0001"},"model":{
+  "parameters": {
+    "P-1": {
+      "kind": {"Int": {"min": 0, "max": 255}},
+      "default": "10",
+      "text": "Sendeverzoegerung nach Busspannungswiederkehr in Sekunden",
+      "refs": ["P-1_R-1"]
+    },
+    "P-11": {
+      "kind": {"Enum": {"values": [1, 2, 3]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [
+        [1, "Rollladen / Markise ohne Lamellenverstellung"],
+        [2, "Jalousie mit Lamellenverstellung"],
+        [3, "Lueftungsklappe / Dachfenster"]
+      ],
+      "refs": ["P-11_R-11"],
+      "enum_values": [
+        {
+          "value": 1,
+          "text": "Rollladen / Markise ohne Lamellenverstellung",
+          "default_text": "Rollladen / Markise ohne Lamellenverstellung"
+        },
+        {
+          "value": 2,
+          "text": "Jalousie mit Lamellenverstellung",
+          "default_text": "Jalousie mit Lamellenverstellung"
+        },
+        {
+          "value": 3,
+          "text": "Lueftungsklappe / Dachfenster",
+          "default_text": "Lueftungsklappe / Dachfenster"
+        }
+      ]
+    },
+    "P-12": {
+      "kind": {"Int": {"min": 1, "max": 600}},
+      "default": "60",
+      "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+      "refs": ["P-12_R-12"]
+    },
+    "P-13": {
+      "kind": {"Enum": {"values": [0, 1, 2, 3]}},
+      "default": "0",
+      "text": "Verhalten bei Busspannungswiederkehr",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren"],
+        [2, "Abfahren"],
+        [3, "Position vor Busspannungsausfall wiederherstellen"]
+      ],
+      "refs": ["P-13_R-13"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {"value": 1, "text": "Auffahren", "default_text": "Auffahren"},
+        {"value": 2, "text": "Abfahren", "default_text": "Abfahren"},
+        {
+          "value": 3,
+          "text": "Position vor Busspannungsausfall wiederherstellen",
+          "default_text": "Position vor Busspannungsausfall wiederherstellen"
+        }
+      ]
+    },
+    "P-14": {
+      "kind": {"Enum": {"values": [0, 1, 2]}},
+      "default": "1",
+      "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren und Bedienung sperren bis Windalarmende"],
+        [2, "Stopp"]
+      ],
+      "refs": ["P-14_R-14"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {
+          "value": 1,
+          "text": "Auffahren und Bedienung sperren bis Windalarmende",
+          "default_text": "Auffahren und Bedienung sperren bis Windalarmende"
+        },
+        {"value": 2, "text": "Stopp", "default_text": "Stopp"}
+      ]
+    },
+    "P-2": {
+      "kind": {"Enum": {"values": [0, 1, 2]}},
+      "default": "0",
+      "text": "Windalarm Ueberwachungszeitraum der Sicherheitsfunktion",
+      "labels": [
+        [0, "Keine Ueberwachung"],
+        [1, "Zyklische Ueberwachung alle 10 Minuten"],
+        [2, "Zyklische Ueberwachung alle 60 Minuten"]
+      ],
+      "refs": ["P-2_R-2"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Ueberwachung", "default_text": "Keine Ueberwachung"},
+        {
+          "value": 1,
+          "text": "Zyklische Ueberwachung alle 10 Minuten",
+          "default_text": "Zyklische Ueberwachung alle 10 Minuten"
+        },
+        {
+          "value": 2,
+          "text": "Zyklische Ueberwachung alle 60 Minuten",
+          "default_text": "Zyklische Ueberwachung alle 60 Minuten"
+        }
+      ]
+    },
+    "P-21": {
+      "kind": {"Enum": {"values": [1, 2, 3]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [
+        [1, "Rollladen / Markise ohne Lamellenverstellung"],
+        [2, "Jalousie mit Lamellenverstellung"],
+        [3, "Lueftungsklappe / Dachfenster"]
+      ],
+      "refs": ["P-21_R-21"],
+      "enum_values": [
+        {
+          "value": 1,
+          "text": "Rollladen / Markise ohne Lamellenverstellung",
+          "default_text": "Rollladen / Markise ohne Lamellenverstellung"
+        },
+        {
+          "value": 2,
+          "text": "Jalousie mit Lamellenverstellung",
+          "default_text": "Jalousie mit Lamellenverstellung"
+        },
+        {
+          "value": 3,
+          "text": "Lueftungsklappe / Dachfenster",
+          "default_text": "Lueftungsklappe / Dachfenster"
+        }
+      ]
+    },
+    "P-22": {
+      "kind": {"Int": {"min": 1, "max": 600}},
+      "default": "60",
+      "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+      "refs": ["P-22_R-22"]
+    },
+    "P-23": {
+      "kind": {"Enum": {"values": [0, 1, 2, 3]}},
+      "default": "0",
+      "text": "Verhalten bei Busspannungswiederkehr",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren"],
+        [2, "Abfahren"],
+        [3, "Position vor Busspannungsausfall wiederherstellen"]
+      ],
+      "refs": ["P-23_R-23"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {"value": 1, "text": "Auffahren", "default_text": "Auffahren"},
+        {"value": 2, "text": "Abfahren", "default_text": "Abfahren"},
+        {
+          "value": 3,
+          "text": "Position vor Busspannungsausfall wiederherstellen",
+          "default_text": "Position vor Busspannungsausfall wiederherstellen"
+        }
+      ]
+    },
+    "P-24": {
+      "kind": {"Enum": {"values": [0, 1, 2]}},
+      "default": "1",
+      "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren und Bedienung sperren bis Windalarmende"],
+        [2, "Stopp"]
+      ],
+      "refs": ["P-24_R-24"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {
+          "value": 1,
+          "text": "Auffahren und Bedienung sperren bis Windalarmende",
+          "default_text": "Auffahren und Bedienung sperren bis Windalarmende"
+        },
+        {"value": 2, "text": "Stopp", "default_text": "Stopp"}
+      ]
+    },
+    "P-31": {
+      "kind": {"Enum": {"values": [1, 2, 3]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [
+        [1, "Rollladen / Markise ohne Lamellenverstellung"],
+        [2, "Jalousie mit Lamellenverstellung"],
+        [3, "Lueftungsklappe / Dachfenster"]
+      ],
+      "refs": ["P-31_R-31"],
+      "enum_values": [
+        {
+          "value": 1,
+          "text": "Rollladen / Markise ohne Lamellenverstellung",
+          "default_text": "Rollladen / Markise ohne Lamellenverstellung"
+        },
+        {
+          "value": 2,
+          "text": "Jalousie mit Lamellenverstellung",
+          "default_text": "Jalousie mit Lamellenverstellung"
+        },
+        {
+          "value": 3,
+          "text": "Lueftungsklappe / Dachfenster",
+          "default_text": "Lueftungsklappe / Dachfenster"
+        }
+      ]
+    },
+    "P-32": {
+      "kind": {"Int": {"min": 1, "max": 600}},
+      "default": "60",
+      "text": "Gesamtfahrzeit Auf/Ab in Sekunden",
+      "refs": ["P-32_R-32"]
+    },
+    "P-33": {
+      "kind": {"Enum": {"values": [0, 1, 2, 3]}},
+      "default": "0",
+      "text": "Verhalten bei Busspannungswiederkehr",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren"],
+        [2, "Abfahren"],
+        [3, "Position vor Busspannungsausfall wiederherstellen"]
+      ],
+      "refs": ["P-33_R-33"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {"value": 1, "text": "Auffahren", "default_text": "Auffahren"},
+        {"value": 2, "text": "Abfahren", "default_text": "Abfahren"},
+        {
+          "value": 3,
+          "text": "Position vor Busspannungsausfall wiederherstellen",
+          "default_text": "Position vor Busspannungsausfall wiederherstellen"
+        }
+      ]
+    },
+    "P-34": {
+      "kind": {"Enum": {"values": [0, 1, 2]}},
+      "default": "1",
+      "text": "Reaktion bei Windalarm (Sicherheitsfunktion Prioritaet 1)",
+      "labels": [
+        [0, "Keine Reaktion"],
+        [1, "Auffahren und Bedienung sperren bis Windalarmende"],
+        [2, "Stopp"]
+      ],
+      "refs": ["P-34_R-34"],
+      "enum_values": [
+        {"value": 0, "text": "Keine Reaktion", "default_text": "Keine Reaktion"},
+        {
+          "value": 1,
+          "text": "Auffahren und Bedienung sperren bis Windalarmende",
+          "default_text": "Auffahren und Bedienung sperren bis Windalarmende"
+        },
+        {"value": 2, "text": "Stopp", "default_text": "Stopp"}
+      ]
+    }
+  },
+  "program_id": "M-00FA_A-0B44-11-0001",
+  "parameter_refs": {
+    "P-11_R-11": {"parameter": "P-11"},
+    "P-12_R-12": {"parameter": "P-12"},
+    "P-13_R-13": {"parameter": "P-13"},
+    "P-14_R-14": {"parameter": "P-14"},
+    "P-1_R-1": {"parameter": "P-1"},
+    "P-21_R-21": {"parameter": "P-21"},
+    "P-22_R-22": {"parameter": "P-22"},
+    "P-23_R-23": {"parameter": "P-23"},
+    "P-24_R-24": {"parameter": "P-24"},
+    "P-2_R-2": {"parameter": "P-2"},
+    "P-31_R-31": {"parameter": "P-31"},
+    "P-32_R-32": {"parameter": "P-32"},
+    "P-33_R-33": {"parameter": "P-33"},
+    "P-34_R-34": {"parameter": "P-34"}
+  }
+}}

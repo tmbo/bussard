@@ -766,15 +766,17 @@ pub struct EnumValue {
     /// The member's label in every translation layer the program carries,
     /// keyed by language identifier (e.g. `de-DE`). Lets a label written in
     /// another language than the parse language still name its member.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub translations: BTreeMap<String, String>,
     /// The `Id`, which a translation refers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// The decoded `BinaryValue` of a `<TypeRestriction Base="BinaryValue">`
     /// member: the octets ETS writes to memory for it, in place of `Value`
     /// (the ABB BE/S16's `…Select` parameters: `Value="0"`,
     /// `BinaryValue="4AY="`, ETS writes `e0 06`). `None` for a `Base="Value"`
     /// enumeration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_value: Option<Vec<u8>>,
 }
 

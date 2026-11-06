@@ -22,7 +22,7 @@ type TestResult = anyhow::Result<()>;
 
 const APP: &str = "M-00FA_A-0298-10-0000";
 
-const PRODUCT: &str = include_str!("../../../bussard-model/tests/fixtures/blocks_app.yaml");
+const PRODUCT: &str = include_str!("../../../bussard-model/tests/fixtures/blocks_app.json");
 
 const LOCK: &str = r#"version = 3
 
@@ -56,14 +56,13 @@ brightness.send = "4/1/5"
 
 fn write_model(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
         dir.join("groups.toml"),
         "groups = [\n  { address = \"4/1/5\", name = \"Brightness\", dpt = \"9.004\" },\n]\n",
     )?;
     std::fs::write(dir.join("devices/1.1.30.toml"), DEVICE)?;
     std::fs::write(dir.join("bussard.lock"), LOCK)?;
-    std::fs::write(dir.join(format!(".bussard/models/{APP}.yaml")), PRODUCT)?;
+    bussard_model::param_model::write_product_model(dir, serde_json::from_str(PRODUCT)?)?;
     Ok(())
 }
 
@@ -433,16 +432,17 @@ fn meteo_xml() -> String {
     )
 }
 
-/// The product model of the Meteodata-like program, written by the
-/// importer from [`meteo_xml`] (issue #345: one source of pages in tests
-/// as in production).
-fn meteo_product() -> anyhow::Result<String> {
+/// Writes the product model of the Meteodata-like program as the importer
+/// does, from [`meteo_xml`] (issue #345: one source of pages in tests as in
+/// production).
+fn write_meteo_product(dir: &Path) -> anyhow::Result<()> {
     let app = bussard_prod::parse_application_program(METEO_APP, meteo_xml().as_bytes())?;
     let product = bussard_prod::ProductData {
-        applications: vec![app.clone()],
+        applications: vec![app],
         ..bussard_prod::ProductData::default()
     };
-    Ok(bussard_prod::product_model::model_yaml(&app, &product)?)
+    bussard_prod::product_model::write_product_models(&product, dir)?;
+    Ok(())
 }
 
 fn write_meteo(dir: &Path) -> anyhow::Result<()> {
@@ -473,14 +473,10 @@ fn write_meteo(dir: &Path) -> anyhow::Result<()> {
         "version = 3\n\n[[device]]\naddress = \"1.1.202\"\nproduct = \"MD-304\"\napplication = \"{METEO_APP}\"\nmask = \"0701\"\nchannels = [\n  {{ key = \"generic-0\", id = \"CH-0\", number = 0 }},\n]\nobjects = [\n{objects}]\nparameters = [\n{params}]\n"
     );
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(dir.join("groups.toml"), "groups = []\n")?;
     std::fs::write(dir.join("devices/1.1.202.toml"), file)?;
     std::fs::write(dir.join("bussard.lock"), lock)?;
-    std::fs::write(
-        dir.join(format!(".bussard/models/{METEO_APP}.yaml")),
-        meteo_product()?,
-    )?;
+    write_meteo_product(dir)?;
     Ok(())
 }
 

@@ -182,8 +182,7 @@ fn test_read_knxprod_synthetic_secure_contents() -> TestResult {
         format!("{:?}", plain_app.load_procedures)
     );
 
-    let yaml = bussard_prod::product_model::model_yaml(app, &data)?;
-    let model = bussard_model::param_model::ProductModel::from_yaml(&yaml, &app.id)?;
+    let model = bussard_prod::product_model::product_model(app, &data);
     assert_eq!(
         model.data_secure,
         Some(bussard_model::param_model::DataSecureCapacity {
@@ -276,11 +275,10 @@ fn param_calculation_product() -> Result<
     zip_product(&catalogue_dir().join("syn-param-calculation"), &path)?;
     let data = bussard_prod::read_knxprod(&path)?;
     let app = data.applications.first().ok_or("no application")?.clone();
-    let yaml = bussard_prod::product_model::model_yaml(&app, &data)?;
     let mut products = bussard_model::ProductModels::default();
     products.insert(
         app.id.clone(),
-        bussard_model::ProductModel::from_yaml(&yaml, &app.id)?,
+        bussard_prod::product_model::product_model(&app, &data),
     );
     Ok((app, products))
 }
