@@ -436,9 +436,34 @@ impl BusService {
         F: AsyncFnOnce(&mut Management) -> Result<T, E>,
         E: From<ServiceError>,
     {
+        self.with_l4_keep_open(target, options, body, |_| false)
+            .await
+    }
+
+    /// [`with_l4`](Self::with_l4), except that the `T_Disconnect` is skipped
+    /// when `keep_open_after` says so for the body's result: a body that
+    /// ended with the device's restart (the device dropped the connection
+    /// and is rebooting, so a `T_Disconnect` would go unanswered).
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`connect_l4`](Self::connect_l4) or `body` returns.
+    pub async fn with_l4_keep_open<T, E, F>(
+        &self,
+        target: IndividualAddress,
+        options: &L4Options,
+        body: F,
+        keep_open_after: impl FnOnce(&Result<T, E>) -> bool,
+    ) -> Result<T, E>
+    where
+        F: AsyncFnOnce(&mut Management) -> Result<T, E>,
+        E: From<ServiceError>,
+    {
         let mut l4 = self.connect_l4_retrying(target, options).await?;
         let result = body(&mut l4).await;
-        let _ = l4.disconnect().await;
+        if !keep_open_after(&result) {
+            let _ = l4.disconnect().await;
+        }
         result
     }
 

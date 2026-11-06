@@ -127,7 +127,7 @@ impl std::str::FromStr for SerialNumber {
 }
 
 /// A KNXnet/IP (or USB) interface in the store and its credentials.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct StoreInterface {
     /// The `Type` attribute (`Tunneling`, `USB`, `Backbone`), empty if absent.
     pub interface_type: String,
@@ -152,17 +152,6 @@ impl StoreInterface {
     fn identity(&self) -> (String, IndividualAddress) {
         (self.interface_type.to_ascii_lowercase(), self.ia)
     }
-
-    /// Whether two interfaces carry the same attributes and credentials.
-    fn same_as(&self, other: &StoreInterface) -> bool {
-        self.interface_type == other.interface_type
-            && self.ia == other.ia
-            && self.host == other.host
-            && self.user_id == other.user_id
-            && self.password == other.password
-            && self.authentication == other.authentication
-            && self.gas == other.gas
-    }
 }
 
 impl std::fmt::Debug for StoreInterface {
@@ -183,7 +172,7 @@ impl std::fmt::Debug for StoreInterface {
 }
 
 /// A device in the store: its tool key, identity and factory key.
-#[derive(Clone, Default)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct StoreDevice {
     /// The tool key ETS (or bussard) set; `None` for a device known only by
     /// its factory key.
@@ -224,6 +213,7 @@ impl std::fmt::Debug for StoreDevice {
 }
 
 /// The decrypted key store (see the module docs for the format).
+#[derive(Clone, PartialEq, Eq)]
 pub struct KeyStore {
     /// The ETS project the keys belong to.
     pub project: String,
@@ -963,7 +953,7 @@ impl KeyStore {
                 .iter_mut()
                 .find(|i| i.identity() == incoming.identity())
             {
-                Some(ours) if ours.same_as(&incoming) => report.interfaces_unchanged += 1,
+                Some(ours) if *ours == incoming => report.interfaces_unchanged += 1,
                 Some(ours) => {
                     *ours = incoming;
                     report.interfaces_updated.push(label);
