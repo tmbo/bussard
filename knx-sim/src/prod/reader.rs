@@ -643,15 +643,28 @@ fn parse_application_program(
                     // The device object, by index or by type 0.
                     let device_object =
                         obj_idx == Some(0) || (obj_idx.is_none() && obj_type == Some(0));
-                    let value = attr(&e, "InlineData").and_then(|hex| decode_hex(&hex));
+                    let mut value = attr(&e, "InlineData").and_then(|hex| decode_hex(&hex));
                     let start = parse_u32(&e, "StartElement")?
                         .and_then(|v| u16::try_from(v).ok())
                         .unwrap_or(1)
                         .max(1);
-                    let count = parse_u32(&e, "Count")?
-                        .and_then(|v| u16::try_from(v).ok())
-                        .unwrap_or(1)
-                        .max(1);
+                    let declared_count =
+                        parse_u32(&e, "Count")?.and_then(|v| u16::try_from(v).ok());
+                    let count = declared_count.unwrap_or(1).max(1);
+                    // `InlineData` longer than the `Count` elements it can
+                    // hold: the first `Count` octets are compared, the rest
+                    // is padding, as with `LdCtrlCompareMem`'s `Size`. The
+                    // Gira IR-Gateway (`M-0008_A-E000-10`) compares PID 78
+                    // with `Count="6"` and seven octets `00000000200003`; the
+                    // sim served all seven and ETS reported the hardware type
+                    // mismatched (ETS sweep, 2026-11-06).
+                    if let (Some(v), Some(n)) = (value.as_mut(), declared_count.map(usize::from))
+                        && n > 0
+                        && v.len() > n
+                        && !v.len().is_multiple_of(n)
+                    {
+                        v.truncate(n);
+                    }
                     if in_app
                         && !device_object
                         && let (Some(value), Ok(pid)) = (value.clone(), u8::try_from(pid))
@@ -1346,6 +1359,36 @@ mod tests {
           </ApplicationProgram></KNX>"#;
         let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
         assert_eq!(pd.function_props, vec![(5, 52)]);
+        Ok(())
+    }
+
+    /// Bussard issue #422: a compare's `InlineData` past its `Count` octets
+    /// is padding (the Gira IR-Gateway `M-0008_A-E000-10-89B0-O0077`).
+    #[test]
+    fn test_parse_application_program_truncates_compare_padding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ApplicationProgram Id="M-0008_A-E000-10-89B0-O0077" ApplicationNumber="57344" ApplicationVersion="16" MaskVersion="MV-07B0">
+           <Static><LoadProcedures><LoadProcedure MergeId="1">
+            <LdCtrlCompareProp AppliesTo="all" InlineData="0008" ObjType="0" PropId="12" />
+            <LdCtrlCompareProp AppliesTo="all" InlineData="00000000200003" ObjType="0" PropId="78" Count="6" />
+            <LdCtrlCompareProp ObjIdx="0" PropId="72" InlineData="01000001000000000000" StartElement="1" Count="1" />
+           </LoadProcedure></LoadProcedures></Static>
+          </ApplicationProgram></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        assert_eq!(
+            pd.hardware_type_marker,
+            Some(vec![0x00, 0x00, 0x00, 0x00, 0x20, 0x00])
+        );
+        assert!(
+            pd.device_compare_props
+                .contains(&(78, vec![0x00, 0x00, 0x00, 0x00, 0x20, 0x00]))
+        );
+        assert!(pd.device_compare_props.contains(&(12, vec![0x00, 0x08])));
+        // Count 1 of a 10-octet value is one element: unchanged.
+        assert!(
+            pd.device_compare_props
+                .contains(&(72, vec![1, 0, 0, 1, 0, 0, 0, 0, 0, 0]))
+        );
         Ok(())
     }
 
