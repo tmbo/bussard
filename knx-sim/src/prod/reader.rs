@@ -209,6 +209,28 @@ fn record_object_type(
     Ok(())
 }
 
+/// A property write of a module definition's load procedure (bussard issue
+/// #422), resolved per module instance after the parse.
+#[derive(Debug, Clone)]
+struct ModuleWrite {
+    /// The `ModuleDef` it belongs to.
+    def: String,
+    /// `ObjIdx`, relative to `base_object`'s argument when given.
+    object: u8,
+    /// `PropId`.
+    pid: u8,
+    /// The `InlineData` length, when any.
+    inline_len: Option<usize>,
+    /// `Count`.
+    count: u16,
+    /// `StartElement`, relative to `base_start`'s argument when given.
+    start: usize,
+    /// The module argument that holds the base object index (`BaseObjIdx`).
+    base_object: Option<String>,
+    /// The module argument that holds the base element (`BaseStartElement`).
+    base_start: Option<String>,
+}
+
 /// A compare's target as `(object, PID, StartElement, Count)`.
 type ElementCompare<K> = (K, u8, u16, u16);
 
@@ -399,6 +421,13 @@ fn parse_application_program(
     // - 1), and the `LdCtrlDeclarePropDesc` data types (bussard issue #422).
     let mut write_ends: Vec<(PropTarget, u8, usize)> = Vec::new();
     let mut declared_descs: Vec<(PropTarget, u8, u8, usize)> = Vec::new();
+    // Module definitions (bussard issue #422): the property writes of a
+    // `<ModuleDef>`'s own load procedure, addressed relative to the module's
+    // arguments, and every `<Module>` instance with its numeric arguments.
+    let mut cur_module_def: Option<String> = None;
+    let mut cur_module: Option<(String, Vec<(String, u32)>)> = None;
+    let mut module_writes: Vec<ModuleWrite> = Vec::new();
+    let mut module_instances: Vec<(String, Vec<(String, u32)>)> = Vec::new();
     let mut type_bits: std::collections::HashMap<String, TypeSize> = Default::default();
     let mut prop_locs: Vec<PropLocation> = Vec::new();
     let mut cur_ptype: Option<String> = None;
@@ -485,7 +514,34 @@ fn parse_application_program(
                 }
                 // Where a parameter (or a union of them) lives when the
                 // product stores it in a property rather than in memory.
-                b"Property" if in_app && (cur_param_type.is_some() || cur_union_bits.is_some()) => {
+                b"ModuleDef" if in_app && !is_empty_element => {
+                    cur_module_def = attr(&e, "Id");
+                }
+                b"Module" if in_app => {
+                    if let Some(def) = attr(&e, "RefId") {
+                        if is_empty_element {
+                            module_instances.push((def, Vec::new()));
+                        } else {
+                            cur_module = Some((def, Vec::new()));
+                        }
+                    }
+                }
+                b"NumericArg" if in_app => {
+                    if let (Some((_, args)), Some(arg), Some(value)) = (
+                        cur_module.as_mut(),
+                        attr(&e, "RefId"),
+                        parse_u32(&e, "Value")?,
+                    ) {
+                        args.push((arg, value));
+                    }
+                }
+                // A parameter of a module definition is stored relative to
+                // the module's base object: not a location of its own.
+                b"Property"
+                    if in_app
+                        && cur_module_def.is_none()
+                        && (cur_param_type.is_some() || cur_union_bits.is_some()) =>
+                {
                     let target = match (
                         parse_u32(&e, "ObjectIndex")?.and_then(|v| u8::try_from(v).ok()),
                         parse_u32(&e, "ObjectType")?.and_then(|v| u16::try_from(v).ok()),
@@ -579,6 +635,35 @@ fn parse_application_program(
                         p.steps.push(LdCtrl::MasterReset {
                             erase_code: parse_u32(&e, "EraseCode")?.unwrap_or(0) as u8,
                             channel: parse_u32(&e, "ChannelNumber")?.unwrap_or(0) as u8,
+                        });
+                    }
+                }
+                b"LdCtrlWriteProp"
+                    if in_app && cur_module_def.is_some() && attr(&e, "ObjIdx").is_some() =>
+                {
+                    property_ops = true;
+                    if let (Some(def), Some(object), Some(pid)) = (
+                        cur_module_def.clone(),
+                        parse_u32(&e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok()),
+                        parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok()),
+                    ) {
+                        module_writes.push(ModuleWrite {
+                            def,
+                            object,
+                            pid,
+                            inline_len: attr(&e, "InlineData")
+                                .and_then(|hex| decode_hex(&hex))
+                                .map(|v| v.len())
+                                .filter(|&n| n > 0),
+                            count: parse_u32(&e, "Count")?
+                                .and_then(|v| u16::try_from(v).ok())
+                                .unwrap_or(1),
+                            start: parse_u32(&e, "StartElement")?
+                                .and_then(|v| usize::try_from(v).ok())
+                                .unwrap_or(1)
+                                .max(1),
+                            base_object: attr(&e, "BaseObjIdx"),
+                            base_start: attr(&e, "BaseStartElement"),
                         });
                     }
                 }
@@ -834,6 +919,12 @@ fn parse_application_program(
                     }
                 }
                 b"ApplicationProgram" => in_app = false,
+                b"ModuleDef" => cur_module_def = None,
+                b"Module" => {
+                    if let Some(instance) = cur_module.take() {
+                        module_instances.push(instance);
+                    }
+                }
                 b"ParameterType" => cur_ptype = None,
                 b"Parameter" => cur_param_type = None,
                 b"Union" => cur_union_bits = None,
@@ -891,6 +982,43 @@ fn parse_application_program(
     // The size of every written property, and the data type of the
     // parameters it holds (issue #841).
     let mut written_prop_pdts: Vec<(u8, u8, u8)> = Vec::new();
+    // Each module instance's writes, at the object and element its arguments
+    // name (`BaseObjIdx`, `BaseStartElement`): the Schneider STXF121
+    // (`M-0009_A-E0EE-10`) writes `ObjIdx="0" PropId="208" Count="164"
+    // BaseObjIdx="…_MD-1_A-1"` in a module instantiated with base objects 6
+    // to 9; ETS described object 6's PID 208 and stopped when it was absent
+    // (ETS sweep, 2026-11-06).
+    for w in &module_writes {
+        for (def, args) in &module_instances {
+            if *def != w.def {
+                continue;
+            }
+            let arg = |name: &Option<String>| -> u32 {
+                name.as_ref()
+                    .and_then(|n| args.iter().find(|(a, _)| a == n))
+                    .map_or(0, |&(_, v)| v)
+            };
+            let Ok(object) = u8::try_from(u32::from(w.object) + arg(&w.base_object)) else {
+                continue;
+            };
+            let target = PropTarget::Index(object);
+            let start = w.start + usize::try_from(arg(&w.base_start)).unwrap_or(0);
+            let end = start + usize::from(w.count.max(1)) - 1;
+            match write_ends
+                .iter_mut()
+                .find(|(t, p, _)| *t == target && *p == w.pid)
+            {
+                Some(entry) => entry.2 = entry.2.max(end),
+                None => write_ends.push((target, w.pid, end)),
+            }
+            if !written_raw
+                .iter()
+                .any(|&(t, p, _, _)| t == target && p == w.pid)
+            {
+                written_raw.push((target, w.pid, w.inline_len, w.count));
+            }
+        }
+    }
     for &(target, pid, inline_len, count) in &written_raw {
         let mut len = inline_len
             .or_else(|| declared_extent(&prop_locs, &type_bits, target, pid))
