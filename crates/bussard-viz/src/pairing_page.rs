@@ -26,7 +26,9 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bussard_model::text::escape_html;
-use bussard_service::enroll_session::{CertificateOutcome, EnrollStatus, NextStep};
+use bussard_service::enroll_session::{
+    CertificateOutcome, EnrollEnd, EnrollStatus, NextStep, SessionProgress,
+};
 use serde::{Deserialize, Serialize};
 use tokio::sync::watch;
 
@@ -98,13 +100,10 @@ impl PairingCertificate {
     /// The row of `outcome`.
     #[must_use]
     pub fn of(outcome: &CertificateOutcome) -> Self {
-        let (badge, tone) = match outcome.status {
-            EnrollStatus::Stored => ("added", "good"),
-            EnrollStatus::Unassigned => ("no device yet", "wait"),
-            EnrollStatus::AlreadyStored => ("already known", "good"),
-            EnrollStatus::Conflict => ("conflict", "bad"),
-            EnrollStatus::Invalid => ("invalid", "bad"),
-            EnrollStatus::Error => ("failed", "bad"),
+        let tone = match outcome.status {
+            EnrollStatus::Stored | EnrollStatus::AlreadyStored => "good",
+            EnrollStatus::Unassigned => "wait",
+            EnrollStatus::Conflict | EnrollStatus::Invalid | EnrollStatus::Error => "bad",
         };
         let detail = match outcome.status {
             EnrollStatus::Stored => match (&outcome.ia, &outcome.name) {
@@ -125,7 +124,7 @@ impl PairingCertificate {
         PairingCertificate {
             serial: outcome.serial.clone().unwrap_or_else(|| "-".to_string()),
             state: outcome.status.as_str(),
-            badge,
+            badge: outcome.status.badge(),
             detail,
             tone,
         }
@@ -151,6 +150,42 @@ pub struct PairingStatus {
     pub ended: Option<String>,
     /// Once ended: what is left to do, as CLI commands.
     pub next_steps: Vec<NextStep>,
+}
+
+/// The line the pairing page ends with: the human goes back to the chat,
+/// which continues by itself (#831).
+const BACK_TO_CHAT: &str = "You can close this tab and go back to your chat.";
+
+impl PairingStatus {
+    /// The live part of the page for a session at `progress`.
+    #[must_use]
+    pub fn of(progress: &SessionProgress) -> Self {
+        let tally = progress.tally();
+        let ended = progress.end_reason().map(|reason| {
+            if progress.end == Some(EnrollEnd::PhoneDone) {
+                format!("Done. {BACK_TO_CHAT}")
+            } else {
+                format!("{reason} {BACK_TO_CHAT}")
+            }
+        });
+        PairingStatus {
+            running: ended.is_none(),
+            phones: progress.phones,
+            refused_phones: progress.refused_phones,
+            certificates: progress
+                .results
+                .iter()
+                .map(PairingCertificate::of)
+                .collect(),
+            summary: tally.summary(),
+            next_steps: if ended.is_some() {
+                tally.next_steps()
+            } else {
+                Vec::new()
+            },
+            ended,
+        }
+    }
 }
 
 /// The current [`PairingStatus`], asked for on every status request.
@@ -436,6 +471,26 @@ mod tests {
         // A finder pattern's top row starts at the quiet zone: a 7-module run.
         assert!(svg.contains("M4 4h7v1h-7z"), "{svg}");
         Ok(())
+    }
+
+    #[test]
+    fn test_pairing_status_of_ended_points_back_to_the_chat() {
+        let timeouts = bussard_service::enroll_session::Timeouts::default();
+        let mut progress = SessionProgress::new(false, timeouts, "the chat");
+        assert!(PairingStatus::of(&progress).running);
+        progress.end = Some(EnrollEnd::PhoneDone);
+        assert_eq!(
+            PairingStatus::of(&progress).ended.as_deref(),
+            Some("Done. You can close this tab and go back to your chat.")
+        );
+        progress.end = Some(EnrollEnd::Stopped);
+        assert_eq!(
+            PairingStatus::of(&progress).ended.as_deref(),
+            Some(
+                "The session was ended from the chat. You can close this tab and go back to \
+                 your chat."
+            )
+        );
     }
 
     #[test]

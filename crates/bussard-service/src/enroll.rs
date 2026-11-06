@@ -35,25 +35,9 @@ use bussard_project::keystore::{
 use bussard_secure::{Certificate, Key16, Password};
 use serde::{Deserialize, Serialize};
 
-/// The status of one entered certificate (the `status` of the enrolment
-/// protocol's `result` message).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EnrolStatus {
-    /// Matched to a device by its serial number and saved.
-    Stored,
-    /// Saved under its serial number; no device in the key store has it yet.
-    Unassigned,
-    /// The key store already holds this FDSK for the serial number.
-    AlreadyStored,
-    /// The key store holds another FDSK for the serial number; nothing was
-    /// written.
-    Conflict,
-    /// Not a certificate: its format or check failed.
-    Invalid,
-    /// The key store could not be written or read back; `message` says why.
-    Error,
-}
+/// The status of one entered certificate: the `status` of the enrolment
+/// protocol's `result` message, one type for both (#911).
+pub use crate::enroll_session::EnrollStatus as EnrolStatus;
 
 /// What became of one entered certificate. Serializable for the CLI's
 /// `--json`, the enrolment session and the MCP tools; it never carries a key.

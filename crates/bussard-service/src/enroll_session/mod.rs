@@ -26,6 +26,7 @@
 
 pub mod relay;
 pub mod report;
+pub mod status;
 
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
@@ -43,6 +44,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
 pub use report::{DOCS_URL, EnrollTally, NextStep, data_path};
+pub use status::{CertificateResult, SessionProgress, SessionStatus, span_words};
 
 /// The enrolment page a link opens unless the surface names another
 /// (`dev/enroll-protocol.md`, "Parties"). The relay's Worker serves it, so
@@ -75,15 +77,15 @@ pub fn hosted_endpoints(
 
 /// Warnings for a hosted session whose relay or page is not the project's
 /// default (finding F13, `dev/enroll-protocol.md`, "Parties"): the page's
-/// JavaScript sees every label in plaintext, so a user should know when it
+/// JavaScript sees every certificate in plaintext, so a user should know when it
 /// is not the project's. Empty for the defaults.
 #[must_use]
 pub fn endpoint_warnings(relay: &str, page: &str) -> Vec<String> {
     let mut out = Vec::new();
     if page.trim_end_matches('/') != DEFAULT_PAGE.trim_end_matches('/') {
         out.push(format!(
-            "the enrolment page is {page}, not the default {DEFAULT_PAGE}; it sees every label \
-             in plaintext, so use it only if you trust whoever serves it"
+            "the enrolment page is {page}, not the default {DEFAULT_PAGE}; it sees every \
+             certificate in plaintext, so use it only if you trust whoever serves it"
         ));
     }
     if relay.trim_end_matches('/') != DEFAULT_RELAY {
@@ -93,6 +95,51 @@ pub fn endpoint_warnings(relay: &str, page: &str) -> Vec<String> {
         ));
     }
     out
+}
+
+/// Where a session's page and relay are (`dev/enroll-protocol.md`,
+/// "Parties").
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Endpoints {
+    /// The relay base URL.
+    pub relay: String,
+    /// The page the link opens.
+    pub page: String,
+    /// Served by this bussard on 127.0.0.1: page and relay share the
+    /// origin, so the link names no relay and no warning applies.
+    pub local: bool,
+}
+
+impl Endpoints {
+    /// The hosted page and relay for the model in `dir`
+    /// ([`hosted_endpoints`] over its `[enroll]` table).
+    ///
+    /// # Errors
+    ///
+    /// bussard.toml does not load.
+    pub fn hosted(
+        dir: &std::path::Path,
+        relay: Option<String>,
+        page: Option<String>,
+    ) -> Result<Self, bussard_model::LoadError> {
+        let config = bussard_model::load_config(dir)?.enroll.unwrap_or_default();
+        let (relay, page) = hosted_endpoints(relay, page, &config);
+        Ok(Endpoints {
+            relay,
+            page,
+            local: false,
+        })
+    }
+
+    /// The warnings of [`endpoint_warnings`]; none in local mode.
+    #[must_use]
+    pub fn warnings(&self) -> Vec<String> {
+        if self.local {
+            Vec::new()
+        } else {
+            endpoint_warnings(&self.relay, &self.page)
+        }
+    }
 }
 
 /// The timeouts of a session (`dev/enroll-protocol.md`, "Timeouts").
@@ -187,6 +234,21 @@ impl EnrollStatus {
         }
     }
 
+    /// The badge a person reads, in the words of `dev/glossary.md`
+    /// ("Certificate states"): `added`, `no device yet`, `already known`,
+    /// `conflict`, `invalid`, `failed`.
+    #[must_use]
+    pub fn badge(self) -> &'static str {
+        match self {
+            EnrollStatus::Stored => "added",
+            EnrollStatus::Unassigned => "no device yet",
+            EnrollStatus::AlreadyStored => "already known",
+            EnrollStatus::Conflict => "conflict",
+            EnrollStatus::Invalid => "invalid",
+            EnrollStatus::Error => "failed",
+        }
+    }
+
     /// Whether the certificate's key is in the store after this outcome.
     #[must_use]
     pub fn is_stored(self) -> bool {
@@ -248,16 +310,8 @@ impl CertificateSink for crate::enroll::CertificateEnrolment {
 
 impl From<crate::enroll::EnrolOutcome> for CertificateOutcome {
     fn from(outcome: crate::enroll::EnrolOutcome) -> Self {
-        use crate::enroll::EnrolStatus as S;
         CertificateOutcome {
-            status: match outcome.status {
-                S::Stored => EnrollStatus::Stored,
-                S::Unassigned => EnrollStatus::Unassigned,
-                S::AlreadyStored => EnrollStatus::AlreadyStored,
-                S::Conflict => EnrollStatus::Conflict,
-                S::Invalid => EnrollStatus::Invalid,
-                S::Error => EnrollStatus::Error,
-            },
+            status: outcome.status,
             serial: outcome.serial,
             ia: outcome.ia,
             name: outcome.name,
@@ -366,16 +420,41 @@ impl EnrollEnd {
         }
     }
 
-    /// A short phrase for a person: why the session ended.
+    /// The end as a key: `phone_done`, `stopped`, `connect_timeout`,
+    /// `idle_timeout`, `max_duration` or `expired`.
     #[must_use]
-    pub fn describe(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
-            EnrollEnd::PhoneDone => "the phone finished",
+            EnrollEnd::PhoneDone => "phone_done",
             EnrollEnd::Stopped => "stopped",
-            EnrollEnd::ConnectTimeout => "no phone joined within 10 minutes",
-            EnrollEnd::IdleTimeout => "no label or sign of the page for 15 minutes",
-            EnrollEnd::MaxDuration => "the 4-hour limit was reached",
-            EnrollEnd::Expired => "the relay session expired",
+            EnrollEnd::ConnectTimeout => "connect_timeout",
+            EnrollEnd::IdleTimeout => "idle_timeout",
+            EnrollEnd::MaxDuration => "max_duration",
+            EnrollEnd::Expired => "expired",
+        }
+    }
+
+    /// Why the session ended, in one sentence for a person, under
+    /// `timeouts`; a stop came from `stopped_from` (`the chat`, `this
+    /// terminal`). Every surface says it with these words.
+    #[must_use]
+    pub fn describe(self, timeouts: &Timeouts, stopped_from: &str) -> String {
+        match self {
+            EnrollEnd::PhoneDone => "Finished on the phone.".to_string(),
+            EnrollEnd::Stopped => format!("The session was ended from {stopped_from}."),
+            EnrollEnd::ConnectTimeout => format!(
+                "No phone joined within {}, so the session was closed.",
+                span_words(timeouts.connect)
+            ),
+            EnrollEnd::IdleTimeout => format!(
+                "Nothing happened for {}, so the session was closed.",
+                span_words(timeouts.idle)
+            ),
+            EnrollEnd::MaxDuration => format!(
+                "The session ran out of time ({} at most).",
+                span_words(timeouts.max)
+            ),
+            EnrollEnd::Expired => "The session ran out of time on the relay.".to_string(),
         }
     }
 }
@@ -504,6 +583,20 @@ impl EnrollSession {
             X25519KeyPair::generate().map_err(EnrollError::from)?,
             bussard_secure::random_bytes().map_err(EnrollError::from)?,
         ))
+    }
+
+    /// A new session over `endpoints`, its relay client and the link to
+    /// open. In local mode page and relay share the origin, so the link
+    /// names no relay.
+    ///
+    /// # Errors
+    ///
+    /// The random source fails, or the relay URL is refused.
+    pub fn connect(endpoints: &Endpoints) -> Result<(Self, HttpRelay, String), EnrollSessionError> {
+        let session = Self::new()?;
+        let relay = HttpRelay::new(&endpoints.relay, &session)?;
+        let link = session.link(&endpoints.page, (!endpoints.local).then(|| relay.base()));
+        Ok((session, relay, link))
     }
 
     /// A session from fixed parts (the test vectors).
@@ -934,6 +1027,33 @@ mod tests {
             "http://127.0.0.1:8123"
         );
         assert_eq!(origin("https://relay.example"), "https://relay.example");
+        Ok(())
+    }
+
+    #[test]
+    fn test_endpoints_hosted_reads_the_enroll_table() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("bussard-endpoints-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(dir.join("bussard.toml"), "")?;
+        let endpoints = Endpoints::hosted(&dir, None, None)?;
+        assert_eq!(
+            (endpoints.relay.as_str(), endpoints.page.as_str()),
+            (DEFAULT_RELAY, DEFAULT_PAGE)
+        );
+        assert!(endpoints.warnings().is_empty());
+        std::fs::write(
+            dir.join("bussard.toml"),
+            "[enroll]\nrelay = \"https://relay.example\"\n",
+        )?;
+        let endpoints = Endpoints::hosted(&dir, None, None)?;
+        std::fs::remove_dir_all(&dir)?;
+        assert_eq!(endpoints.relay, "https://relay.example");
+        assert_eq!(endpoints.warnings().len(), 1);
+        let local = Endpoints {
+            local: true,
+            ..endpoints
+        };
+        assert!(local.warnings().is_empty());
         Ok(())
     }
 
