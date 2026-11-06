@@ -19,16 +19,12 @@
 
 mod build;
 mod container;
-mod dpt_map;
 mod error;
 pub mod facts;
-mod flag_map;
 mod from_json;
-mod hardware;
 mod keyring;
 pub mod keystore;
 mod knx_master;
-mod manufacturer;
 mod password;
 mod project;
 mod version;

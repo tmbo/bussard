@@ -17,10 +17,10 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 use crate::container::Container;
 use crate::error::Result;
 use crate::facts::{apply_facts, derive_facts};
-use crate::hardware::Hardware;
 use crate::knx_master;
-use crate::manufacturer::ApplicationProgram;
 use crate::project::{RawComObjectInstance, RawDevice, RawProject};
+use bussard_ets::application::ApplicationProgram;
+use bussard_ets::hardware::Hardware;
 
 /// A fully-resolved com object on a device.
 struct ResolvedComObject {
@@ -775,7 +775,7 @@ fn resolve_com_object(
     // com-object carries at least a main DPT.
     let dpt = ci.dpt.or(cor.dpt).or(base.dpt).or_else(|| {
         size.as_deref()
-            .and_then(crate::dpt_map::dpt_from_object_size)
+            .and_then(bussard_ets::dpt::dpt_from_object_size)
     });
 
     // Effective display name: prefer the ref/base Text (the human label ETS
@@ -1131,7 +1131,7 @@ fn ensure_hardware<'a>(
             .raw_entry(&entry)
             .ok()
             .flatten()
-            .and_then(|xml| crate::hardware::parse_hardware(&xml).ok())
+            .and_then(|xml| bussard_ets::hardware::parse_hardware(&xml).ok())
             .unwrap_or_default();
         cache.insert(mfr.to_string(), parsed);
     }
@@ -1205,7 +1205,7 @@ fn knxnet_of(raw: &crate::project::RawDevice) -> Option<bussard_model::knxnet::K
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::manufacturer::parse_application_program;
+    use bussard_ets::application::parse_application_program;
 
     fn offered(default: Option<&str>, layers: &[&str]) -> ProgramLanguages {
         ProgramLanguages {
@@ -1307,7 +1307,7 @@ mod tests {
     /// Builds an [`ApplicationProgram`] with one module argument and one channel
     /// for the placeholder tests.
     fn app_with_channel() -> ApplicationProgram {
-        use crate::manufacturer::ChannelDef;
+        use bussard_ets::application::ChannelDef;
         let mut app = ApplicationProgram {
             id: "M-0004_A-1".to_string(),
             ..Default::default()

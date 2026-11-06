@@ -637,7 +637,8 @@ impl KeyStore {
 
     /// Records a device's factory key and serial number (from its certificate).
     /// Returns whether anything changed.
-    pub fn record_fdsk(
+    #[cfg(test)]
+    fn record_fdsk(
         &mut self,
         ia: IndividualAddress,
         serial: Option<SerialNumber>,
