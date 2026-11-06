@@ -1,0 +1,6 @@
+address = "1.1.12"
+name = "Secure sensor"
+
+[security]
+activated = false
+secure_commissioning = false

@@ -76,6 +76,7 @@
 pub mod admission;
 pub mod adopt;
 pub mod assign;
+pub mod audit;
 pub mod backup;
 pub mod bus;
 pub mod commission;

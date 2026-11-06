@@ -1,0 +1,162 @@
+{
+  "format_version": 1,
+  "live": null,
+  "masks": [
+    {
+      "bussard_can": "unknown until the device is scanned",
+      "describe": true,
+      "devices": [
+        "1.2.3"
+      ],
+      "family": "unknown (no mask recorded)",
+      "flash": null,
+      "mask": null,
+      "medium": null,
+      "note": "the device file records no product mask; `bussard scan` reads it",
+      "plan_apply": null,
+      "reconstruct": null
+    },
+    {
+      "bussard_can": "plan/apply, flash, reconstruct, describe",
+      "describe": true,
+      "devices": [
+        "1.1.2"
+      ],
+      "family": "System 7",
+      "flash": true,
+      "mask": "0705",
+      "medium": "TP1",
+      "note": "memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; line-mode `reconstruct --line` records a stub instead of tables",
+      "plan_apply": true,
+      "reconstruct": true
+    },
+    {
+      "bussard_can": "plan/apply, flash, reconstruct, describe",
+      "describe": true,
+      "devices": [
+        "1.1.1",
+        "1.1.10",
+        "1.1.12"
+      ],
+      "family": "System B",
+      "flash": true,
+      "mask": "07B0",
+      "medium": "TP1",
+      "note": "tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support",
+      "plan_apply": true,
+      "reconstruct": true
+    }
+  ],
+  "model": {
+    "devices": 5,
+    "devices_per_line": [
+      {
+        "devices": 4,
+        "line": "1.1"
+      },
+      {
+        "devices": 1,
+        "line": "1.2"
+      }
+    ],
+    "devices_without_location": [
+      "1.1.2",
+      "1.1.10",
+      "1.1.12",
+      "1.2.3"
+    ],
+    "devices_without_name": [
+      "1.1.2"
+    ],
+    "findings": [
+      {
+        "ga": "1/0/2",
+        "ga_name": "Light Kitchen Status",
+        "message": "1/0/2 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "1/0/3",
+        "ga_name": "Undecoded",
+        "message": "1/0/3 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "1/0/4",
+        "ga_name": null,
+        "message": "1/0/4 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      }
+    ],
+    "group_addresses": 5,
+    "group_addresses_without_dpt": [
+      "1/0/3"
+    ],
+    "group_addresses_without_name": [
+      "1/0/4"
+    ],
+    "imported_from": null,
+    "info": {
+      "unlinked_com_objects": 0,
+      "unused_group_addresses": 1
+    },
+    "links": 5,
+    "links_to_unknown_devices": [],
+    "links_to_unknown_objects": [
+      {
+        "device": "1.1.1",
+        "name": null,
+        "object": 9
+      },
+      {
+        "device": "1.1.2",
+        "name": null,
+        "object": 1
+      },
+      {
+        "device": "1.2.3",
+        "name": null,
+        "object": 1
+      }
+    ],
+    "project": "Audit fixture",
+    "protected_group_addresses": [
+      "1/0/4"
+    ],
+    "secure_devices": [
+      {
+        "activated": true,
+        "address": "1.1.10",
+        "name": "Secure dimmer",
+        "secure_capable": true
+      },
+      {
+        "activated": false,
+        "address": "1.1.12",
+        "name": "Secure sensor",
+        "secure_capable": true
+      }
+    ]
+  },
+  "secure": {
+    "devices": [
+      {
+        "activated": true,
+        "address": "1.1.10",
+        "keyring_entry": null,
+        "name": "Secure dimmer",
+        "secure_capable": true
+      },
+      {
+        "activated": false,
+        "address": "1.1.12",
+        "keyring_entry": null,
+        "name": "Secure sensor",
+        "secure_capable": true
+      }
+    ],
+    "keyring_checked": false,
+    "with_keyring_entry": null,
+    "without_keyring_entry": null
+  }
+}

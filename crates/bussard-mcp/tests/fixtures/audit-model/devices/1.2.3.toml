@@ -1,0 +1,5 @@
+address = "1.2.3"
+name = "Push button"
+
+[links]
+1.send = "1/0/4"

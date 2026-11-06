@@ -24,10 +24,10 @@ use bussard_mgmt::{Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 use bussard_service::BusService;
-use bussard_service::identity::{self, SecureStatus};
+use bussard_service::WritePolicy;
+use bussard_service::identity::SecureStatus;
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
 use bussard_service::secure::ToolKeys;
-use bussard_service::{L4Options, WritePolicy};
 
 pub(crate) use bussard_service::scan::Found;
 
@@ -208,36 +208,6 @@ async fn sweep(
         eprintln!();
     }
     swept
-}
-
-/// The session options of a probe ([`scan::probe_options`]).
-pub(crate) fn probe_options(source: IndividualAddress) -> L4Options {
-    scan::probe_options(source)
-}
-
-/// Probes one address in the clear: connect, read the descriptor, and, if
-/// present, best-effort read manufacturer/serial/order. Returns `None` for an
-/// absent or refusing device. A Data Secure-activated device answers mask
-/// `FFFF`; the row is then [`identity::SecureStatus::ActivatedNoKey`].
-pub(crate) async fn probe(
-    service: &BusService,
-    addr: IndividualAddress,
-    source: IndividualAddress,
-) -> Option<Found> {
-    probe_with_key(service, addr, source, None).await
-}
-
-/// [`probe`] with the address's tool key, if the keyring lists it: the
-/// descriptor and the property reads then ride A_SecureData (issue #203).
-pub(crate) async fn probe_with_key(
-    service: &BusService,
-    addr: IndividualAddress,
-    source: IndividualAddress,
-    tool_key: Option<Key16>,
-) -> Option<Found> {
-    let (identity, status) =
-        identity::probe(service, addr, &probe_options(source), tool_key).await?;
-    Some(Found::from_identity(identity, status))
 }
 
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the

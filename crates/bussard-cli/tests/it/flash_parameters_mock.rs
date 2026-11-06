@@ -356,6 +356,31 @@ fn test_flash_parameters_only_refuses_another_application() -> TestResult {
     Ok(())
 }
 
+/// Issue #895: a full flash of a device that runs another, identified
+/// application is refused without `--force` (a flash takes no backup), by
+/// the gate the MCP tier's flash and load ask with `force` false.
+#[test]
+fn test_flash_refuses_another_application_without_force() -> TestResult {
+    let mut device = MockDevice::running([7, 0]);
+    device.program_version = [0x00, 0x83, 0x00, 0x42, 0x10];
+    let Some(bench) = Bench::start("flash-other-app", device, "\"thr@P-0_R-1\" = \"12\"\n")? else {
+        return Ok(());
+    };
+    let out = bench.bussard(&["flash", "1.1.4", "--product", bench.product()?, "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stderr.contains("REFUSING to flash 1.1.4"), "{stderr}");
+    assert!(stderr.contains("application M-0083 A-0042 v16"), "{stderr}");
+    assert!(stderr.contains("--force"), "{stderr}");
+    let dev = bench.device();
+    assert!(dev.load_events.is_empty() && dev.memory_writes.is_empty());
+    Ok(())
+}
+
 #[test]
 fn test_flash_parameters_only_refuses_an_unloaded_device() -> TestResult {
     let mut device = MockDevice::running([7, 0]);

@@ -609,6 +609,34 @@ async fn test_knx_apply_device_loads_the_application_over_another_one() -> anyho
     Ok(())
 }
 
+/// Issue #895: a device whose application id cannot be read gives a plan
+/// nothing to name as replaced, so the chat has no `--force` for it: the
+/// plan never offers a digest that loads over it, as `bussard flash`
+/// refuses it without `--force` (the shared gate).
+#[tokio::test]
+async fn test_knx_plan_device_does_not_load_over_an_unidentified_application() -> anyhow::Result<()>
+{
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_LOADED)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert!(plan["flash"]["load_application"].is_null(), "{plan}");
+    assert!(plan["plan_digest"].is_null(), "{plan}");
+    assert_eq!(gateway.with_device(device_ia()?, |dev| dev.writes)?, 0);
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
 /// Writes the model of [`write_model`] with object 1 also listening on
 /// 1/2/1, a link the device does not hold.
 fn write_model_with_a_new_link(dir: &Path, obj2: &str) -> anyhow::Result<()> {

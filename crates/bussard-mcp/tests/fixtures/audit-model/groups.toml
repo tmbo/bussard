@@ -1,0 +1,9 @@
+project = "Audit fixture"
+
+groups = [
+  { address = "1/0/1", name = "Light Kitchen", dpt = "1.001" },
+  { address = "1/0/2", name = "Light Kitchen Status", dpt = "1.001" },
+  { address = "1/0/3", name = "Undecoded" },
+  { address = "1/0/4", name = "", dpt = "1.001", protected = true },
+  { address = "2/0/1", name = "Reserve", dpt = "5.001" },
+]

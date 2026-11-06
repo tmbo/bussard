@@ -347,6 +347,84 @@ pub fn extract_and_entries(
     Ok(entries)
 }
 
+/// How an explicit `--product` / `--application` contradicts what
+/// `bussard.lock` pins for `device` (issue #228, item 4): a product archive
+/// with another SHA-256 than the pinned one, or another application than the
+/// lock's. `None` when the override agrees, or the lock pins nothing to
+/// contradict. An ETS project export is compared by application only: its
+/// own hash is never the pinned archive's.
+///
+/// # Errors
+///
+/// The override archive cannot be hashed.
+pub fn override_conflict(
+    device: &bussard_model::schema::Device,
+    selection: crate::params::Selection<'_>,
+) -> Result<Option<String>, SetupError> {
+    let target = device.address;
+    if let (Some(file), Some(entry)) = (selection.product, device.lock.product_entry.as_ref()) {
+        let export = file
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"));
+        if !export && entry.file.is_some() {
+            let (sha256, _) =
+                bussard_model::sha256_file(file).ctx(|| format!("hashing {}", file.display()))?;
+            if !sha256.eq_ignore_ascii_case(&entry.sha256) {
+                return Ok(Some(format!(
+                    "--product {} has sha256 {sha256}, but bussard.lock pins {} ({}) as the \
+                     product data of {target}",
+                    file.display(),
+                    entry.sha256,
+                    entry.file.as_deref().unwrap_or("?")
+                )));
+            }
+        }
+    }
+    if let Some(wanted) = selection.application {
+        let pinned = bussard_model::identity::LockIdentity::of(device).application;
+        if let Some(pinned) = pinned
+            && pinned != wanted
+        {
+            return Ok(Some(format!(
+                "--application {wanted} is not the application bussard.lock pins for {target} \
+                 ({pinned})"
+            )));
+        }
+    }
+    Ok(None)
+}
+
+/// The lock-pin rule of a command that writes a device (issue #228, item 4):
+/// an override that contradicts the lock ([`override_conflict`]) is refused
+/// unless `force`. `Ok(None)` when nothing contradicts the lock;
+/// `Ok(Some(conflict))` when `force` lets it through (the caller says so, and
+/// pins an explicit product archive for the device). `verb` names the
+/// command in the refusal.
+///
+/// # Errors
+///
+/// [`SetupError::Message`] with the refusal; the override archive cannot be
+/// hashed.
+pub fn enforce_override(
+    device: &bussard_model::schema::Device,
+    selection: crate::params::Selection<'_>,
+    force: bool,
+    verb: &str,
+) -> Result<Option<String>, SetupError> {
+    let Some(conflict) = override_conflict(device, selection)? else {
+        return Ok(None);
+    };
+    if !force {
+        return Err(SetupError::Message(format!(
+            "refusing to {verb} {}: {conflict}. Pass --force to use it anyway (the product \
+             archive is then pinned for the device in bussard.lock), or drop the override to \
+             use what the lock pins",
+            device.address
+        )));
+    }
+    Ok(Some(conflict))
+}
+
 /// Pins `entries` in `<dir>/bussard.lock` and says which devices now point at
 /// them. A failure is a warning: the archive is cached either way.
 pub fn pin(dir: &Path, entries: &[ProductEntry], out: &mut dyn Output) {
@@ -648,5 +726,70 @@ pub fn report_missing(outcome: &Outcome, dir: &Path, out: &mut dyn Output) {
              --order-number {order} --dir {}` to fetch it.",
             dir.display()
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::params::Selection;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    fn pinned_to(
+        application: &str,
+    ) -> Result<bussard_model::schema::Device, Box<dyn std::error::Error>> {
+        Ok(bussard_model::schema::Device {
+            address: "1.1.4".parse()?,
+            name: "d".to_string(),
+            description: None,
+            location: None,
+            replaced: None,
+            product: None,
+            channels: Default::default(),
+            parameters: Default::default(),
+            module_bases: Default::default(),
+            com_objects: Default::default(),
+            security: None,
+            application_override: None,
+            knxnet: None,
+            lock: bussard_model::schema::DeviceLock {
+                application: Some(application.to_string()),
+                ..Default::default()
+            },
+        })
+    }
+
+    #[test]
+    fn test_enforce_override_refuses_another_application_unless_force() -> TestResult {
+        let device = pinned_to("M-00FA_A-0002-01-0000")?;
+        let other = Selection {
+            product: None,
+            application: Some("M-00FA_A-0003-01-0000"),
+        };
+        let refused = enforce_override(&device, other, false, "flash");
+        let Err(SetupError::Message(text)) = refused else {
+            return Err(format!("not refused: {refused:?}").into());
+        };
+        assert!(
+            text.starts_with("refusing to flash 1.1.4: --application"),
+            "{text}"
+        );
+        assert!(text.contains("Pass --force"), "{text}");
+        let forced = enforce_override(&device, other, true, "flash")?;
+        assert!(forced.is_some_and(|c| c.contains("M-00FA_A-0002-01-0000")));
+        Ok(())
+    }
+
+    #[test]
+    fn test_enforce_override_passes_what_the_lock_pins() -> TestResult {
+        let device = pinned_to("M-00FA_A-0002-01-0000")?;
+        let same = Selection {
+            product: None,
+            application: Some("M-00FA_A-0002-01-0000"),
+        };
+        assert!(enforce_override(&device, same, false, "flash")?.is_none());
+        assert!(enforce_override(&device, Selection::default(), false, "apply to")?.is_none());
+        Ok(())
     }
 }
