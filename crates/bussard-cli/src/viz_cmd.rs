@@ -8,29 +8,47 @@
 //! on Ctrl-C, closing the bus to free the gateway tunnel slot.
 
 use std::net::SocketAddr;
-use std::path::Path;
 use std::process::ExitCode;
 
+use anyhow::Context as _;
 use bussard_model::Model;
 use bussard_viz::VizConfig;
 
-use crate::conn_cmd::{ConnOverrides, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::resolve_config;
 
-/// Options for `bussard viz` beyond the connection and the model directory.
-#[derive(Debug, Clone, Default)]
-pub struct VizOptions {
-    /// Enable `POST /api/group-write`. Off by default: a bare `bussard viz` is
-    /// a viewer, and the endpoint answers `403` until this is set.
-    pub allow_writes: bool,
-    /// Enable the programming-mode watch (active broadcast reads on the bus).
-    pub watch_prog: bool,
-    /// Opt in to a non-loopback gateway, like the five CLI write verbs.
-    pub allow_remote_gateway: bool,
-    /// Extra `Host` header values the server answers to.
-    pub allowed_hosts: Vec<String>,
-    /// An ETS `.knxkeys` keyring whose group keys secure writes to secured GAs
-    /// and decrypt secured live traffic (issue #172).
-    pub keyring: Option<std::path::PathBuf>,
+/// `bussard viz`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct VizArgs {
+    /// The address to bind the HTTP server to.
+    #[arg(long, default_value = "127.0.0.1:8080")]
+    listen: SocketAddr,
+    /// Watch for devices in KNX programming mode and highlight them in the
+    /// UI. This periodically broadcasts `A_IndividualAddress_Read` on the
+    /// bus (active traffic), so it is off by default and must be enabled
+    /// explicitly — never point it at a real installation unattended.
+    #[arg(long)]
+    watch_prog: bool,
+    /// Arm `POST /api/group-write`, so the page can send test writes. Off
+    /// by default: a bare `bussard viz` is a viewer and the endpoint
+    /// answers 403.
+    #[arg(long)]
+    allow_writes: bool,
+    /// Also answer requests whose `Host` is this name. Repeatable. Loopback
+    /// names and bare IP literals are always accepted; any other name is
+    /// refused because it is how DNS rebinding reaches this port.
+    #[arg(long, value_name = "HOST")]
+    allow_host: Vec<String>,
+}
+
+impl Run for VizArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g)
+    }
 }
 
 /// Runs `bussard viz`.
@@ -38,8 +56,8 @@ pub struct VizOptions {
 /// Two options put traffic on the bus, and both go through the same
 /// non-loopback write gate as `bussard write` (issue #74):
 ///
-/// * [`allow_writes`](VizOptions::allow_writes) arms `POST /api/group-write`;
-/// * [`watch_prog`](VizOptions::watch_prog) runs the programming-mode watch, a
+/// * `--allow-writes` arms `POST /api/group-write`;
+/// * `--watch-prog` runs the programming-mode watch, a
 ///   background task that puts a broadcast `A_IndividualAddress_Read` on the
 ///   bus periodically and surfaces responders in `/api/state` and the `prog`
 ///   SSE event.
@@ -48,12 +66,8 @@ pub struct VizOptions {
 /// against any gateway. With either set and a non-loopback gateway resolved,
 /// the server refuses to start without `--allow-remote-gateway` (or
 /// `BUSSARD_ALLOW_REAL_GATEWAY=1`).
-pub fn run(
-    listen: SocketAddr,
-    dir: &Path,
-    overrides: ConnOverrides,
-    options: VizOptions,
-) -> anyhow::Result<ExitCode> {
+fn run(options: VizArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (listen, dir, overrides) = (options.listen, g.dir(), g.group());
     if !dir.exists() {
         anyhow::bail!(
             "model directory {} not found; the viz server needs a loaded model (pass --dir)",
@@ -105,7 +119,13 @@ pub fn run(
         );
     }
 
-    let group_keys = crate::secure_key::group_keys(options.keyring.as_deref())?;
+    let group_keys = g
+        .keyring()
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?;
     if let Some(keys) = &group_keys {
         eprintln!(
             "keyring: {} group key(s) for secured group telegrams",
@@ -119,8 +139,8 @@ pub fn run(
         connection,
         watch_prog: options.watch_prog,
         allow_writes: options.allow_writes,
-        allow_remote_gateway: options.allow_remote_gateway,
-        allowed_hosts: options.allowed_hosts,
+        allow_remote_gateway: g.allow_remote_gateway,
+        allowed_hosts: options.allow_host,
         group_keys,
     };
 

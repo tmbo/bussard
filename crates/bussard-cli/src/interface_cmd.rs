@@ -99,15 +99,17 @@ struct Session<'a> {
     model: &'a Model,
     config: &'a KnxnetConfig,
     overrides: &'a ConnOverrides,
-    tool_key_source: crate::secure_key::ToolKeySource<'a>,
+    tool_key_source: bussard_service::secure::ToolKeySource<'a>,
 }
 
 impl Session<'_> {
     /// The read options: the checked `source`, the tool key when the model
     /// says the device is Secure-activated.
     fn options(&self, source: IndividualAddress) -> anyhow::Result<L4Options> {
-        let activated = crate::secure_key::model_activated(Some(self.model), self.target);
-        let tool_key = crate::secure_key::resolve(self.target, self.tool_key_source, activated)?;
+        let activated = bussard_service::secure::model_activated(Some(self.model), self.target);
+        let tool_key = crate::timing::time("tool keys", || {
+            bussard_service::secure::resolve(self.target, self.tool_key_source, activated)
+        })?;
         Ok(L4Options {
             source: SourcePolicy::Known(source),
             tool_key,
@@ -137,7 +139,7 @@ fn read_and_plan(
     procedure: Option<&bussard_download::FlashPlan>,
 ) -> anyhow::Result<(InterfaceRead, InterfacePlan, Option<Vec<PropertyRow>>)> {
     let target = session.target;
-    let facts = crate::device_facts::cache(session.dir, true, session.overrides.refresh_facts);
+    let facts = crate::conn_cmd::facts_cache(session.dir, true, session.overrides.refresh_facts);
     let device = session.model.devices.get(&target).map(|d| &d.device);
     let (read, rows) = runtime
         .block_on(bus.service().with_l4(target, options, async |l4| {
@@ -192,7 +194,7 @@ pub(crate) fn plan(
     model: &Model,
     config: ConnectionConfig,
     overrides: &ConnOverrides,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    tool_key_source: bussard_service::secure::ToolKeySource<'_>,
     verbose: u8,
     procedure: Procedure<'_>,
 ) -> anyhow::Result<ExitCode> {
@@ -252,10 +254,7 @@ pub(crate) fn plan(
         crate::output::print(crate::output::schema::PLAN, &out)?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!(
-        "{}\n",
-        crate::device_facts::identity_line(target, &read.check)
-    );
+    println!("{}\n", bussard_service::identity_line(target, &read.check));
     print_plan(&plan, &device_plan, verbose > 0);
     if let (Some(rows), Some(app_id)) = (&rows, procedure.app_id) {
         println!();
@@ -310,7 +309,7 @@ pub(crate) fn apply(
     model: &Model,
     config: ConnectionConfig,
     overrides: &ConnOverrides,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    tool_key_source: bussard_service::secure::ToolKeySource<'_>,
     inputs: InterfaceApplyInputs<'_>,
 ) -> anyhow::Result<ExitCode> {
     let Some(knxnet) = interface_only(model, target) else {
@@ -348,11 +347,8 @@ pub(crate) fn apply(
         &link_of(&config, source),
         None,
     )?;
-    eprintln!(
-        "{}",
-        crate::device_facts::identity_line(target, &read.check)
-    );
-    if let Err(err) = crate::device_facts::refuse_drift(target, &read.check, "apply to") {
+    eprintln!("{}", bussard_service::identity_line(target, &read.check));
+    if let Some(err) = bussard_service::drift_refusal(target, &read.check, "apply to") {
         eprintln!("{err}");
         return Ok(ExitCode::FAILURE);
     }
@@ -404,7 +400,7 @@ pub(crate) fn apply(
         .context("writing the pre-apply backup (refusing to write without a backup)")?;
     println!("backup written to {}", backup.display());
 
-    let facts = crate::device_facts::cache(dir, true, false);
+    let facts = crate::conn_cmd::facts_cache(dir, true, false);
     let mut established = read.established;
     let applied = runtime.block_on(bus.service().with_l4(target, &options, async |l4| {
         anyhow::Ok(

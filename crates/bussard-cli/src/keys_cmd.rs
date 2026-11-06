@@ -16,7 +16,7 @@
 //! `BUSSARD_KEYRING_PASSWORD` (never a CLI argument). No key material is ever
 //! printed: the output is addresses, counts and presence flags.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -25,7 +25,75 @@ use bussard_service::enroll_session::{CertificateOutcome, EnrollTally};
 use bussard_service::files::keyring;
 use bussard_service::setup;
 
+use crate::cli::{Resolved, Run, Spec};
 use crate::style::{Cell, Style, Symbol, Table, Tone};
+
+/// The `bussard keys` subcommands (issue #241).
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum KeysCommand {
+    /// Merge an ETS keyring export (`.knxkeys`) into the key store
+    /// (`bussard.keys` next to `bussard.lock`), creating it on first use.
+    ///
+    /// New devices, rotated tool keys, changed credentials and group keys are
+    /// taken from the export; entries it lacks are kept and a factory key
+    /// is never dropped. Prints what changed, never a key.
+    Import {
+        /// The `.knxkeys` file to import.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+    /// Write the key store as a signed `.knxkeys` export for ETS.
+    Export {
+        /// The `.knxkeys` file to write.
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+        /// Overwrite FILE if it exists.
+        #[arg(long)]
+        force: bool,
+    },
+    /// Summarize the key store: devices, interfaces and group addresses,
+    /// never a key.
+    Show,
+    /// Enter device certificates (the 36-character code that carries the
+    /// factory key, FDSK) into the
+    /// key store (issue #728).
+    ///
+    /// On a terminal it asks for one certificate per line, without echo, until an
+    /// empty line; with `--stdin` it reads every line of standard input. A
+    /// certificate is never a command-line argument (shell history). Its
+    /// serial number selects the device; an unknown serial is kept until
+    /// `bussard assign` reads it off a device. Prints the serial, the matched
+    /// address and the status per certificate, never a key.
+    AddCertificate {
+        /// Read the certificates from standard input, one per line.
+        #[arg(long)]
+        stdin: bool,
+    },
+    /// Take device certificates from a phone: prints a link, its QR code and
+    /// the session code, then one line per certificate the phone scans.
+    ///
+    /// The phone encrypts each certificate to this session; the page's server and
+    /// the relay only see ciphertext. Ends when the phone finishes, on `q`
+    /// and Enter, or on Ctrl-C. Prints serials and addresses, never a key.
+    Enroll(crate::enroll_cmd::EnrollArgs),
+}
+
+impl Run for KeysCommand {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json().no_products()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let (dir, json) = (g.dir(), g.json);
+        match self {
+            KeysCommand::Import { file } => run_import(dir, &file, json),
+            KeysCommand::Export { file, force } => run_export(dir, &file, force, json),
+            KeysCommand::Show => run_show(dir, json),
+            KeysCommand::AddCertificate { stdin } => run_add_certificate(dir, stdin, json),
+            KeysCommand::Enroll(args) => crate::enroll_cmd::run(dir, args, json),
+        }
+    }
+}
 
 /// The environment variable carrying the keyring (and key store) password.
 const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
@@ -68,7 +136,7 @@ fn load_existing(dir: &Path, password: &str) -> anyhow::Result<KeyStore> {
 }
 
 /// Runs `bussard keys import <file>`.
-pub fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
+fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let path = KeyStore::path(dir);
     let (report, outcome) = import_quiet(dir, file)?;
     let warnings = rekeyed_warnings(dir, &report);
@@ -209,7 +277,7 @@ fn print_report(store: &Path, file: &Path, r: &ImportReport, outcome: SaveOutcom
 
 /// Runs `bussard keys export <file>`
 /// ([`bussard_service::files::keyring::export_keyring`]).
-pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Result<ExitCode> {
+fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Result<ExitCode> {
     let password = password()?;
     let export =
         keyring::export_keyring(dir, file, &password, force, &mut crate::console::Console)?;
@@ -279,7 +347,7 @@ pub fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::R
 }
 
 /// Runs `bussard keys show`.
-pub fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
+fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let password = password()?;
     let store = load_existing(dir, &password)?;
     let s = store.summary();
@@ -495,7 +563,7 @@ fn indent(out: &mut String, text: &str) {
 /// (without echo, an empty line ends) or, with `--stdin`, every line of
 /// standard input. Needs the password and a writable store before it reads a
 /// label. Fails when any label was invalid, a conflict or not saved.
-pub fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Result<ExitCode> {
+fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Result<ExitCode> {
     use std::io::{BufRead, IsTerminal};
 
     // Held and dropped like a key (zeroized); the labels too.

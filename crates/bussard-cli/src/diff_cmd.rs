@@ -14,7 +14,7 @@
 //! to redo by hand in ETS ([`bussard_model::checklist`], issue #372).
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -23,6 +23,8 @@ use bussard_model::bundle::{self, Bundle};
 use bussard_model::change::{ChangeSet, describe, name_parameters, render_text};
 use bussard_model::checklist::checklist;
 use bussard_model::param_model::ProductModels;
+
+use crate::cli::{Resolved, Run, Spec};
 
 /// One side of a diff, loaded into memory.
 pub struct Side {
@@ -34,26 +36,53 @@ pub struct Side {
     pub files: BTreeMap<String, String>,
 }
 
-/// How `bussard diff` prints its answer.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct Format {
-    /// `--json`: machine-readable.
-    pub json: bool,
-    /// `--raw`: the file-level diff of the model files.
-    pub raw: bool,
-    /// `--checklist`: the ETS checklist.
-    pub checklist: bool,
+/// `bussard diff`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct DiffArgs {
+    /// The first side: a `.knxproj`, a `.bussard` bundle, an xknxproject
+    /// `.json` dump or a project folder.
+    #[arg(value_name = "A")]
+    a: PathBuf,
+    /// The second side, in any of the same forms.
+    #[arg(value_name = "B")]
+    b: PathBuf,
+    /// Print a file-level TOML diff instead of sentences.
+    #[arg(long, conflicts_with = "json")]
+    raw: bool,
+    /// Print a per-device Markdown checklist of the changes to redo by
+    /// hand in ETS (with `--json`, the same structure as JSON).
+    #[arg(long, conflicts_with = "raw")]
+    checklist: bool,
+    /// Project password for both sides (else `BUSSARD_PROJECT_PASSWORD`).
+    #[arg(long)]
+    password: Option<String>,
+    /// Project password for the second side, when it differs.
+    #[arg(long)]
+    password_b: Option<String>,
+}
+
+impl Run for DiffArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json().no_products()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g.json)
+    }
 }
 
 /// Runs `bussard diff <a> <b> [--json] [--raw] [--checklist]`. Always exits
 /// 0: "no differences" is an answer.
-pub fn run(
-    a: &Path,
-    b: &Path,
-    format: Format,
-    password: Option<String>,
-    password_b: Option<String>,
-) -> anyhow::Result<ExitCode> {
+fn run(args: DiffArgs, json: bool) -> anyhow::Result<ExitCode> {
+    let DiffArgs {
+        a,
+        b,
+        raw,
+        checklist: as_checklist,
+        password,
+        password_b,
+    } = args;
+    let (a, b) = (a.as_path(), b.as_path());
     let env = bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
@@ -62,11 +91,6 @@ pub fn run(
     let side_a = load_side(a, pw_a.as_deref())?;
     let side_b = load_side(b, pw_b.as_deref())?;
 
-    let Format {
-        json,
-        raw,
-        checklist: as_checklist,
-    } = format;
     if raw {
         print_raw(a, b, &side_a.files, &side_b.files);
         return Ok(ExitCode::SUCCESS);

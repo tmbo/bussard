@@ -5,10 +5,12 @@
 //! go back to the integrator's ETS project. See [`bussard_model::ets_export`]
 //! for the exact shapes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bussard_service::files::export::GroupFormat;
+
+use crate::cli::{Resolved, Run};
 
 /// The export formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -19,8 +21,25 @@ pub enum ExportFormat {
     EtsXml,
 }
 
+/// `bussard export-groups`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ExportGroupsArgs {
+    /// The export format.
+    #[arg(long, value_enum)]
+    format: ExportFormat,
+    /// The file to write.
+    #[arg(long, value_name = "FILE")]
+    out: PathBuf,
+}
+
+impl Run for ExportGroupsArgs {
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(g.dir(), self.format, &self.out)
+    }
+}
+
 /// Runs the export-groups command.
-pub fn run(dir: &Path, format: ExportFormat, out: &Path) -> anyhow::Result<ExitCode> {
+fn run(dir: &Path, format: ExportFormat, out: &Path) -> anyhow::Result<ExitCode> {
     let format = match format {
         ExportFormat::EtsCsv => GroupFormat::EtsCsv,
         ExportFormat::EtsXml => GroupFormat::EtsXml,

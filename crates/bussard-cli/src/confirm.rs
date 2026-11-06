@@ -171,3 +171,34 @@ mod tests {
         assert!(!text.contains("--yes "), "{text}");
     }
 }
+
+/// How a command answers the one product-data download question
+/// (`--yes-download`, `--no-download`) of `init`, `import` and `adopt`.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct DownloadConsent {
+    /// `--yes-download`: download without asking.
+    pub yes_download: bool,
+    /// `--no-download`: never download; report what is missing.
+    pub no_download: bool,
+}
+
+impl bussard_service::setup::DownloadPrompt for DownloadConsent {
+    fn skip_downloads(&self) -> Option<String> {
+        self.no_download.then(|| "--no-download".to_string())
+    }
+
+    fn download(
+        &mut self,
+        question: &str,
+        files: usize,
+    ) -> Result<bussard_service::setup::DownloadAnswer, bussard_service::setup::SetupError> {
+        use bussard_service::setup::{DownloadAnswer, SetupError};
+        match download(self.yes_download, question).map_err(SetupError::source)? {
+            Download::Yes => Ok(DownloadAnswer::Yes),
+            Download::No => Ok(DownloadAnswer::No),
+            Download::NoTerminal => Ok(DownloadAnswer::Refused(download_refusal(&format!(
+                "{files} file(s)"
+            )))),
+        }
+    }
+}

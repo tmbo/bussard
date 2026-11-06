@@ -12,7 +12,7 @@
 //! offline oracle against an ETS capture (`scripts/campaign/95-offline-oracle.sh`
 //! rows with `run=secure-on` / `run=secure-off`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -24,27 +24,65 @@ use bussard_service::ip_secure::{
 };
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 
-use crate::conn_cmd::{ConnOverrides, enforce_write_gate, gateway_display, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{enforce_write_gate, gateway_display, resolve_config};
 
-/// What `interface secure` takes besides the model directory.
-#[derive(Debug, Clone)]
-pub(crate) struct SecureInputs<'a> {
+/// The `bussard interface` subcommands (issue #398).
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum InterfaceCommand {
+    /// Switch KNXnet/IP Secure of a KNX IP interface on or off, the way ETS
+    /// does.
+    ///
+    /// `on` takes a device in factory state over a plain tunnel: under its
+    /// factory key the security mode and a tool key, then under the tool key the
+    /// device authentication code, the password hashes of the management and
+    /// tunnelling users, the tunnelling users and the secured service
+    /// families, and a master reset. Credentials come from the key store
+    /// (`bussard.keys`); missing ones are generated and saved there before
+    /// the first write. `off` undoes it under the tool key, then again under
+    /// the factory key. Both end with a read-back after the restart. The
+    /// project files never hold a credential. See https://bussard.tmbo.dev/docs/explanation/safety/ for the recovery.
+    // Issue #398.
+    Secure(SecureArgs),
+}
+
+/// `bussard interface secure`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct SecureArgs {
     /// `on` or `off`.
-    pub state: &'a str,
-    /// The interface's individual address.
-    pub address: &'a str,
-    /// `--dry-run`.
-    pub dry_run: bool,
-    /// `--dump-images DIR`.
-    pub dump_images: Option<&'a Path>,
-    /// `--yes`.
-    pub yes: bool,
-    /// `--allow-remote-gateway`.
-    pub allow_remote_gateway: bool,
-    /// `--allow-self-reconfigure`.
-    pub allow_self_reconfigure: bool,
-    /// `--json`.
-    pub json: bool,
+    #[arg(value_name = "on|off")]
+    state: String,
+    /// The interface's address, e.g. `1.1.200`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// Print the steps and send nothing (no connection, the key store
+    /// unchanged).
+    #[arg(long)]
+    dry_run: bool,
+    /// With --dry-run: write the steps' property writes to DIR/plan.json
+    /// for `knxtrace imgdiff` (key material as SHA-256 only).
+    #[arg(long, value_name = "DIR", requires = "dry_run")]
+    dump_images: Option<PathBuf>,
+    /// Skip the confirmation prompt.
+    #[arg(long)]
+    yes: bool,
+    /// Switch the interface bussard tunnels through over a KNXnet/IP
+    /// Secure session with that same interface (the session ends at the
+    /// restart).
+    #[arg(long)]
+    allow_self_reconfigure: bool,
+}
+
+impl Run for InterfaceCommand {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().device_management()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match self {
+            InterfaceCommand::Secure(inputs) => run(&inputs, g),
+        }
+    }
 }
 
 /// The `plan.json` of `--dump-images`.
@@ -90,12 +128,9 @@ fn parse_switch(state: &str) -> anyhow::Result<Switch> {
 }
 
 /// Runs `bussard interface secure on|off <address>`.
-pub(crate) fn run(
-    dir: &Path,
-    inputs: SecureInputs<'_>,
-    overrides: &ConnOverrides,
-) -> anyhow::Result<ExitCode> {
-    let switch = parse_switch(inputs.state)?;
+fn run(inputs: &SecureArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, overrides, json) = (g.dir(), &g.mgmt(), g.json);
+    let switch = parse_switch(&inputs.state)?;
     let target: IndividualAddress = inputs
         .address
         .parse()
@@ -132,15 +167,15 @@ pub(crate) fn run(
     };
 
     if inputs.dry_run {
-        if let Some(out) = inputs.dump_images {
+        if let Some(out) = inputs.dump_images.as_deref() {
             dump(out, &plan)?;
         }
-        report_plan(&plan, inputs.json, true)?;
+        report_plan(&plan, json, true)?;
         return Ok(ExitCode::SUCCESS);
     }
 
     let config = resolve_config(Some(&model), overrides)?;
-    enforce_write_gate(&config, inputs.allow_remote_gateway)?;
+    enforce_write_gate(&config, g.allow_remote_gateway)?;
     let gateway = gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;
     let probed = runtime.block_on(probe_gateway(&config));
@@ -186,7 +221,7 @@ pub(crate) fn run(
         );
         return Ok(ExitCode::FAILURE);
     }
-    if !inputs.json {
+    if !json {
         print_plan(&plan);
     }
     if !crate::confirm::confirm(
@@ -199,14 +234,13 @@ pub(crate) fn run(
     }
     let ctx = SwitchContext {
         config,
-        policy: bussard_service::WritePolicy::transmit(inputs.allow_remote_gateway),
+        policy: bussard_service::WritePolicy::transmit(g.allow_remote_gateway),
         skip_address_check: overrides.skip_address_check,
         dir,
         keystore_password: &password,
         keystore_loaded: &keystore_loaded,
         connect_wait: crate::conn_cmd::connect_wait(),
     };
-    let json = inputs.json;
     let mut progress = |line: &str| {
         if !json {
             println!("  -> {line}");

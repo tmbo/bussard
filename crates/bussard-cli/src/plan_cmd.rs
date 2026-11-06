@@ -17,7 +17,6 @@
 //! Secure device is read with `--keyring` / `--tool-key` (issue #170), see
 //! [`read_device`].
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -28,9 +27,10 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 use bussard_transport::ConnectionConfig;
 
+use crate::cli::{ProductSelection, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
-use crate::param_readback::ProductSource;
-use crate::secure_key::ToolKeySource;
+use bussard_service::params::ProductSource;
+use bussard_service::secure::ToolKeySource;
 
 /// A serialisable `(object, GA)` pair for the JSON output.
 #[derive(Debug, serde::Serialize)]
@@ -61,7 +61,7 @@ struct PlanJson {
     noop: bool,
     /// The parameter read-back (issue #119), when a product file was available.
     #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<crate::param_readback::Readback>,
+    parameters: Option<bussard_service::params::Readback>,
     /// The device's identity compared with `bussard.lock` (lock v2, issue
     /// #228), when the device facts were read.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -77,7 +77,7 @@ pub(crate) use bussard_download::LiveRead;
 /// [`bussard_download::sys7_table_bases`]); the corpus defaults without a
 /// product.
 pub(crate) fn table_bases(
-    product: Option<&crate::param_readback::ProductSource>,
+    product: Option<&bussard_service::params::ProductSource>,
 ) -> bussard_download::Sys7TableBases {
     product
         .and_then(|p| p.app())
@@ -91,7 +91,7 @@ pub(crate) fn table_bases(
 /// `PID_TABLE_REFERENCE` is read where the product puts its tables.
 pub(crate) async fn read_live_tables<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-    product: Option<&crate::param_readback::ProductSource>,
+    product: Option<&bussard_service::params::ProductSource>,
 ) -> anyhow::Result<LiveRead> {
     Ok(bussard_download::read_live_tables_at(l4, table_bases(product)).await?)
 }
@@ -218,7 +218,7 @@ const SECURE_PLAIN_MASK: u16 = 0xFFFF;
 /// read-back.
 pub(crate) type DeviceRead = (
     LiveRead,
-    Option<crate::param_readback::ParamState>,
+    Option<bussard_service::params::ParamState>,
     Option<bussard_model::identity::ReportedIdentity>,
     Option<Vec<bussard_download::SecureSenderEntry>>,
     Option<Vec<u8>>,
@@ -246,9 +246,10 @@ pub(crate) fn read_device(
     properties: Option<&bussard_download::FlashPlan>,
     known_flags: Option<Vec<u8>>,
 ) -> anyhow::Result<DeviceRead> {
-    let activated = crate::secure_key::model_activated(model, target);
-    let (tool_key, factory_key) =
-        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model, target);
+    let (tool_key, factory_key) = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_session_keys(target, tool_key_source, activated)
+    })?;
     let presented_tool_key = tool_key.is_some();
     let options = L4Options {
         source: SourcePolicy::Check {
@@ -261,7 +262,7 @@ pub(crate) fn read_device(
         // finding #1) and as System 7 requires before any memory access.
         // Best-effort on a read; skipped for a device whose facts say it never
         // answers (issue #209).
-        authorize: crate::device_facts::read_only_authorize(&mut facts, target),
+        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
     let runtime = tokio::runtime::Runtime::new()?;
@@ -275,7 +276,7 @@ pub(crate) fn read_device(
                     // read-back walks the interface objects again.
                     // The facts and what the device says it is, for the lock
                     // comparison (issue #228, item 5).
-                    let identity = crate::device_facts::identify(l4, &facts, None)
+                    let identity = bussard_service::identify(l4, &facts, None)
                         .await?
                         .check
                         .map(|check| check.device);
@@ -283,7 +284,7 @@ pub(crate) fn read_device(
                     let params = match (&read, product) {
                         (LiveRead::Tables(live), Some(product)) => {
                             let started = std::time::Instant::now();
-                            let state = crate::param_readback::read_state(
+                            let state = bussard_service::params::read_state(
                                 l4,
                                 product,
                                 model,
@@ -325,16 +326,51 @@ pub(crate) fn read_device(
         .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))
 }
 
+/// `bussard plan`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct PlanArgs {
+    /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
+    /// `--line`).
+    #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+    address: Option<String>,
+    /// Plan every device the project has on this line, e.g. `1.1`, in address
+    /// order, and print one summary table.
+    // Issue #100.
+    #[arg(long, value_name = "LINE", conflicts_with = "address")]
+    line: Option<String>,
+    #[command(flatten)]
+    product: ProductSelection,
+    #[command(flatten)]
+    tool_key: ToolKey,
+}
+
+impl Run for PlanArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+            .json()
+            .tool_key(self.tool_key.tool_key.is_some())
+            .device_management()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let tool_keys = g.tool_keys(self.tool_key.tool_key.as_deref());
+        match (&self.line, &self.address) {
+            (Some(line), _) => crate::line_cmd::run_plan(line, tool_keys, g),
+            (None, Some(address)) => run(address, self.product.selection(), tool_keys, g),
+            // clap requires ADDRESS without --line.
+            (None, None) => anyhow::bail!("give a device ADDRESS or --line"),
+        }
+    }
+}
+
 /// Reads a device's live tables and shows what `apply` would change.
-pub fn run(
+fn run(
     address: &str,
-    dir: &Path,
-    json: bool,
-    overrides: ConnOverrides,
-    selection: crate::param_readback::Selection<'_>,
+    selection: bussard_service::params::Selection<'_>,
     tool_key_source: ToolKeySource<'_>,
-    verbose: u8,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
+    let (dir, json, overrides, verbose) = (g.dir(), g.json, g.mgmt_with_facts(), g.verbose);
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -384,7 +420,7 @@ pub fn run(
         selection,
         Some(&model),
         target,
-        crate::param_readback::MissingProduct::Warn,
+        bussard_service::params::MissingProduct::Warn,
     )?;
     let model_ref = &model;
     let product_ref = product.as_ref();
@@ -421,11 +457,13 @@ pub fn run(
 
     // `admit_tunnel_senders` (issue #297): the tunnelling addresses to admit,
     // when the device is written secured.
-    let material = crate::secure_key::resolve_material(
-        target,
-        tool_key_source,
-        crate::secure_key::model_activated(Some(model_ref), target),
-    )?;
+    let material = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_material(
+            target,
+            tool_key_source,
+            bussard_service::secure::model_activated(Some(model_ref), target),
+        )
+    })?;
     let secured = material.tool_key.is_some();
     let tunnel = crate::secure_key::admitted_tunnel(Some(model_ref), tool_key_source, secured)?;
     // The read budget of PID 61 (issue #336): a cached read is used when the
@@ -456,7 +494,7 @@ pub fn run(
         tool_key_source,
         product_ref,
         Some(model_ref),
-        crate::device_facts::cache(dir, true, overrides.refresh_facts),
+        crate::conn_cmd::facts_cache(dir, true, overrides.refresh_facts),
         &tunnel,
         properties.as_ref(),
         known_flags,
@@ -514,7 +552,7 @@ pub fn run(
     } else {
         let style = crate::style::Style::stdout();
         if let Some(check) = &identity {
-            let line = crate::device_facts::identity_line(target, check);
+            let line = bussard_service::identity_line(target, check);
             if check.is_drift() {
                 println!(
                     "{}\n",

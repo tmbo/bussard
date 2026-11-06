@@ -14,8 +14,43 @@ use std::process::ExitCode;
 use anyhow::Context;
 use bussard_model::{IndividualAddress, Model, ProductModels};
 
+use crate::cli::{Resolved, Run, Spec};
+
+/// `bussard device`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct DeviceArgs {
+    /// The device, e.g. `1.1.47`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// The channel to list in detail: its handle (`a-1`), id or number, a
+    /// page handle, or `device` for the device-level parameters and
+    /// objects.
+    #[arg(value_name = "CHANNEL")]
+    channel: Option<String>,
+    /// Print the paste-ready device-file TOML, with commented lines for
+    /// what the file does not set yet.
+    #[arg(long, conflicts_with = "json")]
+    toml: bool,
+}
+
+impl Run for DeviceArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(
+            &self.address,
+            self.channel.as_deref(),
+            g.dir(),
+            self.toml,
+            g.json,
+        )
+    }
+}
+
 /// Runs `bussard device`.
-pub fn run(
+fn run(
     address: &str,
     channel: Option<&str>,
     dir: &Path,
@@ -35,7 +70,11 @@ pub fn run(
     // A pinned archive whose model is missing gets it now, in the lock's
     // language, rather than the view reporting no product data (issue #255).
     if let Some(app) = &app {
-        crate::product_store::complete_models(dir, Some(app));
+        bussard_service::setup::products::complete_models(
+            dir,
+            Some(app),
+            &mut crate::console::Console,
+        );
     }
     let products = ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, target, channel)?;

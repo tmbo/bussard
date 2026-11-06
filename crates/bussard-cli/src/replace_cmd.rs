@@ -32,7 +32,7 @@
 //! `replace` adds sequencing, the identity cross-check and the record —
 //! nothing that touches the bus on its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
@@ -42,26 +42,63 @@ use bussard_model::IndividualAddress;
 use bussard_service::replace::{self, Pressed, Replacement, Step};
 use bussard_service::{BusService, WritePolicy};
 
+use crate::apply_cmd::ApplyArgs;
 use crate::assign_cmd;
+use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, open_service, resolve_config,
+    enforce_write_gate, gateway_display, load_model_required, open_checked, resolve_config,
 };
+use crate::flash_cmd::FlashArgs;
+
+/// `bussard replace`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ReplaceArgs {
+    /// The address of the device being replaced, e.g. `1.1.4`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// The vendor `.knxprod` to flash the replacement with. Default: the
+    /// archive `bussard.lock` pins for the device in `<dir>/products/`.
+    #[arg(long, value_name = "FILE")]
+    product: Option<PathBuf>,
+    #[command(flatten)]
+    consent: Consent,
+    /// Override the replacement-identity refusals: proceed although the old
+    /// device still answers, or although the pressed device's order number,
+    /// mask or application does not match the device file.
+    #[arg(long)]
+    force: bool,
+    /// Assign and apply, but leave the application image alone — for a spare
+    /// that already carries the right application.
+    #[arg(long)]
+    no_flash: bool,
+    /// The device's BCU access key, in hex, presented with A_Authorize on
+    /// every management connect.
+    // Issue #52.
+    #[arg(long, value_name = "HEX")]
+    bcu_key: Option<String>,
+    #[command(flatten)]
+    tool_key: BenchToolKey,
+}
+
+impl Run for ReplaceArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.tool_key(self.tool_key.tool_key.is_some())
+    }
+
+    fn early_consent(&self) -> Option<(bool, String)> {
+        Some((self.consent.yes, format!("replace {}", self.address)))
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g)
+    }
+}
 
 /// Runs `bussard replace`.
-#[allow(clippy::too_many_arguments)] // the subcommand's flags, 1:1
-pub fn run(
-    address: &str,
-    product: Option<&Path>,
-    dir: &Path,
-    yes: bool,
-    force: bool,
-    no_flash: bool,
-    allow_remote_gateway: bool,
-    bcu_key: Option<&str>,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, product) = (args.address.as_str(), args.product.as_deref());
+    let (yes, force, no_flash) = (args.consent.yes, args.force, args.no_flash);
+    let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -120,8 +157,8 @@ pub fn run(
         let conn = overrides.clone();
         let replacement = replacement.clone();
         runtime.block_on(async move {
-            let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
-            let source = checked_source_or_close(&service, &conn).await?;
+            let (service, source) =
+                open_checked(config, WritePolicy::transmit(allow_remote_gateway), &conn).await?;
             let result = tokio::select! {
                 result = swap_flow(&service, source, &replacement, &gateway, yes, force) => result,
                 _ = tokio::signal::ctrl_c() => {
@@ -145,28 +182,22 @@ pub fn run(
     let mut flashed = false;
     if let Some(product) = product_path.as_deref() {
         println!("\nflashing the application from {}…", product.display());
-        let code = crate::flash_cmd::run(
-            address,
-            Some(product),
-            None,
-            None,
-            dir,
-            true,
+        let code = FlashArgs {
+            address: address.to_string(),
+            product: Some(product.to_path_buf()),
+            consent: Consent { yes: true },
             // The replacement device is a different physical box; whatever it
             // carries from the factory or a previous life is not the model's
             // application, so the freshness refusal would always fire here. The
             // operator already consented to the whole run.
-            true,
-            false,
-            false,
-            false,
-            allow_remote_gateway,
-            bcu_key,
-            tool_key_source,
-            None,
-            overrides.clone(),
-            crate::flash_cmd::FlashOutput::default(),
-        )?;
+            force: true,
+            bcu_key: args.bcu_key.clone(),
+            tool_key: ToolKey {
+                tool_key: args.tool_key.tool_key.clone(),
+            },
+            ..FlashArgs::default()
+        }
+        .run(&g.step())?;
         if code != ExitCode::SUCCESS {
             eprintln!(
                 "\nERROR: the flash step failed. {target} now has the right address but not the \
@@ -183,16 +214,15 @@ pub fn run(
 
     // Phase 3: the link tables, through `bussard apply`.
     println!("\napplying the model's link tables…");
-    let code = crate::apply_cmd::run(
-        address,
-        dir,
-        true,
-        allow_remote_gateway,
-        tool_key_source,
-        None,
-        overrides,
-        crate::apply_cmd::ApplyInputs::default(),
-    )?;
+    let code = ApplyArgs {
+        address: Some(address.to_string()),
+        consent: Consent { yes: true },
+        tool_key: ToolKey {
+            tool_key: args.tool_key.tool_key.clone(),
+        },
+        ..ApplyArgs::default()
+    }
+    .run(&g.step())?;
     if code != ExitCode::SUCCESS {
         eprintln!(
             "\nERROR: the apply step failed. {target} is addressed and programmed but its links \
@@ -283,7 +313,7 @@ async fn swap_flow(
                 let read = replace::identify(service, source, at).await;
                 print_identity(&read);
                 if let Some(check) = replacement.identity_check(&read) {
-                    println!("  {}", crate::device_facts::identity_line(target, &check));
+                    println!("  {}", bussard_service::identity_line(target, &check));
                 }
                 pressed = Some(read);
             }

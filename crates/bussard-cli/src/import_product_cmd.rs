@@ -14,7 +14,7 @@
 //! see [`bussard_prod::extract_from_project`]); the export itself is never
 //! copied.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::bail;
@@ -23,9 +23,48 @@ use bussard_service::files::products as files;
 use bussard_service::setup::products;
 use bussard_service::setup::{DownloadAnswer, DownloadPrompt, SetupError};
 
+use crate::cli::{Resolved, Run};
 use crate::console::Console;
 
 pub(crate) use bussard_service::files::products::is_project_export;
+
+/// `bussard import-product`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ImportProductArgs {
+    /// The `.knxprod` or `.knxproj` file to import (positional mode).
+    #[arg(value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Look the `.knxprod` up in the pointer index by order number and
+    /// download it from the vendor (with confirmation).
+    #[arg(long, value_name = "ORDER", conflicts_with = "file")]
+    order_number: Option<String>,
+    /// Download the vendor product data without asking. Without a
+    /// terminal and without this flag the download is refused. Only
+    /// meaningful with `--order-number`.
+    #[arg(long)]
+    yes_download: bool,
+    /// When the `.knxprod` is a ZIP wrapping several inner `.knxprod` files,
+    /// select which one to import (by entry or file name). Ignored for a
+    /// plain `.knxprod` or a single-inner wrapper.
+    #[arg(long, value_name = "NAME")]
+    inner: Option<String>,
+    /// List the product-data pointer index and exit.
+    #[arg(long, conflicts_with_all = ["file", "order_number"])]
+    list: bool,
+}
+
+impl Run for ImportProductArgs {
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(
+            self.file.as_deref(),
+            g.dir(),
+            self.order_number.as_deref(),
+            self.yes_download,
+            self.inner.as_deref(),
+            self.list,
+        )
+    }
+}
 
 /// Dispatches the three `import-product` modes:
 ///
@@ -33,7 +72,7 @@ pub(crate) use bussard_service::files::products::is_project_export;
 /// * `--order-number`: look the file up in the index, confirm, download,
 ///   verify, then run the normal import on the downloaded file.
 /// * positional FILE: run the normal import on a local `.knxprod`.
-pub fn run(
+fn run(
     file: Option<&Path>,
     dir: &Path,
     order_number: Option<&str>,

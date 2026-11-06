@@ -1,10 +1,10 @@
 //! The `bussard monitor` subcommand: stream decoded telegrams to stdout.
 
 use std::io::{IsTerminal, Write};
-use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
     CancelToken, DecodedTelegram, Filter, GroupKeyring, json_line, pretty_line,
@@ -12,16 +12,31 @@ use bussard_monitor::{
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{load_model_optional, resolve_config};
+
+/// `bussard monitor`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct MonitorArgs {
+    /// Only show telegrams matching this filter: a comma-separated list of
+    /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
+    #[arg(long, value_name = "EXPR")]
+    filter: Option<String>,
+}
+
+impl Run for MonitorArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self.filter.as_deref(), g)
+    }
+}
 
 /// Runs `bussard monitor`.
-pub fn run(
-    dir: &Path,
-    json: bool,
-    filter_expr: Option<&str>,
-    keyring: Option<&Path>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, json, keyring, overrides) = (g.dir(), g.json, g.keyring(), g.group());
     let filter = match filter_expr {
         Some(expr) => Filter::parse(expr)?,
         None => Filter::default(),
@@ -30,13 +45,19 @@ pub fn run(
     let config = resolve_config(model.as_ref(), &overrides)?;
     // KNX Data Secure group telegrams (issue #172): decrypt with the keyring's
     // group keys. Loaded before connecting so a wrong password fails fast.
-    let group_keys = crate::secure_key::group_keys(keyring)?.map(|keys| {
-        eprintln!(
-            "keyring: {} group key(s) for secured group telegrams",
-            keys.len()
-        );
-        GroupKeyring::new(keys)
-    });
+    let group_keys = keyring
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?
+        .map(|keys| {
+            eprintln!(
+                "keyring: {} group key(s) for secured group telegrams",
+                keys.len()
+            );
+            GroupKeyring::new(keys)
+        });
 
     // A dedicated multi-thread runtime; the transport and (later) store need it.
     let runtime = tokio::runtime::Runtime::new()?;

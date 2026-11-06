@@ -48,7 +48,7 @@
 //! prints, the prompts, and the `--product` import.
 
 use std::io::{IsTerminal, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
@@ -68,44 +68,67 @@ use crate::assign_cmd::{
     Verified, VerifyKey, hex, load_model_optional, target_is_free, verify_assignment_with,
     wait_for_single_device_as, warn_if_still_in_programming_mode, write_device_file,
 };
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, open_service,
-    resolve_config,
-};
+use crate::cli::{Consent, Resolved, Run, Spec};
+use crate::conn_cmd::{enforce_write_gate, gateway_display, open_checked, resolve_config};
 use crate::import_product_cmd::is_project_export;
 use crate::style::Style;
 
-/// What one `bussard adopt` run was asked to do.
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct AdoptOptions<'a> {
-    /// The target individual address (`ADDRESS`); `None` takes the next free
-    /// one on the line, or keeps a Data Secure device's address.
-    pub(crate) address: Option<&'a str>,
-    /// `--product`: the vendor `.knxprod` for the new device.
-    pub(crate) product: Option<&'a Path>,
-    /// `--yes`: skip the confirmation prompt.
-    pub(crate) yes: bool,
-    /// `--force`: write the address although another device answers at it.
-    pub(crate) force: bool,
-    /// How the product-data download question is answered.
-    pub(crate) consent: crate::product_fetch::Consent,
+/// `bussard adopt`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct AdoptArgs {
+    /// The address to give the device, e.g. `1.1.47` (default: next free on
+    /// the line; a KNX Data Secure device keeps the address ETS gave it).
+    #[arg(value_name = "ADDRESS")]
+    address: Option<String>,
+    /// The vendor `.knxprod` for the new device (else the cached product model is used).
+    #[arg(long, value_name = "FILE")]
+    product: Option<PathBuf>,
+    #[command(flatten)]
+    consent: Consent,
+    /// Download missing vendor product data without asking. Without a
+    /// terminal and without this flag nothing is downloaded; the missing
+    /// order numbers are listed.
+    #[arg(long, conflicts_with = "no_download")]
+    yes_download: bool,
+    /// Do not download product data for the device's order number; adopt
+    /// it without (identity and links by number) and say where to get it.
+    #[arg(long)]
+    no_download: bool,
+    /// Write the address although another device already answers at it
+    /// (the check is step 1 of the standard's address write).
+    // Issue #530.
+    #[arg(long)]
+    force: bool,
+}
+
+impl Run for AdoptArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+    }
+
+    fn early_consent(&self) -> Option<(bool, String)> {
+        let action = match &self.address {
+            Some(address) => format!("adopt the device in programming mode as {address}"),
+            None => "adopt the device in programming mode".to_string(),
+        };
+        Some((self.consent.yes, action))
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
 }
 
 /// Runs `bussard adopt`.
-pub(crate) fn run(
-    options: AdoptOptions<'_>,
-    dir: &Path,
-    allow_remote_gateway: bool,
-    keyring: Option<&Path>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
-    let AdoptOptions {
-        address: scripted_address,
-        product,
-        yes,
-        force,
-        consent,
-    } = options;
+fn run(args: &AdoptArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (scripted_address, product) = (args.address.as_deref(), args.product.as_deref());
+    let (yes, force) = (args.consent.yes, args.force);
+    let consent = crate::confirm::DownloadConsent {
+        yes_download: args.yes_download,
+        no_download: args.no_download,
+    };
+    let (dir, allow_remote_gateway, keyring, overrides) =
+        (g.dir(), g.allow_remote_gateway, g.keyring(), g.mgmt());
     // A run without a terminal and without --yes was refused before this, by
     // `confirm::require_terminal_or_yes` in `main` (issue #74). Without a
     // terminal the wizard's choices take their documented defaults.
@@ -169,8 +192,12 @@ pub(crate) fn run(
         // The service applies the same write gate again as it opens. Waiting
         // for the connect makes the tunnel-assigned source address available
         // (falling back to 0.0.255 on routing) — issue #30.
-        let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
-        let source = checked_source_or_close(&service, &overrides).await?;
+        let (service, source) = open_checked(
+            config,
+            WritePolicy::transmit(allow_remote_gateway),
+            &overrides,
+        )
+        .await?;
         // Guard with Ctrl-C so an interrupt still closes the tunnel cleanly.
         let result = tokio::select! {
             result = adopt_flow(
@@ -330,7 +357,7 @@ async fn adopt_flow(
     selected: Option<&SelectedProduct>,
     scripted_address: Option<&str>,
     run: AdoptRun<'_>,
-    fetch: crate::product_fetch::Consent,
+    fetch: crate::confirm::DownloadConsent,
     adopt_keys: &AdoptKeys<'_>,
 ) -> anyhow::Result<ExitCode> {
     let AdoptRun {
@@ -559,24 +586,32 @@ async fn adopt_flow(
 fn fetch_product_for(
     order: &str,
     dir: &Path,
-    fetch: crate::product_fetch::Consent,
+    mut fetch: crate::confirm::DownloadConsent,
 ) -> Option<SelectedProduct> {
-    let path = match crate::product_store::archive_for_order(dir, order) {
+    let path = match bussard_service::params::archive_for_order(dir, order) {
         Ok(Some(path)) => path,
         Ok(None) | Err(_) => {
             println!("  no product data cached for {order}; looking it up");
-            let outcome =
-                match crate::product_fetch::fetch_missing(dir, &[order.to_string()], fetch) {
-                    Ok(outcome) => outcome,
-                    Err(err) => {
-                        eprintln!("  product data for {order}: {err:#}");
-                        return None;
-                    }
-                };
+            let outcome = match bussard_service::setup::products::fetch_missing(
+                dir,
+                &[order.to_string()],
+                &mut fetch,
+                &mut crate::console::Console,
+            ) {
+                Ok(outcome) => outcome,
+                Err(err) => {
+                    eprintln!("  product data for {order}: {err:#}");
+                    return None;
+                }
+            };
             match outcome.fetched.first() {
                 Some((_, path)) => path.clone(),
                 None => {
-                    crate::product_fetch::print_missing(&outcome, dir);
+                    bussard_service::setup::products::report_missing(
+                        &outcome,
+                        dir,
+                        &mut crate::console::Console,
+                    );
                     println!("  continuing product-less for {order}");
                     return None;
                 }
@@ -810,7 +845,7 @@ async fn read_secured(
     // device file being written (its order number and application).
     let with_device = bussard_service::adopt::flow::with_device(model, device, target);
     let mut notes = Vec::new();
-    let selection = crate::param_readback::Selection {
+    let selection = bussard_service::params::Selection {
         product,
         application: selected.map(|s| s.application_ref.as_str()),
     };
@@ -819,7 +854,7 @@ async fn read_secured(
         selection,
         Some(&with_device),
         target,
-        crate::param_readback::MissingProduct::Warn,
+        bussard_service::params::MissingProduct::Warn,
     ) {
         Ok(found) => found,
         Err(err) => {
@@ -976,7 +1011,7 @@ fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
     // it in bussard.lock (issue #228); the device save that follows links the
     // device to it. An archive already in the store was pinned when it was
     // stored.
-    let stored = crate::product_store::store_file(dir, file)?;
+    let stored = bussard_service::files::products::store_file(dir, file)?;
     if stored != file {
         println!("  stored vendor file: {}", stored.display());
         let origin = bussard_model::schema::ProductOrigin::File {

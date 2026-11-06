@@ -1,21 +1,12 @@
-//! The CLI's KNX Data Secure tool-key surface (`--keyring`, `--tool-key`;
-//! issue #71).
-//!
-//! The resolver and the secure-layer builder live in
-//! [`bussard_service::secure`] so the MCP server (and any other surface) uses
-//! the same code; this module re-exports them under the names the device
-//! commands already use, plus the operator-facing hints for a device that may
-//! be Data Secure-activated.
-
-use std::path::Path;
+//! The CLI's words around KNX Data Secure (`--keyring`, `--tool-key`; issue
+//! #71): the operator-facing hints for a device that may be Data
+//! Secure-activated or a group address without a key, and the tunnelling
+//! senders `admit_tunnel_senders` adds. The tool-key resolver and the
+//! secure-layer builder are [`bussard_service::secure`]'s.
 
 use anyhow::Context;
 use bussard_model::IndividualAddress;
-use bussard_service::GroupKeys;
-
-pub use bussard_service::secure::{
-    SecureKeyError, SecureMaterial, ToolKeySource, layer, model_activated,
-};
+use bussard_service::secure::ToolKeySource;
 
 /// The tunnelling addresses `[connection] admit_tunnel_senders` adds to a
 /// Secure device's security individual address table (issue #297): every
@@ -51,54 +42,6 @@ pub fn admitted_tunnel(
         );
     }
     Ok(tunnel)
-}
-
-/// [`bussard_service::secure::resolve`], timed as the `--timing` phase
-/// `tool keys` (issue #214).
-///
-/// # Errors
-///
-/// As [`bussard_service::secure::resolve`].
-pub fn resolve(
-    target: IndividualAddress,
-    source: ToolKeySource<'_>,
-    activated: bool,
-) -> Result<Option<bussard_secure::Key16>, SecureKeyError> {
-    crate::timing::time("tool keys", || {
-        bussard_service::secure::resolve(target, source, activated)
-    })
-}
-
-/// [`bussard_service::secure::resolve_session_keys`] (the tool key and the
-/// FDSK, issue #532), timed as the `--timing` phase `tool keys`.
-///
-/// # Errors
-///
-/// As [`bussard_service::secure::resolve`].
-pub fn resolve_session_keys(
-    target: IndividualAddress,
-    source: ToolKeySource<'_>,
-    activated: bool,
-) -> Result<(Option<bussard_secure::Key16>, Option<bussard_secure::Key16>), SecureKeyError> {
-    crate::timing::time("tool keys", || {
-        bussard_service::secure::resolve_session_keys(target, source, activated)
-    })
-}
-
-/// [`bussard_service::secure::resolve_material`], timed as the `--timing`
-/// phase `tool keys` (issue #214).
-///
-/// # Errors
-///
-/// As [`bussard_service::secure::resolve_material`].
-pub fn resolve_material(
-    target: IndividualAddress,
-    source: ToolKeySource<'_>,
-    activated: bool,
-) -> Result<SecureMaterial, SecureKeyError> {
-    crate::timing::time("tool keys", || {
-        bussard_service::secure::resolve_material(target, source, activated)
-    })
 }
 
 /// The guidance for a device without a tool key that may be Data Secure-activated
@@ -162,18 +105,6 @@ pub(crate) fn secure_hint(
     } else {
         err.context(format!("{target} did not answer: {}", no_key_guidance()))
     }
-}
-
-/// Loads the group keys of `--keyring` for secured group communication
-/// (issue #172), or `None` without a keyring. The password comes from
-/// [`bussard_service::secure::KEYRING_PASSWORD_ENV`]; the error names the file, never a key.
-pub fn group_keys(keyring: Option<&Path>) -> anyhow::Result<Option<GroupKeys>> {
-    let Some(path) = keyring else {
-        return Ok(None);
-    };
-    let keys = bussard_service::secure::load_group_keys(path)
-        .with_context(|| format!("loading group keys from {}", path.display()))?;
-    Ok(Some(keys))
 }
 
 /// The CLI's words for a secured GA without a group key.

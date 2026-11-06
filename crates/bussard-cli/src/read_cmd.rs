@@ -15,7 +15,6 @@
 //! a key is refused before anything is sent, and so is one whose responders
 //! are known not to admit the tunnel address (issue #297).
 
-use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -24,7 +23,26 @@ use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_service::admission::{self, Admission, AdmissionEvidence};
 use bussard_service::{SecureGroupError, WritePolicy, group_key_for};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, open_service, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{load_model_optional, open_service, resolve_config};
+
+/// `bussard read`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ReadArgs {
+    /// The group address to read, e.g. `3/2/0`.
+    #[arg(value_name = "GA")]
+    ga: String,
+}
+
+impl Run for ReadArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self.ga, g)
+    }
+}
 
 /// How long to wait for a GroupValueResponse before giving up.
 const READ_TIMEOUT: Duration = Duration::from_secs(3);
@@ -54,13 +72,8 @@ fn timeout_label(timeout: Duration) -> String {
 }
 
 /// Runs `bussard read <ga>`.
-pub fn run(
-    ga_str: &str,
-    dir: &Path,
-    keyring: Option<&Path>,
-    json: bool,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, keyring, json, overrides) = (g.dir(), g.keyring(), g.json, g.group());
     let ga: GroupAddress = ga_str
         .parse()
         .map_err(|_| anyhow::anyhow!("invalid group address {ga_str:?}"))?;
@@ -77,7 +90,12 @@ pub fn run(
         .and_then(|m| m.groups.groups.get(&ga))
         .map(|g| g.name.clone());
     // KNX Data Secure (issue #172): decide plain vs secured before connecting.
-    let group_keys = crate::secure_key::group_keys(keyring)?;
+    let group_keys = keyring
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?;
     let key = group_key_for(model.as_ref(), ga, group_keys.as_ref()).map_err(
         |SecureGroupError::NoKey { ga, keyring_given }| {
             anyhow::anyhow!(crate::secure_key::no_group_key_hint(ga, keyring_given))
@@ -95,7 +113,7 @@ pub fn run(
     // from their PID 54 before asking.
     let keys = match (secured, keyring) {
         (true, Some(path)) => {
-            bussard_service::secure::ToolKeys::load(crate::secure_key::ToolKeySource {
+            bussard_service::secure::ToolKeys::load(bussard_service::secure::ToolKeySource {
                 keyring: Some(path),
                 tool_key: None,
             })?

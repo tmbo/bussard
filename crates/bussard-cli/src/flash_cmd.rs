@@ -27,7 +27,7 @@
 //! that keep it from touching an unsupported or mismatched device.
 
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -46,34 +46,150 @@ use bussard_service::flash_flow::decide_freshness;
 use bussard_service::flash_flow::{FreshnessDecision, preflight_interrupted};
 use bussard_service::{BusService, Management};
 
+use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
-    BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
-    resolve_config,
+    BusSession, enforce_write_gate, gateway_display, load_model_required, resolve_config,
 };
 
+/// `bussard flash`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub(crate) struct FlashArgs {
+    /// The device to program, e.g. `1.0.10`.
+    #[arg(value_name = "ADDRESS")]
+    pub address: String,
+    /// The vendor `.knxprod` (or ETS export) containing the application
+    /// program. Default: the archive `bussard.lock` pins for the device in
+    /// `<dir>/products/`. One that contradicts the lock needs `--force`,
+    /// which also pins it.
+    #[arg(long, value_name = "FILE")]
+    pub product: Option<PathBuf>,
+    /// The application program id (default: the program the lock pins,
+    /// else the order number's, else the sole application).
+    #[arg(long, value_name = "REF", conflicts_with = "order_number")]
+    pub application: Option<String>,
+    /// Select the application program by hardware order number (e.g.
+    /// `AKK-0216.03`) instead of a raw application ref. Resolved through the
+    /// product's hardware catalogue; exactly one match is required.
+    #[arg(long, value_name = "ORDER")]
+    pub order_number: Option<String>,
+    #[command(flatten)]
+    pub consent: Consent,
+    /// Override the not-factory-fresh refusal: flash a device
+    /// that already carries a different application. A flash takes no
+    /// backup, so this destroys the resident application, its parameters
+    /// and its links. Re-flashing the same application does not need it.
+    // Issue #79.
+    #[arg(long)]
+    pub force: bool,
+    /// Skip nothing: re-stream every object. By default an object whose
+    /// resident image already matches (MCB size and CRC, object `Loaded`)
+    /// is skipped when re-flashing the same application, so a
+    /// parameter-only change does not re-download the code segment. On
+    /// System 7 (mask 0701/0705) it also first unloads load-state machines
+    /// 1 to 4 and restarts the device, as ETS does when its Unload command
+    /// precedes the download; a plain flash, like ETS's application
+    /// download, sends neither.
+    // Issue #488.
+    #[arg(long)]
+    pub full: bool,
+    /// Skip the factory reset before the download. By default a System B
+    /// flash of an application that supports Secure and writes filled segments
+    /// sparsely, or that replaces a device that is not factory-fresh, first
+    /// sends a confirmed master reset (erase code 7): the device erases its application, parameters and links and
+    /// keeps its address, so no octet of a previous image survives
+    /// where the new one writes nothing. Use this only when you
+    /// know the device holds no stale image.
+    // Issue #117.
+    #[arg(long)]
+    pub no_factory_reset: bool,
+    /// Rewrite only the parameter memory of a device that already runs this
+    /// application: no table write. On System B it runs the
+    /// standard's partial download (unload, load, Mode 0 re-allocation that
+    /// keeps the memory). Only the octets that differ from what
+    /// the device holds are written, then the load completes and the device
+    /// restarts. Refused when
+    /// the device runs another application or is not Loaded, and when a
+    /// changed parameter shows or hides a com-object (that needs a full flash).
+    /// The parameter memory is backed up first. With `--dry-run`, prints the
+    /// op sequence offline.
+    // Issues #119, #543.
+    #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset"])]
+    pub parameters_only: bool,
+    /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
+    /// presented with A_Authorize on every management connect.
+    /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
+    /// device (ETS uses free access by default). A keyed device needs its
+    /// project key here or it will deny access.
+    // Issue #52.
+    #[arg(long, value_name = "HEX")]
+    pub bcu_key: Option<String>,
+    #[command(flatten)]
+    pub tool_key: ToolKey,
+    /// Also list this individual address (bussard's own tunnel address) as a
+    /// secured sender, sequence 0, in the security individual address table
+    /// (PID 54) the security object is reprogrammed with, so the device
+    /// accepts `bussard write --keyring` to its secured group addresses.
+    /// Off by default: without it the device drops bussard's secured group
+    /// telegrams silently. See https://bussard.tmbo.dev/docs/explanation/safety/.
+    #[arg(long, value_name = "IA")]
+    pub secure_sender: Option<IndividualAddress>,
+    /// Plan offline and stop: no gateway is resolved and no connection is
+    /// opened. The plan is checked against the application's own mask.
+    #[arg(long)]
+    pub dry_run: bool,
+    /// With `--dry-run`, write `plan.json` and the exact memory images the
+    /// flash would stream (one `.bin` each, plus the table images) into DIR.
+    #[arg(long, value_name = "DIR", requires = "dry_run")]
+    pub dump_images: Option<PathBuf>,
+    /// With `--dry-run`, plan against the device state recorded in FILE
+    /// (JSON: the application objects' load states, the application id
+    /// and the MCB entries, as `knxtrace image` writes it from an ETS
+    /// capture) instead of no device: the freshness verdict, the
+    /// product's `par` procedure for a device holding this application,
+    /// and the skip of objects whose image already matches take the shape
+    /// a live flash takes on that device.
+    // Issue #490.
+    #[arg(long, value_name = "FILE", requires = "dry_run")]
+    pub resident: Option<PathBuf>,
+}
+
+impl Run for FlashArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g)
+    }
+}
+
 /// Flashes an application program from vendor product data into a device.
-///
-/// The argument list mirrors the `flash` subcommand's flags 1:1; bundling them
-/// would only obscure that mapping, so the clippy arity lint is allowed here.
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    address: &str,
-    product: Option<&Path>,
-    application: Option<&str>,
-    order_number: Option<&str>,
-    dir: &Path,
-    yes: bool,
-    force: bool,
-    full: bool,
-    no_factory_reset: bool,
-    parameters_only: bool,
-    allow_remote_gateway: bool,
-    bcu_key: Option<&str>,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    secure_sender: Option<IndividualAddress>,
-    overrides: ConnOverrides,
-    output: FlashOutput,
-) -> anyhow::Result<ExitCode> {
+fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, product, bcu_key) = (
+        args.address.as_str(),
+        args.product.as_deref(),
+        args.bcu_key.as_deref(),
+    );
+    let (application, order_number) = (args.application.as_deref(), args.order_number.as_deref());
+    let FlashArgs {
+        force,
+        full,
+        no_factory_reset,
+        parameters_only,
+        secure_sender,
+        ..
+    } = args;
+    let (dir, yes, allow_remote_gateway) = (g.dir(), args.consent.yes, g.allow_remote_gateway);
+    let tool_key_source = g.tool_keys(args.tool_key.tool_key.as_deref());
+    let overrides = g.mgmt_with_facts();
+    let output = FlashOutput {
+        json: g.json,
+        verbose: g.verbose,
+        dry_run: args.dry_run.then(|| DryRun {
+            dump_images: args.dump_images.clone(),
+            resident: args.resident.clone(),
+        }),
+    };
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -93,8 +209,10 @@ pub fn run(
             eprintln!("note: {line}");
         }
     }
-    let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let secure_material = crate::secure_key::resolve_material(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model.as_ref(), target);
+    let secure_material = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_material(target, tool_key_source, activated)
+    })?;
     let tool_key = secure_material.tool_key.clone();
     // The extra secured senders of the security individual address table:
     // `--secure-sender` and, with `admit_tunnel_senders` (issue #297), the key
@@ -135,7 +253,7 @@ pub fn run(
     let product_path = match product {
         Some(path) => path.to_path_buf(),
         None => match model_device
-            .map(|d| crate::product_store::device_archive(dir, d))
+            .map(|d| bussard_service::params::device_archive(dir, d))
             .transpose()?
             .flatten()
         {
@@ -158,26 +276,32 @@ pub fn run(
     // them all).
     // Texts in the lock's language: the device file names enum members by
     // the labels `import` wrote in it (issue #231).
-    let language = crate::product_cache::model_language(model.as_ref(), dir);
+    let language = bussard_service::params::model_language(model.as_ref(), dir);
     let pinned_app = device_product
         .as_ref()
         .and_then(|p| p.application_ref.clone());
-    let product_data =
-        crate::product_cache::read(product, None, dir, language.as_deref(), |catalog| {
+    let product_data = bussard_service::params::read_product(
+        product,
+        None,
+        dir,
+        language.as_deref(),
+        |catalog| {
             match (order_number, application) {
                 (Some(order), _) => {
-                    AppSelection::Only(crate::product_cache::order_refs(catalog, order))
+                    AppSelection::Only(bussard_service::params::order_refs(catalog, order))
                 }
-                (None, Some(wanted)) => crate::product_cache::by_application(catalog, wanted),
+                (None, Some(wanted)) => by_application(catalog, wanted),
                 // Without a selector, the program the lock pins (issue #228):
                 // an ETS export needs no --application when the lock names it.
                 (None, None) => match pinned_app.as_deref() {
-                    Some(app) => crate::product_cache::by_application(catalog, app),
+                    Some(app) => by_application(catalog, app),
                     None => AppSelection::All,
                 },
             }
-        })
-        .with_context(|| format!("reading product data from {}", product.display()))?;
+        },
+        Some(crate::timing::record_product_parse),
+    )
+    .with_context(|| format!("reading product data from {}", product.display()))?;
 
     // Resolve the application program. Three modes, in precedence order:
     //   --order-number : look the order number up in the hardware catalogue and
@@ -333,7 +457,7 @@ pub fn run(
         factory_key: secure_material.fdsk.clone(),
         high_water: secure_seq.clone(),
         bcu_key,
-        facts: crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts),
+        facts: crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts),
         force,
         parameters_only,
         keep_connection: crate::flash_handover::wanted(yes),
@@ -430,7 +554,7 @@ pub fn run(
                     .map(bussard_model::facts::format_application_id),
             },
         );
-        eprintln!("{}", crate::device_facts::identity_line(target, &check));
+        eprintln!("{}", bussard_service::identity_line(target, &check));
     }
     let freshness = match &resident {
         Some(state) => assess_freshness(state, &plan.identity),
@@ -607,7 +731,7 @@ pub fn run(
     // Issue #349: the tables, the group-object count, the parameters and
     // the security object, through the one post-write read-back.
     let mut observer = DisplayObserver {
-        display: Some(crate::progress::FlashDisplay::new(plan_ref, output.json)),
+        display: Some(crate::progress::Display::flash(plan_ref, output.json)),
         restart_started: &restart_started,
     };
     let run = bussard_service::download::FlashRun {
@@ -782,7 +906,7 @@ fn dry_run(
     full: bool,
     no_factory_reset: bool,
     parameters_only: bool,
-    secure_material: &crate::secure_key::SecureMaterial,
+    secure_material: &bussard_service::secure::SecureMaterial,
     extra_senders: &[IndividualAddress],
     output: &FlashOutput,
 ) -> anyhow::Result<ExitCode> {
@@ -991,7 +1115,7 @@ pub(crate) async fn execute_then<R>(
     // last step: from there on the flash waits out the reboot and verifies, so
     // `flash -v` reports it as its own phase.
     let mut observer = DisplayObserver {
-        display: Some(crate::progress::FlashDisplay::new(plan, json)),
+        display: Some(crate::progress::Display::flash(plan, json)),
         restart_started,
     };
     // Authorize the management connect with the project BCU key (or free
@@ -1014,7 +1138,7 @@ pub(crate) async fn execute_then<R>(
 
 /// The CLI's flash progress: the display, and the moment the restart began.
 struct DisplayObserver<'a> {
-    display: Option<crate::progress::FlashDisplay>,
+    display: Option<crate::progress::Display>,
     restart_started: &'a std::cell::Cell<Option<std::time::Instant>>,
 }
 
@@ -1031,9 +1155,20 @@ impl bussard_service::download::FlashObserver for DisplayObserver<'_> {
     }
 
     fn finished(&mut self, verified: bool) {
-        if let Some(display) = self.display.take() {
+        if let Some(mut display) = self.display.take() {
             display.finish(verified);
         }
+    }
+}
+
+/// The selection of the one program `wanted` names, by the rule of
+/// [`select_application`] (the exact id, else the one program with the same
+/// manufacturer, number and version). Anything that rule would refuse selects
+/// every program, so the refusal reads exactly as before.
+fn by_application(catalog: &bussard_prod::ProductCatalog, wanted: &str) -> AppSelection {
+    match bussard_service::params::select_id(catalog, wanted) {
+        Some(id) => AppSelection::Only(vec![id]),
+        None => AppSelection::All,
     }
 }
 
@@ -1418,6 +1553,36 @@ mod tests {
 
     use super::*;
     use bussard_prod::parse_application_program;
+
+    fn catalog(ids: &[&str]) -> bussard_prod::ProductCatalog {
+        bussard_prod::ProductCatalog {
+            application_ids: ids.iter().map(|s| s.to_string()).collect(),
+            ..bussard_prod::ProductCatalog::default()
+        }
+    }
+
+    #[test]
+    fn test_by_application_exact_and_same_program() {
+        let cat = catalog(&["M-0004_A-A011-13-400D-O000A", "M-0004_A-B022-10-1111-O000A"]);
+        assert_eq!(
+            by_application(&cat, "M-0004_A-A011-13-400D-O000A"),
+            AppSelection::Only(vec!["M-0004_A-A011-13-400D-O000A".to_string()])
+        );
+        // Another build hash of the same program (issue #142).
+        assert_eq!(
+            by_application(&cat, "M-0004_A-A011-13-60BC-O000A"),
+            AppSelection::Only(vec!["M-0004_A-A011-13-400D-O000A".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_by_application_unknown_selects_all() {
+        let cat = catalog(&["M-0004_A-A011-13-400D-O000A"]);
+        assert_eq!(
+            by_application(&cat, "M-0083_A-0001-10-0000"),
+            AppSelection::All
+        );
+    }
 
     /// Builds a one-device model whose device at `addr` carries `params`.
     fn model_with_params(addr: &str, params: &[(&str, &str)]) -> bussard_model::Model {

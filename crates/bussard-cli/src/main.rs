@@ -1,6 +1,8 @@
 //! `bussard` — an open-source CLI for KNX.
 //!
-//! Each subcommand lives in its own `*_cmd` module and is dispatched from `main`.
+//! Each subcommand lives in its own `*_cmd` module as an arguments struct that
+//! runs itself ([`cli::Run`]); `main` parses, resolves the global options once
+//! and hands them to it.
 
 mod adopt_cmd;
 mod apply_cmd;
@@ -9,13 +11,13 @@ mod audit_cmd;
 mod backup_cmd;
 mod capture_cmd;
 mod certificate_view;
+mod cli;
 mod commission_cmd;
 mod confirm;
 mod conn_cmd;
 mod console;
 mod describe_cmd;
 mod device_cmd;
-mod device_facts;
 mod device_plan;
 mod diff_cmd;
 mod doc_cmd;
@@ -47,8 +49,6 @@ mod output;
 mod param_readback;
 mod plan_cmd;
 mod plan_view;
-mod product_cache;
-mod product_fetch;
 mod product_store;
 mod progress;
 mod read_cmd;
@@ -68,11 +68,12 @@ mod validate_cmd;
 mod viz_cmd;
 mod write_cmd;
 
-use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
+
+use crate::cli::{Resolved, Role, Run, Spec};
 
 /// bussard: manage a KNX installation as code.
 #[derive(Debug, Parser)]
@@ -202,252 +203,26 @@ impl From<SecureTransportArg> for bussard_transport::SecureTransport {
     }
 }
 
-/// What a subcommand does with the global options, as far as resolving them
-/// is concerned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Role {
-    /// Creates a model (`init`, `import`): the directory is `--dir`,
-    /// `BUSSARD_DIR` or `knx`, never discovered upward.
-    Creates,
-    /// Talks to the bus; `slot` says whether the keyring also feeds the
-    /// command itself (tool keys, group keys) or only the tunnel.
-    Bus {
-        /// The command consumes the keyring beyond opening the tunnel.
-        slot: bool,
-    },
-    /// Works on the model files only (or on nothing: `diff`, `keyring`).
-    Files,
-}
-
-impl Command {
-    /// This subcommand's [`Role`].
-    fn role(&self) -> Role {
-        match self {
-            Command::Init { .. } | Command::Import { .. } => Role::Creates,
-            // `status <ADDRESS>` reads a device; plain `status` reads files.
-            Command::Status {
-                address: Some(_), ..
-            } => Role::Bus { slot: true },
-            Command::Scan { .. }
-            | Command::Assign { .. }
-            | Command::Reconstruct { .. }
-            | Command::Describe { .. }
-            | Command::Flash { .. }
-            | Command::Plan { .. }
-            | Command::Apply { .. }
-            | Command::Interface { .. }
-            | Command::Secure { .. }
-            | Command::Commission { .. }
-            | Command::Backup { .. }
-            | Command::Restore { .. }
-            | Command::Restart { .. }
-            | Command::Replace { .. }
-            | Command::Monitor { .. }
-            | Command::Capture { .. }
-            | Command::Read { .. }
-            | Command::Write { .. }
-            | Command::Viz { .. }
-            | Command::Audit { .. }
-            | Command::Learn { .. }
-            | Command::Mcp { .. }
-            // adopt takes a Data Secure device's tool key from it (#201).
-            | Command::Adopt { .. } => Role::Bus { slot: true },
-            Command::Test { .. } => Role::Bus { slot: false },
-            _ => Role::Files,
-        }
-    }
-
-    /// Whether the subcommand was given `--tool-key`. A keyring that did not
-    /// come from `--keyring` then serves the tunnel only: the two are mutually
-    /// exclusive tool-key sources.
-    fn has_tool_key(&self) -> bool {
-        match self {
-            Command::Assign { tool_key, .. }
-            | Command::Reconstruct { tool_key, .. }
-            | Command::Describe { tool_key, .. }
-            | Command::Flash { tool_key, .. }
-            | Command::Plan { tool_key, .. }
-            | Command::Apply { tool_key, .. }
-            | Command::Commission { tool_key, .. }
-            | Command::Backup { tool_key, .. }
-            | Command::Restore { tool_key, .. }
-            | Command::Restart { tool_key, .. }
-            | Command::Replace { tool_key, .. } => tool_key.is_some(),
-            Command::Secure {
-                command: SecureCommand::Diag { tool_key, .. },
-            } => tool_key.is_some(),
-            _ => false,
-        }
-    }
-
-    /// The consent a command needs before it starts: its `--yes` and the
-    /// action a refusal names (issue #228). These commands refuse before the
-    /// model loads because their first bus action already acts on whatever is
-    /// in programming mode (`assign`, `adopt`, `replace`, `commission`), or
-    /// because every step asks (`learn`). `flash`, `apply`, `restore`, `write`
-    /// and `test` first read and show what they will change, so they refuse at
-    /// their prompt, through the same `confirm::confirm` and the same text.
-    fn early_consent(&self) -> Option<(bool, String)> {
-        match self {
-            Command::Assign { yes, address, .. } => Some((
-                *yes,
-                match address {
-                    Some(address) => format!("assign {address}"),
-                    None => "assign the next free address".to_string(),
-                },
-            )),
-            Command::Adopt { yes, address, .. } => Some((
-                *yes,
-                match address {
-                    Some(address) => format!("adopt the device in programming mode as {address}"),
-                    None => "adopt the device in programming mode".to_string(),
-                },
-            )),
-            Command::Replace { yes, address, .. } => Some((*yes, format!("replace {address}"))),
-            Command::Commission { yes, line, .. } => {
-                Some((*yes, format!("commission line {line}")))
-            }
-            Command::Learn { yes, .. } => Some((*yes, "learn group addresses".to_string())),
-            _ => None,
-        }
-    }
-
-    /// Whether the subcommand has a machine-readable output for `--json`.
-    fn supports_json(&self) -> bool {
-        matches!(
-            self,
-            Command::Export { .. }
-                | Command::Diff { .. }
-                | Command::Scan { .. }
-                | Command::Reconstruct { .. }
-                | Command::Describe { .. }
-                | Command::Keys { .. }
-                | Command::Flash { .. }
-                | Command::Plan { .. }
-                | Command::Apply { .. }
-                | Command::Commission { .. }
-                | Command::Status { .. }
-                | Command::Restart { .. }
-                | Command::History { .. }
-                | Command::Device { .. }
-                | Command::Backup { .. }
-                | Command::Validate { .. }
-                | Command::Groups { .. }
-                | Command::Interface { .. }
-                | Command::Secure { .. }
-                | Command::Doc { .. }
-                | Command::Monitor { .. }
-                | Command::Test { .. }
-                | Command::Audit { .. }
-                | Command::Read { .. }
-                | Command::Write { .. }
-                | Command::Show { .. }
-                | Command::Undo { .. }
-                | Command::Assign { .. }
-        )
-    }
-}
-
-/// The global options, resolved once for the subcommand: flag, then
-/// environment, then `bussard.toml`, then discovery or the built-in default.
-#[derive(Debug)]
-struct Resolved {
-    /// The model directory.
-    dir: PathBuf,
-    /// `--gateway`, else `BUSSARD_GATEWAY`; `bussard.toml` is consulted later,
-    /// by [`conn_cmd::resolve_config`].
-    gateway: Option<String>,
-    /// `--routing`.
-    routing: bool,
-    /// `--device-management`.
-    device_management: bool,
-    /// The keyring the command itself consumes (tool keys, group keys), when
-    /// it has a use for one beyond the tunnel.
-    keyring: Option<PathBuf>,
-    /// `--json`.
-    json: bool,
-    /// `--allow-remote-gateway`.
-    allow_remote_gateway: bool,
-    /// `--skip-address-check`.
-    skip_address_check: bool,
-    /// `--refresh-facts`.
-    refresh_facts: bool,
-    /// The `-v` repeat count.
-    verbose: u8,
-}
-
-impl Resolved {
-    /// Connection overrides for a management command that consults the
-    /// device facts (`reconstruct`, `describe`, `flash`, `plan`, `apply`).
-    fn mgmt_with_facts(&self) -> conn_cmd::ConnOverrides {
-        conn_cmd::ConnOverrides {
-            refresh_facts: self.refresh_facts,
-            ..self.mgmt()
-        }
-    }
-
-    /// Connection overrides for a management command: the source-address
-    /// check is consulted, the device facts are not.
-    fn mgmt(&self) -> conn_cmd::ConnOverrides {
-        conn_cmd::ConnOverrides {
-            skip_address_check: self.skip_address_check,
-            ..self.group()
-        }
-    }
-
-    /// Connection overrides for a group-communication command (no
-    /// source-address check, no device facts).
-    fn group(&self) -> conn_cmd::ConnOverrides {
-        conn_cmd::ConnOverrides {
-            gateway: self.gateway.clone(),
-            routing: self.routing,
-            skip_address_check: false,
-            refresh_facts: false,
-            device_management: self.device_management,
-        }
-    }
-
-    /// The keyring and tool key a management command identifies devices with.
-    fn tool_keys<'a>(&'a self, tool_key: Option<&'a str>) -> secure_key::ToolKeySource<'a> {
-        secure_key::ToolKeySource {
-            keyring: self.keyring.as_deref(),
-            tool_key,
-        }
-    }
-}
-
-/// Resolves the global options for `command` and sets up the KNXnet/IP Secure
-/// tunnel credentials, once, before the subcommand runs, so every connection
-/// it opens uses them.
-fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolved> {
+/// Resolves the global options for `command` (typed as `name`) and sets up
+/// the KNXnet/IP Secure tunnel credentials, once, before the subcommand runs,
+/// so every connection it opens uses them.
+fn resolve_globals(global: &Global, name: &str, spec: Spec) -> anyhow::Result<Resolved> {
     use anyhow::Context as _;
-    if global.json && !command.supports_json() {
-        anyhow::bail!(
-            "`bussard {}` has no JSON output; drop --json",
-            cli_name(command)
-        );
+    if global.json && !spec.json {
+        anyhow::bail!("`bussard {name}` has no JSON output; drop --json");
     }
     // The `.env` (issue #251), in two steps: `BUSSARD_DIR` may come from the
     // working directory's `.env` and decides the model directory; the `.env`
     // the lookup order then finds for that directory supplies every other
     // `BUSSARD_*` variable, behind the process environment.
-    if global.device_management
-        && !matches!(
-            command,
-            Command::Plan { .. }
-                | Command::Apply { .. }
-                | Command::Describe { .. }
-                | Command::Interface { .. }
-        )
-    {
+    if global.device_management && !spec.device_management {
         anyhow::bail!(
             "--device-management manages a KNX IP interface itself; only `plan`, `apply`, \
-             `describe` and `interface secure` take it, not `bussard {}`",
-            cli_name(command)
+             `describe` and `interface secure` take it, not `bussard {name}`"
         );
     }
     let cwd = std::path::Path::new(".");
-    let role = command.role();
+    let role = spec.role;
     let dir = conn_cmd::resolve_model_dir(
         global.dir.as_deref(),
         conn_cmd::dir_before_dotenv(cwd).as_deref(),
@@ -458,11 +233,10 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     // The product store (issue #228): move an earlier `vendor/` into
     // `products/` and regenerate `.bussard/models/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.
-    if role != Role::Creates
-        && !matches!(command, Command::Diff { .. } | Command::Keys { .. })
-        && dir.is_dir()
-    {
-        timing::time("product store", || product_store::prepare(&dir));
+    if role != Role::Creates && spec.products && dir.is_dir() {
+        timing::time("product store", || {
+            bussard_service::files::products::prepare(&dir, &mut console::Console)
+        });
     }
     let gateway = conn_cmd::resolve_gateway(global.gateway.as_deref(), env.gateway.as_deref());
     let keyring = match role {
@@ -475,7 +249,7 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     };
     let slot = match (role, &keyring) {
         (Role::Bus { slot: true }, Some(resolved))
-            if !command.has_tool_key() || resolved.source == conn_cmd::KeyringSource::Flag =>
+            if !spec.tool_key || resolved.source == conn_cmd::KeyringSource::Flag =>
         {
             Some(resolved.path.clone())
         }
@@ -548,24 +322,6 @@ fn resolve_globals(global: &Global, command: &Command) -> anyhow::Result<Resolve
     })
 }
 
-/// The subcommand's name as typed (`export-groups`), for messages.
-fn cli_name(command: &Command) -> String {
-    let debug = format!("{command:?}");
-    let variant = debug.split([' ', '{', '(']).next().unwrap_or_default();
-    let mut name = String::new();
-    for (i, c) in variant.chars().enumerate() {
-        if c.is_ascii_uppercase() {
-            if i > 0 {
-                name.push('-');
-            }
-            name.push(c.to_ascii_lowercase());
-        } else {
-            name.push(c);
-        }
-    }
-    name
-}
-
 /// Maps a `-v` repeat count to a tracing `EnvFilter` directive string, unless an
 /// explicit `RUST_LOG` is set (which always wins). `0` → `warn` (the default).
 fn verbosity_filter(verbose: u8) -> tracing_subscriber::EnvFilter {
@@ -597,420 +353,29 @@ fn cap_rmcp(filter: tracing_subscriber::EnvFilter) -> tracing_subscriber::EnvFil
     }
 }
 
-/// The group-address addressing scheme, as a CLI value.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum SchemeArg {
-    /// `main` = floor, `middle` = trade.
-    FloorTradeBlock,
-    /// `main` = trade, `middle` = floor.
-    FunctionFloor,
-}
-
-impl From<SchemeArg> for bussard_model::Scheme {
-    fn from(value: SchemeArg) -> Self {
-        match value {
-            SchemeArg::FloorTradeBlock => bussard_model::Scheme::FloorTradeBlock,
-            SchemeArg::FunctionFloor => bussard_model::Scheme::FunctionFloor,
-        }
-    }
-}
-
-/// The rendered format for `bussard doc`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-enum DocOutputFormat {
-    /// Markdown, one `.md` file per section.
-    Md,
-    /// Self-contained HTML, one `.html` file per section.
-    Html,
-}
-
-impl From<DocOutputFormat> for bussard_model::DocFormat {
-    fn from(value: DocOutputFormat) -> Self {
-        match value {
-            DocOutputFormat::Md => bussard_model::DocFormat::Markdown,
-            DocOutputFormat::Html => bussard_model::DocFormat::Html,
-        }
-    }
-}
-
-/// The `bussard groups` subcommands.
-#[derive(Debug, Subcommand)]
-enum GroupsCommand {
-    /// Append the conventional group-address block for a room and trade to
-    /// `groups.toml` and print the addresses.
-    ///
-    /// The scheme is `[lint.groups] scheme` in `bussard.toml` (written on the
-    /// first reservation). Re-running for a room and function that already
-    /// have their block adds nothing.
-    Reserve {
-        /// The room, floor first, as one argument: `"EG Küche"`.
-        #[arg(value_name = "FLOOR ROOM")]
-        room: String,
-        /// The functions the room needs: light, light-dim, blind, heating,
-        /// socket.
-        #[arg(value_name = "FUNCTION", required = true)]
-        functions: Vec<String>,
-        /// The addressing scheme for a project that has none yet (default
-        /// floor-trade-block). Refused when it contradicts `bussard.toml`.
-        #[arg(long, value_enum)]
-        scheme: Option<SchemeArg>,
-    },
-    /// Switch KNX Data Secure on or off for one group address.
-    ///
-    /// `off` removes the group key from the key store (`bussard.keys`) and
-    /// clears the `secure` flag of the group and of every com-object linked
-    /// to it on every device; `on` sets them and keeps the store's key, or
-    /// generates a new random one as ETS does. One change, snapshotted with
-    /// the key store, so `bussard undo` restores all three. Needs
-    /// `BUSSARD_KEYRING_PASSWORD`. The Secure devices linked to the group
-    /// address then need `bussard plan` and `bussard apply`, and every user
-    /// of an exported keyring (Home Assistant) a new `bussard keys export`.
-    // Issue #331.
-    Secure {
-        /// The group address, e.g. `1/0/4`.
-        #[arg(value_name = "GA")]
-        ga: String,
-        /// `on` or `off`.
-        #[arg(value_name = "on|off")]
-        state: String,
-    },
-}
-
-/// The `bussard keys` subcommands (issue #241).
-#[derive(Debug, Subcommand)]
-enum KeysCommand {
-    /// Merge an ETS keyring export (`.knxkeys`) into the key store
-    /// (`bussard.keys` next to `bussard.lock`), creating it on first use.
-    ///
-    /// New devices, rotated tool keys, changed credentials and group keys are
-    /// taken from the export; entries it lacks are kept and a factory key
-    /// is never dropped. Prints what changed, never a key.
-    Import {
-        /// The `.knxkeys` file to import.
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-    },
-    /// Write the key store as a signed `.knxkeys` export for ETS.
-    Export {
-        /// The `.knxkeys` file to write.
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-        /// Overwrite FILE if it exists.
-        #[arg(long)]
-        force: bool,
-    },
-    /// Summarize the key store: devices, interfaces and group addresses,
-    /// never a key.
-    Show,
-    /// Enter device certificates (the 36-character code that carries the
-    /// factory key, FDSK) into the
-    /// key store (issue #728).
-    ///
-    /// On a terminal it asks for one certificate per line, without echo, until an
-    /// empty line; with `--stdin` it reads every line of standard input. A
-    /// certificate is never a command-line argument (shell history). Its
-    /// serial number selects the device; an unknown serial is kept until
-    /// `bussard assign` reads it off a device. Prints the serial, the matched
-    /// address and the status per certificate, never a key.
-    AddCertificate {
-        /// Read the certificates from standard input, one per line.
-        #[arg(long)]
-        stdin: bool,
-    },
-    /// Take device certificates from a phone: prints a link, its QR code and
-    /// the session code, then one line per certificate the phone scans.
-    ///
-    /// The phone encrypts each certificate to this session; the page's server and
-    /// the relay only see ciphertext. Ends when the phone finishes, on `q`
-    /// and Enter, or on Ctrl-C. Prints serials and addresses, never a key.
-    Enroll {
-        /// The relay base URL. Default: `relay` in the `[enroll]` table of
-        /// bussard.toml, else the hosted relay. The hosted page talks only
-        /// to the hosted relay; another relay needs its own page (`--page`).
-        #[arg(long, value_name = "URL")]
-        relay: Option<String>,
-        /// The enrolment page the link opens. Default: `page` in `[enroll]`,
-        /// else the hosted page.
-        #[arg(long, value_name = "URL")]
-        page: Option<String>,
-        /// Leave out the QR code.
-        #[arg(long)]
-        no_qr: bool,
-        /// Serve the page and the relay on 127.0.0.1 instead, for a browser
-        /// on this computer (a webcam or typed codes); no hosted relay.
-        #[arg(long, conflicts_with_all = ["relay", "page"])]
-        local: bool,
-    },
-}
-
-/// The `bussard secure` subcommands (issue #533).
-#[derive(Debug, Subcommand)]
-enum SecureCommand {
-    /// Read a Data Secure device's security failures log (PID 55: the
-    /// sequence, cryptographic and access error counters and the latest
-    /// failure), its security report (PID 57) and whether it broadcasts the
-    /// report (PID 58), with its tool key.
-    ///
-    /// After a secured write that did nothing, the counts tell the causes
-    /// apart: no new count means the sender is not in the device's security
-    /// individual address table, a cryptographic count a wrong or stale group
-    /// key, an access count a group-object security flag mismatch.
-    Diag {
-        /// The device, e.g. `1.1.5`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// Clear the log and reset the report after a confirmation, then read
-        /// both back.
-        #[arg(long)]
-        clear: bool,
-        /// Skip the confirmation prompt of --clear.
-        #[arg(long)]
-        yes: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key, for a test
-        /// device. Prefer `--keyring`.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
-}
-
-/// The `bussard interface` subcommands (issue #398).
-#[derive(Debug, Subcommand)]
-enum InterfaceCommand {
-    /// Switch KNXnet/IP Secure of a KNX IP interface on or off, the way ETS
-    /// does.
-    ///
-    /// `on` takes a device in factory state over a plain tunnel: under its
-    /// factory key the security mode and a tool key, then under the tool key the
-    /// device authentication code, the password hashes of the management and
-    /// tunnelling users, the tunnelling users and the secured service
-    /// families, and a master reset. Credentials come from the key store
-    /// (`bussard.keys`); missing ones are generated and saved there before
-    /// the first write. `off` undoes it under the tool key, then again under
-    /// the factory key. Both end with a read-back after the restart. The
-    /// project files never hold a credential. See https://bussard.tmbo.dev/docs/explanation/safety/ for the recovery.
-    // Issue #398.
-    Secure {
-        /// `on` or `off`.
-        #[arg(value_name = "on|off")]
-        state: String,
-        /// The interface's address, e.g. `1.1.200`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// Print the steps and send nothing (no connection, the key store
-        /// unchanged).
-        #[arg(long)]
-        dry_run: bool,
-        /// With --dry-run: write the steps' property writes to DIR/plan.json
-        /// for `knxtrace imgdiff` (key material as SHA-256 only).
-        #[arg(long, value_name = "DIR", requires = "dry_run")]
-        dump_images: Option<PathBuf>,
-        /// Skip the confirmation prompt.
-        #[arg(long)]
-        yes: bool,
-        /// Switch the interface bussard tunnels through over a KNXnet/IP
-        /// Secure session with that same interface (the session ends at the
-        /// restart).
-        #[arg(long)]
-        allow_self_reconfigure: bool,
-    },
-}
-
 /// The top-level subcommands.
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Create a fresh project: discover the gateway, write the
     /// skeleton, then import the ETS project (the one given, or the one
     /// `.knxproj` next to the directory) or offer to scan the line.
-    Init {
-        /// The ETS project to import right away (`.knxproj`, or an
-        /// xknxproject `.json` dump). Default: the one `.knxproj` next to the
-        /// project folder, when there is exactly one.
-        #[arg(value_name = "PROJECT")]
-        project: Option<PathBuf>,
-        /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
-        #[arg(long)]
-        password: Option<String>,
-        /// Download missing vendor product data without asking. Without a
-        /// terminal and without this flag nothing is downloaded; the missing
-        /// order numbers are listed.
-        #[arg(long, conflicts_with = "no_download")]
-        yes_download: bool,
-        /// Do not download missing product data; list it instead.
-        #[arg(long)]
-        no_download: bool,
-        /// Without a project: scan this line after writing the skeleton and
-        /// list what answers, without asking (for scripts).
-        #[arg(long, value_name = "LINE", conflicts_with = "project")]
-        scan: Option<String>,
-        /// Skip the confirmation prompt: initialise a non-empty directory.
-        #[arg(long)]
-        yes: bool,
-    },
+    Init(init_cmd::InitArgs),
     /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
-    Import {
-        /// The `.knxproj` or `.bussard` file to import (omit with `--from-json`).
-        #[arg(value_name = "PROJECT", required_unless_present = "from_json")]
-        project: Option<PathBuf>,
-        /// Import from an xknxproject JSON dump instead of a `.knxproj`.
-        #[arg(long, value_name = "FILE", conflicts_with = "project")]
-        from_json: Option<PathBuf>,
-        /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
-        #[arg(long)]
-        password: Option<String>,
-        /// On a re-import, keep this project's value for every hand-edited
-        /// conflict and exit 0.
-        #[arg(long, conflicts_with_all = ["theirs", "interactive"])]
-        mine: bool,
-        /// On a re-import, take the incoming value for every hand-edited conflict.
-        #[arg(long, conflicts_with = "interactive")]
-        theirs: bool,
-        /// On a re-import, ask per conflict (needs a terminal).
-        #[arg(long)]
-        interactive: bool,
-        /// Download missing vendor product data without asking. Without a
-        /// terminal and without this flag nothing is downloaded; the missing
-        /// order numbers are listed.
-        #[arg(long, conflicts_with = "no_download")]
-        yes_download: bool,
-        /// Do not look up or download missing product data; list it instead.
-        #[arg(long)]
-        no_download: bool,
-        /// Skip the confirmation prompt: import into a non-empty directory
-        /// that holds no project yet.
-        #[arg(long)]
-        yes: bool,
-    },
+    Import(import_cmd::ImportArgs),
     /// Write the project and its history as one `.bussard` file to hand over.
-    Export {
-        /// The bundle to write (default: next to the project folder, named
-        /// after it and today's date).
-        #[arg(value_name = "FILE")]
-        file: Option<PathBuf>,
-        /// Leave the `.bussard/history` snapshots out.
-        #[arg(long)]
-        no_history: bool,
-    },
+    Export(export_cmd::ExportArgs),
     /// Explain what changes between two projects, as plain sentences.
-    Diff {
-        /// The first side: a `.knxproj`, a `.bussard` bundle, an xknxproject
-        /// `.json` dump or a project folder.
-        #[arg(value_name = "A")]
-        a: PathBuf,
-        /// The second side, in any of the same forms.
-        #[arg(value_name = "B")]
-        b: PathBuf,
-        /// Print a file-level TOML diff instead of sentences.
-        #[arg(long, conflicts_with = "json")]
-        raw: bool,
-        /// Print a per-device Markdown checklist of the changes to redo by
-        /// hand in ETS (with `--json`, the same structure as JSON).
-        #[arg(long, conflicts_with = "raw")]
-        checklist: bool,
-        /// Project password for both sides (else `BUSSARD_PROJECT_PASSWORD`).
-        #[arg(long)]
-        password: Option<String>,
-        /// Project password for the second side, when it differs.
-        #[arg(long)]
-        password_b: Option<String>,
-    },
+    Diff(diff_cmd::DiffArgs),
     /// Scan a line for devices: mask version, manufacturer, order number.
-    Scan {
-        /// The line to scan, e.g. `1.1`.
-        #[arg(value_name = "LINE", default_value = "1.1")]
-        line: String,
-        /// The first device number to probe (0–255).
-        #[arg(long, value_name = "N", default_value_t = 0)]
-        from: u8,
-        /// The last device number to probe (0–255).
-        #[arg(long, value_name = "N", default_value_t = 255)]
-        to: u8,
-    },
+    Scan(scan_cmd::ScanArgs),
     /// Assign an address to the device in programming mode.
-    Assign {
-        /// The address to assign, e.g. `1.1.47` (default: next free on the line).
-        #[arg(value_name = "ADDRESS")]
-        address: Option<String>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// A raw KNX Data Secure tool key (32 hex characters) to verify a
-        /// secured device with after the address write.
-        /// Overrides the keyring, which lists devices by address and
-        /// so only knows the new address once ETS re-exports it. For a test or
-        /// bench device: process arguments are visible to other users.
-        // Issue #203.
-        #[arg(long, value_name = "HEX")]
-        tool_key: Option<String>,
-        /// Write the address although another device already answers at it
-        /// (the check is step 1 of the standard's address write).
-        // Issue #530.
-        #[arg(long)]
-        force: bool,
-    },
+    Assign(assign_cmd::AssignArgs),
     /// Read a device's tables back over the bus and diff them against the project,
     /// or (with `--line`) sweep a whole line and synthesize a fresh project.
-    Reconstruct {
-        /// The single device to read, e.g. `1.1.4` (mutually exclusive with
-        /// `--line`).
-        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
-        address: Option<String>,
-        /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh project from
-        /// every System B device's tables (requires `--out`).
-        #[arg(long, value_name = "LINE", conflicts_with_all = ["address", "keyring"])]
-        line: Option<String>,
-        /// The first device number to probe in line mode (0–255).
-        #[arg(long, value_name = "N", default_value_t = 0, requires = "line")]
-        from: u8,
-        /// The last device number to probe in line mode (0–255).
-        #[arg(long, value_name = "N", default_value_t = 255, requires = "line")]
-        to: u8,
-        /// Line mode only: the fresh project folder to synthesize into. Must be
-        /// absent or empty: reconstruction never merges into an existing project.
-        #[arg(long, value_name = "DIR", requires = "line")]
-        out: Option<PathBuf>,
-        /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too. Default: the archive `bussard.lock` pins for
-        /// the device in `<dir>/products/`. One that contradicts the lock is
-        /// used with a warning.
-        // Issue #119.
-        #[arg(long, value_name = "FILE", conflicts_with = "line")]
-        product: Option<PathBuf>,
-        /// The application program id to decode the parameters with (default:
-        /// the program the lock pins, else the order number's, else the sole one).
-        #[arg(long, value_name = "REF", conflicts_with = "line")]
-        application: Option<String>,
-        /// Read the links and tables only: skip the parameter read-back and the
-        /// product parse behind it. On a large parameter segment
-        /// that read-back is most of the command's time.
-        // Issue #215.
-        #[arg(long, conflicts_with_all = ["line", "product", "application"])]
-        no_parameters: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key. Prefer
-        /// `--keyring` for a real installation: a process argument is visible to
-        /// other users on the machine.
-        #[arg(long, value_name = "HEX", conflicts_with_all = ["keyring", "line"])]
-        tool_key: Option<String>,
-    },
+    Reconstruct(reconstruct_cmd::ReconstructArgs),
     /// Introspect a device: enumerate its interface objects and each property's
     /// description (PID, type, element count, access levels) over the bus.
-    Describe {
-        /// The device to introspect, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// Skip nothing: walk every object's property descriptions again, even
-        /// when the device facts (`<dir>/.bussard/facts/<ia>.toml`) already
-        /// hold them.
-        #[arg(long)]
-        full: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key. Prefer
-        /// `--keyring` for a real installation: a process argument is visible to
-        /// other users on the machine.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Describe(describe_cmd::DescribeArgs),
     /// Manage the KNX Secure key store, `bussard.keys` next to
     /// `bussard.lock`: import an ETS `.knxkeys`, export one for ETS, show a
     /// summary. Key material is NEVER printed.
@@ -1018,10 +383,8 @@ enum Command {
     /// The store is encrypted with the password in
     /// `BUSSARD_KEYRING_PASSWORD` and meant to be committed with the project.
     // Issue #241.
-    Keys {
-        #[command(subcommand)]
-        command: KeysCommand,
-    },
+    #[command(subcommand)]
+    Keys(keys_cmd::KeysCommand),
     /// Import vendor product data (`.knxprod`): store it under `products/`,
     /// pin it in `bussard.lock` and generate its product models.
     ///
@@ -1029,341 +392,43 @@ enum Command {
     /// the pointer index and download it from the vendor, or `--list` to show
     /// the index. From an ETS project export (`.knxproj`) FILE every
     /// application program is extracted once into `products/`.
-    ImportProduct {
-        /// The `.knxprod` or `.knxproj` file to import (positional mode).
-        #[arg(value_name = "FILE")]
-        file: Option<PathBuf>,
-        /// Look the `.knxprod` up in the pointer index by order number and
-        /// download it from the vendor (with confirmation).
-        #[arg(long, value_name = "ORDER", conflicts_with = "file")]
-        order_number: Option<String>,
-        /// Download the vendor product data without asking. Without a
-        /// terminal and without this flag the download is refused. Only
-        /// meaningful with `--order-number`.
-        #[arg(long)]
-        yes_download: bool,
-        /// When the `.knxprod` is a ZIP wrapping several inner `.knxprod` files,
-        /// select which one to import (by entry or file name). Ignored for a
-        /// plain `.knxprod` or a single-inner wrapper.
-        #[arg(long, value_name = "NAME")]
-        inner: Option<String>,
-        /// List the product-data pointer index and exit.
-        #[arg(long, conflicts_with_all = ["file", "order_number"])]
-        list: bool,
-    },
+    ImportProduct(import_product_cmd::ImportProductArgs),
     /// Guide a new device from programming mode into the project (assign +
     /// product data + links scaffolding).
-    Adopt {
-        /// The address to give the device, e.g. `1.1.47` (default: next free on
-        /// the line; a KNX Data Secure device keeps the address ETS gave it).
-        #[arg(value_name = "ADDRESS")]
-        address: Option<String>,
-        /// The vendor `.knxprod` for the new device (else the cached product model is used).
-        #[arg(long, value_name = "FILE")]
-        product: Option<PathBuf>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// Download missing vendor product data without asking. Without a
-        /// terminal and without this flag nothing is downloaded; the missing
-        /// order numbers are listed.
-        #[arg(long, conflicts_with = "no_download")]
-        yes_download: bool,
-        /// Do not download product data for the device's order number; adopt
-        /// it without (identity and links by number) and say where to get it.
-        #[arg(long)]
-        no_download: bool,
-        /// Write the address although another device already answers at it
-        /// (the check is step 1 of the standard's address write).
-        // Issue #530.
-        #[arg(long)]
-        force: bool,
-    },
+    Adopt(adopt_cmd::AdoptArgs),
     /// Download the full application program into a device (a fresh device, or
     /// one whose application changes). Everyday changes go through `apply`.
-    Flash {
-        /// The device to program, e.g. `1.0.10`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// The vendor `.knxprod` (or ETS export) containing the application
-        /// program. Default: the archive `bussard.lock` pins for the device in
-        /// `<dir>/products/`. One that contradicts the lock needs `--force`,
-        /// which also pins it.
-        #[arg(long, value_name = "FILE")]
-        product: Option<PathBuf>,
-        /// The application program id (default: the program the lock pins,
-        /// else the order number's, else the sole application).
-        #[arg(long, value_name = "REF", conflicts_with = "order_number")]
-        application: Option<String>,
-        /// Select the application program by hardware order number (e.g.
-        /// `AKK-0216.03`) instead of a raw application ref. Resolved through the
-        /// product's hardware catalogue; exactly one match is required.
-        #[arg(long, value_name = "ORDER")]
-        order_number: Option<String>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// Override the not-factory-fresh refusal: flash a device
-        /// that already carries a different application. A flash takes no
-        /// backup, so this destroys the resident application, its parameters
-        /// and its links. Re-flashing the same application does not need it.
-        // Issue #79.
-        #[arg(long)]
-        force: bool,
-        /// Skip nothing: re-stream every object. By default an object whose
-        /// resident image already matches (MCB size and CRC, object `Loaded`)
-        /// is skipped when re-flashing the same application, so a
-        /// parameter-only change does not re-download the code segment. On
-        /// System 7 (mask 0701/0705) it also first unloads load-state machines
-        /// 1 to 4 and restarts the device, as ETS does when its Unload command
-        /// precedes the download; a plain flash, like ETS's application
-        /// download, sends neither.
-        // Issue #488.
-        #[arg(long)]
-        full: bool,
-        /// Skip the factory reset before the download. By default a System B
-        /// flash of an application that supports Secure and writes filled segments
-        /// sparsely, or that replaces a device that is not factory-fresh, first
-        /// sends a confirmed master reset (erase code 7): the device erases its application, parameters and links and
-        /// keeps its address, so no octet of a previous image survives
-        /// where the new one writes nothing. Use this only when you
-        /// know the device holds no stale image.
-        // Issue #117.
-        #[arg(long)]
-        no_factory_reset: bool,
-        /// Rewrite only the parameter memory of a device that already runs this
-        /// application: no table write. On System B it runs the
-        /// standard's partial download (unload, load, Mode 0 re-allocation that
-        /// keeps the memory). Only the octets that differ from what
-        /// the device holds are written, then the load completes and the device
-        /// restarts. Refused when
-        /// the device runs another application or is not Loaded, and when a
-        /// changed parameter shows or hides a com-object (that needs a full flash).
-        /// The parameter memory is backed up first. With `--dry-run`, prints the
-        /// op sequence offline.
-        // Issues #119, #543.
-        #[arg(long, conflicts_with_all = ["full", "force", "no_factory_reset"])]
-        parameters_only: bool,
-        /// The device's BCU access key, in hex (e.g. `FFFFFFFF` or `0x11223344`),
-        /// presented with A_Authorize on every management connect.
-        /// Unset presents the free-access key (FFFFFFFF) — correct for an unkeyed
-        /// device (ETS uses free access by default). A keyed device needs its
-        /// project key here or it will deny access.
-        // Issue #52.
-        #[arg(long, value_name = "HEX")]
-        bcu_key: Option<String>,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key. Prefer
-        /// `--keyring` for a real installation: a process argument is visible to
-        /// other users on the machine.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-        /// Also list this individual address (bussard's own tunnel address) as a
-        /// secured sender, sequence 0, in the security individual address table
-        /// (PID 54) the security object is reprogrammed with, so the device
-        /// accepts `bussard write --keyring` to its secured group addresses.
-        /// Off by default: without it the device drops bussard's secured group
-        /// telegrams silently. See https://bussard.tmbo.dev/docs/explanation/safety/.
-        #[arg(long, value_name = "IA")]
-        secure_sender: Option<bussard_model::IndividualAddress>,
-        /// Plan offline and stop: no gateway is resolved and no connection is
-        /// opened. The plan is checked against the application's own mask.
-        #[arg(long)]
-        dry_run: bool,
-        /// With `--dry-run`, write `plan.json` and the exact memory images the
-        /// flash would stream (one `.bin` each, plus the table images) into DIR.
-        #[arg(long, value_name = "DIR", requires = "dry_run")]
-        dump_images: Option<PathBuf>,
-        /// With `--dry-run`, plan against the device state recorded in FILE
-        /// (JSON: the application objects' load states, the application id
-        /// and the MCB entries, as `knxtrace image` writes it from an ETS
-        /// capture) instead of no device: the freshness verdict, the
-        /// product's `par` procedure for a device holding this application,
-        /// and the skip of objects whose image already matches take the shape
-        /// a live flash takes on that device.
-        // Issue #490.
-        #[arg(long, value_name = "FILE", requires = "dry_run")]
-        resident: Option<PathBuf>,
-    },
+    Flash(flash_cmd::FlashArgs),
     /// Show what `apply` would write to a device (links and, with product
     /// data, parameters) without writing; or (with `--line`) plan every
     /// device of the project on a line. Read-only on the bus.
-    Plan {
-        /// The device to plan for, e.g. `1.1.4` (mutually exclusive with
-        /// `--line`).
-        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
-        address: Option<String>,
-        /// Plan every device the project has on this line, e.g. `1.1`, in address
-        /// order, and print one summary table.
-        // Issue #100.
-        #[arg(long, value_name = "LINE", conflicts_with = "address")]
-        line: Option<String>,
-        /// The device's vendor `.knxprod`, to read back and decode its parameter
-        /// memory too. Default: the archive `bussard.lock` pins for
-        /// the device in `<dir>/products/`. One that contradicts the lock is
-        /// used with a warning.
-        // Issue #119.
-        #[arg(long, value_name = "FILE", conflicts_with = "line")]
-        product: Option<PathBuf>,
-        /// The application program id to decode the parameters with (default:
-        /// the program the lock pins, else the order number's, else the sole one).
-        #[arg(long, value_name = "REF", conflicts_with = "line")]
-        application: Option<String>,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key. Prefer
-        /// `--keyring` for a real installation: a process argument is visible to
-        /// other users on the machine.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Plan(plan_cmd::PlanArgs),
     /// Write the project to a device: validate, read the device, show the plan,
     /// ask once, back up, write only what differs (links and parameter
     /// octets), verify. With `--line`, every device of the project on a line.
-    Apply {
-        /// The device to write, e.g. `1.1.4` (mutually exclusive with
-        /// `--line`).
-        #[arg(value_name = "ADDRESS", required_unless_present = "line")]
-        address: Option<String>,
-        /// Apply to every device the project has on this line, e.g. `1.1`, in
-        /// address order: one confirmation for the run, one summary table, and a
-        /// resumable state file.
-        // Issue #100.
-        #[arg(long, value_name = "LINE", conflicts_with = "address")]
-        line: Option<String>,
-        /// Line mode only: continue the run recorded in
-        /// `<dir>/captures/apply-line-<line>.json`, skipping the devices it
-        /// already finished.
-        #[arg(long, requires = "line")]
-        resume: bool,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// Refuse unless the device state still hashes to this `state_hash`
-        /// from `bussard plan --json`: the plan a human approved is the plan
-        /// written.
-        #[arg(long = "plan", value_name = "HASH", conflicts_with = "line")]
-        plan_hash: Option<String>,
-        /// Use a `--product` / `--application` that contradicts `bussard.lock`
-        /// (the product archive is then pinned for the device).
-        #[arg(long, conflicts_with = "line")]
-        force: bool,
-        /// The device's vendor `.knxprod`, to compare and write its parameter
-        /// memory. Default: the archive `bussard.lock` pins for the device in
-        /// `<dir>/products/`. One that contradicts the lock needs `--force`.
-        #[arg(long, value_name = "FILE", conflicts_with = "line")]
-        product: Option<PathBuf>,
-        /// The application program id to decode the parameters with (default:
-        /// the program the lock pins, else the order number, else the sole one).
-        #[arg(long, value_name = "REF", conflicts_with = "line")]
-        application: Option<String>,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key. Prefer
-        /// `--keyring` for a real installation: a process argument is visible to
-        /// other users on the machine.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-        /// Also list this individual address (bussard's own tunnel address) as a
-        /// secured sender, sequence 0, in the security individual address table
-        /// (PID 54) the security object is reprogrammed with, so the device
-        /// accepts `bussard write --keyring` to its secured group addresses.
-        /// Off by default: without it the device drops bussard's secured group
-        /// telegrams silently. See https://bussard.tmbo.dev/docs/explanation/safety/.
-        #[arg(long, value_name = "IA", conflicts_with = "line")]
-        secure_sender: Option<bussard_model::IndividualAddress>,
-        /// For a KNX IP interface (a device file with a `[knxnet]` table):
-        /// write a change of its IP assignment, static address set or tunnel
-        /// addresses (PID 53) although bussard tunnels through that
-        /// interface. The tunnel drops (for PID 53: may drop) when the
-        /// interface applies it, so the read-back may not reach the device;
-        /// without this flag such a plan is refused.
-        #[arg(long, conflicts_with = "line")]
-        allow_self_reconfigure: bool,
-    },
+    Apply(apply_cmd::ApplyArgs),
     /// Bench mode: walk the project's devices on a line, prompt for each device's
     /// programming button, verify its order number, assign its address, and
     /// print a label.
     // Issue #100.
-    Commission {
-        /// The line to commission, e.g. `1.1`.
-        #[arg(long, value_name = "LINE")]
-        line: String,
-        /// Also flash each device's application program after assigning it.
-        #[arg(long)]
-        flash: bool,
-        /// Also apply the project's link tables after assigning (and flashing).
-        #[arg(long)]
-        apply: bool,
-        /// Append one label row per commissioned device to this CSV file
-        /// (columns `address;name;order_number;floor;room`).
-        #[arg(long, value_name = "FILE")]
-        labels: Option<PathBuf>,
-        /// The vendor `.knxprod` to flash from. Default: the archive
-        /// `bussard.lock` pins for each device in `<dir>/products/`.
-        #[arg(long, value_name = "FILE", requires = "flash")]
-        product: Option<PathBuf>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch. Prefer `--keyring` for a real installation.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Commission(commission_cmd::CommissionArgs),
     /// Show what has changed in the project since the last history snapshot,
     /// or, given a device ADDRESS, read that device's live state over the bus:
     /// its identity and, for a KNX IP interface, its IP settings, MAC address,
     /// tunnelling addresses and state.
     // Issue #391.
-    Status {
-        /// The device to read, e.g. `1.1.200`. Without it, the project's change
-        /// summary.
-        #[arg(value_name = "ADDRESS")]
-        address: Option<String>,
-        /// Print the file-level diff instead of the plain-language rendering.
-        #[arg(long, conflicts_with = "address")]
-        raw: bool,
-    },
+    Status(status_cmd::StatusArgs),
     /// List the project's history snapshots, oldest first.
-    History {},
+    History(history_cmd::HistoryArgs),
     /// Show what a device can do, in its device file's words: its channels or
     /// ETS parameter pages (inactive ones marked with what enables them), and
     /// for one channel or page its parameters (value, choices, default) and
     /// objects.
-    Device {
-        /// The device, e.g. `1.1.47`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// The channel to list in detail: its handle (`a-1`), id or number, a
-        /// page handle, or `device` for the device-level parameters and
-        /// objects.
-        #[arg(value_name = "CHANNEL")]
-        channel: Option<String>,
-        /// Print the paste-ready device-file TOML, with commented lines for
-        /// what the file does not set yet.
-        #[arg(long, conflicts_with = "json")]
-        toml: bool,
-    },
+    Device(device_cmd::DeviceArgs),
     /// Show what one snapshot changed (or the change between two snapshots).
-    Show {
-        /// The snapshot: its id, or its number from `bussard history`.
-        #[arg(value_name = "SNAPSHOT")]
-        snapshot: String,
-        /// A second snapshot: show the change from the first one to this one.
-        #[arg(value_name = "SNAPSHOT")]
-        to: Option<String>,
-    },
+    Show(history_cmd::ShowArgs),
     /// Put the project files back to a history snapshot (files only, no devices).
-    Undo {
-        /// The snapshot to restore: its id, or its number from `bussard history`
-        /// (default: the newest one that differs from the working files, which
-        /// reverts the last change).
-        #[arg(value_name = "SNAPSHOT")]
-        snapshot: Option<String>,
-    },
+    Undo(history_cmd::UndoArgs),
     /// Snapshot every device in the installation: tables, and where bussard can
     /// bound the read, the writable parameter memory.
     ///
@@ -1371,23 +436,7 @@ enum Command {
     /// `manifest.json` that lists every device considered, including the ones
     /// whose mask bussard cannot read.
     // Issue #96.
-    Backup {
-        /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
-        /// in the project).
-        #[arg(value_name = "ADDRESS")]
-        addresses: Vec<String>,
-        /// Back up only the project's devices on this line, e.g. `1.1`.
-        #[arg(long, value_name = "LINE", conflicts_with = "addresses")]
-        line: Option<String>,
-        /// Where to write the snapshot (default:
-        /// `<dir>/captures/backups/<UTC timestamp>/`).
-        #[arg(long, value_name = "DIR")]
-        out: Option<PathBuf>,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch for a simulator or a device with a synthetic key.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Backup(backup_cmd::BackupArgs),
     /// Write a device's backed-up link tables back onto it, or
     /// with `--parameters` its backed-up parameter memory.
     ///
@@ -1396,330 +445,155 @@ enum Command {
     /// instead of the project. `restore --parameters <BACKUP_JSON> <ADDRESS>`
     /// replays a parameter backup with `apply`'s parameter-only download.
     // Issues #96, #290.
-    Restore {
-        /// `<BACKUP_DIR> <ADDRESS>`: the backup directory (a `bussard backup`
-        /// run, or `<dir>/captures/backups` for the per-device snapshots
-        /// `apply` leaves) and the device, e.g. `1.1.4`. With `--parameters`,
-        /// only `<ADDRESS>`.
-        #[arg(value_name = "BACKUP_DIR> <ADDRESS", num_args = 1..=2, required = true)]
-        args: Vec<String>,
-        /// Replay this parameter backup
-        /// (`<dir>/captures/backups/parameters/<ia>-<ts>.json`) instead of
-        /// link tables: refused unless the backup's device, application and
-        /// mask match; writes only the octets a parameter is placed in under
-        /// the project's configuration, keeps device-managed octets, verifies by
-        /// read-back.
-        #[arg(long, value_name = "BACKUP_JSON")]
-        parameters: Option<PathBuf>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Restore(restore_cmd::RestoreArgs),
     /// Restart a device (the application restarts, nothing is erased) in the
     /// form ETS uses for it: the confirmed restart for a System B application
     /// that supports Secure, else a bare `A_Restart`. Then wait until it
     /// answers again. The device may transmit its status objects as it starts.
-    Restart {
-        /// The device to restart, e.g. `1.1.39`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// How many seconds the device may take to answer again.
-        #[arg(long, value_name = "SECONDS", default_value_t = 30)]
-        timeout: u64,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Restart(restart_cmd::RestartArgs),
     /// Replace a dead device: assign, flash, apply and record, in one guided
     /// flow with one confirmation.
     // Issue #98.
-    Replace {
-        /// The address of the device being replaced, e.g. `1.1.4`.
-        #[arg(value_name = "ADDRESS")]
-        address: String,
-        /// The vendor `.knxprod` to flash the replacement with. Default: the
-        /// archive `bussard.lock` pins for the device in `<dir>/products/`.
-        #[arg(long, value_name = "FILE")]
-        product: Option<PathBuf>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// Override the replacement-identity refusals: proceed although the old
-        /// device still answers, or although the pressed device's order number,
-        /// mask or application does not match the device file.
-        #[arg(long)]
-        force: bool,
-        /// Assign and apply, but leave the application image alone — for a spare
-        /// that already carries the right application.
-        #[arg(long)]
-        no_flash: bool,
-        /// The device's BCU access key, in hex, presented with A_Authorize on
-        /// every management connect.
-        // Issue #52.
-        #[arg(long, value_name = "HEX")]
-        bcu_key: Option<String>,
-        /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
-        /// escape hatch.
-        #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
-        tool_key: Option<String>,
-    },
+    Replace(replace_cmd::ReplaceArgs),
     /// Validate the project and report diagnostics (`--json` for the
     /// machine-readable report).
-    Validate {},
+    Validate(validate_cmd::ValidateArgs),
     /// Work with the group-address plan (`groups.toml`): reserve the
     /// conventional addresses for a room.
-    Groups {
-        #[command(subcommand)]
-        command: GroupsCommand,
-    },
+    #[command(subcommand)]
+    Groups(groups_cmd::GroupsCommand),
     /// KNX IP interface commands: `interface secure on|off <address>`.
-    Interface {
-        #[command(subcommand)]
-        command: InterfaceCommand,
-    },
+    #[command(subcommand)]
+    Interface(interface_secure_cmd::InterfaceCommand),
     /// KNX Data Secure device diagnostics: `secure diag <address>`.
-    Secure {
-        #[command(subcommand)]
-        command: SecureCommand,
-    },
+    #[command(subcommand)]
+    Secure(secure_diag_cmd::SecureCommand),
     /// Export the group-address plan in a format ETS can import.
-    ExportGroups {
-        /// The export format.
-        #[arg(long, value_enum)]
-        format: export_groups_cmd::ExportFormat,
-        /// The file to write.
-        #[arg(long, value_name = "FILE")]
-        out: PathBuf,
-    },
+    ExportGroups(export_groups_cmd::ExportGroupsArgs),
     /// Render the handover documentation folder from the project.
-    Doc {
-        /// The directory to write the rendered documentation into.
-        #[arg(long, default_value = "docs/installation")]
-        out: PathBuf,
-        /// The rendered format.
-        #[arg(long, value_enum, default_value_t = DocOutputFormat::Md)]
-        format: DocOutputFormat,
-    },
+    Doc(doc_cmd::DocArgs),
     /// Live-monitor the bus, decoding telegrams against the project.
-    Monitor {
-        /// Only show telegrams matching this filter: a comma-separated list of
-        /// GAs (`3/2/0`), GA prefixes (`3/` or `3/2/`) or IAs (`1.1.30`).
-        #[arg(long, value_name = "EXPR")]
-        filter: Option<String>,
-    },
+    Monitor(monitor_cmd::MonitorArgs),
     /// Capture telegrams to a SQLite database.
-    Capture {
-        /// The database file to write (created if absent).
-        #[arg(long, value_name = "DB")]
-        to: PathBuf,
-        /// Only capture telegrams matching this filter (see `monitor --filter`).
-        #[arg(long, value_name = "EXPR")]
-        filter: Option<String>,
-    },
+    Capture(capture_cmd::CaptureArgs),
     /// Read a group value from the bus (sends a GroupValueRead, prints the
     /// typed response; exits non-zero on timeout).
-    Read {
-        /// The group address to read, e.g. `3/2/0`.
-        #[arg(value_name = "GA")]
-        ga: String,
-    },
+    Read(read_cmd::ReadArgs),
     /// Write a group value to the bus, e.g. `bussard write 3/0/4 down`.
-    Write {
-        /// The group address to write, e.g. `3/0/4`.
-        #[arg(value_name = "GA")]
-        ga: String,
-        /// The value: `on`/`off`, `up`/`down`, a number, a percentage like `75%`, …
-        #[arg(value_name = "VALUE")]
-        value: String,
-        /// The DPT to encode as (default: the GA's DPT from `groups.toml`).
-        #[arg(long, value_name = "DPT")]
-        dpt: Option<String>,
-        /// Override the protected-group-address refusal: write to a group
-        /// address marked `protected = true` in `groups.toml`.
-        #[arg(long)]
-        force: bool,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-    },
+    Write(write_cmd::WriteArgs),
     /// Generate the Home Assistant KNX integration YAML from the project.
-    HaConfig {
-        /// Output file (default: stdout).
-        #[arg(long, value_name = "FILE")]
-        out: Option<PathBuf>,
-    },
+    HaConfig(ha_config_cmd::HaConfigArgs),
     /// Serve the KNX visualization website (topology, GA tree, live traffic).
-    Viz {
-        /// The address to bind the HTTP server to.
-        #[arg(long, default_value = "127.0.0.1:8080")]
-        listen: SocketAddr,
-        /// Watch for devices in KNX programming mode and highlight them in the
-        /// UI. This periodically broadcasts `A_IndividualAddress_Read` on the
-        /// bus (active traffic), so it is off by default and must be enabled
-        /// explicitly — never point it at a real installation unattended.
-        #[arg(long)]
-        watch_prog: bool,
-        /// Arm `POST /api/group-write`, so the page can send test writes. Off
-        /// by default: a bare `bussard viz` is a viewer and the endpoint
-        /// answers 403.
-        #[arg(long)]
-        allow_writes: bool,
-        /// Also answer requests whose `Host` is this name. Repeatable. Loopback
-        /// names and bare IP literals are always accepted; any other name is
-        /// refused because it is how DNS rebinding reaches this port.
-        #[arg(long, value_name = "HOST")]
-        allow_host: Vec<String>,
-    },
+    Viz(viz_cmd::VizArgs),
     /// Name and type group addresses from live traffic (never transmits).
-    Learn {
-        /// Learn this group address (repeatable). Without it, `--unnamed` /
-        /// `--untyped` pick targets from the project, and a bare `learn` takes
-        /// whatever appears on the bus.
-        #[arg(long = "ga", value_name = "GA")]
-        gas: Vec<String>,
-        /// Learn every group address in the project whose name is a placeholder.
-        #[arg(long)]
-        unnamed: bool,
-        /// Learn every group address in the project that has no DPT.
-        #[arg(long)]
-        untyped: bool,
-        /// Skip the confirmation prompt: accept the top DPT candidate and the
-        /// proposed name. Without a terminal the command is refused unless
-        /// this is given.
-        #[arg(long)]
-        yes: bool,
-        /// How long to wait for each telegram, in seconds.
-        #[arg(long, value_name = "SECS", default_value_t = 30)]
-        timeout: u64,
-    },
+    Learn(learn_cmd::LearnArgs),
     /// Run the scripted acceptance tests in `tests.toml` against the bus.
-    Test {
-        /// The test file to run (default: `<dir>/tests.toml`).
-        #[arg(long, value_name = "FILE")]
-        file: Option<PathBuf>,
-        /// Override the protected-group-address refusal: write to a group
-        /// address marked `protected = true` in `groups.toml`. A test also
-        /// needs `allow_protected = true` in the test file.
-        #[arg(long)]
-        force: bool,
-        /// Report `manual:` steps as skipped instead of carrying them out.
-        #[arg(long)]
-        skip_manual: bool,
-        /// Run only the named test (repeatable).
-        #[arg(long, value_name = "NAME")]
-        only: Vec<String>,
-        /// Skip the confirmation prompt. Without a terminal the command is
-        /// refused unless this is given.
-        #[arg(long)]
-        yes: bool,
-        /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
-        /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
-        /// whether the interface dropped it. Read-only: nothing
-        /// is written to the bus and no tunnel slot is taken.
-        // Issue #197.
-        #[arg(long, value_name = "SECS", conflicts_with_all = ["file", "force", "skip_manual", "only"])]
-        secure_idle: Option<u64>,
-    },
+    Test(test_cmd::TestArgs),
     /// Audit the installation: project gaps, one-sided links, what bussard can do
     /// per device mask, KNX Secure coverage; with `--live`, the gateway's tunnel
     /// slots, a traffic sample and a scan of the project's devices. Read-only.
-    Audit {
-        /// Add the live part: gateway description, traffic sample and a probe of
-        /// every device in the project. Read tier only; never sends a group telegram.
-        #[arg(long)]
-        live: bool,
-        /// Traffic-sample window in seconds for `--live`.
-        #[arg(long, value_name = "SECS", default_value_t = 30, requires = "live")]
-        window: u64,
-    },
+    Audit(audit_cmd::AuditArgs),
     /// Run the MCP server over stdio (or streamable HTTP with `--listen`):
     /// project tools and bus reads by default; bus writes and device
     /// programming only when their flags allow it.
     // The tier flags' help and the tool counts are built from the registration
     // tables in `bussard_mcp::tier_help`, so they cannot drift (issue #704).
     #[command(after_help = bussard_mcp::tier_help::tier_counts_help())]
-    Mcp {
-        #[arg(long, help = bussard_mcp::tier_help::passive_help())]
-        passive: bool,
-        #[arg(
-            long,
-            conflicts_with = "passive",
-            help = bussard_mcp::tier_help::allow_writes_help()
-        )]
-        allow_writes: bool,
-        // The programming tools write one device after an approved plan
-        // (issues #118, #717).
-        #[arg(
-            long,
-            conflicts_with = "passive",
-            help = bussard_mcp::tier_help::allow_programming_help()
-        )]
-        allow_programming: bool,
-        /// How many minutes a `knx_plan_device` digest stays valid for
-        /// `knx_apply_device`.
-        #[arg(
-            long,
-            value_name = "MINUTES",
-            default_value_t = 10,
-            requires = "allow_programming"
-        )]
-        plan_ttl_minutes: u64,
-        #[arg(long, help = bussard_mcp::tier_help::no_model_edits_help())]
-        no_model_edits: bool,
-        /// Path to a capture SQLite database to extend `knx_recent_telegrams`
-        /// history beyond the in-memory ring window.
-        #[arg(long, value_name = "PATH")]
-        capture_db: Option<PathBuf>,
-        // The Home Assistant tier needs a `[home_assistant]` table (issue #280).
-        #[arg(long, help = bussard_mcp::tier_help::allow_home_assistant_help())]
-        allow_home_assistant: bool,
-        // `--listen`, `--allow-remote-clients` and `--allow-host`: issue #265.
-        /// Serve MCP over streamable HTTP instead of stdio, at
-        /// `http://<ADDR>/mcp`. Without a value it binds
-        /// 127.0.0.1:0 (a free port) and prints the URL. Same tools and gates
-        /// as stdio. bussard does not terminate TLS or authenticate clients on
-        /// a loopback bind: a client that needs HTTPS goes through a reverse
-        /// proxy or tunnel that does both. A non-loopback address is refused
-        /// without `--allow-remote-clients`. `BUSSARD_MCP_TOKEN`, when set, is
-        /// the bearer token every request must carry.
-        #[arg(
-            long,
-            value_name = "ADDR",
-            num_args = 0..=1,
-            default_missing_value = bussard_mcp::http::DEFAULT_LISTEN
-        )]
-        listen: Option<SocketAddr>,
-        /// Permit a non-loopback `--listen` address. Every request must then
-        /// carry `Authorization: Bearer <token>`: the token is
-        /// `BUSSARD_MCP_TOKEN`, or one generated at start and printed once.
-        /// The `Host` header check is off, so a reverse proxy may forward any
-        /// host name.
-        #[arg(long, requires = "listen")]
-        allow_remote_clients: bool,
-        /// Accept this `Host` header on a loopback `--listen` too (repeatable),
-        /// for a reverse proxy or tunnel that forwards its public host name.
-        /// Without it only localhost, 127.0.0.1 and ::1 are accepted, which
-        /// blocks DNS rebinding from a browser.
-        #[arg(long, value_name = "HOST", requires = "listen")]
-        allow_host: Vec<String>,
-        /// Where `knx_viz` serves the browser page, read-only like a bare
-        /// `bussard viz`. Without it the page binds 127.0.0.1:0, a free port,
-        /// on the first `knx_viz`.
-        #[arg(long, value_name = "ADDR")]
-        viz_listen: Option<SocketAddr>,
-    },
+    Mcp(mcp_cmd::McpArgs),
+}
+
+impl Command {
+    /// The subcommand's arguments, for resolving the global options.
+    fn args(&self) -> &dyn Run {
+        match self {
+            Command::Init(args) => args,
+            Command::Import(args) => args,
+            Command::Export(args) => args,
+            Command::Diff(args) => args,
+            Command::Scan(args) => args,
+            Command::Assign(args) => args,
+            Command::Reconstruct(args) => args,
+            Command::Describe(args) => args,
+            Command::Keys(args) => args,
+            Command::ImportProduct(args) => args,
+            Command::Adopt(args) => args,
+            Command::Flash(args) => args,
+            Command::Plan(args) => args,
+            Command::Apply(args) => args,
+            Command::Commission(args) => args,
+            Command::Status(args) => args,
+            Command::History(args) => args,
+            Command::Device(args) => args,
+            Command::Show(args) => args,
+            Command::Undo(args) => args,
+            Command::Backup(args) => args,
+            Command::Restore(args) => args,
+            Command::Restart(args) => args,
+            Command::Replace(args) => args,
+            Command::Validate(args) => args,
+            Command::Groups(args) => args,
+            Command::Interface(args) => args,
+            Command::Secure(args) => args,
+            Command::ExportGroups(args) => args,
+            Command::Doc(args) => args,
+            Command::Monitor(args) => args,
+            Command::Capture(args) => args,
+            Command::Read(args) => args,
+            Command::Write(args) => args,
+            Command::HaConfig(args) => args,
+            Command::Viz(args) => args,
+            Command::Learn(args) => args,
+            Command::Test(args) => args,
+            Command::Audit(args) => args,
+            Command::Mcp(args) => args,
+        }
+    }
+
+    /// Runs the subcommand.
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match self {
+            Command::Init(args) => args.run(g),
+            Command::Import(args) => args.run(g),
+            Command::Export(args) => args.run(g),
+            Command::Diff(args) => args.run(g),
+            Command::Scan(args) => args.run(g),
+            Command::Assign(args) => args.run(g),
+            Command::Reconstruct(args) => args.run(g),
+            Command::Describe(args) => args.run(g),
+            Command::Keys(args) => args.run(g),
+            Command::ImportProduct(args) => args.run(g),
+            Command::Adopt(args) => args.run(g),
+            Command::Flash(args) => args.run(g),
+            Command::Plan(args) => args.run(g),
+            Command::Apply(args) => args.run(g),
+            Command::Commission(args) => args.run(g),
+            Command::Status(args) => args.run(g),
+            Command::History(args) => args.run(g),
+            Command::Device(args) => args.run(g),
+            Command::Show(args) => args.run(g),
+            Command::Undo(args) => args.run(g),
+            Command::Backup(args) => args.run(g),
+            Command::Restore(args) => args.run(g),
+            Command::Restart(args) => args.run(g),
+            Command::Replace(args) => args.run(g),
+            Command::Validate(args) => args.run(g),
+            Command::Groups(args) => args.run(g),
+            Command::Interface(args) => args.run(g),
+            Command::Secure(args) => args.run(g),
+            Command::ExportGroups(args) => args.run(g),
+            Command::Doc(args) => args.run(g),
+            Command::Monitor(args) => args.run(g),
+            Command::Capture(args) => args.run(g),
+            Command::Read(args) => args.run(g),
+            Command::Write(args) => args.run(g),
+            Command::HaConfig(args) => args.run(g),
+            Command::Viz(args) => args.run(g),
+            Command::Learn(args) => args.run(g),
+            Command::Test(args) => args.run(g),
+            Command::Audit(args) => args.run(g),
+            Command::Mcp(args) => args.run(g),
+        }
+    }
 }
 
 /// Stack size for the thread that runs the CLI body.
@@ -1752,7 +626,12 @@ fn main() -> ExitCode {
 /// The whole CLI: parse arguments, set up logging, run the subcommand. Runs on
 /// the `bussard-main` thread spawned by [`main`].
 fn cli_main() -> ExitCode {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let name = matches.subcommand_name().unwrap_or_default().to_string();
+    let cli = match Cli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.format(&mut Cli::command()).exit(),
+    };
 
     // The live progress display (issue #147) is only possible on a terminal;
     // when it is, bus-layer events also feed its "last event" line, and log
@@ -1784,14 +663,14 @@ fn cli_main() -> ExitCode {
     // One confirmation rule (issue #228): these commands, run without a
     // terminal and without --yes, are refused here, before the model loads, a
     // keyring is decrypted or a connection opens.
-    if let Some((yes, action)) = cli.command.early_consent()
+    if let Some((yes, action)) = cli.command.args().early_consent()
         && let Err(err) = confirm::require_terminal_or_yes(yes, &action)
     {
         eprintln!("error: {err:#}");
         return ExitCode::FAILURE;
     }
     let globals = match timing::time("tunnel creds", || {
-        resolve_globals(&cli.global, &cli.command)
+        resolve_globals(&cli.global, &name, cli.command.args().spec())
     }) {
         Ok(globals) => globals,
         Err(err) => {
@@ -1861,663 +740,10 @@ fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
     })
 }
 
-/// Dispatches a subcommand, returning the process exit code on success.
-///
-/// `g` holds the resolved global options; `flash` and `plan` use its `-v`
-/// count to unfold the memory-level plan under the parameter-level one
-/// (issue #109).
+/// Runs a subcommand, returning the process exit code on success.
 fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
-    let dir = g.dir.as_path();
-    let json = g.json;
     // One manufacturer lookup for every command (issue #788): the model's
     // list from the imported ETS master data, then the built-in table.
-    bussard_mgmt::manufacturers::load_model_dir(dir);
-    match command {
-        Command::Scan { line, from, to } => {
-            scan_cmd::run(&line, from, to, dir, json, g.keyring.as_deref(), g.mgmt())
-        }
-        Command::Assign {
-            address,
-            yes,
-            tool_key,
-            force,
-        } => assign_cmd::run(
-            address.as_deref(),
-            dir,
-            assign_cmd::AssignFlags {
-                yes,
-                allow_remote_gateway: g.allow_remote_gateway,
-                json,
-                force,
-            },
-            // `--tool-key` overrides the keyring's device entries; the keyring
-            // still opens a KNXnet/IP Secure tunnel (issue #203).
-            secure_key::ToolKeySource {
-                keyring: g.keyring.as_deref().filter(|_| tool_key.is_none()),
-                tool_key: tool_key.as_deref(),
-            },
-            g.mgmt(),
-        ),
-        Command::Reconstruct {
-            address,
-            line,
-            from,
-            to,
-            out,
-            product,
-            application,
-            no_parameters,
-            tool_key,
-        } => {
-            let overrides = g.mgmt_with_facts();
-            match line {
-                Some(line) => {
-                    reconstruct_cmd::run_line(&line, from, to, out.as_deref(), dir, json, overrides)
-                }
-                None => {
-                    // clap guarantees ADDRESS is present when --line is absent.
-                    let address = address.expect("clap requires ADDRESS without --line");
-                    reconstruct_cmd::run(
-                        &address,
-                        dir,
-                        json,
-                        overrides,
-                        param_readback::Selection {
-                            product: product.as_deref(),
-                            application: application.as_deref(),
-                        },
-                        no_parameters,
-                        g.tool_keys(tool_key.as_deref()),
-                    )
-                }
-            }
-        }
-        Command::Describe {
-            address,
-            full,
-            tool_key,
-        } => describe_cmd::run(
-            &address,
-            dir,
-            json,
-            describe_cmd::FactsOptions {
-                full,
-                refresh: g.refresh_facts,
-            },
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
-        Command::Keys { command } => match command {
-            KeysCommand::Import { file } => keys_cmd::run_import(dir, &file, json),
-            KeysCommand::Export { file, force } => keys_cmd::run_export(dir, &file, force, json),
-            KeysCommand::Show => keys_cmd::run_show(dir, json),
-            KeysCommand::AddCertificate { stdin } => {
-                keys_cmd::run_add_certificate(dir, stdin, json)
-            }
-            KeysCommand::Enroll {
-                relay,
-                page,
-                no_qr,
-                local,
-            } => enroll_cmd::run(
-                dir,
-                enroll_cmd::EnrollOptions {
-                    relay,
-                    page,
-                    no_qr,
-                    local,
-                },
-                json,
-            ),
-        },
-        Command::ImportProduct {
-            file,
-            order_number,
-            yes_download,
-            inner,
-            list,
-        } => import_product_cmd::run(
-            file.as_deref(),
-            dir,
-            order_number.as_deref(),
-            yes_download,
-            inner.as_deref(),
-            list,
-        ),
-        Command::Adopt {
-            address,
-            product,
-            yes,
-            yes_download,
-            no_download,
-            force,
-        } => adopt_cmd::run(
-            adopt_cmd::AdoptOptions {
-                address: address.as_deref(),
-                product: product.as_deref(),
-                yes,
-                force,
-                consent: product_fetch::Consent {
-                    yes_download,
-                    no_download,
-                },
-            },
-            dir,
-            g.allow_remote_gateway,
-            g.keyring.as_deref(),
-            g.mgmt(),
-        ),
-        Command::Flash {
-            address,
-            product,
-            application,
-            order_number,
-            yes,
-            force,
-            full,
-            no_factory_reset,
-            parameters_only,
-            bcu_key,
-            tool_key,
-            secure_sender,
-            dry_run,
-            dump_images,
-            resident,
-        } => flash_cmd::run(
-            &address,
-            product.as_deref(),
-            application.as_deref(),
-            order_number.as_deref(),
-            dir,
-            yes,
-            force,
-            full,
-            no_factory_reset,
-            parameters_only,
-            g.allow_remote_gateway,
-            bcu_key.as_deref(),
-            g.tool_keys(tool_key.as_deref()),
-            secure_sender,
-            g.mgmt_with_facts(),
-            flash_cmd::FlashOutput {
-                json,
-                verbose: g.verbose,
-                dry_run: dry_run.then_some(flash_cmd::DryRun {
-                    dump_images,
-                    resident,
-                }),
-            },
-        ),
-        Command::Plan {
-            address,
-            line,
-            product,
-            application,
-            tool_key,
-        } => {
-            let overrides = g.mgmt_with_facts();
-            let tool_key_source = g.tool_keys(tool_key.as_deref());
-            match line {
-                Some(line) => line_cmd::run_plan(&line, dir, json, tool_key_source, overrides),
-                None => {
-                    // clap guarantees ADDRESS is present when --line is absent.
-                    let address = address.expect("clap requires ADDRESS without --line");
-                    plan_cmd::run(
-                        &address,
-                        dir,
-                        json,
-                        overrides,
-                        param_readback::Selection {
-                            product: product.as_deref(),
-                            application: application.as_deref(),
-                        },
-                        tool_key_source,
-                        g.verbose,
-                    )
-                }
-            }
-        }
-        Command::Apply {
-            address,
-            line,
-            resume,
-            yes,
-            plan_hash,
-            force,
-            product,
-            application,
-            tool_key,
-            secure_sender,
-            allow_self_reconfigure,
-        } => {
-            let overrides = g.mgmt_with_facts();
-            let tool_key_source = g.tool_keys(tool_key.as_deref());
-            match line {
-                Some(line) => line_cmd::run_apply(
-                    &line,
-                    dir,
-                    yes,
-                    json,
-                    resume,
-                    g.allow_remote_gateway,
-                    tool_key_source,
-                    overrides,
-                ),
-                None => {
-                    if json {
-                        anyhow::bail!(
-                            "`bussard apply --json` needs --line: a single-device apply has no \
-                             JSON output"
-                        );
-                    }
-                    // clap guarantees ADDRESS is present when --line is absent.
-                    let address = address.expect("clap requires ADDRESS without --line");
-                    apply_cmd::run(
-                        &address,
-                        dir,
-                        yes,
-                        g.allow_remote_gateway,
-                        tool_key_source,
-                        secure_sender,
-                        overrides,
-                        apply_cmd::ApplyInputs {
-                            selection: param_readback::Selection {
-                                product: product.as_deref(),
-                                application: application.as_deref(),
-                            },
-                            plan_hash: plan_hash.as_deref(),
-                            force,
-                            allow_self_reconfigure,
-                        },
-                    )
-                }
-            }
-        }
-        Command::Commission {
-            line,
-            flash,
-            apply,
-            labels,
-            product,
-            yes,
-            tool_key,
-        } => commission_cmd::run(
-            &line,
-            dir,
-            commission_cmd::CommissionOptions {
-                flash,
-                apply,
-                labels: labels.as_deref(),
-                product: product.as_deref(),
-                yes,
-                json,
-                allow_remote_gateway: g.allow_remote_gateway,
-            },
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
-        Command::Status {
-            address: Some(address),
-            ..
-        } => status_cmd::run(
-            &address,
-            dir,
-            json,
-            g.refresh_facts,
-            g.tool_keys(None),
-            g.mgmt(),
-        ),
-        Command::Status { raw, .. } => history_cmd::run_status(dir, json, raw),
-        Command::History {} => history_cmd::run_history(dir, json),
-        Command::Device {
-            address,
-            channel,
-            toml,
-        } => device_cmd::run(&address, channel.as_deref(), dir, toml, json),
-        Command::Show { snapshot, to } => {
-            history_cmd::run_show(dir, &snapshot, to.as_deref(), json)
-        }
-        Command::Undo { snapshot } => history_cmd::run_undo(dir, snapshot.as_deref(), json),
-        Command::Backup {
-            addresses,
-            line,
-            out,
-            tool_key,
-        } => backup_cmd::run(
-            &addresses,
-            line.as_deref(),
-            out.as_deref(),
-            dir,
-            json,
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
-        Command::Restart {
-            address,
-            timeout,
-            yes,
-            tool_key,
-        } => restart_cmd::run(
-            &address,
-            timeout,
-            yes,
-            g.allow_remote_gateway,
-            dir,
-            json,
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
-        Command::Restore {
-            args,
-            parameters,
-            yes,
-            tool_key,
-        } => match (parameters, args.as_slice()) {
-            (Some(backup), [address]) => restore_cmd::run_parameters(
-                &backup,
-                address,
-                dir,
-                yes,
-                g.allow_remote_gateway,
-                g.tool_keys(tool_key.as_deref()),
-                g.mgmt(),
-            ),
-            (None, [backup_dir, address]) => restore_cmd::run(
-                std::path::Path::new(backup_dir),
-                address,
-                dir,
-                yes,
-                g.allow_remote_gateway,
-                g.tool_keys(tool_key.as_deref()),
-                g.mgmt(),
-            ),
-            (Some(_), _) => anyhow::bail!(
-                "`restore --parameters <BACKUP_JSON>` takes one more argument, the device \
-                 address: `bussard restore --parameters <BACKUP_JSON> <ADDRESS>`"
-            ),
-            (None, _) => anyhow::bail!(
-                "`restore` takes the backup directory and the device address: `bussard restore \
-                 <BACKUP_DIR> <ADDRESS>` (or `bussard restore --parameters <BACKUP_JSON> \
-                 <ADDRESS>`)"
-            ),
-        },
-        Command::Replace {
-            address,
-            product,
-            yes,
-            force,
-            no_flash,
-            bcu_key,
-            tool_key,
-        } => replace_cmd::run(
-            &address,
-            product.as_deref(),
-            dir,
-            yes,
-            force,
-            no_flash,
-            g.allow_remote_gateway,
-            bcu_key.as_deref(),
-            g.tool_keys(tool_key.as_deref()),
-            g.mgmt(),
-        ),
-        Command::Validate {} => validate_cmd::run(dir, json),
-        Command::Groups { command } => match command {
-            GroupsCommand::Reserve {
-                room,
-                functions,
-                scheme,
-            } => groups_cmd::run_reserve(dir, &room, &functions, scheme.map(Into::into), json),
-            GroupsCommand::Secure { ga, state } => groups_cmd::run_secure(dir, &ga, &state, json),
-        },
-        Command::Interface { command } => match command {
-            InterfaceCommand::Secure {
-                state,
-                address,
-                dry_run,
-                dump_images,
-                yes,
-                allow_self_reconfigure,
-            } => interface_secure_cmd::run(
-                dir,
-                interface_secure_cmd::SecureInputs {
-                    state: &state,
-                    address: &address,
-                    dry_run,
-                    dump_images: dump_images.as_deref(),
-                    yes,
-                    allow_remote_gateway: g.allow_remote_gateway,
-                    allow_self_reconfigure,
-                    json,
-                },
-                &g.mgmt(),
-            ),
-        },
-        Command::Secure { command } => match command {
-            SecureCommand::Diag {
-                address,
-                clear,
-                yes,
-                tool_key,
-            } => secure_diag_cmd::run(
-                &address,
-                dir,
-                json,
-                clear,
-                yes,
-                g.allow_remote_gateway,
-                g.tool_keys(tool_key.as_deref()),
-                g.mgmt(),
-            ),
-        },
-        Command::ExportGroups { format, out } => export_groups_cmd::run(dir, format, &out),
-        Command::Doc { out, format } => doc_cmd::run(dir, &out, format.into(), json),
-        Command::Init {
-            project,
-            password,
-            yes_download,
-            no_download,
-            scan,
-            yes,
-        } => init_cmd::run(
-            dir,
-            g.gateway.as_deref(),
-            g.routing,
-            init_cmd::FirstRun {
-                project,
-                password,
-                consent: product_fetch::Consent {
-                    yes_download,
-                    no_download,
-                },
-                scan,
-                yes,
-            },
-        ),
-        Command::Import {
-            project,
-            from_json,
-            password,
-            mine,
-            theirs,
-            interactive,
-            yes_download,
-            no_download,
-            yes,
-        } => {
-            if !init_cmd::confirm_target(dir, yes, init_cmd::TargetVerb::Import)? {
-                eprintln!("Not confirmed; nothing written.");
-                return Ok(ExitCode::FAILURE);
-            }
-            let choice = import_bundle::ConflictChoice::from_flags(mine, theirs, interactive);
-            let consent = product_fetch::Consent {
-                yes_download,
-                no_download,
-            };
-            if let Some(json) = from_json {
-                import_cmd::run_json(&json, dir, choice, consent)
-            } else if let Some(project) = project {
-                if bussard_model::bundle::is_bundle_path(&project) {
-                    import_bundle::run_bundle(&project, dir, choice)
-                } else {
-                    import_cmd::run_knxproj(&project, dir, password, choice, consent)
-                }
-            } else {
-                anyhow::bail!("provide a .knxproj path or --from-json <file>")
-            }
-        }
-        Command::Export { file, no_history } => {
-            export_cmd::run(file.as_deref(), dir, no_history, json)
-        }
-        Command::Diff {
-            a,
-            b,
-            raw,
-            checklist,
-            password,
-            password_b,
-        } => diff_cmd::run(
-            &a,
-            &b,
-            diff_cmd::Format {
-                json,
-                raw,
-                checklist,
-            },
-            password,
-            password_b,
-        ),
-        Command::Monitor { filter } => monitor_cmd::run(
-            dir,
-            json,
-            filter.as_deref(),
-            g.keyring.as_deref(),
-            g.group(),
-        ),
-        Command::Capture { to, filter } => {
-            capture_cmd::run(&to, dir, filter.as_deref(), g.keyring.as_deref(), g.group())
-        }
-        Command::Read { ga } => read_cmd::run(&ga, dir, g.keyring.as_deref(), json, g.group()),
-        Command::Write {
-            ga,
-            value,
-            dpt,
-            force,
-            yes,
-        } => write_cmd::run(
-            &ga,
-            &value,
-            dpt.as_deref(),
-            force,
-            yes,
-            g.allow_remote_gateway,
-            dir,
-            g.keyring.as_deref(),
-            json,
-            g.group(),
-        ),
-        Command::HaConfig { out } => ha_config_cmd::run(dir, out.as_deref()),
-        Command::Viz {
-            listen,
-            watch_prog,
-            allow_writes,
-            allow_host,
-        } => viz_cmd::run(
-            listen,
-            dir,
-            g.group(),
-            viz_cmd::VizOptions {
-                allow_writes,
-                watch_prog,
-                allow_remote_gateway: g.allow_remote_gateway,
-                allowed_hosts: allow_host,
-                keyring: g.keyring.clone(),
-            },
-        ),
-        Command::Learn {
-            gas,
-            unnamed,
-            untyped,
-            yes,
-            timeout,
-        } => learn_cmd::run(
-            dir,
-            learn_cmd::LearnOptions {
-                gas,
-                unnamed,
-                untyped,
-                yes,
-                timeout_seconds: timeout,
-                keyring: g.keyring.clone(),
-            },
-            g.group(),
-        ),
-        Command::Test {
-            secure_idle: Some(secs),
-            ..
-        } => test_cmd::run_secure_idle(dir, std::time::Duration::from_secs(secs), json, g.group()),
-        Command::Test {
-            file,
-            force,
-            skip_manual,
-            only,
-            yes,
-            secure_idle: None,
-        } => test_cmd::run(
-            dir,
-            test_cmd::TestOptions {
-                file,
-                json,
-                force,
-                skip_manual,
-                only,
-                yes,
-                allow_remote_gateway: g.allow_remote_gateway,
-            },
-            g.group(),
-        ),
-        Command::Audit { live, window } => audit_cmd::run(
-            dir,
-            audit_cmd::AuditOptions {
-                json,
-                live,
-                window: std::time::Duration::from_secs(window),
-                keyring: g.keyring.as_deref(),
-            },
-            g.mgmt(),
-        ),
-        Command::Mcp {
-            passive,
-            allow_writes,
-            allow_programming,
-            plan_ttl_minutes,
-            no_model_edits,
-            capture_db,
-            allow_home_assistant,
-            listen,
-            allow_remote_clients,
-            allow_host,
-            viz_listen,
-        } => mcp_cmd::run(
-            dir,
-            g.group(),
-            mcp_cmd::McpModes {
-                passive,
-                allow_writes,
-                allow_programming,
-                plan_ttl: std::time::Duration::from_secs(plan_ttl_minutes.saturating_mul(60)),
-                allow_remote_gateway: g.allow_remote_gateway,
-                no_model_edits,
-                allow_home_assistant,
-                viz_listen,
-            },
-            capture_db,
-            g.keyring.clone(),
-            listen.map(|listen| mcp_cmd::Listen {
-                addr: listen,
-                allow_remote_clients,
-                allow_host,
-            }),
-        ),
-    }
+    bussard_mgmt::manufacturers::load_model_dir(g.dir());
+    command.run(g)
 }

@@ -40,11 +40,12 @@ use bussard_service::line::{
 };
 use bussard_service::{BusService, WritePolicy};
 
+use crate::cli::Resolved;
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, open_service, resolve_config,
+    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, open_checked,
+    resolve_config,
 };
-use crate::secure_key::ToolKeySource;
+use bussard_service::secure::ToolKeySource;
 
 /// The state-file format version, bumped if the shape ever changes.
 const STATE_VERSION: u32 = 1;
@@ -152,55 +153,46 @@ pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
 }
 
 /// Runs `bussard plan --line`.
-pub fn run_plan(
+pub(crate) fn run_plan(
     line: &str,
-    dir: &Path,
-    json: bool,
     tool_key_source: ToolKeySource<'_>,
-    overrides: ConnOverrides,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
     run_line(
         line,
-        dir,
+        g.dir(),
         Mode::Plan,
         LineOptions {
-            json,
+            json: g.json,
             yes: false,
             resume: false,
             allow_remote_gateway: false,
         },
         tool_key_source,
-        overrides,
+        g.mgmt_with_facts(),
     )
 }
 
 /// Runs `bussard apply --line`.
-///
-/// The argument list mirrors the subcommand's flags 1:1 (as `flash_cmd::run`
-/// does); bundling them would only obscure that mapping.
-#[allow(clippy::too_many_arguments)]
-pub fn run_apply(
+pub(crate) fn run_apply(
     line: &str,
-    dir: &Path,
     yes: bool,
-    json: bool,
     resume: bool,
-    allow_remote_gateway: bool,
     tool_key_source: ToolKeySource<'_>,
-    overrides: ConnOverrides,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
     run_line(
         line,
-        dir,
+        g.dir(),
         Mode::Apply,
         LineOptions {
-            json,
+            json: g.json,
             yes,
             resume,
-            allow_remote_gateway,
+            allow_remote_gateway: g.allow_remote_gateway,
         },
         tool_key_source,
-        overrides,
+        g.mgmt_with_facts(),
     )
 }
 
@@ -317,8 +309,7 @@ fn run_line(
         let state_path = state_path.clone();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let service = open_service(config, line_policy).await?;
-            let source = checked_source_or_close(&service, &conn).await?;
+            let (service, source) = open_checked(config, line_policy, &conn).await?;
             // Guard the run with Ctrl-C (issue #31): the state file is already
             // current, so the interrupt only needs to release the tunnel slot.
             let interrupted = tokio::select! {
@@ -415,9 +406,11 @@ async fn visit_all(
     // KNX Data Secure (issue #71): one key per device, since a keyring holds
     // one per address; the admitted tunnelling addresses (issue #297).
     let material = |address: IndividualAddress| {
-        let activated = crate::secure_key::model_activated(Some(model), address);
-        crate::secure_key::resolve_material(address, tool_key_source, activated)
-            .map_err(|err| format!("{err:#}"))
+        let activated = bussard_service::secure::model_activated(Some(model), address);
+        crate::timing::time("tool keys", || {
+            bussard_service::secure::resolve_material(address, tool_key_source, activated)
+        })
+        .map_err(|err| format!("{err:#}"))
     };
     let tunnel = |secured: bool| {
         crate::secure_key::admitted_tunnel(Some(model), tool_key_source, secured)
@@ -431,7 +424,7 @@ async fn visit_all(
         mode,
         material: &material,
         tunnel: &tunnel,
-        on_parse: Some(crate::product_cache::record_parse),
+        on_parse: Some(crate::timing::record_product_parse),
         expected: None,
     };
     let mut print_note = |note: LineNote| match note {

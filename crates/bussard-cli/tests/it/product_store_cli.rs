@@ -677,7 +677,7 @@ fn test_fresh_import_writes_the_models_in_the_lock_language() -> TestResult {
         .output()?;
     assert!(out.status.success(), "{}", text(&out));
     // An xknxproject dump records no lock language; the model's language is
-    // then `[import] language` (`product_cache::model_language`).
+    // then `[import] language` (`bussard_service::params::model_language`).
     let model = std::fs::read_to_string(dir.join(format!(".bussard/models/{BILINGUAL_APP}.yaml")))?;
     assert!(model.contains("K\u{fc}hlen"), "{model}");
 

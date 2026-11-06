@@ -17,8 +17,88 @@ use anyhow::{Context, bail};
 use bussard_model::scaffold::{self, Plan, PlanRoom, Scheme};
 use bussard_model::{DeclaredGroup, Model, Severity};
 
+use crate::cli::{Resolved, Run, Spec};
+
+/// The `bussard groups` subcommands.
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum GroupsCommand {
+    /// Append the conventional group-address block for a room and trade to
+    /// `groups.toml` and print the addresses.
+    ///
+    /// The scheme is `[lint.groups] scheme` in `bussard.toml` (written on the
+    /// first reservation). Re-running for a room and function that already
+    /// have their block adds nothing.
+    Reserve {
+        /// The room, floor first, as one argument: `"EG Küche"`.
+        #[arg(value_name = "FLOOR ROOM")]
+        room: String,
+        /// The functions the room needs: light, light-dim, blind, heating,
+        /// socket.
+        #[arg(value_name = "FUNCTION", required = true)]
+        functions: Vec<String>,
+        /// The addressing scheme for a project that has none yet (default
+        /// floor-trade-block). Refused when it contradicts `bussard.toml`.
+        #[arg(long, value_enum)]
+        scheme: Option<SchemeArg>,
+    },
+    /// Switch KNX Data Secure on or off for one group address.
+    ///
+    /// `off` removes the group key from the key store (`bussard.keys`) and
+    /// clears the `secure` flag of the group and of every com-object linked
+    /// to it on every device; `on` sets them and keeps the store's key, or
+    /// generates a new random one as ETS does. One change, snapshotted with
+    /// the key store, so `bussard undo` restores all three. Needs
+    /// `BUSSARD_KEYRING_PASSWORD`. The Secure devices linked to the group
+    /// address then need `bussard plan` and `bussard apply`, and every user
+    /// of an exported keyring (Home Assistant) a new `bussard keys export`.
+    // Issue #331.
+    Secure {
+        /// The group address, e.g. `1/0/4`.
+        #[arg(value_name = "GA")]
+        ga: String,
+        /// `on` or `off`.
+        #[arg(value_name = "on|off")]
+        state: String,
+    },
+}
+
+impl Run for GroupsCommand {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match self {
+            GroupsCommand::Reserve {
+                room,
+                functions,
+                scheme,
+            } => run_reserve(g.dir(), &room, &functions, scheme.map(Into::into), g.json),
+            GroupsCommand::Secure { ga, state } => run_secure(g.dir(), &ga, &state, g.json),
+        }
+    }
+}
+
+/// The group-address addressing scheme, as a CLI value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub(crate) enum SchemeArg {
+    /// `main` = floor, `middle` = trade.
+    FloorTradeBlock,
+    /// `main` = trade, `middle` = floor.
+    FunctionFloor,
+}
+
+impl From<SchemeArg> for Scheme {
+    fn from(value: SchemeArg) -> Self {
+        match value {
+            SchemeArg::FloorTradeBlock => Scheme::FloorTradeBlock,
+            SchemeArg::FunctionFloor => Scheme::FunctionFloor,
+        }
+    }
+}
+
 /// Runs `bussard groups reserve`.
-pub fn run_reserve(
+fn run_reserve(
     dir: &Path,
     room: &str,
     functions: &[String],
@@ -127,7 +207,7 @@ pub fn run_reserve(
 /// every linked com-object's `secure` flag, and the group key in the key
 /// store, as one change. The history snapshot taken first keeps a copy of
 /// the key store, so `bussard undo` restores all three.
-pub fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<ExitCode> {
+fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<ExitCode> {
     use bussard_service::group_security as gs;
     let ga: bussard_model::GroupAddress = ga
         .parse()

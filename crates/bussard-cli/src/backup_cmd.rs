@@ -47,10 +47,38 @@ use bussard_service::backup::{
     write_backup_run,
 };
 
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, gateway_display, load_model_required, open_service,
-    resolve_config,
-};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{gateway_display, load_model_required, open_checked, resolve_config};
+
+/// `bussard backup`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct BackupArgs {
+    /// Back up only these devices, e.g. `1.1.4 1.1.7` (default: every device
+    /// in the project).
+    #[arg(value_name = "ADDRESS")]
+    addresses: Vec<String>,
+    /// Back up only the project's devices on this line, e.g. `1.1`.
+    #[arg(long, value_name = "LINE", conflicts_with = "addresses")]
+    line: Option<String>,
+    /// Where to write the snapshot (default:
+    /// `<dir>/captures/backups/<UTC timestamp>/`).
+    #[arg(long, value_name = "DIR")]
+    out: Option<PathBuf>,
+    /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+    /// escape hatch for a simulator or a device with a synthetic key.
+    #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+    tool_key: Option<String>,
+}
+
+impl Run for BackupArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
+}
 
 /// Runs `bussard backup`.
 ///
@@ -58,16 +86,10 @@ use crate::conn_cmd::{
 /// [`bussard_service::backup::write_backup_run`], the functions
 /// `knx_backup_device` calls (issue #717); this prints the progress and the
 /// summary.
-#[allow(clippy::too_many_arguments)] // one command's worth of flags; a struct would only move them
-pub fn run(
-    addresses: &[String],
-    line: Option<&str>,
-    out: Option<&Path>,
-    dir: &Path,
-    json: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (addresses, line, out) = (&args.addresses, args.line.as_deref(), args.out.as_deref());
+    let (dir, json, overrides) = (g.dir(), g.json, g.mgmt());
+    let tool_key_source = g.tool_keys(args.tool_key.as_deref());
     let Some(model) = load_model_required(dir)? else {
         bail!(
             "{}",
@@ -98,12 +120,14 @@ pub fn run(
 
     // The device facts (issue #209) and the identity verdict (issue #228,
     // item 5) of every device read.
-    let facts = crate::device_facts::cache(dir, true, overrides.refresh_facts);
+    let facts = crate::conn_cmd::facts_cache(dir, true, overrides.refresh_facts);
     // The tool key of a target the model records as security-activated: a
     // keyring without its entry is an error for it, while any other device
     // the keyring does not list is read in the clear (issue #189).
     let tool_key = |target: IndividualAddress, activated: bool| {
-        crate::secure_key::resolve(target, tool_key_source, activated)
+        crate::timing::time("tool keys", || {
+            bussard_service::secure::resolve(target, tool_key_source, activated)
+        })
     };
     // Whether a device's application, from the product data the lock pins,
     // leaves `SupportsExtendedMemoryServices` unset (issue #472).
@@ -127,14 +151,13 @@ pub fn run(
                 &capture.entry.identity,
                 capture.entry.address.parse::<IndividualAddress>(),
             ) {
-                eprintln!("  {}", crate::device_facts::identity_line(target, check));
+                eprintln!("  {}", bussard_service::identity_line(target, check));
             }
         }
     };
     let runtime = tokio::runtime::Runtime::new()?;
     let captured = runtime.block_on(async {
-        let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let source = checked_source_or_close(&service, &overrides).await?;
+        let (service, source) = open_checked(config, WritePolicy::ReadOnly, &overrides).await?;
         let inputs = BackupInputs {
             model: &model,
             source,
