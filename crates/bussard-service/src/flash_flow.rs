@@ -1082,4 +1082,338 @@ mod tests {
         }
         Ok(())
     }
+
+    /// The CLI's rendering of a failed descriptor read: the named cause, or
+    /// the error under "reading the device descriptor".
+    fn descriptor_read_error(
+        target: IndividualAddress,
+        connected: bool,
+        secure: bool,
+        err: MgmtError,
+    ) -> String {
+        descriptor_read_message(target, connected, secure, &err)
+            .unwrap_or_else(|| format!("reading the device descriptor: {err}"))
+    }
+
+    #[test]
+    fn descriptor_disconnect_after_connect_names_the_pattern()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.0.10".parse()?;
+        let err = descriptor_read_error(
+            target,
+            true, // the T_Connect established before the read
+            false,
+            MgmtError::Disconnected { address: target },
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("accepted the connection but disconnected on the first read"),
+            "{msg}"
+        );
+        assert!(msg.contains("*.ip") && msg.contains("*.tp"), "{msg}");
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_disconnect_without_connect_is_passed_through()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A disconnect that happened before the connection established is not the
+        // IP-medium pattern; it passes through with the generic context.
+        let target: IndividualAddress = "1.0.10".parse()?;
+        let err = descriptor_read_error(
+            target,
+            false,
+            false,
+            MgmtError::Disconnected { address: target },
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("reading the device descriptor"), "{msg}");
+        assert!(
+            !msg.contains("accepted the connection but disconnected"),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn descriptor_other_error_is_passed_through() -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.0.10".parse()?;
+        let err = descriptor_read_error(target, true, false, MgmtError::Nak { address: target });
+        let msg = err.to_string();
+        assert!(msg.contains("reading the device descriptor"), "{msg}");
+        Ok(())
+    }
+
+    /// A silent activated device (wrong tool key, or a plain device ignoring the
+    /// wrapper) names the KNX Data Secure cause, not the IP-medium pattern.
+    #[test]
+    fn descriptor_silence_on_a_secure_connection_names_the_tool_key()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.2".parse()?;
+        for err in [
+            MgmtError::Disconnected { address: target },
+            MgmtError::NoResponse { address: target },
+            MgmtError::Secure {
+                address: target,
+                source: bussard_secure::AsduError::SyncUnanswered,
+            },
+        ] {
+            let msg = descriptor_read_error(target, true, true, err).to_string();
+            assert!(msg.contains("SECURED management access"), "{msg}");
+            assert!(msg.contains("tool key"), "{msg}");
+            assert!(msg.contains("Nothing was written"), "{msg}");
+            assert!(
+                !msg.contains("*.ip"),
+                "the IP-medium guidance is wrong here: {msg}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A silent PLAIN connection points at the keyring: an activated device
+    /// refuses unsecured management (spec §6.4).
+    #[test]
+    fn descriptor_silence_on_a_plain_connection_suggests_the_keyring()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.2".parse()?;
+        for err in [
+            MgmtError::NoResponse { address: target },
+            MgmtError::Disconnected { address: target },
+            MgmtError::MidSessionSilence {
+                address: target,
+                kind: bussard_mgmt::SilenceKind::NoResponse,
+                exchanges: 2,
+                wraps: 0,
+            },
+        ] {
+            let msg = descriptor_read_error(target, true, false, err).to_string();
+            assert!(msg.contains("--keyring"), "{msg}");
+            assert!(msg.contains("KNX Data Secure"), "{msg}");
+        }
+        Ok(())
+    }
+
+    /// A target, gateway and model dir for the gate messages.
+    fn gate(force: bool, freshness: &Freshness) -> FreshnessDecision {
+        let target: IndividualAddress = "1.0.2".parse().expect("test fixture");
+        decide_freshness(target, "127.0.0.1:3671", Path::new("knx"), force, freshness)
+    }
+
+    fn resident_other() -> Freshness {
+        Freshness::Resident {
+            resident: Some("M-0083 A-0007 v35".to_string()),
+            objects: vec!["object 3 (application program)".to_string()],
+            reason: None,
+        }
+    }
+
+    #[test]
+    fn test_decide_freshness_fresh_device_proceeds_with_the_no_backup_note() {
+        let decision = gate(false, &Freshness::Fresh);
+        assert!(decision.proceed);
+        assert!(decision.prompt_note.is_none());
+        assert!(
+            decision
+                .message
+                .contains("no application is loaded on 1.0.2"),
+            "{}",
+            decision.message
+        );
+        // The long-standing no-backup note is still stated before the write.
+        assert!(
+            decision.message.contains("no backup is"),
+            "{}",
+            decision.message
+        );
+    }
+
+    #[test]
+    fn test_decide_freshness_same_application_proceeds_without_force() {
+        let decision = gate(
+            false,
+            &Freshness::SameApplication {
+                resident: "M-00FA A-2500 v16".to_string(),
+            },
+        );
+        assert!(
+            decision.proceed,
+            "a re-flash of the same app needs no --force"
+        );
+        assert!(
+            decision
+                .message
+                .contains("1.0.2 already runs this application (M-00FA A-2500 v16)"),
+            "{}",
+            decision.message
+        );
+        // It says what a re-flash resets, so "allowed" is not read as "harmless".
+        assert!(
+            decision.message.contains("reset to the vendor"),
+            "{}",
+            decision.message
+        );
+        let note = decision.prompt_note.expect("the prompt names the re-flash");
+        assert!(note.contains("M-00FA A-2500 v16"), "{note}");
+        assert!(note.contains("Loaded"), "{note}");
+    }
+
+    #[test]
+    fn test_decide_freshness_other_application_is_refused_without_force() {
+        let decision = gate(false, &resident_other());
+        assert!(
+            !decision.proceed,
+            "a different resident app must be refused"
+        );
+        let msg = &decision.message;
+        assert!(msg.contains("REFUSING to flash 1.0.2"), "{msg}");
+        // Names the resident application and where it is loaded.
+        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
+        assert!(msg.contains("object 3 (application program)"), "{msg}");
+        // Names both ways forward.
+        assert!(msg.contains("--force"), "{msg}");
+        assert!(msg.contains("bussard reconstruct 1.0.2 --dir knx"), "{msg}");
+        assert!(msg.contains("bussard apply 1.0.2"), "{msg}");
+        // States the same-application rule explicitly.
+        assert!(msg.contains("Re-flashing the SAME application"), "{msg}");
+    }
+
+    #[test]
+    fn test_decide_freshness_force_proceeds_with_a_loud_warning() {
+        let decision = gate(true, &resident_other());
+        assert!(decision.proceed);
+        let msg = &decision.message;
+        assert!(msg.contains("WARNING: --force"), "{msg}");
+        // The warning names the device, the gateway and what is destroyed.
+        assert!(msg.contains("1.0.2"), "{msg}");
+        assert!(msg.contains("127.0.0.1:3671"), "{msg}");
+        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
+        assert!(msg.contains("DESTROYS"), "{msg}");
+        let note = decision.prompt_note.expect("the prompt warns too");
+        assert!(note.contains("Loaded"), "{note}");
+        assert!(note.contains("DESTROYS it"), "{note}");
+    }
+
+    #[test]
+    fn test_decide_freshness_unidentified_resident_application_is_refused() {
+        let decision = gate(
+            false,
+            &Freshness::Resident {
+                resident: None,
+                objects: vec!["LSM 3".to_string()],
+                reason: None,
+            },
+        );
+        assert!(!decision.proceed);
+        assert!(
+            decision.message.contains("could not identify"),
+            "{}",
+            decision.message
+        );
+        assert!(decision.message.contains("LSM 3"), "{}", decision.message);
+    }
+
+    #[test]
+    fn test_decide_freshness_system7_code_difference_is_refused_with_the_segment() {
+        let decision = gate(
+            false,
+            &Freshness::Resident {
+                resident: None,
+                objects: vec!["LSM 1".to_string()],
+                reason: Some(
+                    "the code segment M-00FA_A-0007_AS-1 at 0x4800 differs from \
+                     M-00FA_A-0007's at offset 3"
+                        .to_string(),
+                ),
+            },
+        );
+        assert!(!decision.proceed);
+        assert!(
+            decision.message.contains("AS-1") && decision.message.contains("offset 3"),
+            "{}",
+            decision.message
+        );
+        assert!(
+            !decision.message.contains("could not identify"),
+            "{}",
+            decision.message
+        );
+        assert!(decision.message.contains("--force"), "{}", decision.message);
+    }
+
+    #[test]
+    fn test_preflight_interrupted_retries_only_on_connection_loss()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use bussard_transport::TransportError;
+        let address: IndividualAddress = "1.1.12".parse()?;
+        let ack_timeout = Err(MgmtError::Transport(TransportError::Timeout(
+            "TUNNELING_ACK",
+        )));
+        assert!(preflight_interrupted(&ack_timeout, None, false));
+        // A silent device retries only when the bus saw a link loss meanwhile.
+        let silent = Err(MgmtError::NoResponse { address });
+        assert!(!preflight_interrupted(&silent, None, false));
+        assert!(preflight_interrupted(&silent, None, true));
+        // A refusal never retries.
+        let denied = Err(MgmtError::AccessDenied { address, level: 1 });
+        assert!(!preflight_interrupted(&denied, None, true));
+        // A clean descriptor read retries when the resident probe was cut short.
+        let interrupted = bussard_download::ResidentState {
+            interrupted: true,
+            ..Default::default()
+        };
+        assert!(preflight_interrupted(
+            &Ok(0x07B0),
+            Some(&interrupted),
+            false
+        ));
+        let complete = bussard_download::ResidentState::default();
+        assert!(!preflight_interrupted(&Ok(0x07B0), Some(&complete), true));
+        Ok(())
+    }
+
+    #[test]
+    fn test_decide_freshness_unreadable_state_is_refused_as_unknown() {
+        let decision = gate(
+            false,
+            &Freshness::Unknown {
+                reason: "no object reported a load state".to_string(),
+            },
+        );
+        assert!(
+            !decision.proceed,
+            "unknown is refused, not treated as fresh"
+        );
+        let msg = &decision.message;
+        assert!(msg.contains("load state is unreadable"), "{msg}");
+        assert!(msg.contains("no object reported a load state"), "{msg}");
+        // The message must not leave the operator thinking the device reported
+        // an application as Loaded.
+        assert!(
+            msg.contains("did NOT report an application as Loaded"),
+            "{msg}"
+        );
+        assert!(msg.contains("--force"), "{msg}");
+    }
+
+    #[test]
+    fn test_decide_freshness_unknown_with_force_proceeds() {
+        let decision = gate(
+            true,
+            &Freshness::Unknown {
+                reason: "device refused the read".to_string(),
+            },
+        );
+        assert!(decision.proceed);
+        assert!(
+            decision.message.contains("WARNING: --force"),
+            "{}",
+            decision.message
+        );
+        assert!(
+            decision.message.contains("127.0.0.1:3671"),
+            "{}",
+            decision.message
+        );
+        assert!(decision.prompt_note.is_some());
+    }
 }
