@@ -377,10 +377,6 @@ async fn visit(
         Err(err) => return DeviceStatus::Failed(one_line(&err.to_string())),
     };
 
-    // An application without extended memory services gets its tables above
-    // 0xFFFF written with A_UserMemory_Write (issue #472).
-    let user_memory_above_64k =
-        bussard_download::uses_user_memory(product.as_ref().and_then(|p| p.app()));
     let (live, object_table) = match read_device_and_object_table(
         service,
         source,
@@ -409,7 +405,8 @@ async fn visit(
         desired,
     ));
     let sys7_live = live.sys7().cloned();
-    let live = live.tables();
+    let live_tables = live;
+    let live = live_tables.tables();
     let mask = live.mask;
     out.mask = Some(mask);
 
@@ -507,13 +504,9 @@ async fn visit(
         None => None,
     };
 
-    let backup_path = match bussard_download::write_pre_write_backup(
-        dir,
-        target.address,
-        live,
-        sys7_live.as_ref(),
-    ) {
-        Ok(path) => path,
+    let backup_path = match crate::program::apply::back_up(dir, target.address, &live_tables, None)
+    {
+        Ok(backups) => backups.tables.unwrap_or_default(),
         Err(err) => {
             return DeviceStatus::Failed(format!(
                 "no backup written, so nothing was written to the device: {}",
@@ -527,39 +520,41 @@ async fn visit(
     )));
     out.backup = Some(backup_path.clone());
 
-    let channel = match service.lease_channel().await {
-        Ok(channel) => channel,
-        Err(err) => return DeviceStatus::Failed(session_error_detail(&err)),
+    // The table write of the single-device apply (issue #901): the same
+    // lease, load sequence and read-back verify. A System 7 write's closing
+    // restart is waited out below, with the tables read back after it.
+    let request = crate::program::apply::ApplyRequest {
+        service,
+        target: target.address,
+        source,
+        dir,
+        model: None,
+        product: product.as_ref(),
+        mask,
+        desired,
+        tables_change,
+        object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
+        images: images.as_ref(),
+        security: security.as_ref(),
+        parameters: None,
+        tool_key: tool_key.clone(),
+        high_water: secure_seq.clone(),
+        options: read_options(source, &tool_key, &secure_seq),
+        seed: None,
     };
-    let secure = crate::secure::layer(&tool_key, &secure_seq);
-    let verified = match &images {
-        Some(images) => {
-            bussard_download::write_sys7(channel, target.address, source, mask, images, secure)
-                .await
-                .map(|v| (v.ok(), v.restarted, format!("{v:?}")))
-                .map_err(|e| e.to_string())
+    let (written, _) = crate::program::apply::write_tables(&request, false, &mut ()).await;
+    let backed_up = |why: &str| format!("{why}; pre-state backed up to {}", backup_path.display());
+    match written {
+        crate::program::apply::TablesWritten::Lease(err) => {
+            DeviceStatus::Failed(session_error_detail(&err))
         }
-        None => bussard_download::write_system_b_seeded(
-            channel,
-            target.address,
-            source,
-            desired,
-            secure,
-            bussard_download::SystemBLoad {
-                security: security.as_ref(),
-                object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
-                keep_tables: !tables_change,
-                user_memory_above_64k,
-            },
-            None,
-        )
-        .await
-        .map(|v| (v.ok(), false, format!("{v:?}")))
-        .map_err(|e| e.to_string()),
-    };
-
-    match verified {
-        Ok((true, true, _)) => {
+        crate::program::apply::TablesWritten::Failed(err) => {
+            DeviceStatus::Failed(backed_up(&one_line(&err)))
+        }
+        crate::program::apply::TablesWritten::Ran(summary) if !summary.ok => DeviceStatus::Failed(
+            backed_up(&format!("did not verify: {}", one_line(&summary.detail))),
+        ),
+        crate::program::apply::TablesWritten::Ran(summary) if summary.restarted => {
             // A System 7 write ends with a basic restart: wait for the device,
             // then read its tables back on a fresh connection, which also shows
             // the write survived the restart.
@@ -576,14 +571,10 @@ async fn visit(
             .await
             {
                 Ok(()) => DeviceStatus::Applied(changes),
-                Err(why) => DeviceStatus::Failed(format!(
-                    "{}; pre-state backed up to {}",
-                    one_line(&why),
-                    backup_path.display()
-                )),
+                Err(why) => DeviceStatus::Failed(backed_up(&one_line(&why))),
             }
         }
-        Ok((true, _, _)) => {
+        crate::program::apply::TablesWritten::Ran(_) => {
             // A verified secured System B write put this PID 54 table on the
             // device: record it in the lock, as `adopt` does (issue #297). A
             // reload of the group-object table alone does not write it.
@@ -598,16 +589,6 @@ async fn visit(
             }
             DeviceStatus::Applied(changes)
         }
-        Ok((false, _, detail)) => DeviceStatus::Failed(format!(
-            "did not verify: {}; pre-state backed up to {}",
-            one_line(&detail),
-            backup_path.display()
-        )),
-        Err(err) => DeviceStatus::Failed(format!(
-            "{}; pre-state backed up to {}",
-            one_line(&err),
-            backup_path.display()
-        )),
     }
 }
 
