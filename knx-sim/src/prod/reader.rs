@@ -666,18 +666,19 @@ fn parse_application_program(
                         parse_u32(&e, "Count")?.and_then(|v| u16::try_from(v).ok());
                     let count = declared_count.unwrap_or(1).max(1);
                     // `InlineData` longer than the `Count` elements it can
-                    // hold: the first `Count` octets are compared, the rest
-                    // is padding, as with `LdCtrlCompareMem`'s `Size`. The
-                    // Gira IR-Gateway (`M-0008_A-E000-10`) compares PID 78
-                    // with `Count="6"` and seven octets `00000000200003`; the
-                    // sim served all seven and ETS reported the hardware type
-                    // mismatched (ETS sweep, 2026-11-06).
+                    // hold: the last `Count` octets are the value, the octets
+                    // in front of them padding. The Gira IR-Gateway
+                    // (`M-0008_A-E000-10`) compares PID 78 with `Count="6"`
+                    // and seven octets `00000000200003`; its own parameter
+                    // bound to that property (`target_hw_id`, BinaryValue
+                    // `AAAAIAAD`) is `00 00 00 20 00 03`. ETS refused both all
+                    // seven octets and the first six (ETS sweep, 2026-11-06).
                     if let (Some(v), Some(n)) = (value.as_mut(), declared_count.map(usize::from))
                         && n > 0
                         && v.len() > n
                         && !v.len().is_multiple_of(n)
                     {
-                        v.truncate(n);
+                        v.drain(..v.len() - n);
                     }
                     if in_app
                         && !device_object
@@ -1377,8 +1378,9 @@ mod tests {
         Ok(())
     }
 
-    /// Bussard issue #422: a compare's `InlineData` past its `Count` octets
-    /// is padding (the Gira IR-Gateway `M-0008_A-E000-10-89B0-O0077`).
+    /// Bussard issue #422: `InlineData` octets in front of the last `Count`
+    /// are padding (the Gira IR-Gateway `M-0008_A-E000-10-89B0-O0077`, whose
+    /// parameter `target_hw_id` holds `00 00 00 20 00 03`).
     #[test]
     fn test_parse_application_program_truncates_compare_padding()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1392,11 +1394,11 @@ mod tests {
         let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
         assert_eq!(
             pd.hardware_type_marker,
-            Some(vec![0x00, 0x00, 0x00, 0x00, 0x20, 0x00])
+            Some(vec![0x00, 0x00, 0x00, 0x20, 0x00, 0x03])
         );
         assert!(
             pd.device_compare_props
-                .contains(&(78, vec![0x00, 0x00, 0x00, 0x00, 0x20, 0x00]))
+                .contains(&(78, vec![0x00, 0x00, 0x00, 0x20, 0x00, 0x03]))
         );
         assert!(pd.device_compare_props.contains(&(12, vec![0x00, 0x08])));
         // Count 1 of a 10-octet value is one element: unchanged.
