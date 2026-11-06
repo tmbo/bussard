@@ -19,7 +19,6 @@
 use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
-use bussard_model::doc::DocFormat;
 use bussard_project::keystore::SaveOutcome;
 use bussard_service::files::export::GroupFormat;
 use bussard_service::files::import::{ConflictChoice, ImportOutcome, NoPrompt};
@@ -127,8 +126,8 @@ pub struct ExportArgs {
     /// file for `groups` and `keyring`, a directory for `doc`).
     #[serde(default)]
     pub out: Option<String>,
-    /// `groups`: `ets-csv` (default) or `ets-xml`. `doc`: `md` (default) or
-    /// `html`.
+    /// `groups`: `ets-csv` (default) or `ets-xml`. `doc`: `md` (the only
+    /// format).
     #[serde(default)]
     pub format: Option<String>,
     /// `bundle`: include the history snapshots (default true).
@@ -252,7 +251,7 @@ impl BussardMcp {
         ets-csv or ets-xml); `keyring` writes the key store as a signed .knxkeys ETS accepts, \
         reads it back and says whether it carries every key (needs the keyring `password` \
         unless the server's environment has it; force: true to overwrite); `doc` renders the \
-        handover documentation folder (format md or html). Returns the written path and one \
+        handover documentation folder as Markdown. Returns the written path and one \
         summary sentence; never key material. Touches no device and no project file."
     )]
     async fn knx_export(
@@ -677,18 +676,14 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
         }
         "doc" => {
             let out = out_path.ok_or_else(|| needs_out("doc"))?;
-            let format = match args.format.as_deref().unwrap_or("md") {
-                "md" | "markdown" => DocFormat::Markdown,
-                "html" => DocFormat::Html,
-                other => {
-                    return Err(refused(
-                        format!("format {other:?} is not md or html"),
-                        &none,
-                    ));
-                }
-            };
-            let files =
-                export::doc(dir, &out, format).map_err(|err| refused(error_chain(&err), &none))?;
+            if let Some(other) = args.format.as_deref().filter(|f| !matches!(*f, "md" | "markdown"))
+            {
+                return Err(refused(
+                    format!("format {other:?}: the documentation is Markdown (md) only"),
+                    &none,
+                ));
+            }
+            let files = export::doc(dir, &out).map_err(|err| refused(error_chain(&err), &none))?;
             Ok(json!({
                 "ok": true,
                 "what": "doc",

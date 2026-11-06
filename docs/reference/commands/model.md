@@ -240,16 +240,15 @@ Behaviour:
 
 ## `bussard doc`
 
-Render the handover documentation folder the KNX guidelines prescribe, from the project and the product models in `.bussard/models/`. Offline; never touches the bus.
+Render the handover documentation folder the KNX guidelines prescribe, as Markdown, from the project and the product models in `.bussard/models/`. Offline; never touches the bus.
 
 ```console
-$ bussard doc [--out <DIR>] [--format md|html]
+$ bussard doc [--out <DIR>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--out <DIR>` | `docs/installation` | Where to write the files. Files with the same names are overwritten; others are left alone. |
-| `--format <FORMAT>` | `md` | `md` (Markdown) or `html` (one self-contained page per file, inline styles, no scripts). |
 | `--json` | off | Print the structured document model to stdout instead of writing files. |
 
 | File | Contents |
