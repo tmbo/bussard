@@ -679,29 +679,41 @@ class TestStaleCompatPrompt(unittest.TestCase):
 
 
 class TestProductProperties(unittest.TestCase):
-    """sweep.product_properties takes a device-object property named by type
-    (ObjectType="0") as object 0 (#422)."""
+    """sweep.product_properties leaves a device property a parameter names by
+    type (ObjectType="0") to the product's CompareProp, which knx-sim serves
+    (#422)."""
 
-    def test_product_properties_object_type_zero(self):
+    def _product(self, tmp: Path, app: str, prop: str, binary: str) -> Path:
         import zipfile
 
+        xml = f"""<KNX><ApplicationProgram Id="{app}"><Static>
+          <ParameterTypes><ParameterType Id="{app}_PT-HardwareType" Name="HardwareType">
+            <TypeRestriction Base="BinaryValue" SizeInBit="48">
+              <Enumeration Text="hw" Value="0" Id="{app}_PT-HardwareType_EN-0" BinaryValue="{binary}" />
+            </TypeRestriction></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="{app}_P-2" Name="HardwareType" ParameterType="{app}_PT-HardwareType" Value="0">
+            {prop}
+          </Parameter></Parameters></Static></ApplicationProgram></KNX>"""
+        path = tmp / "p.knxprod"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(f"M-0009/{app}.xml", xml)
+        return path
+
+    def test_product_properties_skips_object_type_zero(self):
         import sweep
 
-        app = "M-0008_A-E000-10-89B0-O0077"
-        xml = f"""<KNX><ApplicationProgram Id="{app}"><Static>
-          <ParameterTypes><ParameterType Id="{app}_PT-hw" Name="t_u8_array_6_hw_id">
-            <TypeRestriction Base="BinaryValue" SizeInBit="48">
-              <Enumeration Text="INKNXUNI001I2" Value="1" Id="{app}_PT-hw_EN-1" BinaryValue="AAAAIAAD" />
-            </TypeRestriction></ParameterType></ParameterTypes>
-          <Parameters><Parameter Id="{app}_P-311" Name="target_hw_id" ParameterType="{app}_PT-hw" Value="1">
-            <Property ObjectType="0" PropertyId="78" Offset="0" BitOffset="0" />
-          </Parameter></Parameters></Static></ApplicationProgram></KNX>"""
+        app = "M-0009_A-7209-10-6610"
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "p.knxprod"
-            with zipfile.ZipFile(path, "w") as z:
-                z.writestr(f"M-0008/{app}.xml", xml)
+            # The Schneider STJAS471 shape: by type, not seeded.
+            path = self._product(Path(tmp), app, '<Property ObjectType="0" PropertyId="78" Offset="0" BitOffset="0" />',
+                                 "Cf//////")
+            self.assertEqual(sweep.product_properties(path, app), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            # By index it still is.
+            path = self._product(Path(tmp), app, '<Property ObjectIndex="0" PropertyId="78" Offset="0" BitOffset="0" />',
+                                 "Cf//////")
             self.assertEqual(sweep.product_properties(path, app),
-                             [{"object": 0, "pid": 78, "value": "000000200003"}])
+                             [{"object": 0, "pid": 78, "value": "09ffffffffff"}])
 
 
 class TestCaptureIpEnabled(unittest.TestCase):
