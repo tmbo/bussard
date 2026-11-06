@@ -171,19 +171,18 @@ carrying another application, or whose load state cannot be read.
 
 ## Loading an application from chat
 
-When a device does not run the application program the lock pins (none
-loaded, or the pinned one left unloaded), the plan says so first: its
-sentences start with "must have its application program loaded". One yes
+When a device does not run the application program the lock pins (another
+one, or none loaded), the plan says so first: its sentences start with
+"must have its application program loaded" and say what it replaces. One yes
 to the plan's question loads the application and writes your project's
 parameters and links with it, as one job. It runs the same functions as
 `bussard flash`: the download, the read-back against your project and the lock
 update, so the result says verified only when the device matches your project.
 When the application's download writes no link table and your links
 differ, the plan says so and the same yes also writes the links afterwards,
-as `bussard apply` does, with its own read-back. A device that runs another
-application, or whose state cannot be read, is refused by the same gate
-`bussard flash` applies: a flash takes no backup, so `bussard flash --force`
-at the terminal stays the way to overwrite it.
+as `bussard apply` does, with its own read-back. A device whose state cannot
+be read, or whose application bussard cannot identify, is refused; `bussard flash --force` at the terminal stays the way
+to overwrite it.
 
 ## Parameters are approved by name
 

@@ -679,6 +679,26 @@ pub fn freshness_refusal(
     }
 }
 
+/// Whether a plan can name what a flash of this verdict replaces: the device
+/// runs another application whose id was read, or (System 7) whose code
+/// sample says what differs. The MCP tier's application load (issue #750)
+/// names it in the plan's sentences, so the human's yes to that plan's
+/// digest is the chat's `--force` for [`freshness_refusal`]; a device that
+/// does not fit the download, whose state is unknown or whose application
+/// cannot be identified gives a plan nothing to name, and stays refused.
+pub fn names_replacement(gate: &Freshness) -> bool {
+    matches!(
+        gate,
+        Freshness::Resident {
+            resident: Some(_),
+            ..
+        } | Freshness::Resident {
+            reason: Some(_),
+            ..
+        }
+    )
+}
+
 /// What a flash finds on the device, in one line: the gate's verdict as a
 /// plan states it.
 pub fn freshness_line(gate: &Freshness) -> String {
@@ -1020,6 +1040,33 @@ mod tests {
         assert!(names.contains("M-0083 A-0007 v35"), "{names}");
         assert!(names.contains("bussard flash --force 1.1.7"), "{names}");
         Ok(())
+    }
+
+    #[test]
+    fn test_names_replacement_only_for_an_identified_application() {
+        let identified = Freshness::Resident {
+            resident: Some("M-0083 A-0007 v35".to_string()),
+            objects: Vec::new(),
+            reason: None,
+        };
+        let sys7 = Freshness::Resident {
+            resident: None,
+            objects: Vec::new(),
+            reason: Some("the code differs".to_string()),
+        };
+        let unidentified = Freshness::Resident {
+            resident: None,
+            objects: Vec::new(),
+            reason: None,
+        };
+        assert!(names_replacement(&identified) && names_replacement(&sys7));
+        assert!(!names_replacement(&unidentified));
+        assert!(!names_replacement(&Freshness::Unknown {
+            reason: "x".to_string()
+        }));
+        assert!(!names_replacement(&Freshness::Mismatch {
+            reason: "x".to_string()
+        }));
     }
 
     #[test]

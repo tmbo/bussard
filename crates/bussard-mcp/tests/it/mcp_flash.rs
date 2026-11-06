@@ -562,13 +562,10 @@ async fn test_knx_apply_device_loads_the_application_into_a_fresh_device() -> an
     Ok(())
 }
 
-/// Issues #750, #895: a device that runs another (identified) application
-/// is refused as `bussard flash` refuses it without `--force`, by the same
-/// gate: a flash takes no backup, and a chat cannot pass `--force`. The
-/// refusal names the resident application and the CLI's way forward, and
-/// nothing is written.
+/// Issue #750: a device that runs another application gets the pinned one
+/// from the plan's one yes; the plan names what it replaces.
 #[tokio::test]
-async fn test_knx_plan_device_refuses_to_load_over_another_application() -> anyhow::Result<()> {
+async fn test_knx_apply_device_loads_the_application_over_another_one() -> anyhow::Result<()> {
     let gateway = MockGateway::builder()
         .channel(CHANNEL)
         .keep_serving()
@@ -584,30 +581,55 @@ async fn test_knx_plan_device_refuses_to_load_over_another_application() -> anyh
     let (client, task) = serve(dir.path(), &gateway).await?;
 
     let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
-    assert_eq!(plan["refused"], true, "plan: {plan}");
+    assert_eq!(plan["method"], "flash", "plan: {plan}");
+    let replaces = plan["flash"]["load_application"]["replaces"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(replaces.contains("M-00FA A-0003 v1"), "{plan}");
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no plan_digest in {plan}"))?
+        .to_string();
+    let started = call(
+        &client,
+        "knx_apply_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )
+    .await?;
+    let done = finish(&client, &started).await?;
+    let result = &done["result"];
+    assert_eq!(result["ok"], true, "{done}");
+    assert_eq!(result["verified"], true, "{done}");
+    assert_eq!(result["load_application"]["loaded"], true, "{done}");
+    let params = gateway.with_device(device_ia()?, |dev| dev.read_mem(ALLOC_BASE + 0x100, 2))?;
+    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
+
+    client.cancel().await?;
+    task.abort();
+    Ok(())
+}
+
+/// Issue #895: a device whose application id cannot be read gives a plan
+/// nothing to name as replaced, so the chat has no `--force` for it: the
+/// plan never offers a digest that loads over it, as `bussard flash`
+/// refuses it without `--force` (the shared gate).
+#[tokio::test]
+async fn test_knx_plan_device_does_not_load_over_an_unidentified_application() -> anyhow::Result<()>
+{
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(120))
+        .device(device_running(None, LS_LOADED)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let (client, task) = serve(dir.path(), &gateway).await?;
+
+    let plan = call(&client, "knx_plan_device", json!({"address": "1.1.4"})).await?;
+    assert!(plan["flash"]["load_application"].is_null(), "{plan}");
     assert!(plan["plan_digest"].is_null(), "{plan}");
-    let reason = plan["reason"].as_str().unwrap_or_default();
-    assert!(reason.contains("M-00FA A-0003 v1"), "{reason}");
-    assert!(
-        reason.contains("`bussard flash --force 1.1.4` at the CLI"),
-        "{reason}"
-    );
-    // The CLI's gate answers the same for the same verdict.
-    let gate = bussard_download::Freshness::Resident {
-        resident: Some("M-00FA A-0003 v1".to_string()),
-        objects: Vec::new(),
-        reason: None,
-    };
-    let cli = bussard_service::flash_flow::decide_freshness(
-        device_ia()?,
-        "127.0.0.1:3671",
-        dir.path(),
-        false,
-        &gate,
-    );
-    assert!(!cli.proceed);
-    let shared = cli.refusal.unwrap_or_default();
-    assert!(reason.ends_with(&shared), "{reason} / {shared}");
     assert_eq!(gateway.with_device(device_ia()?, |dev| dev.writes)?, 0);
 
     client.cancel().await?;

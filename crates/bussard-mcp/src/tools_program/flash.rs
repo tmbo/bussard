@@ -17,8 +17,12 @@
 //! covers this path too. The refusals are the CLI's without `--force`: no
 //! archive pinned in the lock, and the factory-freshness gate
 //! ([`bussard_service::flash_flow::freshness_refusal`], the function `bussard
-//! flash` decides with, issue #895): a device that runs another application,
-//! does not fit the download, or whose state the probe could not read.
+//! flash` decides with, issue #895): a device that does not fit the
+//! download, whose state the probe could not read, or whose application
+//! cannot be identified. A load (issue #750) names the application it
+//! replaces in the plan, so the yes to its digest stands for `--force` there
+//! ([`bussard_service::flash_flow::names_replacement`]); a parameter flash
+//! of a device running another application is refused.
 //!
 //! A self-contained application's download writes no link table (issue
 //! #779). When the links differ from the model, the job writes them after
@@ -38,7 +42,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::flash::{
     DEVICE_OFFLINE_SECONDS, FlashInputs, com_object_words, flash_options,
 };
-use bussard_service::flash_flow::{freshness_line, freshness_refusal};
+use bussard_service::flash_flow::{freshness_line, freshness_refusal, names_replacement};
 use bussard_service::params::BuiltPlan;
 use bussard_service::secure::SecureMaterial;
 use serde_json::{Value, json};
@@ -184,8 +188,11 @@ pub(super) fn flash_image(
         .map_err(|e| format!("cannot flash {target}: {e}"))?;
     let (freshness, gate) = gate_for(&plan, resident, read);
     // The factory-freshness gate of `bussard flash` (issue #79), the same
-    // function, without its `--force` (issue #895).
-    if let Some(refusal) = freshness_refusal(target, &gate, false) {
+    // function (issue #895). A load names the application it replaces in
+    // the plan, so the yes to its digest is the chat's `--force` there
+    // (issue #750); a parameter flash names none and gets no `--force`.
+    let force = matches!(need, FlashNeed::Load(_)) && names_replacement(&gate);
+    if let Some(refusal) = freshness_refusal(target, &gate, force) {
         return Err(match &need {
             FlashNeed::Load(_) => format!("{why}; {refusal}"),
             FlashNeed::Parameters(_) => refusal,
@@ -379,7 +386,10 @@ pub(super) fn load_need(
         resident,
         &app.id,
     )?;
-    if let Some(refusal) = freshness_refusal(target, &gate, false) {
+    // The plan names the application a load replaces, and the yes to its
+    // digest covers that (issue #750): the chat's `--force`, only where
+    // there is something to name.
+    if let Some(refusal) = freshness_refusal(target, &gate, names_replacement(&gate)) {
         return Some(Err(format!("{why}; {refusal}")));
     }
     Some(Ok(LoadNeed { why }))
