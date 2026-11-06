@@ -6,7 +6,10 @@ use crate::bus::event::Event;
 use crate::wire::apdu::{Apci, Apdu};
 use crate::wire::{CemiLData, IndividualAddress};
 
-use super::{Device, DeviceError, DeviceReaction, SecurityLimits, SecurityObject, security_object};
+use super::{
+    Device, DeviceError, DeviceReaction, PID_LOAD_STATE_CONTROL, SecurityLimits, SecurityObject,
+    security_object,
+};
 
 impl Device {
     /// The transport-control "tpci_int" the CCM nonce folds in (spec §5.4): the
@@ -254,6 +257,73 @@ impl Device {
         }
     }
 
+    /// `A_FunctionPropertyExt_Command` / `_State_Read` on PID 5
+    /// (`PID_LOAD_STATE_CONTROL`) of an object reached by type that has a
+    /// load-state machine (bussard issue #422): the Gira Eco
+    /// (`M-0008_A-C02A-21`) loads its vendor object type 40960 with
+    /// `LdCtrlUnload ObjType="40960"`, which ETS sends as
+    /// `[d4 a0 00 00 10 05 04 00 ..]`; the sim did not answer and ETS
+    /// reported "Das Gerät antwortet nicht" (ETS sweep, 2026-11-06). The
+    /// command applies the 10-octet load event; the answer is an
+    /// `A_FunctionPropertyExt_State_Response` with return code 0 and the new
+    /// state, or a non-zero return code and no data when the event is refused
+    /// (PDT_CONTROL, KNX 3/3/7 §3.4.8.4, as the security object answers).
+    /// `None` when the request is not for such an object.
+    fn typed_load_control(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+        object_type: u16,
+    ) -> Result<Option<DeviceReaction>, DeviceError> {
+        let command = match apdu.apci {
+            Apci::FunctionPropertyExtCommand => true,
+            Apci::FunctionPropertyExtStateRead => false,
+            _ => return Ok(None),
+        };
+        if object_type == super::security_object::IOT_SECURITY {
+            return Ok(None);
+        }
+        let Some(header) = apdu.data.get(..5) else {
+            return Ok(None);
+        };
+        let packed =
+            (u32::from(header[2]) << 16) | (u32::from(header[3]) << 8) | u32::from(header[4]);
+        if packed >> 12 != 1 || packed & 0x0FFF != u32::from(PID_LOAD_STATE_CONTROL) {
+            return Ok(None);
+        }
+        let Some(index) = self
+            .objects
+            .iter()
+            .find(|(i, o)| {
+                self.loadables.contains_key(i)
+                    && o.property(super::interface_object::PID_OBJECT_TYPE)
+                        .is_some_and(|p| p.value.as_slice() == object_type.to_be_bytes())
+            })
+            .map(|(i, _)| *i)
+        else {
+            return Ok(None);
+        };
+        let accepted = if command {
+            let body = apdu.data.get(5..).unwrap_or_default();
+            // The by-index load control's checks and events; its answer is
+            // replaced by the State_Response below.
+            self.on_load_state_write(tool, index, 1, 1, body).is_ok()
+        } else {
+            true
+        };
+        let mut data = header.to_vec();
+        match (accepted, self.report_load_state(index)) {
+            (true, Some(state)) => data.extend_from_slice(&[0x00, state]),
+            // E_IMPOSSIBLE_COMMAND (KNX 3/5/1 §6.3.9.3.3), as the security
+            // object answers an event its state machine refuses.
+            _ => data.push(security_object::rc::IMPOSSIBLE_COMMAND),
+        }
+        Ok(Some(DeviceReaction {
+            responses: vec![self.respond(tool, 0x1D6, &data)],
+            did_master_reset: false,
+        }))
+    }
+
     /// Handle an extended property service (`A_PropertyExtValue_*`,
     /// `A_PropertyExtDescription_Read`, `A_FunctionPropertyExt_*`).
     ///
@@ -295,6 +365,11 @@ impl Device {
                     did_master_reset: false,
                 });
             }
+        }
+        if let Some(object_type) = object_type
+            && let Some(reaction) = self.typed_load_control(tool, apdu, object_type)?
+        {
+            return Ok(reaction);
         }
         // The PIDs the `[knxnet]` table sets (bussard issue #391) are written
         // with array semantics below (element counts, both copies in step).

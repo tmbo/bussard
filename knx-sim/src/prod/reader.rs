@@ -357,6 +357,7 @@ fn parse_application_program(
     let mut completes_loads = false;
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
     let mut function_props: Vec<(u8, u8)> = Vec::new();
+    let mut typed_lsm_types: Vec<u16> = Vec::new();
     let mut typed_props: Vec<crate::prod::TypedProperty> = Vec::new();
     let mut object_types: Vec<(u8, u16)> = Vec::new();
     // The `InlineData` length (when any) and `Count` of each property write,
@@ -594,7 +595,20 @@ fn parse_application_program(
                         written_raw.push((target, pid, inline_len, count));
                     }
                 }
-                b"LdCtrlLoadCompleted" if in_app => completes_loads = true,
+                b"LdCtrlUnload" | b"LdCtrlLoad" | b"LdCtrlLoadCompleted" if in_app => {
+                    if e.name().as_ref() == b"LdCtrlLoadCompleted" {
+                        completes_loads = true;
+                    }
+                    // A load control on an object named by type (bussard
+                    // issue #422: the Gira Eco's type 40960).
+                    if parse_u32(&e, "LsmIdx")?.is_none()
+                        && let Some(object_type) =
+                            parse_u32(&e, "ObjType")?.and_then(|v| u16::try_from(v).ok())
+                        && !typed_lsm_types.contains(&object_type)
+                    {
+                        typed_lsm_types.push(object_type);
+                    }
+                }
                 b"LdCtrlTaskSegment" if in_app => {
                     if let Some(lsm) = parse_u32(&e, "LsmIdx")?.and_then(|v| u8::try_from(v).ok())
                         && !task_segment_lsms.contains(&lsm)
@@ -865,6 +879,7 @@ fn parse_application_program(
         task_segment_lsms: completes_loads.then_some(task_segment_lsms),
         compare_mems,
         function_props,
+        typed_lsm_types,
         object_compare_props,
         typed_props,
         object_types,

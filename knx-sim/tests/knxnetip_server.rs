@@ -59,6 +59,7 @@ fn synthetic_system_b_product() -> ProductData {
         task_segment_lsms: None,
         compare_mems: Vec::new(),
         function_props: Vec::new(),
+        typed_lsm_types: Vec::new(),
         object_compare_props: Vec::new(),
         typed_props: Vec::new(),
         object_types: Vec::new(),

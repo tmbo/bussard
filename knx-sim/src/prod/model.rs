@@ -141,6 +141,13 @@ pub struct ProductData {
     /// download). A device of that hardware has them, so the simulated device
     /// declares them as `PDT_FUNCTION` and runs them.
     pub function_props: Vec<(u8, u8)>,
+    /// The interface-object types the application's load controls
+    /// (`LdCtrlUnload`, `LdCtrlLoad`, `LdCtrlLoadCompleted`) name by
+    /// `ObjType` instead of `LsmIdx` (bussard issue #422: the Gira Eco loads
+    /// its vendor object type 40960 that way). A device of that hardware has
+    /// such an object with a load-state machine; ETS drives it with
+    /// `A_FunctionPropertyExt_Command` on PID 5.
+    pub typed_lsm_types: Vec<u16>,
     /// The properties of interface objects other than the device object that
     /// the application's own `LdCtrlCompareProp` preflights expect, as
     /// `(object index, PID, value, element count)` (bussard issue #390: the
