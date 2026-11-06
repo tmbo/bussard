@@ -297,3 +297,142 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
     assert_eq!(d13["mask"], "07B0");
     Ok(())
 }
+
+// --- byte-identity with the pre-#896 JSON -----------------------------------------
+
+/// Loads `tests/fixtures/audit-model` from a temporary copy (a model load may
+/// write `.bussard/`).
+fn fixture_model() -> Result<Model, Box<dyn std::error::Error>> {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/audit-model");
+    let dst =
+        std::env::temp_dir().join(format!("bussard-mcp-audit-fixture-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dst);
+    std::fs::create_dir_all(dst.join("devices"))?;
+    for entry in std::fs::read_dir(&src)? {
+        let entry = entry?;
+        if entry.file_type()?.is_file() {
+            std::fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    for entry in std::fs::read_dir(src.join("devices"))? {
+        let entry = entry?;
+        std::fs::copy(entry.path(), dst.join("devices").join(entry.file_name()))?;
+    }
+    let model = Model::load(&dst)?;
+    let _ = std::fs::remove_dir_all(&dst);
+    Ok(model)
+}
+
+/// The pretty JSON of `value` as the tool returns it (through a `Value`).
+fn pretty<T: serde::Serialize>(value: &T) -> Result<String, Box<dyn std::error::Error>> {
+    Ok(serde_json::to_string_pretty(&serde_json::to_value(value)?)? + "\n")
+}
+
+/// The fixture under `tests/fixtures`.
+fn expected(name: &str) -> Result<String, Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures")
+        .join(name);
+    Ok(std::fs::read_to_string(path)?)
+}
+
+/// The typed `AuditReport` serialises to the same bytes as the untyped
+/// `serde_json::Value` the audit was built as before #896. The fixtures were
+/// captured from that code for this exact input: every section, every
+/// optional field null and set, every Secure probe outcome.
+#[test]
+fn test_audit_report_json_is_byte_identical_to_the_untyped_report() -> TestResult {
+    use bussard_service::audit::{
+        AuditReport, GatewayReport, LiveReport, SampledTelegram, SecureLiveReport, SecureProbe,
+        TrafficReport,
+    };
+    use bussard_transport::knxnet::{GatewayDescription, TunnelSlot};
+    use std::time::{Duration, SystemTime};
+
+    let model = fixture_model()?;
+    let ia = |s: &str| s.parse::<IndividualAddress>();
+    let keyring = [ia("1.1.10")?, ia("1.1.1")?];
+    let mut report = AuditReport::from_model(&model, Some(&keyring));
+
+    let slot = |raw: u16, free: bool, authorisation_required: bool| TunnelSlot {
+        individual_address: raw,
+        free,
+        authorisation_required,
+        usable: true,
+    };
+    let description = GatewayDescription {
+        name: Some("Mock Gate".to_string()),
+        individual_address: Some(0x11FF),
+        tunnel_slots: Some(vec![slot(0x11F1, false, false), slot(0x11F2, true, true)]),
+        additional_individual_addresses: vec![0x11F1, 0x11F2],
+        ..Default::default()
+    };
+    let endpoint: SocketAddrV4 = "192.0.2.10:3671".parse()?;
+
+    let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_000);
+    let mut telegrams = Vec::new();
+    for (ms, source, ga, payload, repeat_flag) in [
+        (0, "1.1.2", "1/0/1", vec![1], false),
+        (100, "1.1.2", "1/0/1", vec![1], false),
+        (2_000, "1.1.2", "1/0/1", vec![0], false),
+        (2_500, "1.1.1", "1/0/2", vec![0], true),
+        (3_000, "1.0.200", "7/7/0", vec![0x0C, 0x1A], false),
+        (4_000, "1.2.3", "1/0/4", vec![], false),
+        (4_100, "1.2.3", "1/0/3", vec![1], false),
+        (4_200, "1.2.3", "1/0/3", vec![1], false),
+        (9_200, "1.2.3", "1/0/3", vec![1], false),
+    ] {
+        telegrams.push(SampledTelegram {
+            at: t0 + Duration::from_millis(ms),
+            source: ia(source)?,
+            ga: ga.parse::<GroupAddress>()?,
+            payload,
+            repeat_flag,
+        });
+    }
+
+    let mut probes = Vec::new();
+    for (address, name, in_keyring, plain_mask, secured_mask) in [
+        (
+            "1.1.10",
+            "Secure dimmer",
+            Some(true),
+            Some(0xFFFF),
+            Some(Some(0x07B0)),
+        ),
+        ("1.1.12", "Secure sensor", Some(false), Some(0xFFFF), None),
+        ("1.1.13", "Gone", None, None, None),
+        ("1.1.14", "Refused", Some(true), Some(0xFFFF), Some(None)),
+        ("1.1.15", "Plain", Some(false), Some(0x0705), None),
+    ] {
+        probes.push(SecureProbe {
+            address: ia(address)?,
+            name: name.to_string(),
+            in_keyring,
+            plain_mask,
+            secured_mask,
+        });
+    }
+
+    report.live = Some(LiveReport {
+        bus: json!({ "state": "connected", "transport": "tunnel" }),
+        gateway: GatewayReport::described(Some(endpoint), &description),
+        scan: None,
+        secure: Some(SecureLiveReport::new(&probes)),
+        traffic: TrafficReport::new(&model, Duration::from_secs(30), &telegrams),
+    });
+
+    assert_eq!(pretty(&report)?, expected("audit-report-live.json")?);
+    assert_eq!(
+        pretty(&AuditReport::from_model(&model, None))?,
+        expected("audit-report-static.json")?
+    );
+    assert_eq!(
+        pretty(&GatewayReport::unavailable(
+            None,
+            "routing transport".to_string()
+        ))?,
+        expected("audit-gateway-error.json")?
+    );
+    Ok(())
+}

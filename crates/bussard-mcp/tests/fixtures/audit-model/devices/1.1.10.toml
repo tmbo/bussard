@@ -1,0 +1,6 @@
+address = "1.1.10"
+name = "Secure dimmer"
+
+[security]
+activated = true
+secure_commissioning = false
