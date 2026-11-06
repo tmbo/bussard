@@ -306,8 +306,15 @@ impl Device {
         let accepted = if command {
             let body = apdu.data.get(5..).unwrap_or_default();
             // The by-index load control's checks and events; its answer is
-            // replaced by the State_Response below.
-            self.on_load_state_write(tool, index, 1, 1, body).is_ok()
+            // replaced by the State_Response below, so the transport
+            // sequence number it took is given back: the dropped answer used
+            // seq 0 and the State_Response went out as seq 1 on a fresh
+            // connection, which ETS refused with T_NAK until the sim gave up
+            // (Gira Eco, ETS sweep 2026-11-06).
+            let saved = self.tx_seq;
+            let ok = self.on_load_state_write(tool, index, 1, 1, body).is_ok();
+            self.tx_seq = saved;
+            ok
         } else {
             true
         };

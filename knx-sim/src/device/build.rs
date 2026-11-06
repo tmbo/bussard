@@ -1304,6 +1304,15 @@ mod tests {
             r.responses.last().ok_or("an answer")?.tpdu[10..],
             [1, 2, 3, 4]
         );
+        // Each answer takes the next transport sequence number; ETS NAKed
+        // the answer that skipped one (Gira Eco capture, 2026-11-06).
+        let r = dev.handle_cemi(&data(&dev, 0x1D5, &[0xA0, 0x00, 0x00, 0x10, 0x05]))?;
+        let resp = r.responses.last().ok_or("an answer")?;
+        assert_eq!(resp.tpdu[0] & 0xC0, 0x40, "numbered data");
+        let seq = (resp.tpdu[0] >> 2) & 0x0F;
+        let r = dev.handle_cemi(&data(&dev, 0x1D4, &event(0x01)))?;
+        let next = (r.responses.last().ok_or("an answer")?.tpdu[0] >> 2) & 0x0F;
+        assert_eq!(next, (seq + 1) & 0x0F, "no sequence number skipped");
         // LoadCompleted: Loaded; the state read says so too.
         let r = dev.handle_cemi(&data(&dev, 0x1D4, &event(0x02)))?;
         assert_eq!(r.responses.last().ok_or("an answer")?.tpdu[8], 0x01);
