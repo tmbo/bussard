@@ -33,6 +33,8 @@ pub fn property_plan(
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
     )
     .ok()?;
     plan.is_property_only().then_some(plan)

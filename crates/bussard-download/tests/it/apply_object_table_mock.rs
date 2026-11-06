@@ -16,9 +16,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use bussard_download::apply::apply_tables;
+use bussard_download::apply::discover_table_objects;
+use bussard_download::object_table::object_table_image;
 use bussard_download::{
-    FlashPlan, SystemBLoad, apply_tables_with, build_table_images, check_object_table,
-    compute_tables, discover_table_objects, object_table_image, plan_flash,
+    FlashPlan, SystemBLoad, build_table_images, check_object_table, compute_tables,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::schema::{Link, Links};
@@ -26,6 +28,8 @@ use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{BoxError, MockDevice, MockGateway, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
+
+use crate::support::plan_flash_default;
 
 const CHANNEL: u8 = 0x54;
 
@@ -127,8 +131,14 @@ fn model(pairs: &[(u16, &str)]) -> Result<Model, BoxError> {
 /// The full flash plan `flash` builds for the device from `model`.
 fn flash_plan(app: &ApplicationProgram, model: &Model) -> TestResult<FlashPlan> {
     let overrides = BTreeMap::new();
-    let images = build_table_images(Some(model), target()?, app, &overrides);
-    Ok(plan_flash(
+    let images = build_table_images(
+        Some(model),
+        target()?,
+        app,
+        &overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
         app,
         &target()?.to_string(),
         0x07B0,
@@ -212,7 +222,7 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
     // The write: the group-object table first, then the link tables.
     let objects = discover_table_objects(&mut l4).await?;
     let desired = compute_tables(&links(&[(1, "1/0/1"), (2, "1/0/2")])?);
-    let outcome = apply_tables_with(
+    let outcome = apply_tables(
         &mut l4,
         objects,
         &desired,
@@ -300,7 +310,7 @@ async fn test_apply_tables_with_keep_tables_loads_only_the_object_table() -> Tes
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let mut l4 = Layer4Connection::connect(&mut bus, target()?, "0.0.255".parse()?).await?;
     let objects = discover_table_objects(&mut l4).await?;
-    let outcome = apply_tables_with(
+    let outcome = apply_tables(
         &mut l4,
         objects,
         &tables,

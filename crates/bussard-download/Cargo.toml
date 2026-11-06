@@ -19,10 +19,7 @@ bussard-secure = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-# The corpus conformance sweep (`sweep` module) buckets every application in a
-# product corpus and serializes a stable, diffable manifest. serde/serde_json
-# are library deps because the manifest types are public and used by both the
-# env-gated corpus test and any tooling that regenerates the checked-in baseline.
+# Backups, device plans and diagnostics serialize to JSON.
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }

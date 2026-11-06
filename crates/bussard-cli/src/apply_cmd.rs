@@ -60,7 +60,7 @@ use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{
     DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, plan, sys7_table_images,
-    write_tables_seeded,
+    write_tables,
 };
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{MaskProfile, system_type};
@@ -865,7 +865,7 @@ fn write_tables_then_parameters(
         let channel = service.lease_channel().await?;
         let secure = bussard_service::secure::layer(tool_key, secure_seq);
         anyhow::Ok(
-            write_tables_seeded(
+            write_tables(
                 channel, target, source, mask, desired, images, secure, load, write_seed,
             )
             .await,

@@ -23,7 +23,7 @@ use crate::backup::{BackupError, DeviceBackup, backups_root, write_device_backup
 use crate::compute::{DesiredTables, compute_tables};
 use crate::flash::Sys7TableBases;
 use crate::plan::PlanReport;
-use crate::tables_sys7::{Sys7LiveTables, Sys7TablesError, read_sys7_tables_at};
+use crate::tables_sys7::{Sys7LiveTables, Sys7TablesError, read_sys7_tables};
 
 /// A device's live tables, whichever family served them.
 ///
@@ -97,18 +97,13 @@ pub enum LiveReadError {
 /// System B is tried first; its `UnsupportedMask` refusal carries the mask, which
 /// routes a System 7 device to the memory-mapped reader instead of failing. Any
 /// other family is reported back as [`LiveRead::UnsupportedMask`].
+///
+/// `bases` are the System 7 table bases the device's product allocates
+/// ([`crate::sys7_table_bases`]), the fallback the System 7 reader uses when
+/// the device does not answer `PID_TABLE_REFERENCE`. Every surface that has
+/// the product at hand reads (and so writes) the tables where the product put
+/// them; System B ignores `bases`.
 pub async fn read_live_tables<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-) -> Result<LiveRead, LiveReadError> {
-    read_live_tables_at(l4, Sys7TableBases::default()).await
-}
-
-/// [`read_live_tables`] with the System 7 table bases the device's product
-/// allocates ([`crate::sys7_table_bases`]), the fallback the System 7 reader
-/// uses when the device does not answer `PID_TABLE_REFERENCE`. Every surface
-/// that has the product at hand reads (and so writes) the tables where the
-/// product put them; System B ignores `bases`.
-pub async fn read_live_tables_at<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     bases: Sys7TableBases,
 ) -> Result<LiveRead, LiveReadError> {
@@ -119,7 +114,7 @@ pub async fn read_live_tables_at<Ch: L4Channel>(
         Err(TablesError::UnsupportedMask { address, mask })
             if MaskProfile::from_mask(mask).capabilities().plan_apply =>
         {
-            let live = read_sys7_tables_at(l4, bases)
+            let live = read_sys7_tables(l4, bases)
                 .await
                 .map_err(|error| LiveReadError::Sys7 { address, error })?;
             Ok(LiveRead::Tables(LiveTables::Sys7(Box::new(live))))
@@ -146,7 +141,7 @@ pub struct NoLinks(pub IndividualAddress);
 /// A device with no links in the model would compute empty tables; that is
 /// almost certainly a mistake (it would wipe the device), so it is refused.
 /// A bare `flash` does load empty tables, as ETS does (issue #542).
-pub fn desired_tables_for(
+pub(crate) fn desired_tables_for(
     model: &Model,
     target: IndividualAddress,
 ) -> Result<DesiredTables, NoLinks> {
@@ -273,44 +268,16 @@ pub fn write_pre_write_backup(
 }
 
 /// Runs the on-bus write sequence for a **System B** device: connect,
-/// authorize, discover the table objects, then [`crate::apply::apply_tables`].
+/// authorize, discover the table objects, then [`crate::apply::apply_tables`]
+/// with `load` (the security object, issue #156, and the group-object table
+/// reload, issue #540).
+///
+/// `seed` carries the device facts the command's read phase verified (issue
+/// #209): the object table replaces the `PID_OBJECT_TYPE` walks of the table
+/// discovery and of the read-back, the max APDU replaces the
+/// `PID_MAX_APDU_LENGTH` read, and the mask replaces the read-back's
+/// descriptor read. The written frames are the same with or without a seed.
 pub async fn write_system_b<Ch: L4Channel>(
-    channel: Ch,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    desired: &DesiredTables,
-    secure: SecureLayer,
-) -> Result<VerifyOutcome, WriteError> {
-    write_system_b_secured(channel, target, source, desired, secure, None).await
-}
-
-/// [`write_system_b`] that also reprograms the KNX Data Secure security object
-/// when `security` is given (issue #156, see
-/// [`apply_tables_secured`](crate::apply::apply_tables_secured)).
-pub async fn write_system_b_secured<Ch: L4Channel>(
-    channel: Ch,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    desired: &DesiredTables,
-    secure: SecureLayer,
-    security: Option<&crate::security::SecurityInputs>,
-) -> Result<VerifyOutcome, WriteError> {
-    let load = crate::apply::SystemBLoad {
-        security,
-        ..Default::default()
-    };
-    write_system_b_seeded(channel, target, source, desired, secure, load, None).await
-}
-
-/// [`write_system_b_secured`] on a connection seeded with the device facts the
-/// command's read phase verified (issue #209): the object table replaces the
-/// `PID_OBJECT_TYPE` walks of the table discovery and of the read-back, the
-/// max APDU replaces the `PID_MAX_APDU_LENGTH` read, and the mask replaces the
-/// read-back's descriptor read. The written frames are the same with or
-/// without a seed; `None` is [`write_system_b_secured`]. `load` adds the
-/// security object and the group-object table reload (issue #540, see
-/// [`crate::apply::apply_tables_with`]).
-pub async fn write_system_b_seeded<Ch: L4Channel>(
     channel: Ch,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -348,7 +315,7 @@ pub async fn write_system_b_seeded<Ch: L4Channel>(
     // opening property read (#116); the table writes then use its chunk size.
     negotiate_session_apdu(&mut l4).await?;
     let objects = discover_table_objects(&mut l4).await?;
-    let result = crate::apply::apply_tables_with(&mut l4, objects, desired, load).await;
+    let result = crate::apply::apply_tables(&mut l4, objects, desired, load).await;
     let _ = l4.disconnect().await;
     result
 }
@@ -418,71 +385,14 @@ pub struct TableWriteSummary {
 }
 
 /// Runs the write for whichever family the device is: the System 7 path when
-/// `sys7_images` is given, the System B path otherwise.
+/// `sys7_images` is given, the System B path ([`write_system_b`], with `load`
+/// and `seed`) otherwise. System 7 devices have no security object and take
+/// no seed; `load` and `seed` are ignored for them.
 ///
 /// A failure that stopped the sequence is returned as its message; a sequence
 /// that ran to the end but did not verify is `Ok` with `ok == false`.
+#[allow(clippy::too_many_arguments)] // the write's inputs; a struct would only rename them
 pub async fn write_tables<Ch: L4Channel>(
-    channel: Ch,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    mask: u16,
-    desired: &DesiredTables,
-    sys7_images: Option<&Sys7TableImages>,
-    secure: SecureLayer,
-) -> Result<TableWriteSummary, String> {
-    write_tables_secured(
-        channel,
-        target,
-        source,
-        mask,
-        desired,
-        sys7_images,
-        secure,
-        None,
-    )
-    .await
-}
-
-/// [`write_tables`] that also reprograms the KNX Data Secure security object of
-/// a System B device when `security` is given (issue #156). System 7 devices
-/// have no security object; `security` is ignored for them.
-#[allow(clippy::too_many_arguments)] // `write_tables`' inputs plus the security inputs
-pub async fn write_tables_secured<Ch: L4Channel>(
-    channel: Ch,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    mask: u16,
-    desired: &DesiredTables,
-    sys7_images: Option<&Sys7TableImages>,
-    secure: SecureLayer,
-    security: Option<&crate::security::SecurityInputs>,
-) -> Result<TableWriteSummary, String> {
-    let load = crate::apply::SystemBLoad {
-        security,
-        ..Default::default()
-    };
-    write_tables_seeded(
-        channel,
-        target,
-        source,
-        mask,
-        desired,
-        sys7_images,
-        secure,
-        load,
-        None,
-    )
-    .await
-}
-
-/// [`write_tables_secured`] with the verified device facts of the read phase
-/// seeded into the System B write connection (see [`write_system_b_seeded`]),
-/// and the System B `load` beyond the link tables: the security object and
-/// the group-object table reload (issue #540). The System 7 path takes no
-/// seed and ignores `load`.
-#[allow(clippy::too_many_arguments)] // `write_tables_secured`' inputs plus the seed
-pub async fn write_tables_seeded<Ch: L4Channel>(
     channel: Ch,
     target: IndividualAddress,
     source: IndividualAddress,
@@ -505,7 +415,7 @@ pub async fn write_tables_seeded<Ch: L4Channel>(
                 object_table: None,
             })
             .map_err(|e| e.to_string()),
-        None => write_system_b_seeded(channel, target, source, desired, secure, load, seed)
+        None => write_system_b(channel, target, source, desired, secure, load, seed)
             .await
             .map(|v| TableWriteSummary {
                 ok: v.ok(),

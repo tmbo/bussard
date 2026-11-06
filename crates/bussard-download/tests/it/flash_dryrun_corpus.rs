@@ -13,7 +13,9 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{PlanError, plan_flash, trace};
+use bussard_download::{PlanError, trace};
+
+use crate::support::plan_flash_default;
 
 #[test]
 fn dry_run_trace_of_real_vendor_procedures() -> Result<(), Box<dyn std::error::Error>> {
@@ -81,7 +83,7 @@ fn dry_run_trace_of_real_vendor_procedures() -> Result<(), Box<dyn std::error::E
             jung_seen = true;
         }
 
-        match plan_flash(
+        match plan_flash_default(
             &app,
             "1.1.4",
             device_mask,

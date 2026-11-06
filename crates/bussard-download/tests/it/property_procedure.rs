@@ -6,12 +6,14 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashStep, PlanError, PropObject, Session, flash, plan_flash};
+use bussard_download::{FlashStep, PlanError, PropObject, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
+
+use crate::support::plan_flash_default;
 
 /// The KNXnet/IP parameter object type.
 const OT_KNXNETIP: u16 = 11;
@@ -99,7 +101,7 @@ async fn connect(gw: &MockGateway) -> TestResult<Transport> {
 }
 
 fn plan_for(app: &ApplicationProgram, mask: u16) -> Result<bussard_download::FlashPlan, PlanError> {
-    plan_flash(
+    plan_flash_default(
         app,
         "1.1.200",
         mask,

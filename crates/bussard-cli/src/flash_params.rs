@@ -149,8 +149,19 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
     // encoder's own placements, so a device holding the model's image decodes
     // to the model and the check cannot misfire on it (issue #142).
     let current = regions_memory(&regions);
-    let decoded = decode_parameters(ctx.app, ctx.overrides, ctx.base_offsets, &current);
-    let change = group_object_change(ctx.app, &decoded.values, ctx.overrides);
+    let decoded = decode_parameters(
+        ctx.app,
+        ctx.overrides,
+        ctx.base_offsets,
+        &current,
+        &bussard_prod::dynamic::DynamicMemo::new(ctx.app),
+    );
+    let change = group_object_change(
+        ctx.app,
+        &decoded.values,
+        ctx.overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(ctx.app),
+    );
     if !change.is_empty() {
         eprintln!(
             "refusing the parameter-only download to {target}: the new parameter values \
@@ -243,7 +254,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         handed_over,
         async |l4| {
             (
-                read_parameter_regions(l4, plan).await,
+                read_parameter_regions(l4, plan, &[]).await,
                 bussard_download::read_parameter_properties(l4, plan, app).await,
             )
         },
@@ -348,7 +359,7 @@ pub(crate) async fn read_parameters_on<Ch: bussard_mgmt::L4Channel>(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> DeviceRead {
-    let regions = read_parameter_regions(l4, plan).await;
+    let regions = read_parameter_regions(l4, plan, &[]).await;
     let properties = bussard_download::read_parameter_properties(l4, plan, app).await;
     let (code_mismatch, table_change) = if plan.is_sys7() {
         (
@@ -676,6 +687,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app()?),
         )?)
     }
 
@@ -773,6 +786,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?)
     }
 

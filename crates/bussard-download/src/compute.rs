@@ -193,7 +193,7 @@ pub fn table_image_with_count(count: usize, elements: &[u8]) -> Vec<u8> {
 /// synthesized value so the device records the real program identity instead of
 /// zeros. `manufacturer`/`application_number` are truncated to their low 16 bits
 /// and `application_version` to its low 8 — the fields the KNX id format defines.
-pub fn app_program_version(
+pub(crate) fn app_program_version(
     manufacturer: u16,
     application_number: u16,
     application_version: u8,
@@ -318,7 +318,7 @@ pub fn compute_group_object_table(descriptors: &[GroupObjectDescriptor]) -> Opti
 /// are 5, 7, 9, 11, 12 and 13 octets, 21 to 254 are 15 to 248 octets
 /// (code - 6), and 255 is 252 octets, the extended-frame maximum. A size with
 /// no code (`LegacyVarData`, 249 to 251 octets, a typo) is `None`.
-pub fn object_size_code(object_size: &str) -> Option<u8> {
+pub(crate) fn object_size_code(object_size: &str) -> Option<u8> {
     let norm = object_size.trim().to_ascii_lowercase();
     let (number, unit) = norm.split_once(' ')?;
     let n: u16 = number.parse().ok()?;
@@ -354,7 +354,7 @@ pub fn object_size_code(object_size: &str) -> Option<u8> {
 /// builders stay infallible; a System B flash plan first refuses an
 /// application that declares such a size ([`unknown_object_sizes`]), so no plan
 /// writes the fallback. (System 7 keeps the product's TYPE octet instead.)
-pub fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
+pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
     object_size.and_then(object_size_code).unwrap_or(0)
 }
 
@@ -362,7 +362,9 @@ pub fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
 /// value field type code (see [`object_size_code`]), as `(id, size)` pairs
 /// sorted by id. A System B flash plan refuses the application when this is
 /// not empty.
-pub fn unknown_object_sizes(app: &bussard_prod::ApplicationProgram) -> Vec<(String, String)> {
+pub(crate) fn unknown_object_sizes(
+    app: &bussard_prod::ApplicationProgram,
+) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = app
         .com_objects
         .values()
@@ -386,7 +388,7 @@ pub fn unknown_object_sizes(app: &bussard_prod::ApplicationProgram) -> Vec<(Stri
 /// to at least one GA; an unlinked object contributes nothing. `linked_objects`
 /// is the set of com-object numbers that appear in the device's links
 /// (i.e. the ASAPs the association table references).
-pub fn descriptors_for_linked_objects(
+pub(crate) fn descriptors_for_linked_objects(
     com_objects: &[ResolvedComObject<'_>],
     linked_objects: &std::collections::BTreeSet<u16>,
 ) -> Vec<GroupObjectDescriptor> {
@@ -446,7 +448,7 @@ pub struct ChannelConfig {
 /// Returns an empty vec when the application declares no module instances or no
 /// channel membership (a non-module application), so a caller can fall back to
 /// its non-expanded path.
-pub fn expand_group_object_descriptors(
+pub(crate) fn expand_group_object_descriptors(
     app: &bussard_prod::ApplicationProgram,
     channel_configs: &[ChannelConfig],
 ) -> Vec<GroupObjectDescriptor> {
@@ -641,7 +643,7 @@ pub fn dynamic_group_object_descriptors(
 /// 1289; the same holds for flat applications (a Jung A-3030 LED dimmer: 470
 /// entries, an ABB BE/S16: 232). An application with no own com-objects (the
 /// DA.tp shape) is counted up to its highest descriptor, as before.
-pub fn group_object_table_count(
+pub(crate) fn group_object_table_count(
     app: &bussard_prod::ApplicationProgram,
     descriptors: &[GroupObjectDescriptor],
 ) -> usize {
@@ -659,7 +661,7 @@ pub fn group_object_table_count(
 /// Builds the group-object table image like [`compute_group_object_table`] but
 /// with at least `count` entries (zero descriptors pad the tail). Returns `None`
 /// when the table would be empty.
-pub fn compute_group_object_table_with_count(
+pub(crate) fn compute_group_object_table_with_count(
     descriptors: &[GroupObjectDescriptor],
     count: usize,
 ) -> Option<Vec<u8>> {
@@ -692,22 +694,9 @@ pub fn compute_group_object_table_with_count(
 /// ([`bussard_prod::dynamic::evaluate_dynamic`]), each shown com-object gets its
 /// descriptor ([`dynamic_group_object_descriptors`]) and the table is counted
 /// by [`group_object_table_count`]. `None` when the table would be empty.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367).
 pub fn dynamic_group_object_table(
-    app: &bussard_prod::ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    linked: &BTreeMap<u16, LinkedObject>,
-) -> Option<Vec<u8>> {
-    dynamic_group_object_table_with(
-        app,
-        overrides,
-        linked,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
-    )
-}
-
-/// [`dynamic_group_object_table`], evaluating the Dynamic section through
-/// `memo` (issue #367). The image is the same.
-pub fn dynamic_group_object_table_with(
     app: &bussard_prod::ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     linked: &BTreeMap<u16, LinkedObject>,
@@ -1011,8 +1000,13 @@ mod tests {
         assert_eq!(table, vec![0x00, 0x03, 0x05, 0x00, 0x06, 0x00, 0x07, 0x00]);
 
         // The Dynamic builder, nothing linked: C cleared, priority kept.
-        let table = dynamic_group_object_table(&app, &BTreeMap::new(), &BTreeMap::new())
-            .ok_or("empty table")?;
+        let table = dynamic_group_object_table(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )
+        .ok_or("empty table")?;
         assert_eq!(table, vec![0x00, 0x03, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
         Ok(())
     }
@@ -1304,10 +1298,13 @@ mod tests {
         };
         let table = |extension: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
             let app = bussard_prod::parse_application_program("A", xml(extension).as_bytes())?;
-            Ok(
-                dynamic_group_object_table(&app, &BTreeMap::new(), &BTreeMap::new())
-                    .ok_or("empty table")?,
+            Ok(dynamic_group_object_table(
+                &app,
+                &BTreeMap::new(),
+                &BTreeMap::new(),
+                &bussard_prod::dynamic::DynamicMemo::new(&app),
             )
+            .ok_or("empty table")?)
         };
         let plugin =
             table(r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#)?;
@@ -1372,7 +1369,13 @@ mod tests {
         linked.insert(4u16, LinkedObject::default());
         let mut overrides = BTreeMap::new();
         overrides.insert("P-1_R-1".to_string(), "1".to_string());
-        let table = dynamic_group_object_table(&app, &overrides, &linked).ok_or("empty table")?;
+        let table = dynamic_group_object_table(
+            &app,
+            &overrides,
+            &linked,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )
+        .ok_or("empty table")?;
         // Count 6 (the declared objects), object 1 shown unlinked (W, low
         // priority: 0x1300), object 4 = module base 4 + 0, linked 2-byte
         // (U T R C, low, size code 8: 0xcf08); everything else zero.

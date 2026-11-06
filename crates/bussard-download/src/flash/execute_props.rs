@@ -10,10 +10,40 @@
 //! property is read back again and compared, so "verified" means the device
 //! holds the values, never that the sequence completed.
 
-use super::props::{compare_property_value, read_property_value, write_property_value};
-use super::session::{Connector, MAX_RESUME_RECONNECTS, Session, resumable_death};
+use super::props::read_property_value;
+use super::session::{Connector, Session};
+use super::steps::{Reboot, StepExecutor, run_shared_step, run_steps, send_restart};
 use super::{FlashOutcome, FlashPlan, FlashStep, Progress};
 use bussard_mgmt::load::{LoadState, WriteError};
+
+/// The property-only step semantics: the shared property steps, and a
+/// restart deferred until after the read-back.
+struct PropertyOnly {
+    /// Whether the plan ends with a restart.
+    restart: bool,
+}
+
+impl StepExecutor for PropertyOnly {
+    fn reboot(&self, _step: &FlashStep) -> Reboot {
+        Reboot::No
+    }
+
+    async fn run<C: Connector, F: FnMut(Progress)>(
+        &mut self,
+        session: &mut Session<C>,
+        _progress: &mut F,
+        _index: usize,
+        step: &FlashStep,
+    ) -> Result<(), WriteError> {
+        if let FlashStep::Restart = step {
+            // Sent after the read-back below: the device is unreachable
+            // while it reboots.
+            self.restart = true;
+            return Ok(());
+        }
+        run_shared_step(session, step).await.unwrap_or(Ok(()))
+    }
+}
 
 /// Runs a property-only `plan` (see [`FlashPlan::is_property_only`]).
 ///
@@ -26,78 +56,10 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
     plan: &FlashPlan,
     mut progress: F,
 ) -> Result<FlashOutcome, WriteError> {
-    let total = plan.steps.len();
-    let mut restart = false;
-    for (i, step) in plan.steps.iter().enumerate() {
-        progress(Progress::Step {
-            index: i + 1,
-            total,
-            label: plan.step_label(step),
-        });
-        let mut reconnects = 0;
-        loop {
-            let result = match step {
-                FlashStep::CompareProp {
-                    object,
-                    prop_id,
-                    expected: Some(expected),
-                    mask,
-                    start_element,
-                } => {
-                    compare_property_value(
-                        session.l4(),
-                        *object,
-                        *prop_id,
-                        *start_element,
-                        expected,
-                        mask.as_deref(),
-                    )
-                    .await
-                }
-                FlashStep::WriteProp {
-                    object,
-                    prop_id,
-                    value,
-                    start_element,
-                    count,
-                    verify,
-                    ..
-                } => {
-                    write_property_value(
-                        session.l4(),
-                        *object,
-                        *prop_id,
-                        *start_element,
-                        *count,
-                        value,
-                        *verify,
-                    )
-                    .await
-                }
-                FlashStep::DescribeProp { object, prop_id } => {
-                    super::props::describe_property(session.l4(), *object, *prop_id).await
-                }
-                FlashStep::Restart => {
-                    // Sent after the read-back below: the device is unreachable
-                    // while it reboots.
-                    restart = true;
-                    Ok(())
-                }
-                // A `Range`-only compare carries no literal expectation.
-                _ => Ok(()),
-            };
-            match result {
-                Ok(()) => break,
-                // A dropped connection: the steps are idempotent, so reconnect
-                // and run the step again (bounded).
-                Err(e) if resumable_death(&e, session) && reconnects < MAX_RESUME_RECONNECTS => {
-                    reconnects += 1;
-                    session.reconnect().await?;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
+    // The steps are idempotent, so a dropped connection reconnects and runs
+    // the step again; nothing cycles the connection proactively.
+    let mut exec = PropertyOnly { restart: false };
+    run_steps(session, plan, 0, &mut progress, &mut exec).await?;
 
     // The read-back: every property the plan wrote, read and compared.
     let mut warnings = Vec::new();
@@ -141,9 +103,8 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
         }
     }
 
-    if restart {
-        let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-        let _ = session.l4().send_data_unacked(apci, &payload).await;
+    if exec.restart {
+        send_restart(session).await;
     }
 
     Ok(FlashOutcome {

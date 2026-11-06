@@ -45,7 +45,7 @@
 //! for each table: the whole segment with the product's attribute octets (the
 //! EK-E72: `03 00 4000 00ed ff 03 80 00` and `03 00 40ed 00eb ff 03 80 00`),
 //! never the written length. `apply` sends the same record, built by the
-//! resolution the full download uses ([`crate::Sys7SegmentOp::alloc_record`]),
+//! resolution the full download uses ([`crate::flash::Sys7SegmentOp::alloc_record`]),
 //! so the two paths cannot diverge; a packed product
 //! (`DynamicTableManagement`, issue #383) gets the moved and resized segments
 //! `flash` allocates. Without the product's op the record falls back to the
@@ -115,10 +115,10 @@ use std::ops::Range;
 
 /// The load-state machine that owns the `0x4000` address-table region
 /// (`[system7-spec §3]`).
-pub const SYS7_ADDRESS_LSM: u8 = 1;
+pub(crate) const SYS7_ADDRESS_LSM: u8 = 1;
 /// The load-state machine that owns the `0x4201` association-table region
 /// (`[system7-spec §3]`).
-pub const SYS7_ASSOCIATION_LSM: u8 = 2;
+pub(crate) const SYS7_ASSOCIATION_LSM: u8 = 2;
 /// The load-state machine that owns the application, whose segment holds the
 /// group-object table (`[system7-spec §3]`).
 pub const SYS7_APPLICATION_LSM: u8 = 3;
@@ -286,7 +286,7 @@ impl Sys7TableAlloc {
     }
 
     /// The `AdditionalLoadControls` record for this allocation, built as
-    /// `flash` builds it ([`crate::Sys7SegmentOp::alloc_record`]).
+    /// `flash` builds it ([`crate::flash::Sys7SegmentOp::alloc_record`]).
     pub fn record(
         &self,
         profile: &Sys7Profile,

@@ -19,7 +19,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use bussard_download::{FlashStep, plan_flash_sys7_with_hawk, select_application};
+use bussard_download::flash::plan_flash_sys7_with_hawk;
+use bussard_download::{FlashStep, select_application};
 
 const JUNG_APP: &str = "M-0004_A-A011-13-60BC-O000A";
 const MASK_0705: u16 = 0x0705;

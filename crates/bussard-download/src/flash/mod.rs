@@ -112,6 +112,7 @@ mod plan_sys7;
 mod props;
 mod restart_form;
 mod session;
+mod steps;
 #[cfg(test)]
 mod test_support;
 mod verify;
@@ -122,15 +123,12 @@ pub use knxnet_ip::{
     ETS_PROJECT_INSTALLATION_ID, ETS_ROUTING_MULTICAST, ETS_ROUTING_TTL, KnxnetIpProgram,
     KnxnetIpWrite, knxnet_ip_program, write_knxnet_ip,
 };
-use labels::step_label;
 pub use labels::trace;
+use labels::{LabelCtx, step_label};
 pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
-pub use plan::{
-    kept_octets, plan_flash, plan_flash_with_memo, plan_flash_with_object_flags, same_program,
-    select_application,
-};
+pub use plan::{kept_octets, plan_flash, same_program, select_application};
 pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
@@ -1421,55 +1419,15 @@ impl FlashPlan {
     /// The human label of one of this plan's steps, as the dry-run trace and the
     /// progress line print it.
     pub fn step_label(&self, step: &FlashStep) -> String {
-        match step {
-            FlashStep::Restart if self.confirmed_restart => {
-                "restart device (confirmed: A_Restart master reset, erase code 1)".to_string()
-            }
-            FlashStep::Sys7AbsSegment {
-                lsm,
-                address,
-                image: Some(img),
-                ..
-            } if self.sys7_read_compare() => format!(
-                "[S7] alloc + stream segment (read-compare, {} octets) to {address:#06X} on LSM {lsm}",
-                img.len
-            ),
-            FlashStep::Sys7StartLoading { lsm } if self.is_parameters_only() => {
-                format!("[S7] check LSM {lsm} is Loaded, then open it for loading (no allocation)")
-            }
-            FlashStep::Unload { target, .. } if self.is_parameters_only() => format!(
-                "check obj{} is Loaded, then unload it (partial download, kept memory)",
-                target.unwrap_or(0)
-            ),
-            FlashStep::AllocateSegment { size, target, .. } if self.is_parameters_only() => {
-                format!(
-                    "re-allocate the {size}-octet segment of obj{} in Mode 0 (keeps its contents)",
-                    target.unwrap_or(0)
-                )
-            }
-            FlashStep::WriteRelMem { offset, image, .. } if self.is_parameters_only() => {
-                let before = self
-                    .baseline_address(&image.segment_id)
-                    .map_or(String::new(), |a| format!(", {a:#06X} before the download"));
-                format!(
-                    "write the differing parameter octets (segment of {} bytes) at the allocated \
-                     base + {offset:#X}{before}",
-                    image.len
-                )
-            }
-            FlashStep::WriteMem { address, image } if self.is_parameters_only() => {
-                let how = if self.sys7_read_compare() {
-                    ", read-compare"
-                } else {
-                    ""
-                };
-                format!(
-                    "write the differing parameter octets (segment of {} bytes{how}) at {address:#06X}",
-                    image.len
-                )
-            }
-            _ => step_label(step),
-        }
+        step_label(
+            step,
+            &LabelCtx {
+                confirmed_restart: self.confirmed_restart,
+                sys7_read_compare: self.sys7_read_compare(),
+                parameters_only: self.is_parameters_only(),
+                baseline_address: Some(&self.baseline_address),
+            },
+        )
     }
 
     /// Whether this plan only reads and writes interface-object properties
@@ -1814,8 +1772,7 @@ impl FlashOutcome {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::flash::plan::plan_flash;
+    use crate::flash::test_support::plan_flash_default;
 
     #[test]
     fn test_security_activated_uses_the_tool_key_hint() {
@@ -1834,7 +1791,7 @@ mod tests {
     #[test]
     fn estimates_are_sane() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -1862,7 +1819,7 @@ mod tests {
     {
         use super::{FlashStep, KnxnetIpProgram, KnxnetIpWrite, PropObject};
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -1912,7 +1869,7 @@ mod tests {
         use super::FlashStep;
         use bussard_mgmt::LoadControl;
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2006,7 +1963,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use super::FlashStep;
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,

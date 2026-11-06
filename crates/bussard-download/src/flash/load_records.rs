@@ -95,87 +95,135 @@ fn system_b_records(step: &FlashStep) -> Vec<LoadControlRecord> {
     }
 }
 
+/// A System 7 record field the plan carries that does not fit the record (the
+/// planner refuses such a plan; a hand-built one can carry it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Sys7FieldOutOfRange {
+    /// The field, as the error names it.
+    pub field: &'static str,
+    /// Its value.
+    pub value: u32,
+}
+
+impl Sys7FieldOutOfRange {
+    /// Why the record cannot carry the value.
+    pub(super) fn detail(&self) -> String {
+        let Self { field, value } = *self;
+        if field == "task control count" {
+            format!(
+                "System 7 task control count {value} does not fit the record's single count octet"
+            )
+        } else {
+            format!("System 7 {field} {value:#X} exceeds the 16-bit A_Memory space")
+        }
+    }
+}
+
+/// `value` as the record's 16-bit field, or the field named out of range.
+fn field_u16(field: &'static str, value: u32) -> Result<u16, Sys7FieldOutOfRange> {
+    u16::try_from(value).map_err(|_| Sys7FieldOutOfRange { field, value })
+}
+
+/// One 10-octet System 7 load event: the LSM it goes to, what it does, and
+/// its octets.
+pub(super) type Sys7Event = (u32, &'static str, [u8; sys7::LOAD_EVENT_SIZE]);
+
+impl FlashStep {
+    /// The 10-octet System 7 event this step sends to its load-state machine,
+    /// as both the executor and [`FlashPlan::load_control_records`] encode it;
+    /// `None` for a step that sends none (or several: the pre-download
+    /// unloads).
+    pub(super) fn sys7_event(&self) -> Option<Result<Sys7Event, Sys7FieldOutOfRange>> {
+        let simple_event = |lsm: u32, control: LoadControl| {
+            Ok((lsm, simple(control), sys7::simple_event(control)))
+        };
+        Some(match self {
+            FlashStep::Sys7Unload { lsm } => simple_event(*lsm, LoadControl::Unload),
+            FlashStep::Sys7StartLoading { lsm } => simple_event(*lsm, LoadControl::StartLoading),
+            FlashStep::Sys7LoadCompleted { lsm } => simple_event(*lsm, LoadControl::LoadCompleted),
+            FlashStep::Sys7AbsSegment {
+                lsm,
+                address,
+                size,
+                mem_type,
+                access,
+                seg_flags,
+                seg_type,
+                ..
+            } => field_u16("segment address", *address).and_then(|address| {
+                let size = field_u16("segment size", *size)?;
+                Ok((
+                    *lsm,
+                    "abs-segment",
+                    sys7::encode_alloc_segment(
+                        *seg_type, address, size, *access, *mem_type, *seg_flags,
+                    ),
+                ))
+            }),
+            FlashStep::Sys7TaskSegment {
+                lsm,
+                address,
+                identity,
+            } => field_u16("task segment address", *address).map(|address| {
+                (
+                    *lsm,
+                    "task-segment",
+                    sys7::encode_task_segment(address, identity),
+                )
+            }),
+            FlashStep::Sys7TaskCtrl1 {
+                lsm,
+                address,
+                count,
+            } => field_u16("task control address", *address).and_then(|address| {
+                let count = u8::try_from(*count).map_err(|_| Sys7FieldOutOfRange {
+                    field: "task control count",
+                    value: *count,
+                })?;
+                Ok((*lsm, "task-ctrl1", sys7::encode_task_ctrl1(address, count)))
+            }),
+            FlashStep::Sys7TaskPtr {
+                lsm,
+                init,
+                save,
+                pei_handler,
+            } => Ok((
+                *lsm,
+                "task-ptr",
+                sys7::encode_task_ptr(*init, *save, *pei_handler),
+            )),
+            FlashStep::Sys7TaskCtrl2 {
+                lsm,
+                callback,
+                com_objects,
+                segment_1,
+                segment_2,
+            } => Ok((
+                *lsm,
+                "task-ctrl2",
+                sys7::encode_task_ctrl2(*callback, *com_objects, *segment_1, *segment_2),
+            )),
+            _ => return None,
+        })
+    }
+}
+
 /// The 10-octet System 7 events of `step`, with the LSM each goes to. A field
 /// the plan validated as out of range (the planner refuses such a plan) yields
 /// no event.
-fn sys7_events(step: &FlashStep) -> Vec<(u32, &'static str, [u8; sys7::LOAD_EVENT_SIZE])> {
-    let simple_event =
-        |lsm: u32, control: LoadControl| (lsm, simple(control), sys7::simple_event(control));
+fn sys7_events(step: &FlashStep) -> Vec<Sys7Event> {
     match step {
         FlashStep::Sys7PreDownloadRestart { unload } => unload
             .iter()
-            .map(|lsm| simple_event(*lsm, LoadControl::Unload))
+            .map(|lsm| {
+                (
+                    *lsm,
+                    simple(LoadControl::Unload),
+                    sys7::simple_event(LoadControl::Unload),
+                )
+            })
             .collect(),
-        FlashStep::Sys7Unload { lsm } => vec![simple_event(*lsm, LoadControl::Unload)],
-        FlashStep::Sys7StartLoading { lsm } => {
-            vec![simple_event(*lsm, LoadControl::StartLoading)]
-        }
-        FlashStep::Sys7LoadCompleted { lsm } => {
-            vec![simple_event(*lsm, LoadControl::LoadCompleted)]
-        }
-        FlashStep::Sys7AbsSegment {
-            lsm,
-            address,
-            size,
-            mem_type,
-            access,
-            seg_flags,
-            seg_type,
-            ..
-        } => match (u16::try_from(*address), u16::try_from(*size)) {
-            (Ok(address), Ok(size)) => vec![(
-                *lsm,
-                "abs-segment",
-                sys7::encode_alloc_segment(
-                    *seg_type, address, size, *access, *mem_type, *seg_flags,
-                ),
-            )],
-            _ => Vec::new(),
-        },
-        FlashStep::Sys7TaskSegment {
-            lsm,
-            address,
-            identity,
-        } => match u16::try_from(*address) {
-            Ok(address) => vec![(
-                *lsm,
-                "task-segment",
-                sys7::encode_task_segment(address, identity),
-            )],
-            Err(_) => Vec::new(),
-        },
-        FlashStep::Sys7TaskCtrl1 {
-            lsm,
-            address,
-            count,
-        } => match (u16::try_from(*address), u8::try_from(*count)) {
-            (Ok(address), Ok(count)) => {
-                vec![(*lsm, "task-ctrl1", sys7::encode_task_ctrl1(address, count))]
-            }
-            _ => Vec::new(),
-        },
-        FlashStep::Sys7TaskPtr {
-            lsm,
-            init,
-            save,
-            pei_handler,
-        } => vec![(
-            *lsm,
-            "task-ptr",
-            sys7::encode_task_ptr(*init, *save, *pei_handler),
-        )],
-        FlashStep::Sys7TaskCtrl2 {
-            lsm,
-            callback,
-            com_objects,
-            segment_1,
-            segment_2,
-        } => vec![(
-            *lsm,
-            "task-ctrl2",
-            sys7::encode_task_ctrl2(*callback, *com_objects, *segment_1, *segment_2),
-        )],
-        _ => Vec::new(),
+        _ => step.sys7_event().and_then(Result::ok).into_iter().collect(),
     }
 }
 

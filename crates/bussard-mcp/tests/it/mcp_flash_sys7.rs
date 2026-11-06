@@ -444,7 +444,7 @@ async fn test_knx_apply_device_flash_whose_device_drops_the_links_is_not_verifie
     let dropping = device(&SYS7_CODE)?.with_hook(|dev, apci, _| {
         if apci == bussard_testkit::consts::A_RESTART {
             dev.memory.insert(
-                u32::from(bussard_download::SYS7_ASSOCIATION_TABLE_ADDR),
+                u32::from(bussard_download::compute_sys7::SYS7_ASSOCIATION_TABLE_ADDR),
                 0x00,
             );
         }

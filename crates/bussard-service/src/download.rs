@@ -165,7 +165,7 @@ pub async fn flash_session<R>(
             l4.set_timeouts(flash_l4_timeouts().unwrap_or_default());
             Session::adopt_with_facts(connector, l4, bcu_key, run.facts).await
         }
-        None => Session::open_with_facts(connector, bcu_key, run.facts).await,
+        None => Session::open(connector, bcu_key, run.facts).await,
     };
     let mut session = match opened {
         Ok(session) => session,
@@ -272,7 +272,9 @@ pub async fn write_parameters(
     }
     let after = service
         .with_l4(target, read_options, async |l4| {
-            Ok::<_, ServiceError>(bussard_download::read_parameter_regions(l4, &detail.plan).await)
+            Ok::<_, ServiceError>(
+                bussard_download::read_parameter_regions(l4, &detail.plan, &[]).await,
+            )
         })
         .await?;
     Ok(

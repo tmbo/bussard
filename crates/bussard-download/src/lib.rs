@@ -39,107 +39,74 @@ pub mod preflight;
 pub mod program;
 pub mod security;
 pub mod security_diag;
-pub mod sweep;
 pub mod tables_sys7;
 
-pub use apply::{
-    SystemBLoad, TableObjectIndexes, VerifyOutcome, apply_tables, apply_tables_secured,
-    apply_tables_with, discover_table_objects, negotiate_session_apdu, read_states,
-    uses_user_memory,
-};
-pub use apply_sys7::{
-    SYS7_ADDRESS_LSM, SYS7_ASSOCIATION_LSM, Sys7ApplyError, Sys7FlagWrite, Sys7TableImages,
-    Sys7VerifyOutcome, apply_sys7_tables, sys7_flag_writes, sys7_table_images,
-};
+// The corpus file walk of the integration tests' sweep, for the env-gated
+// corpus unit tests in `flash`.
+#[cfg(test)]
+#[path = "../tests/it/support/corpus.rs"]
+mod corpus;
+
+pub use apply::{SystemBLoad, uses_user_memory};
+pub use apply_sys7::{Sys7TableImages, sys7_flag_writes, sys7_table_images};
 pub use backup::{
-    AssociationEntry, BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry,
-    ParameterBackup, ParameterMemory, ParameterStatus, ResolvedEntry, Sys7Detail, backups_root,
-    find_device_backup, has_installation_backup, parameter_backups_dir, read_device_backup,
-    read_manifest, read_parameter_backup, write_device_backup, write_manifest,
-    write_parameter_backup,
+    BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterBackup,
+    ParameterMemory, ParameterStatus, backups_root, find_device_backup, has_installation_backup,
+    parameter_backups_dir, read_device_backup, read_parameter_backup, write_device_backup,
+    write_manifest,
 };
 pub use compute::{
-    ChannelConfig, DesiredTables, GroupObjectDescriptor, LinkedObject, Priority,
-    app_program_version, compute_group_object_table, compute_group_object_table_with_count,
-    compute_tables, descriptors_for_linked_objects, dynamic_group_object_descriptors,
-    dynamic_group_object_table, dynamic_group_object_table_with, expand_group_object_descriptors,
-    group_object_table_count, object_size_code, size_code_from_object_size, table_image_with_count,
-    unknown_object_sizes,
+    DesiredTables, GroupObjectDescriptor, compute_tables, dynamic_group_object_descriptors,
 };
-pub use compute_sys7::{
-    SYS7_ADDRESS_REGION_LEN, SYS7_ADDRESS_TABLE_ADDR, SYS7_ASSOCIATION_REGION_LEN,
-    SYS7_ASSOCIATION_TABLE_ADDR, Sys7DecodeError, Sys7GroupObject, decode_sys7_address_table,
-    decode_sys7_association_table, decode_sys7_group_object_table, sys7_address_table,
-    sys7_association_table, sys7_config_byte, sys7_group_object_table,
-};
+pub use compute_sys7::{Sys7GroupObject, decode_sys7_association_table};
 pub use device_plan::{
     ChangeMark, ChangeSubject, DevicePlan, FullImage, ObjectTableWrite, PlanChange, PlanWrites,
     object_changes, sort_changes, state_hash, state_hash_with,
 };
 pub use flash::{
-    AppIdentity, Connector, DeviceFacts, ETS_PROJECT_INSTALLATION_ID, ETS_ROUTING_MULTICAST,
-    ETS_ROUTING_TTL, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
-    KeptOctets, KnxnetIpProgram, KnxnetIpWrite, LoadControlForm, LoadControlRecord,
-    PartialPlanError, PlanError, Progress, PropObject, RebootReadiness, RestartForm, RestartKind,
-    SegmentFill, Session, SingleConnector, Sys7Context, Sys7SegmentOp, Sys7TableBases,
-    VerifyEchoes, allocation_change, compare_property_value, discover_application_object, flash,
-    kept_octets, knxnet_ip_program, plan_flash, plan_flash_sys7_with_hawk, plan_flash_with_memo,
-    plan_flash_with_object_flags, read_property_value, restart_form, same_program,
-    select_application, sys7_profile_from_hawk, sys7_table_bases, trace, write_knxnet_ip,
-    write_property_value,
+    Connector, DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
+    LoadControlForm, PartialPlanError, PlanError, Progress, PropObject, RebootReadiness,
+    RestartForm, RestartKind, Session, Sys7TableBases, allocation_change,
+    discover_application_object, flash, knxnet_ip_program, plan_flash, read_property_value,
+    restart_form, select_application, sys7_table_bases, trace, write_property_value,
 };
 pub use model_params::{
-    OrderNumberError, Sys7Identity, build_module_obj3_descriptors, build_table_images,
-    build_table_images_with, describe_group_object_change, flash_gate, identity_gate,
-    linked_object_flags, malformed_parameter_warning, model_parameters, needs_sys7_identity,
-    parameter_overrides, plan_for_readback, plan_for_readback_with, product_display, region_rows,
-    resolve_by_order_number, runtime_segments, sys7_code_mismatch, sys7_identity, template_ops_for,
-    verify_readback, write_parameter_memory_backup,
+    Sys7Identity, build_table_images, describe_group_object_change, flash_gate, identity_gate,
+    linked_object_flags, model_parameters, needs_sys7_identity, parameter_overrides,
+    plan_for_readback, region_rows, resolve_by_order_number, runtime_segments, sys7_code_mismatch,
+    sys7_identity, template_ops_for, verify_readback, write_parameter_memory_backup,
 };
 pub use object_table::{
-    DescriptorChange, LiveObjectTable, OBJECT_TABLE_INDEX, ObjectTableChange, ObjectTableCheck,
-    ObjectTableOutcome, check_object_table, find_object_table, object_table_image,
-    read_object_table_at, write_object_table,
+    ObjectTableChange, ObjectTableCheck, check_object_table, find_object_table,
+    read_object_table_at,
 };
 pub use param_decode::{
-    DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, attribute_octets_with,
-    decode_parameters, decode_parameters_with, device_managed_octets,
+    DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, decode_parameters,
+    device_managed_octets,
 };
 pub use param_plan::{
-    CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegion,
-    ParamRegions, ParamValue, SYS7_NOTE, current_parameter_values, group_object_change,
-    group_object_change_with, non_default_parameters, param_plan, planned_parameter_regions,
-    read_current_parameter_memory, read_current_parameter_memory_with_objects,
-    read_parameter_regions, read_parameter_regions_with_objects, regions_memory,
+    CurrentMemory, GroupObjectChange, ParamChange, ParamPlan, ParamReading, ParamRegions,
+    ParamValue, SYS7_NOTE, group_object_change, param_plan, planned_parameter_regions,
+    read_current_parameter_memory, read_parameter_regions, regions_memory,
 };
 pub use param_props::{ParamProperty, changed_properties, read_parameter_properties};
-pub use plan::{LoadStep, ObjectGa, PlanReport, plan};
+pub use plan::{ObjectGa, PlanReport, plan};
 pub use preflight::{
-    Freshness, ResidentObject, ResidentState, assess_freshness, format_app_id,
-    probe_resident_state, probe_resident_state_full,
+    Freshness, ProbeScope, ResidentObject, ResidentState, assess_freshness, format_app_id,
+    probe_resident_state,
 };
 pub use program::{
-    LiveRead, LiveReadError, LiveTables, NoLinks, TableWriteSummary, desired_tables_for,
-    desired_tables_for_app, has_no_group_objects, read_live_tables, read_live_tables_at,
+    LiveRead, LiveTables, desired_tables_for_app, has_no_group_objects, read_live_tables,
     render_full_image_plan_text, render_plan_text, write_pre_write_backup, write_sys7,
-    write_system_b, write_system_b_secured, write_system_b_seeded, write_tables,
-    write_tables_secured, write_tables_seeded,
+    write_system_b, write_tables,
 };
 pub use security::{
-    Capacity, DeviceSecurityView, GO_FLAGS_SECURE, GroupKeyEntry, MAX_SEQUENCE, SecureSenderEntry,
-    SecurityInputs, SecurityPlanError, SecurityProgram, SecurityReadback, TableCapacity,
-    build_security_program, check_planned_capacity, decode_sender_table, device_security_view,
-    prepare_security_program, program_security_object, read_security_flags, read_security_object,
-    read_security_sender_table, resolve_table_capacity, secured_senders, security_inputs_for,
-    sender_table_bytes, write_security_program,
+    GroupKeyEntry, SecureSenderEntry, SecurityInputs, SecurityPlanError, SecurityReadback,
+    TableCapacity, build_security_program, check_planned_capacity, device_security_view,
+    program_security_object, read_security_flags, read_security_object, read_security_sender_table,
+    secured_senders, security_inputs_for, sender_table_bytes,
 };
 pub use security_diag::{
-    FailureCounters, FailureKind, LatestFailure, SecurityDiagnostics, clear_security_diagnostics,
-    read_security_diagnostics,
+    SecurityDiagnostics, clear_security_diagnostics, read_security_diagnostics,
 };
-pub use sweep::{
-    AppSweep, FamilyCoverage, ImageClass, ParseClass, PlanClass, ProductSweep, RankedReason,
-    SweepManifest, SweepTotals, classify_application, family_label, manifest_from_products,
-    sweep_corpus, sweep_file,
-};
-pub use tables_sys7::{Sys7LiveTables, Sys7TablesError, read_sys7_tables, read_sys7_tables_at};
+pub use tables_sys7::Sys7LiveTables;

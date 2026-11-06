@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashOptions, FlashStep, Session, build_table_images, flash, plan_flash};
+use bussard_download::{FlashOptions, FlashStep, Session, build_table_images, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::mcb_entry;
 use bussard_testkit::consts::{
@@ -15,6 +15,8 @@ use bussard_testkit::consts::{
 };
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
+
+use crate::support::plan_flash_default;
 
 /// The shape of `A-4945`: no `<ComObject>`, the parameter segment on LSM 4,
 /// the MCB checks of the table objects in `MergeId` 7.
@@ -47,8 +49,14 @@ async fn test_flash_program_without_group_objects_writes_no_table() -> TestResul
     let template =
         bussard_prod::MasterTemplate::builtin_for_mask("07B0").ok_or("a built-in 07B0 template")?;
     let overrides = BTreeMap::new();
-    let tables = build_table_images(None, ia("1.1.1")?, &app, &overrides);
-    let plan = plan_flash(
+    let tables = build_table_images(
+        None,
+        ia("1.1.1")?,
+        &app,
+        &overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(&app),
+    );
+    let plan = plan_flash_default(
         &app,
         "1.1.1",
         0x07B0,

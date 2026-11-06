@@ -23,6 +23,7 @@ mod no_group_objects_mock;
 mod param_readback_roundtrip;
 mod partial_segment;
 mod property_procedure;
+mod support;
 mod sweep_fixtures;
 mod syn_property_param;
 mod sys7_jung_m2_plan;

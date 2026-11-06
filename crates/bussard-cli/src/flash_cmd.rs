@@ -2142,6 +2142,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app("M-0083_A-0001-01-0001")),
         )?;
         let change = bussard_download::PlanChange {
             mark: bussard_download::ChangeMark::Removed,

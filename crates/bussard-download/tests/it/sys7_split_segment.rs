@@ -21,12 +21,15 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+use bussard_download::flash::kept_octets;
 use bussard_download::{
-    FlashPlan, FlashStep, allocation_change, decode_parameters, kept_octets, plan_flash,
-    planned_parameter_regions, regions_memory,
+    FlashPlan, FlashStep, allocation_change, decode_parameters, planned_parameter_regions,
+    regions_memory,
 };
 use bussard_prod::ProductData;
 use zip::write::SimpleFileOptions;
+
+use crate::support::plan_flash_default;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -79,7 +82,7 @@ fn plan(
     overrides: &BTreeMap<String, String>,
 ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
     let app = product.applications.first().ok_or("one application")?;
-    Ok(plan_flash(
+    Ok(plan_flash_default(
         app,
         "1.1.1",
         0x0705,
@@ -155,7 +158,13 @@ fn test_plan_flash_sys7_split_segment_writes_the_two_parts() -> TestResult {
     let held = current.get_mut(SEGMENT).ok_or("the parameter region")?;
     held[1] = 0x00;
     held[2] = 0x0A;
-    let decoded = decode_parameters(app, &BTreeMap::new(), &BTreeMap::new(), &current);
+    let decoded = decode_parameters(
+        app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &current,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
     let names: Vec<String> = decoded.kept.iter().map(|k| k.kept_line()).collect();
     assert_eq!(names.len(), 1, "{names:?}");
@@ -267,7 +276,13 @@ fn test_plan_flash_sys7_static_split_keeps_the_gap() -> TestResult {
         .ok_or("the parameter region")?;
     held[1] = 0x00;
     held[2] = 0x0A;
-    let decoded = decode_parameters(app, &BTreeMap::new(), &BTreeMap::new(), &current);
+    let decoded = decode_parameters(
+        app,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        &current,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
     assert_eq!(decoded.kept.len(), 1, "{:?}", decoded.kept);
     Ok(())

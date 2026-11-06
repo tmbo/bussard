@@ -12,11 +12,11 @@
 //! one:
 //!
 //! * the desired tables come from [`bussard_download::compute_tables`];
-//! * the live read is [`bussard_download::read_live_tables_at`], so both
+//! * the live read is [`bussard_download::read_live_tables`], so both
 //!   device families (System B `x7B0`, System 7 `0705` / `0701`) are read the
 //!   same way, and on System B the group-object table is compared with the
 //!   image the full flash writes (issue #540);
-//! * the write is [`bussard_download::write_system_b_seeded`] /
+//! * the write is [`bussard_download::write_system_b`] /
 //!   [`bussard_download::write_sys7`] after
 //!   [`bussard_download::write_pre_write_backup`]: the same per-device backup,
 //!   the same load sequence, the same read-back verify. A System 7 write ends
@@ -539,7 +539,7 @@ async fn visit(
                 .map(|v| (v.ok(), v.restarted, format!("{v:?}")))
                 .map_err(|e| e.to_string())
         }
-        None => bussard_download::write_system_b_seeded(
+        None => bussard_download::write_system_b(
             channel,
             target.address,
             source,
@@ -758,7 +758,7 @@ async fn verify_after_restart(
     let read = service
         .with_l4(target, &options, async |l4| {
             Ok::<_, ServiceError>(
-                bussard_download::read_live_tables_at(l4, table_bases(product))
+                bussard_download::read_live_tables(l4, table_bases(product))
                     .await
                     .map_err(|e| chain(&e)),
             )
@@ -811,7 +811,7 @@ async fn read_device_and_object_table(
     let options = read_options(source, tool_key, secure_seq);
     service
         .with_l4(target, &options, async |l4| {
-            let read = bussard_download::read_live_tables_at(l4, table_bases(product)).await;
+            let read = bussard_download::read_live_tables(l4, table_bases(product)).await;
             let check = match (&read, product) {
                 (Ok(LiveRead::Tables(live)), Some(product)) if live.sys7().is_none() => {
                     match product.app().map(|app| {
@@ -821,6 +821,7 @@ async fn read_device_and_object_table(
                             Some(model),
                             target,
                             live.tables().mask,
+                            &bussard_prod::dynamic::DynamicMemo::new(app),
                         )
                     }) {
                         Some(Ok(plan)) => bussard_download::check_object_table(l4, &plan).await,

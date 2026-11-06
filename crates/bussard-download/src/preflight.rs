@@ -271,7 +271,7 @@ pub fn format_app_id(bytes: &[u8]) -> String {
 
 /// How much of a System B device the resident-state probe reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProbeScope {
+pub enum ProbeScope {
     /// The load state and `PID_PROGRAM_VERSION` of the application objects,
     /// the only objects whose state decides the verdict (issue #213). Falls
     /// back to [`Full`](ProbeScope::Full) when the table names no application
@@ -293,29 +293,15 @@ enum ProbeScope {
 /// and 4). The other objects' states never change the verdict (see the module
 /// docs), so they are not read, unless the table names no application object or
 /// none of them reports a load state; the probe then reads every object, as
-/// [`probe_resident_state_full`] does, so the verdict is the same one the full
+/// [`ProbeScope::Full`] does, so the verdict is the same one the full
 /// walk gives. System 7 reads every load-state machine either way.
+///
+/// `scope` decides how much of a System B device is read:
+/// [`ProbeScope::Decisive`] is the probe above, [`ProbeScope::Full`] reads the
+/// load state of every interface object (the probe before issue #213). The
+/// verdict is the same; the extra states are for diagnostics and for the tests
+/// that prove the two agree.
 pub async fn probe_resident_state<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    device_mask: u16,
-    sys7_lsm: Option<&LsmAccess>,
-) -> ResidentState {
-    probe_with_scope(l4, device_mask, sys7_lsm, ProbeScope::Decisive).await
-}
-
-/// [`probe_resident_state`] reading the load state of every interface object
-/// (the probe before issue #213). Its verdict is the same; the extra states are
-/// for diagnostics and for the tests that prove the two agree.
-pub async fn probe_resident_state_full<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    device_mask: u16,
-    sys7_lsm: Option<&LsmAccess>,
-) -> ResidentState {
-    probe_with_scope(l4, device_mask, sys7_lsm, ProbeScope::Full).await
-}
-
-/// The probe behind [`probe_resident_state`] and [`probe_resident_state_full`].
-async fn probe_with_scope<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     device_mask: u16,
     sys7_lsm: Option<&LsmAccess>,

@@ -10,7 +10,9 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashStep, plan_flash};
+use bussard_download::FlashStep;
+
+use crate::support::plan_flash_default;
 
 /// The fixture procedure ends with an `LdCtrlCompareRelMem`; `plan_flash` must
 /// now produce a `FlashPlan` (not refuse) and lower that op to a `CompareRelMem`
@@ -22,7 +24,7 @@ fn test_plan_flash_compare_rel_mem_lowers_to_step() -> Result<(), Box<dyn std::e
 
     // Plan against the app's own declared System B mask (07B0) so the System B
     // gate and the mask compare pass and the op lowering is exercised.
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.1",
         0x07B0,
