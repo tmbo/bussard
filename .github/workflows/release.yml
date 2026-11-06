@@ -74,6 +74,19 @@ jobs:
             echo "::error::CHANGELOG.md has no '## [$version]' section; run scripts/changelog.py collect and name the section before tagging"
             exit 1
           fi
+          # GitHub caps a release body at 125 000 characters; a first release
+          # folded from hundreds of fragments is longer. Keep whole lines up
+          # to 100 000 bytes and point at the full entry in CHANGELOG.md.
+          if [ "$(wc -c < release-notes.md)" -gt 100000 ]; then
+            head -c 100000 release-notes.md | sed '$d' > release-notes.cut
+            # GitHub's heading anchor: lowercase, drop everything but letters,
+            # digits, spaces and hyphens, spaces to hyphens.
+            anchor="$(grep -m1 "^## \\[$version\\]" CHANGELOG.md | sed 's/^## //' \
+              | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 -]//g; s/ /-/g')"
+            printf '\n\n*The notes are cut here. The full entry is `## [%s]` in [CHANGELOG.md](https://github.com/%s/blob/%s/CHANGELOG.md#%s).*\n' \
+              "$version" "${{ github.repository }}" "$tag" "$anchor" >> release-notes.cut
+            mv release-notes.cut release-notes.md
+          fi
           gh release create "$tag" --notes-file release-notes.md \
             --title "bussard $tag"
 
