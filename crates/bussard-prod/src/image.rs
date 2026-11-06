@@ -52,9 +52,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
 
 use bussard_ets::application::{
-    ApplicationProgram, CodeSegment, LabelMatch, LoadOp, ParameterType, SegmentFill, SegmentKind,
-    enum_member_by_label,
+    ApplicationProgram, CodeSegment, LabelMatch, LoadOp, Parameter, ParameterType, SegmentFill,
+    SegmentKind, enum_member_by_label,
 };
+use bussard_ets::dynamic::split_selector;
 use bussard_model::text_codec::TextCodec;
 
 use crate::error::{ProdError, Result};
@@ -282,341 +283,346 @@ pub fn compute_parameter_image_placed_with(
                 .to_string(),
         });
     }
-    // Pre-index the first ParameterRef Value override per parameter id, in a
-    // deterministic order (sorted by ref id) so a fixed ref wins reproducibly.
-    let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
-    {
-        let mut refs: Vec<_> = app.parameter_refs.values().collect();
-        refs.sort_by(|a, b| a.id.cmp(&b.id));
-        for r in refs {
-            if let Some(v) = r.value.as_deref() {
-                ref_value.entry(r.ref_id.as_str()).or_insert(v);
-            }
-        }
-    }
-
     validate_segments(app)?;
-
-    // Seed each targeted segment's image from its `<Data>` base (if any), else
-    // empty; grow lazily as parameters are placed.
+    // Each targeted segment's image starts from its `<Data>` base (if any),
+    // else empty, and grows as parameters are placed.
     let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-
-    // The set of application `Parameter` ids a channel's parameter block
-    // references (via `<ParameterRefRef>`), for a module-based application. ETS
-    // only writes a module parameter that a channel actually references; a module
-    // parameter with a `<Memory>` that no channel references (e.g. a `color`
-    // parameter on the DA.tp app) is never written to the image. `None` for a
-    // non-module application, where every parameter is placed as before.
-    let referenced_module_params: Option<std::collections::BTreeSet<String>> =
-        module_referenced_params(app);
-
-    // First, lay every parameter's default/ref value at its declared position
-    // (the vendor-default image). A **module** parameter (its `<Memory>` carries a
-    // `BaseOffset`) is instantiated once per `<Module>` channel, so each instance
-    // is placed at `declared_offset + instance[base_offset]` — the full
-    // channel-expanded default image ETS downloads. A module parameter no channel
-    // references is skipped entirely. Non-module parameters are placed once at
-    // their declared offset; overrides then re-place per-instance below.
-    let mut params: Vec<_> = app.parameters.values().collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
-
-    for param in params {
-        let Some(mem) = param.memory.as_ref() else {
-            continue;
-        };
-        let Some(seg_id) = mem.code_segment.as_deref() else {
-            // A memory block with no segment: nothing to place it into.
-            continue;
-        };
-
-        let pname = param.name.as_deref().unwrap_or(&param.id);
-
-        // Resolve the effective *default* value (chain steps 1-3); explicit
-        // ref-id overrides (step 4) are applied in a second pass so a module
-        // parameter's default lands at its declared offset while each overridden
-        // instance lands at its own instance offset.
-        let value: Option<String> = param.initial_value.clone().or_else(|| {
-            ref_value
-                .get(param.id.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| param.default.clone())
-        });
-
-        let ptype = param
-            .parameter_type
-            .as_deref()
-            .and_then(|id| app.parameter_types.get(id))
-            .map(|d| &d.kind);
-
-        let Some(offset) = mem.offset else {
-            return Err(param_err(app, pname, "memory block is missing its Offset"));
-        };
-        let bit_offset = mem.bit_offset.unwrap_or(0);
-
-        let placement = encode_value(
-            app,
-            pname,
-            ptype,
-            value.as_deref(),
-            ValueSource::VendorDefault,
-        )?;
-
-        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
-
-        // The per-instance byte offsets this parameter's default occupies. For a
-        // module parameter that a channel references, one offset per module
-        // instance (`declared + instance[base_offset]`); for a plain parameter,
-        // just its declared offset.
-        let instance_offsets: Vec<usize> = match (
-            mem.base_offset.as_deref(),
-            referenced_module_params.as_ref(),
-        ) {
-            (Some(base_arg), Some(referenced)) => {
-                // A module parameter: skip it entirely if no channel references it
-                // (ETS never writes it), else place one instance per channel.
-                if !referenced.contains(&param.id) {
-                    continue;
-                }
-                let rel_arg = base_arg
-                    .strip_prefix(&format!("{}_", app.id))
-                    .unwrap_or(base_arg);
-                let mut offsets = Vec::new();
-                for instance in &app.module_instances {
-                    // An argument without a value (an allocator's) refuses
-                    // rather than placing the parameter at base 0 (issue #449).
-                    let Some(base) = instance.arg_values.get(rel_arg).copied() else {
-                        return Err(param_err(
-                            app,
-                            pname,
-                            &format!(
-                                "module instance {} has no value for the BaseOffset \
-                                 argument {rel_arg}",
-                                instance.id
-                            ),
-                        ));
-                    };
-                    let effective = i64::from(offset).checked_add(base).and_then(|v| {
-                        if v >= 0 {
-                            usize::try_from(v).ok()
-                        } else {
-                            None
-                        }
-                    });
-                    let Some(effective) = effective else {
-                        return Err(param_err(
-                            app,
-                            pname,
-                            "module-instance base offset places the parameter at an \
-                             out-of-range address",
-                        ));
-                    };
-                    offsets.push(effective);
-                }
-                offsets
-            }
-            // A plain parameter, or a module parameter in a non-module app: place
-            // once at the declared offset.
-            _ => vec![offset as usize],
-        };
-
-        let image = images
-            .entry(seg_id.to_string())
-            .or_insert_with(|| base_image(app, seg_id));
-
-        for inst_offset in instance_offsets {
-            let range = place_checked(
-                app,
-                pname,
-                image,
-                inst_offset,
-                bit_offset,
-                &placement,
-                seg_size,
-            )?;
-            mark(&mut placed, seg_id, range);
-        }
-    }
-
-    // Union pass: a `<Union>` overlays several member parameters onto one shared
-    // memory region. All members share the same bytes, so ETS writes only the
-    // member marked `DefaultUnionParameter` (or the first member when none is
-    // marked) — writing every member would let an arbitrary one win. Each member
-    // carries a union-relative Offset/BitOffset; lay the chosen member's default
-    // at `union_base + member_offset`, reusing the same bit-packing as parameters
-    // so a union sub-byte field composes correctly over the base image.
-    for union in &app.unions {
-        let Some(mem) = union.memory.as_ref() else {
-            continue;
-        };
-        let Some(seg_id) = mem.code_segment.as_deref() else {
-            continue;
-        };
-        let Some(base_offset) = mem.offset else {
-            continue;
-        };
-
-        // The default union member: the one flagged, else the first declared.
-        let Some(member) = union
-            .members
-            .iter()
-            .find(|mm| mm.is_default)
-            .or_else(|| union.members.first())
-        else {
-            continue;
-        };
-
-        let Some(param) = app.parameters.get(&member.parameter) else {
-            continue;
-        };
-        let pname = param.name.as_deref().unwrap_or(&param.id);
-
-        // The member's default value (a ref override may also target it).
-        let value: Option<String> = param.initial_value.clone().or_else(|| {
-            ref_value
-                .get(param.id.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| param.default.clone())
-        });
-        let ptype = param
-            .parameter_type
-            .as_deref()
-            .and_then(|id| app.parameter_types.get(id))
-            .map(|d| &d.kind);
-        // Union member values come from vendor data (a ParameterRef override or
-        // the member parameter's default), so the vendor-default leniency applies.
-        let placement = encode_value(
-            app,
-            pname,
-            ptype,
-            value.as_deref(),
-            ValueSource::VendorDefault,
-        )?;
-
-        // Member offsets are relative to the union base; a missing member Offset
-        // means "at the base".
-        let (offset, bit_offset) = union_member_position(base_offset, mem.bit_offset, member);
-        let offset = offset as usize;
-        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
-
-        let image = images
-            .entry(seg_id.to_string())
-            .or_insert_with(|| base_image(app, seg_id));
-        let range = place_checked(app, pname, image, offset, bit_offset, &placement, seg_size)?;
-        mark(&mut placed, seg_id, range);
-    }
-
-    // Second pass: apply the caller's explicit overrides, keyed by app-relative
-    // ParameterRef id. Each key resolves to its application `Parameter` (dropping
-    // the module-instance selector and the `_R-<r>` suffix) and, for a module
-    // parameter, to the module-instance selector that picks its per-instance base
-    // offset.
-    for (ref_id, raw_value) in overrides {
-        let resolved = resolve_override_key(app, ref_id)?;
-        let param = resolved.param;
-        let pname = param.name.as_deref().unwrap_or(&param.id);
-
-        // A `<Union>` member has no memory of its own: it is written at the
-        // union's location plus its member offset. A display-only parameter (no
-        // memory, no union) only steers the Dynamic section and is not written.
-        let union_mem;
-        let mem = match param.memory.as_ref() {
-            Some(mem) => mem,
-            None => match union_member_memory(app, &param.id) {
-                Some(mem) => {
-                    union_mem = mem;
-                    &union_mem
-                }
-                None => continue,
-            },
-        };
-        let Some(seg_id) = mem.code_segment.as_deref() else {
-            return Err(param_err(app, ref_id, "memory block names no CodeSegment"));
-        };
-        let Some(declared) = mem.offset else {
-            return Err(param_err(app, ref_id, "memory block is missing its Offset"));
-        };
-        let bit_offset = mem.bit_offset.unwrap_or(0);
-
-        // Resolve the effective byte offset. A module parameter's declared offset
-        // is instance-relative: add the per-instance base the caller supplied for
-        // this module-instance selector. Refuse rather than misplace when the
-        // base is needed but absent.
-        let offset = if mem.base_offset.is_some() {
-            match resolved.module_instance.as_deref() {
-                Some(selector) => {
-                    let base = base_offsets.get(selector).copied().ok_or_else(|| {
-                        param_err(
-                            app,
-                            ref_id,
-                            &format!(
-                                "is a module-instance parameter whose per-instance base offset \
-                                 (selector {selector}) was not supplied; cannot place it without \
-                                 guessing its address"
-                            ),
-                        )
-                    })?;
-                    // Both operands are untrusted vendor/project u32s; a wrapping
-                    // add would silently place the parameter at a bogus address.
-                    declared.checked_add(base).ok_or_else(|| {
-                        param_err(
-                            app,
-                            ref_id,
-                            &format!(
-                                "declared offset {declared} plus per-instance base {base} \
-                                 overflows a 32-bit segment offset"
-                            ),
-                        )
-                    })?
-                }
-                None => {
-                    // A BaseOffset with no module-instance selector on the key:
-                    // the parameter is module-relative but the override did not
-                    // name an instance, so its address is undetermined.
-                    return Err(param_err(
-                        app,
-                        ref_id,
-                        "is a module parameter but its key carries no _M-<m>_MI-<n> \
-                         instance selector; cannot determine its per-instance offset",
-                    ));
-                }
-            }
+    for slot in static_parameter_slots(app, overrides, base_offsets) {
+        let slot = slot?;
+        let source = if slot.is_override {
+            ValueSource::UserOverride
         } else {
-            declared
+            ValueSource::VendorDefault
         };
-
-        let ptype = param
-            .parameter_type
-            .as_deref()
-            .and_then(|id| app.parameter_types.get(id))
-            .map(|d| &d.kind);
-
-        let placement = encode_value(
-            app,
-            pname,
-            ptype,
-            Some(raw_value),
-            ValueSource::UserOverride,
-        )?;
-
-        let seg_size = app.code_segments.get(seg_id).and_then(|s| s.size);
-        let image = images
-            .entry(seg_id.to_string())
-            .or_insert_with(|| base_image(app, seg_id));
-
-        let range = place_checked(
-            app,
-            pname,
-            image,
-            offset as usize,
-            bit_offset,
-            &placement,
-            seg_size,
-        )?;
-        mark(&mut placed, seg_id, range);
+        let range = write_slot(app, &mut images, &slot.slot, slot.value.as_deref(), source)?;
+        mark(&mut placed, slot.slot.segment, range);
     }
 
     apply_erased_fill(app, &mut images, &placed);
     Ok((images, placed))
+}
+
+/// One value the static image builder writes (an application without a
+/// Dynamic-built image, [`uses_dynamic_image`]): where, which value, and the
+/// vendor default of its ref.
+#[derive(Debug, Clone)]
+pub struct StaticSlot<'a> {
+    /// The parameter and where it lands. `param_ref_id` is the device-file key
+    /// the value belongs to: the parameter's first ref (by id) for a vendor
+    /// default, the override's key for an override, and `None` for a module
+    /// parameter's default, placed once per module instance under no key.
+    /// `module` is always `None`.
+    pub slot: ParameterSlot<'a>,
+    /// The value written.
+    pub value: Option<String>,
+    /// The vendor default of the key's ref: what the slot holds when the
+    /// model sets nothing.
+    pub default: Option<String>,
+    /// Whether `value` is the caller's override, encoded strictly, rather
+    /// than a vendor default.
+    pub is_override: bool,
+}
+
+/// The values the static image builder ([`compute_parameter_image`] for an
+/// application without a Dynamic-built image) writes, in write order: every
+/// parameter's vendor default (a module parameter once per module instance a
+/// channel references), the default member of every `<Union>`, then
+/// `overrides` (keyed like [`compute_parameter_image`] takes them), placed
+/// with the module-instance `base_offsets`. Where two slots cover the same
+/// bits, the later one is what the image holds.
+///
+/// Each entry is the slot or the refusal the image builder reports for it (a
+/// memory block without an offset, a key naming no parameter, a module
+/// parameter whose instance base is missing); the read-back decoder skips
+/// the refusals and reads the rest.
+pub fn static_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Vec<Result<StaticSlot<'a>>> {
+    // The first ref (by id) of each parameter, and the first `Value` a ref
+    // gives it: deterministic, so a fixed ref wins reproducibly.
+    let mut refs: Vec<_> = app.parameter_refs.values().collect();
+    refs.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
+    for r in &refs {
+        first_ref.entry(r.ref_id.as_str()).or_insert(r.id.as_str());
+        if let Some(v) = r.value.as_deref() {
+            ref_value.entry(r.ref_id.as_str()).or_insert(v);
+        }
+    }
+    let default_of = |param: &Parameter| -> Option<String> {
+        param.initial_value.clone().or_else(|| {
+            ref_value
+                .get(param.id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| param.default.clone())
+        })
+    };
+    let key_of = |param: &Parameter| {
+        let id = first_ref
+            .get(param.id.as_str())
+            .copied()
+            .unwrap_or(param.id.as_str());
+        id.strip_prefix(&format!("{}_", app.id))
+            .unwrap_or(id)
+            .to_string()
+    };
+    let slot = |param: &'a Parameter, key: Option<String>, segment: &'a str, offset, bit_offset| {
+        ParameterSlot {
+            module: None,
+            param_ref_id: key,
+            parameter: param,
+            segment,
+            offset,
+            bit_offset,
+        }
+    };
+    let default_slot = |param: &'a Parameter, key, segment, offset, bit_offset| {
+        let value = default_of(param);
+        StaticSlot {
+            slot: slot(param, key, segment, offset, bit_offset),
+            default: value.clone(),
+            value,
+            is_override: false,
+        }
+    };
+    let mut out = Vec::new();
+
+    // Every parameter's default at its declared position. A module parameter
+    // (its `<Memory>` carries a `BaseOffset`) is instantiated once per
+    // `<Module>` channel at `declared + instance[base_offset]`, and skipped
+    // when no channel references it (ETS never writes it, e.g. a `color`
+    // parameter on the DA.tp app).
+    let referenced_module_params = module_referenced_params(app);
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    for param in params {
+        let Some(mem) = param.memory.as_ref() else {
+            continue;
+        };
+        let Some(segment) = mem.code_segment.as_deref() else {
+            continue;
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+        let Some(offset) = mem.offset else {
+            out.push(Err(param_err(
+                app,
+                pname,
+                "memory block is missing its Offset",
+            )));
+            continue;
+        };
+        let bit_offset = mem.bit_offset.unwrap_or(0);
+        let (Some(base_arg), Some(referenced)) = (
+            mem.base_offset.as_deref(),
+            referenced_module_params.as_ref(),
+        ) else {
+            // A plain parameter, or a module parameter in a non-module app:
+            // once, at the declared offset.
+            let key = mem.base_offset.is_none().then(|| key_of(param));
+            out.push(Ok(default_slot(
+                param,
+                key,
+                segment,
+                offset as usize,
+                bit_offset,
+            )));
+            continue;
+        };
+        if !referenced.contains(&param.id) {
+            continue;
+        }
+        let rel_arg = base_arg
+            .strip_prefix(&format!("{}_", app.id))
+            .unwrap_or(base_arg);
+        for instance in &app.module_instances {
+            // An argument without a value (an allocator's) refuses rather
+            // than placing the parameter at base 0 (issue #449).
+            let Some(base) = instance.arg_values.get(rel_arg).copied() else {
+                out.push(Err(param_err(
+                    app,
+                    pname,
+                    &format!(
+                        "module instance {} has no value for the BaseOffset argument {rel_arg}",
+                        instance.id
+                    ),
+                )));
+                continue;
+            };
+            let effective = i64::from(offset)
+                .checked_add(base)
+                .and_then(|v| usize::try_from(v).ok());
+            out.push(match effective {
+                Some(at) => Ok(default_slot(param, None, segment, at, bit_offset)),
+                None => Err(param_err(
+                    app,
+                    pname,
+                    "module-instance base offset places the parameter at an out-of-range address",
+                )),
+            });
+        }
+    }
+
+    // A `<Union>` overlays its members on one memory region; ETS writes the
+    // member marked `DefaultUnionParameter` (else the first) at the union's
+    // location plus the member offset.
+    for union in &app.unions {
+        let Some(mem) = union.memory.as_ref() else {
+            continue;
+        };
+        let (Some(segment), Some(base)) = (mem.code_segment.as_deref(), mem.offset) else {
+            continue;
+        };
+        let Some(member) = union
+            .members
+            .iter()
+            .find(|m| m.is_default)
+            .or_else(|| union.members.first())
+        else {
+            continue;
+        };
+        let Some(param) = app.parameters.get(&member.parameter) else {
+            continue;
+        };
+        let (offset, bit_offset) = union_member_position(base, mem.bit_offset, member);
+        out.push(Ok(default_slot(
+            param,
+            Some(key_of(param)),
+            segment,
+            offset as usize,
+            bit_offset,
+        )));
+    }
+
+    // The overrides, each at its parameter's own memory or its union's plus
+    // the member offset; a module parameter's declared offset is
+    // instance-relative, so the instance's base is added. A display-only
+    // parameter (no memory, no union) only steers the Dynamic section.
+    for (key, raw_value) in overrides {
+        let (param, instance) = match resolve_parameter_key(app, key) {
+            Some(found) => found,
+            None => {
+                let reason = match split_selector(key).1.rsplit_once("_R-") {
+                    Some((param, _)) => {
+                        format!("names parameter {param}, which this application does not define")
+                    }
+                    None => "is not a valid parameter key (no _R-<r> ref suffix)".to_string(),
+                };
+                out.push(Err(param_err(app, key, &reason)));
+                continue;
+            }
+        };
+        let Some(mem) = override_memory(app, param) else {
+            continue;
+        };
+        let placed = override_offset(app, key, &mem, instance.as_deref(), base_offsets);
+        let pref = app
+            .parameter_refs
+            .get(&format!("{}_{}", app.id, split_selector(key).1));
+        let default = pref
+            .and_then(|r| r.value.clone())
+            .or_else(|| default_of(param));
+        out.push(placed.map(|(segment, offset)| StaticSlot {
+            slot: slot(param, Some(key.clone()), segment, offset, mem.bit_offset),
+            value: Some(raw_value.clone()),
+            default,
+            is_override: true,
+        }));
+    }
+    out
+}
+
+/// Where an override of a parameter is written: its own `<Memory>`, else
+/// that of the first `<Union>` listing it (with a location), the member
+/// offset added.
+struct OverrideMemory<'a> {
+    segment: Option<&'a str>,
+    offset: Option<u32>,
+    bit_offset: u8,
+    module_relative: bool,
+}
+
+/// The [`OverrideMemory`] of `param`, `None` for a display-only parameter.
+fn override_memory<'a>(
+    app: &'a ApplicationProgram,
+    param: &'a Parameter,
+) -> Option<OverrideMemory<'a>> {
+    if let Some(mem) = param.memory.as_ref() {
+        return Some(OverrideMemory {
+            segment: mem.code_segment.as_deref(),
+            offset: mem.offset,
+            bit_offset: mem.bit_offset.unwrap_or(0),
+            module_relative: mem.base_offset.is_some(),
+        });
+    }
+    app.unions.iter().find_map(|union| {
+        let member = union.members.iter().find(|m| m.parameter == param.id)?;
+        let mem = union.memory.as_ref()?;
+        let (offset, bit_offset) = union_member_position(mem.offset?, mem.bit_offset, member);
+        Some(OverrideMemory {
+            segment: mem.code_segment.as_deref(),
+            offset: Some(offset),
+            bit_offset,
+            module_relative: mem.base_offset.is_some(),
+        })
+    })
+}
+
+/// The segment and byte offset an override of `key` lands at, from its
+/// memory `mem`: the declared offset, plus the per-instance base the caller
+/// supplied for the module-instance selector `instance` when the parameter
+/// is module-relative. Refuses rather than misplace when the base is needed
+/// but absent.
+fn override_offset<'a>(
+    app: &ApplicationProgram,
+    key: &str,
+    mem: &OverrideMemory<'a>,
+    instance: Option<&str>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Result<(&'a str, usize)> {
+    let Some(segment) = mem.segment else {
+        return Err(param_err(app, key, "memory block names no CodeSegment"));
+    };
+    let Some(declared) = mem.offset else {
+        return Err(param_err(app, key, "memory block is missing its Offset"));
+    };
+    if !mem.module_relative {
+        return Ok((segment, declared as usize));
+    }
+    let Some(selector) = instance else {
+        // The parameter is module-relative but the key names no instance.
+        return Err(param_err(
+            app,
+            key,
+            "is a module parameter but its key carries no _M-<m>_MI-<n> instance selector; \
+             cannot determine its per-instance offset",
+        ));
+    };
+    let base = base_offsets.get(selector).copied().ok_or_else(|| {
+        param_err(
+            app,
+            key,
+            &format!(
+                "is a module-instance parameter whose per-instance base offset (selector \
+                 {selector}) was not supplied; cannot place it without guessing its address"
+            ),
+        )
+    })?;
+    // Both operands are untrusted vendor/project u32s; a wrapping add would
+    // silently place the parameter at a bogus address.
+    let offset = declared.checked_add(base).ok_or_else(|| {
+        param_err(
+            app,
+            key,
+            &format!(
+                "declared offset {declared} plus per-instance base {base} overflows a 32-bit \
+                 segment offset"
+            ),
+        )
+    })?;
+    Ok((segment, offset as usize))
 }
 
 /// Validates every segment's decoded `<Data>`/`<Mask>` against its declared
@@ -1274,26 +1280,6 @@ pub fn hidden_slot_value(
     Some(n.saturating_add(base).to_string())
 }
 
-/// The effective memory location of a `<Union>` member parameter: the union's
-/// `<Memory>` with the member's offset added and its bit offset, or `None` when
-/// `param_id` is no union member (or the union has no location).
-fn union_member_memory(
-    app: &ApplicationProgram,
-    param_id: &str,
-) -> Option<bussard_ets::application::Memory> {
-    app.unions.iter().find_map(|union| {
-        let member = union.members.iter().find(|m| m.parameter == param_id)?;
-        let mem = union.memory.as_ref()?;
-        let (offset, bit_offset) = union_member_position(mem.offset?, mem.bit_offset, member);
-        Some(bussard_ets::application::Memory {
-            code_segment: mem.code_segment.clone(),
-            offset: Some(offset),
-            bit_offset: Some(bit_offset),
-            base_offset: mem.base_offset.clone(),
-        })
-    })
-}
-
 /// The byte and bit offset of a `<Union>` member: the union's `<Memory>`
 /// `Offset`/`BitOffset` plus the member's own `Offset`/`BitOffset`, with a bit
 /// offset of 8 or more carried into the byte offset.
@@ -1344,87 +1330,35 @@ fn module_referenced_params(
     Some(out)
 }
 
-/// A resolved override key: the application `Parameter` it names and, for a
-/// module parameter, the module-instance selector (`MD-<d>_M-<m>_MI-<n>`) that
-/// picks its per-instance base offset.
-struct ResolvedOverride<'a> {
-    param: &'a bussard_ets::application::Parameter,
-    /// The `MD-<d>_M-<m>_MI-<n>` selector for a module parameter, else `None`.
-    module_instance: Option<String>,
-}
-
-/// Resolves an app-relative `ParameterRef` id (the part after `@` in a device
-/// parameter key) to its application `Parameter` and module-instance selector.
+/// Resolves a device-file parameter key (`P-3_R-3`,
+/// `MD-1_M-3_MI-1_P-3_R-45`) to the application `Parameter` its ref points at
+/// and, for a module ref, the `MD-<d>_M-<m>_MI-<n>` selector the
+/// module-instance base offsets are keyed by.
 ///
-/// The ref id preserves the module-instance selector and ends in `_R-<r>`; the
-/// application parameter id is the ref id with the `_R-<r>` suffix and the
-/// `_M-<m>_MI-<n>` selector removed (mirroring the model's `key_to_param_id`).
-/// Both the app-relative id (e.g. `MD-1_P-3`) and the fully-qualified id
-/// (`<app>_MD-1_P-3`) are tried, so the map can be keyed either way.
-fn resolve_override_key<'a>(
+/// A key naming no declared ref resolves to the parameter it spells (its
+/// `_R-<r>` suffix dropped, app-relative or full id). `None` when neither
+/// exists.
+pub fn resolve_parameter_key<'a>(
     app: &'a ApplicationProgram,
-    ref_id: &str,
-) -> Result<ResolvedOverride<'a>> {
-    // Strip the trailing `_R-<r>` ref suffix to get the parameter ref.
-    let param_ref = ref_id
-        .rsplit_once("_R-")
-        .map(|(head, _)| head)
-        .ok_or_else(|| {
-            param_err(
-                app,
-                ref_id,
-                "is not a valid parameter key (no _R-<r> ref suffix)",
-            )
-        })?;
-
-    // Strip a module-instance selector, if present, recording it.
-    let (param_rel, module_instance) = split_module_instance(param_ref);
-
-    // Look the parameter up by its full id (app-prefixed) or its app-relative id.
-    let full = format!("{}_{param_rel}", app.id);
-    let param = app
-        .parameters
-        .get(&full)
-        .or_else(|| app.parameters.get(param_rel.as_str()))
-        .ok_or_else(|| {
-            param_err(
-                app,
-                ref_id,
-                &format!("names parameter {param_rel}, which this application does not define"),
-            )
-        })?;
-
-    Ok(ResolvedOverride {
-        param,
-        module_instance,
-    })
-}
-
-/// Splits an app-relative parameter ref into `(param_rel, module_instance)`.
-///
-/// For a module ref `MD-<d>_M-<m>_MI-<n>_<param>` returns
-/// (`MD-<d>_<param>`, `Some("MD-<d>_M-<m>_MI-<n>")`); for a plain ref returns
-/// the ref unchanged and `None`. Mirrors the model's `strip_module_instance`.
-fn split_module_instance(param_ref: &str) -> (String, Option<String>) {
-    if !param_ref.starts_with("MD-") {
-        return (param_ref.to_string(), None);
-    }
-    let Some(m_pos) = param_ref.find("_M-") else {
-        return (param_ref.to_string(), None);
+    key: &str,
+) -> Option<(&'a Parameter, Option<String>)> {
+    let (instance, param_ref) = split_selector(key);
+    let param = match app.parameter_refs.get(&format!("{}_{param_ref}", app.id)) {
+        Some(pref) => app.parameters.get(&pref.ref_id)?,
+        None => {
+            let rel = param_ref.rsplit_once("_R-")?.0;
+            app.parameters
+                .get(&format!("{}_{rel}", app.id))
+                .or_else(|| app.parameters.get(rel))?
+        }
     };
-    let module_def = &param_ref[..m_pos]; // "MD-1"
-    let after = &param_ref[m_pos + 1..]; // "M-3_MI-1_P-3"
-    let Some(mi_pos) = after.find("_MI-") else {
-        return (param_ref.to_string(), None);
-    };
-    let rest = &after[mi_pos + "_MI-".len()..]; // "1_P-3"
-    let Some(obj_pos) = rest.find('_') else {
-        return (param_ref.to_string(), None);
-    };
-    let instance = &rest[..obj_pos]; // "1"
-    let param_part = &rest[obj_pos + 1..]; // "P-3"
-    let selector = format!("{module_def}_{}_MI-{instance}", &after[..mi_pos]);
-    (format!("{module_def}_{param_part}"), Some(selector))
+    // The selector is the key up to the instance number.
+    let selector = instance.and_then(|inst| {
+        let rest = key.strip_prefix(&format!("{inst}_MI-"))?;
+        let n = rest.split('_').next()?;
+        Some(format!("{inst}_MI-{n}"))
+    });
+    Some((param, selector))
 }
 
 /// The base image for a segment: its decoded `<Data>` if present, else empty.

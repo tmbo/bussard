@@ -590,8 +590,7 @@ fn application_placements(app: &ApplicationProgram) -> Vec<Unreached<'_>> {
     params
         .into_iter()
         .filter_map(|param| {
-            let (segment, offset, bit_offset) =
-                static_location_with(param, None, &BTreeMap::new(), &members)?;
+            let (segment, offset, bit_offset) = application_location(param, &members)?;
             Some(Unreached {
                 param,
                 segment,
@@ -834,10 +833,10 @@ fn drop_shadowed<'a>(app: &ApplicationProgram, placed: Vec<Placed<'a>>) -> Vec<P
         .collect()
 }
 
-/// The placements of an application without a Dynamic section, in the order
-/// [`bussard_prod::compute_parameter_image`] writes them: every parameter's
-/// vendor default (module parameters once per module instance), the default
-/// member of every union, then the overrides.
+/// The placements of an application without a Dynamic section: the
+/// encoder's own slot list ([`bussard_prod::static_parameter_slots`]),
+/// without the slots it refuses and the per-instance defaults of module
+/// parameters, which carry no key.
 fn static_placements<'a>(
     app: &'a ApplicationProgram,
     values: &BTreeMap<String, String>,
@@ -845,155 +844,31 @@ fn static_placements<'a>(
 ) -> Vec<Placed<'a>> {
     let canonical =
         |param: &Parameter, v: Option<&str>| bussard_prod::canonical_parameter_value(app, param, v);
-    // The first ref (by id) of each parameter, and its value: the vendor
-    // default the encoder writes.
-    let mut refs: Vec<_> = app.parameter_refs.values().collect();
-    refs.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
-    for r in &refs {
-        first_ref.entry(r.ref_id.as_str()).or_insert(r.id.as_str());
-        if let Some(v) = r.value.as_deref() {
-            ref_value.entry(r.ref_id.as_str()).or_insert(v);
-        }
-    }
-    let default_of = |param: &Parameter| -> Option<String> {
-        param.initial_value.clone().or_else(|| {
-            ref_value
-                .get(param.id.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| param.default.clone())
+    let placed = bussard_prod::static_parameter_slots(app, values, base_offsets)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|s| {
+            let param = s.slot.parameter;
+            Some(Placed {
+                key: s.slot.param_ref_id?,
+                param,
+                segment: s.slot.segment,
+                offset: s.slot.offset,
+                bit_offset: s.slot.bit_offset,
+                user_value: true,
+                reached: true,
+                desired: canonical(param, s.value.as_deref()),
+                default: canonical(param, s.default.as_deref()),
+                shadowed: Vec::new(),
+            })
         })
-    };
-    let mut placed = Vec::new();
-
-    let mut params: Vec<&Parameter> = app.parameters.values().collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
-    for param in params {
-        let Some(mem) = param.memory.as_ref() else {
-            continue;
-        };
-        let (Some(segment), Some(offset)) = (mem.code_segment.as_deref(), mem.offset) else {
-            continue;
-        };
-        // A module parameter's instances: only overrides place them (the
-        // encoder's default expansion across instances carries no ref key).
-        if mem.base_offset.is_some() {
-            continue;
-        }
-        let key = relative_id(
-            app,
-            first_ref
-                .get(param.id.as_str())
-                .unwrap_or(&param.id.as_str()),
-        );
-        let default = canonical(param, default_of(param).as_deref());
-        placed.push(Placed {
-            key,
-            param,
-            segment,
-            offset: offset as usize,
-            bit_offset: mem.bit_offset.unwrap_or(0),
-            user_value: true,
-            reached: true,
-            desired: default.clone(),
-            default,
-            shadowed: Vec::new(),
-        });
-    }
-
-    for union in &app.unions {
-        let Some(mem) = union.memory.as_ref() else {
-            continue;
-        };
-        let (Some(segment), Some(base)) = (mem.code_segment.as_deref(), mem.offset) else {
-            continue;
-        };
-        let Some(member) = union
-            .members
-            .iter()
-            .find(|m| m.is_default)
-            .or_else(|| union.members.first())
-        else {
-            continue;
-        };
-        let Some(param) = app.parameters.get(&member.parameter) else {
-            continue;
-        };
-        let key = relative_id(
-            app,
-            first_ref
-                .get(param.id.as_str())
-                .unwrap_or(&param.id.as_str()),
-        );
-        let bits =
-            u32::from(mem.bit_offset.unwrap_or(0)) + u32::from(member.bit_offset.unwrap_or(0));
-        let offset = base + member.offset.unwrap_or(0) + bits / 8;
-        let default = canonical(param, default_of(param).as_deref());
-        placed.push(Placed {
-            key,
-            param,
-            segment,
-            offset: offset as usize,
-            bit_offset: (bits % 8) as u8,
-            user_value: true,
-            reached: true,
-            desired: default.clone(),
-            default,
-            shadowed: Vec::new(),
-        });
-    }
-
-    for (key, value) in values {
-        let Some((param, instance)) = resolve_key(app, key) else {
-            continue;
-        };
-        let Some((segment, offset, bit_offset)) =
-            static_location(app, param, instance.as_deref(), base_offsets)
-        else {
-            continue;
-        };
-        let pref = app
-            .parameter_refs
-            .get(&format!("{}_{}", app.id, split_selector(key).1));
-        let default = pref
-            .and_then(|r| r.value.clone())
-            .or_else(|| default_of(param));
-        placed.push(Placed {
-            key: key.clone(),
-            param,
-            segment,
-            offset,
-            bit_offset,
-            user_value: true,
-            reached: true,
-            desired: canonical(param, Some(value)),
-            default: canonical(param, default.as_deref()),
-            shadowed: Vec::new(),
-        });
-    }
+        .collect();
     drop_shadowed(app, placed)
 }
 
-/// Where the static encoder writes an override of `param`: its own memory, or
-/// its union's plus the member offset, module base added.
-fn static_location<'a>(
-    app: &'a ApplicationProgram,
-    param: &'a Parameter,
-    instance: Option<&str>,
-    base_offsets: &BTreeMap<String, u32>,
-) -> Option<(&'a str, usize, u8)> {
-    static_location_with(param, instance, base_offsets, &UnionMembers::Scan(app))
-}
-
 /// Where a union member's parameter sits: the first `<Union>` (in document
-/// order) that lists it, and that member.
-enum UnionMembers<'a> {
-    /// Search the unions on each lookup (one lookup).
-    Scan(&'a ApplicationProgram),
-    /// Every member parameter's first union, indexed once (many lookups).
-    Index(HashMap<&'a str, (&'a Union, &'a UnionMember)>),
-}
+/// order) that lists it, and that member, indexed once.
+struct UnionMembers<'a>(HashMap<&'a str, (&'a Union, &'a UnionMember)>);
 
 impl<'a> UnionMembers<'a> {
     /// The index over every union of `app`.
@@ -1006,28 +881,20 @@ impl<'a> UnionMembers<'a> {
                     .or_insert((union, member));
             }
         }
-        UnionMembers::Index(index)
+        UnionMembers(index)
     }
 
     /// The first union listing `param`, and its member entry.
     fn of(&self, param: &str) -> Option<(&'a Union, &'a UnionMember)> {
-        match self {
-            UnionMembers::Scan(app) => app.unions.iter().find_map(|u| {
-                u.members
-                    .iter()
-                    .find(|m| m.parameter == param)
-                    .map(|m| (u, m))
-            }),
-            UnionMembers::Index(index) => index.get(param).copied(),
-        }
+        self.0.get(param).copied()
     }
 }
 
-/// [`static_location`], finding a union member through `members`.
-fn static_location_with<'a>(
+/// Where an application-level parameter is written: its own memory, or its
+/// union's plus the member offset; `None` for a module parameter, whose
+/// offset depends on the instance.
+fn application_location<'a>(
     param: &'a Parameter,
-    instance: Option<&str>,
-    base_offsets: &BTreeMap<String, u32>,
     members: &UnionMembers<'a>,
 ) -> Option<(&'a str, usize, u8)> {
     let (segment, offset, bit_offset, module_relative) = match param.memory.as_ref() {
@@ -1050,39 +917,7 @@ fn static_location_with<'a>(
             )
         }
     };
-    let offset = if module_relative {
-        offset.checked_add(*base_offsets.get(instance?)?)?
-    } else {
-        offset
-    };
-    Some((segment, offset as usize, bit_offset))
-}
-
-/// Resolves a device-file key to its parameter and, for a module ref, the
-/// `MD-<d>_M-<m>_MI-<n>` selector the model's `module_bases` are keyed by.
-pub(crate) fn resolve_key<'a>(
-    app: &'a ApplicationProgram,
-    key: &str,
-) -> Option<(&'a Parameter, Option<String>)> {
-    let (instance, param_ref) = split_selector(key);
-    // The ref's parameter; for a key naming no declared ref, the parameter the
-    // key spells (its `_R-<r>` suffix dropped), as the image builder does.
-    let param = match app.parameter_refs.get(&format!("{}_{param_ref}", app.id)) {
-        Some(pref) => app.parameters.get(&pref.ref_id)?,
-        None => {
-            let rel = param_ref.rsplit_once("_R-")?.0;
-            app.parameters
-                .get(&format!("{}_{rel}", app.id))
-                .or_else(|| app.parameters.get(rel))?
-        }
-    };
-    // The selector is the key up to the instance number.
-    let selector = instance.and_then(|inst| {
-        let rest = key.strip_prefix(&format!("{inst}_MI-"))?;
-        let n = rest.split('_').next()?;
-        Some(format!("{inst}_MI-{n}"))
-    });
-    Some((param, selector))
+    (!module_relative).then_some((segment, offset as usize, bit_offset))
 }
 
 /// The width in bits of a value of `ptype`, `None` when it depends on the
