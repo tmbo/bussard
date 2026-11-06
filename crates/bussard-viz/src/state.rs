@@ -1,23 +1,22 @@
 //! The shared application state held behind the axum router.
 //!
 //! [`AppState`] bundles everything a handler needs: the loaded model (behind a
-//! swappable [`ModelHandle`]), the [`TrafficHub`], and the optional bus
+//! swappable [`ModelHandle`]) and its memoised projection, the [`TrafficHub`],
+//! and the optional bus
 //! connection ([`BusStatus`]) used for status reporting and group writes. The
 //! whole thing is cloneable (`Arc` inside) so axum can share it across handlers.
 //!
-//! The model lives behind a [`ModelHandle`], a thin layer over the shared
-//! [`bussard_service::ModelHandle`] (the same one the MCP server uses, issue
-//! #86): it reloads by itself when the files on disk change, and
+//! The model lives behind the shared [`ModelHandle`] (the same one the MCP
+//! server uses, issue #86): it reloads by itself when the files on disk change, and
 //! `POST /api/reload` (issue #65) installs a freshly loaded model explicitly.
 //! Every reader (the model/state endpoints, the write gate, the decode feeder)
 //! reads through the handle, so a new model is picked up without a restart.
 
-use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use bussard_bus::{BusHandle, BusState};
-use bussard_model::Model;
-use bussard_service::BusService;
+use bussard_service::{BusService, ModelHandle};
 use bussard_transport::TransportKind;
 use bussard_transport::write_gate::is_loopback_gateway;
 use serde_json::{Value, json};
@@ -143,141 +142,38 @@ impl BusStatus {
     }
 }
 
-/// An immutable, versioned snapshot of the loaded model and its projection.
+/// The memoised `/api/model` projection of a [`ModelHandle`]: recomputed only
+/// when the model's version changes. Cloning shares the cache.
 ///
-/// A reload builds a fresh snapshot (bumping [`version`](ModelSnapshot::version))
-/// and swaps it into the [`ModelHandle`] in one move, so a reader never sees a
-/// half-updated model or a projection that disagrees with its model.
-pub struct ModelSnapshot {
-    /// The loaded model, shared for on-demand decoding and write resolution.
-    pub model: Arc<Model>,
-    /// The precomputed `/api/model` JSON projection of [`model`](Self::model).
-    pub json: Arc<Value>,
-    /// A monotonically increasing version, bumped on every successful reload.
-    /// The initial snapshot is version 1.
-    pub version: u64,
-}
+/// A `std::sync::Mutex` is deliberate: the lock is held only to compare a
+/// version and clone an `Arc`, never across an `await`.
+#[derive(Clone, Default)]
+pub struct Projection(Arc<Mutex<Option<Versioned>>>);
 
-impl ModelSnapshot {
-    /// Builds a snapshot from a model, precomputing its `/api/model` projection.
-    pub fn new(model: Model, version: u64) -> Self {
-        Self::from_shared(Arc::new(model), version)
-    }
+/// A projection and the model version it was made from.
+type Versioned = (u64, Arc<Value>);
 
-    /// Builds a snapshot from a shared model, precomputing its projection.
-    pub fn from_shared(model: Arc<Model>, version: u64) -> Self {
-        Self::from_shared_in(model, version, None)
-    }
-
-    /// Builds a snapshot from a shared model loaded from `dir`, joining the
-    /// product models under `dir` (vendor texts, choice labels, defaults) onto
-    /// the parameter values of the projection. `None` projects without them.
-    pub fn from_shared_in(model: Arc<Model>, version: u64, dir: Option<&Path>) -> Self {
-        let products = dir
-            .map(|d| project::product_models_for(&model, d))
-            .unwrap_or_default();
-        let json = Arc::new(project::project_model_with(&model, &products));
-        ModelSnapshot {
-            model,
-            json,
-            version,
-        }
-    }
-}
-
-/// The viz server's handle to the current [`ModelSnapshot`].
-///
-/// Cloning is cheap (`Arc`s). The model itself lives in a shared
-/// [`bussard_service::ModelHandle`]; this adds the `/api/model` projection,
-/// recomputed only when the model's version changes. Readers call
-/// [`current`](Self::current); `POST /api/reload` calls
-/// [`install`](Self::install) after `Model::load` succeeded, so a broken model
-/// never replaces a good one.
-///
-/// A `std::sync::RwLock` is deliberate: every access is synchronous and holds
-/// the lock only long enough to clone one `Arc`, so it never blocks the async
-/// runtime.
-#[derive(Clone)]
-pub struct ModelHandle {
-    shared: bussard_service::ModelHandle,
-    projection: Arc<RwLock<Arc<ModelSnapshot>>>,
-    /// The model directory, whose product models the projection reads;
-    /// `None` for an in-code model.
-    dir: Option<PathBuf>,
-}
-
-impl ModelHandle {
-    /// A handle over a model that only changes through
-    /// [`install`](Self::install) (version 1). For in-code models in tests.
-    pub fn new(model: Model) -> Self {
-        Self::over(bussard_service::ModelHandle::fixed(model), None)
-    }
-
-    /// A handle that also reloads by itself when the files under `dir` change,
-    /// like the MCP server's model: a `protected: true` saved in an editor is in
-    /// force on the next write without anyone pressing reload.
-    pub fn watching(dir: PathBuf, model: Model) -> Self {
-        Self::over(
-            bussard_service::ModelHandle::new(dir.clone(), model),
-            Some(dir),
-        )
-    }
-
-    /// A projection over a model handle someone else already holds, such as
-    /// the MCP server's: a reload or edit there shows on the next request
-    /// here, without a second load or a second watcher. `dir` is the model
-    /// directory whose product models the projection reads.
-    pub fn from_shared(shared: bussard_service::ModelHandle, dir: Option<PathBuf>) -> Self {
-        Self::over(shared, dir)
-    }
-
-    /// Wraps a shared service handle, projecting its current model.
-    fn over(shared: bussard_service::ModelHandle, dir: Option<PathBuf>) -> Self {
-        let (model, version) = shared.snapshot();
-        let snapshot = ModelSnapshot::from_shared_in(model, version, dir.as_deref());
-        ModelHandle {
-            shared,
-            projection: Arc::new(RwLock::new(Arc::new(snapshot))),
-            dir,
-        }
-    }
-
-    /// Returns the current snapshot, reprojecting only when the model changed.
+impl Projection {
+    /// The projection of `model`'s current version, joining the product
+    /// models under `dir` (vendor texts, choice labels, defaults) onto the
+    /// parameter values, and that version.
     ///
     /// A poisoned lock (a panicking writer) is recovered so a single panic
     /// cannot wedge every reader.
-    pub fn current(&self) -> Arc<ModelSnapshot> {
-        let (model, version) = self.shared.snapshot();
+    pub fn get(&self, model: &ModelHandle, dir: &Path) -> (u64, Arc<Value>) {
+        let (model, version) = model.snapshot();
+        if let Some((cached, json)) = &*self.0.lock().unwrap_or_else(|p| p.into_inner())
+            && *cached == version
         {
-            let cached = self.projection.read().unwrap_or_else(|p| p.into_inner());
-            if cached.version == version {
-                return cached.clone();
-            }
+            return (version, json.clone());
         }
-        let next = Arc::new(ModelSnapshot::from_shared_in(
-            model,
-            version,
-            self.dir.as_deref(),
-        ));
-        let mut guard = self.projection.write().unwrap_or_else(|p| p.into_inner());
-        if guard.version < next.version {
-            *guard = next;
+        let products = project::product_models_for(&model, dir);
+        let json = Arc::new(project::project_model_with(&model, &products));
+        let mut guard = self.0.lock().unwrap_or_else(|p| p.into_inner());
+        if guard.as_ref().is_none_or(|(cached, _)| *cached < version) {
+            *guard = Some((version, json.clone()));
         }
-        guard.clone()
-    }
-
-    /// Installs `model` as the next version and returns its snapshot.
-    ///
-    /// Only ever called after `Model::load` succeeds, so a broken model never
-    /// reaches this method (the reload handler keeps serving the old one).
-    pub fn install(&self, model: Model) -> Arc<ModelSnapshot> {
-        self.shared.install(model);
-        self.current()
-    }
-
-    /// The shared model handle underneath, for code that needs the model only.
-    pub fn shared(&self) -> &bussard_service::ModelHandle {
-        &self.shared
+        (version, json)
     }
 }
 
@@ -309,8 +205,10 @@ pub struct Security {
 /// The shared application state, cloned into every handler by axum.
 #[derive(Clone)]
 pub struct AppState {
-    /// The current model snapshot, swappable via `POST /api/reload`.
+    /// The current model, swappable via `POST /api/reload`.
     pub model: ModelHandle,
+    /// The memoised `/api/model` projection of [`model`](Self::model).
+    pub projection: Projection,
     /// The model directory, re-read by the reload endpoint.
     pub dir: std::path::PathBuf,
     /// The sequenced telegram hub feeding the SSE stream and state endpoint.
@@ -319,6 +217,13 @@ pub struct AppState {
     pub bus: BusStatus,
     /// The browser-facing security policy (write permission, `Host` allow-list).
     pub security: Security,
+}
+
+impl AppState {
+    /// The `/api/model` projection of the current model, and its version.
+    pub fn model_json(&self) -> (u64, Arc<Value>) {
+        self.projection.get(&self.model, &self.dir)
+    }
 }
 
 #[cfg(test)]
@@ -355,28 +260,29 @@ mod tests {
         assert_eq!(j["transport"], Value::Null);
     }
 
-    // --- ModelHandle install semantics -----------------------------------------
+    // --- Projection memo ---------------------------------------------------------
 
     use std::collections::BTreeMap;
 
-    use bussard_model::GroupAddress;
+    use bussard_model::Model;
     use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 
-    /// A single-GA model: `3/0/4` named `name`, optionally `protected`.
-    fn model_with(name: &str, protected: bool) -> Model {
-        let ga: GroupAddress = "3/0/4".parse().expect("ga");
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A single-GA model: `3/0/4` named `name`.
+    fn model_with(name: &str) -> Result<Model, Box<dyn std::error::Error>> {
         let mut groups = BTreeMap::new();
         groups.insert(
-            ga,
+            "3/0/4".parse()?,
             Group {
                 name: name.to_string(),
-                dpt: Some("1.001".parse().expect("dpt")),
+                dpt: Some("1.001".parse()?),
                 description: None,
-                protected,
+                protected: false,
                 secure: false,
             },
         );
-        Model {
+        Ok(Model {
             config: BussardConfig::default(),
             groups: Groups {
                 project: None,
@@ -388,63 +294,26 @@ mod tests {
                 links: BTreeMap::new(),
             },
             devices: BTreeMap::new(),
-        }
+        })
     }
 
     #[test]
-    fn test_model_handle_initial_version_is_one() {
-        let handle = ModelHandle::new(model_with("A", false));
-        assert_eq!(handle.current().version, 1);
-    }
+    fn test_projection_get_follows_the_installed_version() -> TestResult {
+        let handle = ModelHandle::fixed(model_with("Old")?);
+        let projection = Projection::default();
+        let dir = Path::new("/nonexistent");
+        let (version, before) = projection.get(&handle, dir);
+        assert_eq!(version, 1);
+        assert_eq!(before["groups"][0]["name"], "Old");
+        // Unchanged version: the cached projection itself.
+        assert!(Arc::ptr_eq(&before, &projection.get(&handle, dir).1));
 
-    #[test]
-    fn test_model_handle_install_installs_new_snapshot_and_version() {
-        let handle = ModelHandle::new(model_with("Old", false));
-        let before = handle.current();
-        assert_eq!(before.version, 1);
-        assert_eq!(before.json["stats"]["groups"], 1);
-
-        // A reload installs the next model at version 2.
-        handle.install(model_with("New", false));
-
-        let after = handle.current();
-        assert_eq!(after.version, 2);
-        // The precomputed projection tracks the new model.
-        assert_eq!(after.json["groups"][0]["name"], "New");
-        // The old snapshot Arc still points at the old model (readers holding it
-        // are unaffected by the swap).
-        assert_eq!(before.json["groups"][0]["name"], "Old");
-    }
-
-    #[test]
-    fn test_model_handle_install_reflects_new_protected_flag() {
-        // The protected-GA gate reads through the handle, so a newly protected
-        // GA must be visible immediately after a swap.
-        let ga: GroupAddress = "3/0/4".parse().expect("ga");
-        let handle = ModelHandle::new(model_with("Living Room Blind", false));
-        assert!(
-            !handle
-                .current()
-                .model
-                .groups
-                .groups
-                .get(&ga)
-                .expect("ga")
-                .protected
-        );
-
-        handle.install(model_with("Living Room Blind", true));
-
-        assert!(
-            handle
-                .current()
-                .model
-                .groups
-                .groups
-                .get(&ga)
-                .expect("ga")
-                .protected,
-            "the swapped-in model's protected flag must be visible"
-        );
+        handle.install(model_with("New")?);
+        let (version, after) = projection.get(&handle, dir);
+        assert_eq!(version, 2);
+        assert_eq!(after["groups"][0]["name"], "New");
+        // A reader holding the old projection is unaffected by the swap.
+        assert_eq!(before["groups"][0]["name"], "Old");
+        Ok(())
     }
 }
