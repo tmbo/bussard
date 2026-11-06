@@ -257,6 +257,57 @@ impl Device {
         }
     }
 
+    /// `A_FunctionPropertyExt_Command` / `_State_Read` on a function property
+    /// of an object reached by type (KNX 3/3/7 §3.4.8): the answer is an
+    /// `A_FunctionPropertyExt_State_Response` with return code 00h and no
+    /// output data (bussard issue #422: the Gira IR-Gateway calls PID 208 of
+    /// type 65281 with `FF`, `[d4 ff 01 00 10 d0 ff]`; the sim acknowledged it
+    /// at the transport layer and never answered, and ETS reported "Das Gerät
+    /// antwortet nicht", ETS sweep 2026-11-06). `None` when the property is
+    /// not a function property of such an object (the security object and
+    /// the KNXnet/IP object keep their own handlers).
+    fn typed_function_call(
+        &mut self,
+        tool: IndividualAddress,
+        apdu: &Apdu,
+        object_type: u16,
+    ) -> Option<DeviceReaction> {
+        if !matches!(
+            apdu.apci,
+            Apci::FunctionPropertyExtCommand | Apci::FunctionPropertyExtStateRead
+        ) || object_type == security_object::IOT_SECURITY
+            || object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER
+        {
+            return None;
+        }
+        let header = apdu.data.get(..5)?;
+        let packed =
+            (u32::from(header[2]) << 16) | (u32::from(header[3]) << 8) | u32::from(header[4]);
+        if packed >> 12 != 1 {
+            return None;
+        }
+        let pid = u8::try_from(packed & 0x0FFF).ok()?;
+        let is_type = |o: &super::InterfaceObject| {
+            o.property(super::interface_object::PID_OBJECT_TYPE)
+                .is_some_and(|p| p.value.as_slice() == object_type.to_be_bytes())
+        };
+        let function = self
+            .typed_objects
+            .get(&object_type)
+            .or_else(|| self.objects.values().find(|o| is_type(o)))
+            .and_then(|o| o.property(pid))
+            .is_some_and(|p| p.is_function());
+        if !function {
+            return None;
+        }
+        let mut data = header.to_vec();
+        data.push(0x00);
+        Some(DeviceReaction {
+            responses: vec![self.respond(tool, 0x1D6, &data)],
+            did_master_reset: false,
+        })
+    }
+
     /// `A_FunctionPropertyExt_Command` / `_State_Read` on PID 5
     /// (`PID_LOAD_STATE_CONTROL`) of an object reached by type that has a
     /// load-state machine (bussard issue #422): the Gira Eco
@@ -375,6 +426,11 @@ impl Device {
         }
         if let Some(object_type) = object_type
             && let Some(reaction) = self.typed_load_control(tool, apdu, object_type)?
+        {
+            return Ok(reaction);
+        }
+        if let Some(object_type) = object_type
+            && let Some(reaction) = self.typed_function_call(tool, apdu, object_type)
         {
             return Ok(reaction);
         }

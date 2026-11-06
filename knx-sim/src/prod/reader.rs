@@ -262,6 +262,36 @@ fn merge_element_compares<K: PartialEq + Clone>(
         .collect()
 }
 
+/// The PDT code and element size of a `PropType` name of the product
+/// schema (KNX 3/7/3 Standardized Identifier Tables §4.1).
+/// `None` for a type without a fixed element size.
+fn pdt_by_name(name: &str) -> Option<(u8, usize)> {
+    if let Some(n) = name.strip_prefix("PDT_GENERIC_") {
+        let size: u8 = n.parse().ok()?;
+        return (1..=20)
+            .contains(&size)
+            .then(|| (0x10 + size, usize::from(size)));
+    }
+    Some(match name {
+        "PDT_CHAR" => (0x01, 1),
+        "PDT_UNSIGNED_CHAR" => (0x02, 1),
+        "PDT_INT" => (0x03, 2),
+        "PDT_UNSIGNED_INT" => (0x04, 2),
+        "PDT_KNX_FLOAT" => (0x05, 2),
+        "PDT_DATE" => (0x06, 3),
+        "PDT_TIME" => (0x07, 3),
+        "PDT_LONG" => (0x08, 4),
+        "PDT_UNSIGNED_LONG" => (0x09, 4),
+        "PDT_FLOAT" => (0x0A, 4),
+        "PDT_DOUBLE" => (0x0B, 8),
+        "PDT_CHAR_BLOCK" => (0x0C, 10),
+        "PDT_POLL_GROUP_SETTINGS" => (0x0D, 3),
+        "PDT_SHORT_CHAR_BLOCK" => (0x0E, 5),
+        "PDT_DATE_TIME" => (0x0F, 8),
+        _ => return None,
+    })
+}
+
 /// Decode an even-length hex string (as used by `InlineData`); `None` on any
 /// malformed input rather than a partial value.
 ///
@@ -358,12 +388,17 @@ fn parse_application_program(
     let mut compare_mems: Vec<(u16, Vec<u8>)> = Vec::new();
     let mut function_props: Vec<(u8, u8)> = Vec::new();
     let mut typed_lsm_types: Vec<u16> = Vec::new();
+    let mut typed_function_props: Vec<(u16, u8)> = Vec::new();
     let mut typed_props: Vec<crate::prod::TypedProperty> = Vec::new();
     let mut object_types: Vec<(u8, u16)> = Vec::new();
     // The `InlineData` length (when any) and `Count` of each property write,
     // sized after the parse from the parameters the product stores in the
     // property (issue #841).
     let mut written_raw: Vec<(PropTarget, u8, Option<usize>, u16)> = Vec::new();
+    // The last element any property write reaches (`StartElement` + `Count`
+    // - 1), and the `LdCtrlDeclarePropDesc` data types (bussard issue #422).
+    let mut write_ends: Vec<(PropTarget, u8, usize)> = Vec::new();
+    let mut declared_descs: Vec<(PropTarget, u8, u8, usize)> = Vec::new();
     let mut type_bits: std::collections::HashMap<String, TypeSize> = Default::default();
     let mut prop_locs: Vec<PropLocation> = Vec::new();
     let mut cur_ptype: Option<String> = None;
@@ -587,6 +622,20 @@ fn parse_application_program(
                         (None, Some(object_type)) => Some(PropTarget::Type(object_type)),
                         (None, None) => None,
                     };
+                    let start = parse_u32(&e, "StartElement")?
+                        .and_then(|v| usize::try_from(v).ok())
+                        .unwrap_or(1)
+                        .max(1);
+                    if let (Some(target), Some(pid)) = (target, pid) {
+                        let end = start + usize::from(count.max(1)) - 1;
+                        match write_ends
+                            .iter_mut()
+                            .find(|(t, p, _)| *t == target && *p == pid)
+                        {
+                            Some(entry) => entry.2 = entry.2.max(end),
+                            None => write_ends.push((target, pid, end)),
+                        }
+                    }
                     if let (Some(target), Some(pid)) = (target, pid)
                         && !written_raw
                             .iter()
@@ -616,13 +665,42 @@ fn parse_application_program(
                         task_segment_lsms.push(lsm);
                     }
                 }
+                b"LdCtrlDeclarePropDesc" if in_app => {
+                    let object = parse_u32(&e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok());
+                    let object_type = parse_u32(&e, "ObjType")?.and_then(|v| u16::try_from(v).ok());
+                    let target = match (object, object_type) {
+                        (Some(object), _) => Some(PropTarget::Index(object)),
+                        (None, Some(object_type)) => Some(PropTarget::Type(object_type)),
+                        (None, None) => None,
+                    };
+                    let pid = parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok());
+                    if let (Some(target), Some(pid), Some((pdt, size))) = (
+                        target,
+                        pid,
+                        attr(&e, "PropType").and_then(|t| pdt_by_name(&t)),
+                    ) && !declared_descs
+                        .iter()
+                        .any(|(t, p, _, _)| *t == target && *p == pid)
+                    {
+                        declared_descs.push((target, pid, pdt, size));
+                    }
+                }
                 b"LdCtrlInvokeFunctionProp" if in_app => {
                     let object = parse_u32(&e, "ObjIdx")?.and_then(|v| u8::try_from(v).ok());
+                    let object_type = parse_u32(&e, "ObjType")?.and_then(|v| u16::try_from(v).ok());
                     let pid = parse_u32(&e, "PropId")?.and_then(|v| u8::try_from(v).ok());
-                    if let (Some(object), Some(pid)) = (object, pid)
-                        && !function_props.contains(&(object, pid))
-                    {
-                        function_props.push((object, pid));
+                    match (object, object_type, pid) {
+                        (Some(object), _, Some(pid))
+                            if !function_props.contains(&(object, pid)) =>
+                        {
+                            function_props.push((object, pid));
+                        }
+                        (None, Some(object_type), Some(pid))
+                            if !typed_function_props.contains(&(object_type, pid)) =>
+                        {
+                            typed_function_props.push((object_type, pid));
+                        }
+                        _ => {}
                     }
                 }
                 b"LdCtrlCompareMem" if in_app => {
@@ -814,10 +892,32 @@ fn parse_application_program(
     // parameters it holds (issue #841).
     let mut written_prop_pdts: Vec<(u8, u8, u8)> = Vec::new();
     for &(target, pid, inline_len, count) in &written_raw {
-        let len = inline_len
+        let mut len = inline_len
             .or_else(|| declared_extent(&prop_locs, &type_bits, target, pid))
             .unwrap_or(usize::from(count.max(1)));
-        let pdt = declared_pdt(&prop_locs, &type_bits, target, pid, len, count);
+        let mut count = count;
+        let mut pdt = declared_pdt(&prop_locs, &type_bits, target, pid, len, count);
+        // A property the procedure declares (`LdCtrlDeclarePropDesc`) is an
+        // array of elements of the declared type, as many as the writes
+        // reach and the stored parameters fill (bussard issue #422: the Gira
+        // Eco declares type 40960's PID 69 PDT_GENERIC_04 and writes elements
+        // 1-25 and 176-200; ETS read 14 elements of it and the sim, holding
+        // one element of 794 octets, refused).
+        if let Some(&(_, _, declared, size)) = declared_descs
+            .iter()
+            .find(|(t, p, _, _)| *t == target && *p == pid)
+        {
+            let reached = write_ends
+                .iter()
+                .find(|(t, p, _)| *t == target && *p == pid)
+                .map_or(usize::from(count.max(1)), |&(_, _, end)| end);
+            let elements = len.div_ceil(size).max(reached);
+            if let Ok(n) = u16::try_from(elements) {
+                len = elements * size;
+                count = n;
+                pdt = Some(declared);
+            }
+        }
         match target {
             PropTarget::Index(object) => {
                 written_props.push((object, pid, len, count));
@@ -894,6 +994,7 @@ fn parse_application_program(
         compare_mems,
         function_props,
         typed_lsm_types,
+        typed_function_props,
         object_compare_props,
         typed_props,
         object_types,
@@ -1406,6 +1507,32 @@ mod tests {
             pd.device_compare_props
                 .contains(&(72, vec![1, 0, 0, 1, 0, 0, 0, 0, 0, 0]))
         );
+        Ok(())
+    }
+
+    /// Bussard issue #422: a declared property (`LdCtrlDeclarePropDesc`) is
+    /// an array of its declared type as far as the writes reach.
+    #[test]
+    fn test_parse_application_program_sizes_declared_arrays()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX><ApplicationProgram Id="M-0008_A-C02A-21-B6D8-O007C" ApplicationNumber="49194" ApplicationVersion="33" MaskVersion="MV-07B0">
+           <Static><LoadProcedures><LoadProcedure MergeId="6">
+            <LdCtrlDeclarePropDesc ObjType="40960" PropId="69" PropType="PDT_GENERIC_04" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+            <LdCtrlWriteProp AppliesTo="all" ObjType="40960" PropId="69" Count="25" Verify="true" />
+            <LdCtrlWriteProp AppliesTo="all" ObjType="40960" PropId="69" StartElement="176" Count="25" Verify="true" />
+            <LdCtrlDeclarePropDesc ObjIdx="6" PropId="53" PropType="PDT_UNSIGNED_CHAR" MaxElements="14" ReadAccess="0" WriteAccess="0" Writable="true" />
+            <LdCtrlWriteProp ObjIdx="6" PropId="53" Count="14" Verify="false" InlineData="00000000000000000000" />
+           </LoadProcedure></LoadProcedures></Static>
+          </ApplicationProgram></KNX>"#;
+        let pd = parse_application_program(xml, None)?.ok_or("parsed")?;
+        let t = pd
+            .typed_props
+            .iter()
+            .find(|t| t.object_type == 40960 && t.pid == 69)
+            .ok_or("PID 69")?;
+        assert_eq!((t.len, t.count, t.pdt), (800, 200, Some(0x14)));
+        // The Siemens 0701 shape: 14 one-octet elements, not ten octets.
+        assert!(pd.written_props.contains(&(6, 53, 14, 14)));
         Ok(())
     }
 
