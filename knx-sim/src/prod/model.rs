@@ -148,6 +148,11 @@ pub struct ProductData {
     /// such an object with a load-state machine; ETS drives it with
     /// `A_FunctionPropertyExt_Command` on PID 5.
     pub typed_lsm_types: Vec<u16>,
+    /// The function properties `LdCtrlInvokeFunctionProp` steps call on an
+    /// object named by type, as `(object type, PID)` (bussard issue #422: the
+    /// Gira IR-Gateway calls PID 208 of type 65281 with `FF`; ETS sends it as
+    /// `A_FunctionPropertyExt_Command`).
+    pub typed_function_props: Vec<(u16, u8)>,
     /// The properties of interface objects other than the device object that
     /// the application's own `LdCtrlCompareProp` preflights expect, as
     /// `(object index, PID, value, element count)` (bussard issue #390: the

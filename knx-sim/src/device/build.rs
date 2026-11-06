@@ -859,6 +859,24 @@ fn typed_objects_for(
             }
         }
     }
+    // A function property the procedure calls by type
+    // (`LdCtrlInvokeFunctionProp ObjType=…`, bussard issue #422).
+    for &(object_type, pid) in &product.typed_function_props {
+        if object_type == super::knxnet_object::IOT_KNXNET_IP_PARAMETER {
+            continue;
+        }
+        let obj = typed_objects.entry(object_type).or_insert_with(|| {
+            let mut io = InterfaceObject::new();
+            io.set_property(
+                PID_OBJECT_TYPE,
+                Property::read_only(object_type.to_be_bytes().to_vec()),
+            );
+            io
+        });
+        if !obj.has_property(pid) {
+            obj.set_property(pid, Property::function());
+        }
+    }
     (knxnet, typed_objects)
 }
 
@@ -1294,6 +1312,20 @@ mod tests {
                 "event {e}"
             );
         }
+        // ETS's read of 14 elements from 1 `[cc a0 00 00 10 45 0e 00 01]`:
+        // PID 69 is declared PDT_GENERIC_04 and written up to element 200, so
+        // 14 four-octet elements come back (the sim refused it as one element).
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1CC,
+            &[0xA0, 0x00, 0x00, 0x10, 0x45, 0x0E, 0x00, 0x01],
+        ))?;
+        let resp = &r.responses.last().ok_or("an answer")?.tpdu;
+        assert_eq!(
+            resp[2..10],
+            [0xA0, 0x00, 0x00, 0x10, 0x45, 0x0E, 0x00, 0x01]
+        );
+        assert_eq!(resp.len() - 10, 14 * 4);
         // PID 69 at element 176, one 4-octet element, and its read-back.
         let mut write = vec![0xA0, 0x00, 0x00, 0x10, 69, 1, 0, 176];
         write.extend_from_slice(&[1, 2, 3, 4]);
@@ -1320,6 +1352,37 @@ mod tests {
         assert_eq!(
             r.responses.last().ok_or("an answer")?.tpdu[7..],
             [0x00, 0x01]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_calls_a_vendor_function_by_type()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Gira IR-Gateway (`M-0008_A-E000-10`)
+        // compares PID 207 of type 65281 and calls its PID 208 with FF. ETS
+        // sent `[d4 ff 01 00 10 d0 ff]` and got only the T_ACK (ETS sweep,
+        // 2026-11-06).
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlCompareProp AppliesTo="all" InlineData="01" ObjType="65281" PropId="207" />
+              <LdCtrlInvokeFunctionProp AppliesTo="all" ObjType="65281" PropId="208" InlineData="FF" />"#,
+        );
+        let pd = app_product(&xml)?;
+        assert_eq!(pd.typed_function_props, vec![(65281, 208)]);
+        let mut dev = connected_device(&pd)?;
+        let r = dev.handle_cemi(&data(&dev, 0x1D4, &[0xFF, 0x01, 0x00, 0x10, 0xD0, 0xFF]))?;
+        let resp = &r.responses.last().ok_or("an answer")?.tpdu;
+        assert_eq!(resp[1..], [0xD6, 0xFF, 0x01, 0x00, 0x10, 0xD0, 0x00]);
+        // The compared property is still a data property.
+        let r = dev.handle_cemi(&data(
+            &dev,
+            0x1CC,
+            &[0xFF, 0x01, 0x00, 0x10, 0xCF, 0x01, 0x00, 0x01],
+        ))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu.last(),
+            Some(&0x01)
         );
         Ok(())
     }
