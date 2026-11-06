@@ -1137,6 +1137,9 @@ def flow_catalog_add(req: dict) -> dict:
     require_project(req["project"])
     dismiss_password_dialog(req.get("project_password"))
     wait_busy()
+    # ETS moves its splitters between jobs at times: put them back first.
+    restore_tree_splitter()
+    restore_catalog_splitter()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
@@ -1775,10 +1778,33 @@ def ensure_layout() -> dict:
         choose("Katalog", (2800, 140, 4112, 1200))
         time.sleep(3)
         did.append("katalog")
-    moved = restore_catalog_splitter()
-    if moved:
-        did.append(moved)
+    for moved in (restore_tree_splitter(), restore_catalog_splitter()):
+        if moved:
+            did.append(moved)
     return {"did": did, "import_button": bool(catalog_import_button()), "catalog_dy": catalog_dy()}
+
+
+def restore_tree_splitter() -> str | None:
+    """Drag the splitter between the Topologie tree and the centre view back
+    to x 680, where LAYOUT's centre view starts: the device list's header
+    ('Sic Adresse Raum') begins at x 735 then. It moved 37 px right once and
+    the device selection clicked the search folder instead, so the download
+    menu was empty for eight jobs (2026-11-06)."""
+    from pywinauto import mouse
+
+    head = next((l for l in ocr((600, 220, 1000, 262)) if l["text"].startswith("Sic")), None)
+    if not head or abs(head["x"] - 735) <= 10:
+        return None
+    s_ = scale()
+    x0, x1, y = 680 + head["x"] - 735, 680, 1000
+    mouse.press(coords=(int(x0 * s_), int(y * s_)))
+    time.sleep(0.3)
+    for k in range(1, 6):
+        mouse.move(coords=(int((x0 + (x1 - x0) * k / 5) * s_), int(y * s_)))
+        time.sleep(0.05)
+    mouse.release(coords=(int(x1 * s_), int(y * s_)))
+    time.sleep(1.5)
+    return f"tree splitter {x0} -> {x1}"
 
 
 def restore_catalog_splitter() -> str | None:
