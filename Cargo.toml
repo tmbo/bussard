@@ -24,7 +24,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.9.0"
 edition = "2024"
 repository = "https://github.com/tmbo/bussard"
 authors = ["Tom Bocklisch"]
@@ -33,20 +33,20 @@ license = "MIT"
 
 [workspace.dependencies]
 # Internal crates
-bussard-model = { path = "crates/bussard-model", version = "0.1.0" }
-bussard-project = { path = "crates/bussard-project", version = "0.1.0" }
-bussard-transport = { path = "crates/bussard-transport", version = "0.1.0" }
-bussard-monitor = { path = "crates/bussard-monitor", version = "0.1.0" }
-bussard-bus = { path = "crates/bussard-bus", version = "0.1.0" }
-bussard-mcp = { path = "crates/bussard-mcp", version = "0.1.0" }
-bussard-mgmt = { path = "crates/bussard-mgmt", version = "0.1.0" }
-bussard-prod = { path = "crates/bussard-prod", version = "0.1.0" }
-bussard-ets = { path = "crates/bussard-ets", version = "0.1.0" }
-bussard-ha = { path = "crates/bussard-ha", version = "0.1.0" }
-bussard-download = { path = "crates/bussard-download", version = "0.1.0" }
-bussard-secure = { path = "crates/bussard-secure", version = "0.1.0" }
-bussard-service = { path = "crates/bussard-service", version = "0.1.0" }
-bussard-viz = { path = "crates/bussard-viz", version = "0.1.0" }
+bussard-model = { path = "crates/bussard-model", version = "0.9.0" }
+bussard-project = { path = "crates/bussard-project", version = "0.9.0" }
+bussard-transport = { path = "crates/bussard-transport", version = "0.9.0" }
+bussard-monitor = { path = "crates/bussard-monitor", version = "0.9.0" }
+bussard-bus = { path = "crates/bussard-bus", version = "0.9.0" }
+bussard-mcp = { path = "crates/bussard-mcp", version = "0.9.0" }
+bussard-mgmt = { path = "crates/bussard-mgmt", version = "0.9.0" }
+bussard-prod = { path = "crates/bussard-prod", version = "0.9.0" }
+bussard-ets = { path = "crates/bussard-ets", version = "0.9.0" }
+bussard-ha = { path = "crates/bussard-ha", version = "0.9.0" }
+bussard-download = { path = "crates/bussard-download", version = "0.9.0" }
+bussard-secure = { path = "crates/bussard-secure", version = "0.9.0" }
+bussard-service = { path = "crates/bussard-service", version = "0.9.0" }
+bussard-viz = { path = "crates/bussard-viz", version = "0.9.0" }
 # Test-only mock gateway and devices (publish = false): dev-dependency only.
 bussard-testkit = { path = "crates/bussard-testkit" }
 
