@@ -63,8 +63,8 @@ use bussard_secure::{
 use bussard_model::{GroupAddress, IndividualAddress};
 
 use crate::keyring::{
-    Backbone, KEY_LEN, Keyring, KeyringError, attr, canonical_serialization, created_iv,
-    decrypt_key, optional_password, parse_ga, parse_ia, read_created, require, verify_signature,
+    KEY_LEN, KeyringError, attr, canonical_serialization, created_iv, decrypt_key,
+    optional_password, parse_ga, parse_ia, read_created, require, verify_signature,
 };
 
 /// The key store's file name, next to `bussard.lock`.
@@ -126,7 +126,36 @@ impl std::str::FromStr for SerialNumber {
     }
 }
 
+/// The backbone (routing/multicast) key material (spec §4.5).
+#[derive(Clone, PartialEq, Eq)]
+pub struct Backbone {
+    /// The multicast/routing key (decrypted from the AES-CBC `Key` attribute).
+    pub key: Key16,
+    /// The routing multicast address.
+    pub multicast: Ipv4Addr,
+    /// The routing latency tolerance, in milliseconds.
+    pub latency_ms: u16,
+}
+
+impl std::fmt::Debug for Backbone {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Backbone")
+            .field("key", &"<redacted>")
+            .field("multicast", &self.multicast)
+            .field("latency_ms", &self.latency_ms)
+            .finish()
+    }
+}
+
 /// A KNXnet/IP (or USB) interface in the store and its credentials.
+///
+/// For a KNXnet/IP Secure tunnelling interface (`Type="Tunneling"`) `ia` is the
+/// tunnel address the interface assigns to this user, `host` the individual
+/// address of the IP interface itself, `password` the tunnelling user's
+/// password and `authentication` the interface's device authentication code
+/// (issue #71 Phase B). The passwords are decrypted but not derived: PBKDF2 is
+/// slow, so the transport derives only the user it presents
+/// ([`StoreInterface::user_key`], [`StoreInterface::device_auth_key`]).
 #[derive(Clone, PartialEq, Eq)]
 pub struct StoreInterface {
     /// The `Type` attribute (`Tunneling`, `USB`, `Backbone`), empty if absent.
@@ -148,6 +177,28 @@ pub struct StoreInterface {
 }
 
 impl StoreInterface {
+    /// Whether this is a tunnelling interface with a user password, i.e.
+    /// usable for a KNXnet/IP Secure tunnel.
+    pub fn is_secure_tunnel(&self) -> bool {
+        self.interface_type.eq_ignore_ascii_case("Tunneling") && self.password.is_some()
+    }
+
+    /// The user-password key (PBKDF2 with the user-password salt), derived on
+    /// demand.
+    pub fn user_key(&self) -> Option<Key16> {
+        self.password
+            .as_ref()
+            .map(|p| p.derive(salt::USER_PASSWORD))
+    }
+
+    /// The device-authentication key (PBKDF2 with the
+    /// device-authentication-code salt), derived on demand.
+    pub fn device_auth_key(&self) -> Option<Key16> {
+        self.authentication
+            .as_ref()
+            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
+    }
+
     /// The merge identity of an interface: its type and address.
     fn identity(&self) -> (String, IndividualAddress) {
         (self.interface_type.to_ascii_lowercase(), self.ia)
@@ -191,6 +242,16 @@ pub struct StoreDevice {
     /// carried through for the export. bussard never seeds its own send
     /// sequence from it.
     pub ets_sequence: Option<u64>,
+}
+
+impl StoreDevice {
+    /// The device-authentication key (PBKDF2 with the
+    /// device-authentication-code salt), derived on demand.
+    pub fn device_auth_key(&self) -> Option<Key16> {
+        self.authentication
+            .as_ref()
+            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
+    }
 }
 
 impl std::fmt::Debug for StoreDevice {
@@ -625,6 +686,20 @@ impl KeyStore {
         self.group_keys.get(&ga)
     }
 
+    /// The factory default setup key (FDSK) of `ia`, if stored (issue #532):
+    /// the key a device answers under after a reset to default.
+    pub fn fdsk(&self, ia: IndividualAddress) -> Option<&Key16> {
+        self.devices.get(&ia).and_then(|d| d.fdsk.as_ref())
+    }
+
+    /// The devices with a tool key, ascending.
+    pub fn tool_key_devices(&self) -> impl Iterator<Item = IndividualAddress> + '_ {
+        self.devices
+            .iter()
+            .filter(|(_, d)| d.tool_key.is_some())
+            .map(|(ia, _)| *ia)
+    }
+
     /// Records a device's factory key and serial number (from its certificate).
     /// Returns whether anything changed.
     #[cfg(test)]
@@ -782,13 +857,15 @@ impl KeyStore {
     ///
     /// A wrong password or tampered file
     /// ([`KeyringError::SignatureMismatch`]), a malformed document, or a file
-    /// that is not a `bussard.keys/1` store.
+    /// that is not a `bussard.keys/1` store (an ETS export included).
     pub fn parse(xml: &str, password: &str) -> Result<Self, KeyStoreError> {
-        let keyring_key = pbkdf2_key(&Zeroizing::new(latin1_bytes(password)), salt::KEYRING);
-        let created = read_created(xml)?;
-        let iv = created_iv(&created);
-        verify_signature(xml, &keyring_key)?;
-        parse_store(xml, &keyring_key, &iv)
+        match read_document(xml, password)? {
+            (store, Dialect::Store) => Ok(store),
+            (_, Dialect::Export) => Err(KeyStoreError::Format {
+                path: PathBuf::from(KEYSTORE_FILE),
+                found: None,
+            }),
+        }
     }
 
     /// Serializes and encrypts the store to its XML text.
@@ -881,13 +958,13 @@ impl KeyStore {
         Ok((outcome, written))
     }
 
-    /// Merges a decrypted `.knxkeys` export into the store (issue #241):
-    /// new devices, rotated tool keys, changed credentials and group keys are
-    /// taken from the export; entries the export lacks are kept, and a factory
-    /// key or serial number is never dropped.
-    pub fn merge_keyring(&mut self, keyring: &Keyring) -> ImportReport {
+    /// Merges a decrypted `.knxkeys` export (or another store) into the store
+    /// (issue #241): new devices, rotated tool keys, changed credentials and
+    /// group keys are taken from `export`; entries it lacks are kept, and a
+    /// factory key or serial number is never dropped.
+    pub fn merge_keyring(&mut self, export: &KeyStore) -> ImportReport {
         let mut report = ImportReport {
-            project: keyring.project.clone(),
+            project: export.project.clone(),
             backbone: BackboneChange::Absent,
             devices_added: Vec::new(),
             tool_keys_rotated: Vec::new(),
@@ -905,92 +982,54 @@ impl KeyStore {
             interfaces_updated: Vec::new(),
             interfaces_unchanged: 0,
         };
-        if !keyring.project.is_empty() {
-            self.project = keyring.project.clone();
+        if !export.project.is_empty() {
+            self.project = export.project.clone();
         }
 
-        report.backbone = match (&self.backbone, &keyring.backbone) {
+        report.backbone = match (&self.backbone, &export.backbone) {
             (_, None) if self.backbone.is_some() => BackboneChange::Unchanged,
             (_, None) => BackboneChange::Absent,
             (None, Some(_)) => BackboneChange::Added,
-            (Some(ours), Some(theirs)) => {
-                if ours.key == theirs.key
-                    && ours.multicast == theirs.multicast
-                    && ours.latency_ms == theirs.latency_ms
-                {
-                    BackboneChange::Unchanged
-                } else {
-                    BackboneChange::Changed
-                }
-            }
+            (Some(ours), Some(theirs)) if ours == theirs => BackboneChange::Unchanged,
+            (Some(_), Some(_)) => BackboneChange::Changed,
         };
-        if let Some(theirs) = &keyring.backbone {
-            self.backbone = Some(Backbone {
-                key: theirs.key.clone(),
-                multicast: theirs.multicast,
-                latency_ms: theirs.latency_ms,
-            });
+        if let Some(theirs) = &export.backbone {
+            self.backbone = Some(theirs.clone());
         }
 
         // Interfaces, by type and address.
-        for theirs in &keyring.interfaces {
-            let incoming = StoreInterface {
-                interface_type: theirs.interface_type.clone(),
-                ia: theirs.ia,
-                host: theirs.host,
-                user_id: theirs.user_id,
-                password: theirs.password.clone(),
-                authentication: theirs.authentication.clone(),
-                gas: theirs
-                    .gas
-                    .iter()
-                    .map(|ga| (*ga, theirs.group_senders.get(ga).cloned()))
-                    .collect(),
-            };
+        for incoming in &export.interfaces {
             let label = format!("{} {}", display_type(&incoming.interface_type), incoming.ia);
             match self
                 .interfaces
                 .iter_mut()
                 .find(|i| i.identity() == incoming.identity())
             {
-                Some(ours) if *ours == incoming => report.interfaces_unchanged += 1,
+                Some(ours) if ours == incoming => report.interfaces_unchanged += 1,
                 Some(ours) => {
-                    *ours = incoming;
+                    *ours = incoming.clone();
                     report.interfaces_updated.push(label);
                 }
                 None => {
-                    self.interfaces.push(incoming);
+                    self.interfaces.push(incoming.clone());
                     report.interfaces_added.push(label);
                 }
             }
         }
 
         // Devices, by individual address.
-        let mut seen = std::collections::BTreeSet::new();
-        for theirs in &keyring.devices {
-            seen.insert(theirs.ia);
-            let address = theirs.ia.to_string();
-            let ours = match self.devices.get_mut(&theirs.ia) {
-                Some(ours) => ours,
-                None => {
-                    self.devices.insert(
-                        theirs.ia,
-                        StoreDevice {
-                            tool_key: Some(theirs.tool_key.clone()),
-                            serial: theirs.serial,
-                            fdsk: theirs.fdsk.clone(),
-                            management_password: theirs.management_password.clone(),
-                            authentication: theirs.authentication.clone(),
-                            ets_sequence: Some(theirs.seq),
-                        },
-                    );
-                    report.devices_added.push(address);
-                    continue;
-                }
+        for (ia, theirs) in &export.devices {
+            let address = ia.to_string();
+            let Some(ours) = self.devices.get_mut(ia) else {
+                self.devices.insert(*ia, theirs.clone());
+                report.devices_added.push(address);
+                continue;
             };
             let mut changed = false;
-            if ours.tool_key.as_ref() != Some(&theirs.tool_key) {
-                ours.tool_key = Some(theirs.tool_key.clone());
+            if let Some(key) = &theirs.tool_key
+                && ours.tool_key.as_ref() != Some(key)
+            {
+                ours.tool_key = Some(key.clone());
                 report.tool_keys_rotated.push(address.clone());
                 changed = true;
             }
@@ -1030,8 +1069,8 @@ impl KeyStore {
                 report.fdsks_updated.push(address.clone());
                 changed = true;
             }
-            if ours.ets_sequence != Some(theirs.seq) {
-                ours.ets_sequence = Some(theirs.seq);
+            if theirs.ets_sequence.is_some() && ours.ets_sequence != theirs.ets_sequence {
+                ours.ets_sequence = theirs.ets_sequence;
                 report.ets_sequences_updated.push(address);
                 changed = true;
             }
@@ -1042,24 +1081,23 @@ impl KeyStore {
         report.devices_kept = self
             .devices
             .keys()
-            .filter(|ia| !seen.contains(ia))
+            .filter(|ia| !export.devices.contains_key(ia))
             .map(|ia| ia.to_string())
             .collect();
+        for (serial, fdsk) in &export.unassigned {
+            self.unassigned
+                .entry(*serial)
+                .or_insert_with(|| fdsk.clone());
+        }
         self.resolve_unassigned();
         report.fdsks_kept = self.devices.values().filter(|d| d.fdsk.is_some()).count();
 
         // Group keys, by group address.
-        for (ga, key) in &keyring.group_keys {
-            match self.group_keys.get(ga) {
-                Some(ours) if ours == key => report.group_keys_unchanged += 1,
-                Some(_) => {
-                    self.group_keys.insert(*ga, key.clone());
-                    report.group_keys_rotated.push(ga.to_string());
-                }
-                None => {
-                    self.group_keys.insert(*ga, key.clone());
-                    report.group_keys_added.push(ga.to_string());
-                }
+        for (ga, key) in &export.group_keys {
+            match self.group_keys.insert(*ga, key.clone()) {
+                Some(ours) if ours == *key => report.group_keys_unchanged += 1,
+                Some(_) => report.group_keys_rotated.push(ga.to_string()),
+                None => report.group_keys_added.push(ga.to_string()),
             }
         }
         report.group_keys_added.sort();
@@ -1067,7 +1105,7 @@ impl KeyStore {
         report.group_keys_kept = self
             .group_keys
             .keys()
-            .filter(|ga| !keyring.group_keys.contains_key(ga))
+            .filter(|ga| !export.group_keys.contains_key(ga))
             .count();
         report
     }
@@ -1129,11 +1167,12 @@ impl KeyStore {
     /// The export does not parse, its signature does not verify or it does
     /// not decrypt with `password`.
     pub fn check_export(&self, xml: &str, password: &str) -> Result<ExportCheck, KeyStoreError> {
-        let read = crate::keyring::parse_keyring(xml, password)?;
-        let mut check = ExportCheck::default();
-        let mut carried: Vec<GroupAddress> = read.group_keys.keys().copied().collect();
-        carried.sort();
-        check.group_addresses = carried;
+        let read = parse_keyring(xml, password)?;
+        let mut check = ExportCheck {
+            group_addresses: read.group_keys.keys().copied().collect(),
+            devices: read.tool_key_devices().collect(),
+            ..ExportCheck::default()
+        };
         for (ga, key) in &self.group_keys {
             match read.group_keys.get(ga) {
                 None => check.missing_group_keys.push(*ga),
@@ -1141,9 +1180,6 @@ impl KeyStore {
                 Some(_) => {}
             }
         }
-        let mut devices: Vec<IndividualAddress> = read.devices.iter().map(|d| d.ia).collect();
-        devices.sort();
-        check.devices = devices;
         for (ia, device) in &self.devices {
             let Some(key) = &device.tool_key else {
                 continue;
@@ -1160,65 +1196,6 @@ impl KeyStore {
             }
         }
         Ok(check)
-    }
-
-    /// The store as the [`Keyring`] shape the secure paths consume (tunnel
-    /// users, tool keys, group keys, ETS sequence numbers), so every consumer
-    /// of a `.knxkeys` reads the store unchanged (issue #241 item 4). A
-    /// device without a tool key is left out, as a keyring cannot list it.
-    pub fn to_keyring(&self) -> Keyring {
-        Keyring {
-            project: self.project.clone(),
-            created: self.created.clone(),
-            backbone: self.backbone.as_ref().map(|b| Backbone {
-                key: b.key.clone(),
-                multicast: b.multicast,
-                latency_ms: b.latency_ms,
-            }),
-            interfaces: self
-                .interfaces
-                .iter()
-                .map(|i| crate::keyring::Interface {
-                    interface_type: i.interface_type.clone(),
-                    ia: i.ia,
-                    host: i.host,
-                    user_id: i.user_id,
-                    password: i.password.clone(),
-                    authentication: i.authentication.clone(),
-                    gas: i.gas.iter().map(|(ga, _)| *ga).collect(),
-                    group_senders: i
-                        .gas
-                        .iter()
-                        .filter_map(|(ga, s)| s.clone().map(|s| (*ga, s)))
-                        .collect(),
-                })
-                .collect(),
-            devices: self
-                .devices
-                .iter()
-                .filter_map(|(ia, d)| {
-                    Some(crate::keyring::Device {
-                        ia: *ia,
-                        tool_key: d.tool_key.clone()?,
-                        seq: d.ets_sequence.unwrap_or(0),
-                        management_password: d.management_password.clone(),
-                        authentication: d.authentication.clone(),
-                        fdsk: d.fdsk.clone(),
-                        serial: d.serial,
-                    })
-                })
-                .collect(),
-            group_keys: self
-                .group_keys
-                .iter()
-                .map(|(ga, k)| (*ga, k.clone()))
-                .collect(),
-            factory_keys: self
-                .devices
-                .iter()
-                .filter_map(|(ia, d)| d.fdsk.clone().map(|k| (*ia, k)))
-                .collect(),
-        }
     }
 
     /// The redaction-safe summary (counts, addresses, presence flags).
@@ -1638,12 +1615,51 @@ fn write_atomic(
     Ok(SaveOutcome::Written { backup })
 }
 
-/// Walks a verified store document into a [`KeyStore`].
+/// Parses and verifies a `.knxkeys` document, an ETS export or a bussard key
+/// store, from its XML text and password (spec §4): derives the keyring key
+/// (§4.1), verifies the signature (§4.4), then decrypts the encrypted
+/// attributes (§4.2, §4.3) into a [`KeyStore`].
+///
+/// # Errors
+///
+/// [`KeyringError::SignatureMismatch`] if the password is wrong (or the
+/// document was tampered with), [`KeyStoreError::Format`] for a store of
+/// another format, and the various decode/parse variants for malformed input.
+pub fn parse_keyring(xml: &str, password: &str) -> Result<KeyStore, KeyStoreError> {
+    read_document(xml, password).map(|(store, _)| store)
+}
+
+/// Which kind of `.knxkeys` document was read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Dialect {
+    /// A bussard key store: the root carries `Format`; a `<Device>` may lack
+    /// `ToolKey`, and an unknown `SequenceNumber` stays unknown.
+    Store,
+    /// An ETS export: no `Format`; every `<Device>` has a `ToolKey`, and an
+    /// absent `SequenceNumber` is `0`.
+    Export,
+}
+
+/// Verifies `xml` with `password` and walks it into a [`KeyStore`].
+fn read_document(xml: &str, password: &str) -> Result<(KeyStore, Dialect), KeyStoreError> {
+    // The caller's password in its Latin-1 form is key material too; wipe the
+    // intermediate buffer once the keyring key is derived (spec §2.3).
+    let keyring_key = pbkdf2_key(&Zeroizing::new(latin1_bytes(password)), salt::KEYRING);
+    // `Created` seeds the IV of every encrypted attribute (§4.2).
+    let iv = created_iv(&read_created(xml)?);
+    // Verify the signature before trusting the contents (§4.4).
+    verify_signature(xml, &keyring_key)?;
+    parse_store(xml, &keyring_key, &iv)
+}
+
+/// Walks a verified document into a [`KeyStore`]. The root's `Format`
+/// attribute selects the [`Dialect`]: present, it must be
+/// [`KEYSTORE_FORMAT`]; absent, the document is an ETS export.
 fn parse_store(
     xml: &str,
     keyring_key: &Key16,
     iv: &[u8; KEY_LEN],
-) -> Result<KeyStore, KeyStoreError> {
+) -> Result<(KeyStore, Dialect), KeyStoreError> {
     let mut reader = Reader::from_str(xml);
     reader.config_mut().trim_text(true);
     let mut store = KeyStore {
@@ -1655,7 +1671,11 @@ fn parse_store(
         group_keys: BTreeMap::new(),
         unassigned: BTreeMap::new(),
     };
+    let mut dialect = Dialect::Export;
+    // The interface being assembled: its `<Group>` children follow its start.
     let mut current: Option<StoreInterface> = None;
+    // Inside `<GroupAddresses>` a `<Group>` carries a group key; inside an
+    // `<Interface>` it names a GA the interface may send to.
     let mut in_group_addresses = false;
     loop {
         let event = reader
@@ -1665,13 +1685,16 @@ fn parse_store(
         match event {
             Event::Start(e) | Event::Empty(e) => match e.local_name().as_ref() {
                 b"Keyring" => {
-                    let format = attr(&e, b"Format")?;
-                    if format.as_deref() != Some(KEYSTORE_FORMAT) {
-                        return Err(KeyStoreError::Format {
-                            path: PathBuf::from(KEYSTORE_FILE),
-                            found: format,
-                        });
-                    }
+                    dialect = match attr(&e, b"Format")? {
+                        None => Dialect::Export,
+                        Some(format) if format == KEYSTORE_FORMAT => Dialect::Store,
+                        found => {
+                            return Err(KeyStoreError::Format {
+                                path: PathBuf::from(KEYSTORE_FILE),
+                                found,
+                            });
+                        }
+                    };
                     store.project = attr(&e, b"Project")?.unwrap_or_default();
                     store.created = attr(&e, b"Created")?.unwrap_or_default();
                 }
@@ -1691,17 +1714,23 @@ fn parse_store(
                 }
                 b"GroupAddresses" => in_group_addresses = !is_empty,
                 b"Group" => {
-                    let ga = parse_ga("Group/Address", &require(&e, b"Address", "Group")?)?;
                     if in_group_addresses {
+                        let ga = parse_ga(
+                            "GroupAddresses/Group/Address",
+                            &require(&e, b"Address", "Group")?,
+                        )?;
                         let key =
                             decrypt_key(&e, b"Key", "GroupAddresses/Group/Key", keyring_key, iv)?;
                         store.group_keys.insert(ga, key);
-                    } else if let Some(iface) = current.as_mut() {
+                    } else if let Some(iface) = current.as_mut()
+                        && let Some(address) = attr(&e, b"Address")?
+                    {
+                        let ga = parse_ga("Interface/Group/Address", &address)?;
                         iface.gas.push((ga, attr(&e, b"Senders")?));
                     }
                 }
                 b"Device" => {
-                    let (ia, device) = parse_device(&e, keyring_key, iv)?;
+                    let (ia, device) = parse_device(&e, keyring_key, iv, dialect)?;
                     store.devices.insert(ia, device);
                 }
                 b"Certificate" => {
@@ -1732,7 +1761,7 @@ fn parse_store(
     if let Some(done) = current.take() {
         store.interfaces.push(done);
     }
-    Ok(store)
+    Ok((store, dialect))
 }
 
 /// Parses a store `<Backbone>`.
@@ -1788,25 +1817,28 @@ fn parse_interface(
     })
 }
 
-/// Parses a store `<Device>`.
+/// Parses a `<Device>`. An ETS export requires its `ToolKey` and defaults
+/// its `SequenceNumber` to `0`.
 fn parse_device(
     e: &BytesStart,
     keyring_key: &Key16,
     iv: &[u8; KEY_LEN],
+    dialect: Dialect,
 ) -> Result<(IndividualAddress, StoreDevice), KeyringError> {
     let ia = parse_ia(
         "Device/IndividualAddress",
         &require(e, b"IndividualAddress", "Device")?,
     )?;
-    let tool_key = match attr(e, b"ToolKey")? {
-        Some(_) => Some(decrypt_key(
+    let tool_key = if dialect == Dialect::Export || attr(e, b"ToolKey")?.is_some() {
+        Some(decrypt_key(
             e,
             b"ToolKey",
             "Device/ToolKey",
             keyring_key,
             iv,
-        )?),
-        None => None,
+        )?)
+    } else {
+        None
     };
     let fdsk = match attr(e, b"FDSK")? {
         Some(_) => Some(decrypt_key(e, b"FDSK", "Device/FDSK", keyring_key, iv)?),
@@ -1842,7 +1874,11 @@ fn parse_device(
                 keyring_key,
                 iv,
             )?,
-            ets_sequence: parse_number(attr(e, b"SequenceNumber")?, "Device/SequenceNumber")?,
+            ets_sequence: match parse_number(attr(e, b"SequenceNumber")?, "Device/SequenceNumber")?
+            {
+                None if dialect == Dialect::Export => Some(0),
+                seq => seq,
+            },
         },
     ))
 }
@@ -1865,7 +1901,6 @@ fn parse_number<T: std::str::FromStr>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keyring::parse_keyring;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -2008,7 +2043,7 @@ mod tests {
             keyring.group_key(ga("1/2/3")?).map(|k| *k.bytes()),
             Some([0x77; 16])
         );
-        assert_eq!(keyring.devices[0].seq, 42);
+        assert_eq!(keyring.devices[&ia("1.1.10")?].ets_sequence, Some(42));
         let original = parse_keyring(SYNTHETIC, PASSWORD)?;
         assert_eq!(
             keyring.interfaces[0].password,
@@ -2018,20 +2053,18 @@ mod tests {
             keyring.interfaces[0].authentication,
             original.interfaces[0].authentication
         );
+        let device = ia("1.1.10")?;
         assert_eq!(
-            keyring.devices[0].management_password,
-            original.devices[0].management_password
+            keyring.devices[&device].management_password,
+            original.devices[&device].management_password
         );
         assert_eq!(
-            keyring.devices[0].authentication,
-            original.devices[0].authentication
+            keyring.devices[&device].authentication,
+            original.devices[&device].authentication
         );
         assert_eq!(
-            keyring.interfaces[0]
-                .group_senders
-                .get(&ga("1/2/3")?)
-                .map(String::as_str),
-            Some("1.1.10")
+            keyring.interfaces[0].gas,
+            vec![(ga("1/2/3")?, Some("1.1.10".to_string()))]
         );
         // ETS shape: raw group addresses, the ETS namespace, no store extras.
         assert!(export.xml.contains("Address=\"2563\""));
@@ -2045,7 +2078,7 @@ mod tests {
         // A wrong password does not verify.
         assert!(matches!(
             parse_keyring(&export.xml, "wrong"),
-            Err(KeyringError::SignatureMismatch)
+            Err(KeyStoreError::Keyring(KeyringError::SignatureMismatch))
         ));
         Ok(())
     }
@@ -2155,7 +2188,7 @@ mod tests {
         );
         let export = source.export_knxkeys(PASSWORD)?;
         let keyring = parse_keyring(&export.xml, PASSWORD)?;
-        let device = &keyring.devices[0];
+        let device = &keyring.devices[&ia("1.1.10")?];
         assert_eq!(device.fdsk.as_ref().map(|k| *k.bytes()), Some([0x88; 16]));
         assert_eq!(
             device.serial.map(|s| s.to_string()).as_deref(),
@@ -2365,23 +2398,23 @@ mod tests {
     }
 
     #[test]
-    fn test_to_keyring_matches_the_source_export() -> TestResult {
+    fn test_parse_keyring_reads_an_export_and_a_store_alike() -> TestResult {
         let store = sample()?;
-        let keyring = store.to_keyring();
+        let read = parse_keyring(&store.to_xml(PASSWORD)?, PASSWORD)?;
+        assert_eq!(read, store, "a store reads back unchanged");
         let original = parse_keyring(SYNTHETIC, PASSWORD)?;
-        assert_eq!(keyring.devices.len(), 1, "the FDSK-only device is left out");
         assert_eq!(
-            keyring.tool_key(ia("1.1.10")?),
+            read.tool_key(ia("1.1.10")?),
             original.tool_key(ia("1.1.10")?)
         );
-        assert_eq!(keyring.devices[0].seq, 42);
-        assert_eq!(keyring.group_keys, original.group_keys);
         assert_eq!(
-            keyring.interfaces[0].password,
-            original.interfaces[0].password
+            read.tool_key_devices().collect::<Vec<_>>(),
+            vec![ia("1.1.10")?],
+            "the FDSK-only device has no tool key"
         );
-        assert_eq!(keyring.interfaces[0].gas, original.interfaces[0].gas);
-        assert!(keyring.interfaces[0].is_secure_tunnel());
+        assert_eq!(read.group_keys, original.group_keys);
+        assert_eq!(read.interfaces, original.interfaces);
+        assert!(read.interfaces[0].is_secure_tunnel());
         assert!(is_keystore(&store.to_xml(PASSWORD)?));
         assert!(!is_keystore(SYNTHETIC));
         assert!(!is_keystore("not xml <"));

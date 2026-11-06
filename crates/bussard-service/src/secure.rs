@@ -95,7 +95,7 @@ pub enum SecureKeyError {
         path: PathBuf,
         /// The parse error.
         #[source]
-        source: bussard_project::KeyringError,
+        source: bussard_project::KeyStoreError,
     },
     /// The key store (`bussard.keys`) did not decrypt or parse (a wrong
     /// password, a hand-edited file).
@@ -179,18 +179,16 @@ pub fn tunnel_config(
         Some(path) => Some(load_keyring(path)?),
         None => None,
     };
-    let secure_users = |k: &Arc<bussard_project::Keyring>| -> Vec<SecureUser> {
+    let secure_users = |k: &Arc<bussard_project::KeyStore>| -> Vec<SecureUser> {
         k.interfaces
             .iter()
             .filter(|i| i.is_secure_tunnel())
             .filter_map(|i| {
                 let password = i.password.clone()?;
-                let host_code = i.host.and_then(|host| {
-                    k.devices
-                        .iter()
-                        .find(|d| d.ia == host)
-                        .and_then(|d| d.authentication.clone())
-                });
+                let host_code = i
+                    .host
+                    .and_then(|host| k.devices.get(&host))
+                    .and_then(|d| d.authentication.clone());
                 Some(SecureUser {
                     user_id: i.user_id,
                     password,
@@ -250,19 +248,15 @@ pub fn management_user(
     device: IndividualAddress,
 ) -> Result<Option<bussard_transport::SecureUser>, SecureKeyError> {
     let keyring = load_keyring(keyring)?;
-    Ok(keyring
-        .devices
-        .iter()
-        .find(|d| d.ia == device)
-        .and_then(|d| {
-            Some(bussard_transport::SecureUser {
-                user_id: bussard_transport::devmgmt::MANAGEMENT_USER,
-                password: d.management_password.clone()?,
-                device_authentication_code: d.authentication.clone(),
-                tunnel_ia: None,
-                host_ia: Some(device.raw()),
-            })
-        }))
+    Ok(keyring.devices.get(&device).and_then(|d| {
+        Some(bussard_transport::SecureUser {
+            user_id: bussard_transport::devmgmt::MANAGEMENT_USER,
+            password: d.management_password.clone()?,
+            device_authentication_code: d.authentication.clone(),
+            tunnel_ia: None,
+            host_ia: Some(device.raw()),
+        })
+    }))
 }
 
 /// `config` with the management user of `device` from `keyring` as its
@@ -407,7 +401,7 @@ pub fn resolve_material(
 #[derive(Default)]
 pub struct ToolKeys {
     /// The decrypted keyring and the path it came from.
-    keyring: Option<(PathBuf, Arc<bussard_project::Keyring>)>,
+    keyring: Option<(PathBuf, Arc<bussard_project::KeyStore>)>,
     /// A raw `--tool-key`.
     raw: Option<Key16>,
 }
@@ -469,13 +463,7 @@ impl ToolKeys {
     pub fn listed(&self) -> Vec<IndividualAddress> {
         self.keyring
             .as_ref()
-            .map(|(_, k)| {
-                k.devices
-                    .iter()
-                    .filter(|d| k.tool_key(d.ia).is_some())
-                    .map(|d| d.ia)
-                    .collect()
-            })
+            .map(|(_, k)| k.tool_key_devices().collect())
             .unwrap_or_default()
     }
 
@@ -527,8 +515,13 @@ impl ToolKeys {
         let tool_key = tool_key_from(keyring, target, path)?;
         Ok(SecureMaterial {
             tool_key: Some(tool_key),
-            group_keys: Some(keyring.group_keys.clone()),
-            device_sequences: keyring.devices.iter().map(|d| (d.ia, d.seq)).collect(),
+            group_keys: Some(group_key_map(keyring)),
+            device_sequences: keyring
+                .devices
+                .iter()
+                .filter(|(_, d)| d.tool_key.is_some())
+                .map(|(ia, d)| (*ia, d.ets_sequence.unwrap_or(0)))
+                .collect(),
             fdsk: keyring.fdsk(target).cloned(),
         })
     }
@@ -551,7 +544,16 @@ impl ToolKeys {
 ///
 /// A missing password, an unreadable file, or a keyring that does not decrypt.
 pub fn load_group_keys(path: &Path) -> Result<crate::group::GroupKeys, SecureKeyError> {
-    Ok(load_keyring(path)?.group_keys.clone())
+    Ok(group_key_map(&*load_keyring(path)?))
+}
+
+/// The group keys of `keyring` as [`crate::group::GroupKeys`].
+fn group_key_map(keyring: &bussard_project::KeyStore) -> crate::group::GroupKeys {
+    keyring
+        .group_keys
+        .iter()
+        .map(|(ga, key)| (*ga, key.clone()))
+        .collect()
 }
 
 /// Loads the keyring's (or key store's) **interface entries** as the sender
@@ -585,12 +587,7 @@ pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
     } else {
         match load_keyring(path) {
             Ok(keyring) => KeyringStatus::Loaded {
-                tool_keys: keyring
-                    .devices
-                    .iter()
-                    .filter(|d| keyring.tool_key(d.ia).is_some())
-                    .map(|d| d.ia)
-                    .collect(),
+                tool_keys: keyring.tool_key_devices().collect(),
                 group_keys: keyring.group_keys.keys().copied().collect(),
             },
             Err(err) => {
@@ -613,7 +610,7 @@ pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
 
 /// Loads and decrypts `path` with the env password, once per process for the
 /// same file bytes and password (see [`keyring_memo`]).
-fn load_keyring(path: &Path) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {
+fn load_keyring(path: &Path) -> Result<Arc<bussard_project::KeyStore>, SecureKeyError> {
     let password = bussard_model::dotenv::var(KEYRING_PASSWORD_ENV)
         .map_err(|_| SecureKeyError::MissingPassword)?;
     load_keyring_with(path, &password)
@@ -625,7 +622,7 @@ fn load_keyring(path: &Path) -> Result<Arc<bussard_project::Keyring>, SecureKeyE
 fn load_keyring_with(
     path: &Path,
     password: &str,
-) -> Result<Arc<bussard_project::Keyring>, SecureKeyError> {
+) -> Result<Arc<bussard_project::KeyStore>, SecureKeyError> {
     let xml = std::fs::read_to_string(path).map_err(|source| SecureKeyError::Read {
         path: path.to_path_buf(),
         source,
@@ -636,20 +633,15 @@ fn load_keyring_with(
     }
     let started = std::time::Instant::now();
     // The key store (issue #241) is the same format with a `Format` marker;
-    // it is served in the keyring shape, so every consumer reads it unchanged.
-    let parsed = if bussard_project::keystore::is_keystore(&xml) {
-        bussard_project::KeyStore::parse(&xml, password)
-            .map(|store| store.to_keyring())
-            .map_err(|source| SecureKeyError::Store {
-                path: path.to_path_buf(),
-                source,
-            })
-    } else {
-        bussard_project::parse_keyring(&xml, password).map_err(|source| SecureKeyError::Parse {
-            path: path.to_path_buf(),
-            source,
-        })
-    };
+    // both read into a `KeyStore`.
+    let parsed = bussard_project::parse_keyring(&xml, password).map_err(|source| {
+        let path = path.to_path_buf();
+        if bussard_project::keystore::is_keystore(&xml) {
+            SecureKeyError::Store { path, source }
+        } else {
+            SecureKeyError::Parse { path, source }
+        }
+    });
     keyring_memo::record_decrypt(started.elapsed());
     let keyring = Arc::new(parsed?);
     keyring_memo::put(path, key, &keyring);
@@ -707,7 +699,7 @@ mod keyring_memo {
     pub(super) type Key = [u8; 32];
 
     /// One memoized keyring per path.
-    static ENTRIES: Mutex<Vec<(PathBuf, Key, Arc<bussard_project::Keyring>)>> =
+    static ENTRIES: Mutex<Vec<(PathBuf, Key, Arc<bussard_project::KeyStore>)>> =
         Mutex::new(Vec::new());
 
     /// The memo key for `xml` decrypted with `password`.
@@ -719,7 +711,7 @@ mod keyring_memo {
     }
 
     /// The memoized keyring for `path`, if its key still matches.
-    pub(super) fn get(path: &Path, key: &Key) -> Option<Arc<bussard_project::Keyring>> {
+    pub(super) fn get(path: &Path, key: &Key) -> Option<Arc<bussard_project::KeyStore>> {
         let entries = ENTRIES.lock().ok()?;
         entries
             .iter()
@@ -728,7 +720,7 @@ mod keyring_memo {
     }
 
     /// Memoizes `keyring` for `path`, replacing an older entry for it.
-    pub(super) fn put(path: &Path, key: Key, keyring: &Arc<bussard_project::Keyring>) {
+    pub(super) fn put(path: &Path, key: Key, keyring: &Arc<bussard_project::KeyStore>) {
         let Ok(mut entries) = ENTRIES.lock() else {
             return;
         };
@@ -740,7 +732,7 @@ mod keyring_memo {
 /// Extracts `target`'s tool key (spec §2.1: the keyring `ToolKey` is the
 /// device's management key).
 fn tool_key_from(
-    keyring: &bussard_project::Keyring,
+    keyring: &bussard_project::KeyStore,
     target: IndividualAddress,
     path: &Path,
 ) -> Result<Key16, SecureKeyError> {
@@ -750,7 +742,7 @@ fn tool_key_from(
         .ok_or_else(|| SecureKeyError::NoEntry {
             path: path.to_path_buf(),
             target,
-            devices: keyring.devices.len(),
+            devices: keyring.tool_key_devices().count(),
         })
 }
 

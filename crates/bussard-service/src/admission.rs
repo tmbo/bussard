@@ -75,9 +75,9 @@ pub struct AdmissionEvidence {
 }
 
 impl AdmissionEvidence {
-    /// The interface entries of a decrypted keyring (a key store is served in
-    /// the same shape). Reads addresses only.
-    pub fn from_keyring(keyring: &bussard_project::Keyring) -> AdmissionEvidence {
+    /// The interface entries of a decrypted keyring or key store. Reads
+    /// addresses only.
+    pub fn from_keyring(keyring: &bussard_project::KeyStore) -> AdmissionEvidence {
         let interfaces = keyring
             .interfaces
             .iter()
@@ -88,13 +88,11 @@ impl AdmissionEvidence {
                 groups: i
                     .gas
                     .iter()
-                    .map(|ga| {
-                        let senders = i
-                            .group_senders
-                            .get(ga)
-                            .map(|raw| parse_senders(raw))
-                            .unwrap_or_default();
-                        (*ga, senders)
+                    .map(|(ga, senders)| {
+                        (
+                            *ga,
+                            senders.as_deref().map(parse_senders).unwrap_or_default(),
+                        )
                     })
                     .collect(),
             })
@@ -1233,7 +1231,7 @@ mod tests {
         let mut store = bussard_project::KeyStore::new("Synthetic");
         store.merge_keyring(&keyring);
         let reloaded = bussard_project::KeyStore::parse(&store.to_xml(PASSWORD)?, PASSWORD)?;
-        let evidence = AdmissionEvidence::from_keyring(&reloaded.to_keyring());
+        let evidence = AdmissionEvidence::from_keyring(&reloaded);
         assert_eq!(evidence.tunnel_addresses(), vec![ia("1.1.200")?]);
         let tunnel = evidence.interfaces.first().ok_or("no interface")?;
         assert_eq!(

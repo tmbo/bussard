@@ -219,7 +219,7 @@ fn device_auth_keys() -> Result<Vec<bussard_secure::Key16>, Box<dyn std::error::
             break; // every tunnelling user carries the same code
         }
     }
-    if let Some(device) = keyring.devices.iter().find(|d| d.ia == host)
+    if let Some(device) = keyring.devices.get(&host)
         && let Some(k) = device.device_auth_key()
     {
         keys.push(k);
