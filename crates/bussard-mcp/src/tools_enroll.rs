@@ -65,23 +65,21 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::args::Parameters;
+use crate::elicit::{self, Shown, lock};
 use bussard_secure::Password;
 use bussard_service::enroll_session::{
-    CertificateOutcome, CertificateSink, DOCS_URL, EnrollEnd, EnrollEvent, EnrollSession,
-    EnrollTally, HttpRelay, RunOptions, Timeouts, data_path, endpoint_warnings, hosted_endpoints,
+    CertificateOutcome, CertificateSink, DOCS_URL, Endpoints, EnrollSession, HttpRelay, RunOptions,
+    SessionProgress, SessionStatus, Timeouts, data_path,
 };
 use bussard_viz::enroll_local::LocalEnrollServer;
-use bussard_viz::pairing_page::{
-    PairingCertificate, PairingContent, PairingPage, PairingStatus, StatusFn,
-};
+use bussard_viz::pairing_page::{PairingContent, PairingPage, PairingStatus, StatusFn};
 use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{
-    CallToolResponse, CallToolResult, ElicitRequest, ElicitRequestParams, ElicitResult,
-    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, ProgressNotificationParam,
-    ProgressToken, ProtocolVersion,
+    CallToolResponse, CallToolResult, ElicitRequestParams, ElicitationAction,
+    ProgressNotificationParam, ProgressToken,
 };
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::service::RequestContext;
@@ -96,9 +94,6 @@ use crate::server::BussardMcp;
 /// The enrolment tools, withheld with `--no-model-edits` (they write the
 /// key store).
 pub const ENROLL_TOOLS: [&str; 2] = ["knx_enroll_certificates", "knx_enroll_status"];
-
-/// The relay's session lifetime, which bounds a session.
-const SESSION_LIFETIME_SECS: u64 = 4 * 60 * 60;
 
 /// The longest `wait_seconds` of `knx_enroll_status` for the next
 /// certificate; `until_end` waits up to the session's lifetime.
@@ -116,10 +111,6 @@ pub const SILENT_WAIT_SECS: u64 = 4 * 60;
 
 /// What a waiting call says to the chat app once the pairing page is open.
 const OPENED_PROGRESS: &str = "The pairing page is open in your browser. Follow the steps there.";
-
-/// The line the pairing page ends with: the human goes back to the chat,
-/// which continues by itself (#831).
-const BACK_TO_CHAT: &str = "You can close this tab and go back to your chat.";
 
 /// The `requestState` prefix of a multi round-trip enrolment call; the rest
 /// is the session's elicitation id.
@@ -165,48 +156,27 @@ pub struct EnrollStatusArgs {
     pub until_end: bool,
 }
 
-/// What the session thread reports, shared with the status tool.
-#[derive(Debug, Default)]
-struct Progress {
-    /// Phones (page loads) that joined.
-    phones: usize,
-    /// Other phones that tried to join and were refused.
-    refused_phones: usize,
-    /// One outcome per label, in arrival order.
-    results: Vec<CertificateOutcome>,
-    /// Messages dropped (not an envelope, not for this session).
-    ignored: u32,
-    /// How the session ended; `None` while it runs.
-    end: Option<&'static str>,
-    /// Why the session failed, when it did.
-    error: Option<String>,
-}
-
 /// One enrolment session of this server.
 #[derive(Debug)]
 struct EnrollJob {
     /// The id of the elicitation that showed the link, and the handle a
     /// multi round-trip retry names the session by.
     elicitation_id: String,
-    local: bool,
     /// F13: the page or relay is not the default (empty otherwise).
     warnings: Vec<String>,
-    /// The session's connect, idle and maximum timeouts.
-    timeouts: Timeouts,
-    started: Instant,
     stop: Arc<AtomicBool>,
-    progress: Arc<Mutex<Progress>>,
+    progress: Arc<Mutex<SessionProgress>>,
     /// Bumped on every change of `progress`, to wake a waiting status call.
     changed: Arc<watch::Sender<u64>>,
 }
 
 impl EnrollJob {
-    fn progress(&self) -> MutexGuard<'_, Progress> {
+    fn progress(&self) -> MutexGuard<'_, SessionProgress> {
         lock(&self.progress)
     }
 
     fn running(&self) -> bool {
-        self.progress().end.is_none()
+        self.progress().running()
     }
 }
 
@@ -236,14 +206,6 @@ impl EnrollJobs {
 
     fn current(&self) -> Option<Arc<EnrollJob>> {
         lock(&self.current).clone()
-    }
-}
-
-/// A lock that survives a panicked holder: the data is a report.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
     }
 }
 
@@ -296,15 +258,6 @@ fn no_pairing_page(reason: impl Into<String>) -> CallToolResult {
     }))
 }
 
-/// Whether the client of this call declared URL-mode elicitation: only then
-/// can the link reach the human without passing through the assistant.
-fn shows_urls(context: &RequestContext<RoleServer>) -> bool {
-    context
-        .client_capabilities()
-        .and_then(|caps| caps.elicitation)
-        .is_some_and(|elicitation| elicitation.url.is_some())
-}
-
 /// The host of `link` (`bussard.tmbo.dev`, `127.0.0.1:8123`), for the
 /// elicitation message.
 fn link_host(link: &str) -> &str {
@@ -328,13 +281,6 @@ fn elicitation_message(host: &str, warnings: &[String]) -> String {
     message
 }
 
-/// A fresh random elicitation id.
-fn new_elicitation_id() -> Result<String, String> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|e| format!("drawing a random id: {e}"))?;
-    Ok(bussard_model::text::hex(&bytes))
-}
-
 /// Ends `job`'s session and waits for it to close.
 async fn close(job: &EnrollJob) {
     if job.running() {
@@ -349,83 +295,24 @@ struct Started {
     pairing_url: String,
 }
 
-/// One label as the tools report it: never a key.
-fn result_json(outcome: &CertificateOutcome) -> Value {
-    let mut entry = json!({
-        "serial": outcome.serial,
-        "address": outcome.ia,
-        "name": outcome.name,
-        "status": outcome.status.as_str(),
-    });
-    if let Some(message) = &outcome.message {
-        entry["message"] = json!(message);
-    }
-    entry
-}
-
-/// `span` in words: `10 minutes`, `1 minute`, `30 seconds`.
-fn span_words(span: Duration) -> String {
-    let secs = span.as_secs();
-    let (n, unit) = if secs >= 60 && secs.is_multiple_of(60) {
-        (secs / 60, "minute")
-    } else {
-        (secs, "second")
-    };
-    format!("{n} {unit}{}", if n == 1 { "" } else { "s" })
-}
-
-/// Why the session of `job` ended, in one sentence of the glossary's words;
-/// `None` while it runs.
-fn end_reason(job: &EnrollJob, progress: &Progress) -> Option<String> {
-    let end = progress.end?;
-    Some(match end {
-        "phone_done" => "Finished on the phone.".to_string(),
-        "stopped" => "The session was ended from the chat.".to_string(),
-        "connect_timeout" => format!(
-            "No phone joined within {}, so the session was closed.",
-            span_words(job.timeouts.connect)
-        ),
-        "idle_timeout" => format!(
-            "Nothing happened for {}, so the session was closed.",
-            span_words(job.timeouts.idle)
-        ),
-        "max_duration" | "expired" => "The session ran out of time.".to_string(),
-        _ => format!(
-            "The session failed: {}.",
-            progress.error.as_deref().unwrap_or("for an unknown reason")
-        ),
-    })
-}
-
-/// The certificates of `progress` in one line: serial number and badge
-/// (`00FA01020304 added · 0083A1B2C3D4 no device yet`).
-fn serials_line(progress: &Progress) -> String {
-    progress
-        .results
-        .iter()
-        .map(|outcome| {
-            let certificate = PairingCertificate::of(outcome);
-            format!("{} {}", certificate.serial, certificate.badge)
-        })
-        .collect::<Vec<_>>()
-        .join(" \u{00B7} ")
-}
-
-/// The status of `job` as `knx_enroll_status` returns it: counts while it
-/// runs (`results` too with `details`), counts and `results` once ended.
-/// The pairing page lists the certificates, so the chat does not (#820).
+/// The status of `job` as `knx_enroll_status` returns it: the session's
+/// [`SessionStatus`] and what the assistant does next. The pairing page
+/// lists the certificates, so the chat does not (#820).
 fn status_json(job: &EnrollJob, details: bool) -> Value {
-    let progress = job.progress();
-    let stored = progress
-        .results
-        .iter()
-        .filter(|r| r.status.is_stored())
-        .count();
-    let running = progress.end.is_none();
-    let elapsed = job.started.elapsed().as_secs();
-    let tally = EnrollTally::of(&progress.results);
-    let steps = tally.next_steps();
-    let next_step = if running {
+    let status = job.progress().status(details);
+    let next_step = next_step(&status);
+    let mut value = json!(status);
+    value["next_step"] = json!(next_step);
+    value
+}
+
+/// What the assistant does next with `status`.
+fn next_step(status: &SessionStatus) -> &'static str {
+    if status.warning.is_some() {
+        "Tell the human first, plainly, that another phone tried to join this session \
+         (`warning`), and ask whether that was them; if not, call knx_enroll_status with \
+         stop: true and start a new session."
+    } else if status.session == "running" {
         "The session is open and the pairing page lists each certificate as it arrives, so \
          do not list them or repeat the page in the chat. Say nothing unless the human asks; \
          then give `summary` (the counts) in one line, and serial numbers only when the human \
@@ -433,7 +320,7 @@ fn status_json(job: &EnrollJob, details: bool) -> Value {
          knx_enroll_status with until_end: true, without a message to the human, and again \
          while it answers `running`; call it with stop: true once the human says they are \
          done."
-    } else if steps.is_empty() {
+    } else if status.next_steps.is_empty() {
         "The session ended. Give the human `summary` in one or two lines; name serial numbers \
          (`serials`) only if the human asks. Do not repeat the pairing page. Nothing else is \
          left to do."
@@ -441,64 +328,13 @@ fn status_json(job: &EnrollJob, details: bool) -> Value {
         "The session ended. Give the human `summary` in one or two lines and suggest the first \
          entry of `next_steps` (command and why; those commands run at the CLI). Name serial \
          numbers (`serials`) only if the human asks. Do not repeat the pairing page."
-    };
-    let mut summary = match end_reason(job, &progress) {
-        Some(reason) => format!("{reason} {}", tally.summary()),
-        None => format!("The certificate page is open. {}", tally.summary()),
-    };
-    let refused_warning = (progress.refused_phones > 0).then(|| {
-        format!(
-            "Another phone tried to join this session and was refused ({} so far); nothing it \
-             sent was saved. If it was not the human's, someone else has the link: stop the \
-             session (stop: true) and start a new one.",
-            progress.refused_phones
-        )
-    });
-    if let Some(warning) = &refused_warning {
-        summary = format!("{warning} {summary}");
     }
-    let next_step = if refused_warning.is_some() {
-        "Tell the human first, plainly, that another phone tried to join this session \
-         (`warning`), and ask whether that was them; if not, call knx_enroll_status with \
-         stop: true and start a new session."
-    } else {
-        next_step
-    };
-    let mut status = json!({
-        "ok": progress.error.is_none(),
-        "session": if running { "running" } else { "ended" },
-        "end": progress.end,
-        "error": progress.error,
-        "local": job.local,
-        "phones": progress.phones,
-        "refused_phones": progress.refused_phones,
-        "warning": refused_warning,
-        "certificates": progress.results.len(),
-        "stored": stored,
-        "ignored": progress.ignored,
-        "tally": tally,
-        "expires_in_seconds": if running {
-            Some(SESSION_LIFETIME_SECS.saturating_sub(elapsed))
-        } else {
-            None
-        },
-        "summary": summary,
-        "next_steps": if running { Vec::new() } else { steps },
-        "next_step": next_step,
-    });
-    if details || !running {
-        status["results"] = progress.results.iter().map(result_json).collect();
-    }
-    if !running {
-        status["serials"] = json!(serials_line(&progress));
-    }
-    status
 }
 
 /// The progress message of a waiting call: counts only, never a link, a
 /// session code or a certificate (#831).
-fn progress_message(job: &EnrollJob, progress: &Progress) -> String {
-    let device = if job.local {
+fn progress_message(progress: &SessionProgress) -> String {
+    let device = if progress.local {
         "The certificate page"
     } else {
         "Your phone"
@@ -508,62 +344,12 @@ fn progress_message(job: &EnrollJob, progress: &Progress) -> String {
     } else if progress.results.is_empty() {
         format!("{device} is connected. Nothing sent yet.")
     } else {
-        format!(
-            "{device} is connected. {}",
-            EnrollTally::of(&progress.results).summary()
-        )
+        format!("{device} is connected. {}", progress.tally().summary())
     };
     if progress.refused_phones > 0 {
         message.push_str(" Another phone tried to join and was refused.");
     }
     message
-}
-
-/// The live part of the pairing page, from `progress`.
-fn pairing_status(job: &EnrollJob, progress: &Progress) -> PairingStatus {
-    let tally = EnrollTally::of(&progress.results);
-    let ended = end_reason(job, progress).map(|reason| {
-        if progress.end == Some("phone_done") {
-            format!("Done. {BACK_TO_CHAT}")
-        } else {
-            format!("{reason} {BACK_TO_CHAT}")
-        }
-    });
-    PairingStatus {
-        running: ended.is_none(),
-        phones: progress.phones,
-        refused_phones: progress.refused_phones,
-        certificates: progress
-            .results
-            .iter()
-            .map(PairingCertificate::of)
-            .collect(),
-        summary: tally.summary(),
-        next_steps: if ended.is_some() {
-            tally.next_steps()
-        } else {
-            Vec::new()
-        },
-        ended,
-    }
-}
-
-/// How the session's relay is reached: the hosted page and relay of
-/// bussard.toml, or the local server.
-enum Endpoint {
-    Hosted { relay: String, page: String },
-    Local(LocalEnrollServer),
-}
-
-/// The relay and page of a hosted session for the model in `dir`: the
-/// `[enroll]` table of bussard.toml, else the hosted relay and page.
-fn hosted_endpoint(dir: &Path) -> Result<Endpoint, String> {
-    let config = bussard_model::loader::load_config(dir)
-        .map_err(|e| format!("reading {}: {e}", dir.join("bussard.toml").display()))?
-        .enroll
-        .unwrap_or_default();
-    let (relay, page) = hosted_endpoints(None, None, &config);
-    Ok(Endpoint::Hosted { relay, page })
 }
 
 /// Runs `session` to its end in this thread, recording into `job`.
@@ -576,53 +362,18 @@ fn run_session(
     job: &EnrollJob,
 ) {
     let bump = || job.changed.send_modify(|v| *v += 1);
-    let result = session.run(
-        &relay,
-        &mut sink,
-        RunOptions {
-            wait_secs: RUN_WAIT_SECS,
-            timeouts: job.timeouts,
-        },
-        &job.stop,
-        &mut |event| {
-            {
-                let mut progress = job.progress();
-                match event {
-                    EnrollEvent::PhoneJoined => progress.phones = 1,
-                    EnrollEvent::PhoneRefused { phones } => progress.refused_phones = phones,
-                    EnrollEvent::Certificate(outcome) => progress.results.push(outcome),
-                    EnrollEvent::Ignored { reason } => {
-                        progress.ignored += 1;
-                        tracing::debug!(%reason, "enrolment: ignored a message");
-                    }
-                    EnrollEvent::PhoneDone => {}
-                }
-            }
-            bump();
-        },
-    );
+    let options = RunOptions {
+        wait_secs: RUN_WAIT_SECS,
+        timeouts: job.progress().timeouts,
+    };
+    let result = session.run(&relay, &mut sink, options, &job.stop, &mut |event| {
+        job.progress().record(event);
+        bump();
+    });
     if let Some(server) = local {
         server.finish();
     }
-    {
-        let mut progress = job.progress();
-        match result {
-            Ok(summary) => {
-                progress.end = Some(match summary.end {
-                    EnrollEnd::PhoneDone => "phone_done",
-                    EnrollEnd::Stopped => "stopped",
-                    EnrollEnd::ConnectTimeout => "connect_timeout",
-                    EnrollEnd::IdleTimeout => "idle_timeout",
-                    EnrollEnd::MaxDuration => "max_duration",
-                    EnrollEnd::Expired => "expired",
-                });
-            }
-            Err(err) => {
-                progress.end = Some("error");
-                progress.error = Some(err.to_string());
-            }
-        }
-    }
+    job.progress().finish(result);
     bump();
     pairing.finish();
 }
@@ -667,10 +418,8 @@ impl BussardMcp {
     ) -> Result<CallToolResponse, ErrorData> {
         // The client's second round of a 2026-07-28 call: the human's answer.
         if let Some(state) = request_state {
-            let answer = input_responses
-                .and_then(|responses| responses.get(INPUT_KEY).cloned())
-                .and_then(|value| serde_json::from_value::<ElicitResult>(value).ok());
-            return Ok(self.enroll_answered(&state, answer, &context).await.into());
+            let action = elicit::answer(input_responses.as_ref(), INPUT_KEY);
+            return Ok(self.enroll_answered(&state, action, &context).await.into());
         }
         // Nobody would see the page: refuse before a session starts.
         if let Some(reason) = self.browser.no_display() {
@@ -680,7 +429,7 @@ impl BussardMcp {
             Ok(started) => started,
             Err(refused) => return Ok(refused.into()),
         };
-        if !shows_urls(&context) {
+        if !elicit::shows_urls(&context) {
             return Ok(self.open_pairing_page(started, &context).await.into());
         }
         let id = started.job.elicitation_id.clone();
@@ -690,37 +439,23 @@ impl BussardMcp {
             url: started.pairing_url,
             elicitation_id: id.clone(),
         };
-        if context
-            .protocol_version()
-            .is_some_and(|v| v >= ProtocolVersion::V_2026_07_28)
-        {
-            let mut requests = InputRequests::new();
-            requests.insert(
-                INPUT_KEY.to_owned(),
-                InputRequest::Elicitation(ElicitRequest::new(params)),
-            );
-            return Ok(InputRequiredResult::new(
-                Some(requests),
-                Some(format!("{REQUEST_STATE_PREFIX}{id}")),
-            )
-            .into());
-        }
-        let action = match context.peer.create_elicitation(params).await {
-            Ok(result) => result.action,
-            Err(err) => {
-                // Logged only: a client's error text could echo the URL.
-                tracing::warn!(%err, "enrolment: the client did not show the pairing page");
-                close(&started.job).await;
-                return Ok(no_pairing_page(
-                    "the chat app did not show the pairing page; the session was closed",
-                )
-                .into());
-            }
-        };
-        Ok(self
-            .after_elicitation(&started.job, action, &context)
-            .await
-            .into())
+        let state = format!("{REQUEST_STATE_PREFIX}{id}");
+        Ok(
+            match elicit::show(&context, INPUT_KEY, state, params).await {
+                Shown::Pending(response) => response,
+                Shown::Answered(action) => self
+                    .after_elicitation(&started.job, action, &context)
+                    .await
+                    .into(),
+                Shown::Failed => {
+                    close(&started.job).await;
+                    no_pairing_page(
+                        "the chat app did not show the pairing page; the session was closed",
+                    )
+                    .into()
+                }
+            },
+        )
     }
 
     /// `knx_enroll_status`: the results of the enrolment session so far.
@@ -806,48 +541,47 @@ impl BussardMcp {
         {
             return Err(refused(format!("{err}; no session was started")));
         }
-        let elicitation_id = new_elicitation_id().map_err(refused)?;
-        let endpoint = if local {
-            LocalEnrollServer::start()
-                .map(Endpoint::Local)
-                .map_err(|err| refused(format!("starting the local enrolment page: {err}")))?
+        let elicitation_id = elicit::new_id().map_err(refused)?;
+        let (endpoints, local) = if local {
+            let server = LocalEnrollServer::start()
+                .map_err(|err| refused(format!("starting the local enrolment page: {err}")))?;
+            let endpoints = Endpoints {
+                relay: server.relay_url(),
+                page: server.page_url(),
+                local: true,
+            };
+            (endpoints, Some(server))
         } else {
-            hosted_endpoint(&dir).map_err(refused)?
+            let endpoints = Endpoints::hosted(&dir, None, None).map_err(|e| {
+                refused(format!(
+                    "reading {}: {e}",
+                    dir.join("bussard.toml").display()
+                ))
+            })?;
+            (endpoints, None)
         };
-        let session = EnrollSession::new()
+        let (session, relay, link) = EnrollSession::connect(&endpoints)
             .map_err(|err| refused(format!("starting the enrolment session: {err}")))?;
-        let (relay_url, page, relay_in_link, local) = match endpoint {
-            Endpoint::Hosted { relay, page } => (relay, page, true, None),
-            Endpoint::Local(server) => (server.relay_url(), server.page_url(), false, Some(server)),
-        };
-        let relay = HttpRelay::new(&relay_url, &session).map_err(|err| refused(err.to_string()))?;
-        // Local mode: page and relay share the origin, so the link names no relay.
-        let link = session.link(&page, relay_in_link.then(|| relay.base()));
-        let is_local = local.is_some();
-        // F13: say so when the page or relay is not the project's.
-        let warnings = if relay_in_link {
-            endpoint_warnings(&relay_url, &page)
-        } else {
-            Vec::new()
-        };
         let (changed, _) = watch::channel(0u64);
         let job = Arc::new(EnrollJob {
             elicitation_id,
-            local: is_local,
-            warnings,
-            timeouts: self.enroll.timeouts,
-            started: Instant::now(),
+            // F13: say so when the page or relay is not the project's.
+            warnings: endpoints.warnings(),
             stop: Arc::new(AtomicBool::new(false)),
-            progress: Arc::default(),
+            progress: Arc::new(Mutex::new(SessionProgress::new(
+                endpoints.local,
+                self.enroll.timeouts,
+                "the chat",
+            ))),
             changed: Arc::new(changed),
         });
         let page_job = Arc::clone(&job);
-        let status: StatusFn = Arc::new(move || pairing_status(&page_job, &page_job.progress()));
+        let status: StatusFn = Arc::new(move || PairingStatus::of(&page_job.progress()));
         let pairing = PairingPage::start(
             &PairingContent {
                 code: session.fingerprint(),
                 phone_link: link,
-                local: is_local,
+                local: endpoints.local,
                 warnings: job.warnings.clone(),
             },
             status,
@@ -873,7 +607,7 @@ impl BussardMcp {
     async fn enroll_answered(
         &self,
         state: &str,
-        answer: Option<ElicitResult>,
+        action: ElicitationAction,
         context: &RequestContext<RoleServer>,
     ) -> CallToolResult {
         let job = state.strip_prefix(REQUEST_STATE_PREFIX).and_then(|id| {
@@ -887,8 +621,6 @@ impl BussardMcp {
                  knx_enroll_certificates again to start a new session",
             );
         };
-        // No answer counts as dismissed: the link was not shown.
-        let action = answer.map_or(ElicitationAction::Cancel, |answer| answer.action);
         self.after_elicitation(&job, action, context).await
     }
 
@@ -954,7 +686,7 @@ impl BussardMcp {
         let mut result = status_json(job, false);
         result["pairing_page_opened"] = json!(true);
         if job.running() {
-            result["data_path"] = json!(data_path(job.local).join(" "));
+            result["data_path"] = json!(data_path(job.progress().local).join(" "));
             result["read_more"] = json!(DOCS_URL);
             result["summary"] = json!(format!(
                 "{OPENED_PROGRESS} {}",
@@ -1017,7 +749,7 @@ enum Waited {
 /// its idle timer from firing), else [`SILENT_WAIT_SECS`].
 fn wait_limit(job: &EnrollJob, has_progress_token: bool) -> Duration {
     if has_progress_token {
-        job.timeouts.max + Duration::from_secs(RUN_WAIT_SECS + 60)
+        job.progress().timeouts.max + Duration::from_secs(RUN_WAIT_SECS + 60)
     } else {
         Duration::from_secs(SILENT_WAIT_SECS)
     }
@@ -1055,10 +787,10 @@ async fn wait_for_end(
     loop {
         let message = {
             let progress = job.progress();
-            if progress.end.is_some() {
+            if !progress.running() {
                 return Waited::Ended;
             }
-            progress_message(job, &progress)
+            progress_message(&progress)
         };
         if let Some(token) = &token
             && last.as_deref() != Some(message.as_str())
@@ -1096,7 +828,7 @@ async fn wait_for_change(job: &EnrollJob, wait: Duration, until_end: bool) {
     loop {
         {
             let progress = job.progress();
-            if progress.end.is_some() || (!until_end && progress.results.len() > seen) {
+            if !progress.running() || (!until_end && progress.results.len() > seen) {
                 return;
             }
         }
@@ -1119,92 +851,28 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_service::enroll_session::EnrollStatus;
+    use bussard_service::enroll_session::{EnrollEnd, EnrollEvent, EnrollStatus};
 
-    #[test]
-    fn test_result_json_names_serial_address_name_status() {
-        let entry = result_json(&CertificateOutcome {
-            status: EnrollStatus::Stored,
-            serial: Some("00FA01020304".to_string()),
-            ia: Some("1.1.20".to_string()),
-            name: Some("Actuator".to_string()),
-            message: None,
-        });
-        assert_eq!(
-            entry,
-            json!({
-                "serial": "00FA01020304",
-                "address": "1.1.20",
-                "name": "Actuator",
-                "status": "stored",
-            })
-        );
-    }
-
-    fn job_with(statuses: &[EnrollStatus], end: Option<&'static str>) -> EnrollJob {
+    fn job_with(statuses: &[EnrollStatus], end: Option<EnrollEnd>) -> EnrollJob {
         let (changed, _) = watch::channel(0u64);
-        let results = statuses
-            .iter()
-            .map(|status| CertificateOutcome {
+        let mut progress = SessionProgress::new(false, Timeouts::default(), "the chat");
+        for status in statuses {
+            progress.record(EnrollEvent::Certificate(CertificateOutcome {
                 status: *status,
                 serial: Some("00FA01020304".to_string()),
                 ia: None,
                 name: None,
                 message: None,
-            })
-            .collect();
+            }));
+        }
+        progress.end = end;
         EnrollJob {
             elicitation_id: "00".to_string(),
-            local: false,
             warnings: Vec::new(),
-            timeouts: Timeouts::default(),
-            started: Instant::now(),
             stop: Arc::new(AtomicBool::new(false)),
-            progress: Arc::new(Mutex::new(Progress {
-                results,
-                end,
-                ..Progress::default()
-            })),
+            progress: Arc::new(Mutex::new(progress)),
             changed: Arc::new(changed),
         }
-    }
-
-    #[test]
-    fn test_status_json_ended_has_summary_and_next_steps() {
-        let job = job_with(
-            &[EnrollStatus::Unassigned, EnrollStatus::Conflict],
-            Some("phone_done"),
-        );
-        let status = status_json(&job, false);
-        assert_eq!(
-            status["summary"],
-            "Finished on the phone. 2 sent \u{00B7} 1 no device yet \u{00B7} 1 conflict"
-        );
-        assert_eq!(
-            status["serials"],
-            "00FA01020304 no device yet \u{00B7} 00FA01020304 conflict"
-        );
-        assert_eq!(status["tally"]["waiting"], 1);
-        assert_eq!(status["tally"]["conflicts"], 1);
-        let commands: Vec<&str> = status["next_steps"]
-            .as_array()
-            .map(|steps| steps.iter().filter_map(|s| s["command"].as_str()).collect())
-            .unwrap_or_default();
-        assert_eq!(
-            commands,
-            [
-                "bussard scan <LINE>, or bussard adopt <ADDRESS>",
-                "bussard keys export <FILE>",
-                "bussard keys show"
-            ]
-        );
-    }
-
-    #[test]
-    fn test_status_json_running_has_no_next_steps() {
-        let status = status_json(&job_with(&[EnrollStatus::Stored], None), false);
-        assert_eq!(status["next_steps"], json!([]));
-        assert_eq!(status["session"], "running");
     }
 
     #[test]
@@ -1212,14 +880,16 @@ mod tests {
         let job = job_with(&[EnrollStatus::Stored, EnrollStatus::Unassigned], None);
         let status = status_json(&job, false);
         assert_eq!(status["certificates"], 2);
-        assert_eq!(status["stored"], 2);
+        assert_eq!(status["next_steps"], json!([]));
         assert!(status.get("results").is_none(), "{status}");
         let next = status["next_step"].as_str().unwrap_or_default();
         assert!(next.contains("do not list them"), "{next}");
-        let detailed = status_json(&job, true);
-        assert_eq!(detailed["results"].as_array().map(Vec::len), Some(2));
+        assert_eq!(
+            status_json(&job, true)["results"].as_array().map(Vec::len),
+            Some(2)
+        );
         let ended = status_json(
-            &job_with(&[EnrollStatus::Stored], Some("phone_done")),
+            &job_with(&[EnrollStatus::Stored], Some(EnrollEnd::PhoneDone)),
             false,
         );
         assert_eq!(ended["results"].as_array().map(Vec::len), Some(1));
@@ -1228,52 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn test_end_reason_names_each_end() {
-        let mut job = job_with(&[], Some("connect_timeout"));
-        let reason = |job: &EnrollJob| end_reason(job, &job.progress());
-        assert_eq!(
-            reason(&job).as_deref(),
-            Some("No phone joined within 10 minutes, so the session was closed.")
-        );
-        job.timeouts.connect = Duration::from_secs(1);
-        assert_eq!(
-            reason(&job).as_deref(),
-            Some("No phone joined within 1 second, so the session was closed.")
-        );
-        job.progress().end = Some("phone_done");
-        assert_eq!(reason(&job).as_deref(), Some("Finished on the phone."));
-        job.progress().end = None;
-        assert_eq!(reason(&job), None);
-    }
-
-    #[test]
-    fn test_pairing_status_ended_points_back_to_the_chat() {
-        let job = job_with(&[EnrollStatus::Stored], Some("phone_done"));
-        let status = pairing_status(&job, &job.progress());
-        assert_eq!(
-            status.ended.as_deref(),
-            Some("Done. You can close this tab and go back to your chat.")
-        );
-        let job = job_with(&[], Some("stopped"));
-        let status = pairing_status(&job, &job.progress());
-        assert_eq!(
-            status.ended.as_deref(),
-            Some(
-                "The session was ended from the chat. You can close this tab and go back to \
-                 your chat."
-            )
-        );
-        let running = job_with(&[], None);
-        assert!(pairing_status(&running, &running.progress()).running);
-    }
-
-    #[test]
     fn test_progress_message_has_counts_and_no_link() {
         let job = job_with(&[], None);
-        assert_eq!(progress_message(&job, &job.progress()), OPENED_PROGRESS);
+        assert_eq!(progress_message(&job.progress()), OPENED_PROGRESS);
         let job = job_with(&[EnrollStatus::Stored, EnrollStatus::Unassigned], None);
         job.progress().phones = 1;
-        let message = progress_message(&job, &job.progress());
+        let message = progress_message(&job.progress());
         assert_eq!(
             message,
             "Your phone is connected. 2 sent \u{00B7} 1 added \u{00B7} 1 no device yet"
@@ -1290,26 +920,6 @@ mod tests {
         );
         const { assert!(SILENT_WAIT_SECS < 5 * 60) };
         const { assert!(PROGRESS_INTERVAL_SECS < 5 * 60) };
-        assert!(wait_limit(&job, true) > job.timeouts.max);
-    }
-
-    #[test]
-    fn test_hosted_endpoint_reads_the_enroll_table() -> Result<(), Box<dyn std::error::Error>> {
-        let dir = tempfile::tempdir()?;
-        std::fs::write(dir.path().join("bussard.toml"), "")?;
-        let Ok(Endpoint::Hosted { relay, page }) = hosted_endpoint(dir.path()) else {
-            return Err("no hosted endpoint".into());
-        };
-        assert_eq!(relay, bussard_service::enroll_session::DEFAULT_RELAY);
-        assert_eq!(page, bussard_service::enroll_session::DEFAULT_PAGE);
-        std::fs::write(
-            dir.path().join("bussard.toml"),
-            "[enroll]\nrelay = \"https://relay.example\"\n",
-        )?;
-        let Ok(Endpoint::Hosted { relay, .. }) = hosted_endpoint(dir.path()) else {
-            return Err("no hosted endpoint".into());
-        };
-        assert_eq!(relay, "https://relay.example");
-        Ok(())
+        assert!(wait_limit(&job, true) > job.progress().timeouts.max);
     }
 }

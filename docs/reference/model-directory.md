@@ -2,7 +2,7 @@
 
 The project folder is your installation as files: what each file and folder holds, which ones bussard regenerates, and how a bundle packs them. `knx/` by default.
 
-Some identifiers keep the older word "model" for the project: this page's file name, `--no-model-edits`, `.bussard/model-cache/`, and JSON fields such as `model_sha256` and `model_status`. `.bussard/models/` holds product models, which describe a vendor's application program, not your project.
+Some identifiers keep the older word "model" for the project: this page's file name, `--no-model-edits`, and JSON fields such as `model_sha256` and `model_status`. `.bussard/model-cache/` holds product models, which describe a vendor's application program, not your project.
 
 ```
 knx/
@@ -22,8 +22,7 @@ knx/
   .bussard/history/       snapshots of the project files
   .bussard/facts/         @generated device facts, one file per device
   .bussard/products/      the parsed-product cache
-  .bussard/models/        @generated product models, rebuilt from products/ when missing
-  .bussard/model-cache/   the product models converted to JSON, rebuilt when a model changes
+  .bussard/model-cache/   @generated product models, rebuilt from products/ when missing
   .bussard/last_export.json
   .bussard/tunnel-users/  which KNXnet/IP Secure tunnelling user each running bussard holds
   .bussard/instances/     the running `bussard mcp` processes for this project
@@ -75,9 +74,9 @@ Saves edit the files in place. Comments and the formatting of untouched lines su
 
 | Command | `.bussard/` absent |
 |---|---|
-| `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/models/` and the first history snapshot. `products/` is written next to it, never inside. |
+| `init`, `import`, `import-product`, `adopt` | Create it and write `.bussard/model-cache/` and the first history snapshot. `products/` is written next to it, never inside. |
 | `status`, `history`, `show`, `undo`, `export` | The history is empty: `status` says there is no snapshot yet, `history` lists nothing, `show` and `undo` find no snapshot, `export` writes the bundle without snapshots. |
-| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/models/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing product model on demand. |
+| `validate`, `groups`, `export-groups`, `doc`, `ha-config`, `device` | Regenerate `.bussard/model-cache/` from the archives the lock pins, in the lock's `language`, then run as usual. `device` also writes a single missing product model on demand. |
 | `diff`, `keyring` | Read no project folder. |
 | `scan`, `monitor`, `capture`, `read`, `write`, `learn`, `test` | Unaffected (the product models regenerate first, as above). |
 | `describe`, `plan`, `reconstruct`, `audit --live`, `backup` | Read the device facts from the device and write `.bussard/facts/<ia>.toml`. `plan` and `reconstruct` decode parameters when the archive is in `products/`. |
@@ -106,7 +105,7 @@ knx/.bussard/history/20260922T101112Z-001/
 
 - One directory per snapshot, named by a UTC timestamp plus a sequence number, so a listing is already a timeline.
 - A snapshot is a full copy of the project files, since a house's project is well under a megabyte.
-- Nothing else is ever copied: `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out.
+- Nothing else is ever copied: `products/`, `.bussard/model-cache/`, `captures/`, keyrings, `.knxproj` and `.knxprod` files stay out.
 
 `import`, `apply`, `flash`, `adopt`, `reconstruct` and every MCP edit to the project snapshot before they write. `plan` and those commands first record an `external edit` snapshot when the working files differ from the last one, so an edit made in an editor or by an assistant writing TOML is never lost.
 
@@ -204,7 +203,7 @@ The parsed-product cache. A `.knxproj` carries the application program of every 
 ```
 
 - The key is a SHA-256 over the archive's SHA-256, the selected inner archive, the cache format and the running bussard build (its version and executable). An edited or replaced archive, or a rebuilt bussard, gets a new directory, so nothing is read from a stale entry.
-- Regenerating `.bussard/models/` parses only the pinned programs (with the programs their `Hardware2Program` lists next to them), so afterwards the cache holds those, not the whole archive.
+- Regenerating `.bussard/model-cache/` parses only the pinned programs (with the programs their `Hardware2Program` lists next to them), so afterwards the cache holds those, not the whole archive.
 - The 32 most recently written entries are kept.
 - An unreadable or foreign file is a cache miss, never an error. A program read back is the same value the parser returns, so the images `flash` writes are unchanged.
 - `BUSSARD_PRODUCT_CACHE=off` turns the cache off. Deleting the directory is always safe.
@@ -212,9 +211,9 @@ The parsed-product cache. A `.knxproj` carries the application program of every 
 !!! note
     Two other start-up costs are paid once per process. The project is parsed once per command: a later load of unchanged files returns the same result, and any edit is parsed again. The key store or a keyring is decrypted once per process or MCP server for the same file bytes and password; an edited file or another password is decrypted again.
 
-## `.bussard/models`
+## `.bussard/model-cache`
 
-One generated YAML file per application program, written from the archives in `products/` by `import-product`, and by any command or server that finds one missing. Never edit them; [Product data](product-data.md) describes what they hold and when they regenerate.
+One generated JSON file per application program, the product model, written from the archives in `products/` (through the parsed-product cache) by `import-product`, and by any command or server that finds one missing or of an older format. Never edit them; [Product data](product-data.md) describes what they hold and when they regenerate. Deleting the directory is always safe.
 
 ## The bundle format
 
@@ -245,7 +244,7 @@ Entries are sorted, with a fixed timestamp and permissions, so two exports of th
 | `model_sha256` | SHA-256 over the lines `<file sha256>  <path>\n`, sorted by path (the `sha256sum` output format). |
 | `excluded` | What a bundle never contains (below). |
 
-A bundle never contains `products/`, `.bussard/models/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of project files and nothing else. A reader rejects:
+A bundle never contains `products/`, `.bussard/model-cache/`, `captures/`, keyrings, `.knxproj` or `.knxprod` files, or `.env`: the export copies an allow-list of project files and nothing else. A reader rejects:
 
 - any entry outside the layout above;
 - any project file whose hash does not match;

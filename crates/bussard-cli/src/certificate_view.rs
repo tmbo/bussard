@@ -10,46 +10,15 @@ use crate::style::{Style, Tone};
 /// The widest badge, `no device yet`: badges pad to it so lines align.
 const BADGE_WIDTH: usize = 13;
 
-/// The badge of a state and its colour.
+/// The badge of `status` and its tone.
 pub(crate) fn badge(status: EnrollStatus) -> (&'static str, Tone) {
-    match status {
-        EnrollStatus::Stored => ("added", Tone::Ok),
-        EnrollStatus::Unassigned => ("no device yet", Tone::Warn),
-        EnrollStatus::AlreadyStored => ("already known", Tone::Dim),
-        EnrollStatus::Conflict => ("conflict", Tone::Error),
-        EnrollStatus::Invalid => ("invalid", Tone::Error),
-        EnrollStatus::Error => ("failed", Tone::Error),
-    }
-}
-
-/// The detail line of an outcome, `None` when the badge says it all.
-pub(crate) fn detail(outcome: &CertificateOutcome) -> Option<String> {
-    match outcome.status {
-        EnrollStatus::Stored => {
-            let device = match (&outcome.ia, &outcome.name) {
-                (Some(ia), Some(name)) if !name.is_empty() => format!("{ia} {name}"),
-                (Some(ia), _) => ia.clone(),
-                (None, _) => return None,
-            };
-            Some(format!("for {device}"))
-        }
-        EnrollStatus::Unassigned => Some(
-            "no device in your project has this serial number; bussard matches it once it \
-             finds the device (`bussard scan`)"
-                .to_string(),
-        ),
-        EnrollStatus::AlreadyStored => None,
-        EnrollStatus::Conflict => {
-            Some("your key store holds a different key for this device".to_string())
-        }
-        EnrollStatus::Invalid => Some("check the code".to_string()),
-        EnrollStatus::Error => Some(
-            outcome
-                .message
-                .clone()
-                .unwrap_or_else(|| "for an unknown reason".to_string()),
-        ),
-    }
+    let tone = match status {
+        EnrollStatus::Stored => Tone::Ok,
+        EnrollStatus::Unassigned => Tone::Warn,
+        EnrollStatus::AlreadyStored => Tone::Dim,
+        EnrollStatus::Conflict | EnrollStatus::Invalid | EnrollStatus::Error => Tone::Error,
+    };
+    (status.badge(), tone)
 }
 
 /// One line per certificate: serial number, state badge, detail.
@@ -58,7 +27,7 @@ pub(crate) fn line(outcome: &CertificateOutcome, style: Style) -> String {
     let (text, tone) = badge(outcome.status);
     let padded = format!("{text:<BADGE_WIDTH$}");
     let mut line = format!("{serial:<12}  {}", style.paint(&padded, tone));
-    match detail(outcome) {
+    match outcome.detail() {
         Some(detail) => {
             line.push_str("  ");
             line.push_str(&detail);

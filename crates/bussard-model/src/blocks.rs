@@ -460,7 +460,7 @@ fn test_string(test: &WhenTest) -> String {
         WhenTest::Default => "default".to_string(),
         // Kept recognisable and matching nothing.
         WhenTest::Unknown(raw) => format!("?{raw}"),
-        other => crate::dynamic_compact::test_text(other).unwrap_or_default(),
+        other => other.text().unwrap_or_default(),
     }
 }
 

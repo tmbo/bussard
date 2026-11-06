@@ -6,27 +6,20 @@
 //! the page's `connect-src 'self'` covers the relay. The page's files are
 //! embedded at build time; nothing is read from disk at run time.
 //!
-//! [`LocalEnrollServer`] owns its own thread and runtime, so a synchronous
-//! caller (`bussard keys enroll --local`) and an async one (the MCP server)
-//! start it the same way. Dropping it stops the server.
-//!
-//! Requests whose `Host` is not this server's loopback address are refused
-//! (`421`), so a web page that rebinds a DNS name to 127.0.0.1 cannot reach
-//! it under its own origin.
+//! [`LocalEnrollServer`] is a [`LocalServer`]: its own thread and runtime,
+//! stopped when dropped, and requests whose `Host` is not this server's
+//! loopback address are refused (`421`).
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
-use std::thread::JoinHandle;
+use std::net::SocketAddr;
 use std::time::Duration;
 
 use axum::Router;
-use axum::extract::{Request, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware::{self, Next};
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use tokio::sync::oneshot;
 
 use crate::enroll_relay::EnrollRelay;
+use crate::local_server::{self, CSS, HTML, JS, LocalServer, Policy};
 
 /// The path the page is served under.
 pub const PAGE_PATH: &str = "/enroll/";
@@ -36,15 +29,14 @@ pub const PAGE_PATH: &str = "/enroll/";
 /// page reads `closed` within this.
 pub const CLOSE_GRACE: Duration = Duration::from_secs(1);
 
-/// The response headers of the page itself. The policy repeats the page's
-/// own `<meta>` policy with the network narrowed to this origin.
-const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-    img-src 'self' data:; media-src 'self' blob: mediastream:; connect-src 'self'; \
-    base-uri 'none'; form-action 'none'; frame-ancestors 'none'; object-src 'none'";
-
-const HTML: &str = "text/html; charset=utf-8";
-const JS: &str = "text/javascript; charset=utf-8";
-const CSS: &str = "text/css; charset=utf-8";
+/// The headers of the page itself. The policy repeats the page's own
+/// `<meta>` policy with the network narrowed to this origin.
+const POLICY: Policy = Policy {
+    csp: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+        media-src 'self' blob: mediastream:; connect-src 'self'; base-uri 'none'; \
+        form-action 'none'; frame-ancestors 'none'; object-src 'none'",
+    referrer: "no-referrer",
+};
 
 /// The page's files under [`PAGE_PATH`], embedded from `web/enroll/`.
 fn page_file(path: &str) -> Option<(&'static [u8], &'static str)> {
@@ -63,70 +55,28 @@ fn page_file(path: &str) -> Option<(&'static [u8], &'static str)> {
 /// The page and `relay` on one origin. `allowed_hosts` are the `Host`
 /// header values the server answers.
 pub fn router(relay: &EnrollRelay, allowed_hosts: Vec<String>) -> Router {
-    Router::new()
+    let routes = Router::new()
         .route("/enroll", get(|| async { Redirect::permanent(PAGE_PATH) }))
         .route("/enroll/", get(|| serve_file(String::new())))
         .route(
             "/enroll/{*path}",
             get(|axum::extract::Path(path): axum::extract::Path<String>| serve_file(path)),
         )
-        .merge(relay.router())
-        .layer(middleware::from_fn_with_state(
-            std::sync::Arc::new(allowed_hosts),
-            check_host,
-        ))
+        .merge(relay.router());
+    local_server::only_hosts(routes, allowed_hosts)
 }
 
 async fn serve_file(path: String) -> Response {
-    let Some((body, content_type)) = page_file(&path) else {
-        return StatusCode::NOT_FOUND.into_response();
-    };
-    let mut response = body.into_response();
-    let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    if content_type == HTML {
-        headers.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(PAGE_CSP),
-        );
-    }
-    response
-}
-
-/// Refuses a request whose `Host` is not one of this server's names.
-pub(crate) async fn check_host(
-    State(allowed): State<std::sync::Arc<Vec<String>>>,
-    request: Request,
-    next: Next,
-) -> Response {
-    let host = request
-        .headers()
-        .get(header::HOST)
-        .and_then(|h| h.to_str().ok());
-    if host.is_some_and(|h| allowed.iter().any(|a| a.eq_ignore_ascii_case(h))) {
-        next.run(request).await
-    } else {
-        (StatusCode::MISDIRECTED_REQUEST, "unknown host").into_response()
+    match page_file(&path) {
+        Some((body, content_type)) => POLICY.file(body, content_type),
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
 /// The page and the relay served on `127.0.0.1` at a free port, until
 /// dropped.
 #[derive(Debug)]
-pub struct LocalEnrollServer {
-    addr: SocketAddr,
-    shutdown: Option<oneshot::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
-}
+pub struct LocalEnrollServer(LocalServer);
 
 impl LocalEnrollServer {
     /// Binds `127.0.0.1` at a free port and serves the page and a fresh
@@ -146,76 +96,39 @@ impl LocalEnrollServer {
     ///
     /// The socket cannot be bound or the server thread cannot start.
     pub fn start_with(relay: EnrollRelay) -> std::io::Result<Self> {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let port = addr.port();
-        let app = router(
-            &relay,
-            vec![format!("127.0.0.1:{port}"), format!("localhost:{port}")],
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let (shutdown, stopped) = oneshot::channel::<()>();
-        let thread = std::thread::Builder::new()
-            .name("enroll-local".to_owned())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
-                        return;
-                    };
-                    // Not a graceful shutdown: an open long poll would hold
-                    // it for up to 25 seconds. Dropping the runtime ends the
-                    // connections.
-                    tokio::select! {
-                        _ = axum::serve(listener, app) => {}
-                        _ = stopped => {}
-                    }
-                });
-            })?;
-        Ok(LocalEnrollServer {
-            addr,
-            shutdown: Some(shutdown),
-            thread: Some(thread),
+        LocalServer::start("enroll-local", CLOSE_GRACE, |addr: SocketAddr| {
+            let port = addr.port();
+            router(
+                &relay,
+                vec![local_server::host(addr), format!("localhost:{port}")],
+            )
         })
+        .map(LocalEnrollServer)
     }
 
     /// The loopback address the server listens on.
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.0.addr()
     }
 
     /// The relay base URL, `http://127.0.0.1:<port>`.
     #[must_use]
     pub fn relay_url(&self) -> String {
-        format!("http://{}", self.addr)
+        self.0.url("")
     }
 
     /// The page URL, `http://127.0.0.1:<port>/enroll/`. A link to it needs
     /// no `r`: the relay is on the page's origin.
     #[must_use]
     pub fn page_url(&self) -> String {
-        format!("http://{}{PAGE_PATH}", self.addr)
+        self.0.url(PAGE_PATH)
     }
 
     /// Keeps serving for [`CLOSE_GRACE`] so the page sees the session
     /// closed, then stops.
     pub fn finish(self) {
-        std::thread::sleep(CLOSE_GRACE);
-        drop(self);
-    }
-}
-
-impl Drop for LocalEnrollServer {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.0.finish();
     }
 }
 

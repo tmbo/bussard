@@ -106,20 +106,18 @@ impl EnrollTally {
     /// `failed`), in that order, zeros included.
     #[must_use]
     pub fn states(&self) -> [(u32, &'static str); 6] {
+        let conflicts = if self.conflicts == 1 {
+            EnrollStatus::Conflict.badge()
+        } else {
+            "conflicts"
+        };
         [
-            (self.stored, "added"),
-            (self.waiting, "no device yet"),
-            (self.already_known, "already known"),
-            (
-                self.conflicts,
-                if self.conflicts == 1 {
-                    "conflict"
-                } else {
-                    "conflicts"
-                },
-            ),
-            (self.invalid, "invalid"),
-            (self.errors, "failed"),
+            (self.stored, EnrollStatus::Stored.badge()),
+            (self.waiting, EnrollStatus::Unassigned.badge()),
+            (self.already_known, EnrollStatus::AlreadyStored.badge()),
+            (self.conflicts, conflicts),
+            (self.invalid, EnrollStatus::Invalid.badge()),
+            (self.errors, EnrollStatus::Error.badge()),
         ]
     }
 

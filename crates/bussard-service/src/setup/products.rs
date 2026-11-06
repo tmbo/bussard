@@ -4,7 +4,7 @@
 //!
 //! `apply` and `flash` need the vendor's `.knxprod` for a device's order
 //! number, and `validate` reads the product models under
-//! `.bussard/models/`. `import` and `adopt` know the order numbers, so they
+//! `.bussard/model-cache/`. `import` and `adopt` know the order numbers, so they
 //! look every one without product data up in the pointer index, ask once for
 //! the whole list, download, verify, cache and generate the models, and name
 //! what they could not find with the sentence that says where to get it.
@@ -238,7 +238,7 @@ pub fn read_in_model_language(
 }
 
 /// Writes one model file per application program under
-/// `<dir>/.bussard/models/` (see [`bussard_prod::product_model`]).
+/// `<dir>/.bussard/model-cache/` (see [`bussard_prod::product_model`]).
 ///
 /// # Errors
 ///
@@ -513,14 +513,14 @@ fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
 }
 
 /// Writes the product model of every application a device in the lock pins
-/// that `.bussard/models/` lacks, or only of `only` when given (see
+/// that `.bussard/model-cache/` lacks, or only of `only` when given (see
 /// [`bussard_prod::product_model::complete_models`]). Failures are warnings.
 pub fn complete_models(dir: &Path, only: Option<&str>, out: &mut dyn Output) {
     warn_models(bussard_prod::product_model::complete_models(dir, only), out);
 }
 
 /// Writes the product model of every application of every archive the lock
-/// pins that `.bussard/models/` lacks, pinned by a device or not (see
+/// pins that `.bussard/model-cache/` lacks, pinned by a device or not (see
 /// [`bussard_prod::product_model::complete_all_models`]): what `import` has
 /// always written. Failures are warnings.
 pub fn complete_all_models(dir: &Path, out: &mut dyn Output) {

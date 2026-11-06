@@ -1,7 +1,7 @@
 //! `bussard import-product` and the product form of `knx_import_file`
 //! (issue #743): vendor product data into the retained store
 //! `<dir>/products/`, pinned in `bussard.lock`, with one product model per
-//! application program under `<dir>/.bussard/models/`. The store, the index
+//! application program under `<dir>/.bussard/model-cache/`. The store, the index
 //! and the download are [`crate::setup::products`].
 //!
 //! An ETS project export (`.knxproj`) also carries the product data of every
@@ -61,7 +61,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 ///   linking the devices whose order number its catalogue carries; an empty
 ///   `vendor/` (apart from its old `.gitignore`) is removed.
 /// - When an application a device in the lock pins has no
-///   `.bussard/models/<app>.yaml` (the directory is absent, empty or partly
+///   `.bussard/model-cache/<app>.json` (the directory is absent, empty or partly
 ///   deleted), the missing models are regenerated from the archives that
 ///   carry them (issues #267, #356). Checking costs one `stat` per pinned
 ///   application.
@@ -289,7 +289,7 @@ enum DownloadNote {
 
 /// Imports product data: stores the archive under `<dir>/products/`, pins it
 /// in `bussard.lock` and generates a product model under
-/// `<dir>/.bussard/models/` for each application program it contains.
+/// `<dir>/.bussard/model-cache/` for each application program it contains.
 ///
 /// A downloaded file is already in the store. An ETS project export (see
 /// [`is_project_export`]) is not copied: each of its application programs is
@@ -350,7 +350,7 @@ fn import_from_file(
         )
     };
 
-    let models_dir = dir.join(bussard_model::param_model::MODELS_DIR);
+    let models_dir = dir.join(bussard_model::param_model::MODEL_CACHE_DIR);
     let written = store::write_product_models(&product, dir)?;
     store::pin(dir, &entries, out);
 
@@ -364,7 +364,7 @@ fn import_from_file(
     for name in &written {
         out.say(&format!(
             "  {}/{name}",
-            bussard_model::param_model::MODELS_DIR
+            bussard_model::param_model::MODEL_CACHE_DIR
         ));
     }
     out.say("");

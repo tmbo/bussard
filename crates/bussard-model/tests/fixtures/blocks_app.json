@@ -1,0 +1,728 @@
+{
+  "com_object_refs": {
+    "O-2_R-3": {
+      "dpt": "5.010",
+      "flags": "CRT",
+      "function": "Value",
+      "text": "B Universal channel"
+    }
+  },
+  "com_objects": {
+    "0": {
+      "dpt": "9.004",
+      "flags": "CRT",
+      "function": "Physical value",
+      "text": "Brightness"
+    },
+    "1": {
+      "dpt": "1.001",
+      "flags": "CRT",
+      "function": "Switch",
+      "text": "A Universal channel"
+    },
+    "2": {
+      "dpt": "1.001",
+      "flags": "CRT",
+      "function": "Switch",
+      "text": "B Universal channel"
+    },
+    "3": {
+      "dpt": "1.001",
+      "flags": "CRT",
+      "function": "Switch",
+      "text": "C Universal channel"
+    }
+  },
+  "dynamic": [
+    {
+      "channel": {
+        "id": "CH-0",
+        "name": "Generic",
+        "nodes": [
+          {
+            "o": "O-0_R-0"
+          },
+          {
+            "block": {
+              "id": "PB-1",
+              "name": "General",
+              "nodes": [
+                {
+                  "p": "P-1_R-1"
+                },
+                {
+                  "p": "P-2_R-2"
+                },
+                {
+                  "choose": {
+                    "ref": "P-2_R-2",
+                    "when": [
+                      {
+                        "nodes": [
+                          {
+                            "p": "P-3_R-3"
+                          }
+                        ],
+                        "test": "1"
+                      }
+                    ]
+                  }
+                }
+              ],
+              "text": "General"
+            }
+          },
+          {
+            "choose": {
+              "ref": "P-1_R-1",
+              "when": [
+                {
+                  "nodes": [
+                    {
+                      "block": {
+                        "id": "PB-10",
+                        "name": "ChannelA",
+                        "nodes": [
+                          {
+                            "p": "P-11_R-11"
+                          },
+                          {
+                            "choose": {
+                              "ref": "P-11_R-11",
+                              "when": [
+                                {
+                                  "nodes": [
+                                    {
+                                      "p": "P-12_R-12"
+                                    },
+                                    {
+                                      "o": "O-1_R-1"
+                                    }
+                                  ],
+                                  "test": "1"
+                                },
+                                {
+                                  "nodes": [
+                                    {
+                                      "p": "P-13_R-15"
+                                    }
+                                  ],
+                                  "test": "2"
+                                },
+                                {
+                                  "nodes": [
+                                    {
+                                      "p": "P-13_R-13"
+                                    },
+                                    {
+                                      "choose": {
+                                        "ref": "P-13_R-13",
+                                        "when": [
+                                          {
+                                            "nodes": [
+                                              {
+                                                "p": "P-14_R-14"
+                                              }
+                                            ],
+                                            "test": "4"
+                                          }
+                                        ]
+                                      }
+                                    }
+                                  ],
+                                  "test": "3"
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "param_ref": "P-10_R-10"
+                      }
+                    }
+                  ],
+                  "test": "1"
+                }
+              ]
+            }
+          },
+          {
+            "choose": {
+              "ref": "P-2_R-2",
+              "when": [
+                {
+                  "nodes": [
+                    {
+                      "block": {
+                        "id": "PB-20",
+                        "name": "ChannelB",
+                        "nodes": [
+                          {
+                            "p": "P-21_R-21"
+                          },
+                          {
+                            "choose": {
+                              "ref": "P-21_R-21",
+                              "when": [
+                                {
+                                  "nodes": [
+                                    {
+                                      "p": "P-22_R-22"
+                                    }
+                                  ],
+                                  "test": "1"
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "param_ref": "P-20_R-20"
+                      }
+                    },
+                    {
+                      "block": {
+                        "id": "PB-21",
+                        "name": "ObjectsB",
+                        "nodes": [
+                          {
+                            "choose": {
+                              "ref": "P-21_R-21",
+                              "when": [
+                                {
+                                  "nodes": [
+                                    {
+                                      "o": "O-2_R-2"
+                                    }
+                                  ],
+                                  "test": "1"
+                                },
+                                {
+                                  "nodes": [
+                                    {
+                                      "o": "O-2_R-3"
+                                    }
+                                  ]
+                                }
+                              ]
+                            }
+                          }
+                        ],
+                        "param_ref": "P-23_R-23"
+                      }
+                    },
+                    {
+                      "choose": {
+                        "ref": "P-3_R-3",
+                        "when": [
+                          {
+                            "nodes": [
+                              {
+                                "block": {
+                                  "id": "PB-30",
+                                  "name": "ChannelC",
+                                  "nodes": [
+                                    {
+                                      "p": "P-31_R-31"
+                                    },
+                                    {
+                                      "o": "O-3_R-4"
+                                    }
+                                  ],
+                                  "param_ref": "P-30_R-30"
+                                }
+                              }
+                            ],
+                            "test": "1"
+                          }
+                        ]
+                      }
+                    }
+                  ],
+                  "test": "1"
+                }
+              ]
+            }
+          }
+        ],
+        "number": 0
+      }
+    }
+  ],
+  "parameter_refs": {
+    "P-10_R-10": {
+      "parameter": "P-10"
+    },
+    "P-11_R-11": {
+      "parameter": "P-11"
+    },
+    "P-12_R-12": {
+      "parameter": "P-12"
+    },
+    "P-13_R-13": {
+      "internal": true,
+      "parameter": "P-13",
+      "value": "4"
+    },
+    "P-13_R-15": {
+      "internal": true,
+      "parameter": "P-13"
+    },
+    "P-14_R-14": {
+      "parameter": "P-14"
+    },
+    "P-1_R-1": {
+      "parameter": "P-1"
+    },
+    "P-20_R-20": {
+      "parameter": "P-20"
+    },
+    "P-21_R-21": {
+      "parameter": "P-21"
+    },
+    "P-22_R-22": {
+      "parameter": "P-22"
+    },
+    "P-23_R-23": {
+      "parameter": "P-23"
+    },
+    "P-2_R-2": {
+      "parameter": "P-2"
+    },
+    "P-30_R-30": {
+      "parameter": "P-30"
+    },
+    "P-31_R-31": {
+      "parameter": "P-31"
+    },
+    "P-3_R-3": {
+      "parameter": "P-3"
+    }
+  },
+  "parameters": {
+    "P-1": {
+      "default": "0",
+      "enum_values": [
+        {
+          "default_text": "no",
+          "text": "no",
+          "value": 0
+        },
+        {
+          "default_text": "yes",
+          "text": "yes",
+          "value": 1
+        }
+      ],
+      "integer_width": [
+        1,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            0,
+            1
+          ]
+        }
+      },
+      "labels": [
+        [
+          0,
+          "no"
+        ],
+        [
+          1,
+          "yes"
+        ]
+      ],
+      "name": "EnableA",
+      "refs": [
+        "P-1_R-1"
+      ],
+      "text": "Universal channel A enable"
+    },
+    "P-10": {
+      "is_virtual": true,
+      "kind": "None",
+      "name": "TitleA",
+      "refs": [
+        "P-10_R-10"
+      ],
+      "text": "Universal channel A: function"
+    },
+    "P-11": {
+      "default": "1",
+      "enum_values": [
+        {
+          "default_text": "Brightness sensor 1 .. 100 000 lx",
+          "text": "Brightness sensor 1 .. 100 000 lx",
+          "value": 1
+        },
+        {
+          "default_text": "Temperature sensor",
+          "text": "Temperature sensor",
+          "value": 2
+        },
+        {
+          "default_text": "Wind sensor",
+          "text": "Wind sensor",
+          "value": 3
+        }
+      ],
+      "integer_width": [
+        4,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "labels": [
+        [
+          1,
+          "Brightness sensor 1 .. 100 000 lx"
+        ],
+        [
+          2,
+          "Temperature sensor"
+        ],
+        [
+          3,
+          "Wind sensor"
+        ]
+      ],
+      "name": "FunctionA",
+      "refs": [
+        "P-11_R-11"
+      ],
+      "text": "Channel function"
+    },
+    "P-12": {
+      "default": "10",
+      "integer_width": [
+        8,
+        false
+      ],
+      "kind": {
+        "Int": {
+          "max": 200,
+          "min": 1
+        }
+      },
+      "name": "DuskA",
+      "refs": [
+        "P-12_R-12"
+      ],
+      "text": "Dusk threshold in lx"
+    },
+    "P-13": {
+      "default": "2",
+      "enum_values": [
+        {
+          "default_text": "Brightness sensor",
+          "text": "Brightness sensor",
+          "value": 1
+        },
+        {
+          "default_text": "Temperature sensor",
+          "text": "Temperature sensor",
+          "value": 2
+        },
+        {
+          "default_text": "Wind sensor",
+          "text": "Wind sensor",
+          "value": 4
+        }
+      ],
+      "integer_width": [
+        4,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            1,
+            2,
+            4
+          ]
+        }
+      },
+      "labels": [
+        [
+          1,
+          "Brightness sensor"
+        ],
+        [
+          2,
+          "Temperature sensor"
+        ],
+        [
+          4,
+          "Wind sensor"
+        ]
+      ],
+      "name": "SourceA",
+      "refs": [
+        "P-13_R-13",
+        "P-13_R-15"
+      ],
+      "text": "If temperature"
+    },
+    "P-14": {
+      "default": "4",
+      "integer_width": [
+        8,
+        false
+      ],
+      "kind": {
+        "Int": {
+          "max": 200,
+          "min": 1
+        }
+      },
+      "name": "WindA",
+      "refs": [
+        "P-14_R-14"
+      ],
+      "text": "Wind threshold"
+    },
+    "P-2": {
+      "default": "0",
+      "enum_values": [
+        {
+          "default_text": "no",
+          "text": "no",
+          "value": 0
+        },
+        {
+          "default_text": "yes",
+          "text": "yes",
+          "value": 1
+        }
+      ],
+      "integer_width": [
+        1,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            0,
+            1
+          ]
+        }
+      },
+      "labels": [
+        [
+          0,
+          "no"
+        ],
+        [
+          1,
+          "yes"
+        ]
+      ],
+      "name": "EnableB",
+      "refs": [
+        "P-2_R-2"
+      ],
+      "text": "Universal channel B enable"
+    },
+    "P-20": {
+      "is_virtual": true,
+      "kind": "None",
+      "name": "TitleB",
+      "refs": [
+        "P-20_R-20"
+      ],
+      "text": "Universal channel B: function"
+    },
+    "P-21": {
+      "default": "1",
+      "enum_values": [
+        {
+          "default_text": "Brightness sensor 1 .. 100 000 lx",
+          "text": "Brightness sensor 1 .. 100 000 lx",
+          "value": 1
+        },
+        {
+          "default_text": "Temperature sensor",
+          "text": "Temperature sensor",
+          "value": 2
+        },
+        {
+          "default_text": "Wind sensor",
+          "text": "Wind sensor",
+          "value": 3
+        }
+      ],
+      "integer_width": [
+        4,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "labels": [
+        [
+          1,
+          "Brightness sensor 1 .. 100 000 lx"
+        ],
+        [
+          2,
+          "Temperature sensor"
+        ],
+        [
+          3,
+          "Wind sensor"
+        ]
+      ],
+      "name": "FunctionB",
+      "refs": [
+        "P-21_R-21"
+      ],
+      "text": "Channel function"
+    },
+    "P-22": {
+      "default": "10",
+      "integer_width": [
+        8,
+        false
+      ],
+      "kind": {
+        "Int": {
+          "max": 200,
+          "min": 1
+        }
+      },
+      "name": "DuskB",
+      "refs": [
+        "P-22_R-22"
+      ],
+      "text": "Dusk threshold in lx"
+    },
+    "P-23": {
+      "is_virtual": true,
+      "kind": "None",
+      "name": "ObjectsB",
+      "refs": [
+        "P-23_R-23"
+      ],
+      "text": "Objects"
+    },
+    "P-3": {
+      "default": "0",
+      "enum_values": [
+        {
+          "default_text": "no",
+          "text": "no",
+          "value": 0
+        },
+        {
+          "default_text": "yes",
+          "text": "yes",
+          "value": 1
+        }
+      ],
+      "integer_width": [
+        1,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            0,
+            1
+          ]
+        }
+      },
+      "labels": [
+        [
+          0,
+          "no"
+        ],
+        [
+          1,
+          "yes"
+        ]
+      ],
+      "name": "EnableC",
+      "refs": [
+        "P-3_R-3"
+      ],
+      "text": "Universal channel C enable"
+    },
+    "P-30": {
+      "is_virtual": true,
+      "kind": "None",
+      "name": "TitleC",
+      "refs": [
+        "P-30_R-30"
+      ],
+      "text": "Universal channel C: function"
+    },
+    "P-31": {
+      "default": "2",
+      "enum_values": [
+        {
+          "default_text": "Brightness sensor 1 .. 100 000 lx",
+          "text": "Brightness sensor 1 .. 100 000 lx",
+          "value": 1
+        },
+        {
+          "default_text": "Temperature sensor",
+          "text": "Temperature sensor",
+          "value": 2
+        },
+        {
+          "default_text": "Wind sensor",
+          "text": "Wind sensor",
+          "value": 3
+        }
+      ],
+      "integer_width": [
+        4,
+        false
+      ],
+      "kind": {
+        "Enum": {
+          "values": [
+            1,
+            2,
+            3
+          ]
+        }
+      },
+      "labels": [
+        [
+          1,
+          "Brightness sensor 1 .. 100 000 lx"
+        ],
+        [
+          2,
+          "Temperature sensor"
+        ],
+        [
+          3,
+          "Wind sensor"
+        ]
+      ],
+      "name": "FunctionC",
+      "refs": [
+        "P-31_R-31"
+      ],
+      "text": "Channel function"
+    }
+  },
+  "program_id": "M-00FA_A-0298-10-0000"
+}

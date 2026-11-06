@@ -94,15 +94,12 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
              ETS's download does not; neither written nor verified):"
         );
         for k in &readback.kept {
-            let device = k
-                .device
-                .as_deref()
-                .map(|v| with_unit(v, &k.unit))
-                .unwrap_or_else(|| "unreadable".to_string());
             println!(
-                "      {}: device {device}, project {}",
+                "      {}: device {}, project {}",
                 k.name,
-                with_unit(&k.model, &k.unit)
+                k.old_with_unit()
+                    .unwrap_or_else(|| "unreadable".to_string()),
+                k.new_with_unit()
             );
         }
     }
@@ -142,15 +139,12 @@ pub(crate) fn print_text(readback: &Readback, target: IndividualAddress) {
         }
     );
     for d in &readback.differences {
-        let device = d
-            .device
-            .as_deref()
-            .map(|v| with_unit(v, &d.unit))
-            .unwrap_or_else(|| "unreadable".to_string());
         println!(
-            "      {}: device {device}, project {}",
+            "      {}: device {}, project {}",
             d.name,
-            with_unit(&d.model, &d.unit)
+            d.old_with_unit()
+                .unwrap_or_else(|| "unreadable".to_string()),
+            d.new_with_unit()
         );
     }
     println!(

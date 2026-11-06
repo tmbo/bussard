@@ -99,21 +99,21 @@ in-betrieb.send = "4/1/2"
 name = "Fenster Süd"
 "#;
 
-const PRODUCT: &str = r#"identity:
-  id: M-0004_A-20DE-22-C7D8-O000A
-parameters:
-  - id: M-0004_A-20DE-22-C7D8-O000A_MD-3_P-15
-    text: Fahrzeit
-    type: !int
-      min: 1
-      max: 600
-    default: "60"
+const PRODUCT: &str = r#"{
+  "parameters": {
+    "MD-3_P-15": {
+      "kind": {"Int": {"min": 1, "max": 600, "signed": false}},
+      "default": "60",
+      "text": "Fahrzeit"
+    }
+  },
+  "program_id": "M-0004_A-20DE-22-C7D8-O000A"
+}
 "#;
 
 /// Writes a model with one keyed device and its product model.
 fn write_model(dir: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(dir.join("devices"))?;
-    std::fs::create_dir_all(dir.join(".bussard/models"))?;
     std::fs::write(
         dir.join("groups.toml"),
         "groups = [\n  { address = \"3/0/1\", name = \"Central down\", dpt = \"1.008\" },\n  \
@@ -121,10 +121,7 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
     )?;
     std::fs::write(dir.join("devices").join("1.1.47.toml"), DEVICE)?;
     std::fs::write(dir.join("bussard.lock"), LOCK)?;
-    std::fs::write(
-        dir.join(".bussard/models/M-0004_A-20DE-22-C7D8-O000A.yaml"),
-        PRODUCT,
-    )?;
+    bussard_model::param_model::write_product_model(dir, serde_json::from_str(PRODUCT)?)?;
     Ok(())
 }
 
@@ -362,7 +359,7 @@ async fn test_show_device_says_how_to_change_it() -> TestResult {
 
     // Without the product model the parameters are not editable, and the
     // string says what to do about it.
-    std::fs::remove_dir_all(dir.path().join(".bussard/models"))?;
+    std::fs::remove_dir_all(dir.path().join(".bussard/model-cache"))?;
     std::fs::write(
         dir.path().join("bussard.lock"),
         LOCK.replace(

@@ -232,7 +232,7 @@ fn resolve_globals(global: &Global, name: &str, spec: Spec) -> anyhow::Result<Re
     conn_cmd::apply_dotenv(&dir, cwd);
     let env = conn_cmd::EnvGlobals::from_process();
     // The product store (issue #228): move an earlier `vendor/` into
-    // `products/` and regenerate `.bussard/models/` when it is missing, before
+    // `products/` and regenerate `.bussard/model-cache/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.
     if role != Role::Creates && spec.products && dir.is_dir() {
         timing::time("product store", || {

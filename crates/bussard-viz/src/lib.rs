@@ -45,6 +45,7 @@ pub mod enroll_local;
 pub mod enroll_relay;
 pub mod error;
 pub mod guard;
+pub mod local_server;
 pub mod pairing_page;
 pub mod password_page;
 pub mod project;

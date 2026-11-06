@@ -122,7 +122,7 @@ The file stores the value you mean. bussard accepts:
 
 A float is refused with a fix-it hint, because `1.10` and `1.1` cannot be told apart after parsing.
 
-When the product model is available in `.bussard/models/`, the value is normalized to the vendor code: an enum label becomes its code, and a number with unit is checked against the range. Without the product model the string is kept as written, and validation reports that the value could not be checked (E026).
+When the product model is available in `.bussard/model-cache/`, the value is normalized to the vendor code: an enum label becomes its code, and a number with unit is checked against the range. Without the product model the string is kept as written, and validation reports that the value could not be checked (E026).
 
 `flash`, `plan`, `apply`, `reconstruct` and `replace` resolve an enum label against the vendor program itself, read in the lock's `language` (see [Text language](bussard-lock.md#text-language)). A label matches, in this order:
 
@@ -130,7 +130,7 @@ When the product model is available in `.bussard/models/`, the value is normaliz
 2. else its untranslated text (the program's `DefaultLanguage`);
 3. else its text in any other language the program carries, so a file edited from an English catalogue still loads under a German lock.
 
-The first step with a match decides. A label two members share at that step is refused as ambiguous. A label no member carries is refused with the list of labels in the lock's language. `import-product` writes `.bussard/models/` in the same language, so the MCP `knx_set_parameter` check accepts the labels the device files carry.
+The first step with a match decides. A label two members share at that step is refused as ambiguous. A label no member carries is refused with the list of labels in the lock's language. `import-product` writes `.bussard/model-cache/` in the same language, so the MCP `knx_set_parameter` check accepts the labels the device files carry.
 
 ## The `[knxnet]` table
 

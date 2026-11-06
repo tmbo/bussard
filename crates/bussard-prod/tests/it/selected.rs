@@ -389,12 +389,12 @@ fn pinned_model(dir: &Path, pinned: &[&str]) -> TestResult {
     Ok(())
 }
 
-/// The model files under `.bussard/models/`, sorted.
+/// The model files under `.bussard/model-cache/`, sorted.
 fn model_files(dir: &Path) -> Result<Vec<String>, std::io::Error> {
-    let mut names: Vec<String> = std::fs::read_dir(dir.join(".bussard").join("models"))?
+    let mut names: Vec<String> = std::fs::read_dir(dir.join(".bussard").join("model-cache"))?
         .flatten()
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| n.ends_with(".yaml"))
+        .filter(|n| n.ends_with(".json"))
         .collect();
     names.sort();
     Ok(names)
@@ -425,7 +425,7 @@ fn test_complete_models_writes_only_the_pinned_application() -> TestResult {
     pinned_model(tmp.path(), &[APP_B])?;
     assert!(models_incomplete(tmp.path()));
     assert!(complete_models(tmp.path(), None).is_empty());
-    assert_eq!(model_files(tmp.path())?, vec![format!("{APP_B}.yaml")]);
+    assert_eq!(model_files(tmp.path())?, vec![format!("{APP_B}.json")]);
     // Only the pinned program was parsed, so only it is in the cache.
     assert_eq!(cached_programs(tmp.path())?, vec![APP_B.to_string()]);
     assert!(
@@ -445,7 +445,7 @@ fn test_complete_models_writes_each_pinned_application_of_one_archive() -> TestR
     // A's PEI companion is parsed to attach it to A, but no device pins it.
     assert_eq!(
         model_files(tmp.path())?,
-        vec![format!("{APP_A}.yaml"), format!("{APP_B}.yaml")]
+        vec![format!("{APP_A}.json"), format!("{APP_B}.json")]
     );
     assert!(!models_incomplete(tmp.path()));
     // `only` writes an application the archive carries, pinned or not.
@@ -463,9 +463,9 @@ fn test_complete_all_models_writes_every_application() -> TestResult {
     assert_eq!(
         model_files(tmp.path())?,
         vec![
-            format!("{APP_A}.yaml"),
-            format!("{PEI_A}.yaml"),
-            format!("{APP_B}.yaml")
+            format!("{APP_A}.json"),
+            format!("{PEI_A}.json"),
+            format!("{APP_B}.json")
         ]
     );
     Ok(())
