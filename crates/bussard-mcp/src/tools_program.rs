@@ -62,12 +62,14 @@
 //! writes, as the same job (the `flash` submodule). The plan digest binds
 //! the image.
 //!
-//! The write itself is the CLI's: back up the pre-state (tables and parameter
-//! memory) to `captures/backups/`, write with
-//! [`bussard_download::write_tables`] and
-//! [`bussard_service::download::write_parameters`], verify by reading back. A history snapshot naming the gateway is recorded before the
-//! write, so `bussard history` shows every MCP apply (the audit line). Protected
-//! group addresses in the change are refused with no override.
+//! The read, the plan and the write are the CLI's, the same functions
+//! ([`bussard_service::program`], issue #901): back up the pre-state (tables
+//! and parameter memory) to `captures/backups/`, write with
+//! [`bussard_service::program::apply::apply_device`], verify by an
+//! independent read-back. A history snapshot naming the gateway is recorded
+//! before the write, so `bussard history` shows every MCP apply (the audit
+//! line). Protected group addresses in the change are refused with no
+//! override.
 //!
 //! KNX Data Secure (issues #170, #205): with the server's keyring (`bussard mcp
 //! --keyring`, `BUSSARD_KEYRING` or `connection.keyring`, the same resolver
@@ -90,24 +92,21 @@ use std::error::Error as StdError;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::args::Parameters;
-use bussard_bus::BusHandle;
-use bussard_download::{
-    DesiredTables, LiveRead, LiveTables, PlanReport, SecureSenderEntry, SecurityInputs,
-    Sys7TableImages, desired_tables_for_app, plan, render_full_image_plan_text, render_plan_text,
-    sys7_table_images, write_pre_write_backup, write_tables_seeded,
-};
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
+use bussard_download::{DesiredTables, LiveTables, PlanReport, SecurityInputs};
 use bussard_model::history::{History, SnapshotReason};
-use bussard_model::identity::IdentityCheck;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
-use bussard_service::admission::TunnelAdmission;
 use bussard_service::params::{
-    BuiltPlan, MissingProduct, ParamState, ProductSource, Selection, build_device_plan,
-    resolve_product,
+    BuiltPlan, MissingProduct, ProductSource, Selection, resolve_product,
 };
+use bussard_service::program::apply::{ApplyRequest, TablesWritten};
+use bussard_service::program::flash::{FlashFor, FlashImage, FlashNeed};
+use bussard_service::program::plan::put;
+use bussard_service::program::plan::{PlanInputs, Planned};
+use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
+use bussard_service::program::{self as program, Observer, Step};
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
-use bussard_service::{Authorize, BusService, FactsCache, L4Options, SourcePolicy};
+use bussard_service::{BusService, FactsCache, L4Options, ServiceError, SourcePolicy};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -116,7 +115,6 @@ use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::server::BussardMcp;
 use crate::state::ConnState;
@@ -1146,7 +1144,7 @@ impl BussardMcp {
         // archive the lock pins for the device, as `bussard apply` resolves it.
         let product = product_for(&dir, &model, target);
         let app = product.source.as_ref().and_then(|p| p.app());
-        let desired = desired_tables_for_app(&model, target, app).map_err(|e| e.to_string())?;
+        let desired = program::plan::desired_tables(&model, target, product.source.as_ref())?;
 
         let material = self.plan_material(target, &model)?;
         let tool_key = material.tool_key.clone();
@@ -1171,7 +1169,7 @@ impl BussardMcp {
                 "address": target.to_string(),
                 "gateway": gateway,
                 "mask": format!("{:04X}", props.device_mask),
-                "system_type": system_type(props.device_mask),
+                "system_type": bussard_mgmt::system_type(props.device_mask),
                 "secured": tool_key.is_some(),
                 "noop": noop,
                 "plan": bussard_service::property_plan::render_text(target, &app.id, &rows),
@@ -1179,99 +1177,65 @@ impl BussardMcp {
             }));
         }
         // Management calls are sequential (issue #215): this read opens its own
-        // lease, so the warm connection is released first.
-        // The read budget of PID 61 (issue #336): a cached read is used when
-        // the model asks for exactly those flags (no security change pending).
-        let known_flags = tool_key
-            .is_some()
-            .then(|| {
-                let empty = HashMap::new();
-                let keys = material.group_keys.as_ref().unwrap_or(&empty);
-                let inputs =
-                    bussard_download::security_inputs_for(Some(&model), target, &desired, keys);
-                bussard_service::security_change::unchanged_cached_flags(
-                    &dir, target, &desired, &inputs, false,
-                )
-            })
-            .flatten();
-        let flags_cached = known_flags.is_some();
+        // lease, so the warm connection is released first. The read budget of
+        // PID 61 (issue #336): a cached read is used when the model asks for
+        // exactly those flags (no security change pending).
         let mut warm = self.warm().lock().await;
         warm.release().await;
         let (_, read) = read_device(
             &service,
             target,
-            &tool_key,
-            &material.fdsk,
-            &SequenceHighWater::new(),
             &dir,
-            &model,
-            product.source.as_ref(),
-            &tunnel,
-            known_flags,
+            Read {
+                tool_key: &tool_key,
+                factory_key: &material.fdsk,
+                high_water: &SequenceHighWater::new(),
+                model: &model,
+                product: product.source.as_ref(),
+                tunnel: &tunnel,
+                flags_cache: FlagsCache::Plan {
+                    dir: &dir,
+                    refresh: false,
+                    desired: &desired,
+                    group_keys: material.group_keys.as_ref(),
+                },
+            },
         )
         .await?;
         drop(warm);
-        if let (false, Some(flags)) = (flags_cached, read.go_flags.as_deref()) {
-            bussard_service::security_change::remember_flags(&dir, target, flags);
-        }
         // Issue #750: a device that does not run the application the lock
         // pins (another one, none, or the pinned one unloaded) gets it
         // loaded by this plan's flash; without product data to load it is
         // the drift refusal, as before.
-        let load = flash::load_need(&model, target, &read, &product).transpose()?;
+        let load = program::flash::load_need(&model, target, &read, product.source.as_ref())
+            .transpose()?;
         if load.is_none() {
             refuse_drift(target, &read)?;
         }
-        let live = &read.live;
-        let tables = live.tables();
-        let report = plan(tables, &desired);
-        refuse_protected(&model, &report)?;
-        let security = security_inputs(&model, target, &desired, &material, live, &tunnel, &dir)?;
+        let ctx = PlanCtx {
+            model: &model,
+            target,
+            gateway: &gateway,
+            dir: &dir,
+            desired: &desired,
+            tunnel: &tunnel,
+            material: &material,
+            product: &product,
+        };
+        let planned = ctx.planned(&read);
+        let tables = read.live.tables();
+        let report = &planned.report;
+        refuse_protected(&model, report)?;
+        let security = ctx.security(&read)?;
         // A System 7 image that would not fit its memory region must refuse at
         // plan time, before the human is asked anything.
-        if let Some(s7) = live.sys7() {
-            sys7_table_images(s7, &desired)
-                .map_err(|e| format!("computing the System 7 table images: {e}"))?;
-        }
-        let mut built = built_plan(&model, target, &gateway, &dir, &read, &report, &product);
-        admit_in_plan(&mut built, target, &tunnel, &read, &report);
-        security_change_in_plan(
-            &mut built,
-            &model,
-            target,
-            &desired,
-            security.as_ref(),
-            &read,
-            &report,
-        );
+        program::plan::sys7_images(&read, &desired)
+            .map_err(|e| format!("computing the System 7 table images: {e}"))?;
+        let built = &planned.built;
         // A parameter change that shows or hides a com-object is written by a
         // full download (issue #303), and so is an application that must be
         // loaded (issue #750): the plan says `method: flash`.
-        let flash = match (&load, &built.needs_flash) {
-            (Some(need), _) => Some(flash::flash_image(
-                &dir,
-                &model,
-                target,
-                &read,
-                &report,
-                flash::FlashNeed::Load(need),
-                &product,
-                &material,
-                &tunnel,
-            )?),
-            (None, Some(_)) => Some(flash::flash_image(
-                &dir,
-                &model,
-                target,
-                &read,
-                &report,
-                flash::FlashNeed::Parameters(&built),
-                &product,
-                &material,
-                &tunnel,
-            )?),
-            (None, None) => None,
-        };
+        let flash = ctx.flash(&read, report, load.as_ref(), built)?;
         if flash.is_none()
             && let Some(refusal) = &built.refusal
         {
@@ -1358,9 +1322,9 @@ impl BussardMcp {
         }
         let plan_text = match device_plan.writes.full_image.as_ref() {
             Some(full) if flash.is_some() => {
-                render_full_image_plan_text(target, tables, &report, full)
+                bussard_download::render_full_image_plan_text(target, tables, report, full)
             }
-            _ => render_plan_text(target, tables, &report),
+            _ => bussard_download::render_plan_text(target, tables, report),
         };
         let digest = if noop {
             None
@@ -1368,11 +1332,8 @@ impl BussardMcp {
             let pending_plan = PendingPlan {
                 target,
                 created: Instant::now(),
-                live: live_digest(&read),
-                model: flash::with_flash(
-                    model_digest(&model, target, &desired, security.as_ref(), &built),
-                    flash.as_ref(),
-                ),
+                live: program::plan::live_fingerprint(&read),
+                model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
             };
             let digest = plan_digest(&pending_plan);
             let mut plans = tier.plans();
@@ -1386,7 +1347,7 @@ impl BussardMcp {
                 .map(|p| json!({"object": p.object, "ga": p.ga.to_string()}))
                 .collect()
         };
-        let parameters_json = parameters_json(&built);
+        let parameters_json = parameters_json(built);
         let facts = crate::everyday::PlanFacts {
             model: &model,
             target,
@@ -1434,13 +1395,13 @@ impl BussardMcp {
         Ok(json!({
             "ok": true,
             "method": if flash.is_some() { "flash" } else { "apply" },
-            "flash": flash.as_ref().map(|f| f.summary.clone()),
+            "flash": flash.as_ref().map(|f| json!(f.summary)),
             "address": target.to_string(),
             "gateway": gateway,
             "mask": format!("{:04X}", tables.mask),
-            "system_type": system_type(tables.mask),
+            "system_type": bussard_mgmt::system_type(tables.mask),
             "secured": tool_key.is_some(),
-            "identity": read.check.as_ref().map(|c| bussard_service::identity_line(target, c)),
+            "identity": read.check().map(|c| bussard_service::identity_line(target, c)),
             "security_object": security_json(security.as_ref(), &desired, tables_noop),
             "noop": noop,
             "plan": plan_text,
@@ -1847,7 +1808,6 @@ impl BussardMcp {
         plan_hash: Option<&str>,
     ) -> Result<Prepared, String> {
         let (_, service, gateway) = self.programming_preflight()?;
-        let handle = service.handle().clone();
         let dir = self.state().dir.clone();
 
         // The digest must name a plan this session produced, for this device,
@@ -1875,13 +1835,8 @@ impl BussardMcp {
         let model = self.state().model.reload();
         // The model may have changed since the plan (issue #330).
         refuse_insecure_links(&model, target)?;
-        let mut product = product_for(&dir, &model, target);
-        let desired = desired_tables_for_app(
-            &model,
-            target,
-            product.source.as_ref().and_then(|p| p.app()),
-        )
-        .map_err(|e| e.to_string())?;
+        let product = product_for(&dir, &model, target);
+        let desired = program::plan::desired_tables(&model, target, product.source.as_ref())?;
         // KNX Data Secure: the same material the plan resolved, one
         // high-water mark for the read and the write so the send sequence
         // stays monotonic across both connections (spec §5.9).
@@ -1889,90 +1844,60 @@ impl BussardMcp {
         let tool_key = material.tool_key.clone();
         let tunnel = self.admitted_tunnel(&model, tool_key.is_some())?;
         let high_water = SequenceHighWater::new();
+        // The apply may change the flags: the next plan reads PID 61 again
+        // instead of a cache (issue #336).
         let (source, read) = read_device(
             &service,
             target,
-            &tool_key,
-            &material.fdsk,
-            &high_water,
             &dir,
-            &model,
-            product.source.as_ref(),
-            &tunnel,
-            None,
+            Read {
+                tool_key: &tool_key,
+                factory_key: &material.fdsk,
+                high_water: &high_water,
+                model: &model,
+                product: product.source.as_ref(),
+                tunnel: &tunnel,
+                flags_cache: FlagsCache::Forget { dir: &dir },
+            },
         )
         .await?;
-        // The apply may change the flags: the next plan reads PID 61 again
-        // instead of a cache (issue #336).
-        bussard_service::security_change::forget_flags(&dir, target);
-        let live = &read.live;
-        let security = security_inputs(&model, target, &desired, &material, live, &tunnel, &dir)?;
-        let tables = live.tables();
-        let report = plan(tables, &desired);
-        let mut built = built_plan(&model, target, &gateway, &dir, &read, &report, &product);
-        admit_in_plan(&mut built, target, &tunnel, &read, &report);
-        security_change_in_plan(
-            &mut built,
-            &model,
+        let ctx = PlanCtx {
+            model: &model,
             target,
-            &desired,
-            security.as_ref(),
-            &read,
-            &report,
-        );
+            gateway: &gateway,
+            dir: &dir,
+            desired: &desired,
+            tunnel: &tunnel,
+            material: &material,
+            product: &product,
+        };
+        let security = ctx.security(&read)?;
+        let Planned { report, built, .. } = ctx.planned(&read);
+        let tables = read.live.tables();
         // The flash a com-object change needs (issue #303), or the load of
         // the pinned application (issue #750), rebuilt from the fresh read:
         // its image is part of the digest.
-        let load = match flash::load_need(&model, target, &read, &product).transpose() {
-            Ok(load) => load,
+        let flash = match program::flash::load_need(&model, target, &read, product.source.as_ref())
+            .transpose()
+            .and_then(|load| {
+                let flash = ctx.flash(&read, &report, load.as_ref(), &built)?;
+                Ok((load, flash))
+            }) {
+            Ok(found) => found,
             Err(reason) => {
                 tier.plans().remove(digest);
                 return Err(reason);
             }
         };
-        let image = match (&load, &built.needs_flash) {
-            (Some(need), _) => Some(flash::flash_image(
-                &dir,
-                &model,
-                target,
-                &read,
-                &report,
-                flash::FlashNeed::Load(need),
-                &product,
-                &material,
-                &tunnel,
-            )),
-            (None, Some(_)) => Some(flash::flash_image(
-                &dir,
-                &model,
-                target,
-                &read,
-                &report,
-                flash::FlashNeed::Parameters(&built),
-                &product,
-                &material,
-                &tunnel,
-            )),
-            (None, None) => None,
-        };
-        let flash = match image.transpose() {
-            Ok(image) => image,
-            Err(reason) => {
-                tier.plans().remove(digest);
-                return Err(reason);
-            }
-        };
+        let (load, flash) = flash;
 
         // Re-derive the digest from what is true now; anything that moved since
         // the plan retires it.
         let now = PendingPlan {
             target,
             created: planned.created,
-            live: live_digest(&read),
-            model: flash::with_flash(
-                model_digest(&model, target, &desired, security.as_ref(), &built),
-                flash.as_ref(),
-            ),
+            live: program::plan::live_fingerprint(&read),
+            model: model_fingerprint(&ctx, security.as_ref(), &built, flash.as_ref()),
         };
         let moved = match (now.live != planned.live, now.model != planned.model) {
             (true, true) => Some("the device's live state and the model both changed"),
@@ -2008,36 +1933,24 @@ impl BussardMcp {
             tier.plans().remove(digest);
             return Err(refusal.clone());
         }
-        if !MaskProfile::from_mask(tables.mask)
-            .capabilities()
-            .plan_apply
-        {
-            return Err(format!(
-                "{target} reports mask {:04X} ({}); refusing to write a device outside the \
-                 System B / System 7 families",
-                tables.mask,
-                system_type(tables.mask)
-            ));
+        if let Some(refusal) = program::plan::family_refusal(target, tables.mask) {
+            return Err(refusal);
         }
         // The plan is consumed from here on: one digest, one write.
         tier.plans().remove(digest);
         let tables_change = !report.is_noop()
             || built.plan.writes.security_object
             || !built.plan.writes.communication_flags.is_empty();
-        let images = match live.sys7() {
-            Some(s7) if tables_change => Some(
-                sys7_table_images(s7, &desired)
-                    .map_err(|e| format!("computing the System 7 table images: {e}"))?,
-            ),
-            _ => None,
+        let images = match program::plan::sys7_images(&read, &desired) {
+            Ok(images) => images.filter(|_| tables_change),
+            Err(e) => return Err(format!("computing the System 7 table images: {e}")),
         };
-        let param_write = match (
-            &built.partial,
-            read.params.as_ref().and_then(|p| p.detail.as_ref()),
-        ) {
-            (Some(partial), Some(detail)) => Some((partial, detail)),
-            _ => None,
-        };
+        let param_write = built.partial.is_some()
+            && read
+                .params
+                .as_ref()
+                .and_then(|p| p.detail.as_ref())
+                .is_some();
 
         // A group address a device file uses but groups.toml does not define
         // is declared there first, named after the object that uses it, as
@@ -2053,7 +1966,7 @@ impl BussardMcp {
                 .with_args([target.to_string(), digest.to_string()])
                 .with_gateway(Some(gateway.clone()))
                 .with_result(with_declared(
-                    match (tables_change, param_write.is_some()) {
+                    match (tables_change, param_write) {
                         _ if load.is_some() => "before loading the application program",
                         _ if flash.is_some() => "before flashing the application program",
                         (true, true) => "before writing the device tables and parameters",
@@ -2076,39 +1989,29 @@ impl BussardMcp {
         };
 
         // Both backups before the first write, as `bussard apply` takes them.
-        let backup = write_pre_write_backup(&dir, target, tables, live.sys7())
-            .map_err(|e| format!("refusing to write {target} without a backup: {e}"))?;
         // A flash rewrites the whole parameter memory: it is backed up first,
         // where knx_restore_parameters reads it (issue #303).
-        let backed_up = match (&flash, param_write) {
-            (Some(_), _) => read.params.as_ref().and_then(|p| p.detail.as_ref()),
-            (None, write) => write.map(|(_, detail)| detail),
-        };
-        let param_backup = match backed_up {
-            Some(detail) => Some(
-                bussard_download::write_parameter_memory_backup(
-                    &dir,
-                    target,
-                    &detail.plan,
-                    &detail.regions,
-                )
-                .map_err(|e| {
-                    format!("refusing to write {target} without a parameter backup: {e}")
-                })?,
-            ),
-            None => None,
-        };
-        let backup_path = backup.display().to_string();
-        let param_backup_path = param_backup.as_ref().map(|p| p.display().to_string());
-        // What the flash's read-back compares against (issue #319).
-        let flash = flash.map(|mut image| {
-            image.readback = product.source.take().map(|source| flash::FlashReadback {
-                model: std::sync::Arc::clone(&model),
-                source,
-                device_mask: tables.mask,
-            });
-            image
-        });
+        let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
+        let backups = program::apply::back_up(
+            &dir,
+            target,
+            &read.live,
+            detail.filter(|_| flash.is_some() || param_write),
+        )
+        .map_err(|e| match e {
+            program::apply::BackupError::Tables(e) => {
+                format!("refusing to write {target} without a backup: {e}")
+            }
+            program::apply::BackupError::Parameters(e) => {
+                format!("refusing to write {target} without a parameter backup: {e}")
+            }
+        })?;
+        let backup_path = backups
+            .tables
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let param_backup_path = backups.parameters.as_ref().map(|p| p.display().to_string());
 
         let mut result = json!({
             "method": if flash.is_some() { "flash" } else { "apply" },
@@ -2136,7 +2039,6 @@ impl BussardMcp {
             target,
             gateway,
             dir,
-            handle,
             source,
             tool_key,
             high_water,
@@ -2155,8 +2057,10 @@ impl BussardMcp {
     }
 
     /// The write of an apply whose pre-flight passed: the tables when a link
-    /// changes, then the parameter octets, each verified. Never refuses: a
-    /// failure is the result (`ok: false` with the reason and the recovery).
+    /// changes, then the parameter octets, each verified, then the
+    /// independent read-back, through [`program::apply::apply_device`] (the
+    /// function `bussard apply` writes with). Never refuses: a failure is the
+    /// result (`ok: false` with the reason and the recovery).
     async fn apply_write(&self, tier: &ProgrammingTier, job: &str, p: Prepared) -> Value {
         let Prepared {
             origin,
@@ -2165,7 +2069,6 @@ impl BussardMcp {
             target,
             gateway,
             dir,
-            handle,
             source,
             tool_key,
             high_water,
@@ -2181,9 +2084,17 @@ impl BussardMcp {
             mut result,
             ..
         } = p;
+        let Some(service) = self.state().bus.service().cloned() else {
+            merge(
+                &mut result,
+                json!({"ok": false, "verified": false, "reason": "the bus is not wired"}),
+            );
+            return result;
+        };
         if let Some(image) = flash {
             let links_after = image.links_after;
             let ctx = flash::FlashJob {
+                service: &service,
                 target,
                 gateway: &gateway,
                 dir: &dir,
@@ -2192,8 +2103,11 @@ impl BussardMcp {
                 high_water,
                 changed: json!(built.parameters),
                 param_backup: param_backup_path.as_deref(),
+                readback: product.as_ref().and_then(|source| {
+                    program::flash::readback_inputs(source, Some(&model), read.live.tables().mask)
+                }),
             };
-            let result = self.flash_write(tier, job, image, ctx, result).await;
+            let result = self.flash_write(tier, job, &image, ctx, result).await;
             if result["ok"] == json!(true) {
                 // The lock may have changed (the PID 54 record): serve it.
                 self.state().model.reload();
@@ -2205,31 +2119,12 @@ impl BussardMcp {
             }
             return result;
         }
-        let live = &read.live;
-        let tables = live.tables();
-        // The facts the pre-flight read checked seed every later connection
-        // of the job, as `bussard apply` seeds its write and read-back
-        // (issue #761): no second object walk, descriptor or max APDU read.
-        let seed = read.seed.clone();
-        // A device the facts record as not answering authorize is not asked
-        // again on those connections (issue #215), as the CLI does.
-        let authorize = if seed.as_ref().is_some_and(|s| s.authorize_unanswered) {
-            Authorize::Skip
-        } else {
-            Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        };
+        let tables = read.live.tables();
         let tables_change = !report.is_noop()
             || built.plan.writes.security_object
             || !built.plan.writes.communication_flags.is_empty();
-        // The System B group-object table reload (issue #540), written first.
-        let object_table = built.object_table.clone();
-        let param_write = match (
-            &built.partial,
-            read.params.as_ref().and_then(|p| p.detail.as_ref()),
-        ) {
-            (Some(partial), Some(detail)) => Some((partial, detail)),
-            _ => None,
-        };
+        let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
+        let param_write = built.partial.as_ref().zip(detail);
         let (tool, planner) = (origin.tool(), origin.planner());
         let recovery = format!(
             "The device may be left with partially written or unloaded tables. The pre-write \
@@ -2237,308 +2132,154 @@ impl BussardMcp {
              writing it is safe (the tables are rewritten wholesale); do not assume the device \
              works until a new plan reports nothing to do."
         );
-
-        // What the write means to leave on the device, for the read-back
-        // that ends every apply (issue #349).
-        let expected = bussard_service::verify::Expected {
-            tables: Some(desired.clone()),
-            group_objects: None,
-            object_table: object_table.clone(),
-            parameters: match (&param_write, &product) {
-                (Some(_), Some(source)) => {
-                    source
-                        .app()
-                        .map(|app| bussard_service::verify::ExpectedParameters {
-                            product: &source.product,
-                            app,
-                            model: Some(&model),
-                            device_mask: tables.mask,
-                        })
-                }
-                _ => None,
-            },
-            security: if tables_change {
-                security.as_ref().map(|inputs| {
-                    bussard_service::verify::ExpectedSecurity::from_inputs(
-                        inputs,
-                        &desired.addresses,
-                    )
-                })
-            } else {
-                None
-            },
-            // The properties the parameters live in (issue #669), when the
-            // parameters are written.
-            properties: param_write
-                .map(|(_, detail)| {
-                    bussard_service::verify::ExpectedProperty::from_parameter_writes(&detail.plan)
-                })
-                .unwrap_or_default(),
-            table_bases: product
-                .as_ref()
-                .and_then(|p| p.app())
-                .map(bussard_download::sys7_table_bases)
-                .unwrap_or_default(),
+        let mut observer = JobObserver {
+            jobs: &tier.jobs,
+            job,
+            what: PARAMETER_DOWNLOAD,
+            target,
+            truth: origin.truth(),
+            parameter_octets: built.plan.writes.parameter_octets,
         };
-
-        // Whether a write stopped before it reached the device (no lease, a
-        // sequence error): its error is the result, and there is nothing new
-        // to read back.
-        let mut stopped = false;
-        'write: {
-            // The tables first, when a link changes (with the group-object
-            // table reload before them, issue #540).
-            if tables_change || object_table.is_some() {
-                tier.jobs.step(
-                    job,
-                    "writing the group-address and association tables, then reading them back",
-                );
-                let lease = match handle.lease().await {
-                    Ok(lease) => lease,
-                    Err(e) => {
-                        stopped = true;
-                        merge(
-                            &mut result,
-                            json!({
-                                "ok": false,
-                                "verified": false,
-                                "reason": format!("could not lease the bus: {e}"),
-                                "recovery": recovery,
-                            }),
-                        );
-                        break 'write;
-                    }
-                };
-                let outcome = write_tables_seeded(
-                    LeaseChannel::new(lease),
-                    target,
-                    source,
-                    tables.mask,
-                    &desired,
-                    images.as_ref(),
-                    bussard_service::secure::layer(&tool_key, &high_water),
-                    bussard_download::SystemBLoad {
-                        security: security.as_ref(),
-                        object_table: object_table.as_deref(),
-                        keep_tables: !tables_change,
-                        user_memory_above_64k: bussard_download::uses_user_memory(
-                            product.as_ref().and_then(|p| p.app()),
-                        ),
-                    },
-                    seed.clone(),
-                )
-                .await;
-                let verified = matches!(&outcome, Ok(summary) if summary.ok);
-                let restarted = matches!(&outcome, Ok(summary) if summary.restarted);
-                stopped = outcome.is_err();
-                tracing::info!(
-                    "audit: {tool} {target} tables via {gateway}: {}; backup {backup_path}",
-                    if verified { "verified" } else { "FAILED" }
-                );
-                tier.jobs.progress(
-                    job,
-                    "tables",
-                    json!(if verified { "verified" } else { "failed" }),
-                );
-                merge(
-                    &mut result,
-                    match outcome {
-                        Ok(summary) => json!({
-                            "ok": summary.ok,
-                            "verified": summary.ok,
-                            "security_object": security_json(security.as_ref(), &desired, false),
-                            "address_state": summary.address_state.to_string(),
-                            "association_state": summary.association_state.to_string(),
-                            "resulting_address_count": report.resulting_address_count,
-                            "resulting_association_count": report.resulting_association_count,
-                            "group_object_table": summary.object_table.as_ref().map(|t| json!({
-                                "state": t.state.to_string(),
-                                "entries": t.entries,
-                                "read_back_matches": t.matches,
-                            })),
-                            "detail": if summary.ok { Value::Null } else { Value::String(summary.detail) },
-                            "recovery": if summary.ok { Value::Null } else { Value::String(recovery.clone()) },
+        // Authorize (free access) best-effort, as the read did.
+        let options = L4Options {
+            source: SourcePolicy::Known(source),
+            tool_key: tool_key.clone(),
+            high_water: high_water.clone(),
+            ..L4Options::default()
+        };
+        let written = program::apply::apply_device(
+            ApplyRequest {
+                service: &service,
+                target,
+                source,
+                dir: &dir,
+                model: Some(&model),
+                product: product.as_ref(),
+                mask: tables.mask,
+                desired: &desired,
+                tables_change,
+                object_table: built.object_table.as_deref(),
+                images: images.as_ref(),
+                security: security.as_ref(),
+                parameters: param_write,
+                tool_key,
+                high_water,
+                // The facts the pre-flight read checked seed every later
+                // connection of the job (issue #761); a device they record
+                // as not answering authorize is not asked again (#215).
+                options,
+                seed: read.seed(),
+            },
+            &mut observer,
+        )
+        .await;
+        let audit = |what: &str, verified: bool| {
+            tracing::info!(
+                "audit: {tool} {target} {what} via {gateway}: {}",
+                match (verified, what) {
+                    (true, _) => "verified",
+                    (false, "read-back") => "NOT VERIFIED",
+                    (false, _) => "FAILED",
+                }
+            );
+        };
+        if let Some(tables_written) = &written.tables {
+            tracing::info!(
+                "audit: {tool} {target} tables via {gateway}: {}; backup {backup_path}",
+                if tables_written.verified() {
+                    "verified"
+                } else {
+                    "FAILED"
+                }
+            );
+            merge(
+                &mut result,
+                match tables_written {
+                    TablesWritten::Ran(summary) => json!({
+                        "ok": summary.ok,
+                        "verified": summary.ok,
+                        "security_object": security_json(security.as_ref(), &desired, false),
+                        "address_state": summary.address_state.to_string(),
+                        "association_state": summary.association_state.to_string(),
+                        "resulting_address_count": report.resulting_address_count,
+                        "resulting_association_count": report.resulting_association_count,
+                        "group_object_table": summary.object_table.as_ref().map(|t| json!({
+                            "state": t.state.to_string(),
+                            "entries": t.entries,
+                            "read_back_matches": t.matches,
+                        })),
+                        "detail": if summary.ok { Value::Null } else { Value::String(summary.detail.clone()) },
+                        "recovery": if summary.ok { Value::Null } else { Value::String(recovery.clone()) },
+                    }),
+                    TablesWritten::Lease(err) => json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": format!("could not lease the bus: {}", match err {
+                            ServiceError::Lease(cause) => cause.to_string(),
+                            other => other.to_string(),
                         }),
-                        Err(err) => json!({
-                            "ok": false,
-                            "verified": false,
-                            "reason": format!("the write failed: {err}"),
-                            "recovery": recovery.clone(),
-                        }),
-                    },
-                );
-                if !verified {
-                    if param_write.is_some() {
-                        result["parameters"] = json!({
-                            "written": false,
-                            "reason": "not written: the table write did not verify",
-                        });
-                    }
-                    break 'write;
-                }
-                // A System 7 table write ends with a basic restart, as ETS's
-                // does: the parameters and the read-back need the device back.
-                if restarted {
-                    tier.jobs.step(job, "waiting for the device to restart");
-                    let back = match self.state().bus.service() {
-                        Some(service) => {
-                            let options = L4Options {
-                                source: SourcePolicy::Known(source),
-                                tool_key: tool_key.clone(),
-                                high_water: high_water.clone(),
-                                authorize: Authorize::BestEffort(
-                                    bussard_mgmt::apci::FREE_ACCESS_KEY,
-                                ),
-                                ..L4Options::default()
-                            };
-                            bussard_service::restart::wait_until_back(
-                                service,
-                                target,
-                                &options,
-                                tables.mask,
-                                bussard_service::restart::RestartWait::default(),
-                            )
-                            .await
-                            .map_err(|err| err.to_string())
-                        }
-                        None => Err("the bus is not wired".to_string()),
-                    };
-                    match back {
-                        Ok(after) => {
-                            result["restarted"] = json!({
-                                "answered_after_ms": after.as_millis() as u64,
-                            });
-                        }
-                        Err(reason) => {
-                            stopped = true;
-                            merge(
-                                &mut result,
-                                json!({
-                                    "ok": false,
-                                    "verified": false,
-                                    "reason": format!("the device did not come back after its restart: {reason}"),
-                                    "recovery": recovery.clone(),
-                                }),
-                            );
-                            break 'write;
-                        }
-                    }
-                }
-                // The security object was written with this PID 54 table and the
-                // write verified: record it in the lock, as `adopt` does (issue
-                // #297), so the sender admission check sees it. A reload of the
-                // group-object table alone does not write it (issue #540).
-                if let Some(inputs) = security.as_ref().filter(|_| tables_change) {
-                    match bussard_service::admission::record_secure_senders(
-                        &dir,
-                        target,
-                        &inputs.senders,
-                    ) {
-                        Ok(recorded) => result["secure_senders_recorded"] = json!(recorded),
-                        Err(err) => {
-                            tracing::warn!("{err}");
-                            result["secure_senders_recorded"] = json!(false);
-                            result["secure_senders_note"] = json!(err.to_string());
-                        }
-                    }
-                    // And the group-object flags it wrote (PID 61, issue #331).
-                    match bussard_service::security_change::record_security_flags(
-                        &dir,
-                        target,
-                        &inputs.secure_objects,
-                    ) {
-                        Ok(recorded) => result["security_flags_recorded"] = json!(recorded),
-                        Err(err) => {
-                            tracing::warn!("{err}");
-                            result["security_flags_recorded"] = json!(false);
-                            result["security_flags_note"] = json!(err.to_string());
-                        }
-                    }
-                }
+                        "recovery": recovery,
+                    }),
+                    TablesWritten::Failed(why) => json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": format!("the write failed: {why}"),
+                        "recovery": recovery.clone(),
+                    }),
+                },
+            );
+            if !tables_written.verified() && param_write.is_some() {
+                result["parameters"] = json!({
+                    "written": false,
+                    "reason": "not written: the table write did not verify",
+                });
             }
-
-            // Then the parameter octets that differ, with the CLI's engine
-            // (issue #274): the parameter-only download, verified by reading the
-            // memory back.
-            if let Some((partial, detail)) = param_write {
-                let Some(service) = self.state().bus.service() else {
-                    merge(
-                        &mut result,
-                        json!({
-                            "ok": false,
-                            "verified": false,
-                            "reason": "the bus is not wired",
-                        }),
-                    );
-                    break 'write;
-                };
-                tier.jobs.step(
-                    job,
-                    format!(
-                        "writing {} parameter octet(s)",
-                        built.plan.writes.parameter_octets
-                    ),
-                );
-                let read_options = L4Options {
-                    source: SourcePolicy::Known(source),
-                    tool_key: tool_key.clone(),
-                    high_water: high_water.clone(),
-                    authorize,
-                    ..L4Options::default()
-                };
-                let mut observer = JobObserver {
-                    jobs: &tier.jobs,
-                    job,
-                    what: PARAMETER_DOWNLOAD,
-                };
-                let outcome = bussard_service::download::write_parameters(
-                    service,
-                    target,
-                    source,
-                    partial,
-                    detail,
-                    tool_key.clone(),
-                    high_water.clone(),
-                    &read_options,
-                    &mut observer,
-                )
-                .await;
-                stopped = matches!(
+        }
+        match &written.restarted {
+            Some(Ok(after)) => {
+                result["restarted"] = json!({"answered_after_ms": after.as_millis() as u64});
+            }
+            Some(Err(reason)) => merge(
+                &mut result,
+                json!({
+                    "ok": false,
+                    "verified": false,
+                    "reason": format!("the device did not come back after its restart: {reason}"),
+                    "recovery": recovery.clone(),
+                }),
+            ),
+            None => {}
+        }
+        record_json(&mut result, &written.lock);
+        let reached = written.tables.as_ref().is_none_or(TablesWritten::verified)
+            && !matches!(written.restarted, Some(Err(_)));
+        match &written.parameters {
+            Some(outcome) => {
+                let ok = matches!(
                     outcome,
-                    Ok(bussard_service::download::ParamWriteOutcome::Failed(_)) | Err(_)
+                    Ok(bussard_service::download::ParamWriteOutcome::Verified { .. })
                 );
-                let (ok, parameters) = match outcome {
-                    Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => (
-                        true,
+                audit("parameters", ok);
+                result["parameters"] = match outcome {
+                    Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => {
                         json!({
                             "written": true,
                             "verified": true,
                             "octets": octets,
                             "changed": built.parameters,
-                        }),
-                    ),
-                    Ok(failed) => (
-                        false,
-                        json!({
-                            "written": false,
-                            "verified": false,
-                            "reason": failed.failure(),
-                        }),
-                    ),
-                    Err(err) => (
-                        false,
-                        json!({
-                            "written": false,
-                            "verified": false,
-                            "reason": format!("the parameter read-back failed: {}", chain(&err)),
-                        }),
-                    ),
+                        })
+                    }
+                    Ok(failed) => json!({
+                        "written": false,
+                        "verified": false,
+                        "reason": failed.failure(),
+                    }),
+                    Err(why) => json!({
+                        "written": false,
+                        "verified": false,
+                        "reason": format!("the parameter read-back failed: {why}"),
+                    }),
                 };
-                tracing::info!(
-                    "audit: {tool} {target} parameters via {gateway}: {}",
-                    if ok { "verified" } else { "FAILED" }
-                );
-                result["parameters"] = parameters;
                 result["ok"] = json!(ok);
                 result["verified"] = json!(ok);
                 if !ok {
@@ -2551,46 +2292,17 @@ impl BussardMcp {
                         param_backup_path.as_deref().unwrap_or("(no backup)")
                     ));
                 }
-            } else if let Some(why) = &built.parameters_skipped {
-                result["parameters"] = json!({"written": false, "reason": why});
             }
-        }
-
-        // Verified means read back and compared (issues #319, #349): a fresh
-        // session reads the tables, the written parameters and the security
-        // object back and compares them with the model.
-        if let Some(service) = self.state().bus.service().filter(|_| !stopped) {
-            tier.jobs.step(
-                job,
-                format!(
-                    "reading {target} back (tables, parameters, security object) to compare it \
-                     with {}",
-                    origin.truth()
-                ),
-            );
-            let read_options = L4Options {
-                source: SourcePolicy::Known(source),
-                tool_key: tool_key.clone(),
-                high_water: high_water.clone(),
-                authorize,
-                ..L4Options::default()
-            };
-            let readback = bussard_service::verify::read_back_on(
-                service,
-                target,
-                &read_options,
-                seed,
-                &expected,
-            )
-            .await;
-            tracing::info!(
-                "audit: {tool} {target} read-back via {gateway}: {}",
-                if readback.verified {
-                    "verified"
-                } else {
-                    "NOT VERIFIED"
+            None if reached => {
+                if let Some(why) = &built.parameters_skipped {
+                    result["parameters"] = json!({"written": false, "reason": why});
                 }
-            );
+            }
+            None => {}
+        }
+        // Verified means read back and compared (issues #319, #349).
+        if let Some(readback) = &written.readback {
+            audit("read-back", readback.verified);
             result["readback"] = json!(readback);
             if let Some(failure) = readback.failure() {
                 // Say what is left first; a write failure already reported
@@ -2709,11 +2421,7 @@ impl LinksAfter {
     fn holds(&self, server: &BussardMcp) -> bool {
         let model = server.state().model.reload();
         let product = product_for(&server.state().dir, &model, self.target);
-        let desired = desired_tables_for_app(
-            &model,
-            self.target,
-            product.source.as_ref().and_then(|p| p.app()),
-        );
+        let desired = program::plan::desired_tables(&model, self.target, product.source.as_ref());
         desired.is_ok_and(|d| d == self.desired)
             && Self::parameters(&model, self.target) == self.parameters
     }
@@ -2734,8 +2442,6 @@ struct Prepared {
     gateway: String,
     /// The model directory.
     dir: std::path::PathBuf,
-    /// The bus.
-    handle: BusHandle,
     /// The checked source address.
     source: IndividualAddress,
     /// The Data Secure tool key, `None` on the plain path.
@@ -2753,7 +2459,7 @@ struct Prepared {
     /// The security-object inputs, on the secured System B path.
     security: Option<SecurityInputs>,
     /// The System 7 table images, when a System 7 device's links change.
-    images: Option<Sys7TableImages>,
+    images: Option<bussard_download::Sys7TableImages>,
     /// The audit snapshot's id.
     snapshot: Option<String>,
     /// The table backup.
@@ -2761,7 +2467,7 @@ struct Prepared {
     /// The parameter backup, when parameters are written.
     param_backup_path: Option<String>,
     /// The full download, when the plan says `method: flash` (issue #303).
-    flash: Option<flash::FlashImage>,
+    flash: Option<FlashImage>,
     /// The result so far (address, gateway, backups, snapshot).
     result: Value,
 }
@@ -2806,7 +2512,8 @@ impl Origin {
 /// [`JobObserver::what`] of a parameter-only write.
 const PARAMETER_DOWNLOAD: &str = "parameter download";
 
-/// Reports a download's progress into its job.
+/// Reports a programming flow into its job: the steps, the download's
+/// progress, and the human's yes, which the plan digest already carried.
 struct JobObserver<'a> {
     /// The job table.
     jobs: &'a crate::jobs::JobTable,
@@ -2815,9 +2522,51 @@ struct JobObserver<'a> {
     /// What downloads: `"parameter download"` for a parameter-only write,
     /// `"download"` for a flash (issue #303).
     what: &'static str,
+    /// The device.
+    target: IndividualAddress,
+    /// What the read-back compares with.
+    truth: &'static str,
+    /// The parameter octets the write streams.
+    parameter_octets: usize,
 }
 
-impl bussard_service::download::FlashObserver for JobObserver<'_> {
+impl Observer for JobObserver<'_> {
+    fn step(&mut self, step: Step<'_>) {
+        let target = self.target;
+        let text = match step {
+            Step::WriteTables => {
+                "writing the group-address and association tables, then reading them back"
+                    .to_string()
+            }
+            Step::WaitRestart => "waiting for the device to restart".to_string(),
+            Step::WriteParameters { .. } => {
+                format!("writing {} parameter octet(s)", self.parameter_octets)
+            }
+            Step::Download { .. } => format!(
+                "flashing {target}: the full application download, then the restart (the device \
+                 is offline for {} to {} s) and the read-back",
+                bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
+                bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
+            ),
+            Step::ReadBack => format!(
+                "reading {target} back (tables, parameters, security object) to compare it with \
+                 {}",
+                self.truth
+            ),
+        };
+        self.jobs.step(self.job, text);
+    }
+
+    fn done(&mut self, step: Step<'_>, verified: bool) {
+        if let Step::WriteTables = step {
+            self.jobs.progress(
+                self.job,
+                "tables",
+                json!(if verified { "verified" } else { "failed" }),
+            );
+        }
+    }
+
     fn progress(&mut self, event: bussard_download::Progress) {
         match event {
             bussard_download::Progress::Step {
@@ -2862,6 +2611,32 @@ impl bussard_service::download::FlashObserver for JobObserver<'_> {
         if verified && self.what == PARAMETER_DOWNLOAD {
             self.jobs
                 .step(self.job, "reading the parameter memory back to verify");
+        }
+    }
+
+    /// The human's yes is the plan digest `knx_apply_device` was called with
+    /// (the three-step chat contract, `dev/chat-parity.md`), checked before
+    /// any flow runs.
+    fn confirm(&mut self, _question: &program::Question) -> program::Answer {
+        program::Answer::Yes
+    }
+}
+
+impl<'a> JobObserver<'a> {
+    /// The observer of a download or a parameter write that names no plan.
+    fn download(
+        jobs: &'a crate::jobs::JobTable,
+        job: &'a str,
+        what: &'static str,
+        target: IndividualAddress,
+    ) -> Self {
+        JobObserver {
+            jobs,
+            job,
+            what,
+            target,
+            truth: "the model",
+            parameter_octets: 0,
         }
     }
 }
@@ -2911,56 +2686,6 @@ fn inline_outcome_step(job: &str, target: IndividualAddress, result: &Value) -> 
              result again."
         )
     }
-}
-
-/// The security-object inputs for writing `desired` to `target`, as `bussard
-/// apply --keyring` derives them: `None` on the plain path (no tool key) and
-/// for a System 7 device (its tables are written secured, its security object
-/// is not reprogrammed, as in the CLI). The security individual address
-/// table holds the secured senders the model's links imply, with the
-/// keyring's sequence numbers. A group address the model marks `secure`
-/// without a key in the keyring refuses here, before anything is asked or
-/// written.
-fn security_inputs(
-    model: &Model,
-    target: IndividualAddress,
-    desired: &DesiredTables,
-    material: &SecureMaterial,
-    live: &LiveTables,
-    tunnel: &[IndividualAddress],
-    dir: &std::path::Path,
-) -> Result<Option<SecurityInputs>, String> {
-    if material.tool_key.is_none() || live.sys7().is_some() {
-        return Ok(None);
-    }
-    let empty = HashMap::new();
-    let keys = material.group_keys.as_ref().unwrap_or(&empty);
-    let mut inputs = bussard_download::security_inputs_for(Some(model), target, desired, keys);
-    // The tunnelling addresses `admit_tunnel_senders` admits (issue #297),
-    // sequence 0; empty when the option is off.
-    inputs.senders = bussard_download::secured_senders(
-        Some(model),
-        target,
-        keys,
-        &material.device_sequences,
-        tunnel,
-    );
-    inputs.admitted_tunnel = tunnel.iter().copied().filter(|ia| *ia != target).collect();
-    // The table capacities the product declares (issue #537): a program the
-    // device cannot hold refuses here, at plan time.
-    inputs.capacity = bussard_download::TableCapacity::for_device(dir, Some(model), target);
-    bussard_download::check_planned_capacity(target, &desired.addresses, &inputs).map_err(|e| {
-        match e {
-            bussard_download::SecurityPlanError::OverCapacity { .. } => {
-                format!("{target}'s security object cannot be programmed: {e}")
-            }
-            e => format!(
-                "{target}'s security object cannot be programmed: {e}; export a current keyring \
-                 from ETS or fix the group's `secure` flag in groups.toml"
-            ),
-        }
-    })?;
-    Ok(Some(inputs))
 }
 
 /// The `security_object` field of a plan or apply result: what the security
@@ -3036,30 +2761,10 @@ fn refuse_insecure_links(model: &Model, target: IndividualAddress) -> Result<(),
     }
 }
 
-/// Refuses a plan whose additions or removals touch a protected GA.
+/// Refuses a plan whose additions or removals touch a protected GA
+/// ([`program::plan::protected_refusal`]).
 fn refuse_protected(model: &Model, report: &PlanReport) -> Result<(), String> {
-    let protected: Vec<String> = report
-        .additions
-        .iter()
-        .chain(&report.removals)
-        .filter(|p| {
-            model
-                .groups
-                .groups
-                .get(&p.ga)
-                .is_some_and(|group| group.protected)
-        })
-        .map(|p| format!("{} (object {})", p.ga, p.object))
-        .collect();
-    if protected.is_empty() {
-        Ok(())
-    } else {
-        Err(format!(
-            "the change touches protected group address(es) {}; programming them is refused via \
-             MCP with no override (use the CLI with the human at the keyboard)",
-            protected.join(", ")
-        ))
-    }
+    program::plan::protected_refusal(model, report).map_or(Ok(()), Err)
 }
 
 /// The product data for the parameter half of `target`'s plan, or why there
@@ -3101,119 +2806,85 @@ pub(crate) fn product_for(
     }
 }
 
-/// What one read of the device returned.
-struct DeviceRead {
-    /// The live link tables.
-    live: LiveTables,
-    /// The identity verdict against the lock, when the descriptor answered.
-    check: Option<IdentityCheck>,
-    /// The parameter read-back, when product data was at hand.
-    params: Option<ParamState>,
-    /// The security individual address table (PID 54), read only when
-    /// `admit_tunnel_senders` has tunnelling addresses to admit (issue #297);
-    /// `None` otherwise or when the device refused the read.
-    senders: Option<Vec<SecureSenderEntry>>,
-    /// The group-object security flags (PID 61), read on a secured session
-    /// of a System B device (issue #331); `None` on a plain session, on
-    /// System 7, or when the device refused the read.
-    go_flags: Option<Vec<u8>>,
-    /// The device facts this read checked (or read), as the seed of the
-    /// write and read-back connections, so they neither walk the interface
-    /// objects again nor re-read the maximum APDU length (issue #761, as
-    /// `bussard apply` seeds them, issue #209). `None` when no facts were in
-    /// effect: those connections then discover them.
-    seed: Option<bussard_mgmt::ConnectionSeed>,
+/// What one read of a device returned ([`program::read`]).
+type DeviceRead = program::read::DeviceRead<LiveTables>;
+
+/// What a read of the programming tier covers besides the device.
+struct Read<'a> {
+    /// The tool key, `None` on the plain path.
+    tool_key: &'a Option<Key16>,
+    /// The device's factory key: a device reset to default is named, not
+    /// read under it (issue #532).
+    factory_key: &'a Option<Key16>,
+    /// The send-sequence high-water mark of the read and the write.
+    high_water: &'a SequenceHighWater,
+    /// The model.
+    model: &'a Model,
+    /// The product data the parameters are decoded with.
+    product: Option<&'a ProductSource>,
+    /// The admitted tunnelling addresses (PID 54 is read when any).
+    tunnel: &'a [IndividualAddress],
+    /// The PID 61 cache.
+    flags_cache: FlagsCache<'a>,
 }
 
-/// Checks the source address (once per tunnel instance, issue #341: the
-/// service remembers a passed probe until the bus reconnects), then reads the
-/// device on one layer-4 session:
-/// the device facts and the identity verdict, the live tables, and with
-/// `product` the parameter memory (the same session `bussard apply` reads
-/// on). Returns the checked source for the write phase.
-///
-/// With a tool key every APDU, the descriptor read included, rides
-/// `A_SecureData`; `None` is the unchanged plain path.
-#[allow(clippy::too_many_arguments)] // one read's context; a struct would only move it
+/// Checks the source address (once per tunnel instance, issue #341), then
+/// reads the device on one layer-4 session ([`program::read::read_device`],
+/// the read `bussard plan` and `bussard apply` make): the facts and the
+/// identity verdict, the live tables, with `product` the parameter memory,
+/// PID 54 and PID 61. Returns the checked source for the write phase.
 async fn read_device(
     service: &BusService,
     target: IndividualAddress,
-    tool_key: &Option<Key16>,
-    factory_key: &Option<Key16>,
-    high_water: &SequenceHighWater,
     dir: &std::path::Path,
-    model: &Model,
-    product: Option<&ProductSource>,
-    tunnel: &[IndividualAddress],
-    known_flags: Option<Vec<u8>>,
+    read: Read<'_>,
 ) -> Result<(IndividualAddress, DeviceRead), String> {
     let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-    let lease = service
-        .handle()
-        .lease()
-        .await
-        .map_err(|e| format!("could not lease the bus: {e}"))?;
-    // A device reset to default is named, not read under its FDSK (#532).
-    let secure = bussard_service::secure::layer_with_factory_key(tool_key, factory_key, high_water);
-    let mut l4 = Layer4Connection::connect_with_secure(
-        LeaseChannel::new(lease),
-        target,
-        source,
-        Timeouts::default(),
-        secure,
-    )
-    .await
-    .map_err(|e| format!("connecting to {target}: {e}"))?;
-    // Authorize (free access) before reading, as ETS does and as System 7
-    // requires before any memory access. Best-effort on this read, and
-    // skipped for a device whose facts record that it never answers (issue
-    // #215; a stale verdict presents the key on the same connection), as
-    // `bussard plan` and `bussard apply` read (issue #761).
+    // Authorize (free access) before reading, best-effort, skipped for a
+    // device whose facts record that it never answers (issues #215, #761).
     let mut facts = FactsCache::new(dir, false);
-    if let Authorize::BestEffort(key) =
-        bussard_service::status::read_only_authorize(&mut facts, target)
-        && let Err(err) = l4.authorize_or_fail(key).await
-    {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-    let read = read_on(
-        &mut l4,
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        tool_key: read.tool_key.clone(),
+        factory_key: read.factory_key.clone(),
+        high_water: read.high_water.clone(),
+        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
+        ..L4Options::default()
+    };
+    let request = ReadRequest {
         target,
-        &facts,
-        model,
-        product,
-        tunnel,
-        tool_key.is_some(),
-        known_flags,
-    )
-    .await;
-    let _ = l4.disconnect().await;
-    let (read, identified, params, senders, go_flags) = read?;
-    match read {
-        LiveRead::Tables(live) => Ok((
-            source,
-            DeviceRead {
-                live,
-                check: identified.check,
-                params,
-                senders,
-                go_flags,
-                seed: bussard_service::seed_of(identified.established.as_ref()),
-            },
-        )),
-        LiveRead::UnsupportedMask { address, mask } => Err(format!(
+        model: Some(read.model),
+        product: read.product,
+        facts: &facts,
+        tunnel: read.tunnel,
+        secured: read.tool_key.is_some(),
+        flags_cache: read.flags_cache,
+        properties: None,
+    };
+    let device = program::read::read_device(service, &options, &request)
+        .await
+        .map_err(|err| match err {
+            ReadError::Open(ServiceError::Lease(e)) => format!("could not lease the bus: {e}"),
+            ReadError::Open(ServiceError::SourceCheck(e)) => chain(&e),
+            ReadError::Open(e) => format!("connecting to {target}: {e}"),
+            e => chain(&e),
+        })?;
+    match device.into_tables() {
+        Ok(device) => Ok((source, device)),
+        Err((address, mask)) => Err(format!(
             "{address} reports mask {mask:04X} ({}); programming supports the System B (x7B0) \
              and System 7 (0705 / 0701) families; on this mask bussard can: {}",
-            system_type(mask),
-            MaskProfile::from_mask(mask).capabilities().summary()
+            bussard_mgmt::system_type(mask),
+            bussard_mgmt::MaskProfile::from_mask(mask)
+                .capabilities()
+                .summary()
         )),
     }
 }
 
 /// What `knx_reconstruct_device` reads (issue #717): the live tables, the
 /// identity verdict and, with `product`, the parameter read-back, on the one
-/// session [`read_device`] opens for `knx_plan_device` (the source-address
-/// probe, the device facts, the free-access authorize). Read-only.
+/// session [`read_device`] opens for `knx_plan_device`. Read-only.
 pub(crate) async fn read_for_reconstruct(
     service: &BusService,
     target: IndividualAddress,
@@ -3221,22 +2892,32 @@ pub(crate) async fn read_for_reconstruct(
     dir: &std::path::Path,
     model: &Model,
     product: Option<&ProductSource>,
-) -> Result<(LiveTables, Option<IdentityCheck>, Option<ParamState>), String> {
+) -> Result<
+    (
+        LiveTables,
+        Option<bussard_model::identity::IdentityCheck>,
+        Option<bussard_service::params::ParamState>,
+    ),
+    String,
+> {
     let (tool_key, factory_key) = keys;
     let (_, read) = read_device(
         service,
         target,
-        tool_key,
-        factory_key,
-        &SequenceHighWater::new(),
         dir,
-        model,
-        product,
-        &[],
-        None,
+        Read {
+            tool_key,
+            factory_key,
+            high_water: &SequenceHighWater::new(),
+            model,
+            product,
+            tunnel: &[],
+            flags_cache: FlagsCache::Off,
+        },
     )
     .await?;
-    Ok((read.live, read.check, read.params))
+    let check = read.check().cloned();
+    Ok((read.live, check, read.params))
 }
 
 /// Reads the properties a property-only load procedure writes (issue #390)
@@ -3248,147 +2929,179 @@ async fn read_property_rows(
     plan: &bussard_download::FlashPlan,
 ) -> Result<Vec<bussard_service::property_plan::PropertyRow>, String> {
     let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-    let lease = service
-        .handle()
-        .lease()
-        .await
-        .map_err(|e| format!("could not lease the bus: {e}"))?;
-    let secure = bussard_service::secure::layer(tool_key, &SequenceHighWater::new());
-    let mut l4 = Layer4Connection::connect_with_secure(
-        LeaseChannel::new(lease),
-        target,
-        source,
-        Timeouts::default(),
-        secure,
-    )
-    .await
-    .map_err(|e| format!("connecting to {target}: {e}"))?;
-    if let Err(err) = l4
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-    {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-    let rows = bussard_service::property_plan::read_property_rows(&mut l4, plan).await;
-    let _ = l4.disconnect().await;
-    Ok(rows)
-}
-
-/// The reads of [`read_device`] on its open session; `secured` says the
-/// session rides `A_SecureData`, so the security object can be read.
-#[allow(clippy::type_complexity)] // the five reads of one session, named at the caller
-#[allow(clippy::too_many_arguments)] // one session's context, as `read_device`
-async fn read_on<Ch: bussard_mgmt::L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    target: IndividualAddress,
-    facts: &FactsCache,
-    model: &Model,
-    product: Option<&ProductSource>,
-    tunnel: &[IndividualAddress],
-    secured: bool,
-    known_flags: Option<Vec<u8>>,
-) -> Result<
-    (
-        LiveRead,
-        bussard_service::Identified,
-        Option<ParamState>,
-        Option<Vec<SecureSenderEntry>>,
-        Option<Vec<u8>>,
-    ),
-    String,
-> {
-    let device = model.devices.get(&target).map(|d| &d.device);
-    let identified = bussard_service::identify(l4, facts, device)
-        .await
-        .map_err(|e| chain(&e))?;
-    let bases = product
-        .and_then(|p| p.app())
-        .map(bussard_download::sys7_table_bases)
-        .unwrap_or_default();
-    let read = bussard_download::read_live_tables_at(l4, bases)
-        .await
-        .map_err(|e| chain(&e))?;
-    let params = match (&read, product) {
-        (LiveRead::Tables(live), Some(product)) => Some(
-            bussard_service::params::read_state(
-                l4,
-                product,
-                Some(model),
-                target,
-                live.tables().mask,
+    let options = L4Options {
+        source: SourcePolicy::Known(source),
+        tool_key: tool_key.clone(),
+        ..L4Options::default()
+    };
+    service
+        .with_l4(target, &options, async |l4| {
+            Ok::<_, ServiceError>(
+                bussard_service::property_plan::read_property_rows(l4, plan).await,
             )
-            .await,
-        ),
-        _ => None,
-    };
-    // PID 54, for `admit_tunnel_senders` only (issue #297).
-    let senders = match &read {
-        LiveRead::Tables(live) if !tunnel.is_empty() && live.sys7().is_none() => {
-            bussard_download::read_security_sender_table(l4)
-                .await
-                .map_err(|e| chain(&e))?
-        }
-        _ => None,
-    };
-    // PID 61 on a Secure System B device (issue #331): a group object that
-    // leaves or joins Data Secure is a plan change of its own.
-    let go_flags = match &read {
-        // A plan's cached read with no security change pending (#336).
-        LiveRead::Tables(live) if secured && live.sys7().is_none() && known_flags.is_some() => {
-            known_flags
-        }
-        LiveRead::Tables(live) if secured && live.sys7().is_none() => {
-            // The session's last read: a device that refuses or does not
-            // answer leaves the flags unknown, and the plan shows no
-            // security-object change.
-            match bussard_download::read_security_flags(l4).await {
-                Ok(flags) => flags,
-                Err(err) => {
-                    tracing::debug!("{target}: PID 61 not read: {}", chain(&err));
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
-    Ok((read, identified, params, senders, go_flags))
+        })
+        .await
+        .map_err(|err| match err {
+            ServiceError::Lease(e) => format!("could not lease the bus: {e}"),
+            e => format!("connecting to {target}: {e}"),
+        })
 }
 
-/// Adds the security-object change (issue #331) to `built`: the group
-/// objects whose security flag on the device (PID 61 as read) differs from
-/// the model and the key store, and the group keys that leave or join the
-/// group key table with them. Nothing without a secured read of PID 61.
-fn security_change_in_plan(
-    built: &mut BuiltPlan,
+/// What a plan of one device is computed from, besides the read: the plan
+/// `knx_plan_device` shows and `knx_apply_device` re-derives.
+struct PlanCtx<'a> {
+    /// The model.
+    model: &'a Model,
+    /// The device.
+    target: IndividualAddress,
+    /// The gateway.
+    gateway: &'a str,
+    /// The model directory.
+    dir: &'a std::path::Path,
+    /// The model's tables for the device.
+    desired: &'a DesiredTables,
+    /// The admitted tunnelling addresses.
+    tunnel: &'a [IndividualAddress],
+    /// The Data Secure material.
+    material: &'a SecureMaterial,
+    /// The product data the lock pins.
+    product: &'a ProductFor,
+}
+
+impl PlanCtx<'_> {
+    /// The plan ([`program::plan::plan_device`]): the table plan, the
+    /// device plan with its parameter half (a failed product lookup is a
+    /// note and leaves the parameters out), the tunnel admission and the
+    /// security-object change.
+    fn planned(&self, read: &DeviceRead) -> Planned {
+        program::plan::plan_device(
+            &PlanInputs {
+                model: self.model,
+                target: self.target,
+                gateway: self.gateway,
+                dir: self.dir,
+                desired: self.desired,
+                tunnel: self.tunnel,
+                group_keys: self.material.group_keys.as_ref(),
+                parameters_skipped: self.product.refusal.as_deref(),
+            },
+            read,
+        )
+    }
+
+    /// The security object a secured System B write reprograms, as `bussard
+    /// apply --keyring` derives it; `None` on the plain path and on System 7.
+    /// A group address the model marks `secure` without a key refuses here,
+    /// before anything is asked or written.
+    fn security(&self, read: &DeviceRead) -> Result<Option<SecurityInputs>, String> {
+        security_for(
+            self.model,
+            self.target,
+            self.desired,
+            self.material,
+            &read.live,
+            self.tunnel,
+            self.dir,
+        )
+    }
+
+    /// The full download the plan writes, when the application must be
+    /// loaded (`load`, issue #750) or a parameter change reshapes the
+    /// group-object table (issue #303).
+    fn flash(
+        &self,
+        read: &DeviceRead,
+        report: &PlanReport,
+        load: Option<&program::flash::LoadNeed>,
+        built: &BuiltPlan,
+    ) -> Result<Option<FlashImage>, String> {
+        let need = match (load, &built.needs_flash) {
+            (Some(need), _) => FlashNeed::Load(need),
+            (None, Some(_)) => FlashNeed::Parameters(built),
+            (None, None) => return Ok(None),
+        };
+        program::flash::flash_image(
+            &FlashFor {
+                dir: self.dir,
+                model: self.model,
+                target: self.target,
+                read,
+                report,
+                product: self.product.source.as_ref(),
+                material: self.material,
+                tunnel: self.tunnel,
+            },
+            need,
+        )
+        .map(Some)
+    }
+}
+
+/// The security object of a secured System B write of `desired`
+/// ([`program::plan::security_inputs`]); `None` without a tool key and on
+/// System 7, whose security object a table write does not reprogram.
+fn security_for(
     model: &Model,
     target: IndividualAddress,
     desired: &DesiredTables,
-    security: Option<&SecurityInputs>,
-    read: &DeviceRead,
-    report: &PlanReport,
-) {
-    if let (Some(inputs), Some(flags)) = (security, read.go_flags.as_deref()) {
-        bussard_service::security_change::SecurityObjectChange::compare(
-            target, desired, inputs, flags,
-        )
-        .add_to(&mut built.plan, report, Some(model));
+    material: &SecureMaterial,
+    live: &LiveTables,
+    tunnel: &[IndividualAddress],
+    dir: &std::path::Path,
+) -> Result<Option<SecurityInputs>, String> {
+    if live.sys7().is_some() {
+        return Ok(None);
     }
+    program::plan::security_inputs(Some(model), target, desired, material, &[], tunnel, dir)
+        .map_err(|e| match e {
+            bussard_download::SecurityPlanError::OverCapacity { .. } => {
+                format!("{target}'s security object cannot be programmed: {e}")
+            }
+            e => format!(
+                "{target}'s security object cannot be programmed: {e}; export a current keyring \
+                 from ETS or fix the group's `secure` flag in groups.toml"
+            ),
+        })
 }
 
-/// Adds the `admit_tunnel_senders` change (issue #297) to `built`: the
-/// tunnelling addresses `read`'s PID 54 is missing. Nothing on System 7 or
-/// without tunnelling addresses to admit.
-fn admit_in_plan(
-    built: &mut BuiltPlan,
-    target: IndividualAddress,
-    tunnel: &[IndividualAddress],
-    read: &DeviceRead,
-    report: &PlanReport,
-) {
-    if tunnel.is_empty() || read.live.sys7().is_some() {
-        return;
+/// The model's side of a plan digest
+/// ([`program::plan::model_fingerprint`]), extended with the flash image so
+/// the digest binds the exact octets a flash writes.
+fn model_fingerprint(
+    ctx: &PlanCtx<'_>,
+    security: Option<&SecurityInputs>,
+    built: &BuiltPlan,
+    flash: Option<&FlashImage>,
+) -> [u8; 32] {
+    let model =
+        program::plan::model_fingerprint(ctx.model, ctx.target, ctx.desired, security, built);
+    flash.map_or(model, |image| image.fingerprint(model))
+}
+
+/// The lock records of a verified secured write, as result fields.
+fn record_json(result: &mut Value, record: &bussard_service::flash_flow::LockRecord) {
+    for (recorded, key, note) in [
+        (
+            &record.senders,
+            "secure_senders_recorded",
+            "secure_senders_note",
+        ),
+        (
+            &record.flags,
+            "security_flags_recorded",
+            "security_flags_note",
+        ),
+    ] {
+        match recorded {
+            Some((Ok(recorded), _)) => result[key] = json!(recorded),
+            Some((Err(err), _)) => {
+                tracing::warn!("{err}");
+                result[key] = json!(false);
+                result[note] = json!(err);
+            }
+            None => {}
+        }
     }
-    TunnelAdmission::new(target, tunnel, read.senders.as_deref()).add_to(&mut built.plan, report);
 }
 
 /// Refuses a device whose identity drifted from the lock, naming the
@@ -3397,8 +3110,7 @@ fn admit_in_plan(
 /// is its drift (issue #314).
 fn refuse_drift(target: IndividualAddress, read: &DeviceRead) -> Result<(), String> {
     if let Some(refusal) = read
-        .check
-        .as_ref()
+        .check()
         .and_then(|check| bussard_service::drift_refusal(target, check, "write"))
     {
         return Err(refusal);
@@ -3412,34 +3124,6 @@ fn refuse_drift(target: IndividualAddress, read: &DeviceRead) -> Result<(), Stri
         ));
     }
     Ok(())
-}
-
-/// The device plan with its parameter half, built by the CLI's builder
-/// ([`build_device_plan`]); a failed product lookup is a note and leaves the
-/// parameters out.
-fn built_plan(
-    model: &Model,
-    target: IndividualAddress,
-    gateway: &str,
-    dir: &std::path::Path,
-    read: &DeviceRead,
-    report: &PlanReport,
-    product: &ProductFor,
-) -> BuiltPlan {
-    let mut built = build_device_plan(
-        model,
-        target,
-        gateway,
-        dir,
-        &read.live,
-        report,
-        read.params.as_ref(),
-    );
-    if let Some(why) = &product.refusal {
-        built.plan.notes.insert(0, why.clone());
-        built.parameters_skipped = Some(why.clone());
-    }
-    built
 }
 
 /// The plan note of a flash (issue #303).
@@ -3564,134 +3248,10 @@ fn chain(err: &dyn StdError) -> String {
     out
 }
 
-/// Feeds a length-prefixed byte string into a hash, so field boundaries are
-/// unambiguous.
-fn put(hasher: &mut Sha256, bytes: &[u8]) {
-    hasher.update((bytes.len() as u64).to_be_bytes());
-    hasher.update(bytes);
-}
-
-/// The live half of a plan digest: the device-state fingerprint the plan
-/// reports as `state_hash` ([`bussard_download::state_hash_with`], the one
-/// `bussard plan` prints) over the tables, the parameter memory and the
-/// group-object table as read, extended with the security tables the read
-/// covered (PID 54, issue #297; PID 61, issue #331), which a write of the
-/// security object depends on.
-fn live_digest(read: &DeviceRead) -> [u8; 32] {
-    let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
-    let object_table = detail
-        .and_then(|d| d.object_table.as_ref())
-        .and_then(|c| c.live.as_ref().ok())
-        .map(|table| table.image());
-    let state = bussard_download::state_hash_with(
-        &read.live,
-        detail.map(|d| &d.regions),
-        object_table.as_deref(),
-    );
-    let mut h = Sha256::new();
-    put(&mut h, state.as_bytes());
-    if let Some(senders) = &read.senders {
-        put(&mut h, b"pid54");
-        put(&mut h, &bussard_download::sender_table_bytes(senders));
-    }
-    if let Some(flags) = &read.go_flags {
-        put(&mut h, b"pid61");
-        put(&mut h, flags);
-    }
-    h.finalize().into()
-}
-
-/// SHA-256 over the model's links for the device (its fingerprint), the
-/// desired tables computed from them, for a secured write what the security
-/// object receives (its [`SecurityInputs::describe`] line and the secure group
-/// addresses: addresses, object numbers and sequence numbers, no key
-/// material) and the parameter half: the model's parameter values, the
-/// parameter image the write would stream, or why it is left out.
-fn model_digest(
-    model: &Model,
-    target: IndividualAddress,
-    desired: &DesiredTables,
-    security: Option<&SecurityInputs>,
-    built: &BuiltPlan,
-) -> [u8; 32] {
-    let mut h = Sha256::new();
-    put(&mut h, b"model-v2");
-    // The Debug rendering is stable within one build, which is all a digest
-    // that lives for one server session needs.
-    put(
-        &mut h,
-        format!("{:?}", model.links.links.get(&target)).as_bytes(),
-    );
-    let addresses: Vec<u8> = desired
-        .addresses
-        .iter()
-        .flat_map(|ga| ga.raw().to_be_bytes())
-        .collect();
-    put(&mut h, &addresses);
-    let associations: Vec<u8> = desired
-        .associations
-        .iter()
-        .flat_map(|(tsap, asap)| {
-            let mut pair = tsap.to_be_bytes().to_vec();
-            pair.extend_from_slice(&asap.to_be_bytes());
-            pair
-        })
-        .collect();
-    put(&mut h, &associations);
-    match security {
-        Some(inputs) => {
-            put(&mut h, b"secure-v1");
-            put(&mut h, inputs.describe(&desired.addresses).as_bytes());
-            let secure_gas: Vec<u8> = inputs
-                .secure_gas
-                .iter()
-                .flat_map(|ga| ga.raw().to_be_bytes())
-                .collect();
-            put(&mut h, &secure_gas);
-        }
-        None => put(&mut h, b"plain"),
-    }
-    put(
-        &mut h,
-        format!(
-            "{:?}",
-            model.devices.get(&target).map(|d| &d.device.parameters)
-        )
-        .as_bytes(),
-    );
-    match &built.partial {
-        Some(partial) => {
-            put(&mut h, b"parameter-image");
-            for segment in parameter_segments(partial) {
-                put(&mut h, segment.as_bytes());
-                put(&mut h, partial.image_bytes(&segment).unwrap_or_default());
-            }
-        }
-        None => put(&mut h, b"no-parameter-write"),
-    }
-    put(
-        &mut h,
-        built.parameters_skipped.as_deref().unwrap_or("").as_bytes(),
-    );
-    h.finalize().into()
-}
-
-/// The parameter segments a parameter-only plan writes, in plan order.
-fn parameter_segments(partial: &bussard_download::FlashPlan) -> Vec<String> {
-    let mut out: Vec<String> = partial.param_images.keys().cloned().collect();
-    out.sort();
-    out
-}
-
-/// The plan digest: SHA-256 over the device address, the model part and the
-/// live part, as lowercase hex.
+/// The plan digest ([`program::plan::plan_digest`]): SHA-256 over the
+/// device address, the model part and the live part, as lowercase hex.
 fn plan_digest(plan: &PendingPlan) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-plan-v1");
-    put(&mut h, &plan.target.raw().to_be_bytes());
-    put(&mut h, &plan.model);
-    put(&mut h, &plan.live);
-    bussard_model::text::hex(&h.finalize())
+    program::plan::plan_digest(plan.target, &plan.model, &plan.live)
 }
 
 /// A structured tool result.
@@ -3727,39 +3287,6 @@ fn with_declared(text: &str, declared: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_mgmt::tables::DeviceTables;
-
-    fn live(addresses: &[u16]) -> DeviceRead {
-        DeviceRead {
-            live: live_tables(addresses),
-            check: None,
-            params: None,
-            senders: None,
-            go_flags: None,
-            seed: None,
-        }
-    }
-
-    fn live_tables(addresses: &[u16]) -> LiveTables {
-        LiveTables::SystemB(DeviceTables {
-            mask: 0x07B0,
-            addresses: addresses
-                .iter()
-                .map(|&raw| bussard_model::GroupAddress::from_raw(raw))
-                .collect(),
-            associations: vec![(1, 20)],
-            resolved: Vec::new(),
-            sources: Vec::new(),
-            notes: Vec::new(),
-            group_objects: None,
-        })
-    }
-
-    #[test]
-    fn test_live_digest_changes_with_the_tables() {
-        assert_eq!(live_digest(&live(&[0x0A00])), live_digest(&live(&[0x0A00])));
-        assert_ne!(live_digest(&live(&[0x0A00])), live_digest(&live(&[0x0A01])));
-    }
 
     #[test]
     fn test_plan_digest_binds_the_device() -> Result<(), String> {

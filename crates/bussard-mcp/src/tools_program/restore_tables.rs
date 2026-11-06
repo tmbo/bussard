@@ -22,20 +22,21 @@ use bussard_download::backup::{
     DeviceBackup, backups_root, find_device_backup, read_device_backup,
 };
 use bussard_download::{
-    DesiredTables, DevicePlan, PlanReport, PlanWrites, SecurityInputs, Sys7TableImages, plan,
-    render_plan_text, state_hash, sys7_table_images, write_pre_write_backup,
+    DesiredTables, DevicePlan, PlanReport, PlanWrites, SecurityInputs, Sys7TableImages,
+    render_plan_text, state_hash,
 };
 use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::params::BuiltPlan;
+use bussard_service::program::{self, read::FlagsCache};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    BussardMcp, DeviceRead, Origin, Prepared, ProgrammingTier, chain, live_digest, put,
-    read_device, refuse_protected, security_inputs, security_json,
+    BussardMcp, DeviceRead, Origin, Prepared, ProgrammingTier, Read, chain, put, read_device,
+    refuse_protected, security_for, security_json,
 };
 
 /// One table-restore plan this session produced, remembered until written,
@@ -146,7 +147,7 @@ fn tables_digest(
     put(&mut h, b"bussard-restore-tables-v1");
     put(&mut h, &target.raw().to_be_bytes());
     put(&mut h, backup_bytes);
-    put(&mut h, &live_digest(read));
+    put(&mut h, &program::plan::live_fingerprint(read));
     let addresses: Vec<u8> = desired
         .addresses
         .iter()
@@ -273,14 +274,16 @@ impl BussardMcp {
         let (source, read) = read_device(
             &service,
             target,
-            &tool_key,
-            &material.fdsk,
-            &high_water,
             &dir,
-            &model,
-            None,
-            &[],
-            None,
+            Read {
+                tool_key: &tool_key,
+                factory_key: &material.fdsk,
+                high_water: &high_water,
+                model: &model,
+                product: None,
+                tunnel: &[],
+                flags_cache: FlagsCache::Off,
+            },
         )
         .await?;
         let tables = read.live.tables();
@@ -304,18 +307,13 @@ impl BussardMcp {
                 tables.mask
             ));
         }
-        let report = plan(tables, &desired);
+        let report = program::plan::table_plan(&read, &desired);
         refuse_protected(&model, &report)?;
-        let security = security_inputs(
+        let security = security_for(
             &model, target, &desired, &material, &read.live, &tunnel, &dir,
         )?;
-        let images = match read.live.sys7() {
-            Some(s7) => Some(
-                sys7_table_images(s7, &desired)
-                    .map_err(|e| format!("computing the System 7 table images: {e}"))?,
-            ),
-            None => None,
-        };
+        let images = program::plan::sys7_images(&read, &desired)
+            .map_err(|e| format!("computing the System 7 table images: {e}"))?;
         let noop = report.is_noop()
             && images
                 .as_ref()
@@ -390,7 +388,7 @@ impl BussardMcp {
             "mask": format!("{:04X}", tables.mask),
             "system_type": system_type(tables.mask),
             "secured": planned.tool_key.is_some(),
-            "identity": planned.read.check.as_ref().map(|c| bussard_service::identity_line(target, c)),
+            "identity": planned.read.check().map(|c| bussard_service::identity_line(target, c)),
             "noop": noop,
             "plan": render_plan_text(target, tables, report),
             "additions": pairs(&report.additions),
@@ -467,7 +465,7 @@ impl BussardMcp {
         file: &Path,
         digest: &str,
     ) -> Result<Prepared, String> {
-        let (_, service, gateway) = self.programming_preflight()?;
+        let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
         let pending = {
             let mut plans = tier.table_restores();
@@ -527,10 +525,11 @@ impl BussardMcp {
         };
         // The state this restore overwrites is still the only copy of what
         // the device holds now: it is backed up first, as `apply` does.
-        let tables = planned.read.live.tables();
-        let backup = write_pre_write_backup(&dir, target, tables, planned.read.live.sys7())
-            .map_err(|e| format!("refusing to write {target} without a backup: {e}"))?;
-        let backup_path = backup.display().to_string();
+        let backup_path = program::apply::back_up(&dir, target, &planned.read.live, None)
+            .map_err(|e| format!("refusing to write {target} without a backup: {e}"))?
+            .tables
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
         let built = tables_only_plan(target, &planned.model, &gateway, &dir, &planned);
         let result = json!({
             "method": "restore",
@@ -548,7 +547,6 @@ impl BussardMcp {
             target,
             gateway,
             dir,
-            handle: service.handle().clone(),
             source: planned.source,
             tool_key: planned.tool_key,
             high_water: planned.high_water,
