@@ -246,12 +246,13 @@ async fn test_knx_plan_device_flashes_a_healthy_system7_device_without_force() -
     Ok(())
 }
 
-/// Issue #750: a System 7 device whose code differs from the pinned
-/// product's runs another application or version. The plan no longer
-/// refuses with `bussard flash --force`: it says the application must be
-/// loaded, names the segment and the offset that differ, and writes nothing.
+/// Issues #750, #895: a System 7 device whose code differs from the pinned
+/// product's runs another application or version. The plan says why the
+/// application would have to be loaded (the segment and the offset that
+/// differ) and refuses it as `bussard flash` refuses it without `--force`:
+/// one gate for both surfaces. Nothing is written.
 #[tokio::test]
-async fn test_knx_plan_device_plans_a_load_for_a_system7_device_whose_code_differs()
+async fn test_knx_plan_device_refuses_a_load_over_a_system7_device_whose_code_differs()
 -> anyhow::Result<()> {
     let mut code = SYS7_CODE;
     code[2] = 0xEE;
@@ -261,88 +262,19 @@ async fn test_knx_plan_device_plans_a_load_for_a_system7_device_whose_code_diffe
     let (client, task) = serve(dir.path(), &gateway).await?;
 
     let plan = call(&client, "knx_plan_device", json!({"address": "1.1.7"})).await?;
-    assert_eq!(plan["ok"], true, "plan: {plan}");
-    assert_eq!(plan["method"], "flash", "plan: {plan}");
-    let why = plan["flash"]["load_application"]["why"]
-        .as_str()
-        .unwrap_or_default();
+    assert_eq!(plan["refused"], true, "plan: {plan}");
+    assert!(plan["plan_digest"].is_null(), "{plan}");
+    let reason = plan["reason"].as_str().unwrap_or_default();
     assert!(
-        why.contains("M-00FA_A-0007_AS-4") && why.contains("offset 2"),
-        "the load names the segment and the offset: {plan}"
+        reason.contains("M-00FA_A-0007_AS-4") && reason.contains("offset 2"),
+        "the refusal names the segment and the offset: {reason}"
     );
-    let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(
-        sentences.starts_with("! 1.1.7 must have its application program loaded"),
-        "{sentences}"
+        reason.contains("`bussard flash --force 1.1.7` at the CLI"),
+        "{reason}"
     );
-    let question = plan["question"].as_str().unwrap_or_default();
-    assert!(
-        question.starts_with("load application M-00FA_A-0007 into 1.1.7"),
-        "{question}"
-    );
-    assert!(plan["plan_digest"].is_string(), "{plan}");
     let writes = gateway.with_device(device_ia()?, |dev| dev.writes)?;
     assert_eq!(writes, 0, "planning must not write");
-
-    client.cancel().await?;
-    task.abort();
-    Ok(())
-}
-
-/// Issue #750: the yes to a load plan runs the load and the write as one
-/// job: the product's code replaces the device's, the model's parameters
-/// and tables are written with it, and the read-back compares them with the
-/// model before the result says verified.
-#[tokio::test]
-async fn test_knx_apply_device_loads_the_pinned_application_into_a_device_running_another()
--> anyhow::Result<()> {
-    let mut code = SYS7_CODE;
-    code[2] = 0xEE;
-    let gateway = gateway(device(&code)?).await?;
-    let dir = tempfile::tempdir()?;
-    write_model(dir.path())?;
-    let (client, task) = serve(dir.path(), &gateway).await?;
-
-    let done = plan_and_flash(&client).await?;
-    assert_eq!(done["state"], "done", "{done}");
-    let result = &done["result"];
-    assert_eq!(result["ok"], true, "{done}");
-    assert_eq!(result["verified"], true, "{done}");
-    assert_eq!(result["method"], "flash", "{done}");
-    assert_eq!(result["load_application"]["loaded"], true, "{done}");
-    assert_eq!(
-        result["load_application"]["application"], "M-00FA_A-0007",
-        "{done}"
-    );
-    assert_eq!(result["readback"]["verified"], true, "{done}");
-    assert_eq!(result["readback"]["compared"]["addresses"], 1, "{done}");
-    // The tables are backed up as for any apply; the parameter memory of
-    // the other application is not readable with the pinned product data.
-    let backup = result["backup"].as_str().unwrap_or_default();
-    assert!(
-        std::path::Path::new(backup).is_file(),
-        "table backup {backup}"
-    );
-    assert!(result["parameter_backup_note"].is_string(), "{done}");
-
-    let (written, params) = gateway.with_device(device_ia()?, |dev| {
-        (
-            dev.read_mem(SYS7_CODE_BASE, 4),
-            dev.read_mem(SYS7_PARAM_BASE, 2),
-        )
-    })?;
-    assert_eq!(
-        written, SYS7_CODE,
-        "the product's code replaced the device's"
-    );
-    assert_eq!(params, [9, 0x80], "threshold 9, object 2 on");
-
-    // The device now runs the pinned application with the model's values.
-    let replan = call(&client, "knx_plan_device", json!({"address": "1.1.7"})).await?;
-    assert!(
-        replan["flash"]["load_application"].is_null(),
-        "replan: {replan}"
-    );
 
     client.cancel().await?;
     task.abort();

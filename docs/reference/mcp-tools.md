@@ -186,13 +186,12 @@ The result carries the verify outcome, what was written and the backup paths. On
 
 ### Loading the application
 
-A device that does not run the application program `bussard.lock` pins (it runs another one, has none loaded, or holds the pinned one unloaded after an interrupted download) gets it from the same pair, as one job:
+A device that does not run the application program `bussard.lock` pins (it has none loaded, or holds the pinned one unloaded after an interrupted download) gets it from the same pair, as one job:
 
 - The plan says `method: flash`, its `sentences` start with `! <ia> must have its application program loaded: <why>`, and `flash.load_application` carries `why`, `application` and `replaces` (what the device runs now).
-- Its question asks to load the application, so the human's yes is a yes to replacing what the device runs. The digest binds what the device reported; a device that changes between plan and apply retires it.
-- The apply backs up the tables, takes the history snapshot, runs the download `bussard flash <ia>` runs (a factory reset first where the product has one and the device runs another application), reads the device back on the download's last connection, compares it with the project and records the security tables in the lock. It is the same service function the CLI calls, so the offline oracle rows that cover `bussard flash` for a product cover this.
-- The parameter memory of another application cannot be read with the pinned product data, so it is not backed up (`parameter_backup_note`), as `bussard flash` takes none.
-- Refused when the device's state cannot be read, and when it runs an application bussard cannot identify (that stays `bussard flash --force <ia>` at the CLI).
+- Its question asks to load the application. The digest binds what the device reported; a device that changes between plan and apply retires it.
+- The apply backs up the tables, takes the history snapshot, runs the download `bussard flash <ia>` runs, reads the device back on the download's last connection, compares it with the project and records the security tables in the lock. It is the same service function the CLI calls, so the offline oracle rows that cover `bussard flash` for a product cover this.
+- The load is refused by the gate `bussard flash` applies without `--force`: when the device runs another application (an id that differs, a System 7 code sample that differs, or an id it cannot read), when it does not fit the download, and when its state cannot be read. The refusal names what the device runs; `bussard flash --force <ia>` at the CLI replaces it, since a flash takes no backup.
 - A self-contained application's download writes no link table. When the links differ from the project (or a factory reset erases them), the plan's `flash.links_after_download` is true, its sentences and question say the links are written after the load, and the same job then writes them as `bussard apply <ia>` does, as `bussard replace` runs `flash` and then `apply`. Each step ends with its read-back; the result carries the table write in `links`, and `ok` is true only when that read-back matches the project. The same holds for a parameter change that needs a full download.
 
 **Secured devices.** A device the server's key store (or keyring) lists is planned and written over KNX Data Secure, as `bussard apply --keyring` does. On System B the write also reprograms the security object. The gates above apply unchanged, and three more rules cover it:

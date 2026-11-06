@@ -1248,11 +1248,27 @@ impl BussardMcp {
         // full download (issue #303), and so is an application that must be
         // loaded (issue #750): the plan says `method: flash`.
         let flash = match (&load, &built.needs_flash) {
-            (Some(need), _) => Some(flash::load_image(
-                &dir, &model, target, &read, &report, &product, &material, &tunnel, need,
+            (Some(need), _) => Some(flash::flash_image(
+                &dir,
+                &model,
+                target,
+                &read,
+                &report,
+                flash::FlashNeed::Load(need),
+                &product,
+                &material,
+                &tunnel,
             )?),
             (None, Some(_)) => Some(flash::flash_image(
-                &dir, &model, target, &read, &report, &built, &product, &material, &tunnel,
+                &dir,
+                &model,
+                target,
+                &read,
+                &report,
+                flash::FlashNeed::Parameters(&built),
+                &product,
+                &material,
+                &tunnel,
             )?),
             (None, None) => None,
         };
@@ -1915,11 +1931,27 @@ impl BussardMcp {
             }
         };
         let image = match (&load, &built.needs_flash) {
-            (Some(need), _) => Some(flash::load_image(
-                &dir, &model, target, &read, &report, &product, &material, &tunnel, need,
+            (Some(need), _) => Some(flash::flash_image(
+                &dir,
+                &model,
+                target,
+                &read,
+                &report,
+                flash::FlashNeed::Load(need),
+                &product,
+                &material,
+                &tunnel,
             )),
             (None, Some(_)) => Some(flash::flash_image(
-                &dir, &model, target, &read, &report, &built, &product, &material, &tunnel,
+                &dir,
+                &model,
+                target,
+                &read,
+                &report,
+                flash::FlashNeed::Parameters(&built),
+                &product,
+                &material,
+                &tunnel,
             )),
             (None, None) => None,
         };
@@ -3539,77 +3571,32 @@ fn put(hasher: &mut Sha256, bytes: &[u8]) {
     hasher.update(bytes);
 }
 
-/// SHA-256 over the live tables a read returned, including the System 7
-/// region layout the write depends on, and the parameter memory it read.
+/// The live half of a plan digest: the device-state fingerprint the plan
+/// reports as `state_hash` ([`bussard_download::state_hash_with`], the one
+/// `bussard plan` prints) over the tables, the parameter memory and the
+/// group-object table as read, extended with the security tables the read
+/// covered (PID 54, issue #297; PID 61, issue #331), which a write of the
+/// security object depends on.
 fn live_digest(read: &DeviceRead) -> [u8; 32] {
-    let live = &read.live;
-    let tables = live.tables();
+    let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
+    let object_table = detail
+        .and_then(|d| d.object_table.as_ref())
+        .and_then(|c| c.live.as_ref().ok())
+        .map(|table| table.image());
+    let state = bussard_download::state_hash_with(
+        &read.live,
+        detail.map(|d| &d.regions),
+        object_table.as_deref(),
+    );
     let mut h = Sha256::new();
-    put(&mut h, b"live-v2");
-    put(&mut h, &tables.mask.to_be_bytes());
-    let addresses: Vec<u8> = tables
-        .addresses
-        .iter()
-        .flat_map(|ga| ga.raw().to_be_bytes())
-        .collect();
-    put(&mut h, &addresses);
-    let associations: Vec<u8> = tables
-        .associations
-        .iter()
-        .flat_map(|(tsap, asap)| {
-            let mut pair = tsap.to_be_bytes().to_vec();
-            pair.extend_from_slice(&asap.to_be_bytes());
-            pair
-        })
-        .collect();
-    put(&mut h, &associations);
-    match live.sys7() {
-        Some(s7) => {
-            put(&mut h, b"sys7");
-            put(&mut h, &s7.address_base.to_be_bytes());
-            put(&mut h, &s7.association_base.to_be_bytes());
-            put(&mut h, &s7.own_ia.to_be_bytes());
-            match s7.group_object_base {
-                Some(base) => put(&mut h, &base.to_be_bytes()),
-                None => put(&mut h, b"no-object-table"),
-            }
-            put(&mut h, &s7.group_object_image);
-        }
-        None => put(&mut h, b"system-b"),
-    }
-    match read.params.as_ref().and_then(|p| p.detail.as_ref()) {
-        Some(detail) => {
-            put(&mut h, b"parameters");
-            for (segment, region) in &detail.regions {
-                put(&mut h, segment.as_bytes());
-                put(&mut h, &region.address.to_be_bytes());
-                put(&mut h, &region.bytes);
-            }
-        }
-        None => put(&mut h, b"no-parameters"),
-    }
-    // PID 54 when it was read (issue #297); nothing otherwise, so the digest
-    // of a plain or option-off plan is unchanged.
+    put(&mut h, state.as_bytes());
     if let Some(senders) = &read.senders {
         put(&mut h, b"pid54");
         put(&mut h, &bussard_download::sender_table_bytes(senders));
     }
-    // PID 61 when it was read (issue #331), likewise.
     if let Some(flags) = &read.go_flags {
         put(&mut h, b"pid61");
         put(&mut h, flags);
-    }
-    // The System B group-object table when it was read (issue #540),
-    // likewise.
-    if let Some(table) = read
-        .params
-        .as_ref()
-        .and_then(|p| p.detail.as_ref())
-        .and_then(|d| d.object_table.as_ref())
-        .and_then(|c| c.live.as_ref().ok())
-    {
-        put(&mut h, b"object-table");
-        put(&mut h, &table.image());
     }
     h.finalize().into()
 }

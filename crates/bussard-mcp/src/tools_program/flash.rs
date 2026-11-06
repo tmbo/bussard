@@ -15,9 +15,10 @@
 //! [`bussard_service::flash_flow::flash_and_verify`], the function `bussard
 //! flash` runs, so the offline oracle (`scripts/campaign/95-offline-oracle.sh`)
 //! covers this path too. The refusals are the CLI's without `--force`: no
-//! archive pinned in the lock, a device whose state the probe could not
-//! read or whose application cannot be identified
-//! ([`bussard_service::flash_flow::load_refusal`]).
+//! archive pinned in the lock, and the factory-freshness gate
+//! ([`bussard_service::flash_flow::freshness_refusal`], the function `bussard
+//! flash` decides with, issue #895): a device that runs another application,
+//! does not fit the download, or whose state the probe could not read.
 //!
 //! A self-contained application's download writes no link table (issue
 //! #779). When the links differ from the model, the job writes them after
@@ -29,7 +30,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use bussard_download::{
-    DeviceFacts, FlashOptions, FlashPlan, Freshness, PlanReport, SecureSenderEntry,
+    DeviceFacts, FlashOptions, FlashPlan, Freshness, PlanReport, ResidentState, SecureSenderEntry,
     assess_freshness, flash_gate,
 };
 use bussard_model::{IndividualAddress, Model};
@@ -37,6 +38,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::flash::{
     DEVICE_OFFLINE_SECONDS, FlashInputs, com_object_words, flash_options,
 };
+use bussard_service::flash_flow::{freshness_line, freshness_refusal};
 use bussard_service::params::BuiltPlan;
 use bussard_service::secure::SecureMaterial;
 use serde_json::{Value, json};
@@ -92,9 +94,19 @@ pub(super) struct FlashReadback {
     pub(super) device_mask: u16,
 }
 
-/// The full download writing the model to `target`, when `built` says the
-/// parameter values change the group-object table. `Err` is a refusal
-/// reason.
+/// Why a plan writes the device with a full download.
+pub(super) enum FlashNeed<'a> {
+    /// The application bussard.lock pins must be loaded first (issue #750).
+    Load(&'a LoadNeed),
+    /// The model's parameter values change the group-object table (issue
+    /// #303), which a parameter-only write cannot touch.
+    Parameters(&'a BuiltPlan),
+}
+
+/// The full download writing the model to `target`, shaped as `bussard
+/// flash` shapes it for the probe's verdict: a factory reset first when the
+/// device must be wiped, the security object of a secured download. `Err`
+/// is a refusal reason.
 #[allow(clippy::too_many_arguments)] // one plan's context; a struct would only move it
 pub(super) fn flash_image(
     dir: &Path,
@@ -102,32 +114,59 @@ pub(super) fn flash_image(
     target: IndividualAddress,
     read: &DeviceRead,
     report: &PlanReport,
-    built: &BuiltPlan,
+    need: FlashNeed<'_>,
     product: &ProductFor,
     material: &SecureMaterial,
     tunnel: &[IndividualAddress],
 ) -> Result<FlashImage, String> {
-    let why = built
-        .needs_flash
-        .as_deref()
-        .unwrap_or("the group-object table changes");
+    let (why, load) = match &need {
+        FlashNeed::Load(need) => (need.why.clone(), Some(need.why.clone())),
+        FlashNeed::Parameters(built) => (
+            built
+                .needs_flash
+                .clone()
+                .unwrap_or_else(|| "the group-object table changes".to_string()),
+            None,
+        ),
+    };
     let pinned = pinned_product(
         model,
         target,
         product,
-        &format!(
-            "the model's parameter values change {target}'s group-object table ({why}), which \
-             needs a full download"
-        ),
+        &match &need {
+            FlashNeed::Load(_) => why.clone(),
+            FlashNeed::Parameters(_) => format!(
+                "the model's parameter values change {target}'s group-object table ({why}), \
+                 which needs a full download"
+            ),
+        },
     )?;
     let Some(app) = pinned.source.app() else {
         return Err(missing_app(target, pinned.source));
     };
-    let Some(detail) = read.params.as_ref().and_then(|p| p.detail.as_ref()) else {
-        return Err(format!(
-            "{target}'s parameter memory was not read, so a full download cannot be planned; \
-             plan again"
-        ));
+    let params = read.params.as_ref();
+    // A parameter change compares the com-objects the device shows now: its
+    // parameter memory must have been read. A load only needs the probe.
+    let (resident, before) = match &need {
+        FlashNeed::Parameters(_) => {
+            let Some(detail) = params.and_then(|p| p.detail.as_ref()) else {
+                return Err(format!(
+                    "{target}'s parameter memory was not read, so a full download cannot be \
+                     planned; plan again"
+                ));
+            };
+            (&detail.resident, Some(&detail.decoded.values))
+        }
+        FlashNeed::Load(_) => match params.and_then(|p| p.resident()) {
+            Some(resident) => (resident, None),
+            None => {
+                return Err(format!(
+                    "{target}'s resident application could not be probed, so loading {} \
+                     cannot be planned; plan again",
+                    app.id
+                ));
+            }
+        },
     };
     let device_label = target.to_string();
     let (inputs, malformed) = FlashInputs::from_model(
@@ -140,60 +179,151 @@ pub(super) fn flash_image(
     for warning in malformed {
         tracing::warn!("{warning}");
     }
-    let mask = read.live.tables().mask;
-    let plan = inputs
-        .plan(mask)
+    let mut plan = inputs
+        .plan(read.live.tables().mask)
         .map_err(|e| format!("cannot flash {target}: {e}"))?;
-    // The factory-freshness gate of `bussard flash` (issue #79), without its
-    // `--force`: a device must carry no application or this one. A System 7
-    // device has no readable id, so the read's code sample decides there
-    // (issue #314), the verdict the CLI pre-flight decides on too. The image
-    // is shaped by the probe's freshness, as `bussard flash` shapes it.
-    let freshness = assess_freshness(&detail.resident, &plan.identity);
-    let sys7 = read.params.as_ref().and_then(|p| p.sys7_identity.as_ref());
-    let gate = flash_gate(&freshness, &plan, Some(&detail.resident), sys7);
-    if let Some(why) = gate_refusal(target, &plan, &gate) {
-        return Err(why);
+    let (freshness, gate) = gate_for(&plan, resident, read);
+    // The factory-freshness gate of `bussard flash` (issue #79), the same
+    // function, without its `--force` (issue #895).
+    if let Some(refusal) = freshness_refusal(target, &gate, false) {
+        return Err(match &need {
+            FlashNeed::Load(_) => format!("{why}; {refusal}"),
+            FlashNeed::Parameters(_) => refusal,
+        });
     }
-    // A self-contained application's download carries no table objects: the
-    // links that change are written after it (issue #779).
-    let links_after = links_after(model, target, report, &plan, &freshness, &detail.resident);
-    let before = inputs.visible_objects(&detail.decoded.values);
-    let because: Vec<String> = built
-        .parameters
-        .iter()
-        .map(|p| {
-            format!(
-                "{} = {}, was {}",
-                p.key,
-                p.model,
-                p.device.as_deref().unwrap_or("unreadable")
-            )
-        })
-        .collect();
-    shape(
-        Shaping {
-            dir,
-            model,
+    // A download that does not load the link tables leaves them as the
+    // device holds them, and a factory reset erases them: the links are then
+    // written after it (issue #779).
+    let links_after = links_after(model, target, report, &plan, &freshness, resident);
+    let before = before.map(|values| inputs.visible_objects(values));
+    let because: Vec<String> = match &need {
+        FlashNeed::Parameters(built) => built
+            .parameters
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} = {}, was {}",
+                    p.key,
+                    p.model,
+                    p.device.as_deref().unwrap_or("unreadable")
+                )
+            })
+            .collect(),
+        FlashNeed::Load(_) => Vec::new(),
+    };
+    let senders = inputs
+        .finish(
+            &mut plan,
+            Some(&freshness),
+            Some(resident),
+            false,
+            // An application download, as the CLI's `flash` without `--full`:
+            // no System 7 pre-download pass (issue #488).
+            false,
+            Some(model),
             target,
-            read,
-            report,
             material,
             tunnel,
-            why,
-            load: None,
-            before: Some(before),
-            because,
-            parameter_backup: true,
-            links_after,
+        )
+        .map_err(|e| format!("cannot flash {target}: {e}"))?;
+    let options = flash_options(None, false, &plan, &freshness);
+    let after = inputs.visible_objects(inputs.overrides());
+    let objects = |numbers: &BTreeSet<u16>| -> Vec<Value> {
+        numbers
+            .iter()
+            .map(|n| {
+                let (text, dpt) = com_object_words(app, *n);
+                json!({"number": n, "text": text, "dpt": dpt, "because": because})
+            })
+            .collect()
+    };
+    let (shown, hidden, objects_before) = match &before {
+        Some(before) => (
+            after.difference(before).copied().collect(),
+            before.difference(&after).copied().collect(),
+            json!(before.len()),
+        ),
+        // A load: every com-object the model's values show is new.
+        None => (after.clone(), BTreeSet::new(), Value::Null),
+    };
+    let (min, max) = DEVICE_OFFLINE_SECONDS;
+    let on_device = freshness_line(&gate);
+    let summary = json!({
+        "why": why,
+        "load_application": load.as_ref().map(|why| json!({
+            "why": why,
+            "application": app.id,
+            "replaces": on_device,
+        })),
+        "identity": read
+            .check
+            .as_ref()
+            .map(|c| bussard_service::identity_line(target, c)),
+        "resident": on_device,
+        "objects": {
+            "shown": objects(&shown),
+            "hidden": objects(&hidden),
         },
-        &pinned,
-        &inputs,
+        "tables": {
+            "address": {
+                "before": report.current_address_count,
+                "after": report.resulting_address_count,
+            },
+            "association": {
+                "before": report.current_association_count,
+                "after": report.resulting_association_count,
+            },
+            "group_objects": {"before": objects_before, "after": after.len()},
+        },
+        "device_offline_seconds": {"min": min, "max": max},
+        "parameter_backup": {
+            "taken_first": before.is_some(),
+            "dir": bussard_download::backup::parameter_backups_dir(dir).display().to_string(),
+        },
+        "product": {
+            "archive": pinned.archive,
+            "product_sha256": pinned.product_sha256,
+            "application": app.id,
+        },
+        "factory_reset": plan.has_factory_reset(),
+        "differential": options.skip_matching_mcb,
+        // Issue #779: the download writes no link table; the job writes the
+        // links after it with the table write `bussard apply` runs.
+        "links_after_download": links_after,
+    });
+    let binds = format!(
+        "{:?}|{:?}|{:?}",
+        read.check.as_ref().map(|c| &c.device),
+        gate,
+        resident.app_id
+    );
+    Ok(FlashImage {
         plan,
-        &freshness,
-        &gate,
-        &detail.resident,
-    )
+        options,
+        senders,
+        object_table: resident.object_table.clone(),
+        max_apdu: read.seed.as_ref().and_then(|seed| seed.max_apdu),
+        summary,
+        readback: None,
+        load,
+        links_after,
+        binds,
+    })
+}
+
+/// The probe's freshness verdict against `plan`'s application, which shapes
+/// the image as `bussard flash` shapes it, and the gate's verdict
+/// ([`flash_gate`]): a System 7 device has no readable id, so the read's code
+/// sample decides there (issue #314), as in the CLI pre-flight.
+fn gate_for(
+    plan: &FlashPlan,
+    resident: &ResidentState,
+    read: &DeviceRead,
+) -> (Freshness, Freshness) {
+    let freshness = assess_freshness(resident, &plan.identity);
+    let sys7 = read.params.as_ref().and_then(|p| p.sys7_identity.as_ref());
+    let gate = flash_gate(&freshness, plan, Some(resident), sys7);
+    (freshness, gate)
 }
 
 /// Why the application program bussard.lock pins must be loaded into the
@@ -208,7 +338,9 @@ pub(super) struct LoadNeed {
 /// none, or holds the pinned one unloaded. `None` when it runs the pinned
 /// application, or when no product data is at hand to load (the caller's
 /// drift refusal then names `bussard flash`). `Some(Err)` is a refusal: the
-/// load is needed but must not run on a plan's yes.
+/// load is needed but the factory-freshness gate of `bussard flash` refuses
+/// it without `--force` (a device that runs another application, or whose
+/// state is unknown).
 pub(super) fn load_need(
     model: &Model,
     target: IndividualAddress,
@@ -239,13 +371,7 @@ pub(super) fn load_need(
     if plan.is_property_only() {
         return None;
     }
-    let freshness = assess_freshness(resident, &plan.identity);
-    let gate = flash_gate(
-        &freshness,
-        &plan,
-        Some(resident),
-        params.sys7_identity.as_ref(),
-    );
+    let (_, gate) = gate_for(&plan, resident, read);
     let why = bussard_service::flash_flow::load_reason(
         target,
         read.check.as_ref(),
@@ -253,86 +379,10 @@ pub(super) fn load_need(
         resident,
         &app.id,
     )?;
-    if let Some(refusal) = bussard_service::flash_flow::load_refusal(target, &gate) {
+    if let Some(refusal) = freshness_refusal(target, &gate, false) {
         return Some(Err(format!("{why}; {refusal}")));
     }
     Some(Ok(LoadNeed { why }))
-}
-
-/// The full download that loads the application bussard.lock pins (issue
-/// #750), shaped as `bussard flash` shapes it for the probe's verdict: a
-/// factory reset first when the device runs another application. `Err` is a
-/// refusal reason.
-#[allow(clippy::too_many_arguments)] // one plan's context; a struct would only move it
-pub(super) fn load_image(
-    dir: &Path,
-    model: &Model,
-    target: IndividualAddress,
-    read: &DeviceRead,
-    report: &PlanReport,
-    product: &ProductFor,
-    material: &SecureMaterial,
-    tunnel: &[IndividualAddress],
-    need: &LoadNeed,
-) -> Result<FlashImage, String> {
-    let pinned = pinned_product(model, target, product, &need.why)?;
-    let Some(app) = pinned.source.app() else {
-        return Err(missing_app(target, pinned.source));
-    };
-    let Some(resident) = read.params.as_ref().and_then(|p| p.resident()) else {
-        return Err(format!(
-            "{target}'s resident application could not be probed, so loading {} cannot be \
-             planned; plan again",
-            app.id
-        ));
-    };
-    let device_label = target.to_string();
-    let (inputs, malformed) = FlashInputs::from_model(
-        &pinned.source.product,
-        app,
-        &device_label,
-        Some(model),
-        target,
-    );
-    for warning in malformed {
-        tracing::warn!("{warning}");
-    }
-    let plan = inputs
-        .plan(read.live.tables().mask)
-        .map_err(|e| format!("cannot flash {target}: {e}"))?;
-    let freshness = assess_freshness(resident, &plan.identity);
-    let sys7 = read.params.as_ref().and_then(|p| p.sys7_identity.as_ref());
-    let gate = flash_gate(&freshness, &plan, Some(resident), sys7);
-    if let Some(refusal) = bussard_service::flash_flow::load_refusal(target, &gate) {
-        return Err(format!("{}; {refusal}", need.why));
-    }
-    // A download that does not load the link tables leaves them as the
-    // device holds them, and a factory reset erases them: the links are then
-    // written after the load (issue #779).
-    let links_after = links_after(model, target, report, &plan, &freshness, resident);
-    shape(
-        Shaping {
-            dir,
-            model,
-            target,
-            read,
-            report,
-            material,
-            tunnel,
-            why: &need.why,
-            load: Some(need.why.clone()),
-            before: None,
-            because: Vec::new(),
-            parameter_backup: false,
-            links_after,
-        },
-        &pinned,
-        &inputs,
-        plan,
-        &freshness,
-        &gate,
-        resident,
-    )
 }
 
 /// Whether the links must be written after `plan`'s download (issue #779):
@@ -425,144 +475,6 @@ fn missing_app(
          import-product` for {target}'s product, then plan again",
         source.app_id
     )
-}
-
-/// The plan-specific inputs of [`shape`].
-struct Shaping<'a> {
-    dir: &'a Path,
-    model: &'a Model,
-    target: IndividualAddress,
-    read: &'a DeviceRead,
-    report: &'a PlanReport,
-    material: &'a SecureMaterial,
-    tunnel: &'a [IndividualAddress],
-    /// Why the download is needed.
-    why: &'a str,
-    /// Why the application must be loaded, on a load.
-    load: Option<String>,
-    /// The com-objects the device shows now, when its parameters were read.
-    before: Option<BTreeSet<u16>>,
-    /// The parameter changes behind a com-object change.
-    because: Vec<String>,
-    /// Whether the parameter memory is backed up first (it is readable).
-    parameter_backup: bool,
-    /// Whether the links are written after the download (issue #779).
-    links_after: bool,
-}
-
-/// Shapes `plan` as `bussard flash` does for the verdict (the factory reset
-/// or `par` procedure, the security object, the options) and builds the
-/// plan's `flash` field.
-fn shape(
-    s: Shaping<'_>,
-    pinned: &Pinned<'_>,
-    inputs: &FlashInputs<'_>,
-    mut plan: FlashPlan,
-    freshness: &Freshness,
-    gate: &Freshness,
-    resident: &bussard_download::ResidentState,
-) -> Result<FlashImage, String> {
-    let target = s.target;
-    let senders = inputs
-        .finish(
-            &mut plan,
-            Some(freshness),
-            Some(resident),
-            false,
-            // An application download, as the CLI's `flash` without `--full`:
-            // no System 7 pre-download pass (issue #488).
-            false,
-            Some(s.model),
-            target,
-            s.material,
-            s.tunnel,
-        )
-        .map_err(|e| format!("cannot flash {target}: {e}"))?;
-    let options = flash_options(None, false, &plan, freshness);
-    let after = inputs.visible_objects(inputs.overrides());
-    let app = inputs.app();
-    let objects = |numbers: &BTreeSet<u16>| -> Vec<Value> {
-        numbers
-            .iter()
-            .map(|n| {
-                let (text, dpt) = com_object_words(app, *n);
-                json!({"number": n, "text": text, "dpt": dpt, "because": s.because})
-            })
-            .collect()
-    };
-    let (shown, hidden, objects_before) = match &s.before {
-        Some(before) => (
-            after.difference(before).copied().collect(),
-            before.difference(&after).copied().collect(),
-            json!(before.len()),
-        ),
-        // A load: every com-object the model's values show is new.
-        None => (after.clone(), BTreeSet::new(), Value::Null),
-    };
-    let (min, max) = DEVICE_OFFLINE_SECONDS;
-    let read = s.read;
-    let report = s.report;
-    let summary = json!({
-        "why": s.why,
-        "load_application": s.load.as_ref().map(|why| json!({
-            "why": why,
-            "application": app.id,
-            "replaces": resident_line(gate),
-        })),
-        "identity": read
-            .check
-            .as_ref()
-            .map(|c| bussard_service::identity_line(target, c)),
-        "resident": resident_line(gate),
-        "objects": {
-            "shown": objects(&shown),
-            "hidden": objects(&hidden),
-        },
-        "tables": {
-            "address": {
-                "before": report.current_address_count,
-                "after": report.resulting_address_count,
-            },
-            "association": {
-                "before": report.current_association_count,
-                "after": report.resulting_association_count,
-            },
-            "group_objects": {"before": objects_before, "after": after.len()},
-        },
-        "device_offline_seconds": {"min": min, "max": max},
-        "parameter_backup": {
-            "taken_first": s.parameter_backup,
-            "dir": bussard_download::backup::parameter_backups_dir(s.dir).display().to_string(),
-        },
-        "product": {
-            "archive": pinned.archive,
-            "product_sha256": pinned.product_sha256,
-            "application": app.id,
-        },
-        "factory_reset": plan.has_factory_reset(),
-        "differential": options.skip_matching_mcb,
-        // Issue #779: the download writes no link table; the job writes the
-        // links after it with the table write `bussard apply` runs.
-        "links_after_download": s.links_after,
-    });
-    let binds = format!(
-        "{:?}|{:?}|{:?}",
-        read.check.as_ref().map(|c| &c.device),
-        gate,
-        resident.app_id
-    );
-    Ok(FlashImage {
-        plan,
-        options,
-        senders,
-        object_table: resident.object_table.clone(),
-        max_apdu: read.seed.as_ref().and_then(|seed| seed.max_apdu),
-        summary,
-        readback: None,
-        load: s.load,
-        links_after: s.links_after,
-        binds,
-    })
 }
 
 /// `model` extended with the flash image, so a plan digest binds the exact
@@ -835,56 +747,5 @@ impl BussardMcp {
             }
         }
         result
-    }
-}
-
-/// The refusal of the flash gate, `None` when the flash may go ahead: the
-/// device carries another application, or what it carries could not be
-/// confirmed. Only a device that differs names `bussard flash --force`.
-fn gate_refusal(target: IndividualAddress, plan: &FlashPlan, gate: &Freshness) -> Option<String> {
-    let expected = &plan.identity.id;
-    match gate {
-        Freshness::Fresh | Freshness::SameApplication { .. } => None,
-        Freshness::Resident {
-            reason: Some(reason),
-            ..
-        } => Some(format!(
-            "{target} does not run the application this flash writes ({expected}): {reason}; \
-             replacing it is `bussard flash --force {target}` at the CLI"
-        )),
-        Freshness::Resident {
-            resident: Some(id), ..
-        } => Some(format!(
-            "{target} runs application {id}, not the one this flash writes ({expected}); \
-             replacing it is `bussard flash --force {target}` at the CLI"
-        )),
-        Freshness::Resident { resident: None, .. } => Some(format!(
-            "{target} runs an application whose id (PID_PROGRAM_VERSION) cannot be read, so \
-             it cannot be confirmed to be {expected}; replacing it is `bussard flash --force \
-             {target}` at the CLI"
-        )),
-        Freshness::Mismatch { reason } => Some(format!(
-            "{target} does not match this download: {reason}; nothing was written"
-        )),
-        Freshness::Unknown { reason } => Some(format!(
-            "{target}'s resident application could not be confirmed ({reason}), so a flash \
-             cannot tell what it replaces; check the device and plan again"
-        )),
-    }
-}
-
-/// The flash plan's `resident` field: what the gate found on the device.
-fn resident_line(gate: &Freshness) -> String {
-    match gate {
-        Freshness::Fresh => "no application is loaded (factory-fresh)".to_string(),
-        Freshness::SameApplication { resident } => {
-            format!("runs this application ({resident})")
-        }
-        Freshness::Resident { resident, .. } => format!(
-            "runs another application ({})",
-            resident.as_deref().unwrap_or("unidentified")
-        ),
-        Freshness::Mismatch { reason } => format!("does not match ({reason})"),
-        Freshness::Unknown { reason } => format!("unknown ({reason})"),
     }
 }
