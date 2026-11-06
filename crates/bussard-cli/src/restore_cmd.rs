@@ -139,20 +139,20 @@ fn run(
         );
     }
 
-    apply_cmd::apply_desired(
+    apply_cmd::apply_desired(apply_cmd::WriteJob {
         target,
-        &desired,
+        desired: &desired,
         dir,
         config,
         yes,
         allow_remote_gateway,
         tool_key_source,
-        None,
-        &DesiredSource::Backup(path),
-        &overrides,
-        model.as_ref(),
-        apply_cmd::ModelWrite::default(),
-    )
+        secure_sender: None,
+        origin: &DesiredSource::Backup(path),
+        overrides: &overrides,
+        model: model.as_ref(),
+        write: apply_cmd::ModelWrite::default(),
+    })
 }
 
 /// Runs `bussard restore --parameters <backup> <address>` (module docs).
@@ -226,42 +226,36 @@ fn run_parameters(
         authorize: bussard_service::status::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
-    let device = model.devices.get(&target).map(|d| &d.device);
-    let read = runtime.block_on(async {
-        service
-            .with_l4(target, &read_options, async |l4| {
-                let identified = bussard_service::identify(l4, &facts, device).await?;
-                let read = crate::plan_cmd::read_live_tables(l4, None).await?;
-                let state = match &read {
-                    crate::plan_cmd::LiveRead::Tables(live) => Some(
-                        bussard_service::params::read_state(
-                            l4,
-                            &product,
-                            Some(&model),
-                            target,
-                            live.tables().mask,
-                        )
-                        .await,
-                    ),
-                    crate::plan_cmd::LiveRead::UnsupportedMask { .. } => None,
-                };
-                anyhow::Ok((read, identified, state))
-            })
-            .await
-    });
-    let (read, identified, state) = read?;
-    if let Some(check) = &identified.check {
+    let request = bussard_service::program::read::ReadRequest {
+        target,
+        model: Some(&model),
+        product: Some(&product),
+        facts: &facts,
+        tunnel: &[],
+        secured: false,
+        flags_cache: bussard_service::program::read::FlagsCache::Off,
+        properties: None,
+    };
+    let read = runtime.block_on(bussard_service::program::read::read_device(
+        service,
+        &read_options,
+        &request,
+    ))?;
+    if let Some(check) = read.check() {
         eprintln!("{}", bussard_service::identity_line(target, check));
         if let Some(err) = bussard_service::drift_refusal(target, check, "restore to") {
             eprintln!("{err}");
             return Ok(ExitCode::FAILURE);
         }
     }
-    if let crate::plan_cmd::LiveRead::UnsupportedMask { address, mask } = read {
-        crate::plan_cmd::report_unsupported_mask("restore", address, mask);
-        return Ok(ExitCode::FAILURE);
-    }
-    let Some(state) = state else {
+    let read = match read.into_tables() {
+        Ok(read) => read,
+        Err((address, mask)) => {
+            crate::plan_cmd::report_unsupported_mask("restore", address, mask);
+            return Ok(ExitCode::FAILURE);
+        }
+    };
+    let Some(state) = read.params.as_ref() else {
         return Ok(ExitCode::FAILURE);
     };
     let Some(detail) = state.detail.as_ref() else {
@@ -315,19 +309,25 @@ fn run_parameters(
     );
     // The memory this restore overwrites is still the only copy of what the
     // device holds now: back it up first, as `apply` does.
-    let pre = crate::flash_params::write_backup(dir, target, &detail.plan, &detail.regions)
+    let pre = bussard_service::program::apply::back_up_parameters(dir, target, detail)
         .context("writing the parameter backup (refusing to write without a backup)")?;
     println!("parameter backup written to {}", pre.display());
-    let mut observer = crate::apply_cmd::ParamDisplay::new(partial);
+    let mut observer = crate::progress::Terminal::new(yes, false);
+    bussard_service::program::Observer::step(
+        &mut observer,
+        bussard_service::program::Step::WriteParameters { plan: partial },
+    );
     let outcome = runtime.block_on(bussard_service::download::write_parameters(
-        service,
-        target,
-        source,
-        partial,
-        detail,
-        tool_key,
-        secure_seq,
-        &read_options,
+        bussard_service::download::ParamWrite {
+            service,
+            target,
+            source,
+            partial,
+            detail,
+            tool_key,
+            high_water: secure_seq,
+            read_options: &read_options,
+        },
         &mut observer,
     ))?;
     match (&outcome, outcome.failure()) {

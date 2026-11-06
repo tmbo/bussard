@@ -8,7 +8,7 @@
 //!    `--product`), its parameter memory, over one management session.
 //! 3. Refuse a mask outside the two supported families — the same gate as
 //!    `reconstruct`.
-//! 4. Show the plan in the model's words ([`crate::device_plan`]): the objects
+//! 4. Show the plan in the model's words ([`bussard_service::program::plan`]): the objects
 //!    and parameters that change, what stays, what is written, where the
 //!    backup goes. An empty plan prints `<ia> matches your project; nothing to
 //!    write` and exits 0 **without touching any load state**. With
@@ -58,13 +58,9 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
-use bussard_download::{
-    DesiredTables, PlanReport, Sys7LiveTables, Sys7TableImages, plan, sys7_table_images,
-    write_tables_seeded,
-};
-use bussard_mgmt::tables::DeviceTables;
-use bussard_mgmt::{MaskProfile, system_type};
+use bussard_download::{DesiredTables, PlanReport};
 use bussard_model::IndividualAddress;
+use bussard_service::program;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{L4Options, SourcePolicy};
 
@@ -271,26 +267,53 @@ fn run(
             },
         );
     }
-    let desired =
-        plan_cmd::compute_desired(&model, target, product.as_ref().and_then(|p| p.app()))?;
+    let desired = plan_cmd::compute_desired(&model, target, product.as_ref())?;
     hint_installation_backup(dir);
-    apply_desired(
+    apply_desired(WriteJob {
         target,
-        &desired,
+        desired: &desired,
         dir,
         config,
         yes,
         allow_remote_gateway,
         tool_key_source,
         secure_sender,
-        &DesiredSource::Model,
-        &overrides,
-        Some(&model),
-        ModelWrite {
+        origin: &DesiredSource::Model,
+        overrides: &overrides,
+        model: Some(&model),
+        write: ModelWrite {
             product: product.as_ref(),
             plan_hash: args.plan_hash.as_deref(),
         },
-    )
+    })
+}
+
+/// One write of `apply` or `restore` ([`apply_desired`]).
+pub(crate) struct WriteJob<'a> {
+    /// The device.
+    pub target: IndividualAddress,
+    /// The tables to write.
+    pub desired: &'a DesiredTables,
+    /// The model directory.
+    pub dir: &'a Path,
+    /// The resolved connection.
+    pub config: ConnectionConfig,
+    /// `--yes`.
+    pub yes: bool,
+    /// `--allow-remote-gateway`.
+    pub allow_remote_gateway: bool,
+    /// Where the tool keys come from.
+    pub tool_key_source: ToolKeySource<'a>,
+    /// `--secure-sender`.
+    pub secure_sender: Option<IndividualAddress>,
+    /// Where the tables came from.
+    pub origin: &'a DesiredSource,
+    /// The connection overrides.
+    pub overrides: &'a ConnOverrides,
+    /// The model, when one is loaded.
+    pub model: Option<&'a bussard_model::Model>,
+    /// The model half: product data and the approved plan's hash.
+    pub write: ModelWrite<'a>,
 }
 
 /// The model half of [`apply_desired`]: the product data to read and write
@@ -320,162 +343,100 @@ fn hint_installation_backup(dir: &Path) {
 }
 
 /// The shared plan, confirm, back up, write and verify path behind both
-/// `bussard apply` and `bussard restore`.
+/// `bussard apply` and `bussard restore`: the read, the plan and the write
+/// are [`bussard_service::program`]'s, the CLI asks and prints.
 ///
 /// `desired` is whatever the caller decided the device's tables should be. The
 /// device is read, diffed, shown, confirmed, backed up and written exactly the
 /// same way whichever it is.
-#[allow(clippy::too_many_arguments)] // one command's context; a struct would only move it
-pub(crate) fn apply_desired(
-    target: IndividualAddress,
-    desired: &DesiredTables,
-    dir: &Path,
-    config: ConnectionConfig,
-    yes: bool,
-    allow_remote_gateway: bool,
-    tool_key_source: bussard_service::secure::ToolKeySource<'_>,
-    secure_sender: Option<IndividualAddress>,
-    origin: &DesiredSource,
-    overrides: &ConnOverrides,
-    model: Option<&bussard_model::Model>,
-    write: ModelWrite<'_>,
-) -> anyhow::Result<ExitCode> {
-    // KNX Data Secure (issue #71, spec §6.2): every management APDU below —
-    // the read pre-pass and the table writes — rides A_SecureData when the device
-    // is security-activated and a tool key is given. One high-water mark for the
-    // whole command keeps the send sequence monotonic across both connections
-    // (spec §5.9).
+pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
+    let WriteJob {
+        target,
+        desired,
+        dir,
+        config,
+        yes,
+        allow_remote_gateway,
+        tool_key_source,
+        secure_sender,
+        origin,
+        overrides,
+        model,
+        write,
+    } = job;
+    // KNX Data Secure (issue #71, spec §6.2): every management APDU rides
+    // A_SecureData when the device is security-activated and a tool key is
+    // given; one high-water mark keeps the send sequence monotonic (§5.9).
     let activated = bussard_service::secure::model_activated(model, target);
     let material = crate::timing::time("tool keys", || {
         bussard_service::secure::resolve_material(target, tool_key_source, activated)
     })?;
     let tool_key = material.tool_key.clone();
     let secure_seq = bussard_secure::SequenceHighWater::new();
-    let desired = desired.clone();
-    // A secured System B write also reprograms the security object (issue
-    // #156): its group key table indexes the address table being written.
     // `[connection] admit_tunnel_senders` (issue #297): the key store's
     // tunnelling addresses join the security individual address table.
     let tunnel = crate::secure_key::admitted_tunnel(model, tool_key_source, tool_key.is_some())?;
-    let security = tool_key.as_ref().map(|_| {
-        let empty = std::collections::HashMap::new();
-        let keys = material.group_keys.as_ref().unwrap_or(&empty);
-        let mut inputs = bussard_download::security_inputs_for(model, target, &desired, keys);
-        // The security individual address table (issue #181): the secured
-        // senders this device receives from, plus `--secure-sender` and the
-        // admitted tunnelling addresses.
-        let mut extra: Vec<IndividualAddress> = secure_sender.into_iter().collect();
-        extra.extend(tunnel.iter().copied());
-        inputs.senders = bussard_download::secured_senders(
-            model,
-            target,
-            keys,
-            &material.device_sequences,
-            &extra,
-        );
-        inputs.admitted_tunnel = tunnel.iter().copied().filter(|ia| *ia != target).collect();
-        // The table capacities the product declares (issue #537).
-        inputs.capacity = bussard_download::TableCapacity::for_device(dir, model, target);
-        inputs
-    });
-    // A security program the device cannot hold refuses here, before the
-    // gateway is contacted (issue #537).
-    if let Some(inputs) = &security {
-        bussard_download::check_planned_capacity(target, &desired.addresses, inputs)
-            .map_err(|e| anyhow::anyhow!("{target}'s security object cannot be programmed: {e}"))?;
-    }
+    // A secured System B write also reprograms the security object (issue
+    // #156); a program the device cannot hold refuses before the gateway is
+    // contacted (issue #537).
+    let security = program::plan::security_inputs(
+        model,
+        target,
+        desired,
+        &material,
+        &secure_sender.into_iter().collect::<Vec<_>>(),
+        &tunnel,
+        dir,
+    )
+    .map_err(|e| anyhow::anyhow!("{target}'s security object cannot be programmed: {e}"))?;
 
-    // Safety envelope (issue #74): refuse a write to a real (non-loopback)
-    // gateway unless the operator opted in.
+    // Safety envelope (issue #74).
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
 
-    // ONE tunnel for the whole command: the read-only pre-pass below, the
-    // interactive confirmation, the backup, and the write phase all run over it,
-    // and `BusSession` closes it on every exit path. Opening a second tunnel for
-    // the write phase used to cost another CONNECT/DISCONNECT round trip — and
-    // the gateway's only tunnel slot — for no gain; the tunnel heartbeat holds
-    // the slot across the confirmation prompt.
+    // ONE tunnel for the whole command: the read, the confirmation, the
+    // backup and the write run over it; `BusSession` closes it on every exit.
     let runtime = tokio::runtime::Runtime::new()?;
     let bus = BusSession::open(
         &runtime,
         config,
         bussard_service::WritePolicy::transmit(allow_remote_gateway),
     )?;
-    // The tunnel-assigned source address, resolved and checked against the bus
-    // once for both phases (they share this tunnel, so one probe covers both).
-    // `BusSession` closes the tunnel if the check refuses.
-    let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
-
-    // Phase A (read-only): read the live tables and build the plan.
     let service = bus.service();
-    // The device facts (issue #209): checked (or read) on the read connection,
-    // they spare the table reader its object walk, and the write phase below
-    // gets them as a seed so its discovery and read-back do not walk again.
+    let source = runtime.block_on(service.checked_source(overrides.skip_address_check))?;
+
+    // The read: identity, live tables, parameter memory (with product data),
+    // PID 54 and PID 61, on one session. The device facts (issue #209) spare
+    // the reader its object walk and seed the write and read-back.
     let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
     let read_options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
-        // A device reset to default answers only under its FDSK: the read
-        // phase says so and the apply stops (issue #532).
+        // A device reset to default answers only under its FDSK (issue #532).
         factory_key: material.fdsk.clone(),
         high_water: secure_seq.clone(),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1) and as System 7 requires before any memory access.
-        // Best-effort on this read-only pre-pass, and skipped for a device
-        // whose facts record that it never answers (issue #215; a stale set
-        // presents the key on the same connection).
         authorize: bussard_service::status::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
-    let facts = facts;
-    let model_device = model
-        .and_then(|m| m.devices.get(&target))
-        .map(|d| &d.device);
-    // The parameter memory rides the same session when product data is at
-    // hand (the plan's read-back, issue #119).
-    let read = runtime.block_on(async {
-        service
-            .with_l4(target, &read_options, async |l4| {
-                // The facts and the identity verdict (issue #228, item 5).
-                let identified = bussard_service::identify(l4, &facts, model_device).await?;
-                let read = plan_cmd::read_live_tables(l4, write.product).await?;
-                let params = match (&read, write.product) {
-                    (plan_cmd::LiveRead::Tables(live), Some(product)) => Some(
-                        bussard_service::params::read_state(
-                            l4,
-                            product,
-                            model,
-                            target,
-                            live.tables().mask,
-                        )
-                        .await,
-                    ),
-                    _ => None,
-                };
-                // The device's PID 54, only to see whether it already admits
-                // the tunnelling addresses (issue #297).
-                let senders = plan_cmd::read_admission_table(l4, &read, &tunnel).await?;
-                // PID 61 on a secured session (issue #331): a group object
-                // that leaves or joins Data Secure is a change of its own.
-                let flags =
-                    plan_cmd::read_security_flags(l4, &read, tool_key.is_some(), None).await?;
-                anyhow::Ok((read, identified, params, senders, flags))
-            })
-            .await
-    });
-    let (read, identified, params, live_senders, live_flags) = read?;
-    // The apply may change the flags: the next plan reads PID 61 again
-    // instead of a cache (issue #336).
-    bussard_service::security_change::forget_flags(dir, target);
-    let established = identified.established;
-    let write_seed = bussard_service::seed_of(established.as_ref());
+    let request = program::read::ReadRequest {
+        target,
+        model,
+        product: write.product,
+        facts: &facts,
+        tunnel: &tunnel,
+        secured: tool_key.is_some(),
+        // The apply may change the flags: the next plan reads PID 61 again
+        // (issue #336).
+        flags_cache: program::read::FlagsCache::Forget { dir },
+        properties: None,
+    };
+    let read = runtime.block_on(program::read::read_device(service, &read_options, &request))?;
+    let seed = read.seed();
 
     // One identity verdict (issue #228, item 5): a device that reports
-    // another application (or mask) than bussard.lock pins cannot take the
-    // model's parameters and tables; it needs a flash first. A restore writes
-    // a backup, not the model, so it only reports the verdict.
-    if let Some(check) = &identified.check {
+    // another application (or mask) than bussard.lock pins needs a flash
+    // first. A restore writes a backup, not the model: it only reports it.
+    if let Some(check) = read.check() {
         eprintln!("{}", bussard_service::identity_line(target, check));
         if matches!(origin, DesiredSource::Model)
             && let Some(err) = bussard_service::drift_refusal(target, check, "apply to")
@@ -484,10 +445,9 @@ pub(crate) fn apply_desired(
             return Ok(ExitCode::FAILURE);
         }
     }
-
-    let live_tables = match read {
-        plan_cmd::LiveRead::Tables(live) => live,
-        plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
+    let read = match read.into_tables() {
+        Ok(read) => read,
+        Err((address, mask)) => {
             // A property-only load procedure (issue #390) has no tables to
             // apply: its properties are written by `flash`.
             if write
@@ -506,59 +466,39 @@ pub(crate) fn apply_desired(
             return Ok(ExitCode::FAILURE);
         }
     };
-    let sys7_live = live_tables.sys7().cloned();
-    let live = live_tables.tables();
-
-    // The family gate is enforced by the readers (UnsupportedMask above), but
-    // assert it here too as a belt-and-braces guard before any write. Routed
-    // through the central MaskProfile seam.
-    let profile = MaskProfile::from_mask(live.mask);
-    if !profile.capabilities().plan_apply {
-        eprintln!(
-            "{target} reports mask {:04X} ({}); refusing to write a device outside the \
-             System B / System 7 families",
-            live.mask,
-            system_type(live.mask)
-        );
+    let tables = read.live.tables();
+    // The family gate, asserted again before any write.
+    if let Some(refusal) = program::plan::family_refusal(target, tables.mask) {
+        eprintln!("{refusal}");
         return Ok(ExitCode::FAILURE);
     }
 
-    let report = plan(live, &desired);
-    // `admit_tunnel_senders` (issue #297): the tunnelling addresses the
-    // device's PID 54 is missing, as a change of its own.
-    let admission = plan_cmd::tunnel_admission(target, &tunnel, sys7_live.is_some(), live_senders);
-    // The model's plan, in its own words: the objects and parameters that
-    // change. `restore` keeps the table rendering (its truth is a backup).
-    let mut built = match (origin, model) {
-        (DesiredSource::Model, Some(model)) => Some(crate::device_plan::build(
-            model,
-            target,
-            &gateway,
-            dir,
-            &live_tables,
-            &report,
-            params.as_ref(),
+    // The model's plan, in its own words, with the tunnel admission (issue
+    // #297) and the security-object change (issue #331). `restore` keeps the
+    // table rendering (its truth is a backup).
+    let planned = match (origin, model) {
+        (DesiredSource::Model, Some(model)) => Some(program::plan::plan_device(
+            &program::plan::PlanInputs {
+                model,
+                target,
+                gateway: &gateway,
+                dir,
+                desired,
+                tunnel: &tunnel,
+                group_keys: material.group_keys.as_ref(),
+                parameters_skipped: None,
+            },
+            &read,
         )),
         _ => None,
     };
-    if let (Some(built), Some(admission)) = (built.as_mut(), admission.as_ref()) {
-        admission.add_to(&mut built.plan, &report);
-    }
-    // A group address that left or joined Data Secure (issue #331): the
-    // device's PID 61 against the flags the security object will receive.
-    let security_change = match (&security, live_flags.as_deref()) {
-        (Some(inputs), Some(flags)) if sys7_live.is_none() => Some(
-            bussard_service::security_change::SecurityObjectChange::compare(
-                target, &desired, inputs, flags,
-            ),
-        ),
-        _ => None,
+    let report = match &planned {
+        Some(planned) => planned.report.clone(),
+        None => program::plan::table_plan(&read, desired),
     };
-    if let (Some(built), Some(change)) = (built.as_mut(), security_change.as_ref()) {
-        change.add_to(&mut built.plan, &report, model);
-    }
-    match &built {
-        Some(built) => {
+    match &planned {
+        Some(planned) => {
+            let built = &planned.built;
             if let Some(hash) = write.plan_hash
                 && !hash.trim().eq_ignore_ascii_case(&built.plan.state_hash)
             {
@@ -588,220 +528,272 @@ pub(crate) fn apply_desired(
             if matches!(origin, DesiredSource::Backup(_)) {
                 println!("restoring {} to {target}", origin.origin());
             }
-            plan_cmd::print_text(target, live, &report);
+            plan_cmd::print_text(target, tables, &report);
         }
     }
-    let partial = built.as_ref().and_then(|b| b.partial.as_ref());
-    let param_detail = params.as_ref().and_then(|p| p.detail.as_ref());
+    let built = planned.as_ref().map(|p| &p.built);
+    let partial = built.and_then(|b| b.partial.as_ref());
+    let param_detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
+    // The System 7 region images refuse before anything is confirmed, backed
+    // up or written.
+    let images = program::plan::sys7_images(&read, desired)
+        .context("computing the System 7 table images")?;
 
-    // Compute the System 7 region images up front: an image that would not fit
-    // its memory region must refuse here, before anything is confirmed, backed up
-    // or written.
-    let sys7 = match &sys7_live {
-        Some(s7) => Some((
-            s7.clone(),
-            sys7_table_images(s7, &desired).context("computing the System 7 table images")?,
-        )),
-        None => None,
-    };
-
-    // Zero-change: print nothing-to-do and exit 0 WITHOUT touching load states.
-    // A missing tunnelling address rewrites the tables too: the security
-    // object is written inside the table download.
-    let admits =
-        matches!(origin, DesiredSource::Model) && admission.as_ref().is_some_and(|a| a.changes());
-    let flags_change = matches!(origin, DesiredSource::Model)
-        && security_change.as_ref().is_some_and(|c| c.changes());
-    // A System 7 object whose communication flag does not follow its links is
-    // written with the tables (the flag octets go after them).
-    let object_flags = sys7
+    // Zero-change: nothing to do, WITHOUT touching load states. A missing
+    // tunnelling address, a security-flag change and a System 7
+    // communication flag that does not follow its links rewrite the tables
+    // too; a System B group-object table that differs from the full flash's
+    // image is reloaded (issue #540).
+    let admits = planned
         .as_ref()
-        .is_some_and(|(_, images)| !images.flag_writes.is_empty());
+        .and_then(|p| p.admission.as_ref())
+        .is_some_and(|a| a.changes());
+    let flags_change = planned
+        .as_ref()
+        .and_then(|p| p.security_change.as_ref())
+        .is_some_and(|c| c.changes());
+    let object_flags = images
+        .as_ref()
+        .is_some_and(|images| !images.flag_writes.is_empty());
     let tables_change = !report.is_noop() || admits || flags_change || object_flags;
-    // A System B group-object table that differs from the image the full
-    // flash writes is reloaded first (issue #540): a link the last flash did
-    // not know left its object's communication flag off.
-    let object_table = built.as_ref().and_then(|b| b.object_table.clone());
+    let object_table = built.and_then(|b| b.object_table.as_deref());
     if !tables_change && object_table.is_none() && partial.is_none() {
         return Ok(ExitCode::SUCCESS);
     }
 
     // Data Secure: say what the security object will receive (never a key).
-    let security = if sys7.is_none() { security } else { None };
+    let security = security.filter(|_| images.is_none());
     if let Some(inputs) = &security {
         println!("{}", inputs.describe(&desired.addresses));
     }
 
-    // Confirm unless --yes: one question for the whole write.
-    let question = built.as_ref().map(|b| b.plan.question());
-    if !confirm(target, &gateway, yes, &report, origin, question.as_deref())? {
-        eprintln!("aborted; nothing was written.");
-        return Ok(ExitCode::FAILURE);
+    // Ask once for the whole write; on a yes the history snapshot records
+    // what the installation was asked to become (`bussard undo`).
+    let verb = origin.verb();
+    let mut observer = crate::progress::Terminal::new(yes, false)
+        .tables(format!("{verb} {target}: writing the tables"))
+        .snapshot(
+            dir,
+            bussard_model::history::SnapshotReason::new(verb)
+                .with_args([target.to_string()])
+                .with_gateway(Some(gateway.clone()))
+                .with_result(if partial.is_some() {
+                    "before writing the device tables and parameters"
+                } else {
+                    "before writing the device tables"
+                }),
+        );
+    let changes = report.additions.len() + report.removals.len();
+    let question = program::Question {
+        prompt: match built {
+            Some(built) => built.plan.question(),
+            None => format!("{verb} {changes} change(s) to {target} via {gateway}?"),
+        },
+        action: format!("{verb} {target} via {gateway}"),
+    };
+    match program::ask(&mut observer, &question) {
+        Ok(()) => {}
+        Err(program::Declined::No) => {
+            eprintln!("aborted; nothing was written.");
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(program::Declined::Refused(refusal)) => anyhow::bail!("{refusal}"),
     }
 
-    // Snapshot the model before the bus write, so `bussard history` records what
-    // the installation was asked to become and `bussard undo` can go back.
-    crate::history_cmd::snapshot(
-        dir,
-        bussard_model::history::SnapshotReason::new(origin.verb())
-            .with_args([target.to_string()])
-            .with_gateway(Some(gateway.clone()))
-            .with_result(if partial.is_some() {
-                "before writing the device tables and parameters"
-            } else {
-                "before writing the device tables"
-            }),
-    );
-
-    // Back up the pre-state tables before writing anything. A restore takes one
-    // too: the state it is about to overwrite is still the only copy of whatever
-    // is on the device right now.
-    let backup_path = write_backup(dir, target, live, sys7_live.as_ref()).with_context(|| {
-        format!(
-            "writing the pre-{} backup (refusing to write without a backup)",
-            origin.verb()
-        )
-    })?;
+    // Back up the pre-state before writing anything; a restore takes one too.
+    let backups = program::apply::back_up(dir, target, &read.live, partial.and(param_detail));
+    let backups = match backups {
+        Ok(backups) => backups,
+        Err(err @ program::apply::BackupError::Tables(_)) => {
+            return Err(anyhow::Error::new(err).context(format!(
+                "writing the pre-{verb} backup (refusing to write without a backup)"
+            )));
+        }
+        Err(err) => {
+            return Err(anyhow::Error::new(err)
+                .context("writing the parameter backup (refusing to write without a backup)"));
+        }
+    };
+    let backup_path = backups.tables.clone().unwrap_or_default();
     println!(
         "{}",
         crate::style::Style::stdout().dim(&format!("backup written to {}", backup_path.display()))
     );
-    let param_backup = match (partial, param_detail) {
-        (Some(_), Some(detail)) => {
-            let path =
-                crate::flash_params::write_backup(dir, target, &detail.plan, &detail.regions)
-                    .context("writing the parameter backup (refusing to write without a backup)")?;
-            println!("parameter backup written to {}", path.display());
-            Some(path)
-        }
-        _ => None,
-    };
-    // What the write means to leave on the device, for the independent
-    // read-back that ends every apply (issue #349).
-    let expected = bussard_service::verify::Expected {
-        tables: Some(desired.clone()),
-        group_objects: None,
-        object_table: object_table.clone(),
-        parameters: match (partial, param_detail, write.product) {
-            (Some(_), Some(_), Some(product)) => {
-                product
-                    .app()
-                    .map(|app| bussard_service::verify::ExpectedParameters {
-                        product: &product.product,
-                        app,
-                        model,
-                        device_mask: live.mask,
-                    })
-            }
-            _ => None,
-        },
-        security: if tables_change {
-            security.as_ref().map(|inputs| {
-                bussard_service::verify::ExpectedSecurity::from_inputs(inputs, &desired.addresses)
-            })
-        } else {
-            None
-        },
-        // The properties the parameters live in (issue #669), when the
-        // parameters are written.
-        properties: match (partial, param_detail) {
-            (Some(_), Some(detail)) => {
-                bussard_service::verify::ExpectedProperty::from_parameter_writes(&detail.plan)
-            }
-            _ => Vec::new(),
-        },
-        table_bases: plan_cmd::table_bases(write.product),
-    };
-    let (code, read_back) = if tables_change || object_table.is_some() {
-        write_tables_then_parameters(
-            &runtime,
-            service,
-            dir,
-            target,
-            source,
-            &desired,
-            sys7.as_ref().map(|(_, images)| images),
-            bussard_download::SystemBLoad {
-                security: security.as_ref(),
-                object_table: object_table.as_deref(),
-                keep_tables: !tables_change,
-                user_memory_above_64k: bussard_download::uses_user_memory(
-                    write.product.and_then(|p| p.app()),
-                ),
-            },
-            &report,
-            origin,
-            model,
-            write_seed.clone(),
-            live.mask,
-            ParamWrite {
-                partial,
-                detail: param_detail,
-                backup: param_backup.as_deref(),
-            },
-            &tool_key,
-            &secure_seq,
-            &read_options,
-            &backup_path,
-        )?
-    } else {
-        write_parameters(
-            &runtime,
-            service,
-            target,
-            source,
-            partial,
-            param_detail,
-            &tool_key,
-            &secure_seq,
-            &read_options,
-            param_backup.as_deref(),
-        )?
-    };
-
-    // A sequence that stopped before it wrote (an access denial, a lost
-    // connection) has its error; there is nothing new to read back.
-    if !read_back {
-        return Ok(code);
+    if let Some(path) = &backups.parameters {
+        println!("parameter backup written to {}", path.display());
     }
-    // Verified means read back and compared (issues #319, #349): a fresh
-    // session reads the tables, the written parameters and the security
-    // object, and compares them with the model. It reuses the read phase's
-    // checked facts and its authorize verdict, as the write did.
-    let readback_options = L4Options {
-        authorize: if write_seed.as_ref().is_some_and(|s| s.authorize_unanswered) {
-            bussard_service::Authorize::Skip
-        } else {
-            read_options.authorize
+    let written = runtime.block_on(program::apply::apply_device(
+        program::apply::ApplyRequest {
+            service,
+            target,
+            source,
+            dir,
+            model,
+            product: write.product,
+            mask: tables.mask,
+            desired,
+            tables_change,
+            object_table,
+            images: images.as_ref(),
+            security: security.as_ref(),
+            parameters: partial.zip(param_detail),
+            tool_key,
+            high_water: secure_seq,
+            options: read_options,
+            seed,
         },
-        ..read_options.clone()
-    };
-    let readback = runtime.block_on(bussard_service::verify::read_back_on(
-        service,
-        target,
-        &readback_options,
-        write_seed.clone(),
-        &expected,
+        &mut observer,
     ));
-    let err_style = crate::style::Style::stderr();
+    render_written(
+        target,
+        verb,
+        dir,
+        &report,
+        written,
+        &backup_path,
+        backups.parameters.as_deref(),
+    )
+}
+
+/// Prints how the write went, in the order it ran; the exit code says
+/// whether the device holds what was written.
+fn render_written(
+    target: IndividualAddress,
+    verb: &str,
+    dir: &Path,
+    report: &PlanReport,
+    mut written: program::apply::Written,
+    backup_path: &Path,
+    param_backup: Option<&Path>,
+) -> anyhow::Result<ExitCode> {
+    // A bus that could not be leased stops the command, as any session error.
+    if let Some(program::apply::TablesWritten::Lease(_)) = &written.tables
+        && let Some(program::apply::TablesWritten::Lease(err)) = written.tables.take()
+    {
+        return Err(err.into());
+    }
+    let (out, err) = (crate::style::Style::stdout(), crate::style::Style::stderr());
+    let mut code = ExitCode::SUCCESS;
+    match &written.tables {
+        // Handled above.
+        Some(program::apply::TablesWritten::Lease(_)) => {}
+        Some(program::apply::TablesWritten::Failed(why)) => {
+            eprintln!("\n{}", err.error_line(&format!("{verb} failed: {why}")));
+            recovery_notice(backup_path, target);
+            return Ok(ExitCode::FAILURE);
+        }
+        Some(program::apply::TablesWritten::Ran(summary)) if !summary.ok => {
+            eprintln!(
+                "\n{}",
+                err.error_line(&format!("{verb} did not verify: {}", summary.detail))
+            );
+            recovery_notice(backup_path, target);
+            code = ExitCode::FAILURE;
+        }
+        Some(program::apply::TablesWritten::Ran(summary)) => {
+            if let Some(table) = &summary.object_table {
+                println!(
+                    "\ngroup-object table reloaded and read back: {} ({} entries)",
+                    table.state, table.entries
+                );
+            }
+            println!(
+                "\n{}",
+                out.ok(&format!(
+                    "{verb} verified: address table {} ({} entries), association table {} ({} \
+                     entries)",
+                    summary.address_state,
+                    report.resulting_address_count,
+                    summary.association_state,
+                    report.resulting_association_count,
+                ))
+            );
+        }
+        None => {}
+    }
+    match &written.restarted {
+        Some(Ok(after)) => println!(
+            "restarted {target}: it answered again after {:.1} s",
+            after.as_secs_f64()
+        ),
+        Some(Err(why)) => {
+            eprintln!("\n{}", err.error_line(&format!("{verb} {target}: {why}")));
+            recovery_notice(backup_path, target);
+            return Ok(ExitCode::FAILURE);
+        }
+        None => {}
+    }
+    // The verified secured write's PID 54 table and PID 61 flags, saved to
+    // the lock as `adopt` does (issues #297, #331).
+    let records = [
+        (
+            &written.lock.senders,
+            "security individual address table (PID 54",
+            ("sender", "senders"),
+        ),
+        (
+            &written.lock.flags,
+            "group-object security flags (PID 61",
+            ("secured object", "secured objects"),
+        ),
+    ];
+    for (recorded, what, (one, many)) in records {
+        match recorded {
+            Some((Ok(true), count)) => println!(
+                "saved {target}'s {what}, {}) to your project",
+                crate::style::count(*count, one, many)
+            ),
+            Some((Err(why), _)) => eprintln!("{}", err.warning_line(why)),
+            _ => {}
+        }
+    }
+    match &written.parameters {
+        Some(Ok(bussard_service::download::ParamWriteOutcome::Verified { octets })) => println!(
+            "{}",
+            out.ok(&format!(
+                "parameters verified: {octets} changed octet(s) read back from {target}; the \
+                 application is Loaded"
+            ))
+        ),
+        Some(Ok(failed)) => {
+            eprintln!(
+                "\n{}",
+                err.error_line(&failed.failure().unwrap_or_default())
+            );
+            if let Some(path) = param_backup {
+                eprintln!(
+                    "The pre-apply parameter memory was backed up to:\n    {}\nRe-running \
+                     `bussard apply {target}` rewrites only the octets that still differ.",
+                    path.display()
+                );
+            }
+            code = ExitCode::FAILURE;
+        }
+        Some(Err(why)) => anyhow::bail!("{why}"),
+        None => {}
+    }
+    // Verified means read back and compared (issues #319, #349).
+    let Some(readback) = &written.readback else {
+        return Ok(code);
+    };
     for note in &readback.notes {
-        eprintln!("{}", err_style.warning_line(note));
+        eprintln!("{}", err.warning_line(note));
     }
     match readback.failure() {
         Some(failure) => {
             eprintln!(
                 "\n{}",
-                err_style.error_line(&format!("{} {target}: {failure}", origin.verb()))
+                err.error_line(&format!("{verb} {target}: {failure}"))
             );
             if code == ExitCode::SUCCESS {
-                recovery_notice(&backup_path, target);
+                recovery_notice(backup_path, target);
             }
             Ok(ExitCode::FAILURE)
         }
         None => {
             println!(
                 "{}",
-                crate::style::Style::stdout().ok(&format!(
+                out.ok(&format!(
                     "read back from {target} and compared with your project: {}",
                     readback.summary()
                 ))
@@ -814,327 +806,6 @@ pub(crate) fn apply_desired(
             Ok(code)
         }
     }
-}
-
-/// The parameter half of a write: the download, the read-back's plan and
-/// the backup to point at on a failure.
-#[derive(Clone, Copy)]
-struct ParamWrite<'a> {
-    partial: Option<&'a bussard_download::FlashPlan>,
-    detail: Option<&'a bussard_service::params::ParamDetail>,
-    backup: Option<&'a Path>,
-}
-
-/// Writes the tables (with, on System B, the group-object table reload and
-/// the security object `load` carries), records what a verified write
-/// programmed, then writes the parameter octets that differ. Returns the exit
-/// code of the write sequence; the read-back after it decides whether the
-/// apply verified.
-#[allow(clippy::too_many_arguments)] // one write phase's context
-fn write_tables_then_parameters(
-    runtime: &tokio::runtime::Runtime,
-    service: &bussard_service::BusService,
-    dir: &Path,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    desired: &DesiredTables,
-    images: Option<&Sys7TableImages>,
-    load: bussard_download::SystemBLoad<'_>,
-    report: &PlanReport,
-    origin: &DesiredSource,
-    model: Option<&bussard_model::Model>,
-    write_seed: Option<bussard_mgmt::ConnectionSeed>,
-    mask: u16,
-    params: ParamWrite<'_>,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-    read_options: &L4Options,
-    backup_path: &Path,
-) -> anyhow::Result<(ExitCode, bool)> {
-    // Phase B (write): execute the load sequence and verify.
-    // The same tunnel phase A used: its L4 session and bus lease are both
-    // released by now, so the write phase simply takes the lease again.
-    // Progress (issue #147): the table write emits no finer events, so the live
-    // view is a spinner with elapsed time and the last bus event; plain runs
-    // print nothing extra.
-    let mut display = crate::progress::Display::task(
-        format!("{} {target}: writing the tables", origin.verb()),
-        false,
-    );
-    let outcome = runtime.block_on(async {
-        let channel = service.lease_channel().await?;
-        let secure = bussard_service::secure::layer(tool_key, secure_seq);
-        anyhow::Ok(
-            write_tables_seeded(
-                channel, target, source, mask, desired, images, secure, load, write_seed,
-            )
-            .await,
-        )
-    });
-    display.finish(matches!(&outcome, Ok(Ok(summary)) if summary.ok));
-    let outcome = outcome?;
-
-    match outcome {
-        Ok(summary) if summary.ok => {
-            if let Some(table) = &summary.object_table {
-                println!(
-                    "\ngroup-object table reloaded and read back: {} ({} entries)",
-                    table.state, table.entries
-                );
-            }
-            println!(
-                "\n{}",
-                crate::style::Style::stdout().ok(&format!(
-                    "{} verified: address table {} ({} entries), association table {} ({} \
-                     entries)",
-                    origin.verb(),
-                    summary.address_state,
-                    report.resulting_address_count,
-                    summary.association_state,
-                    report.resulting_association_count,
-                ))
-            );
-            // A System 7 table write ends with a basic restart, as ETS's does;
-            // the parameters and the read-back need the device back first.
-            if summary.restarted {
-                let back = runtime.block_on(bussard_service::restart::wait_until_back(
-                    service,
-                    target,
-                    read_options,
-                    mask,
-                    bussard_service::restart::RestartWait::default(),
-                ));
-                match back {
-                    Ok(after) => println!(
-                        "restarted {target}: it answered again after {:.1} s",
-                        after.as_secs_f64()
-                    ),
-                    Err(err) => {
-                        eprintln!(
-                            "\n{}",
-                            crate::style::Style::stderr()
-                                .error_line(&format!("{} {target}: {err}", origin.verb()))
-                        );
-                        recovery_notice(backup_path, target);
-                        return Ok((ExitCode::FAILURE, false));
-                    }
-                }
-            }
-            // The security object was written with this PID 54 table and the
-            // write verified: record it in the lock, as `adopt` does (issue
-            // #297), so the sender admission check sees it. A reload of the
-            // group-object table alone does not write it.
-            let security = load.security.filter(|_| !load.keep_tables);
-            if let (Some(inputs), Some(_)) = (security, model) {
-                match bussard_service::admission::record_secure_senders(
-                    dir,
-                    target,
-                    &inputs.senders,
-                ) {
-                    Ok(true) => println!(
-                        "saved {target}'s security individual address table (PID 54, {}) to \
-                         your project",
-                        crate::style::count(inputs.senders.len(), "sender", "senders")
-                    ),
-                    Ok(false) => {}
-                    Err(err) => eprintln!(
-                        "{}",
-                        crate::style::Style::stderr().warning_line(&err.to_string())
-                    ),
-                }
-                // And the group-object flags it wrote (PID 61, issue #331).
-                match bussard_service::security_change::record_security_flags(
-                    dir,
-                    target,
-                    &inputs.secure_objects,
-                ) {
-                    Ok(true) => println!(
-                        "saved {target}'s group-object security flags (PID 61, {}) to your \
-                         project",
-                        crate::style::count(
-                            inputs.secure_objects.len(),
-                            "secured object",
-                            "secured objects"
-                        )
-                    ),
-                    Ok(false) => {}
-                    Err(err) => eprintln!(
-                        "{}",
-                        crate::style::Style::stderr().warning_line(&err.to_string())
-                    ),
-                }
-            }
-            write_parameters(
-                runtime,
-                service,
-                target,
-                source,
-                params.partial,
-                params.detail,
-                tool_key,
-                secure_seq,
-                read_options,
-                params.backup,
-            )
-        }
-        Ok(summary) => {
-            eprintln!(
-                "\n{}",
-                crate::style::Style::stderr().error_line(&format!(
-                    "{} did not verify: {}",
-                    origin.verb(),
-                    summary.detail
-                ))
-            );
-            recovery_notice(backup_path, target);
-            Ok((ExitCode::FAILURE, true))
-        }
-        Err(err) => {
-            eprintln!(
-                "\n{}",
-                crate::style::Style::stderr()
-                    .error_line(&format!("{} failed: {err}", origin.verb()))
-            );
-            recovery_notice(backup_path, target);
-            Ok((ExitCode::FAILURE, false))
-        }
-    }
-}
-
-/// Writes the parameter octets that differ (the `flash --parameters-only`
-/// download) and verifies them by reading the memory back.
-///
-/// A no-op when `partial` is `None`.
-#[allow(clippy::too_many_arguments)] // one write phase's context
-fn write_parameters(
-    runtime: &tokio::runtime::Runtime,
-    service: &bussard_service::BusService,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    partial: Option<&bussard_download::FlashPlan>,
-    detail: Option<&bussard_service::params::ParamDetail>,
-    tool_key: &Option<bussard_secure::Key16>,
-    secure_seq: &bussard_secure::SequenceHighWater,
-    read_options: &L4Options,
-    backup: Option<&Path>,
-) -> anyhow::Result<(ExitCode, bool)> {
-    let (Some(partial), Some(detail)) = (partial, detail) else {
-        return Ok((ExitCode::SUCCESS, true));
-    };
-    let backup_note = |target: IndividualAddress| {
-        if let Some(path) = backup {
-            eprintln!(
-                "The pre-apply parameter memory was backed up to:\n    {}\nRe-running \
-                 `bussard apply {target}` rewrites only the octets that still differ.",
-                path.display()
-            );
-        }
-    };
-    // The one parameter write (issue #274), shared with `knx_apply_device`.
-    let mut observer = ParamDisplay(Some(crate::progress::Display::flash(partial, false)));
-    let outcome = runtime.block_on(bussard_service::download::write_parameters(
-        service,
-        target,
-        source,
-        partial,
-        detail,
-        tool_key.clone(),
-        secure_seq.clone(),
-        read_options,
-        &mut observer,
-    ))?;
-    match (&outcome, outcome.failure()) {
-        (bussard_service::download::ParamWriteOutcome::Verified { octets }, _) => {
-            println!(
-                "{}",
-                crate::style::Style::stdout().ok(&format!(
-                    "parameters verified: {octets} changed octet(s) read back from {target}; \
-                     the application is Loaded"
-                ))
-            );
-            Ok((ExitCode::SUCCESS, true))
-        }
-        (_, failure) => {
-            eprintln!(
-                "\n{}",
-                crate::style::Style::stderr().error_line(&failure.unwrap_or_default())
-            );
-            backup_note(target);
-            // A download that stopped (`Failed`) wrote nothing more to read.
-            let wrote = !matches!(
-                outcome,
-                bussard_service::download::ParamWriteOutcome::Failed(_)
-            );
-            Ok((ExitCode::FAILURE, wrote))
-        }
-    }
-}
-
-/// The progress display of the parameter download.
-pub(crate) struct ParamDisplay(Option<crate::progress::Display>);
-
-impl ParamDisplay {
-    /// The display of `partial`'s download.
-    pub(crate) fn new(partial: &bussard_download::FlashPlan) -> Self {
-        ParamDisplay(Some(crate::progress::Display::flash(partial, false)))
-    }
-}
-
-impl bussard_service::download::FlashObserver for ParamDisplay {
-    fn progress(&mut self, event: bussard_download::Progress) {
-        if let Some(display) = &mut self.0 {
-            display.on_progress(event);
-        }
-    }
-
-    fn finished(&mut self, verified: bool) {
-        if let Some(mut display) = self.0.take() {
-            display.finish(verified);
-        }
-    }
-}
-
-/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74).
-/// Non-interactive without `--yes` is refused. `question` is the model plan's
-/// one question; `restore` builds its own from the table plan.
-fn confirm(
-    target: IndividualAddress,
-    gateway: &str,
-    yes: bool,
-    report: &PlanReport,
-    origin: &DesiredSource,
-    question: Option<&str>,
-) -> anyhow::Result<bool> {
-    let changes = report.additions.len() + report.removals.len();
-    let prompt = match question {
-        Some(q) => q.to_string(),
-        None => format!(
-            "{} {changes} change(s) to {target} via {gateway}?",
-            origin.verb()
-        ),
-    };
-    crate::confirm::confirm(
-        yes,
-        &prompt,
-        &format!("{} {target} via {gateway}", origin.verb()),
-    )
-}
-
-/// Serialises the live pre-state tables to a JSON backup under
-/// `<dir>/captures/backups/<ia>-<timestamp>.json`.
-///
-/// The format itself lives in [`bussard_download::backup`], so `apply`,
-/// `bussard backup` and `bussard restore` all read and write one shape
-/// (issue #96).
-pub(crate) fn write_backup(
-    dir: &Path,
-    target: IndividualAddress,
-    live: &DeviceTables,
-    sys7: Option<&Sys7LiveTables>,
-) -> anyhow::Result<std::path::PathBuf> {
-    Ok(bussard_download::write_pre_write_backup(
-        dir, target, live, sys7,
-    )?)
 }
 
 /// Prints the loud recovery guidance on any apply failure.
