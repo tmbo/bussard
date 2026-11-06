@@ -78,7 +78,7 @@ fn keyring_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knx-sim/examples/secure/synthetic.knxkeys")
 }
 
-fn keyring() -> TestResult<bussard_project::Keyring> {
+fn keyring() -> TestResult<bussard_project::KeyStore> {
     let xml = std::fs::read_to_string(keyring_path())?;
     Ok(bussard_project::parse_keyring(&xml, PASSWORD)?)
 }

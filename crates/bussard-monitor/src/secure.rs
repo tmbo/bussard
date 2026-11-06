@@ -1,7 +1,7 @@
 //! KNX Data Secure group telegrams in the monitor (issue #172).
 //!
 //! A secured group telegram arrives as an `A_SecureData` (`0x03F1`) APDU on a
-//! group address. With the keyring's group keys a [`GroupKeyring`] verifies the
+//! group address. With the key store's group keys a [`GroupKeyring`] verifies the
 //! MAC, decrypts the inner APDU and hands a frame carrying the plain APDU to
 //! the ordinary decode pipeline, so the value, DPT and names resolve exactly as
 //! for a plain telegram. The outcome travels on the telegram as a
@@ -20,10 +20,10 @@
 //! keyed by a device's tool key, not a group key, and pass through unchanged.
 //! Nothing here prints or stores key material.
 
-use std::collections::HashMap;
+use std::sync::Arc;
 
-use bussard_model::GroupAddress;
-use bussard_secure::{Freshness, Key16, SecurityAlgorithm, decode_group, peek_header};
+use bussard_project::KeyStore;
+use bussard_secure::{Freshness, SecurityAlgorithm, decode_group, peek_header};
 use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 
@@ -76,41 +76,41 @@ impl SecureInfo {
     }
 }
 
-/// The keyring's group keys plus the per-sender freshness table, for a
-/// monitor or capture run.
+/// A view of a key store's group keys plus the per-sender freshness table,
+/// for a monitor or capture run.
 ///
 /// `Debug` lists how many keys it holds, never the keys.
 pub struct GroupKeyring {
-    keys: HashMap<GroupAddress, Key16>,
+    store: Arc<KeyStore>,
     freshness: Freshness,
 }
 
 impl std::fmt::Debug for GroupKeyring {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GroupKeyring")
-            .field("group_keys", &self.keys.len())
+            .field("group_keys", &self.len())
             .finish_non_exhaustive()
     }
 }
 
 impl GroupKeyring {
-    /// A keyring over the given group keys (the keyring's
-    /// `GroupAddresses/Group@Key` entries).
-    pub fn new(keys: HashMap<GroupAddress, Key16>) -> Self {
+    /// A view of the group keys of `store` (a key store or a decrypted
+    /// `.knxkeys` export).
+    pub fn new(store: Arc<KeyStore>) -> Self {
         GroupKeyring {
-            keys,
+            store,
             freshness: Freshness::new(),
         }
     }
 
     /// How many group keys it holds.
     pub fn len(&self) -> usize {
-        self.keys.len()
+        self.store.group_keys.len()
     }
 
     /// Whether it holds no group key at all.
     pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
+        self.store.group_keys.is_empty()
     }
 
     /// Unwraps a secured group telegram.
@@ -139,7 +139,7 @@ impl GroupKeyring {
             raw_asdu: Some(asdu.to_vec()),
             warning: None,
         };
-        let Some(key) = self.keys.get(&ga) else {
+        let Some(key) = self.store.group_key(ga) else {
             return Some((None, failed(SecureStatus::NoKey)));
         };
         let Ok(plain) = decode_group(key, asdu, cemi.source.raw(), ga.raw()) else {
@@ -191,7 +191,7 @@ pub(crate) fn algorithm_label(scf: u8) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_secure::{Sequence, encode_group};
+    use bussard_secure::{Key16, Sequence, encode_group};
     use bussard_testkit::{TestResult, ga, ia};
     use bussard_transport::cemi::{CemiFrame, GroupData};
     use std::time::SystemTime;
@@ -226,9 +226,9 @@ mod tests {
     }
 
     fn keyring() -> TestResult<GroupKeyring> {
-        let mut keys = HashMap::new();
-        keys.insert(ga("1/2/3")?, key());
-        Ok(GroupKeyring::new(keys))
+        let mut store = KeyStore::new("test");
+        store.group_keys.insert(ga("1/2/3")?, key());
+        Ok(GroupKeyring::new(Arc::new(store)))
     }
 
     #[test]

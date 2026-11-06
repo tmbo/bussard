@@ -82,7 +82,7 @@ pub use files::{
 pub use flags::{Flags, FlagsParseError, Priority};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
 pub use keyring_checks::{KeyringFacts, KeyringStatus, validate_keyring};
-pub use keystore_meta::{KEYSTORE_META_FILE, KeyStoreMeta, KeyStoreMetaError, KeyringExport};
+pub use keystore_meta::{ExportRecord, KEYSTORE_META_FILE, KeyStoreMeta, KeyStoreMetaError};
 pub use lint::{GroupsLint, LintConfig, TopologyLint, lint};
 pub use loader::{LoadError, LoadedDevice, Model, SaveError, import_language, load_config};
 pub use lock_products::{PinError, PinReport, pin_products, sha256_file, sha256_file_cached};

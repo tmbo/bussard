@@ -281,18 +281,16 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
     let password = password()?;
     let export =
         keyring::export_keyring(dir, file, &password, force, &mut crate::console::Console)?;
+    fn joined<T: std::fmt::Display>(items: &[T]) -> String {
+        items
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<String>>()
+            .join(", ")
+    }
     if json {
-        let value = serde_json::json!({
-            "file": file.display().to_string(),
-            "devices": export.devices,
-            "group_keys": export.group_keys,
-            "interfaces": export.interfaces,
-            "skipped_devices": export.skipped_devices,
-            "verified": export.verified,
-            "group_addresses": export.group_addresses,
-            "omitted_group_addresses": export.omitted_group_addresses,
-            "leftovers": export.leftovers,
-        });
+        let mut value = serde_json::to_value(&export)?;
+        value["file"] = serde_json::json!(file.display().to_string());
         crate::output::print(crate::output::schema::KEYS_EXPORT, &value)?;
     } else {
         println!(
@@ -305,7 +303,7 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
         if !export.skipped_devices.is_empty() {
             println!(
                 "  left out (no tool key, ETS needs one): {}",
-                export.skipped_devices.join(", ")
+                joined(&export.skipped_devices)
             );
         }
         println!(
@@ -313,14 +311,14 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
             if export.group_addresses.is_empty() {
                 "none".to_string()
             } else {
-                export.group_addresses.join(", ")
+                joined(&export.group_addresses)
             }
         );
         if !export.omitted_group_addresses.is_empty() {
             println!(
                 "  group addresses omitted (secure in the model or the store, no key in the \
                  export): {}",
-                export.omitted_group_addresses.join(", ")
+                joined(&export.omitted_group_addresses)
             );
         }
         if export.verified {

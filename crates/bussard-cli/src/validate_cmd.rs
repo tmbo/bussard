@@ -59,7 +59,7 @@ fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
 fn keyring_diagnostics(model: &Model, dir: &Path) -> Vec<Diagnostic> {
     let env = crate::conn_cmd::EnvGlobals::from_process();
     let facts =
-        crate::conn_cmd::resolve_keyring(None, env.keyring.as_deref(), dir).map(|resolved| {
+        bussard_service::secure::keyring_file(dir, None, env.keyring.as_deref()).map(|resolved| {
             bussard_service::secure::keyring_facts(&resolved.path, resolved.source.describe())
         });
     let mut diags = bussard_model::validate_keyring(model, facts.as_ref());

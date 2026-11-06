@@ -106,7 +106,7 @@ impl VizPage {
         let model = state.model.clone();
         // A keyring that does not load leaves secured telegrams encrypted on
         // the page, as in the ring (`run::server_group_keyring` logs why).
-        let group_keys = crate::secure_group::group_keys(state.keyring.as_deref())
+        let group_keys = crate::secure_group::key_store(state.keyring.as_deref())
             .ok()
             .flatten();
         let security = bussard_viz::state::Security {

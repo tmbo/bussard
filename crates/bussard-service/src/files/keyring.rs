@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 use bussard_model::{GroupAddress, Model};
-use bussard_project::keystore::{ExportCheck, KeyStore};
+use bussard_project::keystore::{ExportCheck, KeyStore, KeyringExport};
 
 use crate::setup::{Context as _, Output, SetupError};
 
@@ -29,30 +29,6 @@ pub fn load_existing(dir: &Path, password: &str) -> Result<KeyStore, SetupError>
                 path.display()
             ))
         })
-}
-
-/// What a keyring export wrote and what reading it back found. Counts and
-/// addresses only.
-#[derive(Debug, Clone)]
-pub struct KeyringExport {
-    /// Devices in the export.
-    pub devices: usize,
-    /// Group keys in the export.
-    pub group_keys: usize,
-    /// KNXnet/IP interfaces in the export.
-    pub interfaces: usize,
-    /// Devices left out (no tool key, ETS needs one).
-    pub skipped_devices: Vec<String>,
-    /// Whether the file as written was read back, its signature checked,
-    /// decrypted and its key set found equal to the store's.
-    pub verified: bool,
-    /// The group addresses the export carries a key for.
-    pub group_addresses: Vec<String>,
-    /// Group addresses secure in the model or the store without a key in the
-    /// export.
-    pub omitted_group_addresses: Vec<String>,
-    /// What the read-back found missing or different, as sentences.
-    pub leftovers: Vec<String>,
 }
 
 /// Writes the store in `dir` as a signed `.knxkeys` ETS accepts, records the
@@ -77,7 +53,7 @@ pub fn export_keyring(
         )));
     }
     let store = load_existing(dir, password)?;
-    let export = store
+    let mut export = store
         .export_knxkeys(password)
         .ctx(|| "building the .knxkeys export".to_string())?;
     std::fs::write(file, &export.xml).ctx(|| format!("writing {}", file.display()))?;
@@ -86,11 +62,6 @@ pub fn export_keyring(
     if let Err(err) = bussard_model::KeyStoreMeta::record_export(dir, file) {
         out.warn(&format!("warning: the export was not recorded: {err}"));
     }
-    let skipped_devices: Vec<String> = export
-        .skipped_devices
-        .iter()
-        .map(|ia| ia.to_string())
-        .collect();
     // Verified means read back and compared (issue #349): the file as written,
     // its signature checked, decrypted and its key set compared with the store.
     let written =
@@ -98,21 +69,9 @@ pub fn export_keyring(
     let check = store
         .check_export(&written, password)
         .ctx(|| format!("reading {} back", file.display()))?;
-    let omitted = omitted_group_addresses(dir, &store, &check);
-    Ok(KeyringExport {
-        devices: export.devices,
-        group_keys: export.group_keys,
-        interfaces: export.interfaces,
-        skipped_devices,
-        verified: check.verified(),
-        group_addresses: check
-            .group_addresses
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-        omitted_group_addresses: omitted.iter().map(ToString::to_string).collect(),
-        leftovers: check.leftovers(),
-    })
+    export.read_back(&check);
+    export.omitted_group_addresses = omitted_group_addresses(dir, &store, &check);
+    Ok(export)
 }
 
 /// The group addresses the model marks secure or the store keys that the

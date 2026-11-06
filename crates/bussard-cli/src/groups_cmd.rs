@@ -307,8 +307,8 @@ fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<E
     // instead keeps the old state (issue #331).
     let env =
         bussard_model::dotenv::var_os(crate::conn_cmd::KEYRING_ENV).map(std::path::PathBuf::from);
-    if let Some(other) = crate::conn_cmd::resolve_keyring(None, env.as_deref(), dir)
-        .filter(|r| r.source != crate::conn_cmd::KeyringSource::Store)
+    if let Some(other) = bussard_service::secure::keyring_file(dir, None, env.as_deref())
+        .filter(|r| r.source != bussard_service::secure::KeyringSource::Store)
     {
         eprintln!(
             "warning: bus commands read their keys from {} ({}), not from the key store; it \
