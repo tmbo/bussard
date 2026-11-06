@@ -1,15 +1,363 @@
 //! The System 7 executor: run a System 7 [`FlashPlan`] against a mask 0705 /
 //! 0701 device, then read the written regions back to verify them.
 
-use super::execute::write_image;
+use super::execute::{image_part, write_image};
 use super::session::{
     Connector, MAX_RESUME_RECONNECTS, Session, reconnect_exchange_threshold, resumable_death,
 };
+use super::steps::{Reboot, StepExecutor, run_shared_step, run_steps, send_restart};
 use super::verify::take_sample;
 use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageRef, Progress};
 use bussard_mgmt::load::{
     IntermediatePoll, LoadControl, LoadState, WriteError, read_mcb_table, read_memory,
 };
+
+/// The System 7 step semantics: the LSM records, absolute segment streaming
+/// and the plain terminal restart, with the verify state they build up.
+struct System7<'a> {
+    plan: &'a FlashPlan,
+    ctx: &'a super::Sys7Context,
+    lsm: bussard_mgmt::LsmAccess,
+    /// Whether to verify after the terminal restart (real device) or before it
+    /// (a mock that does not reboot-and-return).
+    verify_after_restart: bool,
+    /// The final outcome, captured by the terminal-restart arm (verify AFTER
+    /// reconnect); `None` until then.
+    verified: Option<FlashOutcome>,
+    /// Read-back spot-check samples of the segment writes (address, first octets).
+    written_samples: Vec<(u16, Vec<u8>)>,
+    /// The LSMs that reached LoadCompleted, in order, for the post-flash verify.
+    completed_lsms: Vec<u32>,
+    /// Findings that do not fail the flash (a skipped step, see below).
+    warnings: Vec<String>,
+}
+
+impl StepExecutor for System7<'_> {
+    /// The terminal restart reboots the device itself and is repeated only
+    /// after a link loss. The pre-download pass reboots and reconnects too,
+    /// so no cycle runs before it, but it stays resumable (its unloads are
+    /// idempotent).
+    fn reboot(&self, step: &FlashStep) -> Reboot {
+        match step {
+            FlashStep::Restart => Reboot::SelfReconnecting,
+            FlashStep::Sys7PreDownloadRestart { .. } => Reboot::Replayed,
+            _ => Reboot::No,
+        }
+    }
+
+    fn restart_verified(&self) -> bool {
+        self.verified.is_some()
+    }
+
+    async fn run<C: Connector, F: FnMut(Progress)>(
+        &mut self,
+        session: &mut Session<C>,
+        progress: &mut F,
+        index: usize,
+        step: &FlashStep,
+    ) -> Result<(), WriteError> {
+        let plan = self.plan;
+        match step {
+            FlashStep::Sys7Unload { lsm: idx } => {
+                let octet = lsm_octet(session.l4().target(), *idx)?;
+                self.lsm
+                    .drive(session.l4(), octet, LoadControl::Unload)
+                    .await?;
+            }
+            FlashStep::Sys7StartLoading { lsm: idx } => {
+                let octet = lsm_octet(session.l4().target(), *idx)?;
+                // A parameter-only download writes into the resident
+                // application (issue #146): the machine must hold it,
+                // or nothing is written.
+                if plan.is_parameters_only() {
+                    // A machine still completing an earlier load
+                    // (LoadCompleting) is waited out (issue #479).
+                    let actual = self
+                        .lsm
+                        .read_settled_state(session.l4(), octet, IntermediatePoll::STANDARD)
+                        .await?;
+                    if actual != LoadState::Loaded {
+                        return Err(WriteError::NotLoaded {
+                            address: session.l4().target(),
+                            object_index: octet,
+                            actual,
+                        });
+                    }
+                }
+                self.lsm
+                    .drive(session.l4(), octet, LoadControl::StartLoading)
+                    .await?;
+            }
+            FlashStep::Sys7AbsSegment {
+                address,
+                seg_flags,
+                image,
+                ..
+            } => {
+                // 1. Allocate the absolute segment on the LSM. The captures pin
+                //    opcode/subtype, big-endian start+length, `mem_type` and the
+                //    per-segment attribute octets, which the plan takes from the
+                //    op's `Access`/`MemType`/`SegFlags` (ETS reproduces them
+                //    verbatim) or derives from the address when absent.
+                //    Checked, not truncated: an out-of-range address used to go
+                //    out as a wrong allocation frame before the following write
+                //    refused.
+                self.send_record(session, step).await?;
+                let seg_addr = sys7_u16(session.l4().target(), "segment address", *address)?;
+                let seg_flags = *seg_flags;
+                // 2. Stream the segment's <Data>, if any, to its absolute address.
+                //    A data-less segment (0x0700 RAM region) is allocate-only.
+                if let Some(img) = image {
+                    let blind =
+                        stream_sys7_image(session, plan, seg_addr, img, &mut *progress).await?;
+                    // Spot-check only unmasked, checksum-controlled segments
+                    // written blind: a masked segment leaves device-owned
+                    // bytes untouched, so the image's leading octets do not
+                    // equal the device's memory; a `seg_flags == 0`
+                    // segment is rewritten by the running application after
+                    // the restart (1.1.36 `0x4916`: written `0c`, read back
+                    // `00`), so its sample proves nothing. A read-compare
+                    // write compared every octet already.
+                    if blind
+                        && !self.ctx.segment_masks.contains_key(&img.segment_id)
+                        && seg_flags != 0
+                        && let Some(bytes) = plan.images.get(&img.segment_id)
+                    {
+                        let part = image_part(bytes, img);
+                        self.written_samples.push((seg_addr, take_sample(part)));
+                    }
+                }
+            }
+            // A parameter segment written in place, with no allocation
+            // record: the System 7 parameter-only download (issue #146).
+            FlashStep::WriteMem { address, image } => {
+                let addr = sys7_u16(session.l4().target(), "write address", *address)?;
+                stream_sys7_image(session, plan, addr, image, &mut *progress).await?;
+            }
+            FlashStep::Sys7TaskSegment { .. }
+            | FlashStep::Sys7TaskCtrl1 { .. }
+            | FlashStep::Sys7TaskPtr { .. }
+            | FlashStep::Sys7TaskCtrl2 { .. } => self.send_record(session, step).await?,
+            FlashStep::Sys7LoadCompleted { lsm: idx } => {
+                let octet = lsm_octet(session.l4().target(), *idx)?;
+                self.lsm
+                    .drive(session.l4(), octet, LoadControl::LoadCompleted)
+                    .await?;
+                self.completed_lsms.push(*idx);
+            }
+            FlashStep::Sys7CompareMem { address, expected } => {
+                let addr = sys7_u16(session.l4().target(), "compare address", *address)?;
+                let got = read_sys7_memory(session, addr, expected.len()).await?;
+                if &got != expected {
+                    return Err(WriteError::Mgmt(
+                        bussard_mgmt::MgmtError::MemoryVerifyFailed {
+                            address: session.l4().target(),
+                            addr: u32::from(addr),
+                            expected: expected.clone(),
+                            got,
+                        },
+                    ));
+                }
+            }
+            FlashStep::LoadImageProp {
+                obj_idx,
+                prop_id,
+                count,
+                ..
+            } => {
+                // Jung A-A011 per-object MCB verification (`[system7-spec §2
+                // amendment]`): read the object's PID_MCB_TABLE. Read-back compare is
+                // the baseline verify, so a read-only MCB confirm here (no tool-side
+                // CRC) simply asserts the object serves a readable MCB entry.
+                if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
+                    read_mcb_table(
+                        session.l4(),
+                        (*obj_idx).min(u8::MAX.into()) as u8,
+                        1,
+                        (*count).max(1).min(u8::MAX.into()) as u8,
+                        None,
+                    )
+                    .await?;
+                }
+            }
+            FlashStep::Restart => {
+                // The terminal restart reboots the device and drops the L4
+                // connection, and the flash is only a real success if the load
+                // *persists* across that reboot (System B taught us a bad image
+                // silently reverts to Unloaded — the same rigor applies here). So
+                // when the session can re-open its own connection, verify AFTER the
+                // restart: fire the restart, wait out the reboot, reconnect and
+                // re-authorize (the retained connector), then re-read the LSM states
+                // and run the segment spot checks on the *fresh* connection. Reading
+                // the LSM status or a segment on the now-closed pre-restart
+                // connection is exactly the "management telegram with no open
+                // connection" rejection a real device (and the sim) issues.
+                //
+                // A session built from an already-open connection
+                // ([`Session::from_connection`], the mock-device tests) has no
+                // connector to reconnect with and its mock does not reboot — so fall
+                // back to verifying over the still-open connection *before* the
+                // restart, preserving those tests' behaviour.
+                if self.verify_after_restart && session.can_reconnect() {
+                    send_restart(session).await;
+                    // The device is unreachable while it reboots; poll for it
+                    // (bounded), then re-establish the authorized connection and
+                    // verify honestly on it.
+                    session.reconnect_after_reboot().await?;
+                    self.verified = Some(
+                        verify_sys7(
+                            session,
+                            &self.lsm,
+                            &self.completed_lsms,
+                            &self.written_samples,
+                        )
+                        .await?,
+                    );
+                } else {
+                    // No connector to reconnect with (mock): verify over the
+                    // still-open connection, then fire-and-forget the restart.
+                    self.verified = Some(
+                        verify_sys7(
+                            session,
+                            &self.lsm,
+                            &self.completed_lsms,
+                            &self.written_samples,
+                        )
+                        .await?,
+                    );
+                    send_restart(session).await;
+                }
+            }
+            FlashStep::Sys7PreDownloadRestart { unload } => {
+                for idx in unload {
+                    let octet = lsm_octet(session.l4().target(), *idx)?;
+                    match self
+                        .lsm
+                        .drive(session.l4(), octet, LoadControl::Unload)
+                        .await
+                    {
+                        Ok(_) => {}
+                        // ETS unloads LSMs 1 to 4 whatever the procedure
+                        // loads; a machine the device lacks, or one that
+                        // refuses, is no reason to stop before anything
+                        // was written. The procedure's own unloads stay
+                        // strict.
+                        Err(
+                            e @ (WriteError::ObjectAbsent { .. } | WriteError::LoadError { .. }),
+                        ) => {
+                            self.warnings.push(format!(
+                                "step {}: pre-download unload of LSM {idx} skipped: {e}",
+                                index + 1
+                            ));
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
+                // Reboot the device into its unloaded state and start the
+                // download on a fresh connection, as ETS does. Without a
+                // connector (a mock built from one open connection) the
+                // session could not come back, so the restart is skipped.
+                if session.can_reconnect() {
+                    send_restart(session).await;
+                    session.reconnect_after_reboot().await?;
+                }
+            }
+            FlashStep::EnableVerifyMode => {
+                // From here every segment write's echo is compared
+                // with the chunk (DMP_MemWrite_RCoV, Management
+                // Procedures 03_05_02 §3.16.3), and the session sets
+                // the mode again on every later connection (issue
+                // #524). A device without it streams as before.
+                match session.enable_verify_mode().await? {
+                    bussard_mgmt::VerifyModeOutcome::Refused { previous } => {
+                        self.warnings.push(format!(
+                            "step {}: the device refused verify mode \
+                             (PID_DEVICE_CONTROL stays {previous:#04X}); the segment \
+                             writes were not self.verified by echo",
+                            index + 1
+                        ));
+                    }
+                    bussard_mgmt::VerifyModeOutcome::Unsupported => {
+                        self.warnings.push(format!(
+                            "step {}: the device has no readable PID_DEVICE_CONTROL; \
+                             the segment writes were not self.verified by echo",
+                            index + 1
+                        ));
+                    }
+                    _ => {}
+                }
+            }
+            other => match run_shared_step(session, other).await {
+                Some(result) => result?,
+                // System B steps never appear in a System 7 plan.
+                None => {
+                    return Err(WriteError::Mgmt(
+                        bussard_mgmt::MgmtError::MalformedResponse {
+                            address: session.l4().target(),
+                            reason: format!("System 7 executor met a non-System-7 step: {other:?}"),
+                        },
+                    ));
+                }
+            },
+        }
+        Ok(())
+    }
+
+    fn recover(
+        &mut self,
+        index: usize,
+        step: &FlashStep,
+        err: WriteError,
+    ) -> Result<(), WriteError> {
+        match err {
+            // Unloading an object the device does not have leaves nothing
+            // loaded on it: the goal of the step already holds.
+            WriteError::ObjectAbsent { object_index, .. }
+                if matches!(step, FlashStep::Sys7Unload { .. }) =>
+            {
+                self.warnings.push(format!(
+                    "step {}: object {object_index} absent on the device, nothing to unload",
+                    index + 1
+                ));
+                Ok(())
+            }
+            // The terminal restart already ran and verified the download
+            // (issue #178): a step after it cannot undo that, so its failure
+            // is reported, not turned into a failed, "partially written"
+            // flash. The planner emits no such step; a hand-built plan can.
+            e if self.verified.is_some() => {
+                self.warnings.push(format!(
+                    "step {} ({}) after the final restart failed and was skipped: {e}",
+                    index + 1,
+                    self.plan.step_label(step)
+                ));
+                Ok(())
+            }
+            e => Err(e),
+        }
+    }
+}
+
+impl System7<'_> {
+    /// Sends the 10-octet event of a System 7 allocation or task step to its
+    /// load-state machine ([`FlashStep::sys7_event`]).
+    async fn send_record<C: Connector>(
+        &self,
+        session: &mut Session<C>,
+        step: &FlashStep,
+    ) -> Result<(), WriteError> {
+        let target = session.l4().target();
+        let Some(event) = step.sys7_event() else {
+            return Ok(());
+        };
+        let (idx, _, bytes) = event.map_err(|e| WriteError::AddressOutOfRange {
+            address: target,
+            detail: e.detail(),
+        })?;
+        let octet = lsm_octet(target, idx)?;
+        self.lsm.send_control(session.l4(), octet, &bytes).await
+    }
+}
 
 /// Executes a validated **System 7** [`FlashPlan`] (`[system7-spec §3/§4]`).
 ///
@@ -23,9 +371,10 @@ use bussard_mgmt::load::{
 ///
 /// The session was already authorized at connect time (System 7 requires
 /// `A_Authorize` before memory access; the free-access key is presented by
-/// [`Session::open`]). It shares the same resume-on-drop and proactive-L4-cycling
-/// discipline as [`flash`](super::flash) via the session, but has its own step loop because the
-/// LSM control and absolute streaming differ from System B.
+/// [`Session::open`]). The step loop, proactive L4 cycling and resume-on-drop
+/// are [`run_steps`], shared with [`flash`](super::flash). ETS holds one
+/// connection for the whole System 7 download, so the cycle is off unless the
+/// plan targets KNX Virtual or the environment asks for it (issue #116).
 pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
     session: &mut Session<C>,
     plan: &FlashPlan,
@@ -36,486 +385,36 @@ pub(super) async fn flash_sys7<C: Connector, F: FnMut(Progress)>(
         .sys7
         .as_ref()
         .expect("flash_sys7 called on a non-System-7 plan");
-    let lsm = bussard_mgmt::lsm_access_from_profile(&ctx.profile);
-    // Whether to verify after the terminal restart (real device) or before it (a
-    // mock that does not reboot-and-return). Read once, then consumed in the
-    // terminal-restart arm — same discipline as the System B path.
-    let verify_after_restart = options.verify_after_restart;
-    // The final outcome, captured either by the terminal-restart arm (verify AFTER
-    // reconnect) or by the post-loop fallback (a procedure with no final Restart).
-    let mut verified: Option<FlashOutcome> = None;
-    let total = plan.steps.len();
-    // Read-back spot-check samples of the segment writes (address, first octets).
-    let mut written_samples: Vec<(u16, Vec<u8>)> = Vec::new();
-    // The LSMs that reached LoadCompleted, in order, for the post-flash verify.
-    let mut completed_lsms: Vec<u32> = Vec::new();
-
-    // The proactive-reconnect exchange threshold (0 = disabled), read once — the
-    // same rule as the System B path: off unless the plan targets KNX Virtual
-    // or the environment asks for it (issue #116). ETS holds one connection for
-    // the whole System 7 download.
-    let reconnect_threshold = reconnect_exchange_threshold(plan);
-    // Findings that do not fail the flash (a skipped step, see below).
-    let mut warnings: Vec<String> = Vec::new();
-
-    for (i, step) in plan.steps.iter().enumerate() {
-        // Proactive periodic L4 reconnection between steps (never mid memory
-        // write). The LSM states and allocated segments are persistent device
-        // state, so they survive a graceful cycle. The terminal Restart reboots
-        // the device itself, so it is excluded.
-        let self_reconnecting = matches!(step, FlashStep::Restart);
-        // The pre-download pass reboots and reconnects too, so a cycle right
-        // before it would be wasted; unlike the terminal restart it stays
-        // resumable (its unloads are idempotent).
-        let reboots = self_reconnecting || matches!(step, FlashStep::Sys7PreDownloadRestart { .. });
-        if reconnect_threshold > 0
-            && session.can_reconnect()
-            && !reboots
-            && session.numbered_exchanges() >= reconnect_threshold
-        {
-            session.cycle_l4().await?;
-        }
-        progress(Progress::Step {
-            index: i + 1,
-            total,
-            label: plan.step_label(step),
-        });
-
-        // Resume-on-drop: run the step, and if it dies from an unexpected mid-flow
-        // connection death and the session can reconnect, cycle the connection and
-        // re-run the whole step. LSM state and allocated segments are persistent
-        // device state that survive the drop, and every System 7 memory write is
-        // absolute-addressed and idempotent, so replaying the step is safe. The
-        // terminal Restart reboots the device and is excluded (its silence is
-        // expected) unless the gateway link was lost while it ran (issue #192):
-        // then it is sent again once the device answers, which only reboots a
-        // loaded device once more. Its reconnect phase resumes across a link
-        // loss on its own (see `Session::reconnect_after_reboot`). Bounded by
-        // MAX_RESUME_RECONNECTS per step.
-        let mut resume_reconnects = 0u32;
-        'resume: loop {
-            let losses_before_attempt = session.link_losses();
-            let step_result: Result<(), WriteError> = async {
-                match step {
-                    FlashStep::Sys7Unload { lsm: idx } => {
-                        let octet = lsm_octet(session.l4().target(), *idx)?;
-                        lsm.drive(session.l4(), octet, LoadControl::Unload).await?;
-                    }
-                    FlashStep::Sys7StartLoading { lsm: idx } => {
-                        let octet = lsm_octet(session.l4().target(), *idx)?;
-                        // A parameter-only download writes into the resident
-                        // application (issue #146): the machine must hold it,
-                        // or nothing is written.
-                        if plan.is_parameters_only() {
-                            // A machine still completing an earlier load
-                            // (LoadCompleting) is waited out (issue #479).
-                            let actual = lsm
-                                .read_settled_state(session.l4(), octet, IntermediatePoll::STANDARD)
-                                .await?;
-                            if actual != LoadState::Loaded {
-                                return Err(WriteError::NotLoaded {
-                                    address: session.l4().target(),
-                                    object_index: octet,
-                                    actual,
-                                });
-                            }
-                        }
-                        lsm.drive(session.l4(), octet, LoadControl::StartLoading)
-                            .await?;
-                    }
-                    FlashStep::Sys7AbsSegment {
-                        lsm: idx,
-                        address,
-                        size,
-                        mem_type,
-                        access,
-                        seg_flags,
-                        seg_type,
-                        image,
-                    } => {
-                        // 1. Allocate the absolute segment on the LSM. The captures pin
-                        //    opcode/subtype, big-endian start+length, `mem_type` and the
-                        //    per-segment attribute octets, which the plan takes from the
-                        //    op's `Access`/`MemType`/`SegFlags` (ETS reproduces them
-                        //    verbatim) or derives from the address when absent.
-                        let (access, seg_flags) = (*access, *seg_flags);
-                        // Checked, not truncated: an out-of-range address used to go out as
-                        // a wrong allocation frame before the following write refused.
-                        let target = session.l4().target();
-                        let seg_addr = sys7_u16(target, "segment address", *address)?;
-                        let seg_size = sys7_u16(target, "segment size", *size)?;
-                        let event = bussard_mgmt::encode_alloc_segment(
-                            *seg_type, seg_addr, seg_size, access, *mem_type, seg_flags,
-                        );
-                        let octet = lsm_octet(target, *idx)?;
-                        lsm.send_control(session.l4(), octet, &event).await?;
-                        // 2. Stream the segment's <Data>, if any, to its absolute address.
-                        //    A data-less segment (0x0700 RAM region) is allocate-only.
-                        if let Some(img) = image {
-                            let blind =
-                                stream_sys7_image(session, plan, seg_addr, img, &mut progress)
-                                    .await?;
-                            // Spot-check only unmasked, checksum-controlled segments
-                            // written blind: a masked segment leaves device-owned
-                            // bytes untouched, so the image's leading octets do not
-                            // equal the device's memory; a `seg_flags == 0`
-                            // segment is rewritten by the running application after
-                            // the restart (1.1.36 `0x4916`: written `0c`, read back
-                            // `00`), so its sample proves nothing. A read-compare
-                            // write compared every octet already.
-                            if blind
-                                && !ctx.segment_masks.contains_key(&img.segment_id)
-                                && seg_flags != 0
-                                && let Some(bytes) = plan.images.get(&img.segment_id)
-                            {
-                                let part = image_part(bytes, img);
-                                written_samples.push((seg_addr, take_sample(part)));
-                            }
-                        }
-                    }
-                    // A parameter segment written in place, with no allocation
-                    // record: the System 7 parameter-only download (issue #146).
-                    FlashStep::WriteMem { address, image } => {
-                        let addr = sys7_u16(session.l4().target(), "write address", *address)?;
-                        stream_sys7_image(session, plan, addr, image, &mut progress).await?;
-                    }
-                    FlashStep::Sys7TaskSegment {
-                        lsm: idx,
-                        address,
-                        identity,
-                    } => {
-                        let target = session.l4().target();
-                        let task_addr = sys7_u16(target, "task segment address", *address)?;
-                        let event = bussard_mgmt::encode_task_segment(task_addr, identity);
-                        let octet = lsm_octet(target, *idx)?;
-                        lsm.send_control(session.l4(), octet, &event).await?;
-                    }
-                    FlashStep::Sys7TaskCtrl1 {
-                        lsm: idx,
-                        address,
-                        count,
-                    } => {
-                        let target = session.l4().target();
-                        let ctrl_addr = sys7_u16(target, "task control address", *address)?;
-                        let ctrl_count =
-                            u8::try_from(*count).map_err(|_| WriteError::AddressOutOfRange {
-                                address: target,
-                                detail: format!(
-                                    "System 7 task control count {count} does not fit the record's \
-                             single count octet"
-                                ),
-                            })?;
-                        let event = bussard_mgmt::encode_task_ctrl1(ctrl_addr, ctrl_count);
-                        let octet = lsm_octet(target, *idx)?;
-                        lsm.send_control(session.l4(), octet, &event).await?;
-                    }
-                    FlashStep::Sys7TaskPtr {
-                        lsm: idx,
-                        init,
-                        save,
-                        pei_handler,
-                    } => {
-                        let event = bussard_mgmt::encode_task_ptr(*init, *save, *pei_handler);
-                        let octet = lsm_octet(session.l4().target(), *idx)?;
-                        lsm.send_control(session.l4(), octet, &event).await?;
-                    }
-                    FlashStep::Sys7TaskCtrl2 {
-                        lsm: idx,
-                        callback,
-                        com_objects,
-                        segment_1,
-                        segment_2,
-                    } => {
-                        let event = bussard_mgmt::encode_task_ctrl2(
-                            *callback,
-                            *com_objects,
-                            *segment_1,
-                            *segment_2,
-                        );
-                        let octet = lsm_octet(session.l4().target(), *idx)?;
-                        lsm.send_control(session.l4(), octet, &event).await?;
-                    }
-                    FlashStep::Sys7LoadCompleted { lsm: idx } => {
-                        let octet = lsm_octet(session.l4().target(), *idx)?;
-                        lsm.drive(session.l4(), octet, LoadControl::LoadCompleted)
-                            .await?;
-                        completed_lsms.push(*idx);
-                    }
-                    FlashStep::Sys7CompareMem { address, expected } => {
-                        let addr = sys7_u16(session.l4().target(), "compare address", *address)?;
-                        let got = read_sys7_memory(session, addr, expected.len()).await?;
-                        if &got != expected {
-                            return Err(WriteError::Mgmt(
-                                bussard_mgmt::MgmtError::MemoryVerifyFailed {
-                                    address: session.l4().target(),
-                                    addr: u32::from(addr),
-                                    expected: expected.clone(),
-                                    got,
-                                },
-                            ));
-                        }
-                    }
-                    FlashStep::DescribeProp { object, prop_id } => {
-                        // ETS's description read for a property write it has no
-                        // value for (issue #841); the answer changes nothing.
-                        super::props::describe_property(session.l4(), *object, *prop_id).await?;
-                    }
-                    FlashStep::CompareProp {
-                        object,
-                        prop_id,
-                        expected,
-                        mask,
-                        start_element,
-                    } => {
-                        // The obj0/PID78 preflight and any other property compare: identical
-                        // to System B (an interface-object property read + compare).
-                        if let Some(expected) = expected {
-                            super::props::compare_property_value(
-                                session.l4(),
-                                *object,
-                                *prop_id,
-                                *start_element,
-                                expected,
-                                mask.as_deref(),
-                            )
-                            .await?;
-                        }
-                    }
-                    FlashStep::WriteProp {
-                        object,
-                        prop_id,
-                        value,
-                        start_element,
-                        count,
-                        verify,
-                        ..
-                    } => {
-                        // A property write of the procedure (issue #390), with its
-                        // Count and Verify, as on System B.
-                        super::props::write_property_value(
-                            session.l4(),
-                            *object,
-                            *prop_id,
-                            *start_element,
-                            *count,
-                            value,
-                            *verify,
-                        )
-                        .await?;
-                    }
-                    FlashStep::LoadImageProp {
-                        obj_idx,
-                        prop_id,
-                        count,
-                        ..
-                    } => {
-                        // Jung A-A011 per-object MCB verification (`[system7-spec §2
-                        // amendment]`): read the object's PID_MCB_TABLE. Read-back compare is
-                        // the baseline verify, so a read-only MCB confirm here (no tool-side
-                        // CRC) simply asserts the object serves a readable MCB entry.
-                        if *prop_id == u32::from(bussard_mgmt::PID_MCB_TABLE) {
-                            read_mcb_table(
-                                session.l4(),
-                                (*obj_idx).min(u8::MAX.into()) as u8,
-                                1,
-                                (*count).max(1).min(u8::MAX.into()) as u8,
-                                None,
-                            )
-                            .await?;
-                        }
-                    }
-                    FlashStep::Restart => {
-                        // The terminal restart reboots the device and drops the L4
-                        // connection, and the flash is only a real success if the load
-                        // *persists* across that reboot (System B taught us a bad image
-                        // silently reverts to Unloaded — the same rigor applies here). So
-                        // when the session can re-open its own connection, verify AFTER the
-                        // restart: fire the restart, wait out the reboot, reconnect and
-                        // re-authorize (the retained connector), then re-read the LSM states
-                        // and run the segment spot checks on the *fresh* connection. Reading
-                        // the LSM status or a segment on the now-closed pre-restart
-                        // connection is exactly the "management telegram with no open
-                        // connection" rejection a real device (and the sim) issues.
-                        //
-                        // A session built from an already-open connection
-                        // ([`Session::from_connection`], the mock-device tests) has no
-                        // connector to reconnect with and its mock does not reboot — so fall
-                        // back to verifying over the still-open connection *before* the
-                        // restart, preserving those tests' behaviour.
-                        let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                        if verify_after_restart && session.can_reconnect() {
-                            let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            // The device is unreachable while it reboots; poll for it
-                            // (bounded), then re-establish the authorized connection and
-                            // verify honestly on it.
-                            session.reconnect_after_reboot().await?;
-                            verified = Some(
-                                verify_sys7(session, &lsm, &completed_lsms, &written_samples)
-                                    .await?,
-                            );
-                        } else {
-                            // No connector to reconnect with (mock): verify over the
-                            // still-open connection, then fire-and-forget the restart.
-                            verified = Some(
-                                verify_sys7(session, &lsm, &completed_lsms, &written_samples)
-                                    .await?,
-                            );
-                            let _ = session.l4().send_data_unacked(apci, &payload).await;
-                        }
-                    }
-                    FlashStep::Sys7PreDownloadRestart { unload } => {
-                        for idx in unload {
-                            let octet = lsm_octet(session.l4().target(), *idx)?;
-                            match lsm.drive(session.l4(), octet, LoadControl::Unload).await {
-                                Ok(_) => {}
-                                // ETS unloads LSMs 1 to 4 whatever the procedure
-                                // loads; a machine the device lacks, or one that
-                                // refuses, is no reason to stop before anything
-                                // was written. The procedure's own unloads stay
-                                // strict.
-                                Err(
-                                    e @ (WriteError::ObjectAbsent { .. }
-                                    | WriteError::LoadError { .. }),
-                                ) => {
-                                    warnings.push(format!(
-                                        "step {}: pre-download unload of LSM {idx} skipped: {e}",
-                                        i + 1
-                                    ));
-                                }
-                                Err(e) => return Err(e),
-                            }
-                        }
-                        // Reboot the device into its unloaded state and start the
-                        // download on a fresh connection, as ETS does. Without a
-                        // connector (a mock built from one open connection) the
-                        // session could not come back, so the restart is skipped.
-                        if session.can_reconnect() {
-                            let (apci, payload) = bussard_mgmt::apci::encode_restart(0);
-                            let _ = session.l4().send_data_unacked(apci, &payload).await;
-                            session.reconnect_after_reboot().await?;
-                        }
-                    }
-                    FlashStep::EnableVerifyMode => {
-                        // From here every segment write's echo is compared
-                        // with the chunk (DMP_MemWrite_RCoV, Management
-                        // Procedures 03_05_02 §3.16.3), and the session sets
-                        // the mode again on every later connection (issue
-                        // #524). A device without it streams as before.
-                        match session.enable_verify_mode().await? {
-                            bussard_mgmt::VerifyModeOutcome::Refused { previous } => {
-                                warnings.push(format!(
-                                    "step {}: the device refused verify mode \
-                                     (PID_DEVICE_CONTROL stays {previous:#04X}); the segment \
-                                     writes were not verified by echo",
-                                    i + 1
-                                ));
-                            }
-                            bussard_mgmt::VerifyModeOutcome::Unsupported => {
-                                warnings.push(format!(
-                                    "step {}: the device has no readable PID_DEVICE_CONTROL; \
-                                     the segment writes were not verified by echo",
-                                    i + 1
-                                ));
-                            }
-                            _ => {}
-                        }
-                    }
-                    // The KNXnet/IP parameters of an IP-enabled device (issue
-                    // #455, the COMIP2 on 0701), as on System B.
-                    FlashStep::KnxnetIpParameters { program } => {
-                        super::knxnet_ip::write_knxnet_ip(session.l4(), program).await?;
-                    }
-                    FlashStep::Delay { milliseconds } => {
-                        super::execute::delay_step(*milliseconds).await;
-                    }
-                    // System B steps never appear in a System 7 plan.
-                    other => {
-                        return Err(WriteError::Mgmt(
-                            bussard_mgmt::MgmtError::MalformedResponse {
-                                address: session.l4().target(),
-                                reason: format!(
-                                    "System 7 executor met a non-System-7 step: {other:?}"
-                                ),
-                            },
-                        ));
-                    }
-                }
-                Ok(())
-            }
-            .await;
-
-            match step_result {
-                Ok(()) => break 'resume,
-                Err(e)
-                    if resumable_death(&e, session)
-                        && !self_reconnecting
-                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
-                {
-                    resume_reconnects += 1;
-                    session.reconnect().await?;
-                }
-                // The terminal restart cut short by a gateway link loss (#192).
-                Err(e)
-                    if resumable_death(&e, session)
-                        && self_reconnecting
-                        && verified.is_none()
-                        && session.link_losses() != losses_before_attempt
-                        && resume_reconnects < MAX_RESUME_RECONNECTS =>
-                {
-                    resume_reconnects += 1;
-                    tracing::warn!(
-                        "step {} ({}) was cut short by a gateway link loss ({e}); \
-                         reconnecting and repeating it",
-                        i + 1,
-                        plan.step_label(step)
-                    );
-                    session.reconnect_after_reboot().await?;
-                }
-                // Unloading an object the device does not have leaves nothing
-                // loaded on it: the goal of the step already holds.
-                Err(WriteError::ObjectAbsent { object_index, .. })
-                    if matches!(step, FlashStep::Sys7Unload { .. }) =>
-                {
-                    warnings.push(format!(
-                        "step {}: object {object_index} absent on the device, nothing to unload",
-                        i + 1
-                    ));
-                    break 'resume;
-                }
-                // The terminal restart already ran and verified the download
-                // (issue #178): a step after it cannot undo that, so its failure
-                // is reported, not turned into a failed, "partially written"
-                // flash. The planner emits no such step; a hand-built plan can.
-                Err(e) if verified.is_some() => {
-                    warnings.push(format!(
-                        "step {} ({}) after the final restart failed and was skipped: {e}",
-                        i + 1,
-                        plan.step_label(step)
-                    ));
-                    break 'resume;
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
+    let mut exec = System7 {
+        plan,
+        ctx,
+        lsm: bussard_mgmt::lsm_access_from_profile(&ctx.profile),
+        verify_after_restart: options.verify_after_restart,
+        verified: None,
+        written_samples: Vec::new(),
+        completed_lsms: Vec::new(),
+        warnings: Vec::new(),
+    };
+    let threshold = reconnect_exchange_threshold(plan);
+    run_steps(session, plan, threshold, &mut progress, &mut exec).await?;
 
     // The terminal restart captured the outcome (verify AFTER reboot). A procedure
     // with no final Restart falls back to verifying now over the still-open
     // connection.
-    let mut outcome = match verified {
+    let mut outcome = match exec.verified {
         Some(outcome) => outcome,
-        None => verify_sys7(session, &lsm, &completed_lsms, &written_samples).await?,
+        None => {
+            verify_sys7(
+                session,
+                &exec.lsm,
+                &exec.completed_lsms,
+                &exec.written_samples,
+            )
+            .await?
+        }
     };
-    outcome.warnings.extend(warnings);
+    outcome.warnings.extend(exec.warnings);
     Ok(outcome)
-}
-
-/// The octets of `bytes` (an image, its mask or its baseline) that `image`
-/// streams: `image.len` octets from `image.offset`, clamped to `bytes`.
-fn image_part<'a>(bytes: &'a [u8], image: &ImageRef) -> &'a [u8] {
-    let start = image.offset.min(bytes.len());
-    let end = image.offset.saturating_add(image.len).min(bytes.len());
-    &bytes[start..end]
 }
 
 /// Streams the plan's image for `segment_id` to `addr` and reports whether it

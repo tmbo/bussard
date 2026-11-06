@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use bussard_mgmt::apci;
 use bussard_mgmt::{
-    DeviceConnection, broadcast, read_individual_address_by_serial, write_individual_address,
+    Layer4Connection, broadcast, read_individual_address_by_serial, write_individual_address,
     write_individual_address_by_serial,
 };
 use bussard_model::IndividualAddress;
@@ -114,8 +114,7 @@ async fn discover_write_and_verify_round_trip() -> TestResult {
     // 1. Discover exactly one device in programming mode. The mock answers
     //    instantly, so a short collection window keeps the test fast without
     //    changing what it proves.
-    let found =
-        broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW).await?;
+    let found = broadcast::devices_in_programming_mode(&mut bus, source, SHORT_WINDOW).await?;
     assert_eq!(found, vec!["15.15.255".parse()?]);
 
     // 2. Write the new address.
@@ -123,8 +122,14 @@ async fn discover_write_and_verify_round_trip() -> TestResult {
     write_individual_address(&mut bus, source, target).await?;
 
     // 3. Verify: connect to the NEW address and read the descriptor.
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
-    let mask = dev.device_descriptor().await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut dev).await?;
     assert_eq!(mask, 0x07B0);
     let order = dev.read_device_property(apci::PID_ORDER_INFO).await?;
     assert_eq!(order, b"MDT-JAL0410");
@@ -148,8 +153,7 @@ async fn zero_devices_in_programming_mode_is_empty() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let found =
-        broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW).await?;
+    let found = broadcast::devices_in_programming_mode(&mut bus, source, SHORT_WINDOW).await?;
     assert!(found.is_empty());
     drop(gw);
     Ok(())
@@ -162,8 +166,7 @@ async fn two_devices_in_programming_mode_both_reported() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let found =
-        broadcast::devices_in_programming_mode_within(&mut bus, source, SHORT_WINDOW).await?;
+    let found = broadcast::devices_in_programming_mode(&mut bus, source, SHORT_WINDOW).await?;
     assert_eq!(found.len(), 2, "both responders surface: {found:?}");
     drop(gw);
     Ok(())
@@ -190,8 +193,8 @@ async fn verify_fails_when_address_not_applied() -> TestResult {
         response_timeout: Duration::from_millis(50),
         absent_on_negative_confirmation: false,
     };
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast).await?;
-    let err = must_fail(dev.device_descriptor().await)?;
+    let mut dev = Layer4Connection::connect(&mut bus, target, source, fast.into()).await?;
+    let err = must_fail(bussard_mgmt::read_device_descriptor(&mut dev).await)?;
     assert!(
         !err.device_present(),
         "no device at the new address: {err:?}"
@@ -211,7 +214,13 @@ async fn serial_number_read_and_write_round_trip() -> TestResult {
     let serial = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05];
 
     // Read the current address by serial number (no button press).
-    let current = read_individual_address_by_serial(&mut bus, source, serial).await?;
+    let current = read_individual_address_by_serial(
+        &mut bus,
+        source,
+        serial,
+        broadcast::PROGRAMMING_MODE_WINDOW,
+    )
+    .await?;
     assert_eq!(current, Some("15.15.255".parse()?));
 
     // Write a new address by serial number.
@@ -219,8 +228,17 @@ async fn serial_number_read_and_write_round_trip() -> TestResult {
     write_individual_address_by_serial(&mut bus, source, serial, target).await?;
 
     // Verify on the new address.
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
-    assert_eq!(dev.device_descriptor().await?, 0x07B0);
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        bussard_mgmt::read_device_descriptor(&mut dev).await?,
+        0x07B0
+    );
     dev.disconnect().await?;
 
     {
@@ -241,13 +259,9 @@ async fn serial_read_unknown_serial_is_none() -> TestResult {
     let unknown = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     // An unknown serial is ruled out only once the window elapses; a short one
     // keeps this absent-path test fast.
-    let found = broadcast::read_individual_address_by_serial_within(
-        &mut bus,
-        source,
-        unknown,
-        SHORT_WINDOW,
-    )
-    .await?;
+    let found =
+        broadcast::read_individual_address_by_serial(&mut bus, source, unknown, SHORT_WINDOW)
+            .await?;
     assert_eq!(found, None);
     drop(gw);
     Ok(())

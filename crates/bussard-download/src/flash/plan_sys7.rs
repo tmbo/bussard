@@ -2098,7 +2098,7 @@ pub(super) fn parse_compare_mem(attrs: &[(String, String)]) -> Option<(u32, Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flash::plan::plan_flash;
+    use crate::flash::test_support::plan_flash_default;
 
     #[test]
     fn test_parse_compare_mem_compares_size_octets() -> Result<(), Box<dyn std::error::Error>> {
@@ -2653,7 +2653,7 @@ mod tests {
     fn plan_descriptor_table(
         app: &ApplicationProgram,
     ) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             app,
             "1.1.99",
             0x0701,
@@ -2872,7 +2872,7 @@ mod tests {
     #[test]
     fn test_plan_flash_sys7_stack_segment_keeps_seg_type() -> Result<(), Box<dyn std::error::Error>>
     {
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &sys7_app_with_seg_type("1")?,
             "1.1.99",
             0x0705,
@@ -2903,7 +2903,7 @@ mod tests {
 
     #[test]
     fn test_plan_flash_sys7_unknown_seg_type_refuses() -> Result<(), Box<dyn std::error::Error>> {
-        let err = plan_flash(
+        let err = plan_flash_default(
             &sys7_app_with_seg_type("2")?,
             "1.1.99",
             0x0705,
@@ -2924,7 +2924,7 @@ mod tests {
         address: u32,
         size: u32,
     ) -> std::result::Result<FlashPlan, PlanError> {
-        plan_flash(
+        plan_flash_default(
             &sys7_app_with(lsm, address, size),
             "1.1.99",
             0x0705,
@@ -3000,7 +3000,7 @@ mod tests {
     #[test]
     fn plan_lowers_system_7() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_sys7_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0705,
@@ -3169,7 +3169,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-0083_A-E", xml.as_bytes())?;
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0705,
@@ -3233,7 +3233,7 @@ mod tests {
         let app = parse_application_program("M-0083_A-F", xml.as_bytes())?;
         let overrides: BTreeMap<String, String> =
             [("P-2_R-2".to_string(), "200".to_string())].into();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0705,
@@ -3279,7 +3279,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-0048_A-4947", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0701,
@@ -3338,7 +3338,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-0048_A-4947", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0701,
@@ -3403,7 +3403,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-00FA_A-0615", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0701,
@@ -3471,7 +3471,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-0071_A-3211", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.99",
             0x0701,
@@ -3526,7 +3526,7 @@ mod tests {
         )?;
         let identity = sys7_task_identity(&app)?;
         assert_eq!(identity.octets(), [0x01, 0x00, 0xB6, 0x45, 0x37, 0x03]);
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.1",
             0x0705,
@@ -3591,7 +3591,7 @@ mod tests {
             .err()
             .ok_or("no PeiType must refuse")?;
         assert!(reason.contains("PeiType"), "{reason}");
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.1",
             0x0705,
@@ -3843,7 +3843,7 @@ mod tests {
         app: &ApplicationProgram,
         n: u16,
     ) -> std::result::Result<FlashPlan, Box<dyn std::error::Error>> {
-        Ok(plan_flash(
+        Ok(plan_flash_default(
             app,
             "1.1.49",
             0x0705,
@@ -4145,7 +4145,7 @@ mod tests {
     ) -> std::result::Result<FlashPlan, PlanError> {
         let overrides: BTreeMap<String, String> =
             [("P-1_R-1".to_string(), kept.to_string())].into();
-        plan_flash(
+        plan_flash_default(
             app,
             "1.1.99",
             0x0705,
@@ -4337,7 +4337,7 @@ mod tests {
         let mut seen = BTreeSet::new();
         let (mut sys7, mut sys_b, mut sys7_choose, mut sys_b_choose) = (0, 0, 0, 0);
         let mut default_splits = Vec::new();
-        for path in crate::sweep::knxprod_files(&dir) {
+        for path in crate::corpus::knxprod_files(&dir) {
             let Ok(product) = bussard_prod::read_knxprod(&path) else {
                 continue;
             };
@@ -4394,7 +4394,7 @@ mod tests {
                         .iter()
                         .any(|&(base, len, _)| sys7_segment_parts(&allocs, base, len).is_some())
                     {
-                        let kept = plan_flash(
+                        let kept = plan_flash_default(
                             app,
                             "1.1.99",
                             device_mask,

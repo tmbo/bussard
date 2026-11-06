@@ -13,11 +13,11 @@ use std::collections::HashMap;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
-use crate::dpt_map::parse_ets_dpt;
 use crate::error::{ImportError, Result};
-use crate::flag_map::FlagSet;
 use crate::version::SchemaVersion;
 use bussard_ets::attrs::{attr_value, attrs_map, flagset_from, get};
+use bussard_ets::dpt::parse_ets_dpt;
+use bussard_ets::flags::FlagSet;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress};
 
 /// A group address as read from the project file.

@@ -116,14 +116,13 @@ fn run(args: &RestartArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let outcome = runtime
         .block_on(async move {
             let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
-            let options = L4Options {
-                source: SourcePolicy::Check {
+            let options = L4Options::secured(
+                SourcePolicy::Check {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                high_water: bussard_secure::SequenceHighWater::new(),
-                ..L4Options::default()
-            };
+                bussard_secure::SequenceHighWater::new(),
+            );
             let outcome = restart_device(&service, target, &options, choice.form, wait).await;
             service.close().await;
             anyhow::Ok(outcome)

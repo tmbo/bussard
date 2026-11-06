@@ -37,7 +37,7 @@
 //! Nothing here reads or prints key material: PID 53 is read for its element
 //! count only, and every message names addresses and object numbers.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_download::{
     DesiredTables, FlashPlan, FlashStep, LiveRead, PropObject, SecurityInputs, build_table_images,
@@ -54,6 +54,7 @@ use bussard_prod::{ApplicationProgram, ProductData};
 
 use crate::bus::{BusService, L4Options};
 use crate::params::FlashedParameters;
+use crate::util::chain;
 
 /// The parameter half of an [`Expected`]: what the memory is decoded with
 /// and compared against.
@@ -272,7 +273,13 @@ impl<'a> Expected<'a> {
     ) -> Expected<'a> {
         let loads = |lsm: u32| crate::flash_flow::loads_lsm(flash, lsm);
         let (overrides, _) = parameter_overrides(model, target);
-        let images = build_table_images(model, target, app, &overrides);
+        let images = build_table_images(
+            model,
+            target,
+            app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
+        );
         let links: &[bussard_model::schema::Link] = model
             .and_then(|m| m.links.links.get(&target))
             .map(Vec::as_slice)
@@ -363,37 +370,72 @@ impl Leftover {
     }
 }
 
-/// How many items of each kind the read-back compared. A `None` field was
-/// not compared.
+/// What a read-back counts: the `compared` keys of the `--json` result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Counted {
+    /// Group address table entries.
+    Addresses,
+    /// Association table entries.
+    Associations,
+    /// Group-object table entries.
+    GroupObjects,
+    /// Parameter values decoded and compared.
+    Parameters,
+    /// Group key table (PID 53) entries.
+    GroupKeys,
+    /// Security individual address table (PID 54) entries.
+    SecureSenders,
+    /// Group objects flagged secured (PID 61).
+    SecuredObjects,
+    /// Properties a load procedure wrote (issue #390).
+    Properties,
+}
+
+impl Counted {
+    /// `n` of these in the summary's words (`2 group addresses`,
+    /// `1 group key (PID 53)`).
+    fn phrase(self, n: usize) -> String {
+        let (one, many, suffix) = match self {
+            Counted::Addresses => ("group address", "group addresses", ""),
+            Counted::Associations => ("association", "associations", ""),
+            Counted::GroupObjects => ("group object", "group objects", ""),
+            Counted::Parameters => ("parameter", "parameters", ""),
+            Counted::GroupKeys => ("group key", "group keys", " (PID 53)"),
+            Counted::SecureSenders => ("secure sender", "secure senders", " (PID 54)"),
+            Counted::SecuredObjects => ("secured object", "secured objects", " (PID 61)"),
+            Counted::Properties => (
+                "load-procedure property value",
+                "load-procedure property values",
+                "",
+            ),
+        };
+        format!("{}{suffix}", counted(n, one, many))
+    }
+}
+
+/// How many items of each kind the read-back compared; a kind that is not
+/// in the map was not compared.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Compared {
-    /// Group address table entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub addresses: Option<usize>,
-    /// Association table entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub associations: Option<usize>,
-    /// Group-object table entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_objects: Option<u16>,
-    /// Parameter values decoded and compared.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub parameters: Option<usize>,
-    /// Group key table (PID 53) entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub group_keys: Option<u16>,
-    /// Security individual address table (PID 54) entries.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secure_senders: Option<usize>,
-    /// Group objects flagged secured (PID 61).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub secured_objects: Option<usize>,
+    /// The counts, by kind.
+    #[serde(flatten)]
+    pub counts: BTreeMap<Counted, usize>,
     /// The security object's load state as read (PID 5, issue #534).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_load_state: Option<String>,
-    /// Properties a load procedure wrote (issue #390).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub properties: Option<usize>,
+}
+
+impl Compared {
+    /// Records that `n` items of `kind` were compared.
+    pub fn set(&mut self, kind: Counted, n: usize) {
+        self.counts.insert(kind, n);
+    }
+
+    /// How many items of `kind` were compared, `None` when none was.
+    pub fn get(&self, kind: Counted) -> Option<usize> {
+        self.counts.get(&kind).copied()
+    }
 }
 
 /// What the post-write read-back found.
@@ -460,46 +502,9 @@ impl WriteReadback {
     /// 14 parameters`); `nothing` when nothing was.
     pub fn summary(&self) -> String {
         let c = &self.compared;
-        let mut parts = Vec::new();
-        if let Some(n) = c.addresses {
-            parts.push(counted(n, "group address", "group addresses"));
-        }
-        if let Some(n) = c.associations {
-            parts.push(counted(n, "association", "associations"));
-        }
-        if let Some(n) = c.group_objects {
-            parts.push(counted(n, "group object", "group objects"));
-        }
-        if let Some(n) = c.parameters {
-            parts.push(counted(n, "parameter", "parameters"));
-        }
-        if let Some(n) = c.group_keys {
-            parts.push(format!(
-                "{} (PID 53)",
-                counted(n, "group key", "group keys")
-            ));
-        }
-        if let Some(n) = c.secure_senders {
-            parts.push(format!(
-                "{} (PID 54)",
-                counted(n, "secure sender", "secure senders")
-            ));
-        }
-        if let Some(n) = c.secured_objects {
-            parts.push(format!(
-                "{} (PID 61)",
-                counted(n, "secured object", "secured objects")
-            ));
-        }
+        let mut parts: Vec<String> = c.counts.iter().map(|(k, n)| k.phrase(*n)).collect();
         if let Some(state) = &c.security_load_state {
             parts.push(format!("security object {state} (PID 5)"));
-        }
-        if let Some(n) = c.properties {
-            parts.push(counted(
-                n,
-                "load-procedure property value",
-                "load-procedure property values",
-            ));
         }
         if parts.is_empty() {
             "nothing".to_string()
@@ -508,7 +513,9 @@ impl WriteReadback {
         }
     }
 
+    /// Records a leftover: the read-back is no longer verified.
     pub(crate) fn push(&mut self, kind: LeftoverKind, item: String, device: String, model: String) {
+        self.verified = false;
         self.leftovers.push(Leftover {
             kind,
             item,
@@ -522,18 +529,6 @@ impl WriteReadback {
 fn counted(n: impl Into<usize>, one: &str, many: &str) -> String {
     let n: usize = n.into();
     format!("{n} {}", if n == 1 { one } else { many })
-}
-
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
-    }
-    out
 }
 
 /// `1 entry`, `3 entries`.
@@ -553,7 +548,7 @@ pub async fn read_back<Ch: L4Channel>(
 ) -> WriteReadback {
     let mut out = WriteReadback::default();
     if expected.tables.is_some() || expected.group_objects.is_some() {
-        match bussard_download::read_live_tables_at(l4, expected.table_bases).await {
+        match bussard_download::read_live_tables(l4, expected.table_bases).await {
             Ok(LiveRead::Tables(live)) => {
                 compare_tables(&mut out, live.tables(), expected);
                 if let (Some(s7), Some(desired)) = (live.sys7(), &expected.tables) {
@@ -631,7 +626,7 @@ async fn compare_properties<Ch: L4Channel>(
             ),
         }
     }
-    out.compared.properties = Some(expected.len());
+    out.compared.set(Counted::Properties, expected.len());
 }
 
 /// [`read_back`] on a fresh session to `target` (an apply, after its writes
@@ -698,8 +693,9 @@ fn compare_tables(out: &mut WriteReadback, live: &DeviceTables, expected: &Expec
                 entries(desired.associations.len()),
             );
         }
-        out.compared.addresses = Some(live.addresses.len());
-        out.compared.associations = Some(live.associations.len());
+        out.compared.set(Counted::Addresses, live.addresses.len());
+        out.compared
+            .set(Counted::Associations, live.associations.len());
     }
     if let Some(want) = expected.group_objects {
         match live.group_objects {
@@ -712,7 +708,7 @@ fn compare_tables(out: &mut WriteReadback, live: &DeviceTables, expected: &Expec
                         entries(usize::from(want)),
                     );
                 }
-                out.compared.group_objects = Some(count);
+                out.compared.set(Counted::GroupObjects, usize::from(count));
             }
             None => out
                 .notes
@@ -769,7 +765,8 @@ async fn compare_object_table<Ch: L4Channel>(
             );
         }
     }
-    out.compared.group_objects = Some(live.count);
+    out.compared
+        .set(Counted::GroupObjects, usize::from(live.count));
 }
 
 /// The System 7 communication flags against the model's links: C on for
@@ -810,18 +807,12 @@ fn compare_parameters(out: &mut WriteReadback, flashed: &FlashedParameters) {
         return;
     }
     for d in &flashed.differences {
-        let unit = d.unit.as_deref().filter(|u| !u.is_empty());
-        let with_unit = |v: &str| match unit {
-            Some(u) => format!("{v} {u}"),
-            None => v.to_string(),
-        };
         out.push(
             LeftoverKind::Parameter,
             format!("parameter {} ({})", d.key, d.name),
-            d.device
-                .as_deref()
-                .map_or_else(|| "an unreadable value".to_string(), with_unit),
-            with_unit(&d.model),
+            d.old_with_unit()
+                .unwrap_or_else(|| "an unreadable value".to_string()),
+            d.new_with_unit(),
         );
     }
     if !flashed.kept.is_empty() {
@@ -838,7 +829,7 @@ fn compare_parameters(out: &mut WriteReadback, flashed: &FlashedParameters) {
             names.join(", ")
         ));
     }
-    out.compared.parameters = Some(flashed.compared);
+    out.compared.set(Counted::Parameters, flashed.compared);
 }
 
 /// The security object's PID 53 count, PID 54 and PID 61 against the
@@ -860,7 +851,7 @@ async fn compare_security<Ch: L4Channel>(
                     entries(usize::from(expected.group_keys)),
                 );
             }
-            out.compared.group_keys = Some(count);
+            out.compared.set(Counted::GroupKeys, usize::from(count));
         }
         Err(err) => out
             .notes
@@ -894,7 +885,7 @@ async fn compare_security<Ch: L4Channel>(
                 "not listed".to_string(),
             );
         }
-        out.compared.secure_senders = Some(held.len());
+        out.compared.set(Counted::SecureSenders, held.len());
     }
     if let Some(held) = readback.secured_objects() {
         for object in expected.secured_objects.difference(&held) {
@@ -913,7 +904,7 @@ async fn compare_security<Ch: L4Channel>(
                 "plain".to_string(),
             );
         }
-        out.compared.secured_objects = Some(held.len());
+        out.compared.set(Counted::SecuredObjects, held.len());
     }
 }
 
@@ -1098,8 +1089,8 @@ mod tests {
         let mut out = WriteReadback::default();
         compare_tables(&mut out, &live, &expected);
         assert!(out.leftovers.is_empty(), "{:?}", out.leftovers);
-        assert_eq!(out.compared.addresses, Some(1));
-        assert_eq!(out.compared.group_objects, Some(21));
+        assert_eq!(out.compared.get(Counted::Addresses), Some(1));
+        assert_eq!(out.compared.get(Counted::GroupObjects), Some(21));
         assert_eq!(
             out.summary(),
             "1 group address, 1 association, 21 group objects"
@@ -1149,7 +1140,13 @@ mod tests {
             .ok_or("a built-in 07B0 template")?
             .ops;
         let overrides = std::collections::BTreeMap::new();
-        let tables = bussard_download::build_table_images(None, "1.1.1".parse()?, &app, &overrides);
+        let tables = bussard_download::build_table_images(
+            None,
+            "1.1.1".parse()?,
+            &app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         Ok(bussard_download::plan_flash(
             &app,
             "1.1.1",
@@ -1158,6 +1155,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             Some(&template),
             &tables,
+            &std::collections::BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?)
     }
 
@@ -1203,12 +1202,17 @@ mod tests {
                 &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
             )
             .await?;
-            let mut l4 =
-                Layer4Connection::connect(&mut bus, "1.1.1".parse()?, "0.0.255".parse()?).await?;
+            let mut l4 = Layer4Connection::connect(
+                &mut bus,
+                "1.1.1".parse()?,
+                "0.0.255".parse()?,
+                bussard_mgmt::ConnectOptions::default(),
+            )
+            .await?;
             let out = read_back(&mut l4, &expected).await;
             let _ = l4.disconnect().await;
             assert_eq!(out.verified, verified, "{:?}", out.leftovers);
-            assert_eq!(out.compared.properties, Some(1));
+            assert_eq!(out.compared.get(Counted::Properties), Some(1));
             if !verified {
                 assert_eq!(out.leftovers[0].item, "object 4 PID 201");
                 assert_eq!(out.leftovers[0].device, "FF");
@@ -1231,8 +1235,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 =
-            Layer4Connection::connect(&mut bus, "1.1.200".parse()?, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            "1.1.200".parse()?,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let ip = PropObject::Type {
             object_type: 11,
             occurrence: 0,
@@ -1259,7 +1268,7 @@ mod tests {
         let out = read_back(&mut l4, &expected).await;
         let _ = l4.disconnect().await;
         assert!(!out.verified);
-        assert_eq!(out.compared.properties, Some(2));
+        assert_eq!(out.compared.get(Counted::Properties), Some(2));
         assert_eq!(out.leftovers.len(), 1, "{:?}", out.leftovers);
         assert_eq!(out.leftovers[0].kind, LeftoverKind::Property);
         assert_eq!(out.leftovers[0].item, "object type 11 PID 205");

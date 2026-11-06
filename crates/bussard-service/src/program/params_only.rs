@@ -33,7 +33,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 use super::apply::BackupError;
 use super::observer::{Declined, Note, Observer, Question, Step};
 use crate::flash::FlashInputs;
-use crate::{Authorize, BusService, L4Options, Management, ServiceError, SourcePolicy};
+use crate::{Authorize, BusService, L4Options, Management, ServiceError};
 
 /// What one read-only pass over the parameter memory learned.
 pub struct ParamsRead {
@@ -54,7 +54,7 @@ pub async fn read_parameters_on<Ch: L4Channel>(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> ParamsRead {
-    let regions = bussard_download::read_parameter_regions(l4, plan).await;
+    let regions = bussard_download::read_parameter_regions(l4, plan, &[]).await;
     let properties = bussard_download::read_parameter_properties(l4, plan, app).await;
     let (code_mismatch, table_change) = if plan.is_sys7() {
         (
@@ -99,25 +99,24 @@ pub async fn read_parameters(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Result<ParamsRead, ServiceError> {
-    let options = L4Options {
-        source: SourcePolicy::Known(bussard_bus::ops::group_source(session.service.handle())),
-        tool_key: session.tool_key.clone(),
-        high_water: session.high_water.clone(),
-        // Best-effort: a denial or a device without authorize still reads.
-        authorize: Authorize::BestEffort(
-            session
-                .bcu_key
-                .unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ),
-        ..L4Options::default()
-    };
+    // Best-effort: a denial or a device without authorize still reads.
+    let options = L4Options::secured(
+        bussard_bus::ops::group_source(session.service.handle()),
+        session.tool_key.clone(),
+        session.high_water.clone(),
+    )
+    .with_authorize(Authorize::BestEffort(
+        session
+            .bcu_key
+            .unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
+    ));
     session
         .service
-        .with_device(session.target, &options, async |dev| {
+        .with_l4(session.target, &options, async |l4| {
             // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
             // read goes out in APDU-sized chunks without re-reading it.
-            dev.l4_mut().set_max_apdu(session.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), plan, app).await)
+            l4.set_max_apdu(session.max_apdu);
+            Ok::<_, ServiceError>(read_parameters_on(l4, plan, app).await)
         })
         .await
 }
@@ -262,13 +261,16 @@ pub fn plan_parameters_only(
     // table, which this download does not rewrite. The device's values come
     // from the decoder the read-back uses (issue #142).
     let current = bussard_download::regions_memory(&regions);
+    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
     let decoded = bussard_download::decode_parameters(
         app,
         inputs.overrides(),
         inputs.base_offsets(),
         &current,
+        &memo,
     );
-    let change = bussard_download::group_object_change(app, &decoded.values, inputs.overrides());
+    let change =
+        bussard_download::group_object_change(app, &decoded.values, inputs.overrides(), &memo);
     if !change.is_empty() {
         return Err(format!(
             "the new parameter values change the group-object table ({}); a parameter-only \
@@ -278,7 +280,6 @@ pub fn plan_parameters_only(
     }
     // Issue #411: a System 7 load procedure that allocates the segments
     // differently under the new values needs the full download.
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
     if let Some(why) =
         bussard_download::allocation_change(app, &decoded.values, inputs.overrides(), &memo)
     {
@@ -394,7 +395,7 @@ pub async fn write_parameters_only(
     let (outcome, after) =
         crate::download::flash_session(run, &planned.partial, &mut *observer, async |l4| {
             (
-                bussard_download::read_parameter_regions(l4, plan).await,
+                bussard_download::read_parameter_regions(l4, plan, &[]).await,
                 bussard_download::read_parameter_properties(l4, plan, app).await,
             )
         })
@@ -517,6 +518,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app()?),
         )?)
     }
 
@@ -614,6 +617,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?)
     }
 

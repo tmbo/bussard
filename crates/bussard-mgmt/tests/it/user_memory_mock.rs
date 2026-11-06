@@ -35,7 +35,13 @@ async fn run(addr: u32, data: &[u8], echo: bool) -> Result<Run, BoxError> {
         .await?;
     let gw_addr: SocketAddrV4 = gw.addr();
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw_addr)).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.set_user_memory_above_64k(true);
     if echo {
         write_memory_echoed(&mut l4, addr, data, |_| {}).await?;

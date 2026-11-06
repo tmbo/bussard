@@ -336,7 +336,8 @@ pub fn table_plan(read: &DeviceRead<LiveTables>, desired: &DesiredTables) -> Pla
 pub fn sys7_images(
     read: &DeviceRead<LiveTables>,
     desired: &DesiredTables,
-) -> Result<Option<bussard_download::Sys7TableImages>, bussard_download::Sys7ApplyError> {
+) -> Result<Option<bussard_download::Sys7TableImages>, bussard_download::apply_sys7::Sys7ApplyError>
+{
     read.live
         .sys7()
         .map(|s7| bussard_download::sys7_table_images(s7, desired))

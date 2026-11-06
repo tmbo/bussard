@@ -81,19 +81,18 @@
 //! Both encodings are produced by the shared [`crate::apci`] helpers, through the
 //! crate's single descriptor reader ([`crate::connection::read_device_descriptor`])
 //! and single memory module ([`crate::memory`]) — the same ones
-//! [`DeviceConnection`](crate::DeviceConnection) and the download engine use — so
+//! typed [`Layer4Connection`] procedures and the download engine use — so
 //! every path agrees on the wire form. A table whose `PID_TABLE_REFERENCE` points
 //! above `0xFFFF` is read with `A_MemoryExtended_Read` instead of the plain
-//! service; the selection is per address, inside [`crate::memory`]. This module drives a borrowed [`Layer4Connection`] directly
-//! (rather than a [`DeviceConnection`](crate::DeviceConnection)) because
-//! `read_tables` operates on the caller's live connection.
+//! service; the selection is per address, inside [`crate::memory`]. This module drives the
+//! caller's live [`Layer4Connection`].
 //!
 //! Everything here is **read-only** on the bus and preserves the crate's
 //! absent-vs-refusing distinction: transport-level failures surface as
 //! [`MgmtError`]; a device that answers but does not expose a readable table
-//! surfaces as [`TablesError::TableUnreadable`].
+//! surfaces as [`MgmtError::MalformedResponse`] naming the table and the reason.
 
-use crate::connection::{L4Channel, Layer4Connection, property_request};
+use crate::connection::{L4Channel, Layer4Connection};
 use crate::error::{MgmtError, SilenceKind};
 use bussard_model::{GroupAddress, IndividualAddress};
 
@@ -233,15 +232,6 @@ pub enum TablesError {
         mask: u16,
     },
 
-    /// The device answered but a required table could not be read on any path.
-    #[error("{address}: {reason}")]
-    TableUnreadable {
-        /// The device.
-        address: IndividualAddress,
-        /// Which table failed, and how.
-        reason: String,
-    },
-
     /// The association table uses format 0 (one-octet TSAP and ASAP,
     /// `PDT_GENERIC_02`), which bussard does not read or write.
     #[error(
@@ -292,22 +282,16 @@ pub async fn read_tables<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result
     let mut sources = Vec::new();
 
     let addr_index = find_object(&objects, OT_ADDRESS_TABLE).ok_or_else(|| {
-        TablesError::TableUnreadable {
-            address,
-            reason: format!(
+        unreadable(address, format!(
                 "no group address table object (type {OT_ADDRESS_TABLE}) among {} interface object(s)",
                 objects.len()
-            ),
-        }
+            ))
     })?;
     let assoc_index = find_object(&objects, OT_ASSOCIATION_TABLE).ok_or_else(|| {
-        TablesError::TableUnreadable {
-            address,
-            reason: format!(
+        unreadable(address, format!(
                 "no association table object (type {OT_ASSOCIATION_TABLE}) among {} interface object(s)",
                 objects.len()
-            ),
-        }
+            ))
     })?;
 
     // Group address table: 2-octet elements, each one GA.
@@ -402,24 +386,6 @@ async fn device_descriptor<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Resu
     Ok(crate::connection::read_device_descriptor(l4).await?)
 }
 
-/// Reads `count` elements of a property starting at element `start`.
-///
-/// Returns the raw value octets; an empty vec means the device reported zero
-/// elements (property or object absent / not readable at that index).
-async fn read_property<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    object_index: u8,
-    property_id: u8,
-    start: u16,
-    count: u8,
-) -> Result<Vec<u8>> {
-    let resp = property_request(l4, object_index, property_id, start, count).await?;
-    if resp.count == 0 {
-        return Ok(Vec::new());
-    }
-    Ok(resp.data)
-}
-
 /// Reads a `len`-octet span of device memory starting at the 24-bit `addr`,
 /// through the crate's single memory module.
 ///
@@ -433,22 +399,16 @@ async fn read_memory<Ch: L4Channel>(
     addr: u32,
     len: usize,
 ) -> Result<Vec<u8>> {
+    let address = l4.target();
     crate::memory::read_memory_range(l4, addr, len)
         .await
-        .map_err(|e| memory_error(l4.target(), e))
+        .map_err(|e| e.into_mgmt(address).into())
 }
 
-/// Folds a memory-layer [`crate::load::WriteError`] into a [`TablesError`]: a
-/// management error passes through unchanged, anything else (an out-of-range
-/// span) becomes an unreadable table naming the reason.
-fn memory_error(address: IndividualAddress, err: crate::load::WriteError) -> TablesError {
-    match err {
-        crate::load::WriteError::Mgmt(m) => TablesError::Mgmt(m),
-        other => TablesError::TableUnreadable {
-            address,
-            reason: other.to_string(),
-        },
-    }
+/// A table that could not be read on any path: a malformed answer naming the
+/// table and why.
+fn unreadable(address: IndividualAddress, reason: String) -> TablesError {
+    MgmtError::MalformedResponse { address, reason }.into()
 }
 
 // --- Discovery and table assembly ---
@@ -474,11 +434,10 @@ pub async fn discover_interface_objects<Ch: L4Channel>(
 async fn discover_objects<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>) -> Result<Vec<(u8, u16)>> {
     let objects = discover_interface_objects(l4).await?;
     if objects.is_empty() {
-        return Err(TablesError::TableUnreadable {
-            address: l4.target(),
-            reason: "no interface objects discoverable (PID_OBJECT_TYPE unreadable at index 0)"
-                .to_string(),
-        });
+        return Err(unreadable(
+            l4.target(),
+            "no interface objects discoverable (PID_OBJECT_TYPE unreadable at index 0)".to_string(),
+        ));
     }
     Ok(objects)
 }
@@ -501,7 +460,9 @@ async fn group_object_count<Ch: L4Channel>(
     if let Some(count) = read_element_count(l4, object_index).await? {
         return Ok(Some((count, TableSource::Property)));
     }
-    let refbytes = read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
+    let refbytes = l4
+        .read_property(object_index, PID_TABLE_REFERENCE, 1, 1)
+        .await?;
     let Some(table_addr) = decode_table_reference(&refbytes) else {
         return Ok(None);
     };
@@ -533,7 +494,7 @@ async fn read_element_count<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
 ) -> Result<Option<u16>> {
-    let data = read_property(l4, object_index, PID_TABLE, 0, 1).await?;
+    let data = l4.read_property(object_index, PID_TABLE, 0, 1).await?;
     if data.len() < 2 {
         return Ok(None);
     }
@@ -620,9 +581,12 @@ async fn read_counted_table_via_memory<Ch: L4Channel>(
     }
 
     let before = l4.numbered_exchanges();
-    let refbytes = match read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await {
+    let refbytes = match l4
+        .read_property(object_index, PID_TABLE_REFERENCE, 1, 1)
+        .await
+    {
         Ok(bytes) => bytes,
-        Err(err) => return refusal(l4, before, err, what, "PID_TABLE_REFERENCE read"),
+        Err(err) => return refusal(l4, before, err.into(), what, "PID_TABLE_REFERENCE read"),
     };
     let Some(table_addr) = decode_table_reference(&refbytes).filter(|&a| a != 0) else {
         tracing::debug!(
@@ -641,7 +605,7 @@ async fn read_counted_table_via_memory<Ch: L4Channel>(
     let bytes = match crate::memory::read_memory_range(l4, table_addr, span).await {
         Ok(bytes) => bytes,
         Err(err) => {
-            let err = memory_error(l4.target(), err);
+            let err = err.into_mgmt(l4.target()).into();
             return refusal(l4, before, err, what, "memory read");
         }
     };
@@ -680,8 +644,7 @@ fn refusal<Ch: L4Channel, T>(
             MgmtError::MalformedResponse { .. }
             | MgmtError::MemoryRefused { .. }
             | MgmtError::MemoryReturnCode { .. },
-        )
-        | TablesError::TableUnreadable { .. } => true,
+        ) => true,
         TablesError::Mgmt(
             MgmtError::NoResponse { .. }
             | MgmtError::MidSessionSilence {
@@ -720,7 +683,9 @@ async fn read_table_via_property<Ch: L4Channel>(
     let mut next: usize = 1; // property array elements are 1-based
     while next <= count {
         let want = chunk_elems.min(count - next + 1);
-        let data = read_property(l4, object_index, PID_TABLE, next as u16, want as u8).await?;
+        let data = l4
+            .read_property(object_index, PID_TABLE, next as u16, want as u8)
+            .await?;
         // The device may return fewer elements than asked; advance by what
         // actually arrived. An empty or short answer mid-table is a refusal.
         let got = data.len() / elem_size;
@@ -738,13 +703,13 @@ async fn read_table_via_property<Ch: L4Channel>(
             continue;
         }
         if got == 0 || data.len() % elem_size != 0 {
-            return Err(TablesError::TableUnreadable {
-                address: l4.target(),
-                reason: format!(
+            return Err(unreadable(
+                l4.target(),
+                format!(
                     "{what}: PID_TABLE read at element {next} returned {} octet(s) (expected a multiple of {elem_size})",
                     data.len()
                 ),
-            });
+            ));
         }
         bytes.extend_from_slice(&data);
         next += got;
@@ -765,11 +730,13 @@ async fn read_table_via_memory<Ch: L4Channel>(
     what: &str,
 ) -> Result<Vec<u8>> {
     let address = l4.target();
-    let refbytes = read_property(l4, object_index, PID_TABLE_REFERENCE, 1, 1).await?;
-    let table_addr =
-        decode_table_reference(&refbytes).ok_or_else(|| TablesError::TableUnreadable {
+    let refbytes = l4
+        .read_property(object_index, PID_TABLE_REFERENCE, 1, 1)
+        .await?;
+    let table_addr = decode_table_reference(&refbytes).ok_or_else(|| {
+        unreadable(
             address,
-            reason: if refbytes.is_empty() {
+            if refbytes.is_empty() {
                 format!("{what}: neither PID_TABLE nor PID_TABLE_REFERENCE is readable")
             } else {
                 format!(
@@ -777,17 +744,18 @@ async fn read_table_via_memory<Ch: L4Channel>(
                     refbytes.len()
                 )
             },
-        })?;
+        )
+    })?;
     // No 16-bit ceiling here: `read_memory` selects `A_MemoryExtended_Read` for an
     // address above `0xFFFF`, which is exactly where the 07B0 actuators keep their
     // tables (`0xf000..0x1aad3`). Refusing them was the reconstruct/apply
     // verification failure in issue #80.
     let count_bytes = read_memory(l4, table_addr, 2).await?;
     if count_bytes.len() < 2 {
-        return Err(TablesError::TableUnreadable {
+        return Err(unreadable(
             address,
-            reason: format!("{what}: memory read of the table size word came back short"),
-        });
+            format!("{what}: memory read of the table size word came back short"),
+        ));
     }
     let count = usize::from(u16::from_be_bytes([count_bytes[0], count_bytes[1]]));
 
@@ -795,12 +763,12 @@ async fn read_table_via_memory<Ch: L4Channel>(
     // The entries start after the 2-octet count word. `read_memory` chunks the span
     // by the negotiated max APDU (issue #58) and bounds it against the 24-bit
     // extended-memory space, so the only address arithmetic left here is the +2.
-    let entries_addr = table_addr
-        .checked_add(2)
-        .ok_or_else(|| TablesError::TableUnreadable {
+    let entries_addr = table_addr.checked_add(2).ok_or_else(|| {
+        unreadable(
             address,
-            reason: format!("{what}: table reference {table_addr:#X} is at the top of memory"),
-        })?;
+            format!("{what}: table reference {table_addr:#X} is at the top of memory"),
+        )
+    })?;
     let bytes = read_memory(l4, entries_addr, total).await?;
     Ok(bytes)
 }

@@ -24,7 +24,7 @@ use bussard_service::admission::Admission;
 use bussard_service::describe::walk_objects;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
-    DptOverridePolicy, L4Options, ServiceError, SourcePolicy, WriteCheck, WriteRefusal, WriteValue,
+    DptOverridePolicy, L4Options, ServiceError, WriteCheck, WriteRefusal, WriteValue,
     group_key_for, prepare_group_write,
 };
 use rmcp::ErrorData;
@@ -512,7 +512,7 @@ impl BussardMcp {
     /// `knx_show_device`.
     #[tool(
         description = "Show what one device can do, in its device file's words, from the lock and \
-        the product model under .bussard/models/ (no bus access): its channels (handle, vendor text, the \
+        the product model under .bussard/model-cache/ (no bus access): its channels (handle, vendor text, the \
         user's name, counts); for an application without channels of its own, its ETS parameter \
         pages (`blocks`, in ETS order); inactive pages and channels marked `inactive` with the \
         parameters that enable them and the objects they would show, and a `summary` counting \
@@ -895,7 +895,7 @@ impl BussardMcp {
                 // An unknown verdict reads the responders' PID 54 first (#316).
                 Some(
                     self.resolve_admission(service, |live| {
-                        bussard_service::admission::check_sender_admission_with(
+                        bussard_service::admission::check_sender_admission(
                             Some(&model),
                             ga,
                             sender,
@@ -1049,12 +1049,12 @@ impl BussardMcp {
 
         // Authorize (free access) as ETS does before configuration access; a
         // best-effort read tolerates a device without authorize.
-        let options = L4Options {
-            source: SourcePolicy::Known(ops::group_source(service.handle())),
+        let options = L4Options::secured(
+            ops::group_source(service.handle()),
             tool_key,
-            factory_key,
-            ..L4Options::default()
-        };
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_factory_key(factory_key);
         // The warm connection (issue #215): a call to the device the previous
         // call talked to, within the idle window and on the same tunnel, reuses
         // its connection; anything else kept is disconnected first. The lock is
@@ -1268,7 +1268,7 @@ impl BussardMcp {
             // a "not listed" there refuses too (issue #316).
             Some(
                 self.resolve_admission(service, |live| {
-                    bussard_service::admission::check_tunnel_write_with(
+                    bussard_service::admission::check_tunnel_write(
                         Some(&model),
                         ga,
                         sender,

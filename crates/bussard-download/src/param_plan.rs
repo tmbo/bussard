@@ -37,20 +37,51 @@ use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_prod::application::ApplicationProgram;
 
-use crate::param_decode::{decode_parameters, display_name, parameter_type, render, resolve_key};
+use crate::param_decode::decode_parameters;
 
-use crate::flash::{FlashPlan, FlashStep, ImageKind};
+use crate::flash::{FlashPlan, FlashStep, ImageKind, ImageRef};
 
 /// Interface-object type 3: the application-program object.
 const OT_APPLICATION_PROGRAM: u16 = 3;
 
-/// A parameter value as the plan shows it.
+/// A parameter value as the plan shows it. Serialized as the value, `null`
+/// when unknown.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamValue {
     /// A value, already rendered for a human (an enumeration shows its text).
     Known(String),
     /// The value could not be read back from the device.
     Unknown,
+}
+
+impl ParamValue {
+    /// The value, `None` when unknown.
+    pub fn known(&self) -> Option<&str> {
+        match self {
+            ParamValue::Known(v) => Some(v),
+            ParamValue::Unknown => None,
+        }
+    }
+}
+
+impl serde::Serialize for ParamValue {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.known().serialize(serializer)
+    }
+}
+
+/// `value` followed by `unit` when there is one.
+fn with_unit(value: &str, unit: Option<&str>) -> String {
+    match unit.filter(|u| !u.is_empty()) {
+        Some(u) => format!("{value} {u}"),
+        None => value.to_string(),
+    }
+}
+
+/// Serializes a value as its text (`ParamChange::new`, always known in a
+/// report).
+fn as_text<S: serde::Serializer>(value: &ParamValue, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.collect_str(value)
 }
 
 impl std::fmt::Display for ParamValue {
@@ -62,8 +93,10 @@ impl std::fmt::Display for ParamValue {
     }
 }
 
-/// One parameter the flash would change.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// One parameter the flash would change. Serialized as a report row: `key`,
+/// `name`, `device` (what it holds, `null` when unreadable), `model` and
+/// `unit`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ParamChange {
     /// The app-relative `ParameterRef` id that identifies the parameter (the
     /// part after `@` in a device-file parameter key).
@@ -72,14 +105,26 @@ pub struct ParamChange {
     /// to its `Name` and then its id.
     pub name: String,
     /// What the device holds now.
+    #[serde(rename = "device")]
     pub old: ParamValue,
     /// What the flash would write.
+    #[serde(rename = "model", serialize_with = "as_text")]
     pub new: ParamValue,
     /// The unit the vendor shows after the value (`SuffixText`), when declared.
     pub unit: Option<String>,
 }
 
 impl ParamChange {
+    /// What the device holds, with the unit; `None` when unreadable.
+    pub fn old_with_unit(&self) -> Option<String> {
+        self.old.known().map(|v| with_unit(v, self.unit.as_deref()))
+    }
+
+    /// What the flash writes, with the unit.
+    pub fn new_with_unit(&self) -> String {
+        with_unit(&self.new.to_string(), self.unit.as_deref())
+    }
+
     /// The one-line rendering used by the CLI pre-flight and the `--json`
     /// fallback text: `night setback: 18 to 17 °C`.
     pub fn line(&self) -> String {
@@ -123,7 +168,7 @@ pub struct ParamPlan {
     /// A note explaining a degraded plan (System 7, or no readback at all).
     pub note: Option<String>,
     /// The parameters placed in octets the download leaves as the device
-    /// holds them (issue #411, [`crate::KeptOctets`]): not written, so not
+    /// holds them (issue #411, [`crate::flash::KeptOctets`]): not written, so not
     /// among the changes. `old` is the device's value, `new` the model's.
     pub kept: Vec<ParamChange>,
 }
@@ -157,70 +202,32 @@ pub fn param_plan(
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> ParamPlan {
-    if !current.is_empty() {
-        let decoded = decode_parameters(app, overrides, base_offsets, current);
-        return ParamPlan {
-            changes: decoded.differences,
-            unknown: decoded.unknown,
-            note: None,
-            kept: decoded.kept,
-        };
-    }
+    let decoded = decode_parameters(
+        app,
+        overrides,
+        base_offsets,
+        current,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     // Nothing was read: every override that lands in memory is a change to an
     // unknown current value, unless the download keeps its octets (issue
     // #411).
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-    let kept_octets = crate::flash::kept_octets(app, overrides, &memo);
-    let mut changes = Vec::new();
-    let mut kept = Vec::new();
-    for (key, desired) in overrides {
-        let Some((param, _)) = resolve_key(app, key) else {
-            continue;
-        };
-        let in_union = app
-            .unions
-            .iter()
-            .any(|u| u.members.iter().any(|m| m.parameter == param.id));
-        if param.memory.is_none() && !in_union {
-            continue;
-        }
-        let ptype = parameter_type(app, param);
-        let change = ParamChange {
-            key: key.clone(),
-            name: display_name(param),
-            old: ParamValue::Unknown,
-            new: ParamValue::Known(render(desired.trim(), ptype)),
-            unit: param.suffix_text.clone(),
-        };
-        let in_kept = param.memory.as_ref().is_some_and(|m| {
-            let offset = m.offset.and_then(|o| usize::try_from(o).ok());
-            kept_octets.iter().any(|k| {
-                m.code_segment.as_deref() == Some(k.segment.as_str())
-                    && offset.is_some_and(|o| k.contains(o))
-            })
-        });
-        if in_kept {
-            kept.push(change);
-        } else {
-            changes.push(change);
-        }
-    }
-    let note = (!changes.is_empty()).then(|| {
+    let note = (current.is_empty() && !decoded.differences.is_empty()).then(|| {
         "the device's current parameter memory could not be read, so every value \
          below is shown as an unknown current value"
             .to_string()
     });
     ParamPlan {
-        unknown: changes.len(),
-        changes,
+        changes: decoded.differences,
+        unknown: decoded.unknown,
         note,
-        kept,
+        kept: decoded.kept,
     }
 }
 
 /// One parameter value decoded out of a device's parameter memory, next to the
 /// vendor default (issue #119, `reconstruct` / `plan` read-back).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct ParamReading {
     /// The app-relative parameter id (`P-…`).
     pub key: String,
@@ -260,24 +267,14 @@ pub fn non_default_parameters(
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> Vec<ParamReading> {
-    decode_parameters(app, overrides, base_offsets, current).non_default
-}
-
-/// The raw values the device holds, keyed like a device file's
-/// `parameters:` block: the override shape
-/// [`bussard_prod::dynamic::evaluate_dynamic`] takes.
-///
-/// Starts from `overrides` (the model's values) and replaces every value the
-/// device memory in `current` answers for. A parameter with no memory (a
-/// display-only selector) keeps the model's value, since the device does not
-/// hold one.
-pub fn current_parameter_values(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-) -> BTreeMap<String, String> {
-    decode_parameters(app, overrides, base_offsets, current).values
+    decode_parameters(
+        app,
+        overrides,
+        base_offsets,
+        current,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    )
+    .non_default
 }
 
 /// How a parameter change would reshape the group-object table (issue #119).
@@ -305,25 +302,13 @@ impl GroupObjectChange {
 
 /// Compares the group-object table the application's Dynamic section yields for
 /// the `before` and `after` parameter values (both keyed like
-/// [`current_parameter_values`] returns them).
+/// [`DecodedParameters::values`](crate::param_decode::DecodedParameters::values) holds them).
+///
+/// The Dynamic section is evaluated through `memo` (issue #367): each side
+/// is evaluated once for both the shown objects and the table image, and a
+/// side a parameter decode with the same memo already evaluated is not
+/// evaluated again.
 pub fn group_object_change(
-    app: &ApplicationProgram,
-    before: &BTreeMap<String, String>,
-    after: &BTreeMap<String, String>,
-) -> GroupObjectChange {
-    group_object_change_with(
-        app,
-        before,
-        after,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
-    )
-}
-
-/// [`group_object_change`], evaluating the Dynamic section through `memo`
-/// (issue #367): each side is evaluated once for both the shown objects and
-/// the table image, and a side a parameter decode with the same memo already
-/// evaluated is not evaluated again. The change is the same.
-pub fn group_object_change_with(
     app: &ApplicationProgram,
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
@@ -341,8 +326,8 @@ pub fn group_object_change_with(
     GroupObjectChange {
         shown: new.difference(&old).copied().collect(),
         hidden: old.difference(&new).copied().collect(),
-        table_differs: crate::compute::dynamic_group_object_table_with(app, before, &linked, memo)
-            != crate::compute::dynamic_group_object_table_with(app, after, &linked, memo),
+        table_differs: crate::compute::dynamic_group_object_table(app, before, &linked, memo)
+            != crate::compute::dynamic_group_object_table(app, after, &linked, memo),
     }
 }
 
@@ -371,18 +356,12 @@ pub const SYS7_NOTE: &str = "System 7 device: parameters are written as whole ab
 ///
 /// Returns an empty map for a System 7 plan, whose parameters are written as
 /// whole absolute regions rather than a segment image (see [`SYS7_NOTE`]).
+///
+/// `objects` is the interface-object table the caller already walked on
+/// this connection (the flash pre-flight's freshness probe), so the read-back
+/// does not sweep `PID_OBJECT_TYPE` again. An empty `objects` walks the
+/// table as usual.
 pub async fn read_current_parameter_memory<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-) -> CurrentMemory {
-    read_current_parameter_memory_with_objects(l4, plan, &[]).await
-}
-
-/// [`read_current_parameter_memory`] with the interface-object table the
-/// caller already walked on this connection (the flash pre-flight's
-/// freshness probe), so the read-back does not sweep `PID_OBJECT_TYPE` again.
-/// An empty `objects` walks the table as usual.
-pub async fn read_current_parameter_memory_with_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
     objects: &[(u8, u16)],
@@ -390,7 +369,7 @@ pub async fn read_current_parameter_memory_with_objects<Ch: L4Channel>(
     if plan.is_sys7() {
         return CurrentMemory::new();
     }
-    read_parameter_regions_with_objects(l4, plan, objects)
+    read_parameter_regions(l4, plan, objects)
         .await
         .into_iter()
         .map(|(segment, region)| (segment, region.bytes))
@@ -451,41 +430,73 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
         }
     };
     if plan.is_sys7() {
-        for step in &plan.steps {
-            if let FlashStep::Sys7AbsSegment {
-                address,
-                image: Some(image),
-                ..
-            } = step
-                && plan
-                    .param_images
-                    .get(&image.segment_id)
-                    .is_some_and(|b| !b.is_empty())
-            {
-                // The whole segment from its base, also where the procedure
-                // allocates it in parts (issue #413).
-                let len = plan
-                    .image_bytes(&image.segment_id)
-                    .map_or(image.len, <[u8]>::len);
-                add(
-                    &image.segment_id,
-                    address.saturating_sub(image.offset as u32),
-                    len,
-                );
-            }
+        for (image, base, len) in sys7_parameter_segments(plan) {
+            add(&image.segment_id, base, len);
         }
         return out;
     }
     // Object indices as the plan names them; `None`/`0` is the application
     // object.
-    let object = |target: &Option<u32>| target.filter(|t| *t != 0);
-    let mut last_allocation: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+    for (_, image, region) in parameter_writes(plan, |target| target.filter(|t| *t != 0)) {
+        if let Some((start, len)) = region {
+            add(&image.segment_id, start, len);
+        }
+    }
+    out
+}
+
+/// The System 7 segments whose image carries parameters, in step order: each
+/// `AbsSegment` image with the segment's base and the length of the whole
+/// segment, also where the procedure allocates it in parts (issue #413).
+fn sys7_parameter_segments(plan: &FlashPlan) -> Vec<(&ImageRef, u32, usize)> {
+    plan.steps
+        .iter()
+        .filter_map(|step| match step {
+            FlashStep::Sys7AbsSegment {
+                address,
+                image: Some(image),
+                ..
+            } if plan
+                .param_images
+                .get(&image.segment_id)
+                .is_some_and(|b| !b.is_empty()) =>
+            {
+                let len = plan
+                    .image_bytes(&image.segment_id)
+                    .map_or(image.len, <[u8]>::len);
+                Some((image, address.saturating_sub(image.offset as u32), len))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// One System B parameter write: its object, its image, and the region its
+/// segment is read as (`(start, len)` from the segment base).
+type ParameterWrite<'p, K> = (K, &'p ImageRef, Option<(u32, usize)>);
+
+/// The System B parameter writes, in step order, with the object `object`
+/// resolves each to and the region the write's segment is read as
+/// ([`whole_region`]): `None` for a write into an earlier allocation of its
+/// object. An object's `PID_TABLE_REFERENCE` names only the segment allocated
+/// on it *last*, so such a segment sits at a base the device no longer
+/// reports. A write streams into its own object's segment (the executor keeps
+/// one base per object), even when other objects were allocated in between,
+/// as the master template does (obj4, obj3, obj1, obj2 allocated, then
+/// written); with no allocation in the plan, the object's current segment is
+/// the one the write targets.
+fn parameter_writes<K: Ord + Copy>(
+    plan: &FlashPlan,
+    object: impl Fn(&Option<u32>) -> K,
+) -> Vec<ParameterWrite<'_, K>> {
+    let mut last_allocation: BTreeMap<K, usize> = BTreeMap::new();
     for (i, step) in plan.steps.iter().enumerate() {
         if let FlashStep::AllocateSegment { target, .. } = step {
             last_allocation.insert(object(target), i);
         }
     }
-    let mut allocated: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+    let mut allocated: BTreeMap<K, usize> = BTreeMap::new();
+    let mut out = Vec::new();
     for (i, step) in plan.steps.iter().enumerate() {
         match step {
             FlashStep::AllocateSegment { target, .. } => {
@@ -501,10 +512,11 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
                     Some(at) => last_allocation.get(&obj) == Some(at),
                     None => !last_allocation.contains_key(&obj),
                 };
-                if readable {
-                    let (start, len) = whole_region(plan, *offset, image);
-                    add(&image.segment_id, start, len);
-                }
+                out.push((
+                    obj,
+                    image,
+                    readable.then(|| whole_region(plan, *offset, image)),
+                ));
             }
             _ => {}
         }
@@ -517,7 +529,7 @@ pub fn planned_parameter_regions(plan: &FlashPlan) -> ParamRegions {
 /// download writes in part (issue #411) the whole image from the segment
 /// base, kept octets included, so every write of it and the parameters it
 /// keeps decode from one region.
-fn whole_region(plan: &FlashPlan, offset: u32, image: &crate::flash::ImageRef) -> (u32, usize) {
+fn whole_region(plan: &FlashPlan, offset: u32, image: &ImageRef) -> (u32, usize) {
     if plan.kept().iter().any(|k| k.segment == image.segment_id) {
         let start = offset.saturating_sub(u32::try_from(image.offset).unwrap_or(u32::MAX));
         let len = plan
@@ -548,16 +560,10 @@ fn whole_region(plan: &FlashPlan, offset: u32, image: &crate::flash::ImageRef) -
 /// in 215-octet `A_MemoryExtended_Read`s under Data Secure (228 plain, 63 for
 /// the plain service below `0xFFFF`) instead of the 12-octet standard-frame
 /// floor. A device that does not expose the property keeps the floor.
+///
+/// `objects` is an interface-object table the caller already read on this
+/// connection; an empty `objects` walks it here.
 pub async fn read_parameter_regions<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-) -> ParamRegions {
-    read_parameter_regions_with_objects(l4, plan, &[]).await
-}
-
-/// [`read_parameter_regions`] with an interface-object table the caller
-/// already read on this connection; an empty `objects` walks it here.
-pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
     objects: &[(u8, u16)],
@@ -570,28 +576,10 @@ pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
     // A dead connection surfaces on the first memory read below.
     let _ = l4.negotiate_max_apdu().await;
     if plan.is_sys7() {
-        for step in &plan.steps {
-            let FlashStep::Sys7AbsSegment {
-                address,
-                image: Some(image),
-                ..
-            } = step
-            else {
-                continue;
-            };
-            let carries_params = plan
-                .param_images
-                .get(&image.segment_id)
-                .is_some_and(|b| !b.is_empty());
-            if !carries_params || out.contains_key(&image.segment_id) {
+        for (image, base, len) in sys7_parameter_segments(plan) {
+            if out.contains_key(&image.segment_id) {
                 continue;
             }
-            // The whole segment from its base, also where the procedure
-            // allocates it in parts (issue #413).
-            let base = address.saturating_sub(image.offset as u32);
-            let len = plan
-                .image_bytes(&image.segment_id)
-                .map_or(image.len, <[u8]>::len);
             match read_memory_range(l4, base, len).await {
                 Ok(bytes) => {
                     out.insert(
@@ -642,55 +630,22 @@ pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
             .unwrap_or(app_object)
     };
 
-    // An object's `PID_TABLE_REFERENCE` names only the segment allocated on it
-    // *last*. A parameter image written after an earlier allocation on the same
-    // object sits at a base the device no longer reports, so reading it would
-    // decode the wrong bytes; such an image is left unread (its values stay
-    // unknown) rather than guessed at.
-    let mut last_allocation: BTreeMap<u8, usize> = BTreeMap::new();
-    for (i, step) in plan.steps.iter().enumerate() {
-        if let FlashStep::AllocateSegment { target, .. } = step {
-            last_allocation.insert(resolve_object(target), i);
-        }
-    }
-
-    // Segment bases are per object; read each one once.
+    // Segment bases are per object; read each one once. A segment that is not
+    // its object's last allocation sits at a base the device no longer
+    // reports, so reading it would decode the wrong bytes; it is left unread
+    // (its values stay unknown) rather than guessed at.
     let mut bases: BTreeMap<u8, Option<u32>> = BTreeMap::new();
-    // The allocation each object received most recently, as the steps run: a
-    // write streams into its own object's segment (the executor keeps one base
-    // per object), even when other objects were allocated in between, as the
-    // master template does (obj4, obj3, obj1, obj2 allocated, then written).
-    let mut allocated: BTreeMap<u8, usize> = BTreeMap::new();
-    for (i, step) in plan.steps.iter().enumerate() {
-        if let FlashStep::AllocateSegment { target, .. } = step {
-            allocated.insert(resolve_object(target), i);
+    for (object, image, region) in parameter_writes(plan, resolve_object) {
+        if out.contains_key(&image.segment_id) {
             continue;
         }
-        let FlashStep::WriteRelMem {
-            offset,
-            image,
-            target,
-        } = step
-        else {
-            continue;
-        };
-        if image.kind != ImageKind::Parameters || out.contains_key(&image.segment_id) {
-            continue;
-        }
-        let object = resolve_object(target);
-        let readable = match allocated.get(&object) {
-            Some(at) => last_allocation.get(&object) == Some(at),
-            // No allocation in this plan: the object's current segment is the
-            // one the write targets.
-            None => !last_allocation.contains_key(&object),
-        };
-        if !readable {
+        let Some((start, len)) = region else {
             tracing::debug!(
                 segment = %image.segment_id,
                 "parameter segment is not the object's last allocation; its values stay unknown"
             );
             continue;
-        }
+        };
         let base = match bases.get(&object) {
             Some(base) => *base,
             None => {
@@ -703,7 +658,6 @@ pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
             }
         };
         let Some(base) = base else { continue };
-        let (start, len) = whole_region(plan, *offset, image);
         let Some(addr) = base.checked_add(start) else {
             continue;
         };
@@ -900,10 +854,17 @@ mod tests {
     }
 
     #[test]
-    fn test_current_parameter_values_decodes_every_ref() {
+    fn test_decode_parameters_values_decodes_every_ref() {
         let app = gated_app();
         let current = BTreeMap::from([("M-1_A-2_RS-1".to_string(), vec![9, 0b1000_0000])]);
-        let values = current_parameter_values(&app, &BTreeMap::new(), &BTreeMap::new(), &current);
+        let values = decode_parameters(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )
+        .values;
         assert_eq!(values.get("P-0_R-1").map(String::as_str), Some("9"));
         assert_eq!(values.get("P-1_R-2").map(String::as_str), Some("1"));
     }
@@ -913,14 +874,36 @@ mod tests {
         let app = gated_app();
         let off = BTreeMap::from([("P-1_R-2".to_string(), "0".to_string())]);
         let on = BTreeMap::from([("P-1_R-2".to_string(), "1".to_string())]);
-        let change = group_object_change(&app, &off, &on);
+        let change = group_object_change(
+            &app,
+            &off,
+            &on,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert_eq!(change.shown, vec![2]);
         assert!(change.hidden.is_empty());
         assert!(!change.is_empty());
-        assert_eq!(group_object_change(&app, &on, &off).hidden, vec![2]);
+        assert_eq!(
+            group_object_change(
+                &app,
+                &on,
+                &off,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
+            .hidden,
+            vec![2]
+        );
         // A threshold change leaves the table alone.
         let thr = BTreeMap::from([("P-0_R-1".to_string(), "12".to_string())]);
-        assert!(group_object_change(&app, &off, &thr).is_empty());
+        assert!(
+            group_object_change(
+                &app,
+                &off,
+                &thr,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
+            .is_empty()
+        );
     }
 
     #[test]

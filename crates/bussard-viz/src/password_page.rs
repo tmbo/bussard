@@ -15,22 +15,22 @@
 //! renders it: a wrong password shows the form again with the tries left,
 //! an accepted or failed one closes the page for good (single use).
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{DefaultBodyLimit, Form, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
-use axum::middleware;
-use axum::response::{IntoResponse, Response};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::Response;
 use axum::routing::get;
 use bussard_model::text::escape_html;
 use bussard_secure::Password;
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
+
+use crate::local_server::{self, CSS, HTML, LocalServer, Policy};
 
 /// How long [`PasswordPage::finish`] keeps serving after the last verdict,
 /// so the browser receives the final page.
@@ -39,16 +39,20 @@ pub const FINISH_GRACE: Duration = Duration::from_secs(2);
 /// The largest form body the page accepts.
 const BODY_LIMIT: usize = 8 * 1024;
 
-/// The response headers of the page: its own stylesheet only, posts to
-/// itself only, no framing.
-const PAGE_CSP: &str = "default-src 'none'; style-src 'self'; base-uri 'none'; \
-    form-action 'self'; frame-ancestors 'none'; object-src 'none'";
+/// The headers of the page: its own stylesheet only, posts to itself only,
+/// no framing. `same-origin`, not `no-referrer`: a post then carries this
+/// page's `Origin` (a `no-referrer` page posts `Origin: null`).
+const POLICY: Policy = Policy {
+    csp: "default-src 'none'; style-src 'self'; base-uri 'none'; form-action 'self'; \
+        frame-ancestors 'none'; object-src 'none'",
+    referrer: "same-origin",
+};
 
-const HTML: &str = "text/html; charset=utf-8";
-const CSS: &str = "text/css; charset=utf-8";
-
-const TEMPLATE: &str = include_str!("../../../web/password/index.html");
+const BODY: &str = include_str!("../../../web/password/body.html");
 const STYLE: &str = include_str!("../../../web/password/password.css");
+
+/// What the page says once it is closed and nothing more is posted.
+const CLOSED: &str = "This form is closed. Go back to the chat.";
 
 /// One password the human posted, with the channel the caller answers on.
 pub struct Submission {
@@ -94,16 +98,14 @@ pub struct PasswordPrompt {
 
 /// The password form served on `127.0.0.1` at a free port, until dropped.
 pub struct PasswordPage {
-    addr: SocketAddr,
+    server: LocalServer,
     token: String,
-    shutdown: Option<oneshot::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for PasswordPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PasswordPage")
-            .field("addr", &self.addr)
+            .field("addr", &self.addr())
             .finish_non_exhaustive()
     }
 }
@@ -137,105 +139,58 @@ impl PasswordPage {
         prompt: PasswordPrompt,
         submissions: mpsc::Sender<Submission>,
     ) -> std::io::Result<Self> {
-        let mut bytes = [0u8; 16];
-        getrandom::getrandom(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let token = bussard_model::text::hex(&bytes);
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let host = format!("127.0.0.1:{}", addr.port());
-        let app = router(
-            &token,
-            Shared {
+        let token = local_server::token()?;
+        let server = LocalServer::start("password-page", FINISH_GRACE, |addr| {
+            let shared = Shared {
                 prompt,
                 submissions,
                 closed: AtomicBool::new(false),
-                origin: format!("http://{host}"),
-            },
-            vec![host],
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let (shutdown, stopped) = oneshot::channel::<()>();
-        let thread = std::thread::Builder::new()
-            .name("password-page".to_owned())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
-                        return;
-                    };
-                    tokio::select! {
-                        _ = axum::serve(listener, app) => {}
-                        _ = stopped => {}
-                    }
-                });
-            })?;
-        Ok(PasswordPage {
-            addr,
-            token,
-            shutdown: Some(shutdown),
-            thread: Some(thread),
-        })
+                origin: format!("http://{}", local_server::host(addr)),
+            };
+            router(&token, shared, addr)
+        })?;
+        Ok(PasswordPage { server, token })
     }
 
     /// The page URL, `http://127.0.0.1:<port>/<token>/`. Never put it in a
     /// tool result.
     #[must_use]
     pub fn url(&self) -> String {
-        format!("http://{}/{}/", self.addr, self.token)
+        self.server.url(&format!("/{}/", self.token))
     }
 
     /// The loopback address the page listens on.
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.server.addr()
     }
 
     /// Keeps serving for [`FINISH_GRACE`] so the browser gets the last
     /// page, then stops.
     pub fn finish(self) {
-        std::thread::sleep(FINISH_GRACE);
-        drop(self);
-    }
-}
-
-impl Drop for PasswordPage {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.server.finish();
     }
 }
 
 /// The page's routes under `/<token>/`, behind the exact-`Host` check.
 /// Every other path is a 404.
-fn router(token: &str, shared: Shared, allowed_hosts: Vec<String>) -> Router {
-    Router::new()
+fn router(token: &str, shared: Shared, addr: SocketAddr) -> Router {
+    let routes = Router::new()
         .route(&format!("/{token}/"), get(page).post(post))
         .route(
             &format!("/{token}/password.css"),
-            get(|| async { respond(StatusCode::OK, STYLE.to_string(), CSS) }),
+            get(|| async { POLICY.file(STYLE, CSS) }),
         )
         .layer(DefaultBodyLimit::max(BODY_LIMIT))
-        .with_state(Arc::new(shared))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(allowed_hosts),
-            crate::enroll_local::check_host,
-        ))
+        .with_state(Arc::new(shared));
+    local_server::only_hosts(routes, vec![local_server::host(addr)])
 }
 
 async fn page(State(shared): State<Arc<Shared>>) -> Response {
     if shared.closed.load(Ordering::SeqCst) {
-        return html(&render_closed(
-            "This form is closed. Go back to the chat.",
-            false,
-        ));
+        return closed(&shared, CLOSED, false);
     }
-    html(&render_form(&shared.prompt, None))
+    POLICY.html(render_form(&shared.prompt, None))
 }
 
 async fn post(
@@ -246,17 +201,14 @@ async fn post(
     // A browser always sends `Origin` on a post; another site's is refused.
     let origin = headers.get(header::ORIGIN).and_then(|o| o.to_str().ok());
     if origin.is_some_and(|o| o != shared.origin) {
-        return respond(StatusCode::FORBIDDEN, "cross-origin post".to_string(), HTML);
+        return POLICY.respond(StatusCode::FORBIDDEN, "cross-origin post", HTML);
     }
     if shared.closed.load(Ordering::SeqCst) {
-        return html(&render_closed(
-            "This form is closed. Go back to the chat.",
-            false,
-        ));
+        return closed(&shared, CLOSED, false);
     }
     let password = Password::new(form.password);
     if password.is_empty() {
-        return html(&render_form(
+        return POLICY.html(render_form(
             &shared.prompt,
             Some("Enter the password.".to_string()),
         ));
@@ -268,66 +220,26 @@ async fn post(
         .await
         .is_err()
     {
-        shared.closed.store(true, Ordering::SeqCst);
-        return html(&render_closed(
-            "This form is closed. Go back to the chat.",
-            false,
-        ));
+        return closed(&shared, CLOSED, false);
     }
     match verdict.await {
-        Ok(Verdict::Wrong { tries_left }) => html(&render_form(
+        Ok(Verdict::Wrong { tries_left }) => POLICY.html(render_form(
             &shared.prompt,
             Some(format!(
                 "That password does not open the project. Try again ({tries_left} {} left).",
                 if tries_left == 1 { "try" } else { "tries" }
             )),
         )),
-        Ok(Verdict::Accepted { message }) => {
-            shared.closed.store(true, Ordering::SeqCst);
-            html(&render_closed(&message, true))
-        }
-        Ok(Verdict::Closed { message }) => {
-            shared.closed.store(true, Ordering::SeqCst);
-            html(&render_closed(&message, false))
-        }
-        Err(_) => {
-            shared.closed.store(true, Ordering::SeqCst);
-            html(&render_closed(
-                "This form is closed. Go back to the chat.",
-                false,
-            ))
-        }
+        Ok(Verdict::Accepted { message }) => closed(&shared, &message, true),
+        Ok(Verdict::Closed { message }) => closed(&shared, &message, false),
+        Err(_) => closed(&shared, CLOSED, false),
     }
 }
 
-/// An HTML page with the headers every answer carries.
-fn html(body: &str) -> Response {
-    respond(StatusCode::OK, body.to_string(), HTML)
-}
-
-/// `body` with its content type and the headers every answer carries.
-fn respond(status: StatusCode, body: String, content_type: &'static str) -> Response {
-    let mut response = (status, body).into_response();
-    let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    // `same-origin`, not `no-referrer`: a post then carries this page's
-    // `Origin` (a `no-referrer` page posts `Origin: null`).
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("same-origin"),
-    );
-    if content_type == HTML {
-        headers.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(PAGE_CSP),
-        );
-    }
-    response
+/// Closes the form for good and shows `message`.
+fn closed(shared: &Shared, message: &str, good: bool) -> Response {
+    shared.closed.store(true, Ordering::SeqCst);
+    POLICY.html(render_closed(message, good))
 }
 
 /// The form, with `problem` above it when the last post had one.
@@ -352,23 +264,30 @@ fn render_form(prompt: &PasswordPrompt, problem: Option<String>) -> String {
         <input id=\"password\" name=\"password\" type=\"password\" \
         autocomplete=\"current-password\" required autofocus>\
         <button type=\"submit\">Import the project</button></form>";
-    TEMPLATE
-        .replace("{{message}}", &message)
-        .replace("{{form}}", form)
+    shell(
+        &BODY
+            .replace("{{message}}", &message)
+            .replace("{{form}}", form),
+    )
 }
 
 /// The closed page with `message`.
 fn render_closed(message: &str, good: bool) -> String {
     let tone = if good { "good" } else { "bad" };
-    TEMPLATE
-        .replace(
-            "{{message}}",
-            &format!(
-                "<div class=\"banner {tone}\" role=\"status\">{}</div>",
-                escape_html(message)
-            ),
-        )
-        .replace("{{form}}", "<p>You can close this page.</p>")
+    let banner = format!(
+        "<div class=\"banner {tone}\" role=\"status\">{}</div>",
+        escape_html(message)
+    );
+    shell(
+        &BODY
+            .replace("{{message}}", &banner)
+            .replace("{{form}}", "<p>You can close this page.</p>"),
+    )
+}
+
+/// `body` in the shared page shell.
+fn shell(body: &str) -> String {
+    POLICY.page("project password", "password.css", None, "password", body)
 }
 
 #[cfg(test)]

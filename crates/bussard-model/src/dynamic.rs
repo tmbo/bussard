@@ -425,6 +425,33 @@ impl WhenTest {
         WhenTest::Values(values)
     }
 
+    /// The `test` text of the branch as ETS writes it (`1 2`, `!=0`, the
+    /// raw text of an unknown test), `None` for the default branch:
+    /// [`WhenTest::parse`] reads it back to the same test.
+    pub fn text(&self) -> Option<String> {
+        match self {
+            WhenTest::Values(values) => Some(
+                values
+                    .iter()
+                    .map(i64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
+            WhenTest::Compare { op, value } => {
+                let op = match op {
+                    CompareOp::Ne => "!=",
+                    CompareOp::Lt => "<",
+                    CompareOp::Le => "<=",
+                    CompareOp::Gt => ">",
+                    CompareOp::Ge => ">=",
+                };
+                Some(format!("{op}{value}"))
+            }
+            WhenTest::Default => None,
+            WhenTest::Unknown(raw) => Some(raw.clone()),
+        }
+    }
+
     /// Whether this branch applies to a parameter value.
     ///
     /// [`WhenTest::Default`] and [`WhenTest::Unknown`] never match directly; the
@@ -451,90 +478,136 @@ impl WhenTest {
 /// `<Rows>`/`<Columns>`, …) are flattened into their parent.
 /// [`flatten_containers`] gives the fully flattened view. All ids are
 /// app-relative (the program-id prefix stripped).
+///
+/// The serde form is compact, one key per node, since the product model and
+/// the parsed-product cache store whole trees of them (issue #345):
+///
+/// ```text
+/// {"p": "P-1_R-1"}                  <ParameterRefRef>
+/// {"o": "O-1_R-1"}                  <ComObjectRefRef>
+/// {"choose": {"ref": "P-1_R-1", "when": [{"test": "1 2", "nodes": [...]},
+///                                        {"nodes": [...]}]}}
+/// {"block": {id, name, text, text_ref, param_ref, nodes}}
+/// {"channel": {id, name, text, number, text_ref, nodes}}
+/// {"module": {id, def, args: {"MD-1_A-1": 4}, computed: [...]}}
+/// {"repeat": {id, ref, count, nodes}}
+/// {"assign": {target, source, value}}
+/// ```
+///
+/// Absent attributes, empty `nodes` and empty `args` are left out. A test is
+/// written as ETS writes it ([`WhenTest::text`]; the default branch has none)
+/// and read back through [`WhenTest::parse`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum DynamicNode {
     /// `<Channel>`: a labelled group of the configuration.
+    #[serde(rename = "channel")]
     Channel {
         /// The channel id, app-relative (e.g. `MD-1_CH-1`).
         id: String,
         /// The `Name` attribute, if non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         /// The `Text` attribute (translation applied), if non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
         /// The `Number` attribute.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         number: Option<u32>,
         /// The `TextParameterRefId`, app-relative.
+        #[serde(rename = "text_ref", default, skip_serializing_if = "Option::is_none")]
         text_parameter_ref: Option<String>,
         /// The nodes inside the channel, in document order.
+        #[serde(rename = "nodes", default, skip_serializing_if = "Vec::is_empty")]
         children: Vec<DynamicNode>,
     },
     /// `<ParameterBlock>`: one page (or inline group) of parameters.
+    #[serde(rename = "block")]
     ParameterBlock {
         /// The block id, app-relative (e.g. `PB-13`).
         id: String,
         /// The `Name` attribute, if non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         /// The `Text` attribute (translation applied), if non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         text: Option<String>,
         /// The `TextParameterRefId`, app-relative.
+        #[serde(rename = "text_ref", default, skip_serializing_if = "Option::is_none")]
         text_parameter_ref: Option<String>,
         /// The `ParamRefId`, app-relative: the ref that titles a block without
         /// a `Text` of its own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         param_ref: Option<String>,
         /// The nodes inside the block, in document order.
+        #[serde(rename = "nodes", default, skip_serializing_if = "Vec::is_empty")]
         children: Vec<DynamicNode>,
     },
     /// `<ParameterRefRef RefId>`: the parameter ref is shown (and its memory
     /// written) when this node is reached.
+    #[serde(rename = "p")]
     ParameterRefRef(String),
     /// `<ComObjectRefRef RefId>`: the com-object ref is instantiated when this
     /// node is reached.
+    #[serde(rename = "o")]
     ComObjectRefRef(String),
     /// `<choose ParamRefId>`: the branches whose test matches the parameter's
     /// value are evaluated (the `default` branches when none matches).
+    #[serde(rename = "choose")]
     Choose {
         /// The `ParameterRef` id whose value selects the branches.
+        #[serde(rename = "ref")]
         param_ref_id: String,
         /// The `<when>` branches in document order.
+        #[serde(rename = "when", default)]
         whens: Vec<DynamicWhen>,
     },
     /// `<Module RefId>`: one instantiation of a `<ModuleDef>`; reaching it
     /// evaluates that module definition's own Dynamic section with these
     /// argument values.
+    #[serde(rename = "module")]
     Module {
         /// The module instance id (e.g. `MD-13_M-44`).
         id: String,
         /// The module definition it instantiates (e.g. `MD-13`).
+        #[serde(rename = "def")]
         module_def: String,
         /// The `<NumericArg>` literal values, keyed by app-relative argument
         /// id.
+        #[serde(default, skip_serializing_if = "HashMap::is_empty")]
         args: HashMap<String, i64>,
         /// The `<NumericArg>`s computed at instantiation (an allocator, or a
         /// `BaseValue`), in document order (issue #449).
-        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        #[serde(rename = "computed", default, skip_serializing_if = "Vec::is_empty")]
         computed_args: Vec<ComputedArg>,
     },
     /// `<Repeat ParameterRefId|Count>`: the children are instantiated as many
     /// times as the parameter's value (or the literal `Count`) says, each
     /// `<Module>` inside once per repetition (issue #449).
+    #[serde(rename = "repeat")]
     Repeat {
         /// The repeat id, app-relative (e.g. `X-1`, `MD-1_X-2`).
         id: String,
         /// The `ParameterRefId` whose value is the count, app-relative.
+        #[serde(rename = "ref", default, skip_serializing_if = "Option::is_none")]
         param_ref_id: Option<String>,
         /// The literal `Count`, when there is no parameter.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         count: Option<u32>,
         /// The repeated nodes, in document order.
+        #[serde(rename = "nodes", default, skip_serializing_if = "Vec::is_empty")]
         children: Vec<DynamicNode>,
     },
     /// `<Assign TargetParamRefRef SourceParamRefRef|Value>`: while reached, the
     /// target parameter takes the source parameter's value (or the literal).
+    #[serde(rename = "assign")]
     Assign {
         /// The assigned `ParameterRef` id.
         target: String,
         /// The `ParameterRef` id whose value is copied, if any.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         source: Option<String>,
         /// The literal value assigned when there is no source.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         value: Option<String>,
     },
 }
@@ -629,10 +702,53 @@ pub fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
 /// One `<when>` branch of a [`DynamicNode::Choose`].
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct DynamicWhen {
-    /// The branch condition.
+    /// The branch condition, stored as its `test` text ([`WhenTest::text`]);
+    /// the default branch has none.
+    #[serde(
+        with = "test_text",
+        default = "test_text::default",
+        skip_serializing_if = "test_text::is_default"
+    )]
     pub test: WhenTest,
     /// The nodes evaluated when the branch is taken.
+    #[serde(rename = "nodes", default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<DynamicNode>,
+}
+
+/// `#[serde(with)]` adapter storing a [`WhenTest`] as its `test` text; the
+/// default branch is written without one.
+mod test_text {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    use super::WhenTest;
+
+    /// A branch without a `test` is the default branch.
+    pub(super) fn default() -> WhenTest {
+        WhenTest::Default
+    }
+
+    /// Whether the test is left out: the default branch.
+    pub(super) fn is_default(test: &WhenTest) -> bool {
+        *test == WhenTest::Default
+    }
+
+    /// Writes [`WhenTest::text`].
+    pub(super) fn serialize<S: Serializer>(
+        test: &WhenTest,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        test.text().serialize(serializer)
+    }
+
+    /// Reads a test text back through [`WhenTest::parse`].
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<WhenTest, D::Error> {
+        Ok(match Option::<String>::deserialize(deserializer)? {
+            Some(text) => WhenTest::parse(Some(&text), None),
+            None => WhenTest::Default,
+        })
+    }
 }
 
 /// One `<Enumeration>` in a `<TypeRestriction>`.
@@ -650,15 +766,17 @@ pub struct EnumValue {
     /// The member's label in every translation layer the program carries,
     /// keyed by language identifier (e.g. `de-DE`). Lets a label written in
     /// another language than the parse language still name its member.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub translations: BTreeMap<String, String>,
     /// The `Id`, which a translation refers to.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     /// The decoded `BinaryValue` of a `<TypeRestriction Base="BinaryValue">`
     /// member: the octets ETS writes to memory for it, in place of `Value`
     /// (the ABB BE/S16's `…Select` parameters: `Value="0"`,
     /// `BinaryValue="4AY="`, ETS writes `e0 06`). `None` for a `Base="Value"`
     /// enumeration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_value: Option<Vec<u8>>,
 }
 
@@ -3144,6 +3262,96 @@ impl IndexWalk<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_nodes_round_trip_every_shape() -> Result<(), Box<dyn std::error::Error>> {
+        let tree = vec![DynamicNode::Channel {
+            id: "CH-1".into(),
+            name: Some("c".into()),
+            text: Some("Channel".into()),
+            number: Some(1),
+            text_parameter_ref: Some("P-1_R-1".into()),
+            children: vec![
+                DynamicNode::ParameterRefRef("P-1_R-1".into()),
+                DynamicNode::Choose {
+                    param_ref_id: "P-1_R-1".into(),
+                    whens: [
+                        WhenTest::Values(vec![1, -2]),
+                        WhenTest::Compare {
+                            op: CompareOp::Ne,
+                            value: 0,
+                        },
+                        WhenTest::Unknown("x y".into()),
+                        WhenTest::Unknown(String::new()),
+                        WhenTest::Default,
+                    ]
+                    .into_iter()
+                    .map(|test| DynamicWhen {
+                        test,
+                        children: vec![DynamicNode::ComObjectRefRef("O-1_R-1".into())],
+                    })
+                    .collect(),
+                },
+                DynamicNode::ParameterBlock {
+                    id: "PB-1".into(),
+                    name: None,
+                    text: None,
+                    text_parameter_ref: None,
+                    param_ref: Some("P-1_R-1".into()),
+                    children: Vec::new(),
+                },
+                DynamicNode::Module {
+                    id: "MD-1_M-1".into(),
+                    module_def: "MD-1".into(),
+                    args: HashMap::from([("MD-1_A-1".to_string(), 4)]),
+                    computed_args: Vec::new(),
+                },
+                DynamicNode::Repeat {
+                    id: "X-1".into(),
+                    param_ref_id: Some("P-1_R-1".into()),
+                    count: None,
+                    children: vec![DynamicNode::Module {
+                        id: "MD-2_M-1".into(),
+                        module_def: "MD-2".into(),
+                        args: HashMap::new(),
+                        computed_args: vec![
+                            ComputedArg {
+                                arg: "MD-2_A-1".into(),
+                                allocator: Some("L-1".into()),
+                                value: None,
+                                base: None,
+                            },
+                            ComputedArg {
+                                arg: "MD-2_A-2".into(),
+                                allocator: None,
+                                value: Some(0),
+                                base: Some("MD-2_A-1".into()),
+                            },
+                        ],
+                    }],
+                },
+                DynamicNode::Assign {
+                    target: "P-2_R-2".into(),
+                    source: None,
+                    value: Some("3".into()),
+                },
+            ],
+        }];
+        let json = serde_json::to_string(&tree)?;
+        assert!(json.starts_with(r#"[{"channel":{"id":"CH-1""#), "{json}");
+        assert!(json.contains(r#"{"p":"P-1_R-1"}"#), "{json}");
+        assert!(
+            json.contains(r#"{"test":"","nodes":[{"o":"O-1_R-1"}]},{"nodes":[{"o":"O-1_R-1"}]}"#),
+            "{json}"
+        );
+        assert!(
+            json.contains(r#"{"block":{"id":"PB-1","param_ref":"P-1_R-1"}}"#),
+            "{json}"
+        );
+        let back: Vec<DynamicNode> = serde_json::from_str(&json)?;
+        assert_eq!(back, tree);
+        Ok(())
+    }
 
     /// A hand-built source: the evaluator needs no XML.
     #[derive(Default)]

@@ -9,9 +9,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_download::{
-    DesiredTables, FlashPlan, SecurityInputs, Sys7TableImages, TableWriteSummary, backup,
-};
+use bussard_download::{DesiredTables, FlashPlan, SecurityInputs, Sys7TableImages, backup};
 use bussard_mgmt::ConnectionSeed;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
@@ -130,7 +128,7 @@ pub enum TablesWritten {
     /// The bus could not be leased.
     Lease(crate::ServiceError),
     /// The write ran.
-    Ran(TableWriteSummary),
+    Ran(bussard_download::program::TableWriteSummary),
     /// The write failed.
     Failed(String),
 }
@@ -232,14 +230,13 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
     let target = req.target;
     // The facts the read checked seed every later connection; a device they
     // record as not answering authorize is not asked again (issue #215).
-    let checked = L4Options {
-        authorize: if req.seed.as_ref().is_some_and(|s| s.authorize_unanswered) {
+    let checked = req.options.clone().with_authorize(
+        if req.seed.as_ref().is_some_and(|s| s.authorize_unanswered) {
             Authorize::Skip
         } else {
             req.options.authorize
         },
-        ..req.options.clone()
-    };
+    );
     if req.tables_change || req.object_table.is_some() {
         let (tables, restarted) = write_tables(&req, true, &mut *observer).await;
         let verified = tables.verified();
@@ -315,7 +312,7 @@ pub async fn write_tables(
     observer.step(Step::WriteTables);
     let written = match req.service.lease_channel().await {
         Err(err) => TablesWritten::Lease(err),
-        Ok(channel) => match bussard_download::write_tables_seeded(
+        Ok(channel) => match bussard_download::write_tables(
             channel,
             req.target,
             req.source,

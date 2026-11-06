@@ -8,7 +8,8 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
-use bussard_download::{LiveRead, LiveReadError, LiveTables, SecureSenderEntry};
+use bussard_download::program::LiveReadError;
+use bussard_download::{LiveRead, LiveTables, SecureSenderEntry};
 use bussard_mgmt::{L4Channel, Layer4Connection, MgmtError};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_secure::Key16;
@@ -197,7 +198,7 @@ pub async fn read_on<Ch: L4Channel>(
         _ => None,
     };
     let identified = crate::facts::identify(l4, req.facts, device).await?;
-    let live = bussard_download::read_live_tables_at(l4, table_bases(req.product)).await?;
+    let live = bussard_download::read_live_tables(l4, table_bases(req.product)).await?;
     let (params, parameter_time) = match (&live, req.product) {
         (LiveRead::Tables(tables), Some(product)) => {
             let started = Instant::now();

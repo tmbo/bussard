@@ -39,11 +39,13 @@ use bussard_model::schema::{
     BussardConfig, Connection as ModelConnection, Transport as ModelTransport,
 };
 use bussard_service::WritePolicy;
+use bussard_service::line::WalkEvent;
 use bussard_service::reconstruct::{ReconstructReport, build_report};
 use bussard_service::reconstruct_line::{
-    LineSummary, OutDir, PER_ADDRESS_ESTIMATE, SweepObserver, build_summary, check_out_dir,
-    discovery_timeouts, inject_reconstruct_banners, sweep_line, synthesize_model,
+    LineSummary, OutDir, PER_ADDRESS_ESTIMATE, build_summary, check_out_dir,
+    inject_reconstruct_banners, sweep_line, synthesize_model,
 };
+use bussard_service::scan::LineRange;
 use bussard_transport::TransportKind;
 
 use crate::cli::{ProductSelection, Resolved, Run, Spec};
@@ -322,23 +324,24 @@ fn run_line(
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
         let (service, source) = open_checked(config, WritePolicy::ReadOnly, &conn).await?;
-        let mut progress = Progress(crate::progress::Display::sweep(
+        let mut progress = crate::progress::Display::sweep(
             "reconstructing",
             usize::from(to.saturating_sub(from)) + 1,
             json,
-        ));
+        );
+        let range = LineRange {
+            area,
+            line: line_no,
+            from,
+            to,
+        };
+        let mut on_event = |event: WalkEvent<'_, _>| match event {
+            WalkEvent::Probing { address, found, .. } => progress.probing(address, found),
+            WalkEvent::Probed { .. } => progress.advance(),
+        };
         let found = tokio::select! {
-            found = sweep_line(
-                &service,
-                area,
-                line_no,
-                from,
-                to,
-                source,
-                discovery_timeouts(),
-                &mut progress,
-            ) => {
-                progress.0.finish(true);
+            found = sweep_line(&service, range, source, &mut on_event) => {
+                progress.finish(true);
                 eprintln!(
                     "\rsweep complete: {} device(s) found            ",
                     found.len()
@@ -392,20 +395,6 @@ fn ensure_empty_out(out: &Path) -> anyhow::Result<()> {
              (choose a fresh directory)",
             out.display()
         )),
-    }
-}
-
-/// The CLI's sweep progress: a line rewritten in place, or the live view on
-/// an interactive terminal (issue #147).
-struct Progress(crate::progress::Display);
-
-impl SweepObserver for Progress {
-    fn probing(&mut self, addr: IndividualAddress, found: usize) {
-        self.0.probing(addr, found);
-    }
-
-    fn advance(&mut self) {
-        self.0.advance();
     }
 }
 

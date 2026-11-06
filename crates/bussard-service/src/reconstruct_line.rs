@@ -18,50 +18,25 @@
 //! Every synthesized hand-editable file carries [`RECONSTRUCT_BANNER`],
 //! injected after [`Model::save`] by [`inject_reconstruct_banners`]. The sweep
 //! is read-only on the bus; the only files written are in the fresh output
-//! directory. The sweep never prints: progress goes to a [`SweepObserver`].
+//! directory. The sweep never prints: progress goes to a [`WalkEvent`] callback.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, read_tables};
-use bussard_mgmt::{
-    DeviceConnection, L4Channel, MaskProfile, Timeouts, manufacturers, system_type,
-};
+use bussard_mgmt::{MaskProfile, manufacturers, system_type};
 use bussard_model::schema::{
     BussardConfig, ComObject, Device, Group, Groups, Link, Links, Product,
 };
 use bussard_model::text::hex;
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 
-use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use crate::identity::{Identity, read_identity};
+use crate::line::{WalkEvent, walk};
+use crate::scan::LineRange;
+use crate::{BusService, L4Options, ServiceError};
 
-/// Per-address budget for the up-front estimate of a sweep's duration.
-pub const PER_ADDRESS_ESTIMATE: Duration = Duration::from_millis(3200);
-
-/// Environment variable that overrides the per-attempt discovery timeout in
-/// milliseconds. Set only by integration tests to keep a full-line mock sweep
-/// fast; unset in normal use so the standard [`Timeouts::discovery`] budget
-/// applies.
-pub const DISCOVERY_MS_ENV: &str = "BUSSARD_SCAN_DISCOVERY_MS";
-
-/// The discovery timeout budget, honouring [`DISCOVERY_MS_ENV`] when set.
-pub fn discovery_timeouts() -> Timeouts {
-    match bussard_model::dotenv::var(DISCOVERY_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: Duration::from_millis(ms),
-            // Discovery: a negative con classifies absent (issue #45).
-            absent_on_negative_confirmation: true,
-        },
-        None => Timeouts::discovery(),
-    }
-}
+pub use crate::scan::PER_ADDRESS_ESTIMATE;
 
 /// The reconstruction banner injected atop every synthesized file. It states
 /// the provenance (table read-back, not ETS) and the three things a human or
@@ -161,59 +136,26 @@ pub struct LineDevice {
     pub skipped: Option<String>,
 }
 
-/// The progress of a sweep, for a surface that shows it.
-pub trait SweepObserver {
-    /// `addr` is being probed, with `found` responders so far.
-    fn probing(&mut self, addr: IndividualAddress, found: usize);
-    /// One address was probed.
-    fn advance(&mut self);
-}
-
-/// Sweeps `area.line_no.from` to `.to`, returning every responder with its
-/// tables (System B) or a stub (everything else). One session at a time, each
-/// on its own lease; read-only on the bus.
-#[allow(clippy::too_many_arguments)] // the sweep's range plus its session inputs
+/// Sweeps `range`, returning every responder with its tables (System B) or
+/// a stub (everything else). One session at a time, each on its own lease;
+/// read-only on the bus. `on_event` hears each probe start and end
+/// ([`walk`]).
 pub async fn sweep_line(
     service: &BusService,
-    area: u8,
-    line_no: u8,
-    from: u8,
-    to: u8,
+    range: LineRange,
     source: IndividualAddress,
-    timeouts: Timeouts,
-    observer: &mut (dyn SweepObserver + Send),
+    on_event: &mut (dyn FnMut(WalkEvent<'_, Option<LineDevice>>) + Send),
 ) -> Vec<LineDevice> {
-    let mut found = Vec::new();
-    for device in from..=to {
-        let Ok(addr) = IndividualAddress::new(area, line_no, device) else {
-            continue;
-        };
-        observer.probing(addr, found.len());
-        if let Some(dev) = probe_line(service, addr, source, timeouts).await {
-            found.push(dev);
-        }
-        observer.advance();
-    }
-    found
-}
-
-/// Reads a two-byte device property, `None` when absent or short.
-async fn read_u16<Ch: L4Channel>(dev: &mut DeviceConnection<Ch>, pid: u8) -> Option<u16> {
-    match dev.read_device_property(pid).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    }
-}
-
-/// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
+    walk(
+        &range.addresses(),
+        Option::is_some,
+        |addr| probe_line(service, addr, source),
+        on_event,
+    )
+    .await
+    .into_iter()
+    .filter_map(|step| step.outcome)
+    .collect()
 }
 
 /// Probes one address: descriptor first; System B → read tables; anything else
@@ -223,43 +165,23 @@ async fn probe_line(
     service: &BusService,
     addr: IndividualAddress,
     source: IndividualAddress,
-    timeouts: Timeouts,
 ) -> Option<LineDevice> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts,
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
-    let (mask, manufacturer_id, serial, order) = service
-        .with_device(addr, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
-                Ok(mask) => mask,
-                Err(err) => {
-                    if err.device_present() {
-                        tracing::debug!("{addr} present but refused the descriptor read: {err}");
-                    }
-                    return Ok(None);
-                }
-            };
-            // Best-effort product identity for every responder (System B or not).
-            let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
-            let serial = dev
-                .read_device_property(PID_SERIAL_NUMBER)
-                .await
-                .ok()
-                .filter(|v| !v.is_empty());
-            let order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            Ok::<_, ServiceError>(Some((mask, manufacturer_id, serial, order)))
+    let options = L4Options::discovery(source);
+    // Best-effort product identity for every responder (System B or not).
+    let identity = service
+        .with_l4(addr, &options, async |l4| {
+            Ok::<_, ServiceError>(read_identity(l4, true).await.ok())
         })
         .await
         .ok()
         .flatten()?;
+    let Identity {
+        mask,
+        manufacturer_id,
+        serial,
+        order,
+        ..
+    } = identity;
 
     // System B → read tables over a fresh Layer 4 session; others → stub. The
     // profile makes this medium-agnostic: 07B0 (TP1), 57B0 (KNX-IP) and 27B0
@@ -293,13 +215,9 @@ async fn read_line_tables(
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Result<DeviceTables, String> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1).
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    };
+    // Authorize (free access) before reading, as ETS does (issue #52
+    // finding #1).
+    let options = L4Options::read_only(source);
     let result = service
         .with_l4(addr, &options, async |l4| {
             Ok::<_, ServiceError>(read_tables(l4).await)
@@ -608,11 +526,6 @@ mod tests {
     #[test]
     fn test_hex_formats_lowercase() {
         assert_eq!(hex(&[0xDE, 0xAD]), "dead");
-    }
-
-    #[test]
-    fn test_clean_ascii_trims_nuls_and_space() {
-        assert_eq!(clean_ascii(b"AB-12 \0\0junk"), "AB-12");
     }
 
     #[test]

@@ -6,12 +6,14 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashStep, PlanError, PropObject, Session, flash, plan_flash};
+use bussard_download::{FlashStep, PlanError, PropObject, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
+
+use crate::support::plan_flash_default;
 
 /// The KNXnet/IP parameter object type.
 const OT_KNXNETIP: u16 = 11;
@@ -99,7 +101,7 @@ async fn connect(gw: &MockGateway) -> TestResult<Transport> {
 }
 
 fn plan_for(app: &ApplicationProgram, mask: u16) -> Result<bussard_download::FlashPlan, PlanError> {
-    plan_flash(
+    plan_flash_default(
         app,
         "1.1.200",
         mask,
@@ -262,7 +264,13 @@ async fn test_flash_describe_prop_reads_the_description_and_writes_nothing() -> 
     let app = without_preferred_parameters()?;
     let plan = plan_for(&app, 0x0021)?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(
         &mut session,
@@ -302,7 +310,13 @@ async fn test_flash_property_procedure_writes_and_reads_back() -> TestResult {
     let app = ip_interface_app("0021")?;
     let plan = plan_for(&app, 0x0021)?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(
         &mut session,
@@ -334,7 +348,13 @@ async fn test_flash_property_procedure_falls_back_to_the_object_index() -> TestR
     let app = ip_interface_app("0021")?;
     let plan = plan_for(&app, 0x0021)?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(
         &mut session,
@@ -359,7 +379,13 @@ async fn test_flash_property_procedure_stops_on_a_failed_precondition() -> TestR
     let app = ip_interface_app("0021")?;
     let plan = plan_for(&app, 0x0021)?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let err = flash(
         &mut session,
@@ -402,7 +428,13 @@ async fn test_write_property_value_fails_a_verify_mismatch() -> TestResult {
     let device = device.with_property_ext(OT_KNXNETIP, 204, 1, &[0x05]);
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let err = bussard_download::write_property_value(
         session.l4(),
@@ -439,7 +471,13 @@ async fn test_write_property_value_splits_elements_to_the_apdu_budget() -> TestR
     let device = MockDevice::new(ia("1.1.200")?).with_writable_property(3, 205, 4, &[0; 32]);
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = connect(&gw).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let value: Vec<u8> = (0..32).collect();
     bussard_download::write_property_value(
@@ -476,7 +514,13 @@ async fn test_flash_property_procedure_falls_back_when_ext_goes_unanswered() -> 
     let app = ip_interface_app("0021")?;
     let plan = plan_for(&app, 0x0021)?;
     let mut bus = connect(&gw).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, ia("1.1.200")?, ia("0.0.255")?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     l4.set_timeouts(bussard_mgmt::Timeouts {
         response_timeout: std::time::Duration::from_millis(150),
         ..l4.timeouts()

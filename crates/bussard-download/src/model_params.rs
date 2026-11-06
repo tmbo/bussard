@@ -20,7 +20,7 @@ use crate::backup::{
     ParameterBackup, ParameterMemory, encode_hex, parameter_backups_dir, rfc3339_utc, unix_seconds,
     write_parameter_backup,
 };
-use crate::flash::{FlashPlan, FlashStep, plan_flash_with_memo};
+use crate::flash::{FlashPlan, FlashStep, plan_flash};
 use crate::param_plan::ParamRegions;
 use crate::preflight::{Freshness, ResidentState, assess_freshness};
 
@@ -65,28 +65,12 @@ pub fn model_parameters(
 /// The full flash plan for `target` against `device_mask`, built offline the
 /// way `flash` builds it. `plan` and `reconstruct` use it to locate the
 /// parameter memory they read back (issue #119).
+///
+/// The Dynamic section is evaluated through `memo` (issue #367): the
+/// group-object table image and the parameter image share one evaluation of
+/// the model's values, and so does a caller that decodes the memory it reads
+/// with the same memo.
 pub fn plan_for_readback(
-    product_data: &ProductData,
-    app: &ApplicationProgram,
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-    device_mask: u16,
-) -> Result<FlashPlan, crate::PlanError> {
-    plan_for_readback_with(
-        product_data,
-        app,
-        model,
-        target,
-        device_mask,
-        &DynamicMemo::new(app),
-    )
-}
-
-/// [`plan_for_readback`], evaluating the Dynamic section through `memo`
-/// (issue #367): the group-object table image and the parameter image share
-/// one evaluation of the model's values, and so does a caller that decodes
-/// the memory it reads with the same memo. The plan is the same.
-pub fn plan_for_readback_with(
     product_data: &ProductData,
     app: &ApplicationProgram,
     model: Option<&bussard_model::Model>,
@@ -96,9 +80,9 @@ pub fn plan_for_readback_with(
 ) -> Result<FlashPlan, crate::PlanError> {
     let (overrides, bases) = model_parameters(model, target);
     let template_ops = template_ops_for(product_data, app);
-    let table_images = build_table_images_with(model, target, app, &overrides, memo);
+    let table_images = build_table_images(model, target, app, &overrides, memo);
     let object_flags = linked_object_flags(model, target);
-    plan_flash_with_memo(
+    plan_flash(
         app,
         &target.to_string(),
         device_mask,
@@ -137,7 +121,7 @@ pub fn parameter_overrides(
 }
 
 /// The warning for a parameter key without the `<slug>@<ref-id>` form.
-pub fn malformed_parameter_warning(key: &str, target: IndividualAddress) -> String {
+pub(crate) fn malformed_parameter_warning(key: &str, target: IndividualAddress) -> String {
     format!(
         "warning: ignoring parameter key {key:?} on {target}: it has no `<slug>@<ref-id>` \
          form, so its ETS-stable identity is undetermined"
@@ -187,6 +171,7 @@ pub fn linked_object_flags(
         })
         .unwrap_or_default()
 }
+
 /// Builds the loadable table images (obj1 address, obj2 association, obj3
 /// group-object) a merged flash writes, keyed by device object index (1/2/3).
 ///
@@ -201,7 +186,7 @@ pub fn linked_object_flags(
 /// For a **module-based** application (the DA.tp shape), obj3 is
 /// **channel-expanded**: the module's com-objects are instantiated once per
 /// `<Module>` channel via
-/// [`crate::expand_group_object_descriptors`], so the table carries
+/// [`crate::compute::expand_group_object_descriptors`], so the table carries
 /// every per-channel com-object instance ETS emits (73 entries for DA.tp), not
 /// just the 7 module base objects. Each channel's Communication flag is set when
 /// any of its com-objects is linked in the model, matching ETS (which registers a
@@ -214,23 +199,14 @@ pub fn linked_object_flags(
 /// descriptors (Communication set when linked, the model's per-object flags
 /// for a linked one), at ASAP `Number` + the module instance's `BaseNumber`
 /// argument, and the table is counted up to the application's highest own
-/// com-object number ([`crate::dynamic_group_object_table`]). The
+/// com-object number ([`crate::compute::dynamic_group_object_table`]). The
 /// two paths below remain for applications without one.
 ///
 /// Returns an empty map when the model is absent or the device has no links —
 /// which leaves a self-contained (thelsing) single-object flash untouched.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367).
 pub fn build_table_images(
-    model: Option<&bussard_model::Model>,
-    target: IndividualAddress,
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-) -> BTreeMap<u32, Vec<u8>> {
-    build_table_images_with(model, target, app, overrides, &DynamicMemo::new(app))
-}
-
-/// [`build_table_images`], evaluating the Dynamic section through `memo`
-/// (issue #367). The images are the same.
-pub fn build_table_images_with(
     model: Option<&bussard_model::Model>,
     target: IndividualAddress,
     app: &ApplicationProgram,
@@ -302,18 +278,18 @@ pub fn build_table_images_with(
         let model_objects = model
             .and_then(|m| m.devices.get(&target))
             .map(|d| &d.device.com_objects);
-        let linked_objects: BTreeMap<u16, crate::LinkedObject> = linked
+        let linked_objects: BTreeMap<u16, crate::compute::LinkedObject> = linked
             .iter()
             .map(|&object| {
                 let info = model_objects.and_then(|objects| objects.get(&object));
-                let entry = crate::LinkedObject {
+                let entry = crate::compute::LinkedObject {
                     com_object_ref: info.and_then(|c| c.reference.clone()),
                     flags: info.map(|c| c.flags),
                 };
                 (object, entry)
             })
             .collect();
-        crate::dynamic_group_object_table_with(app, overrides, &linked_objects, memo)
+        crate::compute::dynamic_group_object_table(app, overrides, &linked_objects, memo)
     } else if !app.module_instances.is_empty() && app.channel_membership.is_some() {
         // Module-based application: instantiate the com-objects across channels.
         // Each channel is linked when any of the com-objects it carries appears
@@ -362,7 +338,7 @@ pub fn build_table_images_with(
 /// unconfigured device programs. Each channel's ASAPs are discovered by expanding
 /// that channel alone; a channel is linked when any of those ASAPs is in
 /// `linked`, and the full table is then expanded with those per-channel flags.
-pub fn build_module_obj3_descriptors(
+pub(crate) fn build_module_obj3_descriptors(
     app: &ApplicationProgram,
     linked: &std::collections::BTreeSet<u16>,
 ) -> Vec<crate::compute::GroupObjectDescriptor> {
@@ -479,7 +455,7 @@ pub fn resolve_by_order_number<'a>(
 }
 
 /// A short label for the product in an error message: its manufacturer id(s).
-pub fn product_display(product: &ProductData) -> String {
+pub(crate) fn product_display(product: &ProductData) -> String {
     if product.manufacturers.is_empty() {
         "the product archive".to_string()
     } else {

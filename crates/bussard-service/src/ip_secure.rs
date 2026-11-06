@@ -64,8 +64,10 @@ use bussard_model::IndividualAddress;
 use bussard_model::text::hex;
 use bussard_project::KeyStore;
 use bussard_project::keystore::{StoreInterface, StoreRevision};
-use bussard_secure::{Key16, Password, Sequence, salt};
+use bussard_secure::{Key16, Password, Sequence, SequenceHighWater, salt};
 use sha2::{Digest, Sha256};
+
+use crate::verify::{Counted, LeftoverKind, WriteReadback};
 
 /// Which way the switch goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -356,35 +358,16 @@ impl SwitchPlan {
             Phase::Fdsk => "FDSK",
             Phase::Tool => "tool key",
         };
-        let what = match &planned.step {
-            Step::SecurityMode(on) => format!(
-                "security mode {} (type 17 PID 51)",
-                if *on { "on" } else { "off" }
-            ),
-            Step::ToolKey => match self.switch {
-                Switch::On => "tool key (type 17 PID 56)".to_string(),
-                Switch::Off => "tool key back to the FDSK (type 17 PID 56)".to_string(),
-            },
-            Step::SequenceNumber => "send sequence (type 17 PID 59)".to_string(),
-            Step::SecuredFamily { family, on } => format!(
-                "{} {} (type 11 PID 94)",
-                family_name(*family),
-                if *on { "secured" } else { "not secured" }
-            ),
-            Step::DeviceAuthentication => "device authentication code (type 11 PID 92)".to_string(),
-            Step::PasswordHashes => format!(
-                "password hashes of users 1 to {} (type 11 PID 93)",
-                self.secrets.user_keys.len()
-            ),
-            Step::TunnellingUsers => {
-                format!(
-                    "tunnelling users {} (type 11 PID 97)",
-                    pairs(&self.tunnel_users)
-                )
-            }
-            Step::MasterReset => "master reset (erase code 1)".to_string(),
-        };
-        format!("{what}, under the {key}")
+        format!("{}, under the {key}", planned.step.wire(self).what)
+    }
+
+    /// The tool key a [`Step::ToolKey`] writes: the new tool key (`on`) or
+    /// the FDSK back (`off`).
+    fn written_tool_key(&self) -> &Key16 {
+        match self.switch {
+            Switch::On => &self.secrets.tool_key,
+            Switch::Off => &self.secrets.fdsk,
+        }
     }
 
     /// The property records of the plan, for `--dump-images` (`plan.json`,
@@ -406,104 +389,135 @@ impl SwitchPlan {
     }
 
     fn step_records(&self, planned: &PlannedStep) -> Vec<PlanRecord> {
-        let phase = planned.phase;
-        let record = |object_type: u16, pid: u16, start: Option<u16>, value: Value| PlanRecord {
-            object_type,
-            instance: 1,
-            pid,
-            start_element: start,
-            length: value.len(),
-            data: value.hex(),
-            sha256: value.sha256(),
-            phase,
-        };
-        match &planned.step {
-            Step::SecurityMode(on) => vec![record(
-                OT_SECURITY,
-                PID_SECURITY_MODE,
-                None,
-                Value::Plain(wire::security_mode_command(*on).to_vec()),
-            )],
-            Step::ToolKey => {
-                let key = match self.switch {
-                    Switch::On => &self.secrets.tool_key,
-                    Switch::Off => &self.secrets.fdsk,
-                };
-                vec![record(
-                    OT_SECURITY,
-                    PID_TOOL_KEY,
-                    Some(1),
-                    Value::Secret(key.bytes().to_vec()),
-                )]
-            }
-            Step::SequenceNumber => vec![record(
-                OT_SECURITY,
-                PID_SEQUENCE_NUMBER_SENDING,
-                Some(1),
-                Value::Unknown(wire::SEQUENCE_OCTETS),
-            )],
-            Step::SecuredFamily { family, on } => vec![record(
-                OT_KNXNET_IP_PARAMETER,
-                PID_SECURED_SERVICE_FAMILIES,
-                None,
-                Value::Plain(wire::secured_family_command(*family, *on).to_vec()),
-            )],
-            Step::DeviceAuthentication => vec![record(
-                OT_KNXNET_IP_PARAMETER,
-                PID_DEVICE_AUTHENTICATION_CODE,
-                Some(1),
-                match &self.secrets.device_auth {
-                    Some(key) => Value::Secret(key.bytes().to_vec()),
-                    None => Value::Unknown(KEY_OCTETS),
+        planned
+            .step
+            .wire(self)
+            .writes
+            .into_iter()
+            .map(|(object_type, pid, start, value)| PlanRecord {
+                object_type,
+                instance: 1,
+                pid,
+                start_element: start,
+                length: value.len(),
+                data: value.hex(),
+                sha256: value.sha256(),
+                phase: planned.phase,
+            })
+            .collect()
+    }
+}
+
+/// What one step does, as the plan line names it and the dump records it.
+struct StepWire {
+    /// The plan line without its key.
+    what: String,
+    /// The property writes: object type, PID, start element (`None` for a
+    /// function-property command) and value.
+    writes: Vec<(u16, u16, Option<u16>, Value)>,
+}
+
+impl Step {
+    /// The step's wire address, `(object type, PID)`; `None` for the master
+    /// reset.
+    pub fn property(&self) -> Option<(u16, u16)> {
+        Some(match self {
+            Step::SecurityMode(_) => (OT_SECURITY, PID_SECURITY_MODE),
+            Step::ToolKey => (OT_SECURITY, PID_TOOL_KEY),
+            Step::SequenceNumber => (OT_SECURITY, PID_SEQUENCE_NUMBER_SENDING),
+            Step::SecuredFamily { .. } => (OT_KNXNET_IP_PARAMETER, PID_SECURED_SERVICE_FAMILIES),
+            Step::DeviceAuthentication => (OT_KNXNET_IP_PARAMETER, PID_DEVICE_AUTHENTICATION_CODE),
+            Step::PasswordHashes => (OT_KNXNET_IP_PARAMETER, PID_PASSWORD_HASHES),
+            Step::TunnellingUsers => (OT_KNXNET_IP_PARAMETER, PID_TUNNELLING_USERS),
+            Step::MasterReset => return None,
+        })
+    }
+
+    /// The step's line and property writes under `plan`: the one table
+    /// [`SwitchPlan::lines`] and [`SwitchPlan::records`] derive from.
+    fn wire(&self, plan: &SwitchPlan) -> StepWire {
+        let (object_type, pid) = self.property().unwrap_or_default();
+        let write = |start: Option<u16>, value: Value| (object_type, pid, start, value);
+        let (what, writes) = match self {
+            Step::SecurityMode(on) => (
+                format!(
+                    "security mode {} (type 17 PID 51)",
+                    if *on { "on" } else { "off" }
+                ),
+                vec![write(
+                    None,
+                    Value::Plain(wire::security_mode_command(*on).to_vec()),
+                )],
+            ),
+            Step::ToolKey => (
+                match plan.switch {
+                    Switch::On => "tool key (type 17 PID 56)".to_string(),
+                    Switch::Off => "tool key back to the FDSK (type 17 PID 56)".to_string(),
                 },
-            )],
+                vec![write(
+                    Some(1),
+                    Value::Secret(plan.written_tool_key().bytes().to_vec()),
+                )],
+            ),
+            Step::SequenceNumber => (
+                "send sequence (type 17 PID 59)".to_string(),
+                vec![write(Some(1), Value::Unknown(wire::SEQUENCE_OCTETS))],
+            ),
+            Step::SecuredFamily { family, on } => (
+                format!(
+                    "{} {} (type 11 PID 94)",
+                    family_name(*family),
+                    if *on { "secured" } else { "not secured" }
+                ),
+                vec![write(
+                    None,
+                    Value::Plain(wire::secured_family_command(*family, *on).to_vec()),
+                )],
+            ),
+            Step::DeviceAuthentication => (
+                "device authentication code (type 11 PID 92)".to_string(),
+                vec![write(
+                    Some(1),
+                    match &plan.secrets.device_auth {
+                        Some(key) => Value::Secret(key.bytes().to_vec()),
+                        None => Value::Unknown(KEY_OCTETS),
+                    },
+                )],
+            ),
             Step::PasswordHashes => {
-                let count = u16::try_from(self.secrets.user_keys.len()).unwrap_or(0);
-                let mut all = Vec::with_capacity(self.secrets.user_keys.len() * KEY_OCTETS);
-                for key in &self.secrets.user_keys {
-                    all.extend_from_slice(key.bytes());
-                }
-                vec![
+                let keys = &plan.secrets.user_keys;
+                let count = u16::try_from(keys.len()).unwrap_or(0);
+                let all: Vec<u8> = keys.iter().flat_map(|k| k.bytes().to_vec()).collect();
+                (
+                    format!(
+                        "password hashes of users 1 to {} (type 11 PID 93)",
+                        keys.len()
+                    ),
                     // knxtrace redacts every PID 93 value, the count too, so
                     // both sides compare it by hash.
-                    record(
-                        OT_KNXNET_IP_PARAMETER,
-                        PID_PASSWORD_HASHES,
-                        Some(0),
-                        Value::Secret(count.to_be_bytes().to_vec()),
-                    ),
-                    record(
-                        OT_KNXNET_IP_PARAMETER,
-                        PID_PASSWORD_HASHES,
-                        Some(1),
-                        Value::Secret(all),
-                    ),
-                ]
+                    vec![
+                        write(Some(0), Value::Secret(count.to_be_bytes().to_vec())),
+                        write(Some(1), Value::Secret(all)),
+                    ],
+                )
             }
             Step::TunnellingUsers => {
-                let count = u16::try_from(self.tunnel_users.len()).unwrap_or(0);
-                vec![
-                    record(
-                        OT_KNXNET_IP_PARAMETER,
-                        PID_TUNNELLING_USERS,
-                        Some(0),
-                        Value::Plain(count.to_be_bytes().to_vec()),
-                    ),
-                    record(
-                        OT_KNXNET_IP_PARAMETER,
-                        PID_TUNNELLING_USERS,
-                        Some(1),
-                        Value::Plain(
-                            self.tunnel_users
-                                .iter()
-                                .flat_map(|&(u, i)| [u, i])
-                                .collect(),
+                let users = &plan.tunnel_users;
+                let count = u16::try_from(users.len()).unwrap_or(0);
+                (
+                    format!("tunnelling users {} (type 11 PID 97)", pairs(users)),
+                    vec![
+                        write(Some(0), Value::Plain(count.to_be_bytes().to_vec())),
+                        write(
+                            Some(1),
+                            Value::Plain(users.iter().flat_map(|&(u, i)| [u, i]).collect()),
                         ),
-                    ),
-                ]
+                    ],
+                )
             }
-            Step::MasterReset => Vec::new(),
-        }
+            Step::MasterReset => ("master reset (erase code 1)".to_string(), Vec::new()),
+        };
+        StepWire { what, writes }
     }
 }
 
@@ -629,7 +643,7 @@ pub fn plan_on(
     if tunnels.len() > 14 {
         return Err(IpSecureError::TooManyTunnels(tunnels.len()));
     }
-    let mut updated = store_clone(store);
+    let mut updated = store.clone();
     let mut generated = Vec::new();
     let entry = updated.devices.entry(target).or_default();
     let tool_key = match &device.tool_key {
@@ -741,7 +755,7 @@ pub fn plan_on(
         .iter()
         .map(|(&u, (slot, _, ia))| (u, *slot, *ia))
         .collect();
-    let changed = !generated.is_empty() || !same_credentials(store, &updated, target);
+    let changed = !generated.is_empty() || *store != updated;
     let steps = on_steps();
     Ok(SwitchPlan {
         target,
@@ -795,7 +809,7 @@ pub fn plan_off(store: &KeyStore, target: IndividualAddress) -> Result<SwitchPla
 /// The key store after a verified `off`: the device keeps its FDSK, serial
 /// and KNXnet/IP credentials (an `on` reuses them) and loses its tool key.
 pub fn store_after_off(store: &KeyStore, target: IndividualAddress) -> KeyStore {
-    let mut updated = store_clone(store);
+    let mut updated = store.clone();
     if let Some(device) = updated.devices.get_mut(&target) {
         device.tool_key = None;
     }
@@ -860,47 +874,6 @@ fn off_steps() -> Vec<PlannedStep> {
     steps
 }
 
-/// Whether the store's credentials for `target` are unchanged in `updated`.
-fn same_credentials(store: &KeyStore, updated: &KeyStore, target: IndividualAddress) -> bool {
-    let dev = |s: &KeyStore| {
-        s.devices.get(&target).map(|d| {
-            (
-                d.tool_key.as_ref().map(|k| *k.bytes()),
-                d.authentication.clone(),
-                d.management_password.clone(),
-            )
-        })
-    };
-    let ifaces = |s: &KeyStore| {
-        s.interfaces
-            .iter()
-            .filter(|i| i.host == Some(target))
-            .map(|i| {
-                (
-                    i.ia,
-                    i.user_id,
-                    i.password.clone(),
-                    i.authentication.clone(),
-                )
-            })
-            .collect::<Vec<_>>()
-    };
-    dev(store) == dev(updated) && ifaces(store) == ifaces(updated)
-}
-
-/// A deep copy of the store (it has no `Clone` of its own).
-fn store_clone(store: &KeyStore) -> KeyStore {
-    KeyStore {
-        project: store.project.clone(),
-        created: store.created.clone(),
-        backbone: store.backbone.clone(),
-        interfaces: store.interfaces.clone(),
-        devices: store.devices.clone(),
-        group_keys: store.group_keys.clone(),
-        unassigned: store.unassigned.clone(),
-    }
-}
-
 /// What one connection of a switch did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ConnectionReport {
@@ -932,13 +905,7 @@ pub async fn run_steps<Ch: L4Channel>(
         progress(&plan.describe(planned));
         match &planned.step {
             Step::SecurityMode(on) => wire::set_security_mode(l4, *on).await?,
-            Step::ToolKey => {
-                let key = match plan.switch {
-                    Switch::On => &plan.secrets.tool_key,
-                    Switch::Off => &plan.secrets.fdsk,
-                };
-                wire::write_tool_key(l4, key).await?;
-            }
+            Step::ToolKey => wire::write_tool_key(l4, plan.written_tool_key()).await?,
             Step::SequenceNumber => {
                 // max(clock, the device's own counter), issue #535.
                 wire::write_sequence_number(l4, Sequence::seed().value()).await?;
@@ -968,20 +935,30 @@ pub async fn run_steps<Ch: L4Channel>(
 }
 
 /// What the read-back after a switch found.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Verification {
     /// The security mode the device reports, when it answered with one.
     pub security_mode: Option<bool>,
     /// `PID_TUNNELLING_USERS` as read back (`on` only).
     pub tunnel_users: Option<Vec<(u8, u8)>>,
-    /// What does not match the plan; empty when verified.
-    pub mismatches: Vec<String>,
+    /// The comparison with the plan: what was compared, what differs.
+    pub readback: WriteReadback,
 }
 
 impl Verification {
     /// Whether everything read back matches.
     pub fn verified(&self) -> bool {
-        self.mismatches.is_empty()
+        self.readback.verified
+    }
+
+    /// What does not match the plan, one sentence each; empty when
+    /// verified.
+    pub fn mismatches(&self) -> Vec<String> {
+        self.readback
+            .leftovers
+            .iter()
+            .map(crate::verify::Leftover::sentence)
+            .collect()
     }
 }
 
@@ -998,32 +975,47 @@ pub async fn verify<Ch: L4Channel>(
     plan: &SwitchPlan,
 ) -> Result<Verification, IpSecureError> {
     let want_on = plan.switch == Switch::On;
+    let on_off = |on: bool| if on { "on" } else { "off" }.to_string();
+    let mut readback = WriteReadback {
+        verified: true,
+        ..WriteReadback::default()
+    };
     let mode = wire::read_security_mode(l4).await?;
-    let mut mismatches = Vec::new();
     match mode {
-        Some(on) if on != want_on => mismatches.push(format!(
-            "the security mode reads {}, expected {}",
-            if on { "on" } else { "off" },
-            plan.switch
-        )),
-        None => mismatches.push("the security mode read returned no value".to_string()),
+        Some(on) if on != want_on => readback.push(
+            LeftoverKind::Property,
+            "the security mode (type 17 PID 51)".to_string(),
+            on_off(on),
+            on_off(want_on),
+        ),
+        None => readback.push(
+            LeftoverKind::Readback,
+            "the security mode (type 17 PID 51)".to_string(),
+            "no value".to_string(),
+            on_off(want_on),
+        ),
         _ => {}
     }
     let mut users = None;
     if want_on {
         let read = wire::read_tunnelling_users(l4).await?;
         if read != plan.tunnel_users {
-            mismatches.push(format!(
-                "PID 97 reads {:?}, expected {:?} (user id, address index)",
-                read, plan.tunnel_users
-            ));
+            readback.push(
+                LeftoverKind::Property,
+                "the tunnelling users (type 11 PID 97, user id->address index)".to_string(),
+                pairs(&read),
+                pairs(&plan.tunnel_users),
+            );
         }
         users = Some(read);
     }
+    readback
+        .compared
+        .set(Counted::Properties, if want_on { 2 } else { 1 });
     Ok(Verification {
         security_mode: mode,
         tunnel_users: users,
-        mismatches,
+        readback,
     })
 }
 
@@ -1032,20 +1024,6 @@ pub async fn verify<Ch: L4Channel>(
 /// minute, [`bussard_mgmt::process_time_wait`]).
 pub fn restart_wait(seconds: Option<u16>) -> std::time::Duration {
     bussard_mgmt::process_time_wait(seconds.unwrap_or(8))
-}
-
-/// The steps' wire addresses, for tests and the oracle: `(object type, PID)`.
-pub fn step_property(step: &Step) -> Option<(u16, u16)> {
-    Some(match step {
-        Step::SecurityMode(_) => (OT_SECURITY, PID_SECURITY_MODE),
-        Step::ToolKey => (OT_SECURITY, PID_TOOL_KEY),
-        Step::SequenceNumber => (OT_SECURITY, PID_SEQUENCE_NUMBER_SENDING),
-        Step::SecuredFamily { .. } => (OT_KNXNET_IP_PARAMETER, PID_SECURED_SERVICE_FAMILIES),
-        Step::DeviceAuthentication => (OT_KNXNET_IP_PARAMETER, PID_DEVICE_AUTHENTICATION_CODE),
-        Step::PasswordHashes => (OT_KNXNET_IP_PARAMETER, PID_PASSWORD_HASHES),
-        Step::TunnellingUsers => (OT_KNXNET_IP_PARAMETER, PID_TUNNELLING_USERS),
-        Step::MasterReset => return None,
-    })
 }
 
 /// The text a surface hashes into a plan digest: the target, the direction,
@@ -1115,55 +1093,31 @@ impl SwitchOutcome {
 /// Why a switch stopped.
 #[derive(Debug, thiserror::Error)]
 pub enum SwitchError {
-    /// A management step or read failed; `stage` says where.
+    /// A stage failed: the bus or a session could not be opened, a
+    /// management step or read failed, or the key store could not be
+    /// written. `stage` says where.
     #[error("{stage}: {source}")]
-    Step {
+    At {
         /// Which part of the switch.
         stage: &'static str,
         /// The failure.
         #[source]
-        source: IpSecureError,
-    },
-    /// The bus could not be opened or a session not established.
-    #[error("{stage}: {source}")]
-    Service {
-        /// Which part of the switch.
-        stage: &'static str,
-        /// The failure.
-        #[source]
-        source: crate::ServiceError,
-    },
-    /// The key store could not be written.
-    #[error("{stage}: {source}")]
-    Store {
-        /// Which part of the switch.
-        stage: &'static str,
-        /// The failure.
-        #[source]
-        source: bussard_project::keystore::KeyStoreError,
+        source: Box<dyn std::error::Error + Send + Sync>,
     },
     /// The verification connection could not be configured.
     #[error("configuring the verification tunnel: {0}")]
     SecureConfig(#[from] crate::secure::SecureKeyError),
 }
 
-/// A `with_l4` body error: the service's or a step's.
-enum BodyError {
-    Service(crate::ServiceError),
-    Step(IpSecureError),
-}
-
-impl From<crate::ServiceError> for BodyError {
-    fn from(err: crate::ServiceError) -> Self {
-        BodyError::Service(err)
-    }
-}
-
-impl BodyError {
-    fn at(self, stage: &'static str) -> SwitchError {
-        match self {
-            BodyError::Service(source) => SwitchError::Service { stage, source },
-            BodyError::Step(source) => SwitchError::Step { stage, source },
+impl SwitchError {
+    /// `source` as the failure of `stage`.
+    fn at(
+        stage: &'static str,
+        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
+    ) -> Self {
+        SwitchError::At {
+            stage,
+            source: source.into(),
         }
     }
 }
@@ -1200,17 +1154,40 @@ pub fn secured_through(
         && probed.is_some_and(|(gateway, secure_only)| secure_only && gateway == Some(target))
 }
 
-/// Opens the bus and waits for the tunnel.
-async fn open(
-    config: bussard_transport::ConnectionConfig,
+/// Runs `session` on one management connection to the target, opened
+/// under `key` on a fresh bus over `config`; the bus is closed after it.
+/// `keep_open_after` skips the `T_Disconnect` for a result that ended with
+/// the device's restart.
+async fn on_target<T>(
     ctx: &SwitchContext<'_>,
+    config: bussard_transport::ConnectionConfig,
+    target: IndividualAddress,
+    key: Key16,
     stage: &'static str,
-) -> Result<crate::BusService, SwitchError> {
-    let service = crate::BusService::open(config, ctx.policy)
-        .map_err(|source| SwitchError::Service { stage, source })?;
-    let _ = service.wait_connected(ctx.connect_wait).await;
-    Ok(service)
+    session: impl AsyncFnOnce(&mut crate::Management) -> Result<T, IpSecureError>,
+    keep_open_after: impl FnOnce(&Result<T, BoxError>) -> bool,
+) -> Result<T, SwitchError> {
+    let bus = crate::BusService::open(config, ctx.policy).map_err(|e| SwitchError::at(stage, e))?;
+    let _ = bus.wait_connected(ctx.connect_wait).await;
+    let source = crate::SourcePolicy::Check {
+        skip: ctx.skip_address_check,
+    };
+    let options = crate::L4Options::secured(source, Some(key), SequenceHighWater::new())
+        .with_authorize(crate::Authorize::Skip);
+    let result = bus
+        .with_l4_keep_open(
+            target,
+            &options,
+            async |l4| session(l4).await.map_err(BoxError::from),
+            keep_open_after,
+        )
+        .await;
+    bus.close().await;
+    result.map_err(|source| SwitchError::At { stage, source })
 }
+
+/// A stage's failure before it is named.
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Runs `steps` on one management connection opened under `key`. When they
 /// write `PID_TUNNELLING_USERS`, the connection first reads
@@ -1230,44 +1207,29 @@ async fn connection(
     // the next stage.
     let mut config = config;
     config.reconnect.budget = std::time::Duration::ZERO;
-    let bus = open(config, ctx, stage).await?;
-    let result = async {
-        let source = bus
-            .checked_source(ctx.skip_address_check)
-            .await
-            .map_err(|source| SwitchError::Service { stage, source })?;
-        let options = crate::L4Options {
-            source: crate::SourcePolicy::Known(source),
-            tool_key: Some(key),
-            authorize: crate::Authorize::Skip,
-            ..crate::L4Options::default()
-        };
-        let mut l4 = bus
-            .connect_l4(plan.target, &options)
-            .await
-            .map_err(|source| SwitchError::Service { stage, source })?;
-        let result = async {
+    let target = plan.target;
+    on_target(
+        ctx,
+        config,
+        target,
+        key,
+        stage,
+        async |l4| {
             if steps.iter().any(|s| s.step == Step::TunnellingUsers) {
-                let table = wire::read_tunnelling_addresses(&mut l4).await?;
+                let table = wire::read_tunnelling_addresses(l4).await?;
                 let known = plan.notes.len();
                 plan.resolve_tunnel_users(table.as_deref())?;
                 for note in &plan.notes[known..] {
                     progress(note);
                 }
             }
-            run_steps(&mut l4, plan, steps, progress).await
-        }
-        .await;
+            run_steps(l4, plan, steps, progress).await
+        },
         // After the master reset the device has dropped the connection and
         // is rebooting: a T_Disconnect would go unanswered.
-        if !matches!(&result, Ok(r) if r.restart_seconds.is_some()) {
-            let _ = l4.disconnect().await;
-        }
-        result.map_err(|source| SwitchError::Step { stage, source })
-    }
-    .await;
-    bus.close().await;
-    result
+        |result| matches!(result, Ok(r) if r.restart_seconds.is_some()),
+    )
+    .await
 }
 
 /// Switches KNXnet/IP Secure on or off as `plan` says, and verifies it.
@@ -1295,9 +1257,11 @@ pub async fn run_switch(
     let mut loaded = ctx.keystore_loaded.clone();
     let store_saved_before = plan
         .save_store(ctx.dir, ctx.keystore_password, &mut loaded)
-        .map_err(|source| SwitchError::Store {
-            stage: "saving the generated credentials to the key store before the first write",
-            source,
+        .map_err(|e| {
+            SwitchError::at(
+                "saving the generated credentials to the key store before the first write",
+                e,
+            )
         })?;
 
     let first_steps = plan.first_connection().to_vec();
@@ -1376,28 +1340,16 @@ pub async fn run_switch(
         Switch::On => plan.tool_key(),
         Switch::Off => plan.fdsk(),
     };
-    let stage = "the read-back after the restart";
-    let bus = open(config, ctx, stage).await?;
-    let verification = async {
-        let source = bus
-            .checked_source(ctx.skip_address_check)
-            .await
-            .map_err(|source| SwitchError::Service { stage, source })?;
-        let options = crate::L4Options {
-            source: crate::SourcePolicy::Known(source),
-            tool_key: Some(key),
-            authorize: crate::Authorize::Skip,
-            ..crate::L4Options::default()
-        };
-        bus.with_l4(plan.target, &options, async |l4| {
-            verify(l4, plan).await.map_err(BodyError::Step)
-        })
-        .await
-        .map_err(|err| err.at(stage))
-    }
-    .await;
-    bus.close().await;
-    let verification = verification?;
+    let verification = on_target(
+        ctx,
+        config,
+        plan.target,
+        key,
+        "the read-back after the restart",
+        async |l4| verify(l4, plan).await,
+        |_| false,
+    )
+    .await?;
 
     let mut outcome = SwitchOutcome {
         store_saved_before,
@@ -1410,9 +1362,11 @@ pub async fn run_switch(
     if plan.switch == Switch::Off && outcome.verified(Switch::Off) {
         store_after_off(store, plan.target)
             .save_unchanged_since(ctx.dir, ctx.keystore_password, &mut loaded)
-            .map_err(|source| SwitchError::Store {
-                stage: "dropping the tool key from the key store after the verified switch",
-                source,
+            .map_err(|e| {
+                SwitchError::at(
+                    "dropping the tool key from the key store after the verified switch",
+                    e,
+                )
             })?;
         outcome.store_saved_after = true;
     }
@@ -1468,7 +1422,7 @@ mod tests {
         let wire: Vec<(Option<(u16, u16)>, Phase)> = plan
             .steps
             .iter()
-            .map(|s| (step_property(&s.step), s.phase))
+            .map(|s| (s.step.property(), s.phase))
             .collect();
         assert_eq!(
             wire,

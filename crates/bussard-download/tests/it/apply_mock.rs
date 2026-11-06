@@ -5,7 +5,7 @@
 //! from bussard's own encoders (de-mirrored): the mock decodes the raw APDUs,
 //! mutates its own load states and sparse memory, and answers with the responses
 //! a real device sends. The client drives it through
-//! [`bussard_download::apply_tables`].
+//! [`bussard_download::apply::apply_tables`].
 //!
 //! # Why this mock refuses `PID_TABLE` property writes
 //!
@@ -47,7 +47,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use bussard_download::{apply_tables, compute_tables, discover_table_objects};
+use bussard_download::apply::apply_tables;
+use bussard_download::apply::discover_table_objects;
+use bussard_download::{SystemBLoad, compute_tables};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_model::schema::Link;
@@ -668,7 +670,7 @@ const SOURCE: &str = "0.0.255";
 async fn run_apply(
     cfg: DeviceCfg,
 ) -> TestResult<(
-    Result<bussard_download::VerifyOutcome, WriteError>,
+    Result<bussard_download::apply::VerifyOutcome, WriteError>,
     Shared,
     MockGateway,
 )> {
@@ -677,9 +679,15 @@ async fn run_apply(
     let source: IndividualAddress = SOURCE.parse()?;
 
     let desired = compute_tables(&model_links()?);
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let objects = discover_table_objects(&mut l4).await?;
-    let outcome = apply_tables(&mut l4, objects, &desired).await;
+    let outcome = apply_tables(&mut l4, objects, &desired, SystemBLoad::default()).await;
     let _ = l4.disconnect().await;
     Ok((outcome, state, handle))
 }
@@ -982,7 +990,13 @@ async fn plan_only_read_touches_no_load_state() -> TestResult {
     let source: IndividualAddress = SOURCE.parse()?;
 
     // A plan is a read-only `read_tables` — it must never write a load control.
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let _ = bussard_mgmt::tables::read_tables(&mut l4).await?;
     let _ = l4.disconnect().await;
 

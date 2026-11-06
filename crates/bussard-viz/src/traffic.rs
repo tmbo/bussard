@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use bussard_bus::{BusHandle, BusState, ops};
 use bussard_mgmt::LeaseChannel;
-use bussard_mgmt::broadcast::devices_in_programming_mode_within;
+use bussard_mgmt::broadcast::devices_in_programming_mode;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, GroupKeyring, json_value};
@@ -25,7 +25,8 @@ use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::state::{BusStatus, ModelHandle};
+use crate::state::BusStatus;
+use bussard_service::ModelHandle;
 
 /// The short, stable tag for a cEMI message code in the SSE telegram contract.
 ///
@@ -411,7 +412,7 @@ pub async fn feed_secured(
                         let snapshot = model.current();
                         let decoded = DecodedTelegram::from_frame_secured(
                             &frame.frame,
-                            Some(snapshot.model.as_ref()),
+                            Some(snapshot.as_ref()),
                             keyring.as_mut(),
                         );
                         // Carry the cEMI message code: the gateway's con-echo of
@@ -478,7 +479,7 @@ pub async fn watch_prog(hub: TrafficHub, handle: BusHandle) {
             Err(_) => break,
         };
         let channel = LeaseChannel::new(lease);
-        match devices_in_programming_mode_within(channel, source, PROG_COLLECTION_WINDOW).await {
+        match devices_in_programming_mode(channel, source, PROG_COLLECTION_WINDOW).await {
             Ok(found) => {
                 let set: BTreeSet<IndividualAddress> = found.into_iter().collect();
                 hub.set_prog_if_changed(set);
@@ -780,11 +781,12 @@ mod tests {
         use bussard_model::Model;
         use bussard_transport::ConnectionConfig;
 
-        use crate::state::{BusStatus, ModelHandle};
+        use crate::state::BusStatus;
+        use bussard_service::ModelHandle;
 
         // An empty model directory loads fine (every file is optional).
         let tmp = tempfile::tempdir()?;
-        let model = ModelHandle::new(Model::load(tmp.path())?);
+        let model = ModelHandle::fixed(Model::load(tmp.path())?);
 
         // A dead gateway on loopback: the actor tries once, fails, and moves
         // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.

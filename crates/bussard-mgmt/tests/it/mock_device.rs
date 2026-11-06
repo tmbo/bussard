@@ -8,7 +8,7 @@
 //! response NDTs (which the client must in turn acknowledge). One simulated
 //! device NAKs; one goes silent (models an absent address).
 //!
-//! These exercise the full [`DeviceConnection`] procedure surface plus the
+//! These exercise the full [`Layer4Connection`] procedure surface plus the
 //! sequence state machine end-to-end over UDP localhost.
 
 use std::collections::HashMap;
@@ -16,7 +16,7 @@ use std::net::SocketAddrV4;
 use std::time::Duration;
 
 use bussard_mgmt::apci;
-use bussard_mgmt::{DeviceConnection, MgmtError, Timeouts};
+use bussard_mgmt::{Layer4Connection, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, Step, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -386,9 +386,15 @@ async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() -> Test
     let channel = LeaseChannel::new(lease);
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(channel, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        channel,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let mask = dev.device_descriptor().await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut dev).await?;
     assert_eq!(mask, 0x07B0, "the L4 session over a lease reads correctly");
     dev.disconnect().await?;
 
@@ -412,9 +418,15 @@ async fn device_descriptor_property_and_memory() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let mask = dev.device_descriptor().await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut dev).await?;
     assert_eq!(mask, 0x07B0);
 
     let manu = dev.read_device_property(apci::PID_MANUFACTURER_ID).await?;
@@ -459,7 +471,13 @@ async fn max_apdu_negotiation_scales_memory_chunk() -> TestResult {
         ("1.1.12", 12u8, false),
     ] {
         let target: IndividualAddress = target_str.parse()?;
-        let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            source,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         // Before negotiation the conservative default applies.
         assert_eq!(
             l4.max_memory_chunk(),
@@ -502,13 +520,18 @@ async fn retransmitted_previous_response_does_not_desync() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.7".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // The first read is clean; every subsequent read is preceded by a replayed
     // previous response. All must yield the correct mask and stay in sync.
     for i in 0..6 {
-        let mask = dev
-            .device_descriptor()
+        let mask = bussard_mgmt::read_device_descriptor(&mut dev)
             .await
             .unwrap_or_else(|e| panic!("read {i} failed: {e}"));
         assert_eq!(mask, 0x07B0, "read {i} must decode the fresh response");
@@ -530,7 +553,13 @@ async fn wraparound_across_many_requests() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     for _ in 0..20 {
         let manu = dev.read_device_property(apci::PID_MANUFACTURER_ID).await?;
@@ -556,14 +585,20 @@ async fn folded_ack_device_still_delivers_response() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let mask = dev.device_descriptor().await?;
+    let mask = bussard_mgmt::read_device_descriptor(&mut dev).await?;
     assert_eq!(mask, 0x07B0, "folded-ACK response must still decode");
 
     // A second request must also succeed: the receive sequence advanced exactly
     // once for the folded response, so nothing is dropped as a duplicate.
-    let mask2 = dev.device_descriptor().await?;
+    let mask2 = bussard_mgmt::read_device_descriptor(&mut dev).await?;
     assert_eq!(
         mask2, 0x07B0,
         "connection stayed in sync after a folded ACK"
@@ -586,9 +621,15 @@ async fn nak_device_is_present_but_refuses() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.7".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let err = must_fail(dev.device_descriptor().await)?;
+    let err = must_fail(bussard_mgmt::read_device_descriptor(&mut dev).await)?;
     assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
     assert!(err.device_present(), "a NAK means the device is present");
     drop(gw);
@@ -613,9 +654,15 @@ async fn malformed_descriptor_error_carries_raw_hex() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.0.255".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let err = must_fail(dev.device_descriptor().await)?;
+    let err = must_fail(bussard_mgmt::read_device_descriptor(&mut dev).await)?;
     match err {
         MgmtError::MalformedResponse { reason, .. } => {
             // The A_PropertyValue_Response selector is 0x03D6.
@@ -650,9 +697,15 @@ async fn descriptor_echo_is_named_in_the_error() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.0.255".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
-    let err = must_fail(dev.device_descriptor().await)?;
+    let err = must_fail(bussard_mgmt::read_device_descriptor(&mut dev).await)?;
     match err {
         MgmtError::MalformedResponse { reason, .. } => {
             assert!(
@@ -699,9 +752,9 @@ async fn silent_device_is_absent() -> TestResult {
         response_timeout: Duration::from_millis(50),
         absent_on_negative_confirmation: false,
     };
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast).await?;
+    let mut dev = Layer4Connection::connect(&mut bus, target, source, fast.into()).await?;
 
-    let err = must_fail(dev.device_descriptor().await)?;
+    let err = must_fail(bussard_mgmt::read_device_descriptor(&mut dev).await)?;
     assert!(matches!(err, MgmtError::NoResponse { .. }), "got {err:?}");
     assert!(!err.device_present(), "silence means the device is absent");
     drop(gw);
@@ -729,7 +782,13 @@ async fn describe_property_reads_one_descriptor() -> TestResult {
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // By index (PID 0): index 1 is the object-type property.
     let desc = dev
@@ -771,7 +830,13 @@ async fn describe_object_enumerates_all_properties_and_terminates() -> TestResul
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     let props = dev.describe_object(apci::DEVICE_OBJECT_INDEX).await?;
     assert_eq!(
@@ -807,7 +872,13 @@ async fn describe_object_on_device_without_descriptions_is_empty() -> TestResult
     let mut bus = open_bus(addr).await?;
     let target: IndividualAddress = "1.1.4".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     let props = dev.describe_object(apci::DEVICE_OBJECT_INDEX).await?;
     assert!(props.is_empty(), "no descriptions → empty enumeration");

@@ -228,7 +228,7 @@ fn resolve_globals(global: &Global, name: &str, spec: Spec) -> anyhow::Result<Re
     conn_cmd::apply_dotenv(&dir, cwd);
     let env = conn_cmd::EnvGlobals::from_process();
     // The product store (issue #228): move an earlier `vendor/` into
-    // `products/` and regenerate `.bussard/models/` when it is missing, before
+    // `products/` and regenerate `.bussard/model-cache/` when it is missing, before
     // the command reads the model. `init` creates, `import` does this itself.
     if role != Role::Creates && spec.products && dir.is_dir() {
         timing::time("product store", || {
@@ -357,7 +357,7 @@ enum Command {
     /// skeleton, then import the ETS project (the one given, or the one
     /// `.knxproj` next to the directory) or offer to scan the line.
     Init(init_cmd::InitArgs),
-    /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
+    /// Import a `.knxproj` or a `.bussard` bundle.
     Import(import_cmd::ImportArgs),
     /// Write the project and its history as one `.bussard` file to hand over.
     Export(export_cmd::ExportArgs),

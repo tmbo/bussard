@@ -20,7 +20,7 @@ use bussard_mgmt::tables::{
     OT_GROUP_OBJECT_TABLE, PID_OBJECT_TYPE, PID_TABLE, PID_TABLE_REFERENCE, TableSource,
     TablesError,
 };
-use bussard_mgmt::{Layer4Connection, Timeouts};
+use bussard_mgmt::{Layer4Connection, MgmtError, Timeouts};
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, TestResult, ga};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -296,7 +296,7 @@ async fn read_tables_from(
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
     let mut l4 =
-        Layer4Connection::connect_with(&mut bus, target, source, Timeouts::discovery()).await?;
+        Layer4Connection::connect(&mut bus, target, source, Timeouts::discovery().into()).await?;
     let result = tables::read_tables(&mut l4).await;
     let _ = l4.disconnect().await;
     Ok(result)
@@ -617,13 +617,13 @@ async fn device_with_no_readable_table_is_a_clean_error() -> TestResult {
         .err()
         .ok_or("expected the read to fail, it succeeded")?;
     match err {
-        TablesError::TableUnreadable { reason, .. } => {
+        TablesError::Mgmt(MgmtError::MalformedResponse { reason, .. }) => {
             assert!(
                 reason.contains("neither PID_TABLE nor PID_TABLE_REFERENCE"),
                 "unexpected reason: {reason}"
             );
         }
-        other => panic!("expected TableUnreadable, got {other:?}"),
+        other => panic!("expected an unreadable table, got {other:?}"),
     }
 
     drop(gw);
@@ -646,13 +646,13 @@ async fn device_without_address_table_object_is_a_clean_error() -> TestResult {
         .err()
         .ok_or("expected the read to fail, it succeeded")?;
     match err {
-        TablesError::TableUnreadable { reason, .. } => {
+        TablesError::Mgmt(MgmtError::MalformedResponse { reason, .. }) => {
             assert!(
                 reason.contains("no group address table object"),
                 "unexpected reason: {reason}"
             );
         }
-        other => panic!("expected TableUnreadable, got {other:?}"),
+        other => panic!("expected an unreadable table, got {other:?}"),
     }
 
     drop(gw);

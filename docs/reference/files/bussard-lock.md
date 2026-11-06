@@ -145,7 +145,7 @@ hidden = [
 
 - `parameters[]` lists every parameter the evaluated configuration shows, whether the device file holds a value for it or it is at its vendor default, plus any other ref the file holds a value for.
 - Only one ref per parameter id appears. A parameter only an `<Assign>` reaches is listed only when the file holds a value for it.
-- The rest of the program's parameters, with their texts, types and defaults, are in the product model under `.bussard/models/`.
+- The rest of the program's parameters, with their texts, types and defaults, are in the product model under `.bussard/model-cache/`.
 - An MCP `knx_set_parameter` re-derives the channels, objects and this index under the new value when the archive is pinned, keeping every existing handle and key.
 - `channels[]` leaves out a channel with nothing to configure: one whose only parameters have the effective `Access` `"None"` and that holds no object (ETS bookkeeping such as Jung's "Applikationsinstanzen").
 

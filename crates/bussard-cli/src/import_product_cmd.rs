@@ -5,7 +5,7 @@
 //! under `<dir>/products/` (retained model data, see
 //! [`crate::product_store`]), pins it in `bussard.lock`, and writes one
 //! machine-generated product model per ApplicationProgram under
-//! `<dir>/.bussard/models/` (regenerated from the archive whenever it is
+//! `<dir>/.bussard/model-cache/` (regenerated from the archive whenever it is
 //! missing).
 //!
 //! An ETS project export (`.knxproj`) also carries the product data of every
@@ -168,7 +168,7 @@ pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
 }
 
 /// Writes one model file per application program under
-/// `<dir>/.bussard/models/` (see [`bussard_prod::product_model`]).
+/// `<dir>/.bussard/model-cache/` (see [`bussard_prod::product_model`]).
 pub(crate) fn write_product_models(
     product: &ProductData,
     dir: &Path,

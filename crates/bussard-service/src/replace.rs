@@ -40,7 +40,6 @@
 
 use std::path::{Path, PathBuf};
 
-use bussard_mgmt::apci::{PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::system_type;
 use bussard_model::SerialRecord;
 use bussard_model::identity::{IdentityCheck, LockIdentity, ReportedIdentity};
@@ -48,8 +47,8 @@ use bussard_model::schema::Device;
 use bussard_model::{IndividualAddress, Model};
 
 use crate::assign::Verified;
-use crate::identity::clean_ascii;
-use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use crate::identity::read_identity;
+use crate::{Authorize, BusService, L4Options, ServiceError};
 
 /// Why a replace step failed.
 #[derive(Debug, thiserror::Error)]
@@ -296,30 +295,19 @@ pub async fn identify(
     let mut pressed = Pressed::unread(current);
     // Authorize comes after the descriptor read (below), so the session opens
     // without it.
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
+    let options = L4Options::read_only(source).with_authorize(Authorize::Skip);
     let _ = service
-        .with_device(current, &options, async |dev| {
-            pressed.mask = dev.device_descriptor().await.ok();
-            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-                tracing::debug!("{current} authorize (free access) did not grant: {err}");
+        .with_l4(current, &options, async |dev| {
+            match read_identity(dev, false).await {
+                Ok(identity) => {
+                    pressed.mask = Some(identity.mask);
+                    pressed.order = identity.order;
+                    pressed.serial = identity.serial;
+                }
+                Err(err) => tracing::debug!("{current} did not identify itself: {err}"),
             }
-            pressed.order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            pressed.serial = dev
-                .read_device_property(PID_SERIAL_NUMBER)
-                .await
-                .ok()
-                .filter(|v| !v.is_empty());
-            if let Ok(obj) = bussard_download::discover_application_object(dev.l4_mut()).await {
-                let id = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
+            if let Ok(obj) = bussard_download::discover_application_object(dev).await {
+                let id = bussard_mgmt::read_program_version(dev, obj)
                     .await
                     .ok()
                     .flatten();

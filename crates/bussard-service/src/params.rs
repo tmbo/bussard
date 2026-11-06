@@ -23,15 +23,18 @@ use std::time::Duration;
 
 use bussard_download::backup::backups_root;
 use bussard_download::{
-    ChangeMark, ChangeSubject, DecodedParameters, DevicePlan, FlashPlan, FullImage, LiveTables,
-    ObjectTableWrite, OctetRange, OctetRole, ParamRegions, ParamValue, PlanChange, PlanReport,
-    PlanWrites, ResidentState, Sys7Identity, object_changes, probe_resident_state,
-    read_parameter_regions, regions_memory, select_application, sort_changes, state_hash_with,
+    ChangeMark, ChangeSubject, CurrentMemory, DecodedParameters, DevicePlan, FlashPlan, FullImage,
+    LiveTables, ObjectTableWrite, OctetRange, OctetRole, ParamChange, ParamReading, ParamRegions,
+    ParamValue, PlanChange, PlanReport, PlanWrites, ResidentState, Sys7Identity, object_changes,
+    probe_resident_state, read_parameter_regions, regions_memory, select_application, sort_changes,
+    state_hash_with,
 };
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::schema::{Device, ProductEntry};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
+
+use crate::util::chain;
 
 /// The retained product store under a model directory (issue #228).
 pub const PRODUCTS_DIR: &str = "products";
@@ -40,18 +43,6 @@ pub const PRODUCTS_DIR: &str = "products";
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ProductError(pub String);
-
-/// An error and its sources, joined with `": "` (the `{:#}` rendering).
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
-    }
-    out
-}
 
 /// The `--product` / `--application` selection of a command.
 #[derive(Debug, Clone, Copy, Default)]
@@ -409,50 +400,20 @@ fn select_app(
     }
 }
 
-/// One non-default parameter, for the JSON report.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct ReadingJson {
-    /// The parameter's key.
-    pub key: String,
-    /// The vendor text.
-    pub name: String,
-    /// What the device holds.
-    pub value: String,
-    /// The vendor default.
-    pub default: String,
-    /// The unit, when the parameter type has one.
-    pub unit: Option<String>,
-}
-
-/// One difference between the device and the model, for the JSON report.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct DifferenceJson {
-    /// The parameter's key.
-    pub key: String,
-    /// The vendor text.
-    pub name: String,
-    /// What the device holds; `None` when it could not be read.
-    pub device: Option<String>,
-    /// What the model asks for (its override, else the vendor default).
-    pub model: String,
-    /// The unit, when the parameter type has one.
-    pub unit: Option<String>,
-}
-
 /// The parameter read-back of one device.
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Readback {
     /// The application the memory was decoded with.
     pub application: String,
     /// The parameters whose device value differs from the vendor default.
-    pub non_default: Vec<ReadingJson>,
+    pub non_default: Vec<ParamReading>,
     /// The parameters whose device value differs from the model.
-    pub differences: Vec<DifferenceJson>,
+    pub differences: Vec<ParamChange>,
     /// The runtime-owned parameters (`Access="None"`, e.g. a download flag the
     /// application resets after the restart): what the device holds, with no
     /// verdict against the default or the model.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub device_managed: Vec<ReadingJson>,
+    pub device_managed: Vec<ParamReading>,
     /// The written octet runs that hold an internal ETS value (`Access="None"`,
     /// never shown, e.g. a function-block selector) differing from the
     /// model's image, with both values (issue #285).
@@ -464,7 +425,7 @@ pub struct Readback {
     /// says, with no verdict. Not written by `flash` or `apply`, so never a
     /// difference.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub kept: Vec<DifferenceJson>,
+    pub kept: Vec<ParamChange>,
     /// Why the read-back is partial or absent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -573,24 +534,18 @@ pub async fn read_state<Ch: L4Channel>(
     // the read-back plan, the decode, the group-object change and the octet
     // attribution below (issue #367).
     let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-    let plan = match bussard_download::plan_for_readback_with(
-        &source.product,
-        app,
-        model,
-        target,
-        device_mask,
-        &memo,
-    ) {
+    let plan = match readback_plan(&source.product, app, model, target, device_mask, &memo) {
         Ok(plan) => plan,
-        Err(err) => {
-            return ParamState::noted(
-                &app.id,
-                format!("the parameter memory cannot be located: {err}"),
-            );
-        }
+        Err(note) => return ParamState::noted(&app.id, note),
     };
     let access = plan.sys7_lsm_access();
-    let resident = probe_resident_state(l4, device_mask, access.as_ref()).await;
+    let resident = probe_resident_state(
+        l4,
+        device_mask,
+        access.as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     // The parameter-only download's rule: the same program (any build hash)
     // on System B, every driven LSM Loaded and the product's code on System 7.
     if let Err(why) = bussard_download::identity_gate(&plan, Some(&resident)) {
@@ -615,7 +570,7 @@ pub async fn read_state<Ch: L4Channel>(
         state.refused_resident = Some(resident);
         return state;
     }
-    let regions = read_parameter_regions(l4, &plan).await;
+    let regions = read_parameter_regions(l4, &plan, &[]).await;
     // The properties the parameters live in, on the same connection (issue
     // #706).
     let properties = bussard_download::read_parameter_properties(l4, &plan, app).await;
@@ -626,30 +581,24 @@ pub async fn read_state<Ch: L4Channel>(
     if regions.is_empty() {
         return ParamState::noted(&app.id, "the parameter memory could not be read".into());
     }
-    let current = regions_memory(&regions);
-    let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let decoded =
-        bussard_download::decode_parameters_with(app, &overrides, &bases, &current, &memo);
-    let change =
-        bussard_download::group_object_change_with(app, &decoded.values, &overrides, &memo);
+    let Decoded {
+        current,
+        overrides,
+        bases,
+        decoded,
+    } = decode_regions(app, model, target, &regions, &memo);
+    let change = bussard_download::group_object_change(app, &decoded.values, &overrides, &memo);
     // Issue #411: a System 7 load-procedure `<choose>` that allocates the
     // segments differently under the model's values needs the full download
     // that sends the new allocation records.
     let needs_flash = (!change.is_empty())
         .then(|| bussard_download::describe_group_object_change(&change))
         .or_else(|| bussard_download::allocation_change(app, &decoded.values, &overrides, &memo));
-    let device_managed = decoded
-        .device_managed
-        .iter()
-        .cloned()
-        .map(reading_json)
-        .collect();
-    let (non_default, differences) = report(decoded.clone());
     let (octets, unwritten) = plan
         .parameters_only(&regions)
         .map(|partial| {
             let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
-                bussard_download::attribute_octets_with(
+                bussard_download::attribute_octets(
                     app,
                     &overrides,
                     &bases,
@@ -672,15 +621,14 @@ pub async fn read_state<Ch: L4Channel>(
         .into_iter()
         .filter(|r| r.parameters.iter().any(|p| p.role == OctetRole::Internal))
         .collect();
-    let kept = kept_rows(&decoded.kept, device);
     ParamState {
         readback: Readback {
             application: app.id.clone(),
-            non_default,
-            differences,
-            device_managed,
+            non_default: decoded.non_default.clone(),
+            differences: decoded.differences.clone(),
+            device_managed: decoded.device_managed.clone(),
             internal,
-            kept,
+            kept: with_file_keys(&decoded.kept, device),
             note: None,
         },
         detail: Some(ParamDetail {
@@ -707,7 +655,7 @@ pub struct FlashedParameters {
     /// The parameters the device still holds differently from the model,
     /// keyed as the device file keys them. Runtime-owned (device-managed)
     /// parameters are never listed, as in a plan.
-    pub differences: Vec<DifferenceJson>,
+    pub differences: Vec<ParamChange>,
     /// How many parameter values the read-back decoded and compared (issue
     /// #349); 0 when the memory was not compared.
     pub compared: usize,
@@ -716,7 +664,7 @@ pub struct FlashedParameters {
     /// allocation those octets hold whatever the allocation left, so the
     /// model's value there is not verified.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub kept: Vec<DifferenceJson>,
+    pub kept: Vec<ParamChange>,
     /// Why the memory was not compared; `None` when it was.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -740,19 +688,13 @@ impl FlashedParameters {
             .differences
             .iter()
             .map(|d| {
-                let unit = d.unit.as_deref().filter(|u| !u.is_empty());
-                let with_unit = |v: &str| match unit {
-                    Some(u) => format!("{v} {u}"),
-                    None => v.to_string(),
-                };
                 format!(
                     "{} ({}) is {}, your project says {}",
                     d.key,
                     d.name,
-                    d.device
-                        .as_deref()
-                        .map_or_else(|| "unreadable".to_string(), with_unit),
-                    with_unit(&d.model)
+                    d.old_with_unit()
+                        .unwrap_or_else(|| "unreadable".to_string()),
+                    d.new_with_unit()
                 )
             })
             .collect();
@@ -790,43 +732,70 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
     // The plan and the decode share one evaluation of the model's values
     // (issue #367).
     let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-    let plan = match bussard_download::plan_for_readback_with(
-        product,
-        app,
-        model,
-        target,
-        device_mask,
-        &memo,
-    ) {
+    let plan = match readback_plan(product, app, model, target, device_mask, &memo) {
         Ok(plan) => plan,
-        Err(err) => return noted(format!("the parameter memory cannot be located: {err}")),
+        Err(note) => return noted(note),
     };
-    let regions = read_parameter_regions(l4, &plan).await;
+    let regions = read_parameter_regions(l4, &plan, &[]).await;
     let expects_parameters = plan.param_images.values().any(|b| !b.is_empty());
     if regions.is_empty() && expects_parameters {
         return noted("the parameter memory could not be read back".into());
     }
-    let current = regions_memory(&regions);
-    let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let decoded =
-        bussard_download::decode_parameters_with(app, &overrides, &bases, &current, &memo);
+    let decoded = decode_regions(app, model, target, &regions, &memo).decoded;
     let device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let kept = kept_rows(&decoded.kept, device);
-    let compared = decoded.values.len().saturating_sub(kept.len());
-    let (_, differences) = report(decoded);
     FlashedParameters {
-        compared,
-        kept,
-        differences: differences
-            .into_iter()
-            .map(|d| DifferenceJson {
-                key: file_key(device, &d.key),
-                ..d
-            })
-            .collect(),
+        compared: decoded.values.len().saturating_sub(decoded.kept.len()),
+        kept: with_file_keys(&decoded.kept, device),
+        differences: with_file_keys(&decoded.differences, device),
         note: None,
+    }
+}
+
+/// The read-back plan of `app` on the device (the full flash plan, which
+/// locates the parameter memory), or why it cannot be made.
+fn readback_plan(
+    product: &ProductData,
+    app: &ApplicationProgram,
+    model: Option<&Model>,
+    target: IndividualAddress,
+    device_mask: u16,
+    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Result<FlashPlan, String> {
+    bussard_download::plan_for_readback(product, app, model, target, device_mask, memo)
+        .map_err(|err| format!("the parameter memory cannot be located: {err}"))
+}
+
+/// The parameter memory as read, decoded against the model's values.
+struct Decoded {
+    /// The memory, by code segment.
+    current: CurrentMemory,
+    /// The model's values for the device.
+    overrides: BTreeMap<String, String>,
+    /// The module-instance base offsets.
+    bases: BTreeMap<String, u32>,
+    /// The decoding.
+    decoded: DecodedParameters,
+}
+
+/// Decodes the parameter `regions` read off `target` against the model's
+/// values: what the plan's and the flash's read-backs share.
+fn decode_regions(
+    app: &ApplicationProgram,
+    model: Option<&Model>,
+    target: IndividualAddress,
+    regions: &ParamRegions,
+    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Decoded {
+    let current = regions_memory(regions);
+    let (overrides, bases) = bussard_download::model_parameters(model, target);
+    let decoded = bussard_download::decode_parameters(app, &overrides, &bases, &current, memo);
+    Decoded {
+        current,
+        overrides,
+        bases,
+        decoded,
     }
 }
 
@@ -842,55 +811,14 @@ pub(crate) fn model_images(
         .collect()
 }
 
-/// One decoded value as a JSON report row.
-fn reading_json(r: bussard_download::ParamReading) -> ReadingJson {
-    ReadingJson {
-        key: r.key,
-        name: r.name,
-        value: r.value,
-        default: r.default,
-        unit: r.unit,
-    }
-}
-
-/// The kept parameters of a decoded memory (issue #411) as report rows:
-/// `device` what the device holds, `model` what the model says.
-pub(crate) fn kept_rows(
-    kept: &[bussard_download::ParamChange],
-    device: Option<&Device>,
-) -> Vec<DifferenceJson> {
-    kept.iter()
-        .map(|c| DifferenceJson {
+/// `rows` with each key the device file's (see [`file_key`]).
+pub(crate) fn with_file_keys(rows: &[ParamChange], device: Option<&Device>) -> Vec<ParamChange> {
+    rows.iter()
+        .map(|c| ParamChange {
             key: file_key(device, &c.key),
-            name: c.name.clone(),
-            device: match &c.old {
-                ParamValue::Known(v) => Some(v.clone()),
-                ParamValue::Unknown => None,
-            },
-            model: c.new.to_string(),
-            unit: c.unit.clone(),
+            ..c.clone()
         })
         .collect()
-}
-
-/// The JSON report rows of a decoded parameter memory.
-fn report(decoded: DecodedParameters) -> (Vec<ReadingJson>, Vec<DifferenceJson>) {
-    let non_default = decoded.non_default.into_iter().map(reading_json).collect();
-    let differences = decoded
-        .differences
-        .into_iter()
-        .map(|c| DifferenceJson {
-            key: c.key,
-            name: c.name,
-            device: match c.old {
-                ParamValue::Known(v) => Some(v),
-                ParamValue::Unknown => None,
-            },
-            model: c.new.to_string(),
-            unit: c.unit,
-        })
-        .collect();
-    (non_default, differences)
 }
 
 /// One parameter the plan writes, in the model's words and the vendor's.
@@ -950,7 +878,7 @@ pub struct OctetAttribution {
     /// How many octets.
     pub length: usize,
     /// The parameters whose bits in the run differ, by device-file key.
-    pub parameters: Vec<OctetParameter>,
+    pub parameters: Vec<bussard_download::OctetOwner>,
     /// The run in one line, ready to quote.
     pub sentence: String,
     /// What the run means, when it holds an internal ETS selector whose
@@ -1022,23 +950,6 @@ const DEVICE_MANAGED_PREFIX: &str = "not written (owned by the application at ru
 pub const DEVICE_MANAGED_SKIP_NOTE: &str = "the application owns this value at runtime (an \
      `Access=\"None\"` parameter such as a download flag); a restore leaves the device's value";
 
-/// A parameter behind written octets.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct OctetParameter {
-    /// The device-file key (`<channel>.<key>` in a channel), or the ref id
-    /// when the device file does not place the parameter.
-    pub key: String,
-    /// The vendor text.
-    pub name: String,
-    /// Why it is or is not in the changed list.
-    pub role: OctetRole,
-    /// What the device holds there (enumeration member text, else the
-    /// number, with the unit); `None` when it cannot be decoded.
-    pub device: Option<String>,
-    /// What the model's image holds there, in the same form.
-    pub model: Option<String>,
-}
-
 /// How many octet runs a plan's notes spell out before pointing at the
 /// structured list.
 const OCTET_NOTE_RANGES: usize = 8;
@@ -1088,15 +999,12 @@ fn octet_attributions(
                 .rsplit_once('_')
                 .map_or(r.segment.as_str(), |(_, tail)| tail)
                 .to_string();
-            let parameters: Vec<OctetParameter> = r
+            let parameters: Vec<bussard_download::OctetOwner> = r
                 .owners
                 .iter()
-                .map(|o| OctetParameter {
+                .map(|o| bussard_download::OctetOwner {
                     key: file_key(device, &o.key),
-                    name: o.name.clone(),
-                    role: o.role,
-                    device: o.device.clone(),
-                    model: o.model.clone(),
+                    ..o.clone()
                 })
                 .collect();
             let place = format!(
@@ -1127,12 +1035,10 @@ fn octet_attributions(
                     }
                 )
             } else {
-                let names: Vec<String> = r
-                    .owners
+                let names: Vec<String> = parameters
                     .iter()
-                    .zip(&parameters)
-                    .map(|(o, p)| {
-                        let named = format!("{} ({}, {})", p.name, o.role_text(), p.key);
+                    .map(|p| {
+                        let named = format!("{} ({}, {})", p.name, p.role_text(), p.key);
                         match (&p.device, &p.model) {
                             (None, None) => named,
                             (device, model) => format!(
@@ -1146,13 +1052,12 @@ fn octet_attributions(
                     .collect();
                 format!("{place}: {}", names.join("; "))
             };
-            let explanation = r
-                .owners
+            let explanation = parameters
                 .iter()
                 .find(|o| o.unwritten_differs())
                 .map(unwritten_note)
                 .or_else(|| {
-                    r.owners
+                    parameters
                         .iter()
                         .any(bussard_download::OctetOwner::internal_selector_differs)
                         .then(|| INTERNAL_SELECTOR_NOTE.to_string())

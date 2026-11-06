@@ -64,7 +64,7 @@ config_path = "../ha/knx.yaml"    # the KNX YAML Home Assistant reads
 ## Notes
 
 - **`[lint]` is opt-in.** Without it nothing extra is reported, so adding the feature cannot change an existing project. With it, `validate` runs the topology and convention rules `L001` to `L008` (see [Diagnostics](../diagnostics.md)).
-- **Bus current for `L002`** comes from the product models in `.bussard/models/`, written by `import-product` from the `BusCurrent` in the `.knxprod` `Hardware.xml`. Devices with no product model contribute nothing and are counted in the warning.
+- **Bus current for `L002`** comes from the product models in `.bussard/model-cache/`, written by `import-product` from the `BusCurrent` in the `.knxprod` `Hardware.xml`. Devices with no product model contribute nothing and are counted in the warning.
 - **`[home_assistant]`** is optional. With it, `bussard mcp --allow-home-assistant` registers the Home Assistant tools; without it the flag does nothing.
 - **`admit_tunnel_senders`** is off by default. The reason it exists is in [Safety](../../explanation/safety.md).
 

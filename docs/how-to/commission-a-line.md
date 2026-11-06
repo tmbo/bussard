@@ -180,7 +180,7 @@ The report has no timestamps, so a rerun at the three-month visit gives a protoc
 === "In chat"
 
     ```text
-    You:        Write the handover documentation as HTML.
+    You:        Write the handover documentation.
     Assistant:  (calls knx_export with what: doc)
                 Written to docs/installation.
     ```
@@ -189,10 +189,10 @@ The report has no timestamps, so a rerun at the three-month visit gives a protoc
 
     ```console
     $ bussard doc
-    $ bussard doc --format html --out handover/
+    $ bussard doc --out handover/
     ```
 
-The documentation reads only your project and writes the folder the KNX guidelines ask for, by default to `docs/installation`: a device list, a group-address list with senders and listeners, one sheet per room in plain language, the connection details (never credentials) and a change log from git. Devices without a `location:` get no room sheet. Two runs on the same project write identical files, so commit the folder and regenerate it after every change.
+The documentation reads only your project and writes the folder the KNX guidelines ask for as Markdown, by default to `docs/installation`: a device list, a group-address list with senders and listeners, one sheet per room in plain language, the connection details (never credentials) and a change log from git. Devices without a `location:` get no room sheet. Two runs on the same project write identical files, so commit the folder and regenerate it after every change.
 
 ## Next steps
 

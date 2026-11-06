@@ -75,7 +75,13 @@ impl<'a> FlashInputs<'a> {
             .map(|d| d.device.module_bases.clone())
             .unwrap_or_default();
         let template_ops = bussard_download::template_ops_for(product, app);
-        let table_images = bussard_download::build_table_images(model, target, app, &overrides);
+        let table_images = bussard_download::build_table_images(
+            model,
+            target,
+            app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
+        );
         let object_flags = bussard_download::linked_object_flags(model, target);
         let knxnet = model
             .and_then(|m| m.devices.get(&target))
@@ -137,7 +143,7 @@ impl<'a> FlashInputs<'a> {
     /// The plan is refused (another mask, an unsupported device or op, a
     /// KNXnet/IP parameter without a value in `[knxnet]`).
     pub fn plan(&self, mask: u16) -> Result<FlashPlan, PlanError> {
-        let mut plan = bussard_download::plan_flash_with_object_flags(
+        let mut plan = bussard_download::plan_flash(
             self.app,
             &self.device,
             mask,
@@ -146,6 +152,7 @@ impl<'a> FlashInputs<'a> {
             self.template_ops.as_deref(),
             &self.table_images,
             &self.object_flags,
+            &bussard_prod::dynamic::DynamicMemo::new(self.app),
         )?;
         // A property-only procedure (an IP interface, issue #390) writes the
         // object itself; `apply` keeps its `[knxnet]` table (issue #391).
@@ -530,9 +537,15 @@ mod tests {
             .map(|d| d.device.module_bases.clone())
             .unwrap_or_default();
         let template = bussard_download::template_ops_for(product, app);
-        let images = bussard_download::build_table_images(Some(model), target, app, &overrides);
+        let images = bussard_download::build_table_images(
+            Some(model),
+            target,
+            app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
+        );
         let flags = bussard_download::linked_object_flags(Some(model), target);
-        let mut plan = bussard_download::plan_flash_with_object_flags(
+        let mut plan = bussard_download::plan_flash(
             app,
             &target.to_string(),
             0x07B0,
@@ -541,6 +554,7 @@ mod tests {
             template.as_deref(),
             &images,
             &flags,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
         )?;
         if matches!(
             freshness,
@@ -745,6 +759,8 @@ mod tests {
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?;
         let prelude = |plan: &FlashPlan| {
             plan.steps.iter().any(|s| {

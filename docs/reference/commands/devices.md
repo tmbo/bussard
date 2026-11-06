@@ -221,7 +221,7 @@ Behaviour with an `ADDRESS`:
 
 ## `bussard device <ADDRESS> [CHANNEL]`
 
-Show what a device can do, in its device file's words. Files only: the data comes from `bussard.lock` and the product model under `.bussard/models/`.
+Show what a device can do, in its device file's words. Files only: the data comes from `bussard.lock` and the product model under `.bussard/model-cache/`.
 
 Illustrative output, shortened:
 
@@ -277,7 +277,7 @@ Behaviour:
 
 ## `bussard import-product [FILE]`
 
-Import vendor product data (`.knxprod`): store it under `<dir>/products/`, pin it in `bussard.lock`, and generate one product model per application program under `<dir>/.bussard/models/`.
+Import vendor product data (`.knxprod`): store it under `<dir>/products/`, pin it in `bussard.lock`, and generate one product model per application program under `<dir>/.bussard/model-cache/`.
 
 ```console
 $ bussard import-product <FILE>

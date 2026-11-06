@@ -38,7 +38,7 @@ use crate::flash::{FlashPlan, FlashStep, ImageKind};
 
 /// The load procedure's index of the group-object table object (`LsmIdx` /
 /// `ObjIdx` 3), the object a System B full flash streams the table into.
-pub const OBJECT_TABLE_INDEX: u32 = 3;
+pub(crate) const OBJECT_TABLE_INDEX: u32 = 3;
 
 /// The Communication flag of a descriptor word (bit 10).
 const COMMUNICATION: u16 = 1 << 10;
@@ -329,7 +329,7 @@ impl ObjectTableOutcome {
 /// `A_MemoryExtended_Write`, `LoadCompleted`, then a read of the table
 /// through its fresh `PID_TABLE_REFERENCE`. A failure surfaces with the step;
 /// the caller prints the recovery guidance.
-pub async fn write_object_table<Ch: L4Channel>(
+pub(crate) async fn write_object_table<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_index: u8,
     image: &[u8],

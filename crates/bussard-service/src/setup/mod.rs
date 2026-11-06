@@ -242,7 +242,7 @@ pub struct SetupRequest {
     pub gateway: Option<String>,
     /// Configure KNXnet/IP routing (multicast) instead of a tunnel.
     pub routing: bool,
-    /// The project to import (`.knxproj`, or an xknxproject `.json` dump).
+    /// The project to import (a `.knxproj`).
     pub project: Option<PathBuf>,
     /// Look for the one `.knxproj` next to `dir` when `project` is `None`.
     pub find_project: bool,
@@ -372,8 +372,7 @@ pub fn run<H: SetupHooks>(
                 path.display(),
                 dir.display()
             ));
-            let is_json = is_json(&path);
-            let code = hooks.write_import(model, dir, (!is_json).then_some(path.as_path()), out)?;
+            let code = hooks.write_import(model, dir, Some(path.as_path()), out)?;
             import::import_neighbour(&path, dir, out);
             Some((path, code))
         }
@@ -383,13 +382,6 @@ pub fn run<H: SetupHooks>(
         resolution,
         imported,
     })
-}
-
-/// Whether `path` is an xknxproject `.json` dump rather than a `.knxproj`.
-pub fn is_json(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"))
 }
 
 #[cfg(test)]

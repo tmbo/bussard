@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use bussard_download::{
-    FlashOptions, FlashPlan, FlashStep, ImageKind, Session, build_table_images, flash, plan_flash,
+    FlashOptions, FlashPlan, FlashStep, ImageKind, Session, build_table_images, flash,
     template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
@@ -23,6 +23,8 @@ use bussard_testkit::{MockDevice, MockGateway, Reaction, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
 use crate::builtin_template::zip_synthetic;
+
+use crate::support::plan_flash_default;
 
 /// The product and its application, read from the zipped synthetic XML.
 fn product() -> TestResult<(bussard_prod::ProductData, tempfile::TempDir)> {
@@ -40,8 +42,14 @@ fn plan_of(
 ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
     let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
     let overrides = BTreeMap::new();
-    let tables = build_table_images(None, "1.1.1".parse()?, app, &overrides);
-    Ok(plan_flash(
+    let tables = build_table_images(
+        None,
+        "1.1.1".parse()?,
+        app,
+        &overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
         app,
         "1.1.1",
         0x07B0,
@@ -133,7 +141,13 @@ async fn flash_onto(
     let plan = plan_of(&product, app).map_err(|e| e.to_string())?;
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(&mut session, &plan, FlashOptions::default(), |_| {}).await;
     let _ = session.into_disconnect().await;

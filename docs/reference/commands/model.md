@@ -22,7 +22,7 @@ Tunnelling: 4 tunnels, 1 in use.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project (a `.knxproj`, or an xknxproject `.json` dump) to import right after writing the skeleton. |
+| `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project (a `.knxproj`) to import right after writing the skeleton. |
 | `--password <PASSWORD>` | | Project password, as for `import`. |
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not download missing product data; list it instead. |
@@ -49,10 +49,10 @@ Behaviour:
 
 ## `bussard import [PROJECT]`
 
-Import an ETS `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-export-file)) or an xknxproject JSON dump into the project, fetch missing product data, then validate.
+Import an ETS `.knxproj` or a `.bussard` bundle (see [`export`](#bussard-export-file)) into the project, fetch missing product data, then validate.
 
 ```console
-$ bussard import [PROJECT] [--from-json <FILE>] [--password <PASSWORD>] [--mine | --theirs | --interactive]
+$ bussard import <PROJECT> [--password <PASSWORD>] [--mine | --theirs | --interactive]
 ```
 
 When product data is still missing, the summary says where to get it:
@@ -66,8 +66,7 @@ product data still missing:
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[PROJECT]` | | The `.knxproj` or `.bussard` file to import. Omit it with `--from-json`. |
-| `--from-json <FILE>` | | Import from an xknxproject JSON dump instead of a `.knxproj`. |
+| `<PROJECT>` | | The `.knxproj` or `.bussard` file to import. |
 | `--password <PASSWORD>` | `BUSSARD_PROJECT_PASSWORD`, then a prompt | Project password. |
 | `--mine` | off | On a re-import, keep this project's value for every hand-edited conflict and exit 0. |
 | `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
@@ -89,7 +88,7 @@ Behaviour:
 **Product data.** After the write, `import` looks up every device's order number that `bussard.lock` does not yet pin in `<dir>/products/` in bussard's pointer index, the one `import-product --order-number` uses.
 
 - The downloads it finds are listed with size and origin and fetched after one confirmation for the whole list (`--yes-download` for scripts).
-- Each download is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/models/`.
+- Each download is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/model-cache/`.
 - An application program no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod`. See [Product data](../product-data.md).
 - A device without product data still gets its file (identity, location, links by number). `apply` writes its links but not its parameters.
 - `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape.
@@ -130,7 +129,7 @@ The bundle format is on [Project folder](../model-directory.md).
 
 ## `bussard diff <A> <B>`
 
-Explain what changes from `A` to `B` as the plain sentences `bussard status` prints. Each side is a `.knxproj`, a `.bussard` bundle, an xknxproject `.json` dump or a project folder. Both are loaded in memory; nothing is written.
+Explain what changes from `A` to `B` as the plain sentences `bussard status` prints. Each side is a `.knxproj`, a `.bussard` bundle or a project folder. Both are loaded in memory; nothing is written.
 
 ```console
 $ bussard diff <A> <B> [--raw | --checklist] [--password <PASSWORD>] [--password-b <PASSWORD>]
@@ -240,16 +239,15 @@ Behaviour:
 
 ## `bussard doc`
 
-Render the handover documentation folder the KNX guidelines prescribe, from the project and the product models in `.bussard/models/`. Offline; never touches the bus.
+Render the handover documentation folder the KNX guidelines prescribe, as Markdown, from the project and the product models in `.bussard/model-cache/`. Offline; never touches the bus.
 
 ```console
-$ bussard doc [--out <DIR>] [--format md|html]
+$ bussard doc [--out <DIR>]
 ```
 
 | Flag | Default | Meaning |
 |---|---|---|
 | `--out <DIR>` | `docs/installation` | Where to write the files. Files with the same names are overwritten; others are left alone. |
-| `--format <FORMAT>` | `md` | `md` (Markdown) or `html` (one self-contained page per file, inline styles, no scripts). |
 | `--json` | off | Print the structured document model to stdout instead of writing files. |
 
 | File | Contents |

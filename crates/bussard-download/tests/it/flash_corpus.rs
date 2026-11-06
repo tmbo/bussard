@@ -2,7 +2,7 @@
 //!
 //! Given a directory of real vendor `.knxprod` files (set
 //! `BUSSARD_PRODUCT_CORPUS=<dir>`), [`corpus_flashability_sweep`] runs every
-//! application in every product through the shared [`bussard_download::sweep`]
+//! application in every product through the shared [`crate::support::sweep`]
 //! engine — parse -> image-synthesis -> plan-lowering — bucketing and ranking the
 //! outcomes into a [`SweepManifest`]. No device is touched: everything is a pure
 //! function of the product data and each app's own declared mask, so this answers
@@ -27,8 +27,12 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_download::sweep::knxprod_files;
-use bussard_download::{FlashStep, SweepManifest, plan_flash, sweep_corpus};
+use bussard_download::FlashStep;
+
+use crate::support::corpus::knxprod_files;
+use crate::support::sweep::{SweepManifest, sweep_corpus};
+
+use crate::support::plan_flash_default;
 
 /// The minimum number of applications across the corpus that must lower to an
 /// executable plan. The seeded corpus yields 12 (all the Zennio 07B0 devices,
@@ -240,7 +244,7 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
             let Ok(mask) = u16::from_str_radix(mask_str.trim(), 16) else {
                 continue;
             };
-            let Ok(plan) = plan_flash(
+            let Ok(plan) = plan_flash_default(
                 app,
                 "1.1.1",
                 mask,
@@ -318,7 +322,7 @@ fn test_plan_flash_corpus_0701_delay_apps_plan() {
             if !on_0701 || !has_delay {
                 continue;
             }
-            let plan = plan_flash(
+            let plan = plan_flash_default(
                 app,
                 "1.1.1",
                 0x0701,
@@ -451,7 +455,7 @@ fn corpus_extended_memory_apps_lower_to_executable_plans() {
                 .as_deref()
                 .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
                 .expect("a capture 07B0 app must declare a hex mask");
-            match plan_flash(
+            match plan_flash_default(
                 app,
                 "1.1.1",
                 mask,
@@ -527,7 +531,7 @@ fn test_plan_flash_type_color_apps() -> Result<(), Box<dyn std::error::Error>> {
                 .as_deref()
                 .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
                 .ok_or_else(|| format!("{} declares no hex mask", app.id))?;
-            let plan = plan_flash(
+            let plan = plan_flash_default(
                 app,
                 "1.1.1",
                 mask,
@@ -632,9 +636,14 @@ fn test_plan_flash_corpus_map_error_product_procedures() -> Result<(), Box<dyn s
                 .as_deref()
                 .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
                 .ok_or_else(|| format!("{}: no hex mask", app.id))?;
-            let tables =
-                bussard_download::build_table_images(None, "1.1.1".parse()?, app, &BTreeMap::new());
-            let plan = plan_flash(
+            let tables = bussard_download::build_table_images(
+                None,
+                "1.1.1".parse()?,
+                app,
+                &BTreeMap::new(),
+                &bussard_prod::dynamic::DynamicMemo::new(app),
+            );
+            let plan = plan_flash_default(
                 app,
                 "1.1.1",
                 mask,

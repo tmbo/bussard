@@ -552,14 +552,17 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         // Issue #336: `flash --json` carries the "Data Secure off for <GA>"
         // line the text output prints from the pre-flight PID 61 read.
+        let app = app("M-0083_A-0001-01-0001")?;
         let plan = bussard_download::plan_flash(
-            &app("M-0083_A-0001-01-0001")?,
+            &app,
             "1.1.10",
             0x07B0,
             &BTreeMap::new(),
             &BTreeMap::new(),
             None,
             &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?;
         let change = bussard_download::PlanChange {
             mark: bussard_download::ChangeMark::Removed,

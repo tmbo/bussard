@@ -20,7 +20,7 @@ use super::{SecureAdoption, SecureDeviceFacts};
 use crate::assign::{Verified, empty_model};
 use crate::params::ProductSource;
 use crate::secure::{SecureKeyError, SecureMaterial, ToolKeys};
-use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use crate::{BusService, L4Options, ServiceError};
 
 /// Why an adopt step failed.
 #[derive(Debug, thiserror::Error)]
@@ -520,20 +520,17 @@ pub async fn read_secured(
     material: &SecureMaterial,
     mut notes: Vec<String>,
 ) -> Result<SecuredRead, AdoptError> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: material.tool_key.clone(),
-        high_water: SequenceHighWater::new(),
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
     let (tables, security, params) = service
         .with_l4(target, &options, async |l4| {
             // The APDU budget sizes the PID 61 chunks as ETS does.
             let _ = l4.negotiate_max_apdu().await;
-            let tables = match bussard_download::read_live_tables(l4)
-                .await
-                .map_err(read_err)?
+            let tables = match bussard_download::read_live_tables(
+                l4,
+                bussard_download::Sys7TableBases::default(),
+            )
+            .await
+            .map_err(read_err)?
             {
                 bussard_download::LiveRead::Tables(live) => Some(live),
                 bussard_download::LiveRead::UnsupportedMask { mask, .. } => {
@@ -739,13 +736,7 @@ pub async fn read_knxnet_settings(
     dir: &Path,
     material: &SecureMaterial,
 ) -> Result<Option<bussard_model::knxnet::KnxnetFacts>, AdoptError> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: material.tool_key.clone(),
-        high_water: SequenceHighWater::new(),
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
     let facts = crate::FactsCache::new(dir, false);
     service
         .with_l4(target, &options, async |l4| {

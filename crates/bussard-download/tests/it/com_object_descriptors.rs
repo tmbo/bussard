@@ -56,7 +56,13 @@ fn test_build_table_images_flagless_object_keeps_type_octet() -> TestResult {
     let product = product(dir.path())?;
     let app = product.applications.first().ok_or("one application")?;
     let target: bussard_model::IndividualAddress = "1.1.1".parse()?;
-    let tables = build_table_images(None, target, app, &BTreeMap::new());
+    let tables = build_table_images(
+        None,
+        target,
+        app,
+        &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     let table = tables.get(&3).ok_or("a group-object table")?;
     // Object 2 sits at +0x4 (word 0 is the count).
     assert_eq!(hex(table.get(4..6).ok_or("object 2")?), "0300");

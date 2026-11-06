@@ -22,122 +22,227 @@ type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP: &str = "M-0004_A-20DE-22-0000";
 
-const PRODUCT: &str = r#"identity:
-  id: M-0004_A-20DE-22-0000
-com_objects:
-  50:
-    text: Logik Ausgang
-    function_text: Schalten
-    dpt: '1.001'
-    flags: CRT
-    ref_id: M-0004_A-20DE-22-0000_O-50_R-50
-  60:
-    text: Helligkeit
-    function_text: Messwert
-    dpt: '9.004'
-    flags: CRT
-    ref_id: M-0004_A-20DE-22-0000_O-60_R-60
-parameters:
-  - id: M-0004_A-20DE-22-0000_P-747
-    text: Funktion
-    type: !enum
-      values:
-        - { value: 0, text: 1 x Jalousie }
-        - { value: 1, text: 2 x Schalten }
-    default: '0'
-    refs:
-      P-747_R-84: {}
-  - id: M-0004_A-20DE-22-0000_P-1542
-    text: Logikfunktionen
-    type: !enum
-      values:
-        - { value: 0, text: gesperrt }
-        - { value: 1, text: freigegeben }
-    default: '0'
-    refs:
-      P-1542_R-2234: {}
-  - id: M-0004_A-20DE-22-0000_P-1600
-    text: Logik Treppenhauszeit
-    type: !int
-      min: 1
-      max: 600
-    default: '60'
-    refs:
-      P-1600_R-1600: {}
-  - id: M-0004_A-20DE-22-0000_P-32
-    text: CalcParam
-    type: !int
-      min: 0
-      max: 255
-    default: '0'
-    refs:
-      P-32_R-104:
-        internal: true
-      P-32_R-105:
-        internal: true
-  - id: M-0004_A-20DE-22-0000_P-34
-    text: Szenen aktivieren
-    type: !enum
-      values:
-        - { value: 0, text: nein }
-        - { value: 1, text: ja }
-    default: '0'
-    refs:
-      P-34_R-106: {}
-  - id: M-0004_A-20DE-22-0000_P-1700
-    text: Logik Verknuepfung
-    type: !int
-      min: 0
-      max: 9
-    default: '0'
-    refs:
-      P-1700_R-1700: {}
-  - id: M-0004_A-20DE-22-0000_P-1800
-    text: Szene Treppenhaus
-    type: !int
-      min: 0
-      max: 63
-    default: '0'
-    refs:
-      P-1800_R-1800: {}
-  - id: M-0004_A-20DE-22-0000_P-1900
-    text: Helligkeit senden
-    type: !enum
-      values:
-        - { value: 0, text: nein }
-        - { value: 1, text: ja }
-    default: '0'
-    refs:
-      P-1900_R-1900: {}
-  - id: M-0004_A-20DE-22-0000_MD-3_P-14
-    text: Betriebsart
-    type: !enum
-      values:
-        - { value: 1, text: Rollladen }
-        - { value: 2, text: Jalousie }
-    default: '1'
-    refs:
-      MD-3_P-14_R-14: {}
-  - id: M-0004_A-20DE-22-0000_MD-4_P-12
-    text: Treppenhausfunktion
-    type: !enum
-      values:
-        - { value: 0, text: gesperrt }
-        - { value: 1, text: freigegeben }
-    default: '0'
-    refs:
-      MD-4_P-12_R-12: {}
-dynamic:
-  - {"channel":{"id":"CH-1","text":"Allgemein","number":1,"nodes":[{"p":"P-747_R-84"},{"p":"P-1542_R-2234"},{"p":"P-34_R-106"},{"p":"P-1900_R-1900"},{"o":"O-60_R-60"},{"choose":{"ref":"P-34_R-106","when":[{"test":"1","nodes":[{"assign":{"target":"P-32_R-105","value":"1"}}]}]}}]}}
-  - {"choose":{"ref":"P-747_R-84","when":[{"test":"0","nodes":[{"module":{"id":"MD-3_M-18","def":"MD-3"}}]},{"test":"1","nodes":[{"module":{"id":"MD-4_M-19","def":"MD-4"}},{"module":{"id":"MD-4_M-20","def":"MD-4"}}]}]}}
-  - {"choose":{"ref":"P-1542_R-2234","when":[{"test":"1","nodes":[{"channel":{"id":"CH-6","text":"Logikfunktionen","number":6,"nodes":[{"p":"P-1600_R-1600"},{"o":"O-50_R-50"}]}}]}]}}
-  - {"choose":{"ref":"P-32_R-104","when":[{"test":"1","nodes":[{"channel":{"id":"CH-7","text":"Logik","number":7,"nodes":[{"p":"P-1700_R-1700"}]}}]}]}}
-  - {"choose":{"ref":"P-32_R-105","when":[{"test":"1","nodes":[{"channel":{"id":"CH-8","text":"Szenen","number":8,"nodes":[{"p":"P-1800_R-1800"}]}}]}]}}
-module_dynamics:
-  MD-3:
-    - {"channel":{"id":"MD-3_CH-25","text":"Relaisausgänge {{ArgBeschriftung}} ({{0:...}})","number":25,"nodes":[{"p":"MD-3_P-14_R-14"},{"o":"MD-3_O-3_R-4"}]}}
-  MD-4:
-    - {"channel":{"id":"MD-4_CH-1","text":"Relaisausgang {{ArgBeschriftung}}","number":1,"nodes":[{"p":"MD-4_P-12_R-12"},{"o":"MD-4_O-2_R-2"}]}}
+const PRODUCT: &str = r#"{
+  "parameters": {
+    "MD-3_P-14": {
+      "kind": {"Enum": {"values": [1, 2]}},
+      "default": "1",
+      "text": "Betriebsart",
+      "labels": [[1, "Rollladen"], [2, "Jalousie"]],
+      "refs": ["MD-3_P-14_R-14"],
+      "enum_values": [
+        {"value": 1, "text": "Rollladen", "default_text": "Rollladen"},
+        {"value": 2, "text": "Jalousie", "default_text": "Jalousie"}
+      ]
+    },
+    "MD-4_P-12": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Treppenhausfunktion",
+      "labels": [[0, "gesperrt"], [1, "freigegeben"]],
+      "refs": ["MD-4_P-12_R-12"],
+      "enum_values": [
+        {"value": 0, "text": "gesperrt", "default_text": "gesperrt"},
+        {"value": 1, "text": "freigegeben", "default_text": "freigegeben"}
+      ]
+    },
+    "P-1542": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Logikfunktionen",
+      "labels": [[0, "gesperrt"], [1, "freigegeben"]],
+      "refs": ["P-1542_R-2234"],
+      "enum_values": [
+        {"value": 0, "text": "gesperrt", "default_text": "gesperrt"},
+        {"value": 1, "text": "freigegeben", "default_text": "freigegeben"}
+      ]
+    },
+    "P-1600": {
+      "kind": {"Int": {"min": 1, "max": 600, "signed": false}},
+      "default": "60",
+      "text": "Logik Treppenhauszeit",
+      "refs": ["P-1600_R-1600"]
+    },
+    "P-1700": {
+      "kind": {"Int": {"min": 0, "max": 9, "signed": false}},
+      "default": "0",
+      "text": "Logik Verknuepfung",
+      "refs": ["P-1700_R-1700"]
+    },
+    "P-1800": {
+      "kind": {"Int": {"min": 0, "max": 63, "signed": false}},
+      "default": "0",
+      "text": "Szene Treppenhaus",
+      "refs": ["P-1800_R-1800"]
+    },
+    "P-1900": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Helligkeit senden",
+      "labels": [[0, "nein"], [1, "ja"]],
+      "refs": ["P-1900_R-1900"],
+      "enum_values": [
+        {"value": 0, "text": "nein", "default_text": "nein"},
+        {"value": 1, "text": "ja", "default_text": "ja"}
+      ]
+    },
+    "P-32": {
+      "kind": {"Int": {"min": 0, "max": 255, "signed": false}},
+      "default": "0",
+      "text": "CalcParam",
+      "refs": ["P-32_R-104", "P-32_R-105"]
+    },
+    "P-34": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Szenen aktivieren",
+      "labels": [[0, "nein"], [1, "ja"]],
+      "refs": ["P-34_R-106"],
+      "enum_values": [
+        {"value": 0, "text": "nein", "default_text": "nein"},
+        {"value": 1, "text": "ja", "default_text": "ja"}
+      ]
+    },
+    "P-747": {
+      "kind": {"Enum": {"values": [0, 1]}},
+      "default": "0",
+      "text": "Funktion",
+      "labels": [[0, "1 x Jalousie"], [1, "2 x Schalten"]],
+      "refs": ["P-747_R-84"],
+      "enum_values": [
+        {"value": 0, "text": "1 x Jalousie", "default_text": "1 x Jalousie"},
+        {"value": 1, "text": "2 x Schalten", "default_text": "2 x Schalten"}
+      ]
+    }
+  },
+  "com_objects": {
+    "50": {"text": "Logik Ausgang", "function": "Schalten", "dpt": "1.001", "flags": "CRT"},
+    "60": {"text": "Helligkeit", "function": "Messwert", "dpt": "9.004", "flags": "CRT"}
+  },
+  "program_id": "M-0004_A-20DE-22-0000",
+  "dynamic": [
+    {
+      "channel": {
+        "id": "CH-1",
+        "text": "Allgemein",
+        "number": 1,
+        "nodes": [
+          {"p": "P-747_R-84"},
+          {"p": "P-1542_R-2234"},
+          {"p": "P-34_R-106"},
+          {"p": "P-1900_R-1900"},
+          {"o": "O-60_R-60"},
+          {
+            "choose": {
+              "ref": "P-34_R-106",
+              "when": [{"test": "1", "nodes": [{"assign": {"target": "P-32_R-105", "value": "1"}}]}]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "choose": {
+        "ref": "P-747_R-84",
+        "when": [
+          {"test": "0", "nodes": [{"module": {"id": "MD-3_M-18", "def": "MD-3"}}]},
+          {
+            "test": "1",
+            "nodes": [
+              {"module": {"id": "MD-4_M-19", "def": "MD-4"}},
+              {"module": {"id": "MD-4_M-20", "def": "MD-4"}}
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "choose": {
+        "ref": "P-1542_R-2234",
+        "when": [
+          {
+            "test": "1",
+            "nodes": [
+              {
+                "channel": {
+                  "id": "CH-6",
+                  "text": "Logikfunktionen",
+                  "number": 6,
+                  "nodes": [{"p": "P-1600_R-1600"}, {"o": "O-50_R-50"}]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "choose": {
+        "ref": "P-32_R-104",
+        "when": [
+          {
+            "test": "1",
+            "nodes": [
+              {
+                "channel": {"id": "CH-7", "text": "Logik", "number": 7, "nodes": [{"p": "P-1700_R-1700"}]}
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "choose": {
+        "ref": "P-32_R-105",
+        "when": [
+          {
+            "test": "1",
+            "nodes": [
+              {
+                "channel": {"id": "CH-8", "text": "Szenen", "number": 8, "nodes": [{"p": "P-1800_R-1800"}]}
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "module_dynamics": {
+    "MD-3": [
+      {
+        "channel": {
+          "id": "MD-3_CH-25",
+          "text": "Relaisausgänge {{ArgBeschriftung}} ({{0:...}})",
+          "number": 25,
+          "nodes": [{"p": "MD-3_P-14_R-14"}, {"o": "MD-3_O-3_R-4"}]
+        }
+      }
+    ],
+    "MD-4": [
+      {
+        "channel": {
+          "id": "MD-4_CH-1",
+          "text": "Relaisausgang {{ArgBeschriftung}}",
+          "number": 1,
+          "nodes": [{"p": "MD-4_P-12_R-12"}, {"o": "MD-4_O-2_R-2"}]
+        }
+      }
+    ]
+  },
+  "parameter_refs": {
+    "MD-3_P-14_R-14": {"parameter": "MD-3_P-14"},
+    "MD-4_P-12_R-12": {"parameter": "MD-4_P-12"},
+    "P-1542_R-2234": {"parameter": "P-1542"},
+    "P-1600_R-1600": {"parameter": "P-1600"},
+    "P-1700_R-1700": {"parameter": "P-1700"},
+    "P-1800_R-1800": {"parameter": "P-1800"},
+    "P-1900_R-1900": {"parameter": "P-1900"},
+    "P-32_R-104": {"parameter": "P-32", "internal": true},
+    "P-32_R-105": {"parameter": "P-32", "internal": true},
+    "P-34_R-106": {"parameter": "P-34"},
+    "P-747_R-84": {"parameter": "P-747"}
+  }
+}
 "#;
 
 /// The lock of a blinds device (1.1.47, "1 x Jalousie") and, with
@@ -245,7 +350,6 @@ impl Scratch {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("devices"))?;
-        std::fs::create_dir_all(dir.join(".bussard/models"))?;
         std::fs::write(dir.join("bussard.lock"), lock(switches))?;
         std::fs::write(dir.join("devices/1.1.47.toml"), BLINDS)?;
         if switches {
@@ -257,7 +361,7 @@ impl Scratch {
             dir.join("bussard.toml"),
             "[connection]\ntransport = \"tunnel\"\n",
         )?;
-        std::fs::write(dir.join(format!(".bussard/models/{APP}.yaml")), PRODUCT)?;
+        bussard_model::param_model::write_product_model(&dir, serde_json::from_str(PRODUCT)?)?;
         Ok(Scratch(dir))
     }
 
@@ -274,7 +378,10 @@ impl Drop for Scratch {
 
 fn products() -> Result<ProductModels, Box<dyn std::error::Error>> {
     let mut products = ProductModels::default();
-    products.insert(APP.to_string(), ProductModel::from_yaml(PRODUCT, APP)?);
+    products.insert(
+        APP.to_string(),
+        serde_json::from_str::<ProductModel>(PRODUCT)?,
+    );
     Ok(products)
 }
 
@@ -295,7 +402,7 @@ fn blinds_model() -> Result<Model, Box<dyn std::error::Error>> {
 
 #[test]
 fn test_module_channels_of_keys_instance_channels_by_selector() -> TestResult {
-    let product = ProductModel::from_yaml(PRODUCT, APP)?;
+    let product = serde_json::from_str::<ProductModel>(PRODUCT)?;
     let channels = bussard_model::blocks::module_channels_of(&product);
     let got: Vec<(&str, Option<&str>, Option<&str>)> = channels
         .iter()

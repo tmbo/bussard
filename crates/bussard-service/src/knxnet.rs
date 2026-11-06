@@ -56,6 +56,7 @@ use bussard_model::knxnet::{
 use sha2::{Digest, Sha256};
 
 use crate::facts::{Established, FactsCache, FactsWant};
+use crate::util::chain;
 use crate::verify::{Expected, ExpectedProperty, LeftoverKind, WriteReadback};
 
 /// The index of the KNXnet/IP parameter object in `table` (`(index, object
@@ -879,24 +880,11 @@ pub async fn apply_interface<Ch: L4Channel>(
             "read again after the write".to_string(),
         ),
     }
-    readback.verified = readback.leftovers.is_empty();
     InterfaceApply {
         written,
         write_error,
         readback,
     }
-}
-
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut source = err.source();
-    while let Some(next) = source {
-        out.push_str(": ");
-        out.push_str(&next.to_string());
-        source = next.source();
-    }
-    out
 }
 
 /// Writes the interface's values as read before an apply to
@@ -1317,7 +1305,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let cache = FactsCache::disabled();
         let mut read = read_interface(&mut l4, &cache, None).await?;
         let facts = read.knxnet.clone().ok_or("the mock serves the object")?;
@@ -1424,7 +1418,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let read = read_interface(&mut l4, &FactsCache::disabled(), None).await?;
         let facts = read.knxnet.ok_or("object")?;
         let mut config = facts.as_config();

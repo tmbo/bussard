@@ -72,7 +72,7 @@ pub struct DecodedParameters {
     /// empty for an application without a Dynamic-built image.
     pub unshown: Vec<String>,
     /// The shown parameters placed in octets the load procedure leaves as
-    /// the device holds them (issue #411, [`crate::KeptOctets`]): a download
+    /// the device holds them (issue #411, [`crate::flash::KeptOctets`]): a download
     /// does not write them, so what the device holds there carries no
     /// verdict against the model. `old` is the device's value (`Unknown`
     /// when unreadable), `new` the model's. Never in `differences`, sorted
@@ -84,28 +84,13 @@ pub struct DecodedParameters {
 /// code-segment id) against the model's `overrides` (keyed like
 /// [`bussard_prod::compute_parameter_image`] takes them) and module-instance
 /// `base_offsets`.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367): the
+/// model's values are evaluated once for the placements, the differences and
+/// the unshown overrides, and once more for each distinct set of values the
+/// device holds. A caller that planned the read-back with the same memo
+/// shares those evaluations too.
 pub fn decode_parameters(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-) -> DecodedParameters {
-    decode_parameters_with(
-        app,
-        overrides,
-        base_offsets,
-        current,
-        &DynamicMemo::new(app),
-    )
-}
-
-/// [`decode_parameters`], evaluating the Dynamic section through `memo`
-/// (issue #367): the model's values are evaluated once for the placements,
-/// the differences and the unshown overrides, and once more for each
-/// distinct set of values the device holds. A caller that planned the
-/// read-back with the same memo shares those evaluations too. The decoding
-/// is the same.
-pub fn decode_parameters_with(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
@@ -312,7 +297,8 @@ impl OctetRole {
     }
 }
 
-/// A parameter whose encoding covers bits of a written octet range.
+/// A parameter whose encoding covers bits of a written octet range,
+/// serialized as a report row (`key`, `name`, `role`, `device`, `model`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OctetOwner {
     /// The device-file key of the ref (app-relative `ParameterRef` id, with
@@ -332,13 +318,14 @@ pub struct OctetOwner {
     pub model: Option<String>,
     /// Whether the parameter's type is an enumeration (an internal one is a
     /// selector ETS writes).
+    #[serde(skip)]
     pub enumerated: bool,
     /// `Some(fill)` when a download of the model's image does not place this
     /// parameter (the Dynamic does not reach it under the current
     /// configuration and the application does not download hidden
     /// parameters): the image keeps the segment's fill octet there, and ETS
     /// does not write the octet. `None` when the download writes the field.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub segment_fill: Option<u8>,
 }
 
@@ -398,28 +385,9 @@ pub struct OctetRange {
 /// function-block selector. Module parameters are attributed through the
 /// configuration's own placements only. Consecutive octets with the same
 /// owners form one range.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367).
 pub fn attribute_octets(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-    image: &CurrentMemory,
-    changed: &BTreeMap<String, Vec<(usize, u8)>>,
-) -> Vec<OctetRange> {
-    attribute_octets_with(
-        app,
-        overrides,
-        base_offsets,
-        current,
-        image,
-        changed,
-        &DynamicMemo::new(app),
-    )
-}
-
-/// [`attribute_octets`], evaluating the Dynamic section through `memo`
-/// (issue #367). The ranges are the same.
-pub fn attribute_octets_with(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
@@ -624,8 +592,7 @@ fn application_placements(app: &ApplicationProgram) -> Vec<Unreached<'_>> {
     params
         .into_iter()
         .filter_map(|param| {
-            let (segment, offset, bit_offset) =
-                static_location_with(param, None, &BTreeMap::new(), &members)?;
+            let (segment, offset, bit_offset) = application_location(param, &members)?;
             Some(Unreached {
                 param,
                 segment,
@@ -868,10 +835,10 @@ fn drop_shadowed<'a>(app: &ApplicationProgram, placed: Vec<Placed<'a>>) -> Vec<P
         .collect()
 }
 
-/// The placements of an application without a Dynamic section, in the order
-/// [`bussard_prod::compute_parameter_image`] writes them: every parameter's
-/// vendor default (module parameters once per module instance), the default
-/// member of every union, then the overrides.
+/// The placements of an application without a Dynamic section: the
+/// encoder's own slot list ([`bussard_prod::static_parameter_slots`]),
+/// without the slots it refuses and the per-instance defaults of module
+/// parameters, which carry no key.
 fn static_placements<'a>(
     app: &'a ApplicationProgram,
     values: &BTreeMap<String, String>,
@@ -879,155 +846,31 @@ fn static_placements<'a>(
 ) -> Vec<Placed<'a>> {
     let canonical =
         |param: &Parameter, v: Option<&str>| bussard_prod::canonical_parameter_value(app, param, v);
-    // The first ref (by id) of each parameter, and its value: the vendor
-    // default the encoder writes.
-    let mut refs: Vec<_> = app.parameter_refs.values().collect();
-    refs.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
-    let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
-    for r in &refs {
-        first_ref.entry(r.ref_id.as_str()).or_insert(r.id.as_str());
-        if let Some(v) = r.value.as_deref() {
-            ref_value.entry(r.ref_id.as_str()).or_insert(v);
-        }
-    }
-    let default_of = |param: &Parameter| -> Option<String> {
-        param.initial_value.clone().or_else(|| {
-            ref_value
-                .get(param.id.as_str())
-                .map(|s| s.to_string())
-                .or_else(|| param.default.clone())
+    let placed = bussard_prod::static_parameter_slots(app, values, base_offsets)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter_map(|s| {
+            let param = s.slot.parameter;
+            Some(Placed {
+                key: s.slot.param_ref_id?,
+                param,
+                segment: s.slot.segment,
+                offset: s.slot.offset,
+                bit_offset: s.slot.bit_offset,
+                user_value: true,
+                reached: true,
+                desired: canonical(param, s.value.as_deref()),
+                default: canonical(param, s.default.as_deref()),
+                shadowed: Vec::new(),
+            })
         })
-    };
-    let mut placed = Vec::new();
-
-    let mut params: Vec<&Parameter> = app.parameters.values().collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
-    for param in params {
-        let Some(mem) = param.memory.as_ref() else {
-            continue;
-        };
-        let (Some(segment), Some(offset)) = (mem.code_segment.as_deref(), mem.offset) else {
-            continue;
-        };
-        // A module parameter's instances: only overrides place them (the
-        // encoder's default expansion across instances carries no ref key).
-        if mem.base_offset.is_some() {
-            continue;
-        }
-        let key = relative_id(
-            app,
-            first_ref
-                .get(param.id.as_str())
-                .unwrap_or(&param.id.as_str()),
-        );
-        let default = canonical(param, default_of(param).as_deref());
-        placed.push(Placed {
-            key,
-            param,
-            segment,
-            offset: offset as usize,
-            bit_offset: mem.bit_offset.unwrap_or(0),
-            user_value: true,
-            reached: true,
-            desired: default.clone(),
-            default,
-            shadowed: Vec::new(),
-        });
-    }
-
-    for union in &app.unions {
-        let Some(mem) = union.memory.as_ref() else {
-            continue;
-        };
-        let (Some(segment), Some(base)) = (mem.code_segment.as_deref(), mem.offset) else {
-            continue;
-        };
-        let Some(member) = union
-            .members
-            .iter()
-            .find(|m| m.is_default)
-            .or_else(|| union.members.first())
-        else {
-            continue;
-        };
-        let Some(param) = app.parameters.get(&member.parameter) else {
-            continue;
-        };
-        let key = relative_id(
-            app,
-            first_ref
-                .get(param.id.as_str())
-                .unwrap_or(&param.id.as_str()),
-        );
-        let bits =
-            u32::from(mem.bit_offset.unwrap_or(0)) + u32::from(member.bit_offset.unwrap_or(0));
-        let offset = base + member.offset.unwrap_or(0) + bits / 8;
-        let default = canonical(param, default_of(param).as_deref());
-        placed.push(Placed {
-            key,
-            param,
-            segment,
-            offset: offset as usize,
-            bit_offset: (bits % 8) as u8,
-            user_value: true,
-            reached: true,
-            desired: default.clone(),
-            default,
-            shadowed: Vec::new(),
-        });
-    }
-
-    for (key, value) in values {
-        let Some((param, instance)) = resolve_key(app, key) else {
-            continue;
-        };
-        let Some((segment, offset, bit_offset)) =
-            static_location(app, param, instance.as_deref(), base_offsets)
-        else {
-            continue;
-        };
-        let pref = app
-            .parameter_refs
-            .get(&format!("{}_{}", app.id, split_selector(key).1));
-        let default = pref
-            .and_then(|r| r.value.clone())
-            .or_else(|| default_of(param));
-        placed.push(Placed {
-            key: key.clone(),
-            param,
-            segment,
-            offset,
-            bit_offset,
-            user_value: true,
-            reached: true,
-            desired: canonical(param, Some(value)),
-            default: canonical(param, default.as_deref()),
-            shadowed: Vec::new(),
-        });
-    }
+        .collect();
     drop_shadowed(app, placed)
 }
 
-/// Where the static encoder writes an override of `param`: its own memory, or
-/// its union's plus the member offset, module base added.
-fn static_location<'a>(
-    app: &'a ApplicationProgram,
-    param: &'a Parameter,
-    instance: Option<&str>,
-    base_offsets: &BTreeMap<String, u32>,
-) -> Option<(&'a str, usize, u8)> {
-    static_location_with(param, instance, base_offsets, &UnionMembers::Scan(app))
-}
-
 /// Where a union member's parameter sits: the first `<Union>` (in document
-/// order) that lists it, and that member.
-enum UnionMembers<'a> {
-    /// Search the unions on each lookup (one lookup).
-    Scan(&'a ApplicationProgram),
-    /// Every member parameter's first union, indexed once (many lookups).
-    Index(HashMap<&'a str, (&'a Union, &'a UnionMember)>),
-}
+/// order) that lists it, and that member, indexed once.
+struct UnionMembers<'a>(HashMap<&'a str, (&'a Union, &'a UnionMember)>);
 
 impl<'a> UnionMembers<'a> {
     /// The index over every union of `app`.
@@ -1040,28 +883,20 @@ impl<'a> UnionMembers<'a> {
                     .or_insert((union, member));
             }
         }
-        UnionMembers::Index(index)
+        UnionMembers(index)
     }
 
     /// The first union listing `param`, and its member entry.
     fn of(&self, param: &str) -> Option<(&'a Union, &'a UnionMember)> {
-        match self {
-            UnionMembers::Scan(app) => app.unions.iter().find_map(|u| {
-                u.members
-                    .iter()
-                    .find(|m| m.parameter == param)
-                    .map(|m| (u, m))
-            }),
-            UnionMembers::Index(index) => index.get(param).copied(),
-        }
+        self.0.get(param).copied()
     }
 }
 
-/// [`static_location`], finding a union member through `members`.
-fn static_location_with<'a>(
+/// Where an application-level parameter is written: its own memory, or its
+/// union's plus the member offset; `None` for a module parameter, whose
+/// offset depends on the instance.
+fn application_location<'a>(
     param: &'a Parameter,
-    instance: Option<&str>,
-    base_offsets: &BTreeMap<String, u32>,
     members: &UnionMembers<'a>,
 ) -> Option<(&'a str, usize, u8)> {
     let (segment, offset, bit_offset, module_relative) = match param.memory.as_ref() {
@@ -1084,39 +919,7 @@ fn static_location_with<'a>(
             )
         }
     };
-    let offset = if module_relative {
-        offset.checked_add(*base_offsets.get(instance?)?)?
-    } else {
-        offset
-    };
-    Some((segment, offset as usize, bit_offset))
-}
-
-/// Resolves a device-file key to its parameter and, for a module ref, the
-/// `MD-<d>_M-<m>_MI-<n>` selector the model's `module_bases` are keyed by.
-pub(crate) fn resolve_key<'a>(
-    app: &'a ApplicationProgram,
-    key: &str,
-) -> Option<(&'a Parameter, Option<String>)> {
-    let (instance, param_ref) = split_selector(key);
-    // The ref's parameter; for a key naming no declared ref, the parameter the
-    // key spells (its `_R-<r>` suffix dropped), as the image builder does.
-    let param = match app.parameter_refs.get(&format!("{}_{param_ref}", app.id)) {
-        Some(pref) => app.parameters.get(&pref.ref_id)?,
-        None => {
-            let rel = param_ref.rsplit_once("_R-")?.0;
-            app.parameters
-                .get(&format!("{}_{rel}", app.id))
-                .or_else(|| app.parameters.get(rel))?
-        }
-    };
-    // The selector is the key up to the instance number.
-    let selector = instance.and_then(|inst| {
-        let rest = key.strip_prefix(&format!("{inst}_MI-"))?;
-        let n = rest.split('_').next()?;
-        Some(format!("{inst}_MI-{n}"))
-    });
-    Some((param, selector))
+    (!module_relative).then_some((segment, offset as usize, bit_offset))
 }
 
 /// The width in bits of a value of `ptype`, `None` when it depends on the
@@ -1249,7 +1052,13 @@ mod tests {
                 12, 9, 5, 0x10, 66, 8, 70, 5, 0x06, 0xD6, 30, 1, 0, 1, 0xAA, 0
             ]
         );
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         // Every value but the display-only concept, which has no memory.
         assert_eq!(
@@ -1313,8 +1122,15 @@ mod tests {
             let desired = segment[offset];
             segment[offset] = held;
             let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(offset, desired ^ held)])]);
-            let ranges =
-                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
+            let ranges = attribute_octets(
+                &app,
+                &model,
+                &BTreeMap::new(),
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app),
+            );
             assert_eq!(ranges.len(), 1, "octet {offset}: {ranges:?}");
             let got: Vec<(&str, OctetRole)> = ranges[0]
                 .owners
@@ -1341,6 +1157,7 @@ mod tests {
             &current,
             &hidden_image,
             &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         );
         let got: Vec<(&str, OctetRole)> = ranges
             .iter()
@@ -1350,7 +1167,15 @@ mod tests {
 
         // Consecutive octets with the same owners form one range.
         let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(14, 0xFF), (15, 0xFF)])]);
-        let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &image, &image, &changed);
+        let ranges = attribute_octets(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &image,
+            &image,
+            &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert_eq!(ranges.len(), 1, "{ranges:?}");
         assert_eq!((ranges[0].offset, ranges[0].length), (14, 2));
         Ok(())
@@ -1408,8 +1233,15 @@ mod tests {
             segment[15] = 33;
             segment[2] ^= 0x01;
             let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(2, 0x01), (15, 33)])]);
-            let ranges =
-                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
+            let ranges = attribute_octets(
+                &app,
+                &model,
+                &BTreeMap::new(),
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app),
+            );
             assert_eq!(ranges.len(), 2, "{ranges:?}");
 
             let hidden = &ranges[0].owners;
@@ -1460,14 +1292,26 @@ mod tests {
         let model = map(&[("P-1_R-1", "0"), ("P-2_R-2", "5"), ("UP-3_R-3", "2")]);
         let current = device(&app, &model)?;
         assert_eq!(current["A_RS-1"][..3], [10, 0x20, 7]);
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["UP-3_R-3"]);
         assert_eq!(decoded.non_default[0].line(), "Mode: On (default Auto)");
 
         // A factory image of the same configuration holds only defaults.
         let defaults = device(&app, &BTreeMap::new())?;
-        let decoded = decode_parameters(&app, &BTreeMap::new(), &BTreeMap::new(), &defaults);
+        let decoded = decode_parameters(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &defaults,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.non_default.is_empty(), "{:?}", decoded.non_default);
         assert!(decoded.differences.is_empty());
         Ok(())
@@ -1482,7 +1326,13 @@ mod tests {
         // Concept 0 hides `hidden` (P-2_R-2): its value 5 is never written.
         let model = map(&[("P-1_R-1", "0"), ("P-2_R-2", "5"), ("UP-3_R-3", "2")]);
         let current = device(&app, &model)?;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.unshown, ["P-2_R-2"]);
 
@@ -1500,7 +1350,13 @@ mod tests {
             ("MD-1_M-1_MI-1_P-3_R-6", "8"),
         ]);
         let current = device(&app, &model)?;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.unshown.is_empty(), "{:?}", decoded.unshown);
         Ok(())
     }
@@ -1514,7 +1370,13 @@ mod tests {
         segment[8..10].copy_from_slice(&[0x07, 0x08]); // 18 °C
         segment[10..13].copy_from_slice(&[0, 2, 0]); // 120 s
         segment[7] = 9; // instance M-2's debounce
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         let lines: Vec<String> = decoded.differences.iter().map(ParamChange::line).collect();
         assert_eq!(
             lines,
@@ -1544,7 +1406,13 @@ mod tests {
         let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
         assert_eq!(segment[13], 1);
         segment[13] = 0;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["P-10_R-10"]);
         assert_eq!(keys(&decoded.device_managed), ["P-8_R-8"]);
@@ -1562,7 +1430,13 @@ mod tests {
         let model = map(&[("P-5_R-5", "999.7")]);
         let current = device(&app, &model)?;
         assert_eq!(current["A_RS-1"][8..10], [0x36, 0x1A]);
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.non_default[0].value, "999.68");
         Ok(())
@@ -1613,22 +1487,40 @@ mod tests {
         let (shared_image, _) =
             bussard_prod::compute_parameter_image_placed_with(&app, &model, &bases, &memo)?;
         assert_eq!(memo.evaluations(), 1);
-        let shared = decode_parameters_with(&app, &model, &bases, &current, &memo);
-        let change =
-            crate::param_plan::group_object_change_with(&app, &shared.values, &model, &memo);
-        let octets = attribute_octets_with(&app, &model, &bases, &current, &image, &changed, &memo);
+        let shared = decode_parameters(&app, &model, &bases, &current, &memo);
+        let change = crate::param_plan::group_object_change(&app, &shared.values, &model, &memo);
+        let octets = attribute_octets(&app, &model, &bases, &current, &image, &changed, &memo);
 
-        let fresh = decode_parameters(&app, &model, &bases, &current);
+        let fresh = decode_parameters(
+            &app,
+            &model,
+            &bases,
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(!fresh.differences.is_empty());
         assert_eq!(shared_image, image);
         assert_eq!(shared, fresh);
         assert_eq!(
             change,
-            crate::param_plan::group_object_change(&app, &fresh.values, &model)
+            crate::param_plan::group_object_change(
+                &app,
+                &fresh.values,
+                &model,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
         );
         assert_eq!(
             octets,
-            attribute_octets(&app, &model, &bases, &current, &image, &changed)
+            attribute_octets(
+                &app,
+                &model,
+                &bases,
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
         );
         // The model's values were evaluated once for all four steps; the
         // device's values add their own.
@@ -1644,7 +1536,15 @@ mod tests {
         let image = device(&app, &model)?;
         let changed: BTreeMap<String, Vec<(usize, u8)>> =
             image.keys().map(|s| (s.clone(), Vec::new())).collect();
-        let octets = attribute_octets(&app, &model, &BTreeMap::new(), &image, &image, &changed);
+        let octets = attribute_octets(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &image,
+            &image,
+            &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(octets.is_empty());
         Ok(())
     }

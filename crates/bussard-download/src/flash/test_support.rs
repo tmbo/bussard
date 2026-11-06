@@ -81,7 +81,7 @@ fn par_pair_xml(par: bool) -> String {
 /// The full plan of [`par_pair_xml`] with the `par` allocation.
 pub(super) fn par_pair_plan() -> Result<super::FlashPlan, Box<dyn std::error::Error>> {
     let app = parse_application_program("M-4_A-1", par_pair_xml(true).as_bytes())?;
-    Ok(super::plan_flash(
+    Ok(plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -95,7 +95,7 @@ pub(super) fn par_pair_plan() -> Result<super::FlashPlan, Box<dyn std::error::Er
 /// The full plan of [`par_pair_xml`] without the `par` allocation.
 pub(super) fn full_only_plan() -> Result<super::FlashPlan, Box<dyn std::error::Error>> {
     let app = parse_application_program("M-4_A-1", par_pair_xml(false).as_bytes())?;
-    Ok(super::plan_flash(
+    Ok(plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -104,4 +104,28 @@ pub(super) fn full_only_plan() -> Result<super::FlashPlan, Box<dyn std::error::E
         None,
         &BTreeMap::new(),
     )?)
+}
+
+/// [`super::plan_flash`] with no object flags and a fresh Dynamic memo, the
+/// inputs most planner tests share.
+pub(crate) fn plan_flash_default(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    template_ops: Option<&[bussard_prod::application::LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+) -> Result<super::FlashPlan, super::PlanError> {
+    super::plan_flash(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        template_ops,
+        table_images,
+        &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    )
 }

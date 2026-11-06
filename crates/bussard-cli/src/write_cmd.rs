@@ -159,7 +159,7 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             let mut live = admission::LiveTables::new();
             Some(
                 admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
-                    admission::check_tunnel_write_with(model_ref, ga, source, &evidence, live)
+                    admission::check_tunnel_write(model_ref, ga, source, &evidence, live)
                 })
                 .await,
             )

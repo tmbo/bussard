@@ -1,131 +1,21 @@
-//! The typed management client: [`DeviceConnection`].
+//! The typed management procedures on a [`Layer4Connection`]: property
+//! reads and writes, property descriptions, memory reads, the interactive
+//! memory write and restart.
 //!
-//! Wraps a [`Layer4Connection`](crate::connection::Layer4Connection) and exposes
-//! the high-level procedures `bussard scan`, `assign` and the downloader need:
-//! device descriptor, property reads, memory reads and restart. Each procedure
-//! sends its request, waits for the acknowledged response, and decodes it,
-//! translating a missing answer into [`MgmtError::NoResponse`] (device absent)
-//! and a NAK/disconnect into a "present but refusing" error.
-
-use bussard_model::IndividualAddress;
+//! Each procedure sends its request, waits for the acknowledged response, and
+//! decodes it, translating a missing answer into [`MgmtError::NoResponse`]
+//! (device absent) and a NAK/disconnect into a "present but refusing" error.
+//! The device descriptor is [`read_device_descriptor`](crate::read_device_descriptor);
+//! the authorize step is [`Layer4Connection::authorize_or_fail`].
 
 use crate::apci;
 use crate::connection::{
-    AuthorizeOutcome, L4Channel, Layer4Connection, PropertyDesc, Timeouts,
-    describe_object_properties, property_description_request, property_request,
-    property_write_request,
+    L4Channel, Layer4Connection, PropertyDesc, describe_object_properties,
+    property_description_request, property_request, property_write_request,
 };
 use crate::error::{MgmtError, Result};
 
-/// A management client bound to a single device over a connection-oriented
-/// session.
-///
-/// Construct one with [`DeviceConnection::connect`]; it opens a `T_Connect`.
-/// Call the typed procedures; then drop or [`DeviceConnection::disconnect`] to
-/// send a clean `T_Disconnect`.
-pub struct DeviceConnection<Ch: L4Channel> {
-    inner: Layer4Connection<Ch>,
-}
-
-impl<Ch: L4Channel> DeviceConnection<Ch> {
-    /// Opens a connection-oriented session to `target`, presenting `source` as
-    /// the tool's own individual address.
-    ///
-    /// `conn` is the frame channel — a borrowed
-    /// [`BusConnection`](bussard_transport::BusConnection) or a
-    /// [`LeaseChannel`](crate::connection::LeaseChannel) over the bus actor.
-    pub async fn connect(
-        conn: Ch,
-        target: IndividualAddress,
-        source: IndividualAddress,
-    ) -> Result<DeviceConnection<Ch>> {
-        let inner = Layer4Connection::connect(conn, target, source).await?;
-        Ok(DeviceConnection { inner })
-    }
-
-    /// Like [`connect`](Self::connect) but with an explicit timeout budget — use
-    /// [`Timeouts::discovery`] for fast absent-address probing during a scan.
-    pub async fn connect_with(
-        conn: Ch,
-        target: IndividualAddress,
-        source: IndividualAddress,
-        timeouts: Timeouts,
-    ) -> Result<DeviceConnection<Ch>> {
-        let inner = Layer4Connection::connect_with(conn, target, source, timeouts).await?;
-        Ok(DeviceConnection { inner })
-    }
-
-    /// Like [`connect_with`](Self::connect_with) but with an explicit KNX Data
-    /// Secure layer (issue #71, spec §6.1).
-    ///
-    /// Pass [`SecureLayer::plain`](crate::secure::SecureLayer::plain) for the
-    /// unchanged plain path, or
-    /// [`SecureLayer::activated`](crate::secure::SecureLayer::activated) with a
-    /// `DataSecureSession` to transparently wrap every management APDU to a
-    /// security-activated device. The typed procedures below are unchanged; they
-    /// do not know whether the connection is secure.
-    pub async fn connect_with_secure(
-        conn: Ch,
-        target: IndividualAddress,
-        source: IndividualAddress,
-        timeouts: Timeouts,
-        secure: crate::secure::SecureLayer,
-    ) -> Result<DeviceConnection<Ch>> {
-        let inner =
-            Layer4Connection::connect_with_secure(conn, target, source, timeouts, secure).await?;
-        Ok(DeviceConnection { inner })
-    }
-
-    /// Wraps a management session that is already open (a `T_Connect` sent,
-    /// authorized or not) in the typed client.
-    ///
-    /// For a caller that opens the session elsewhere, such as the service
-    /// layer's `BusService::with_device`, and wants the typed procedures
-    /// below on it. Sends nothing.
-    pub fn from_l4(inner: Layer4Connection<Ch>) -> DeviceConnection<Ch> {
-        DeviceConnection { inner }
-    }
-
-    /// The device this connection targets.
-    pub fn target(&self) -> IndividualAddress {
-        self.inner.target()
-    }
-
-    /// The underlying [`Layer4Connection`], so a procedure that lives outside
-    /// this typed client can run over the same open session.
-    ///
-    /// The download engine's primitives (`load::read_load_state`,
-    /// `LsmAccess::read_state`, …) take the L4 connection directly; this is the
-    /// seam that lets a caller which already holds a `DeviceConnection` — the
-    /// `bussard flash` pre-flight, say — reuse it instead of opening a second
-    /// connection to the same device.
-    pub fn l4_mut(&mut self) -> &mut Layer4Connection<Ch> {
-        &mut self.inner
-    }
-
-    /// Presents an access `key` with `A_Authorize_Request` and applies the
-    /// tolerate-absence / fail-on-denied policy (issue #52 finding #1).
-    ///
-    /// ETS authorizes a management session before any configuration access; this
-    /// is the typed-client entry point for that. Pass
-    /// [`apci::FREE_ACCESS_KEY`](crate::apci::FREE_ACCESS_KEY) for an unkeyed
-    /// device (the capture used free access) or the project BCU key for a keyed
-    /// one. Returns the [`AuthorizeOutcome`]: a level-0 grant or an
-    /// unsupported-authorize device both return `Ok` (the session continues); a
-    /// non-zero granted level fails with [`MgmtError::AccessDenied`].
-    pub async fn authorize(&mut self, key: u32) -> Result<AuthorizeOutcome> {
-        self.inner.authorize_or_fail(key).await
-    }
-
-    /// Reads the device descriptor (type 0): the 16-bit **mask version** that
-    /// decides property-based vs memory-based link writes.
-    ///
-    /// Delegates to [`crate::connection::read_device_descriptor`], the crate's one
-    /// descriptor reader — see it for the exact framing and what it accepts.
-    pub async fn device_descriptor(&mut self) -> Result<u16> {
-        crate::connection::read_device_descriptor(&mut self.inner).await
-    }
-
+impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// Reads `count` elements of a property, starting at element `start`, of the
     /// interface object at `object_index`.
     ///
@@ -139,8 +29,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         start: u16,
         count: u8,
     ) -> Result<Vec<u8>> {
-        let resp =
-            property_request(&mut self.inner, object_index, property_id, start, count).await?;
+        let resp = property_request(self, object_index, property_id, start, count).await?;
         if resp.count == 0 {
             return Ok(Vec::new());
         }
@@ -168,15 +57,8 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         count: u8,
         value: &[u8],
     ) -> Result<Vec<u8>> {
-        let resp = property_write_request(
-            &mut self.inner,
-            object_index,
-            property_id,
-            count,
-            start,
-            value,
-        )
-        .await?;
+        let resp =
+            property_write_request(self, object_index, property_id, count, start, value).await?;
         if resp.count == 0 {
             return Ok(Vec::new());
         }
@@ -214,13 +96,8 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         property_id: u8,
         property_index: u8,
     ) -> Result<PropertyDesc> {
-        let desc = property_description_request(
-            &mut self.inner,
-            object_index,
-            property_id,
-            property_index,
-        )
-        .await?;
+        let desc =
+            property_description_request(self, object_index, property_id, property_index).await?;
         Ok(desc.into())
     }
 
@@ -233,7 +110,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// Read-only on the bus; a device that does not implement the description
     /// service yields an empty list rather than an error.
     pub async fn describe_object(&mut self, object_index: u8) -> Result<Vec<PropertyDesc>> {
-        describe_object_properties(&mut self.inner, object_index).await
+        describe_object_properties(self, object_index).await
     }
 
     /// Reads `len` octets of device memory starting at `addr`.
@@ -245,22 +122,9 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
         // Delegate to [`crate::memory`], the crate's single memory module, which
         // picks the plain A_Memory_Read or the 24-bit A_MemoryExtended_Read from
         // the address (see `memory::select_extended_memory`).
-        crate::memory::read_memory(&mut self.inner, addr, len)
+        crate::memory::read_memory(self, addr, len)
             .await
-            .map_err(|e| self.memory_error(e))
-    }
-
-    /// Folds a [`crate::memory`] error back into the [`MgmtError`] this type's
-    /// callers expect: a management error passes through, anything else (an
-    /// out-of-range address) becomes a malformed-response description.
-    fn memory_error(&self, err: crate::load::WriteError) -> MgmtError {
-        match err {
-            crate::load::WriteError::Mgmt(m) => m,
-            other => MgmtError::MalformedResponse {
-                address: self.inner.target(),
-                reason: other.to_string(),
-            },
-        }
+            .map_err(|e| e.into_mgmt(self.target()))
     }
 
     /// Writes `data` to device memory starting at `addr`, in
@@ -298,10 +162,10 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// access is.
     ///
     /// An empty `data` is a no-op.
-    pub async fn write_memory(&mut self, addr: u32, data: &[u8]) -> Result<()> {
+    pub async fn write_memory_read_back(&mut self, addr: u32, data: &[u8]) -> Result<()> {
         // An application without extended memory services is written above
         // 0xFFFF with A_UserMemory_Write, 15 octets at most (issue #472).
-        let user = crate::memory::memory_service(&self.inner, addr, data.len())
+        let user = crate::memory::memory_service(self, addr, data.len())
             == crate::memory::MemoryService::User;
         let chunk = if user {
             usize::from(apci::MAX_USER_MEMORY_LEN)
@@ -319,7 +183,7 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
                 .and_then(|off| addr.checked_add(off))
                 .filter(|&a| a <= apci::MAX_MEMORY_ADDRESS)
                 .ok_or(MgmtError::MalformedResponse {
-                    address: self.inner.target(),
+                    address: self.target(),
                     reason: "memory write range exceeds the 24-bit address space".to_string(),
                 })?;
 
@@ -329,9 +193,9 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             // separate read-back compare (the historical dump-primitive discipline).
             if !user && crate::memory::select_extended_memory(chunk_addr, take) {
                 let (req_apci, payload) = apci::encode_memory_extended_write(chunk_addr, piece);
-                let (resp_apci, resp) = self.inner.request(req_apci, &payload).await?;
+                let (resp_apci, resp) = self.request(req_apci, &payload).await?;
                 crate::memory::check_extended_write_response(
-                    self.inner.target(),
+                    self.target(),
                     chunk_addr,
                     &payload,
                     resp_apci,
@@ -349,18 +213,18 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
             // A_Memory_Write (and A_UserMemory_Write) is acknowledged (T_ACK) but
             // not answered, so send it and wait only for the ACK; the read-back
             // is the confirmation.
-            self.inner.send_data(req_apci, &payload).await?;
+            self.send_data(req_apci, &payload).await?;
             if user {
-                self.inner.discard_pending_response();
+                self.discard_pending_response();
             }
 
             // Verify: read the same address back and compare octet-for-octet.
-            let got = crate::memory::read_memory_strict(&mut self.inner, chunk_addr, take as u8)
+            let got = crate::memory::read_memory_strict(self, chunk_addr, take as u8)
                 .await
-                .map_err(|e| self.memory_error(e))?;
+                .map_err(|e| e.into_mgmt(self.target()))?;
             if got != piece {
                 return Err(MgmtError::MemoryVerifyFailed {
-                    address: self.inner.target(),
+                    address: self.target(),
                     addr: chunk_addr,
                     expected: piece.to_vec(),
                     got,
@@ -382,21 +246,6 @@ impl<Ch: L4Channel> DeviceConnection<Ch> {
     /// capture.
     pub async fn restart(&mut self) -> Result<()> {
         let (apci, payload) = apci::encode_restart(0);
-        self.inner.send_data_unacked(apci, &payload).await
-    }
-
-    /// Sends a clean `T_Disconnect`.
-    pub async fn disconnect(self) -> Result<()> {
-        self.inner.disconnect().await
-    }
-
-    /// Unwraps the typed client back into its open [`Layer4Connection`],
-    /// without sending anything.
-    ///
-    /// The seam that lets a caller hand a session it opened for reads (the
-    /// `bussard flash` pre-flight) to a procedure that drives the connection
-    /// itself (the download session, issue #213).
-    pub fn into_l4(self) -> Layer4Connection<Ch> {
-        self.inner
+        self.send_data_unacked(apci, &payload).await
     }
 }

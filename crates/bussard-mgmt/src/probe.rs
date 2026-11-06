@@ -80,18 +80,8 @@ pub const ADDRESS_PROBE_MS_ENV: &str = "BUSSARD_ADDRESS_PROBE_MS";
 
 /// The source-address probe budget, honouring [`ADDRESS_PROBE_MS_ENV`] when set.
 pub fn probe_timeouts_from_env() -> Timeouts {
-    match bussard_model::dotenv::var(ADDRESS_PROBE_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        Some(ms) => Timeouts {
-            ack_timeout: std::time::Duration::from_millis(ms),
-            max_repetitions: 0,
-            response_timeout: std::time::Duration::from_millis(ms),
-            absent_on_negative_confirmation: false,
-        },
-        None => Timeouts::probe(),
-    }
+    bussard_model::dotenv::duration_ms(ADDRESS_PROBE_MS_ENV)
+        .map_or_else(Timeouts::probe, |wait| Timeouts::uniform(wait, 0, false))
 }
 
 /// Why [`checked_source`] refused to hand out a source address.
@@ -289,7 +279,7 @@ pub async fn probe_own_address_on<Ch: L4Channel>(
     address: IndividualAddress,
     timeouts: Timeouts,
 ) -> Result<AddressProbe> {
-    let mut l4 = Layer4Connection::connect_with(conn, address, address, timeouts).await?;
+    let mut l4 = Layer4Connection::connect(conn, address, address, timeouts.into()).await?;
     let outcome = classify(&mut l4).await;
     // Leave the slot clean: when a peer actually answered, this puts a
     // `T_Disconnect` on the bus so the device does not hold the session open. A

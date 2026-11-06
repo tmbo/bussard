@@ -12,11 +12,11 @@
 //! one:
 //!
 //! * the desired tables come from [`bussard_download::compute_tables`];
-//! * the live read is [`bussard_download::read_live_tables_at`], so both
+//! * the live read is [`bussard_download::read_live_tables`], so both
 //!   device families (System B `x7B0`, System 7 `0705` / `0701`) are read the
 //!   same way, and on System B the group-object table is compared with the
 //!   image the full flash writes (issue #540);
-//! * the write is [`bussard_download::write_system_b_seeded`] /
+//! * the write is [`bussard_download::write_system_b`] /
 //!   [`bussard_download::write_sys7`] after
 //!   [`bussard_download::write_pre_write_backup`]: the same per-device backup,
 //!   the same load sequence, the same read-back verify. A System 7 write ends
@@ -26,8 +26,8 @@
 //! handed to the caller as [`LineNote`]s.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error as StdError;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use bussard_download::{
     DesiredTables, LiveRead, LiveTables, ObjectTableCheck, PlanReport, compute_tables, plan,
@@ -35,18 +35,31 @@ use bussard_download::{
 };
 use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::text::hex;
-use bussard_model::{IndividualAddress, Model};
+use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 use sha2::{Digest, Sha256};
 
 use crate::params::{MissingProduct, ParseHook, ProductSource, Selection, resolve_product};
 use crate::secure::SecureMaterial;
-use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use crate::util::{chain, one_line, session_error_detail};
+use crate::{BusService, L4Options, ServiceError};
 
-/// A line argument that is not `area.line`.
+/// Why a line argument could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct LineError(String);
+pub enum LineError {
+    /// Fewer than two dot-separated parts.
+    #[error("invalid line {0:?}; expected area.line like \"1.1\"")]
+    Shape(String),
+    /// The area part is not a number.
+    #[error("invalid area in {0:?}")]
+    Area(String),
+    /// The line part is not a number.
+    #[error("invalid line in {0:?}")]
+    Line(String),
+    /// The area or the line is above 15.
+    #[error("area and line must each be 0–15 (got {0:?})")]
+    Range(String),
+}
 
 /// Parses an `area.line` string (e.g. `1.1`) into its two parts.
 ///
@@ -55,26 +68,119 @@ pub struct LineError(String);
 ///
 /// # Errors
 ///
-/// Fewer than two parts, a part that is not a number, or one above 15.
+/// A [`LineError`] naming what is wrong with `line`.
 pub fn parse_line(line: &str) -> Result<(u8, u8), LineError> {
     let parts: Vec<&str> = line.trim().split('.').collect();
     if parts.len() < 2 {
-        return Err(LineError(format!(
-            "invalid line {line:?}; expected area.line like \"1.1\""
-        )));
+        return Err(LineError::Shape(line.to_string()));
     }
     let area: u8 = parts[0]
         .parse()
-        .map_err(|_| LineError(format!("invalid area in {line:?}")))?;
+        .map_err(|_| LineError::Area(line.to_string()))?;
     let line_no: u8 = parts[1]
         .parse()
-        .map_err(|_| LineError(format!("invalid line in {line:?}")))?;
+        .map_err(|_| LineError::Line(line.to_string()))?;
     if area > 15 || line_no > 15 {
-        return Err(LineError(format!(
-            "area and line must each be 0–15 (got {line:?})"
-        )));
+        return Err(LineError::Range(line.to_string()));
     }
     Ok((area, line_no))
+}
+
+/// The model's devices on `area.line_no`, in address order.
+pub fn model_devices_on_line(
+    model: &Model,
+    area: u8,
+    line_no: u8,
+) -> impl Iterator<Item = (&IndividualAddress, &LoadedDevice)> {
+    model
+        .devices
+        .iter()
+        .filter(move |(ia, _)| ia.area() == area && ia.line() == line_no)
+}
+
+/// What a [`walk`] reports while it runs.
+#[derive(Debug, Clone, Copy)]
+pub enum WalkEvent<'a, R> {
+    /// `address`, the `index`-th (1-based) of `total`, is visited next;
+    /// `found` visits so far found a device.
+    Probing {
+        /// The address visited next.
+        address: IndividualAddress,
+        /// Its 1-based position in the walk.
+        index: usize,
+        /// How many addresses the walk visits.
+        total: usize,
+        /// Devices found so far.
+        found: usize,
+    },
+    /// The visit of `address` ended with `outcome` after `elapsed`; `found`
+    /// counts this one.
+    Probed {
+        /// The address visited.
+        address: IndividualAddress,
+        /// What the visit returned.
+        outcome: &'a R,
+        /// How long the visit took.
+        elapsed: Duration,
+        /// Devices found so far, this one included.
+        found: usize,
+    },
+}
+
+/// One address a [`walk`] visited.
+#[derive(Debug, Clone)]
+pub struct Walked<R> {
+    /// The address.
+    pub address: IndividualAddress,
+    /// What the visit returned.
+    pub outcome: R,
+    /// How long the visit took.
+    pub elapsed: Duration,
+}
+
+/// Visits `addresses` in order, one at a time (TP1 etiquette: most gateways
+/// do not multiplex connection-oriented sessions, so each visit opens and
+/// closes its own), and reports each start and end to `on_event`. `found`
+/// says which outcomes count as a device found. `scan`, `reconstruct
+/// --line`, `backup` and the commission pre-pass walk a line through this.
+///
+/// `visit` is a plain closure returning a future (not an async closure), so
+/// the walk stays `Send` inside a spawned task.
+pub async fn walk<R, Fut: Future<Output = R>>(
+    addresses: &[IndividualAddress],
+    found: fn(&R) -> bool,
+    mut visit: impl FnMut(IndividualAddress) -> Fut,
+    on_event: &mut (dyn FnMut(WalkEvent<'_, R>) + Send),
+) -> Vec<Walked<R>> {
+    let total = addresses.len();
+    let mut walked: Vec<Walked<R>> = Vec::with_capacity(total);
+    let mut found_so_far = 0usize;
+    for (n, &address) in addresses.iter().enumerate() {
+        on_event(WalkEvent::Probing {
+            address,
+            index: n + 1,
+            total,
+            found: found_so_far,
+        });
+        let started = Instant::now();
+        let outcome = visit(address).await;
+        let elapsed = started.elapsed();
+        if found(&outcome) {
+            found_so_far += 1;
+        }
+        on_event(WalkEvent::Probed {
+            address,
+            outcome: &outcome,
+            elapsed,
+            found: found_so_far,
+        });
+        walked.push(Walked {
+            address,
+            outcome,
+            elapsed,
+        });
+    }
+    walked
 }
 
 /// Which half of a run this is: a read-only preview or the real write.
@@ -170,10 +276,7 @@ pub struct LineTarget {
 /// an error: an empty table set would wipe the device, and one unlinked device
 /// must not abort a whole-line run (the single-device `plan` still refuses it).
 pub fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<LineTarget> {
-    model
-        .devices
-        .iter()
-        .filter(|(ia, _)| ia.area() == area && ia.line() == line_no)
+    model_devices_on_line(model, area, line_no)
         .map(|(ia, loaded)| {
             let links = model
                 .links
@@ -539,7 +642,7 @@ async fn visit(
         parameters: None,
         tool_key: tool_key.clone(),
         high_water: secure_seq.clone(),
-        options: read_options(source, &tool_key, &secure_seq),
+        options: L4Options::secured(source, tool_key.clone(), secure_seq.clone()),
         seed: None,
     };
     let (written, _) = crate::program::apply::write_tables(&request, false, &mut ()).await;
@@ -684,25 +787,6 @@ fn unchecked_object_table_note(report: &PlanReport, why: &str) -> Option<String>
     ))
 }
 
-/// The read options of a line run: free-access authorize, best-effort, as the
-/// single-device `apply` read phase.
-fn read_options(
-    source: IndividualAddress,
-    tool_key: &Option<Key16>,
-    secure_seq: &SequenceHighWater,
-) -> L4Options {
-    L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        high_water: secure_seq.clone(),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1) and as System 7 requires before any memory access.
-        // Best-effort.
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    }
-}
-
 /// Where the device's product puts a System 7 device's tables; the corpus
 /// defaults without a product.
 fn table_bases(product: Option<&ProductSource>) -> bussard_download::Sys7TableBases {
@@ -729,17 +813,17 @@ async fn verify_after_restart(
     crate::restart::wait_until_back(
         service,
         target,
-        &read_options(source, tool_key, secure_seq),
+        &L4Options::secured(source, tool_key.clone(), secure_seq.clone()),
         mask,
         crate::restart::RestartWait::default(),
     )
     .await
     .map_err(|err| err.to_string())?;
-    let options = read_options(source, tool_key, secure_seq);
+    let options = L4Options::secured(source, tool_key.clone(), secure_seq.clone());
     let read = service
         .with_l4(target, &options, async |l4| {
             Ok::<_, ServiceError>(
-                bussard_download::read_live_tables_at(l4, table_bases(product))
+                bussard_download::read_live_tables(l4, table_bases(product))
                     .await
                     .map_err(|e| chain(&e)),
             )
@@ -789,10 +873,10 @@ async fn read_device_and_object_table(
     tool_key: &Option<Key16>,
     secure_seq: &SequenceHighWater,
 ) -> Result<(LiveRead, Option<ObjectTableCheck>), String> {
-    let options = read_options(source, tool_key, secure_seq);
+    let options = L4Options::secured(source, tool_key.clone(), secure_seq.clone());
     service
         .with_l4(target, &options, async |l4| {
-            let read = bussard_download::read_live_tables_at(l4, table_bases(product)).await;
+            let read = bussard_download::read_live_tables(l4, table_bases(product)).await;
             let check = match (&read, product) {
                 (Ok(LiveRead::Tables(live)), Some(product)) if live.sys7().is_none() => {
                     match product.app().map(|app| {
@@ -802,6 +886,7 @@ async fn read_device_and_object_table(
                             Some(model),
                             target,
                             live.tables().mask,
+                            &bussard_prod::dynamic::DynamicMemo::new(app),
                         )
                     }) {
                         Some(Ok(plan)) => bussard_download::check_object_table(l4, &plan).await,
@@ -827,36 +912,6 @@ fn session_open_error(err: &ServiceError) -> String {
     }
 }
 
-/// A management session that could not be opened, as a per-device row reads
-/// it: `leasing the bus: <cause>` or `connecting: <cause>`.
-fn session_error_detail(err: &ServiceError) -> String {
-    match err {
-        ServiceError::Lease(cause) => format!("leasing the bus: {cause}"),
-        other => format!("connecting: {other}"),
-    }
-}
-
-/// An error and its sources joined with `": "` (anyhow's `{:#}`).
-fn chain(err: &dyn StdError) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
-
-/// Flattens a multi-line error into one summary-table cell.
-pub fn one_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -874,7 +929,9 @@ mod tests {
     fn test_parse_line_rejects_nonsense() {
         assert!(parse_line("1").is_err());
         assert!(parse_line("16.1").is_err());
-        assert!(parse_line("a.b").is_err());
+        assert!(matches!(parse_line("a.b"), Err(LineError::Area(_))));
+        assert!(matches!(parse_line("16.1"), Err(LineError::Range(_))));
+        assert!(matches!(parse_line("1"), Err(LineError::Shape(_))));
     }
 
     #[test]
@@ -886,11 +943,6 @@ mod tests {
             DeviceStatus::Skipped("unsupported mask 0012 (System 1)".to_string()).label(),
             "skipped: unsupported mask 0012 (System 1)"
         );
-    }
-
-    #[test]
-    fn test_one_line_flattens_multiline_errors() {
-        assert_eq!(one_line("a\n\n  b  \nc"), "a; b; c");
     }
 
     #[test]

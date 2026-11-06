@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_model::doc::{DocFile, DocFormat, InstallationDoc, write_files};
+use bussard_model::doc::{DocFile, InstallationDoc, write_files};
 use bussard_model::schema::{ComObject, Device, Link, Location};
 use bussard_model::{Model, ProductModels};
 
@@ -15,8 +15,8 @@ fn fixture_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../knx-sim/examples/small-installation/knx")
 }
 
-fn render(dir: &Path, model: &Model, format: DocFormat) -> Vec<DocFile> {
-    InstallationDoc::build(model, &ProductModels::load(dir), dir).render(format)
+fn render(dir: &Path, model: &Model) -> Vec<DocFile> {
+    InstallationDoc::build(model, &ProductModels::load(dir), dir).render()
 }
 
 fn paths(files: &[DocFile]) -> Vec<&str> {
@@ -27,15 +27,12 @@ fn paths(files: &[DocFile]) -> Vec<&str> {
 fn test_render_small_fixture_is_deterministic() -> TestResult {
     let dir = fixture_dir();
     let model = Model::load(&dir)?;
-    for format in [DocFormat::Markdown, DocFormat::Html] {
-        let first = render(&dir, &model, format);
-        let second = render(&dir, &Model::load(&dir)?, format);
-        assert_eq!(
-            first, second,
-            "two runs must be byte-identical ({format:?})"
-        );
-    }
-    let md = render(&dir, &model, DocFormat::Markdown);
+    let md = render(&dir, &model);
+    assert_eq!(
+        md,
+        render(&dir, &Model::load(&dir)?),
+        "two runs must be byte-identical"
+    );
     assert_eq!(
         paths(&md),
         [
@@ -63,21 +60,6 @@ fn test_render_small_fixture_is_deterministic() -> TestResult {
             .contains("| 1/0/1 | Light Kitchen |")
     );
     assert!(file("index.md")?.content.contains("[Devices](devices.md)"));
-    Ok(())
-}
-
-#[test]
-fn test_render_html_is_self_contained() -> TestResult {
-    let dir = fixture_dir();
-    let html = render(&dir, &Model::load(&dir)?, DocFormat::Html);
-    let index = html
-        .iter()
-        .find(|f| f.path == "index.html")
-        .ok_or("index.html missing")?;
-    assert!(index.content.starts_with("<!DOCTYPE html>"));
-    assert!(index.content.contains("<a href=\"devices.html\">"));
-    assert!(!index.content.contains("<script"));
-    assert!(!index.content.contains("<link "));
     Ok(())
 }
 
@@ -144,8 +126,8 @@ fn test_render_reconstructed_model_degrades_to_addresses() -> TestResult {
     // A directory outside any repository: no change log, silently.
     let dir = std::env::temp_dir();
     let doc = InstallationDoc::build(&model, &ProductModels::default(), &dir);
-    let md = doc.render(DocFormat::Markdown);
-    assert_eq!(md, doc.render(DocFormat::Markdown));
+    let md = doc.render();
+    assert_eq!(md, doc.render());
     let room = md
         .iter()
         .find(|f| f.path == "rooms/unassigned-room-1.md")
@@ -168,7 +150,7 @@ fn test_write_files_creates_room_directory() -> TestResult {
     let model = reconstructed_model()?;
     let doc = InstallationDoc::build(&model, &ProductModels::default(), &std::env::temp_dir());
     let out = std::env::temp_dir().join(format!("bussard-doc-test-{}", std::process::id()));
-    let files = doc.render(DocFormat::Markdown);
+    let files = doc.render();
     write_files(&files, &out)?;
     let written = std::fs::read_to_string(out.join("rooms/unassigned-room-1.md"))?;
     std::fs::remove_dir_all(&out)?;

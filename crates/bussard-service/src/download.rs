@@ -13,7 +13,7 @@ use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
 
-use crate::bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
+use crate::bus::{Authorize, BusService, L4Options, Management};
 use crate::error::ServiceError;
 use crate::params::ParamDetail;
 
@@ -30,15 +30,8 @@ pub const FLASH_L4_TIMEOUT_MS_ENV: &str = "BUSSARD_FLASH_L4_TIMEOUT_MS";
 /// The L4 timeout budget for a flash connection, honouring
 /// [`FLASH_L4_TIMEOUT_MS_ENV`].
 pub fn flash_l4_timeouts() -> Option<Timeouts> {
-    bussard_model::dotenv::var(FLASH_L4_TIMEOUT_MS_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(|ms| Timeouts {
-            ack_timeout: std::time::Duration::from_millis(ms),
-            max_repetitions: 1,
-            response_timeout: std::time::Duration::from_millis(ms),
-            absent_on_negative_confirmation: false,
-        })
+    bussard_model::dotenv::duration_ms(FLASH_L4_TIMEOUT_MS_ENV)
+        .map(|wait| Timeouts::uniform(wait, 1, false))
 }
 
 /// Opens the L4 connection to the flash target through the service.
@@ -72,17 +65,16 @@ impl bussard_download::Connector for ServiceConnector<'_> {
     async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
         // The service waits for a tunnel re-established after a gateway link
         // loss (issue #177) before the fresh T_Connect. The download session
-        // authorizes itself, so the service does not.
-        let options = L4Options {
-            source: SourcePolicy::Known(self.source),
-            tool_key: self.secure_tool_key.clone(),
-            // The write path: the pre-flight already found the device under
-            // its tool key, so no factory-key try here (issue #532).
-            factory_key: None,
-            high_water: self.secure_seq.clone(),
-            timeouts: flash_l4_timeouts().unwrap_or_default(),
-            authorize: Authorize::Skip,
-        };
+        // authorizes itself, so the service does not. The write path: the
+        // pre-flight already found the device under its tool key, so no
+        // factory-key try here (issue #532).
+        let options = L4Options::secured(
+            self.source,
+            self.secure_tool_key.clone(),
+            self.secure_seq.clone(),
+        )
+        .with_timeouts(flash_l4_timeouts().unwrap_or_default())
+        .with_authorize(Authorize::Skip);
         match self.service.connect_l4(self.target, &options).await {
             Ok(l4) => Ok(l4),
             Err(ServiceError::Mgmt(err)) => Err(WriteError::Mgmt(err)),
@@ -154,7 +146,7 @@ pub async fn flash_session<R>(
             l4.set_timeouts(flash_l4_timeouts().unwrap_or_default());
             Session::adopt_with_facts(connector, l4, bcu_key, run.facts).await
         }
-        None => Session::open_with_facts(connector, bcu_key, run.facts).await,
+        None => Session::open(connector, bcu_key, run.facts).await,
     };
     let mut session = match opened {
         Ok(session) => session,
@@ -286,7 +278,9 @@ pub async fn write_parameters(
     }
     let after = service
         .with_l4(target, read_options, async |l4| {
-            Ok::<_, ServiceError>(bussard_download::read_parameter_regions(l4, &detail.plan).await)
+            Ok::<_, ServiceError>(
+                bussard_download::read_parameter_regions(l4, &detail.plan, &[]).await,
+            )
         })
         .await?;
     Ok(

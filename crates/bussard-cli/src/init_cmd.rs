@@ -4,8 +4,8 @@
 //! routing, or by KNXnet/IP discovery across every local interface), writes the
 //! TOML skeleton, and prints next steps. The result validates cleanly.
 //!
-//! The first run is one command. With a project (a `.knxproj`, or an
-//! xknxproject `.json` dump) given as the argument, or exactly one `.knxproj`
+//! The first run is one command. With a project (a `.knxproj`) given as the
+//! argument, or exactly one `.knxproj`
 //! found next to the model directory, `init` runs `import` right after
 //! writing `bussard.toml` (product data and validation included). Without
 //! one, on a terminal it offers to scan the gateway's line and lists what
@@ -54,9 +54,8 @@ type ProbeFn = fn(SocketAddrV4);
 /// scan a line.
 #[derive(Debug, Clone, Default, clap::Args)]
 pub(crate) struct InitArgs {
-    /// The ETS project to import right away (`.knxproj`, or an
-    /// xknxproject `.json` dump). Default: the one `.knxproj` next to the
-    /// project folder, when there is exactly one.
+    /// The ETS project (`.knxproj`) to import right away. Default: the one
+    /// `.knxproj` next to the project folder, when there is exactly one.
     #[arg(value_name = "PROJECT")]
     project: Option<PathBuf>,
     /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).

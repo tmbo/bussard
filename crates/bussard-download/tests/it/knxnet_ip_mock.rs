@@ -3,7 +3,9 @@
 //! sweep capture shows, written to the object the device has, each write
 //! read back; a device without the object fails the step.
 
-use bussard_download::{KnxnetIpProgram, PropObject, knxnet_ip_program, write_knxnet_ip};
+use bussard_download::flash::KnxnetIpProgram;
+use bussard_download::flash::write_knxnet_ip;
+use bussard_download::{PropObject, knxnet_ip_program};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_prod::application::ApplicationProgram;
@@ -36,7 +38,13 @@ fn allinbox_program() -> TestResult<KnxnetIpProgram> {
 async fn run(device: MockDevice, program: &KnxnetIpProgram) -> TestResult<(MockDevice, String)> {
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let result = write_knxnet_ip(&mut l4, program).await;
     let _ = l4.disconnect().await;
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;

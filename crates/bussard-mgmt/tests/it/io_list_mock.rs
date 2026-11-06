@@ -56,11 +56,11 @@ async fn discover(
         .start()
         .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect_with(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target()?,
         "0.0.255".parse()?,
-        Timeouts::discovery(),
+        Timeouts::discovery().into(),
     )
     .await?;
     l4.set_max_apdu(max_apdu);
@@ -78,11 +78,11 @@ async fn walk(device: MockDevice) -> Result<Vec<(u8, u16)>, BoxError> {
         .start()
         .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect_with(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target()?,
         "0.0.255".parse()?,
-        Timeouts::discovery(),
+        Timeouts::discovery().into(),
     )
     .await?;
     let table = probe_object_types(&mut l4).await?;
@@ -238,11 +238,11 @@ async fn test_probe_object_types_uses_seeded_table() -> TestResult {
         .start()
         .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect_with(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target()?,
         "0.0.255".parse()?,
-        Timeouts::discovery(),
+        Timeouts::discovery().into(),
     )
     .await?;
     l4.seed(ConnectionSeed {

@@ -348,7 +348,7 @@ impl TransportError {
 ///
 /// Only call it for the connect or the first send of a socket opened for this
 /// attempt: on a live link a broken pipe is the peer hanging up.
-pub fn is_local_network_refusal(gateway: SocketAddrV4, source: &io::Error) -> bool {
+fn is_local_network_refusal(gateway: SocketAddrV4, source: &io::Error) -> bool {
     let ip = gateway.ip();
     (ip.is_private() || ip.is_link_local())
         && matches!(
@@ -360,7 +360,10 @@ pub fn is_local_network_refusal(gateway: SocketAddrV4, source: &io::Error) -> bo
 /// Turns a socket error from a fresh socket's connect or first send into
 /// [`TransportError::LocalNetworkDenied`] when [`is_local_network_refusal`]
 /// says so; any other error is returned unchanged.
-pub fn classify_fresh_socket_error(gateway: SocketAddrV4, err: TransportError) -> TransportError {
+pub(crate) fn classify_fresh_socket_error(
+    gateway: SocketAddrV4,
+    err: TransportError,
+) -> TransportError {
     match err {
         TransportError::Io { source, .. } if is_local_network_refusal(gateway, &source) => {
             TransportError::LocalNetworkDenied { gateway, source }

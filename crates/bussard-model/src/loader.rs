@@ -305,13 +305,13 @@ pub(crate) fn parse_groups(path: &Path, text: &str) -> Result<Groups, LoadError>
     Ok(groups)
 }
 
-/// The `models/` directory as `Model::load` sees it: every entry's name, size
-/// and modification time. The product models translate enum labels, so a
-/// change there must miss the memo even when the model files are unchanged.
+/// The product-model directory as `Model::load` sees it: every entry's name,
+/// size and modification time. The product models translate enum labels, so
+/// a change there must miss the memo even when the model files are
+/// unchanged.
 fn models_fingerprint(dir: &Path) -> ModelsFingerprint {
-    let mut out: ModelsFingerprint = crate::param_model::models_dirs(dir)
+    let mut out: ModelsFingerprint = fs::read_dir(dir.join(crate::param_model::MODEL_CACHE_DIR))
         .into_iter()
-        .filter_map(|d| fs::read_dir(d).ok())
         .flat_map(|rd| rd.flatten())
         .map(|e| {
             let meta = e.metadata().ok();
@@ -329,7 +329,7 @@ fn models_fingerprint(dir: &Path) -> ModelsFingerprint {
 /// The process-wide memo behind [`Model::load`] (issue #214): one command
 /// used to parse the same model three to five times (the command, the
 /// history capture, the connection config). A load whose directory, file
-/// texts and `models/` fingerprint all equal a memoized one returns a clone
+/// texts and product-model fingerprint all equal a memoized one returns a clone
 /// of that model instead of parsing again; any edit to any file misses, so a
 /// command that saves and reloads sees its own write.
 mod memo {
@@ -411,7 +411,7 @@ pub(crate) fn thread_parse_count() -> usize {
 type ModelsFingerprint = Vec<(String, u64, Option<std::time::SystemTime>)>;
 
 /// Builds the model from its sources. With `models_dir`, the product models
-/// of the applications the lock pins are read from its `models/` to translate
+/// of the applications the lock pins are read from it to translate
 /// enum labels to codes.
 fn assemble(sources: &Sources, models_dir: Option<&Path>) -> Result<Model, LoadError> {
     memo::PARSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -499,9 +499,9 @@ impl Model {
     }
 
     /// [`Model::load`] for model files in `dir` whose enum labels translate
-    /// through the product models of `models_root` (its `.bussard/models/`).
+    /// through the product models of `models_root`.
     ///
-    /// A history snapshot holds the model files only, never `models/`, so a
+    /// A history snapshot holds the model files only, never the product models, so a
     /// snapshot loaded on its own keeps every enum label as text while the
     /// working model holds codes, and every labelled parameter reads as
     /// changed (issue #279). [`crate::history::History::load`] loads with the
@@ -1028,16 +1028,16 @@ mod tests {
             2,
             "an edited file is parsed again"
         );
-        // So does a change under `.bussard/models/` (the enum label
+        // So does a change of the product models (the enum label
         // translations).
-        let models = dir.join(crate::param_model::MODELS_DIR);
+        let models = dir.join(crate::param_model::MODEL_CACHE_DIR);
         fs::create_dir_all(&models)?;
-        fs::write(models.join("extra.yaml"), "# nothing\n")?;
+        fs::write(models.join("extra.json"), "{}\n")?;
         Model::load(&dir)?;
         assert_eq!(
             thread_parses() - before,
             3,
-            "a .bussard/models/ change is parsed again"
+            "a product model change is parsed again"
         );
         fs::remove_dir_all(&dir)?;
         Ok(())

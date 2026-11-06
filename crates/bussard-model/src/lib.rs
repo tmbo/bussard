@@ -27,7 +27,6 @@ pub mod dotenv;
 pub mod dpt;
 mod dpt_tables;
 pub mod dynamic;
-pub mod dynamic_compact;
 mod emit;
 pub mod ets_export;
 pub mod facts;
@@ -73,7 +72,7 @@ pub use codec::{
 };
 pub use declare::{DeclaredGroup, declare_used_groups};
 pub use discover::{DEFAULT_MODEL_DIR, NESTED_MODEL_DIR, discover};
-pub use doc::{DocError, DocFile, DocFormat, InstallationDoc};
+pub use doc::{DocError, DocFile, InstallationDoc};
 pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use files::{

@@ -35,7 +35,7 @@ use crate::compute::DesiredTables;
 
 /// The absolute base address of the System 7 **address table (GrAT)**: the LSM 1
 /// table region (`[system7-spec §2.3]`, `[corpus: 49/49]`).
-pub const SYS7_ADDRESS_TABLE_ADDR: u16 = 0x4000;
+pub(crate) const SYS7_ADDRESS_TABLE_ADDR: u16 = 0x4000;
 
 /// The absolute base address of the System 7 **association table (GrOAT)**: the
 /// LSM 2 table region (`[system7-spec §2.3]`).
@@ -80,7 +80,7 @@ pub const SYS7_PARAMETER_IMAGE_ADDR: u16 = 0x4400;
 /// image at [`SYS7_PARAMETER_IMAGE_ADDR`] — 511 octets, exactly the corpus
 /// segment size (`[system7-spec §2.3]`). The same bound discipline as
 /// [`SYS7_ADDRESS_REGION_LEN`] applies.
-pub const SYS7_ASSOCIATION_REGION_LEN: usize =
+pub(crate) const SYS7_ASSOCIATION_REGION_LEN: usize =
     (SYS7_PARAMETER_IMAGE_ADDR - SYS7_ASSOCIATION_TABLE_ADDR) as usize;
 
 /// The octet length of an address-table image holding `count` entries (the `CNT`
@@ -219,7 +219,7 @@ pub fn sys7_group_object_table_span(cnt: u8, capacity: usize) -> Result<usize, S
 ///
 /// A `CNT` of `0` is an unprogrammed table: it has no own-IA slot, so the own IA
 /// is reported as `0` and the GA list is empty.
-pub fn decode_sys7_address_table(
+pub(crate) fn decode_sys7_address_table(
     image: &[u8],
     capacity: usize,
 ) -> Result<(u16, Vec<GroupAddress>), Sys7DecodeError> {
@@ -353,7 +353,7 @@ fn require_len(
 /// `CNT` is the number of 2-byte entries **including** the own-IA slot
 /// (`1 + tables.addresses.len()`), so it is clamped to `u8`. Entry 0 is
 /// `own_ia`; TSAP 1..N map to the sorted GAs in [`DesiredTables::addresses`].
-pub fn sys7_address_table(own_ia: u16, tables: &DesiredTables) -> Vec<u8> {
+pub(crate) fn sys7_address_table(own_ia: u16, tables: &DesiredTables) -> Vec<u8> {
     let count = 1 + tables.addresses.len();
     let mut out = Vec::with_capacity(sys7_address_table_len(count));
     out.push(count.min(usize::from(u8::MAX)) as u8);
@@ -385,7 +385,7 @@ pub fn sys7_address_table(own_ia: u16, tables: &DesiredTables) -> Vec<u8> {
 /// form can index, issue #739. This builder clamps the count and keeps the low
 /// octet of each index, so its caller refuses a table past
 /// [`SYS7_MAX_TABLE_INDEX`] first (`apply_sys7::sys7_table_images`).
-pub fn sys7_association_table(tables: &DesiredTables) -> Vec<u8> {
+pub(crate) fn sys7_association_table(tables: &DesiredTables) -> Vec<u8> {
     let count = tables.associations.len();
     let mut out = Vec::with_capacity(1 + count * 2);
     out.push(count.min(usize::from(u8::MAX)) as u8);
@@ -420,7 +420,7 @@ pub fn sys7_association_table(tables: &DesiredTables) -> Vec<u8> {
 /// flipping it. The read-on-init flag (I) is not in this octet. The flash
 /// post-pass applies this rule (the 1.1.31, 1.1.46 and 1.1.1 captures:
 /// template `db` with U clear writes `4b`, `df` writes `5f`).
-pub fn sys7_config_byte(template: u8, flags: bussard_model::Flags) -> u8 {
+pub(crate) fn sys7_config_byte(template: u8, flags: bussard_model::Flags) -> u8 {
     use bussard_model::Flags;
     let mut c = template & 0b0010_0011;
     for (bit, flag) in [
@@ -480,7 +480,11 @@ pub struct Sys7GroupObject {
 /// 1.1.49 and 1.1.52 (`rows-2026-10-26.txt`, header `DA 07 00` on 1.1.49), and
 /// in the synthetic `syn-s7-0705 defaults` row (`captures/synthetic/rows.txt`),
 /// all at 100 % coverage.
-pub fn sys7_group_object_table(ram_flags_ptr: u16, objects: &[Sys7GroupObject]) -> Option<Vec<u8>> {
+#[cfg(test)]
+pub(crate) fn sys7_group_object_table(
+    ram_flags_ptr: u16,
+    objects: &[Sys7GroupObject],
+) -> Option<Vec<u8>> {
     let max_asap = objects.iter().map(|o| o.asap).max()?;
     let count = usize::from(max_asap) + 1;
     // Descriptor `asap` sits at index `asap`.

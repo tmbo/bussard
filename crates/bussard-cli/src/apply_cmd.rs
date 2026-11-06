@@ -60,9 +60,9 @@ use anyhow::{Context, bail};
 use bussard_download::backup::{backups_root, has_installation_backup};
 use bussard_download::{DesiredTables, PlanReport};
 use bussard_model::IndividualAddress;
+use bussard_service::L4Options;
 use bussard_service::program;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::{L4Options, SourcePolicy};
 
 use bussard_transport::ConnectionConfig;
 
@@ -409,15 +409,12 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
     // PID 54 and PID 61, on one session. The device facts (issue #209) spare
     // the reader its object walk and seed the write and read-back.
     let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
-    let read_options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        // A device reset to default answers only under its FDSK (issue #532).
-        factory_key: material.fdsk.clone(),
-        high_water: secure_seq.clone(),
-        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
-        ..L4Options::default()
-    };
+    // A device reset to default answers only under its FDSK (issue #532).
+    let read_options = L4Options::secured(source, tool_key.clone(), secure_seq.clone())
+        .with_factory_key(material.fdsk.clone())
+        .with_authorize(bussard_service::status::read_only_authorize(
+            &mut facts, target,
+        ));
     let request = program::read::ReadRequest {
         target,
         model,

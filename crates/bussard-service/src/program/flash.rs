@@ -1276,7 +1276,7 @@ fn by_application(
 pub fn resolve_by_order_number<'a>(
     product: &'a ProductData,
     order_number: &str,
-) -> Result<&'a ApplicationProgram, bussard_download::OrderNumberError> {
+) -> Result<&'a ApplicationProgram, bussard_download::model_params::OrderNumberError> {
     bussard_download::resolve_by_order_number(product, order_number)
 }
 

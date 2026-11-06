@@ -106,7 +106,7 @@ use bussard_service::program::plan::{PlanInputs, Planned};
 use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
 use bussard_service::program::{self as program, Observer, Step};
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
-use bussard_service::{BusService, FactsCache, L4Options, ServiceError, SourcePolicy};
+use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -2141,12 +2141,7 @@ impl BussardMcp {
             parameter_octets: built.plan.writes.parameter_octets,
         };
         // Authorize (free access) best-effort, as the read did.
-        let options = L4Options {
-            source: SourcePolicy::Known(source),
-            tool_key: tool_key.clone(),
-            high_water: high_water.clone(),
-            ..L4Options::default()
-        };
+        let options = L4Options::secured(source, tool_key.clone(), high_water.clone());
         let written = program::apply::apply_device(
             ApplyRequest {
                 service: &service,
@@ -2843,14 +2838,11 @@ async fn read_device(
     // Authorize (free access) before reading, best-effort, skipped for a
     // device whose facts record that it never answers (issues #215, #761).
     let mut facts = FactsCache::new(dir, false);
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: read.tool_key.clone(),
-        factory_key: read.factory_key.clone(),
-        high_water: read.high_water.clone(),
-        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, read.tool_key.clone(), read.high_water.clone())
+        .with_factory_key(read.factory_key.clone())
+        .with_authorize(bussard_service::status::read_only_authorize(
+            &mut facts, target,
+        ));
     let request = ReadRequest {
         target,
         model: Some(read.model),
@@ -2929,11 +2921,7 @@ async fn read_property_rows(
     plan: &bussard_download::FlashPlan,
 ) -> Result<Vec<bussard_service::property_plan::PropertyRow>, String> {
     let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, tool_key.clone(), SequenceHighWater::new());
     service
         .with_l4(target, &options, async |l4| {
             Ok::<_, ServiceError>(

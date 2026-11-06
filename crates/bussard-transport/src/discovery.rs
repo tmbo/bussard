@@ -282,7 +282,7 @@ async fn search_extended_udp(
 /// each interface because KNXnet/IP discovery is multicast and multicast does
 /// not route between subnets — the SEARCH_REQUEST must egress the interface on
 /// the gateway's own network.
-pub fn local_ipv4_interfaces() -> Vec<Ipv4Addr> {
+fn local_ipv4_interfaces() -> Vec<Ipv4Addr> {
     let mut addrs: Vec<Ipv4Addr> = match if_addrs::get_if_addrs() {
         Ok(ifaces) => ifaces
             .into_iter()

@@ -12,9 +12,11 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{FlashStep, build_table_images, plan_flash, template_ops_for};
+use bussard_download::{FlashStep, build_table_images, template_ops_for};
 use bussard_prod::MasterTemplate;
 use zip::write::SimpleFileOptions;
+
+use crate::support::plan_flash_default;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -68,8 +70,14 @@ fn test_template_ops_for_stub_master_uses_builtin() -> TestResult {
 
     let target: bussard_model::IndividualAddress = "1.1.1".parse()?;
     let overrides = BTreeMap::new();
-    let tables = build_table_images(None, target, app, &overrides);
-    let plan = plan_flash(
+    let tables = build_table_images(
+        None,
+        target,
+        app,
+        &overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
+    let plan = plan_flash_default(
         app,
         "1.1.1",
         0x07B0,

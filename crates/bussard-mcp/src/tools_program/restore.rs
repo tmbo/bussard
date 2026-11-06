@@ -18,9 +18,9 @@ use bussard_download::backup::{ParameterBackup, parameter_backups_dir, read_para
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::SequenceHighWater;
+use bussard_service::L4Options;
 use bussard_service::program::{self, read::FlagsCache};
 use bussard_service::restore::{RestorePlan, build_restore_plan};
-use bussard_service::{Authorize, L4Options, SourcePolicy};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -417,13 +417,11 @@ impl BussardMcp {
             job,
             format!("restoring {} parameter octet(s)", planned.plan.octets),
         );
-        let read_options = L4Options {
-            source: SourcePolicy::Known(planned.source),
-            tool_key: planned.tool_key.clone(),
-            high_water: planned.high_water.clone(),
-            authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-            ..L4Options::default()
-        };
+        let read_options = L4Options::secured(
+            planned.source,
+            planned.tool_key.clone(),
+            planned.high_water.clone(),
+        );
         let mut observer = JobObserver::download(&tier.jobs, job, PARAMETER_DOWNLOAD, target);
         let outcome = bussard_service::download::write_parameters(
             bussard_service::download::ParamWrite {

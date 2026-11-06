@@ -16,7 +16,7 @@
 //! [`install`](ModelHandle::install).
 //!
 //! Before every reload the handle fills in the product models
-//! `.bussard/models/` lacks ([`complete_product_models`]), and the servers
+//! `.bussard/model-cache/` lacks ([`complete_product_models`]), and the servers
 //! run the same completion before their first load, so an empty or partly
 //! deleted models directory heals without a restart (issue #267).
 //!
@@ -207,7 +207,7 @@ impl ModelHandle {
     }
 }
 
-/// Regenerates the product models under `<dir>/.bussard/models/` of the
+/// Regenerates the product models under `<dir>/.bussard/model-cache/` of the
 /// applications the lock's devices pin that the directory lacks (see
 /// [`bussard_prod::product_model::complete_models`]). Cheap when nothing is
 /// missing: one `stat` per pinned application, no archive read. A pinned

@@ -18,6 +18,7 @@ use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
 
 use crate::key::Key16;
+use x25519_dalek::{PublicKey, SharedSecret, StaticSecret};
 
 /// AES-128-CBC encryptor (used to drive the CBC-MAC).
 type Aes128CbcEnc = cbc::Encryptor<Aes128>;
@@ -394,6 +395,55 @@ pub fn random_bytes<const N: usize>() -> Result<[u8; N], CryptoError> {
     let mut out = [0u8; N];
     getrandom::getrandom(&mut out).map_err(|e| CryptoError::Random(e.to_string()))?;
     Ok(out)
+}
+
+/// An X25519 key pair: the ephemeral pair of a KNXnet/IP Secure
+/// SESSION_REQUEST ([`crate::ipsecure`]) or one side of an enrolment session
+/// ([`crate::enroll`]). The secret zeroizes on drop and `Debug` shows only the
+/// public key.
+pub struct X25519KeyPair {
+    secret: StaticSecret,
+    public: PublicKey,
+}
+
+impl std::fmt::Debug for X25519KeyPair {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("X25519KeyPair")
+            .field("public", self.public.as_bytes())
+            .finish_non_exhaustive()
+    }
+}
+
+impl X25519KeyPair {
+    /// A fresh key pair from the OS random source.
+    ///
+    /// # Errors
+    ///
+    /// [`CryptoError::Random`] when the random source fails.
+    pub fn generate() -> Result<Self, CryptoError> {
+        let secret = zeroize::Zeroizing::new(random_bytes::<32>()?);
+        Ok(Self::from_secret(*secret))
+    }
+
+    /// The key pair whose secret scalar is `secret` (test vectors and the
+    /// simulators; production code calls [`X25519KeyPair::generate`]).
+    #[must_use]
+    pub fn from_secret(secret: [u8; 32]) -> Self {
+        let secret = StaticSecret::from(secret);
+        let public = PublicKey::from(&secret);
+        Self { secret, public }
+    }
+
+    /// The public key.
+    #[must_use]
+    pub fn public(&self) -> [u8; 32] {
+        self.public.to_bytes()
+    }
+
+    /// The X25519 shared secret with `peer`.
+    pub(crate) fn shared_secret(&self, peer: &[u8; 32]) -> SharedSecret {
+        self.secret.diffie_hellman(&PublicKey::from(*peer))
+    }
 }
 
 /// Errors from the KNX Secure crypto primitives.

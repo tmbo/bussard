@@ -18,7 +18,8 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{FlashStep, plan_flash_sys7_with_hawk};
+use bussard_download::FlashStep;
+use bussard_download::flash::plan_flash_sys7_with_hawk;
 use zip::write::SimpleFileOptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;

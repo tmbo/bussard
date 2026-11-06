@@ -29,13 +29,14 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
+use bussard_model::Model;
 use bussard_model::history::SnapshotReason;
-use bussard_model::{IndividualAddress, Model};
 use bussard_service::assign::{ProgrammingWait, hex, wait_for_programming_mode};
 use bussard_service::commission::{
     Identified, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed, forget_facts,
     identify_pressed, probe_line,
 };
+use bussard_service::line::WalkEvent;
 use bussard_service::setup::Collected;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -642,8 +643,10 @@ impl BussardMcp {
         if !run.probed {
             tier.jobs.step(job, "checking which devices already answer");
             let targets = run.walk.targets().to_vec();
-            let mut on_probe = |addr: IndividualAddress| {
-                jobs.progress(job, "checking", json!(addr.to_string()));
+            let mut on_probe = |event: WalkEvent<'_, _>| {
+                if let WalkEvent::Probing { address, .. } = event {
+                    jobs.progress(job, "checking", json!(address.to_string()));
+                }
             };
             let verdicts = probe_line(&service, source, &targets, &mut on_probe).await;
             run.walk.set_verdicts(verdicts);

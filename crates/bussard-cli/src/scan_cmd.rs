@@ -26,7 +26,8 @@ use bussard_secure::Key16;
 use bussard_service::BusService;
 use bussard_service::WritePolicy;
 use bussard_service::identity::SecureStatus;
-use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
+use bussard_service::line::WalkEvent;
+use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
 use bussard_service::secure::ToolKeys;
 
 pub(crate) use bussard_service::scan::Found;
@@ -198,8 +199,8 @@ async fn sweep(
 ) -> Sweep {
     let mut display = crate::progress::Display::sweep("scanning", range.count(), json);
     let swept = scan::sweep(service, range, source, key_for, &mut |event| match event {
-        SweepEvent::Probing { address, found } => display.probing(address, found),
-        SweepEvent::Probed { .. } => display.advance(),
+        WalkEvent::Probing { address, found, .. } => display.probing(address, found),
+        WalkEvent::Probed { .. } => display.advance(),
     })
     .await;
     display.finish(true);
@@ -211,9 +212,9 @@ async fn sweep(
 }
 
 /// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring the
-/// device part) into `(area, line)` ([`scan::parse_line`]).
+/// device part) into `(area, line)` ([`bussard_service::line::parse_line`]).
 pub(crate) fn parse_line(line: &str) -> anyhow::Result<(u8, u8)> {
-    Ok(scan::parse_line(line)?)
+    Ok(bussard_service::line::parse_line(line)?)
 }
 
 /// The sweep's counts for the summary line (issue #792).

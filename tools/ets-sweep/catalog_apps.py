@@ -1,14 +1,16 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["pyyaml"]
+# dependencies = []
 # ///
 """Map every corpus product file to its application programs (epic #419, part 2 #421).
 
-    uv run tools/ets-sweep/catalog_apps.py [--corpus DIR] [--filter a,b] [--bussard target/debug/bussard]
+    uv run tools/ets-sweep/catalog_apps.py [--corpus DIR] [--filter a,b]
 
-For each `.knxprod` in the corpus, `bussard import-product` into a scratch
-directory generates the product models; their identity (application id, name,
-mask) and order numbers go to `tools/ets-sweep/catalog-apps.json`:
+For each `.knxprod` in the corpus (and each `.knxprod` nested in it), the
+application programs' identity (application id, the untranslated `Name`, mask)
+and the order numbers `Hardware.xml` maps to them go to
+`tools/ets-sweep/catalog-apps.json` (read from the archive: bussard's product
+models carry neither name nor order numbers since #906):
 
     {"<file>": {"apps": [{"id": "M-0083_A-004F-11-8F33", "name": "Rain sensor",
                           "mask": "0701", "order_numbers": ["SCN-RS1R.01"]}, ...],
@@ -21,62 +23,63 @@ flashes. Labels only, no vendor data. Files with an entry are skipped.
 from __future__ import annotations
 
 import argparse
+import io
 import json
-import shutil
-import subprocess
+import re
 import sys
-import tempfile
+import zipfile
 from pathlib import Path
-
-import yaml
-
-
-class _Loader(yaml.SafeLoader):
-    """bussard's models tag parameter types (`type: !int`); keep the scalar."""
-
-
-_Loader.add_multi_constructor("!", lambda loader, suffix, node: loader.construct_scalar(node) if isinstance(node, yaml.ScalarNode) else loader.construct_mapping(node) if isinstance(node, yaml.MappingNode) else loader.construct_sequence(node))
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 OUT = HERE / "catalog-apps.json"
 
-
-def _head(text: str) -> str:
-    """The identity and order numbers of a model: the top-level keys up to the
-    first other one. A model runs to tens of MB; loading all of it with the
-    pure-Python YAML loader costs minutes per product."""
-    out = []
-    for line in text.splitlines(keepends=True):
-        key = line.split(":", 1)[0]
-        if line[:1].isalpha() and key not in ("model_format", "identity", "order_numbers"):
-            break
-        out.append(line)
-    return "".join(out)
+_APP_FILE = re.compile(r"(^|/)(M-[0-9A-F]{4}_A-[^/]+)\.xml$")
+_ATTR = re.compile(r'([A-Za-z]+)="([^"]*)"')
 
 
-def apps_of(bussard: Path, product: Path) -> list[dict]:
-    with tempfile.TemporaryDirectory(prefix="ets-apps-") as tmp:
-        r = subprocess.run([str(bussard), "import-product", "--dir", tmp, str(product)], capture_output=True, text=True, timeout=600)
-        if r.returncode != 0:
-            raise RuntimeError((r.stderr or r.stdout).strip()[-400:])
-        out = []
-        for model in sorted(Path(tmp, ".bussard", "models").glob("*.yaml")):
-            doc = yaml.load(_head(model.read_text()), Loader=_Loader)  # noqa: S506 - our own models
-            ident = doc.get("identity", {})
-            out.append({
-                "id": ident.get("id", model.stem),
-                "name": ident.get("name"),
-                "mask": str(ident.get("mask_version")),
-                "order_numbers": doc.get("order_numbers") or [],
-            })
-        return out
+def _attrs(tag: str) -> dict[str, str]:
+    return dict(_ATTR.findall(tag))
+
+
+def _scan(z: zipfile.ZipFile, apps: dict[str, dict], orders: dict[str, set[str]]) -> None:
+    """Collects the programs and the order-number mapping of one archive,
+    descending into nested `.knxprod` files."""
+    for name in z.namelist():
+        lower = name.lower()
+        if lower.endswith(".knxprod"):
+            with zipfile.ZipFile(io.BytesIO(z.read(name))) as inner:
+                _scan(inner, apps, orders)
+        elif lower.endswith("/hardware.xml"):
+            text = z.read(name).decode("utf-8", "replace")
+            for hw in re.findall(r"<Hardware\b.*?</Hardware>", text, re.S):
+                numbers = [_attrs(t).get("OrderNumber") for t in re.findall(r"<Product\b[^>]*>", hw)]
+                refs = [_attrs(t).get("RefId") for t in re.findall(r"<ApplicationProgramRef\b[^>]*>", hw)]
+                for ref in filter(None, refs):
+                    orders.setdefault(ref, set()).update(n for n in numbers if n)
+        elif _APP_FILE.search(name):
+            with z.open(name) as f:
+                head = f.read(1 << 16).decode("utf-8", "replace")
+            tag = re.search(r"<ApplicationProgram\b[^>]*>", head)
+            if tag:
+                a = _attrs(tag.group(0))
+                if a.get("Id"):
+                    mask = a.get("MaskVersion") or ""
+                    apps[a["Id"]] = {"id": a["Id"], "name": (a.get("Name") or "").strip() or None,
+                                     "mask": (mask[3:] if mask.startswith("MV-") else mask) or None}
+
+
+def apps_of(product: Path) -> list[dict]:
+    apps: dict[str, dict] = {}
+    orders: dict[str, set[str]] = {}
+    with zipfile.ZipFile(product) as z:
+        _scan(z, apps, orders)
+    return [{**apps[i], "order_numbers": sorted(orders.get(i, ()))} for i in sorted(apps)]
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--corpus", type=Path, default=REPO / "tests-support" / "product-corpus" / "cache" / "vendor")
-    ap.add_argument("--bussard", type=Path, default=REPO / "target" / "debug" / "bussard")
     ap.add_argument("--filter", default="")
     ap.add_argument("--redo", action="store_true")
     args = ap.parse_args()
@@ -89,7 +92,7 @@ def main() -> int:
         if path.name in data and not args.redo:
             continue
         try:
-            data[path.name] = {"apps": apps_of(args.bussard, path), "error": None}
+            data[path.name] = {"apps": apps_of(path), "error": None}
         except Exception as exc:  # noqa: BLE001 - recorded, the sweep goes on
             data[path.name] = {"apps": [], "error": str(exc)[:400]}
         OUT.write_text(json.dumps(dict(sorted(data.items())), indent=1, ensure_ascii=False) + "\n")

@@ -31,11 +31,11 @@ const DEFAULT_BACKLOG: usize = 50;
 
 /// `GET /api/model` — the precomputed model projection.
 ///
-/// Clones the current snapshot's cached projection. `POST /api/reload` can swap
-/// the snapshot underneath, so this reads through the [`ModelHandle`] every call
+/// Clones the current model's memoised projection. `POST /api/reload` can
+/// swap the model underneath, so this reads through the handle every call
 /// rather than capturing an `Arc` once.
 pub async fn get_model(State(state): State<AppState>) -> Json<Value> {
-    Json(state.model.current().json.as_ref().clone())
+    Json(state.model_json().1.as_ref().clone())
 }
 
 /// `GET /api/state` — the bus status, current seq, last value per GA, and the
@@ -211,7 +211,7 @@ pub async fn post_group_write(
     // Read the CURRENT model snapshot so a reload's protected-GA changes and
     // DPT edits are enforced immediately on the very next write.
     let snapshot = state.model.current();
-    let model = snapshot.model.as_ref();
+    let model = snapshot.as_ref();
 
     // Exactly one of value / payload.
     let value = match (&req.value, &req.payload) {
@@ -264,7 +264,7 @@ pub async fn post_group_write(
 ///
 /// Regenerates missing product models from the pinned archives (issue #267),
 /// then re-runs `Model::load` on the server's model directory. On success it installs
-/// the model into the shared [`ModelHandle`](crate::state::ModelHandle) as the
+/// the model into the shared [`ModelHandle`](bussard_service::ModelHandle) as the
 /// next `model_version` in one move, emits a `model`
 /// SSE event so connected pages refetch `/api/model`, and returns `200` with the
 /// new `{model_version, stats}`.
@@ -280,9 +280,9 @@ pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, A
         .map_err(|e| ApiError::ModelInvalid(format!("model reload failed: {e}")))?;
 
     // Install it as the next version (current + 1).
-    let snapshot = state.model.install(model);
-    let next_version = snapshot.version;
-    let stats = snapshot.json.get("stats").cloned().unwrap_or(Value::Null);
+    state.model.install(model);
+    let (next_version, json) = state.model_json();
+    let stats = json.get("stats").cloned().unwrap_or(Value::Null);
 
     // Tell connected pages to refetch /api/model.
     let event = json!({ "model_version": next_version, "stats": stats });

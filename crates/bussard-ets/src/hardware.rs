@@ -55,7 +55,7 @@ pub struct Hardware {
     /// Order number → the bus current the hardware draws, in mA, from the
     /// `<Hardware BusCurrent=…>` attribute.
     ///
-    /// Read by the `L002` topology lint (via the generated `models/*.yaml`) to
+    /// Read by the `L002` topology lint (via the generated product models) to
     /// total a line's draw against its power supply. Vendors declare it per
     /// `<Hardware>` block, so every order number in a block shares the value.
     pub order_to_bus_current: HashMap<String, u32>,

@@ -63,7 +63,13 @@ async fn test_memory_response_number_zero_is_a_refusal() -> TestResult {
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     // The single-telegram read keeps returning the empty answer.
     assert!(read_memory(&mut l4, 0x4000, 4).await?.is_empty());
     let Err(err) = read_memory_range(&mut l4, 0x4000, 4).await else {
@@ -100,7 +106,13 @@ async fn test_extended_read_return_code_is_named() -> TestResult {
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let Err(err) = read_memory(&mut l4, 0x01_6000, 4).await else {
         return Err("access denied".into());
     };
@@ -133,7 +145,13 @@ async fn test_extended_write_return_code_is_not_a_verify_mismatch() -> TestResul
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let Err(err) = write_memory(&mut l4, 0x01_6000, &[1, 2, 3]).await else {
         return Err("the write is refused".into());
     };
@@ -160,7 +178,13 @@ async fn test_descriptor_type_3f_is_unsupported() -> TestResult {
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let Err(err) = read_device_descriptor(&mut l4).await else {
         return Err("type 0 is not supported".into());
     };
@@ -187,7 +211,13 @@ async fn test_descriptor_of_another_type_is_not_read_as_type_0() -> TestResult {
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let Err(err) = read_device_descriptor(&mut l4).await else {
         return Err("a type-2 answer is not a mask".into());
     };
@@ -212,7 +242,13 @@ async fn test_authorize_level_between_maximum_and_minimum_is_granted() -> TestRe
     })?)
     .await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, source()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        source()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let outcome = l4.authorize_or_fail(0xFFFF_FFFF).await?;
     assert_eq!(outcome, AuthorizeOutcome::Granted { level: 2 });
     assert_eq!(outcome.level(), Some(2));
