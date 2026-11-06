@@ -407,8 +407,54 @@ impl Device {
         // the product's properties on it (a manufacturer PID such as the
         // Siemens IP interfaces' 236); a `knxnet` device option adds them to
         // the object it configures (`Device::with_knxnet`).
-        let (knxnet_by_type, typed) = typed_objects_for(product, address, true);
+        let (knxnet_by_type, mut typed) = typed_objects_for(product, address, true);
+        // A vendor object the procedure loads by type (`LdCtrlUnload
+        // ObjType="40960"`, the Gira Eco) exists even when no property step
+        // names it, and has a load-state machine once indexed.
+        for &object_type in &product.typed_lsm_types {
+            typed.entry(object_type).or_insert_with(|| {
+                let mut io = InterfaceObject::new();
+                io.set_property(
+                    PID_OBJECT_TYPE,
+                    Property::read_only(object_type.to_be_bytes().to_vec()),
+                );
+                io
+            });
+        }
         let typed_objects = index_typed_objects(&mut objects, typed);
+        for &object_type in &product.typed_lsm_types {
+            let index = objects
+                .iter()
+                .find(|(_, o)| {
+                    o.property(PID_OBJECT_TYPE)
+                        .is_some_and(|p| p.value.as_slice() == object_type.to_be_bytes())
+                })
+                .map(|(i, _)| *i);
+            if let Some(index) = index
+                && !loadables.contains_key(&index)
+            {
+                if let Some(io) = objects.get_mut(&index) {
+                    io.set_property(
+                        PID_LOAD_STATE_CONTROL,
+                        Property::writable(vec![initial_state.to_byte()]),
+                    );
+                }
+                loadables.insert(
+                    index,
+                    ObjectState {
+                        lsm: LoadStateMachine::new(initial_state),
+                        base: default_base_for(index),
+                        descriptor: LoadableObject {
+                            lsm_index: index,
+                            name: format!("object type {object_type}"),
+                            max_size: None,
+                            image: Vec::new(),
+                        },
+                        mcb_written: None,
+                    },
+                );
+            }
+        }
         let mut device = Self {
             address,
             profile,
@@ -1210,6 +1256,62 @@ mod tests {
         let index = dev.knxnet_index().ok_or("listed")?;
         let r = dev.handle_cemi(&data(&dev, 0x3D5, &[index, 236, 0x10, 0x01]))?;
         assert_eq!(prop_response_value(&r), vec![0x80]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_loads_a_vendor_object_by_type() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Bussard issue #422: the Gira Eco (`M-0008_A-C02A-21`) loads its
+        // vendor object type 40960 with load controls by `ObjType`. ETS sent
+        // `[d4 a0 00 00 10 05 04 00 ..]` (Unload) and got no answer (ETS
+        // sweep, 2026-11-06).
+        let xml = glass_touch_app("1").replace(
+            r#"<LdCtrlWriteProp ObjIdx="7" PropId="161" Verify="false" InlineData="01" />"#,
+            r#"<LdCtrlUnload AppliesTo="all" ObjType="40960" />
+              <LdCtrlLoad AppliesTo="all" ObjType="40960" />
+              <LdCtrlDeclarePropDesc ObjType="40960" PropId="69" PropType="PDT_GENERIC_04" MaxElements="1" ReadAccess="3" WriteAccess="3" Writable="true" />
+              <LdCtrlWriteProp AppliesTo="all" ObjType="40960" PropId="69" Count="25" Verify="true" />
+              <LdCtrlWriteProp AppliesTo="all" ObjType="40960" PropId="69" StartElement="176" Count="25" Verify="true" />
+              <LdCtrlLoadCompleted AppliesTo="all" ObjType="40960" />"#,
+        );
+        let pd = app_product(&xml)?;
+        assert_eq!(pd.typed_lsm_types, vec![40960]);
+        let mut dev = connected_device(&pd)?;
+        let event = |e: u8| {
+            let mut d = vec![0xA0, 0x00, 0x00, 0x10, 0x05, e];
+            d.extend_from_slice(&[0; 9]);
+            d
+        };
+        // Unload, then StartLoading: State_Response [a0 00 00 10 05 00 state].
+        for (e, state) in [(0x04u8, 0x00u8), (0x01, 0x02)] {
+            let r = dev.handle_cemi(&data(&dev, 0x1D4, &event(e)))?;
+            let resp = &r.responses.last().ok_or("an answer")?.tpdu;
+            assert_eq!(resp[1], 0xD6, "A_FunctionPropertyExt_State_Response");
+            assert_eq!(
+                resp[2..],
+                [0xA0, 0x00, 0x00, 0x10, 0x05, 0x00, state],
+                "event {e}"
+            );
+        }
+        // PID 69 at element 176, one 4-octet element, and its read-back.
+        let mut write = vec![0xA0, 0x00, 0x00, 0x10, 69, 1, 0, 176];
+        write.extend_from_slice(&[1, 2, 3, 4]);
+        let r = dev.handle_cemi(&data(&dev, 0x1CE, &write))?;
+        assert_eq!(r.responses.last().ok_or("an answer")?.tpdu.last(), Some(&0));
+        let r = dev.handle_cemi(&data(&dev, 0x1CC, &[0xA0, 0x00, 0x00, 0x10, 69, 1, 0, 176]))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu[10..],
+            [1, 2, 3, 4]
+        );
+        // LoadCompleted: Loaded; the state read says so too.
+        let r = dev.handle_cemi(&data(&dev, 0x1D4, &event(0x02)))?;
+        assert_eq!(r.responses.last().ok_or("an answer")?.tpdu[8], 0x01);
+        let r = dev.handle_cemi(&data(&dev, 0x1D5, &[0xA0, 0x00, 0x00, 0x10, 0x05]))?;
+        assert_eq!(
+            r.responses.last().ok_or("an answer")?.tpdu[7..],
+            [0x00, 0x01]
+        );
         Ok(())
     }
 

@@ -482,6 +482,15 @@ pub fn typed_ext_write(
         let end = from + data.len();
         if prop.value.len() < end {
             prop.value.resize(end, 0);
+            // An array grows by whole elements: its element count follows,
+            // so a read-back from a later start finds them (the Gira Eco
+            // writes 25 elements of PID 69 at element 176, bussard issue #422).
+            if object_type != IOT_KNXNET_IP_PARAMETER
+                && let Ok(elements) = u16::try_from(end / size)
+                && elements > prop.max_elements
+            {
+                prop.max_elements = elements;
+            }
         }
         prop.value[from..end].copy_from_slice(data);
         rc = 0x00;
