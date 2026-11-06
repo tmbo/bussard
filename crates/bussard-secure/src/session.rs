@@ -7,7 +7,7 @@
 //! runs the S-A_Sync handshake (spec §6.3) that ETS performs before the first
 //! S-A_Data of every connection: [`DataSecureSession::sync_request`] on the tool
 //! side, [`DataSecureSession::answer_sync_request`] on the device side. The
-//! transport seam ([`SecureLayer`] over `DeviceConnection`, spec §6.1) holds one
+//! transport seam ([`SecureLayer`] under `Layer4Connection`, spec §6.1) holds one
 //! of these when a device is security-activated.
 
 use std::collections::HashMap;

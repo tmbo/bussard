@@ -38,8 +38,9 @@
 //! // Connect to device 1.1.4 and read its mask version.
 //! let target = "1.1.4".parse()?;
 //! let source = "0.0.255".parse()?;
-//! let mut device = Layer4Connection::connect(&mut bus, target, source, bussard_mgmt::ConnectOptions::default()).await?;
-//! let mask = device.device_descriptor().await?;
+//! let mut device =
+//!     Layer4Connection::connect(&mut bus, target, source, ConnectOptions::default()).await?;
+//! let mask = read_device_descriptor(&mut device).await?;
 //! println!("mask version: {mask:#06x} ({})", bussard_mgmt::system_type(mask));
 //! device.disconnect().await?;
 //! # Ok(())
