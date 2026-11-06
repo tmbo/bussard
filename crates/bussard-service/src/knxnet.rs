@@ -56,6 +56,7 @@ use bussard_model::knxnet::{
 use sha2::{Digest, Sha256};
 
 use crate::facts::{Established, FactsCache, FactsWant};
+use crate::util::chain;
 use crate::verify::{Expected, ExpectedProperty, LeftoverKind, WriteReadback};
 
 /// The index of the KNXnet/IP parameter object in `table` (`(index, object
@@ -885,18 +886,6 @@ pub async fn apply_interface<Ch: L4Channel>(
         write_error,
         readback,
     }
-}
-
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut source = err.source();
-    while let Some(next) = source {
-        out.push_str(": ");
-        out.push_str(&next.to_string());
-        source = next.source();
-    }
-    out
 }
 
 /// Writes the interface's values as read before an apply to

@@ -24,15 +24,15 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, read_tables};
-use bussard_mgmt::{L4Channel, MaskProfile, Timeouts, manufacturers, system_type};
+use bussard_mgmt::{MaskProfile, Timeouts, manufacturers, system_type};
 use bussard_model::schema::{
     BussardConfig, ComObject, Device, Group, Groups, Link, Links, Product,
 };
 use bussard_model::text::hex;
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 
+use crate::identity::{Identity, read_identity};
 use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
 
 /// Per-address budget for the up-front estimate of a sweep's duration.
@@ -195,28 +195,6 @@ pub async fn sweep_line(
     found
 }
 
-/// Reads a two-byte device property, `None` when absent or short.
-async fn read_u16<Ch: L4Channel>(
-    dev: &mut bussard_mgmt::Layer4Connection<Ch>,
-    pid: u8,
-) -> Option<u16> {
-    match dev.read_device_property(pid).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
-    }
-}
-
-/// Cleans a raw property value to printable ASCII, trimming trailing NULs/space.
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
-}
-
 /// Probes one address: descriptor first; System B → read tables; anything else
 /// → best-effort product identity, recorded as a stub. Returns `None` for an
 /// absent or refusing device.
@@ -232,35 +210,21 @@ async fn probe_line(
         authorize: Authorize::Skip,
         ..L4Options::default()
     };
-    let (mask, manufacturer_id, serial, order) = service
-        .with_l4(addr, &options, async |dev| {
-            let mask = match bussard_mgmt::read_device_descriptor(dev).await {
-                Ok(mask) => mask,
-                Err(err) => {
-                    if err.device_present() {
-                        tracing::debug!("{addr} present but refused the descriptor read: {err}");
-                    }
-                    return Ok(None);
-                }
-            };
-            // Best-effort product identity for every responder (System B or not).
-            let manufacturer_id = read_u16(dev, PID_MANUFACTURER_ID).await;
-            let serial = dev
-                .read_device_property(PID_SERIAL_NUMBER)
-                .await
-                .ok()
-                .filter(|v| !v.is_empty());
-            let order = dev
-                .read_device_property(PID_ORDER_INFO)
-                .await
-                .ok()
-                .map(|v| clean_ascii(&v))
-                .filter(|s| !s.is_empty());
-            Ok::<_, ServiceError>(Some((mask, manufacturer_id, serial, order)))
+    // Best-effort product identity for every responder (System B or not).
+    let identity = service
+        .with_l4(addr, &options, async |l4| {
+            Ok::<_, ServiceError>(read_identity(l4, true).await.ok())
         })
         .await
         .ok()
         .flatten()?;
+    let Identity {
+        mask,
+        manufacturer_id,
+        serial,
+        order,
+        ..
+    } = identity;
 
     // System B → read tables over a fresh Layer 4 session; others → stub. The
     // profile makes this medium-agnostic: 07B0 (TP1), 57B0 (KNX-IP) and 27B0
@@ -609,11 +573,6 @@ mod tests {
     #[test]
     fn test_hex_formats_lowercase() {
         assert_eq!(hex(&[0xDE, 0xAD]), "dead");
-    }
-
-    #[test]
-    fn test_clean_ascii_trims_nuls_and_space() {
-        assert_eq!(clean_ascii(b"AB-12 \0\0junk"), "AB-12");
     }
 
     #[test]

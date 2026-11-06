@@ -54,6 +54,7 @@ use bussard_prod::{ApplicationProgram, ProductData};
 
 use crate::bus::{BusService, L4Options};
 use crate::params::FlashedParameters;
+use crate::util::chain;
 
 /// The parameter half of an [`Expected`]: what the memory is decoded with
 /// and compared against.
@@ -528,18 +529,6 @@ impl WriteReadback {
 fn counted(n: impl Into<usize>, one: &str, many: &str) -> String {
     let n: usize = n.into();
     format!("{n} {}", if n == 1 { one } else { many })
-}
-
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
-    }
-    out
 }
 
 /// `1 entry`, `3 entries`.

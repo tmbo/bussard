@@ -26,13 +26,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{MgmtError, broadcast, manufacturers, system_type};
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 
-use crate::identity::{HIDDEN_MASK, SecureStatus, clean_ascii};
+use crate::identity::{Identity, SecureStatus, read_identity, read_manufacturer, read_order};
 use crate::secure::ToolKeys;
 use crate::{Authorize, BusService, L4Options, Management, ServiceError, SourcePolicy};
 
@@ -494,33 +493,9 @@ pub async fn identify(
         ..L4Options::default()
     };
     service
-        .with_l4(address, &options, async |dev| {
-            let mask = bussard_mgmt::read_device_descriptor(dev).await?;
-            if !secured && mask == HIDDEN_MASK {
-                return Ok(Verified {
-                    secure: SecureStatus::ActivatedNoKey,
-                    ..Verified::default()
-                });
-            }
-            if let Err(err) = dev
-                .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-                .await
-            {
-                tracing::debug!("{address} authorize (free access) did not grant: {err}");
-            }
-            Ok(Verified {
-                mask: Some(mask),
-                manufacturer_id: read_manufacturer(dev).await,
-                serial: read_serial(dev).await,
-                order: read_order(dev).await,
-                programming_mode_cleared: false,
-                secure: if secured {
-                    SecureStatus::Activated
-                } else {
-                    SecureStatus::Plain
-                },
-                warnings: Vec::new(),
-            })
+        .with_l4(address, &options, async |l4| {
+            let identity = read_identity(l4, !secured).await?;
+            Ok(Verified::read(identity, secured, false))
         })
         .await
 }
@@ -626,50 +601,33 @@ async fn read_back(
     clear_programming_mode: bool,
     secured: bool,
 ) -> Result<Verified, VerifyError> {
-    let mask = bussard_mgmt::read_device_descriptor(dev)
-        .await
-        .map_err(|err| {
-            VerifyError::Unverified(if secured {
-                format!(
-                    "wrote {target} and connected, but the device did not answer the SECURED \
+    let identity = read_identity(dev, !secured).await.map_err(|err| {
+        VerifyError::Unverified(if secured {
+            format!(
+                "wrote {target} and connected, but the device did not answer the SECURED \
                  descriptor read ({err}): either the tool key is not this device's, or the \
                  device is not Data Secure-activated (retry without --keyring/--tool-key); the \
                  assignment is unverified"
-                )
-            } else if matches!(err, MgmtError::Disconnected { .. }) {
-                format!(
-                    "wrote {target} and connected, but the device disconnected on the first read: \
+            )
+        } else if matches!(err, MgmtError::Disconnected { .. }) {
+            format!(
+                "wrote {target} and connected, but the device disconnected on the first read: \
                  typical for devices whose management is gated on a loaded application or a \
                  different medium profile (e.g. KNX Virtual IP-medium `*.ip` devices, which \
                  disconnect on descriptor reads while their `*.tp` siblings answer). The address \
                  was written but could not be verified."
-                )
-            } else {
-                format!(
-                    "wrote {target} and connected, but the device did not answer a descriptor read \
+            )
+        } else {
+            format!(
+                "wrote {target} and connected, but the device did not answer a descriptor read \
                  ({err}); the assignment is unverified"
-                )
-            })
-        })?;
+            )
+        })
+    })?;
 
-    if !secured && mask == HIDDEN_MASK {
-        return Ok(Verified {
-            secure: SecureStatus::ActivatedNoKey,
-            ..Verified::default()
-        });
+    if !secured && identity.mask_hidden() {
+        return Ok(Verified::read(identity, secured, false));
     }
-    // Authorize the session (free access), as ETS does after the descriptor read
-    // (issue #52 finding #1). Best-effort: the descriptor read verified the write.
-    if let Err(err) = dev
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-    {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-    let manufacturer_id = read_manufacturer(dev).await;
-    let serial = read_serial(dev).await;
-    let order = read_order(dev).await;
-
     // Explicitly clear programming mode, exactly as ETS does after assigning an
     // address. Best-effort: the broadcast check remains the fallback.
     let programming_mode_cleared = if !clear_programming_mode {
@@ -683,45 +641,34 @@ async fn read_back(
             }
         }
     };
-
-    Ok(Verified {
-        mask: Some(mask),
-        manufacturer_id,
-        serial,
-        order,
-        programming_mode_cleared,
-        secure: if secured {
-            SecureStatus::Activated
-        } else {
-            SecureStatus::Plain
-        },
-        warnings: Vec::new(),
-    })
+    Ok(Verified::read(identity, secured, programming_mode_cleared))
 }
 
-/// `PID_MANUFACTURER_ID`, when readable.
-async fn read_manufacturer(dev: &mut Management) -> Option<u16> {
-    match dev.read_device_property(PID_MANUFACTURER_ID).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
+impl Verified {
+    /// The verdict of a [`read_identity`]: a plain read of a hidden mask is
+    /// [`SecureStatus::ActivatedNoKey`] with no mask; otherwise the read
+    /// fields, secured or plain.
+    fn read(identity: Identity, secured: bool, programming_mode_cleared: bool) -> Verified {
+        if !secured && identity.mask_hidden() {
+            return Verified {
+                secure: SecureStatus::ActivatedNoKey,
+                ..Verified::default()
+            };
+        }
+        Verified {
+            mask: Some(identity.mask),
+            manufacturer_id: identity.manufacturer_id,
+            serial: identity.serial,
+            order: identity.order,
+            programming_mode_cleared,
+            secure: if secured {
+                SecureStatus::Activated
+            } else {
+                SecureStatus::Plain
+            },
+            warnings: Vec::new(),
+        }
     }
-}
-
-/// `PID_SERIAL_NUMBER`, when readable.
-async fn read_serial(dev: &mut Management) -> Option<Vec<u8>> {
-    dev.read_device_property(PID_SERIAL_NUMBER)
-        .await
-        .ok()
-        .filter(|v| !v.is_empty())
-}
-
-/// `PID_ORDER_INFO` as text, when readable.
-async fn read_order(dev: &mut Management) -> Option<String> {
-    dev.read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty())
 }
 
 // ---------------------------------------------------------------------------

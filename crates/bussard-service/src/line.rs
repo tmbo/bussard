@@ -26,7 +26,6 @@
 //! handed to the caller as [`LineNote`]s.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::error::Error as StdError;
 use std::path::{Path, PathBuf};
 
 use bussard_download::{
@@ -41,6 +40,7 @@ use sha2::{Digest, Sha256};
 
 use crate::params::{MissingProduct, ParseHook, ProductSource, Selection, resolve_product};
 use crate::secure::SecureMaterial;
+use crate::util::{chain, one_line, session_error_detail};
 use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
 
 /// A line argument that is not `area.line`.
@@ -847,36 +847,6 @@ fn session_open_error(err: &ServiceError) -> String {
     }
 }
 
-/// A management session that could not be opened, as a per-device row reads
-/// it: `leasing the bus: <cause>` or `connecting: <cause>`.
-fn session_error_detail(err: &ServiceError) -> String {
-    match err {
-        ServiceError::Lease(cause) => format!("leasing the bus: {cause}"),
-        other => format!("connecting: {other}"),
-    }
-}
-
-/// An error and its sources joined with `": "` (anyhow's `{:#}`).
-fn chain(err: &dyn StdError) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
-
-/// Flattens a multi-line error into one summary-table cell.
-pub fn one_line(text: &str) -> String {
-    text.lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("; ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -906,11 +876,6 @@ mod tests {
             DeviceStatus::Skipped("unsupported mask 0012 (System 1)".to_string()).label(),
             "skipped: unsupported mask 0012 (System 1)"
         );
-    }
-
-    #[test]
-    fn test_one_line_flattens_multiline_errors() {
-        assert_eq!(one_line("a\n\n  b  \nc"), "a; b; c");
     }
 
     #[test]

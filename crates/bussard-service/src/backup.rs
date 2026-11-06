@@ -39,7 +39,6 @@ use bussard_download::backup::{
     write_device_backup, write_manifest,
 };
 use bussard_download::{LiveRead, Sys7TableBases};
-use bussard_mgmt::apci::PID_ORDER_INFO;
 use bussard_mgmt::{
     L4Channel, Layer4Connection, MaskProfile, Timeouts, read_mcb_table, read_memory_range,
     read_table_reference, system_type,
@@ -47,7 +46,9 @@ use bussard_mgmt::{
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::Key16;
 
+use crate::identity::read_order;
 use crate::secure::SecureKeyError;
+use crate::util::session_error_detail;
 use crate::{Authorize, BusService, FactsCache, L4Options, Management, ServiceError, SourcePolicy};
 
 /// The largest parameter image a backup will pull off a device.
@@ -301,25 +302,6 @@ async fn capture_one(
     }
 }
 
-/// A session error in the words of a manifest row.
-fn session_error_detail(err: &ServiceError) -> String {
-    match err {
-        ServiceError::Lease(cause) => format!("leasing the bus: {cause}"),
-        other => format!("connecting: {other}"),
-    }
-}
-
-/// The printable ASCII of a property value up to its first NUL, trimmed.
-fn clean_ascii(bytes: &[u8]) -> String {
-    let s: String = bytes
-        .iter()
-        .take_while(|b| **b != 0)
-        .filter(|b| b.is_ascii_graphic() || **b == b' ')
-        .map(|b| *b as char)
-        .collect();
-    s.trim().to_string()
-}
-
 /// Reads one device's identity, tables and parameter memory on an open,
 /// authorized session.
 async fn read_one(
@@ -327,12 +309,7 @@ async fn read_one(
     target: IndividualAddress,
     user_memory: impl FnOnce() -> bool,
 ) -> DeviceCapture {
-    let order = dev
-        .read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty());
+    let order = read_order(dev).await;
 
     let read_at = SystemTime::now();
     let live = bussard_download::read_live_tables(dev, Sys7TableBases::default()).await;
@@ -657,10 +634,5 @@ mod tests {
         assert!(parse_line("1").is_err());
         assert!(parse_line("16.1").is_err());
         assert!(parse_line("1.1.4").is_err());
-    }
-
-    #[test]
-    fn test_clean_ascii_stops_at_nul() {
-        assert_eq!(clean_ascii(b" 2CHANG.01\0junk"), "2CHANG.01");
     }
 }
