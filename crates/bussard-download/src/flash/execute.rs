@@ -6,7 +6,7 @@
 //! and verifies the result.
 
 use super::execute_sys7::flash_sys7;
-use super::labels::step_label;
+use super::labels::{LabelCtx, step_label};
 use super::session::{
     Connector, MAX_RESUME_RECONNECTS, RestartKind, Session, allocate_with_context_resumable,
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
@@ -417,7 +417,7 @@ impl StepExecutor for SystemB<'_> {
         }
         Some(format!(
             "skip {} (unchanged: resident MCB size+CRC match the image, object Loaded)",
-            step_label(step)
+            step_label(step, &LabelCtx::default())
         ))
     }
 

@@ -89,31 +89,22 @@ impl StepExecutor for System7<'_> {
                     .await?;
             }
             FlashStep::Sys7AbsSegment {
-                lsm: idx,
                 address,
-                size,
-                mem_type,
-                access,
                 seg_flags,
-                seg_type,
                 image,
+                ..
             } => {
                 // 1. Allocate the absolute segment on the LSM. The captures pin
                 //    opcode/subtype, big-endian start+length, `mem_type` and the
                 //    per-segment attribute octets, which the plan takes from the
                 //    op's `Access`/`MemType`/`SegFlags` (ETS reproduces them
                 //    verbatim) or derives from the address when absent.
-                let (access, seg_flags) = (*access, *seg_flags);
-                // Checked, not truncated: an out-of-range address used to go out as
-                // a wrong allocation frame before the following write refused.
-                let target = session.l4().target();
-                let seg_addr = sys7_u16(target, "segment address", *address)?;
-                let seg_size = sys7_u16(target, "segment size", *size)?;
-                let event = bussard_mgmt::encode_alloc_segment(
-                    *seg_type, seg_addr, seg_size, access, *mem_type, seg_flags,
-                );
-                let octet = lsm_octet(target, *idx)?;
-                self.lsm.send_control(session.l4(), octet, &event).await?;
+                //    Checked, not truncated: an out-of-range address used to go
+                //    out as a wrong allocation frame before the following write
+                //    refused.
+                self.send_record(session, step).await?;
+                let seg_addr = sys7_u16(session.l4().target(), "segment address", *address)?;
+                let seg_flags = *seg_flags;
                 // 2. Stream the segment's <Data>, if any, to its absolute address.
                 //    A data-less segment (0x0700 RAM region) is allocate-only.
                 if let Some(img) = image {
@@ -143,62 +134,10 @@ impl StepExecutor for System7<'_> {
                 let addr = sys7_u16(session.l4().target(), "write address", *address)?;
                 stream_sys7_image(session, plan, addr, image, &mut *progress).await?;
             }
-            FlashStep::Sys7TaskSegment {
-                lsm: idx,
-                address,
-                identity,
-            } => {
-                let target = session.l4().target();
-                let task_addr = sys7_u16(target, "task segment address", *address)?;
-                let event = bussard_mgmt::encode_task_segment(task_addr, identity);
-                let octet = lsm_octet(target, *idx)?;
-                self.lsm.send_control(session.l4(), octet, &event).await?;
-            }
-            FlashStep::Sys7TaskCtrl1 {
-                lsm: idx,
-                address,
-                count,
-            } => {
-                let target = session.l4().target();
-                let ctrl_addr = sys7_u16(target, "task control address", *address)?;
-                let ctrl_count =
-                    u8::try_from(*count).map_err(|_| WriteError::AddressOutOfRange {
-                        address: target,
-                        detail: format!(
-                            "System 7 task control count {count} does not fit the record's \
-                     single count octet"
-                        ),
-                    })?;
-                let event = bussard_mgmt::encode_task_ctrl1(ctrl_addr, ctrl_count);
-                let octet = lsm_octet(target, *idx)?;
-                self.lsm.send_control(session.l4(), octet, &event).await?;
-            }
-            FlashStep::Sys7TaskPtr {
-                lsm: idx,
-                init,
-                save,
-                pei_handler,
-            } => {
-                let event = bussard_mgmt::encode_task_ptr(*init, *save, *pei_handler);
-                let octet = lsm_octet(session.l4().target(), *idx)?;
-                self.lsm.send_control(session.l4(), octet, &event).await?;
-            }
-            FlashStep::Sys7TaskCtrl2 {
-                lsm: idx,
-                callback,
-                com_objects,
-                segment_1,
-                segment_2,
-            } => {
-                let event = bussard_mgmt::encode_task_ctrl2(
-                    *callback,
-                    *com_objects,
-                    *segment_1,
-                    *segment_2,
-                );
-                let octet = lsm_octet(session.l4().target(), *idx)?;
-                self.lsm.send_control(session.l4(), octet, &event).await?;
-            }
+            FlashStep::Sys7TaskSegment { .. }
+            | FlashStep::Sys7TaskCtrl1 { .. }
+            | FlashStep::Sys7TaskPtr { .. }
+            | FlashStep::Sys7TaskCtrl2 { .. } => self.send_record(session, step).await?,
             FlashStep::Sys7LoadCompleted { lsm: idx } => {
                 let octet = lsm_octet(session.l4().target(), *idx)?;
                 self.lsm
@@ -396,6 +335,27 @@ impl StepExecutor for System7<'_> {
             }
             e => Err(e),
         }
+    }
+}
+
+impl System7<'_> {
+    /// Sends the 10-octet event of a System 7 allocation or task step to its
+    /// load-state machine ([`FlashStep::sys7_event`]).
+    async fn send_record<C: Connector>(
+        &self,
+        session: &mut Session<C>,
+        step: &FlashStep,
+    ) -> Result<(), WriteError> {
+        let target = session.l4().target();
+        let Some(event) = step.sys7_event() else {
+            return Ok(());
+        };
+        let (idx, _, bytes) = event.map_err(|e| WriteError::AddressOutOfRange {
+            address: target,
+            detail: e.detail(),
+        })?;
+        let octet = lsm_octet(target, idx)?;
+        self.lsm.send_control(session.l4(), octet, &bytes).await
     }
 }
 

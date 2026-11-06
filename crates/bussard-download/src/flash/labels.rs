@@ -1,6 +1,22 @@
 //! Human labels for flash steps: the progress line and the dry-run [`trace`].
 
+use std::collections::BTreeMap;
+
 use super::{FlashPlan, FlashStep, PropObject};
+
+/// The plan facts a step label depends on; the default is a plain full
+/// System B flash.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct LabelCtx<'a> {
+    /// The plan ends with the confirmed restart (A_Restart master reset).
+    pub confirmed_restart: bool,
+    /// The System 7 segments are written by read-compare.
+    pub sys7_read_compare: bool,
+    /// A parameter-only download against the resident memory.
+    pub parameters_only: bool,
+    /// The address each segment's baseline was read at before the download.
+    pub baseline_address: Option<&'a BTreeMap<String, u32>>,
+}
 
 /// A `" (LsmIdx/ObjIdx N)"` suffix for a step label, naming the object index the
 /// op targets, or empty when it targets the discovered application object.
@@ -12,8 +28,55 @@ pub(super) fn target_suffix(target: Option<u32>) -> String {
 }
 
 /// A short human label for a step, for the progress line and the dry-run trace.
-pub(super) fn step_label(step: &FlashStep) -> String {
+pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
     match step {
+        FlashStep::Restart if ctx.confirmed_restart => {
+            "restart device (confirmed: A_Restart master reset, erase code 1)".to_string()
+        }
+        FlashStep::Sys7AbsSegment {
+            lsm,
+            address,
+            image: Some(img),
+            ..
+        } if ctx.sys7_read_compare => format!(
+            "[S7] alloc + stream segment (read-compare, {} octets) to {address:#06X} on LSM {lsm}",
+            img.len
+        ),
+        FlashStep::Sys7StartLoading { lsm } if ctx.parameters_only => {
+            format!("[S7] check LSM {lsm} is Loaded, then open it for loading (no allocation)")
+        }
+        FlashStep::Unload { target, .. } if ctx.parameters_only => format!(
+            "check obj{} is Loaded, then unload it (partial download, kept memory)",
+            target.unwrap_or(0)
+        ),
+        FlashStep::AllocateSegment { size, target, .. } if ctx.parameters_only => {
+            format!(
+                "re-allocate the {size}-octet segment of obj{} in Mode 0 (keeps its contents)",
+                target.unwrap_or(0)
+            )
+        }
+        FlashStep::WriteRelMem { offset, image, .. } if ctx.parameters_only => {
+            let before = ctx
+                .baseline_address
+                .and_then(|b| b.get(&image.segment_id))
+                .map_or(String::new(), |a| format!(", {a:#06X} before the download"));
+            format!(
+                "write the differing parameter octets (segment of {} bytes) at the allocated \
+                 base + {offset:#X}{before}",
+                image.len
+            )
+        }
+        FlashStep::WriteMem { address, image } if ctx.parameters_only => {
+            let how = if ctx.sys7_read_compare {
+                ", read-compare"
+            } else {
+                ""
+            };
+            format!(
+                "write the differing parameter octets (segment of {} bytes{how}) at {address:#06X}",
+                image.len
+            )
+        }
         FlashStep::SecurityLoadControl { control } => {
             let what = match control {
                 bussard_mgmt::LoadControl::Unload => "unload",
