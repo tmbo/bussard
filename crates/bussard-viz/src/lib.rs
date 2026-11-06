@@ -99,9 +99,9 @@ pub struct VizConfig {
     /// Extra `Host` header values to accept beyond loopback names and IP
     /// literals. Empty in the normal case; see [`guard`] for why this matters.
     pub allowed_hosts: Vec<String>,
-    /// The keyring's group keys for KNX Data Secure group communication
+    /// The keyring or key store for KNX Data Secure group communication
     /// (`--keyring`, issue #172): secured writes and decrypted live traffic.
-    pub group_keys: Option<bussard_service::GroupKeys>,
+    pub group_keys: Option<std::sync::Arc<bussard_service::secure::KeyStore>>,
 }
 
 /// Errors surfaced while starting the viz server.
@@ -223,7 +223,7 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
                 .filter(|h| !h.is_empty())
                 .collect(),
         ),
-        group_keys: config.group_keys.clone().map(std::sync::Arc::new),
+        group_keys: config.group_keys.clone(),
     };
 
     let service = match &config.connection {
@@ -297,8 +297,8 @@ pub fn state_with_feed(
                 bus.clone(),
                 security
                     .group_keys
-                    .as_deref()
-                    .map(|keys| bussard_monitor::GroupKeyring::new(keys.clone())),
+                    .clone()
+                    .map(bussard_monitor::GroupKeyring::new),
             ));
             (bus, Some(feeder))
         }

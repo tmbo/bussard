@@ -71,6 +71,7 @@ use std::process::ExitCode;
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum};
 
 use crate::cli::{Resolved, Role, Run, Spec};
+use bussard_service::secure::KeyringSource;
 
 /// bussard: manage a KNX installation as code.
 #[derive(Debug, Parser)]
@@ -236,74 +237,75 @@ fn resolve_globals(global: &Global, name: &str, spec: Spec) -> anyhow::Result<Re
         });
     }
     let gateway = conn_cmd::resolve_gateway(global.gateway.as_deref(), env.gateway.as_deref());
+    // A keyring only ever serves a command that talks to the bus; a files
+    // command must not ask for its password.
     let keyring = match role {
-        // A keyring only ever serves a command that talks to the bus; a files
-        // command must not ask for its password.
-        Role::Bus { .. } => {
-            conn_cmd::resolve_keyring(global.keyring.as_deref(), env.keyring.as_deref(), &dir)
-        }
+        Role::Bus { .. } => bussard_service::secure::keyring_file(
+            &dir,
+            global.keyring.as_deref(),
+            env.keyring.as_deref(),
+        ),
         Role::Creates | Role::Files => None,
     };
     let slot = match (role, &keyring) {
         (Role::Bus { slot: true }, Some(resolved))
-            if !spec.tool_key || resolved.source == conn_cmd::KeyringSource::Flag =>
+            if !spec.tool_key || resolved.source == KeyringSource::Flag =>
         {
             Some(resolved.path.clone())
         }
         _ => None,
     };
 
-    // Without explicit flags, only a keyring can carry tunnelling users.
-    if keyring.is_none() && global.secure_user.is_none() && global.secure_password_env.is_none() {
-        if global.secure_transport.is_some() {
-            anyhow::bail!(
-                "--secure-transport needs KNXnet/IP Secure tunnelling credentials: {}",
-                bussard_service::guidance::tunnel_credentials_hint()
-            );
-        }
-    } else {
-        let config = bussard_service::secure::tunnel_config(
-            bussard_service::secure::TunnelCredentialSource {
-                keyring: keyring.as_ref().map(|resolved| resolved.path.as_path()),
-                user: global.secure_user,
-                password_env: global.secure_password_env.as_deref(),
-            },
-        )
-        .with_context(|| match &keyring {
-            Some(resolved) if resolved.source != conn_cmd::KeyringSource::Flag => format!(
-                "the keyring {} comes from {} (pass --keyring to use another one)",
-                resolved.path.display(),
-                resolved.source.describe()
-            ),
-            _ => "resolving the KNXnet/IP Secure tunnelling credentials".to_string(),
-        })?;
-        if let Some(resolved) = &keyring
-            && resolved.source != conn_cmd::KeyringSource::Flag
-        {
-            tracing::info!(
-                "using the keyring {} from {}",
-                resolved.path.display(),
-                resolved.source.describe()
-            );
-        }
-        let config = match (config, global.secure_transport) {
-            (Some(config), Some(transport)) => Some(config.with_transport(transport.into())),
-            (None, Some(_)) => anyhow::bail!(
-                "--secure-transport needs KNXnet/IP Secure tunnelling credentials, and the keyring \
-                 lists no tunnelling user"
-            ),
-            (config, None) => config,
-        };
-        // Mark the tunnelling user a tunnel holds, so another bussard process
-        // for this model picks a different one (issue #287).
-        let config = match config {
-            Some(config) if dir.is_dir() => {
-                Some(config.with_user_lock_dir(dir.join(".bussard").join("tunnel-users")))
-            }
-            other => other,
-        };
-        conn_cmd::set_secure_tunnel(config);
+    // The tunnel credentials: explicit flags, else the keyring's tunnelling
+    // users. The command resolves its tool keys from `slot` itself.
+    let overrides = bussard_service::secure::KeyOverrides {
+        tool_key: None,
+        secure_user: global.secure_user,
+        secure_password_env: global.secure_password_env.as_deref(),
+    };
+    let keys = bussard_service::secure::resolve_keys(
+        keyring.as_ref().map(|resolved| resolved.path.as_path()),
+        None,
+        overrides,
+    )
+    .with_context(|| match &keyring {
+        Some(resolved) if resolved.source != KeyringSource::Flag => format!(
+            "the keyring {} comes from {} (pass --keyring to use another one)",
+            resolved.path.display(),
+            resolved.source.describe()
+        ),
+        _ => "resolving the KNXnet/IP Secure tunnelling credentials".to_string(),
+    })?;
+    if let Some(resolved) = &keyring
+        && resolved.source != KeyringSource::Flag
+    {
+        tracing::info!(
+            "using the keyring {} from {}",
+            resolved.path.display(),
+            resolved.source.describe()
+        );
     }
+    let config = match (keys.tunnel, global.secure_transport) {
+        (Some(config), Some(transport)) => Some(config.with_transport(transport.into())),
+        (None, Some(_)) if keyring.is_none() => anyhow::bail!(
+            "--secure-transport needs KNXnet/IP Secure tunnelling credentials: {}",
+            bussard_service::guidance::tunnel_credentials_hint()
+        ),
+        (None, Some(_)) => anyhow::bail!(
+            "--secure-transport needs KNXnet/IP Secure tunnelling credentials, and the keyring \
+             lists no tunnelling user"
+        ),
+        (config, None) => config,
+    };
+    // Mark the tunnelling user a tunnel holds, so another bussard process
+    // for this model picks a different one (issue #287).
+    let config = match config {
+        Some(config) if dir.is_dir() => {
+            Some(config.with_user_lock_dir(dir.join(".bussard").join("tunnel-users")))
+        }
+        other => other,
+    };
+    conn_cmd::set_secure_tunnel(config);
 
     Ok(Resolved {
         dir,

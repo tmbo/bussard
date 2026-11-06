@@ -36,7 +36,7 @@ use anyhow::{Context, anyhow};
 use bussard_model::schema::{BussardConfig, Groups, Link, Links};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::infer::{self, DptCandidate};
-use bussard_monitor::{ApciKind, DecodedTelegram, Filter, GroupKeyring, TelegramRing};
+use bussard_monitor::{ApciKind, DecodedTelegram, Filter, TelegramRing};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::cli::{Resolved, Run, Spec};
@@ -102,20 +102,7 @@ fn run(options: LearnArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     // KNX Data Secure group telegrams (issue #204): the same group keys and
     // decode path as `monitor`. Loaded before connecting so a wrong password
     // fails fast.
-    let group_keys = g
-        .keyring()
-        .map(|path| {
-            bussard_service::secure::load_group_keys(path)
-                .with_context(|| format!("loading group keys from {}", path.display()))
-        })
-        .transpose()?
-        .map(|keys| {
-            eprintln!(
-                "keyring: {} group key(s) for secured group telegrams",
-                keys.len()
-            );
-            GroupKeyring::new(keys)
-        });
+    let group_keys = crate::secure_key::group_keyring(g.keyring())?;
     eprintln!(
         "gateway: {} (listening only, never transmits)",
         gateway_display(&config)

@@ -524,16 +524,16 @@ fn test_security_object_program_matches_ets() -> TestResult {
         let sequences: HashMap<IndividualAddress, u64> = keys
             .devices
             .iter()
-            .filter(|d| !unknown.contains(&d.ia))
-            .map(|d| (d.ia, d.seq))
+            .filter(|(ia, _)| !unknown.contains(*ia))
+            .map(|(ia, d)| (*ia, d.ets_sequence.unwrap_or(0)))
             .collect();
-        let senders = bussard_download::secured_senders(
-            Some(&model),
-            device,
-            &keys.group_keys,
-            &sequences,
-            &[],
-        );
+        let group_keys: HashMap<_, _> = keys
+            .group_keys
+            .iter()
+            .map(|(ga, k)| (*ga, k.clone()))
+            .collect();
+        let senders =
+            bussard_download::secured_senders(Some(&model), device, &group_keys, &sequences, &[]);
         println!(
             "PID 54: bussard entries {:?}",
             senders
@@ -588,7 +588,12 @@ fn test_security_object_program_matches_ets() -> TestResult {
         addresses: addresses.clone(),
         associations,
     };
-    let inputs = bussard_download::security_inputs_for(None, device, &desired, &keys.group_keys);
+    let group_keys: HashMap<_, _> = keys
+        .group_keys
+        .iter()
+        .map(|(ga, k)| (*ga, k.clone()))
+        .collect();
+    let inputs = bussard_download::security_inputs_for(None, device, &desired, &group_keys);
     let program = bussard_download::build_security_program(
         device,
         &addresses,
@@ -738,12 +743,13 @@ fn test_group_addressed_capture_frames_verify() -> TestResult {
         // Tool access on a group address: the broadcast S-A_Sync.
         let addr = TpAddressing::group(f.src, f.dst);
         let verdict = match scf.service {
-            SecureService::SyncReq => keys.devices.iter().find_map(|d| {
-                asdu::decode_sync_req(&d.tool_key, body, &addr)
+            SecureService::SyncReq => keys.devices.iter().find_map(|(ia, d)| {
+                let tool_key = d.tool_key.as_ref()?;
+                asdu::decode_sync_req(tool_key, body, &addr)
                     .ok()
                     .map(|(_, req)| {
-                        challenge = Some((d.tool_key.clone(), req.challenge));
-                        format!("S-A_Sync_Req (tool key of {})", d.ia)
+                        challenge = Some((tool_key.clone(), req.challenge));
+                        format!("S-A_Sync_Req (tool key of {ia})")
                     })
             }),
             SecureService::SyncRes => challenge.as_ref().and_then(|(key, ch)| {
@@ -751,10 +757,10 @@ fn test_group_addressed_capture_frames_verify() -> TestResult {
                     .ok()
                     .map(|_| "S-A_Sync_Res".to_string())
             }),
-            SecureService::Data => keys.devices.iter().find_map(|d| {
-                asdu::decode(&d.tool_key, body, &addr)
+            SecureService::Data => keys.devices.iter().find_map(|(ia, d)| {
+                asdu::decode(d.tool_key.as_ref()?, body, &addr)
                     .ok()
-                    .map(|_| format!("S-A_Data (tool key of {})", d.ia))
+                    .map(|_| format!("S-A_Data (tool key of {ia})"))
             }),
         };
         match verdict {

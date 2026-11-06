@@ -4,11 +4,9 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    CancelToken, DecodedTelegram, Filter, GroupKeyring, StreamOptions, json_line, pretty_line,
-    run_stream,
+    CancelToken, DecodedTelegram, Filter, StreamOptions, json_line, pretty_line, run_stream,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -45,19 +43,7 @@ fn run(filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<ExitCode> {
     let config = resolve_config(model.as_ref(), &overrides)?;
     // KNX Data Secure group telegrams (issue #172): decrypt with the keyring's
     // group keys. Loaded before connecting so a wrong password fails fast.
-    let group_keys = keyring
-        .map(|path| {
-            bussard_service::secure::load_group_keys(path)
-                .with_context(|| format!("loading group keys from {}", path.display()))
-        })
-        .transpose()?
-        .map(|keys| {
-            eprintln!(
-                "keyring: {} group key(s) for secured group telegrams",
-                keys.len()
-            );
-            GroupKeyring::new(keys)
-        });
+    let group_keys = crate::secure_key::group_keyring(keyring)?;
 
     // A dedicated multi-thread runtime; the transport and (later) store need it.
     let runtime = tokio::runtime::Runtime::new()?;

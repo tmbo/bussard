@@ -52,13 +52,13 @@ pub struct KeyStoreMeta {
     pub changed: Option<String>,
     /// The keyring exports `bussard keys export` wrote, one per path.
     #[serde(default, rename = "export", skip_serializing_if = "Vec::is_empty")]
-    pub exports: Vec<KeyringExport>,
+    pub exports: Vec<ExportRecord>,
 }
 
 /// One keyring export bussard wrote.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct KeyringExport {
+pub struct ExportRecord {
     /// The export file: absolute, or relative to the model directory.
     pub path: String,
     /// When it was written, as an RFC 3339 UTC time.
@@ -157,7 +157,7 @@ impl KeyStoreMeta {
         let mut meta = Self::load(dir)?;
         let path = record_path(dir, file);
         meta.exports.retain(|e| e.path != path);
-        meta.exports.push(KeyringExport {
+        meta.exports.push(ExportRecord {
             path,
             written: now(),
         });
@@ -313,7 +313,7 @@ mod tests {
         std::fs::write(dir.join("ha.knxkeys"), "x")?;
         let meta = KeyStoreMeta {
             changed: Some("2026-10-24T10:00:00Z".into()),
-            exports: vec![KeyringExport {
+            exports: vec![ExportRecord {
                 path: "ha.knxkeys".into(),
                 written: "2026-10-20T10:00:00Z".into(),
             }],

@@ -176,13 +176,13 @@ pub async fn serve_http_with_ready(
 /// once and the ring keeps secured telegrams encrypted; the tools that need
 /// the keys report the same reason on their own.
 pub fn server_group_keyring(state: &SharedState) -> Option<GroupKeyring> {
-    match crate::secure_group::group_keys(state.keyring.as_deref()) {
-        Ok(Some(keys)) => {
+    match crate::secure_group::key_store(state.keyring.as_deref()) {
+        Ok(Some(store)) => {
             tracing::info!(
                 "keyring: {} group key(s) for secured group telegrams",
-                keys.len()
+                store.group_keys.len()
             );
-            Some(GroupKeyring::new(keys.as_ref().clone()))
+            Some(GroupKeyring::new(store))
         }
         Ok(None) => None,
         Err(reason) => {

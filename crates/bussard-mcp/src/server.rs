@@ -1496,10 +1496,10 @@ fn query_capture(
     let rows = store.query(&qf).ok()?;
     // Secured group telegrams decrypt with the server's `--keyring` (issue
     // #172); without one (or on a load failure) they stay as stored.
-    let mut keyring = crate::secure_group::group_keys(state.keyring.as_deref())
+    let mut keyring = crate::secure_group::key_store(state.keyring.as_deref())
         .ok()
         .flatten()
-        .map(|keys| bussard_monitor::GroupKeyring::new(keys.as_ref().clone()));
+        .map(bussard_monitor::GroupKeyring::new);
     // Re-decode against the current model, drop undecodable rows, and re-apply
     // the requested filter (this is what makes a GA prefix like "3/" correct).
     let mut out: Vec<bussard_monitor::DecodedTelegram> = rows

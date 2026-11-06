@@ -1,4 +1,4 @@
-//! `.knxkeys` keyring parsing (issue #71, spec §4).
+//! The `.knxkeys` crypto (issue #71, spec §4).
 //!
 //! A `.knxkeys` file is the ETS-exported bundle of KNX Secure key material: the
 //! backbone (routing) key, per-interface tunnel/management credentials, per-device
@@ -8,25 +8,16 @@
 //! serialization that ends with the password-derived key, so the signature
 //! doubles as the password check (spec §4.4).
 //!
-//! This module decodes that format into a typed [`Keyring`] (spec §4.6):
+//! This module holds the format's crypto and attribute readers: the `Created`
+//! IV (§4.2), the signature check and canonical serialization (§4.4), and the
+//! key and password decryption (§4.2, §4.3). The document itself is read into
+//! a [`KeyStore`](crate::KeyStore) ([`parse_keyring`](crate::parse_keyring)),
+//! the one model of key material.
 //!
-//! - [`parse_keyring`] derives the keyring key (§4.1), verifies the signature
-//!   (§4.4), decrypts the encrypted attributes (§4.2, §4.3), and reads the raw
-//!   keys directly.
-//!
-//! # Key hygiene (spec §2.3)
-//!
-//! Every field that holds key material is a [`bussard_secure::Key16`], which does
-//! not derive a value-leaking `Debug` and is not serializable. The [`Keyring`]
-//! and its children have hand-written [`std::fmt::Debug`] impls that redact key
-//! material, and none of them implement `Serialize`/`Deserialize`. Nothing here
-//! prints, logs, or serializes a key.
+//! Nothing here prints, logs, or serializes a key.
 //!
 //! No GPL source was consulted; the format is reimplemented from the public XKNX
 //! reference and the KNX Secure specification.
-
-use std::collections::HashMap;
-use std::net::Ipv4Addr;
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64;
@@ -36,8 +27,7 @@ use sha2::{Digest, Sha256};
 
 use zeroize::Zeroizing;
 
-use bussard_secure::crypto::latin1_bytes;
-use bussard_secure::{Key16, Password, aes_cbc_decrypt, pbkdf2_key, salt};
+use bussard_secure::{Key16, Password, aes_cbc_decrypt};
 
 use bussard_ets::attrs::{attr_value, attrs_map};
 use bussard_model::{GroupAddress, IndividualAddress};
@@ -61,219 +51,6 @@ const ELEMENT_END: u8 = 0x02;
 /// The longest string the one-byte length prefix of the canonical serialization
 /// can frame (spec §4.4).
 const MAX_FRAMED_LEN: usize = u8::MAX as usize;
-
-/// A parsed `.knxkeys` keyring (spec §4.6).
-///
-/// Holds the decrypted, typed key material. See the module docs for the hygiene
-/// guarantees; this type is intentionally neither `Serialize` nor `Clone`, and
-/// its `Debug` redacts all key material.
-pub struct Keyring {
-    /// The ETS project name from the root `Project` attribute (empty if absent).
-    pub project: String,
-    /// The keyring's `Created` timestamp attribute (the AES-CBC IV seed, §4.2).
-    pub created: String,
-    /// The backbone (routing/multicast) key material, if the keyring carries a
-    /// `<Backbone>` element.
-    pub backbone: Option<Backbone>,
-    /// The tunnel/USB/backbone interfaces and their credentials.
-    pub interfaces: Vec<Interface>,
-    /// The per-device tool keys and sequence state.
-    pub devices: Vec<Device>,
-    /// The per-group-address runtime keys, keyed by group address.
-    pub group_keys: HashMap<GroupAddress, Key16>,
-    /// The factory default setup keys (FDSK) by device, including a key
-    /// store device known only by its FDSK (no tool key, so not in
-    /// [`devices`](Self::devices)). The key a device answers under after a
-    /// reset to default (issue #532).
-    pub factory_keys: HashMap<IndividualAddress, Key16>,
-}
-
-impl Keyring {
-    /// Looks up a device's factory default setup key (FDSK) by individual
-    /// address (issue #532).
-    pub fn fdsk(&self, ia: IndividualAddress) -> Option<&Key16> {
-        self.factory_keys.get(&ia)
-    }
-
-    /// Looks up a device's tool key by individual address (spec §2.1 key
-    /// selection: the tool key is the per-device management key).
-    pub fn tool_key(&self, ia: IndividualAddress) -> Option<&Key16> {
-        self.devices
-            .iter()
-            .find(|d| d.ia == ia)
-            .map(|d| &d.tool_key)
-    }
-
-    /// Looks up a group runtime key by group address.
-    pub fn group_key(&self, ga: GroupAddress) -> Option<&Key16> {
-        self.group_keys.get(&ga)
-    }
-}
-
-impl std::fmt::Debug for Keyring {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Keyring")
-            .field("project", &self.project)
-            .field("created", &self.created)
-            .field("backbone", &self.backbone)
-            .field("interfaces", &self.interfaces)
-            .field("devices", &self.devices)
-            .field(
-                "group_keys",
-                &format_args!("<{} redacted>", self.group_keys.len()),
-            )
-            .field(
-                "factory_keys",
-                &format_args!("<{} redacted>", self.factory_keys.len()),
-            )
-            .finish()
-    }
-}
-
-/// The backbone (routing/multicast) key material (spec §4.5).
-#[derive(Clone, PartialEq, Eq)]
-pub struct Backbone {
-    /// The multicast/routing key (decrypted from the AES-CBC `Key` attribute).
-    pub key: Key16,
-    /// The routing multicast address.
-    pub multicast: Ipv4Addr,
-    /// The routing latency tolerance, in milliseconds.
-    pub latency_ms: u16,
-}
-
-impl std::fmt::Debug for Backbone {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Backbone")
-            .field("key", &"<redacted>")
-            .field("multicast", &self.multicast)
-            .field("latency_ms", &self.latency_ms)
-            .finish()
-    }
-}
-
-/// A tunnel/USB/backbone interface and its credentials (spec §4.5).
-///
-/// For a KNXnet/IP Secure tunnelling interface (`Type="Tunneling"`) `ia` is the
-/// tunnel address the interface assigns to this user, `host` the individual
-/// address of the IP interface itself, `password` the tunnelling user's
-/// password and `authentication` the interface's device authentication code
-/// (issue #71 Phase B). The passwords are decrypted but not derived: PBKDF2 is
-/// slow, so the transport derives only the user it presents
-/// ([`Interface::user_key`], [`Interface::device_auth_key`]).
-pub struct Interface {
-    /// The `Type` attribute (`Tunneling`, `USB`, `Backbone`), empty if absent.
-    pub interface_type: String,
-    /// The interface's individual address.
-    pub ia: IndividualAddress,
-    /// The host device's individual address, if the `Host` attribute is present.
-    pub host: Option<IndividualAddress>,
-    /// The tunnel/management user id.
-    pub user_id: u8,
-    /// The decrypted user password (`Password`). `None` when the interface
-    /// carries no `Password` (a USB interface, for example).
-    pub password: Option<Password>,
-    /// The decrypted device authentication code (`Authentication`). `None`
-    /// when absent.
-    pub authentication: Option<Password>,
-    /// The group addresses this interface may send to.
-    pub gas: Vec<GroupAddress>,
-    /// The raw `Senders` attribute of each of those `<Group>` children, when
-    /// present, kept so a key store export writes it back (issue #241).
-    pub group_senders: HashMap<GroupAddress, String>,
-}
-
-impl Interface {
-    /// Whether this is a tunnelling interface with a user password, i.e.
-    /// usable for a KNXnet/IP Secure tunnel.
-    pub fn is_secure_tunnel(&self) -> bool {
-        self.interface_type.eq_ignore_ascii_case("Tunneling") && self.password.is_some()
-    }
-
-    /// The user-password key (PBKDF2 with the user-password salt), derived on
-    /// demand.
-    pub fn user_key(&self) -> Option<Key16> {
-        self.password
-            .as_ref()
-            .map(|p| p.derive(salt::USER_PASSWORD))
-    }
-
-    /// The device-authentication key (PBKDF2 with the
-    /// device-authentication-code salt), derived on demand.
-    pub fn device_auth_key(&self) -> Option<Key16> {
-        self.authentication
-            .as_ref()
-            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
-    }
-}
-
-impl std::fmt::Debug for Interface {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Interface")
-            .field("interface_type", &self.interface_type)
-            .field("ia", &self.ia)
-            .field("host", &self.host)
-            .field("user_id", &self.user_id)
-            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
-            .field(
-                "authentication",
-                &self.authentication.as_ref().map(|_| "<redacted>"),
-            )
-            .field("gas", &self.gas)
-            .field("group_senders", &self.group_senders)
-            .finish()
-    }
-}
-
-/// A device's tool key and Data Secure sequence state (spec §4.5).
-pub struct Device {
-    /// The device's individual address.
-    pub ia: IndividualAddress,
-    /// The device's tool key (decrypted from the AES-CBC `ToolKey` attribute).
-    pub tool_key: Key16,
-    /// The device's last-known Data Secure sequence number (defaults to 0).
-    pub seq: u64,
-    /// The decrypted `ManagementPassword` (a KNXnet/IP Secure device's
-    /// management user, user id 1), if present.
-    pub management_password: Option<Password>,
-    /// The decrypted `Authentication` (a KNXnet/IP Secure device's device
-    /// authentication code), if present.
-    pub authentication: Option<Password>,
-    /// The decrypted factory default setup key (`FDSK`), if present. ETS 6
-    /// exports carry it next to the tool key (issue #241).
-    pub fdsk: Option<Key16>,
-    /// The device's serial number (`SerialNumber`, 12 hex digits), if present.
-    pub serial: Option<crate::keystore::SerialNumber>,
-}
-
-impl Device {
-    /// The device-authentication key (PBKDF2 with the
-    /// device-authentication-code salt), derived on demand.
-    pub fn device_auth_key(&self) -> Option<Key16> {
-        self.authentication
-            .as_ref()
-            .map(|p| p.derive(salt::DEVICE_AUTHENTICATION_CODE))
-    }
-}
-
-impl std::fmt::Debug for Device {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Device")
-            .field("ia", &self.ia)
-            .field("tool_key", &"<redacted>")
-            .field("seq", &self.seq)
-            .field(
-                "management_password",
-                &self.management_password.as_ref().map(|_| "<redacted>"),
-            )
-            .field(
-                "authentication",
-                &self.authentication.as_ref().map(|_| "<redacted>"),
-            )
-            .field("fdsk", &self.fdsk.as_ref().map(|_| "<redacted>"))
-            .field("serial", &self.serial.map(|s| s.to_string()))
-            .finish()
-    }
-}
 
 /// An error parsing a `.knxkeys` keyring.
 #[derive(Debug, thiserror::Error)]
@@ -352,34 +129,6 @@ pub enum KeyringError {
     /// A crypto primitive rejected its input while decrypting an attribute.
     #[error("decrypting a .knxkeys attribute: {0}")]
     Crypto(#[from] bussard_secure::CryptoError),
-}
-
-/// Parses and verifies a `.knxkeys` keyring from its XML text and password
-/// (spec §4).
-///
-/// Steps: derive the keyring key (§4.1), verify the signature (§4.4), then walk
-/// the document decrypting encrypted attributes (§4.2, §4.3) and reading raw keys
-/// directly into a typed [`Keyring`] (§4.6).
-///
-/// # Errors
-///
-/// Returns [`KeyringError::SignatureMismatch`] if the password is wrong (or the
-/// document was tampered with), and the various decode/parse variants for
-/// malformed input.
-pub fn parse_keyring(xml: &str, password: &str) -> Result<Keyring, KeyringError> {
-    // The caller's password in its Latin-1 form is key material too; wipe the
-    // intermediate buffer once the keyring key is derived (spec §2.3).
-    let keyring_key = pbkdf2_key(&Zeroizing::new(latin1_bytes(password)), salt::KEYRING);
-
-    // The `Created` attribute is the IV seed for every encrypted attribute
-    // (§4.2), so we need it before decrypting anything. Read it up front.
-    let created = read_created(xml)?;
-    let iv = created_iv(&created);
-
-    // Verify the signature before trusting the contents (§4.4).
-    verify_signature(xml, &keyring_key)?;
-
-    parse_body(xml, &keyring_key, &iv)
 }
 
 /// Reads the `Created` attribute off the root `<Keyring>` element (§4.2).
@@ -533,241 +282,6 @@ fn push_framed(out: &mut Vec<u8>, bytes: &[u8], what: &str) -> Result<(), Keyrin
     Ok(())
 }
 
-/// Walks the keyring body, decrypting/reading each element into the typed model
-/// (spec §4.5, §4.6).
-fn parse_body(xml: &str, keyring_key: &Key16, iv: &[u8; KEY_LEN]) -> Result<Keyring, KeyringError> {
-    let mut reader = Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    let mut project = String::new();
-    let mut created = String::new();
-    let mut backbone: Option<Backbone> = None;
-    let mut interfaces: Vec<Interface> = Vec::new();
-    let mut devices: Vec<Device> = Vec::new();
-    let mut group_keys: HashMap<GroupAddress, Key16> = HashMap::new();
-
-    // The interface currently being assembled (its child <Group> elements follow
-    // the <Interface> start before the matching end).
-    let mut current_interface: Option<Interface> = None;
-    // Inside `<GroupAddresses>`, a `<Group>` carries a group key; inside an
-    // `<Interface>` it names a GA the interface may send to.
-    let mut in_group_addresses = false;
-
-    loop {
-        let event = reader
-            .read_event()
-            .map_err(|e| KeyringError::Xml(e.to_string()))?;
-        let is_empty = matches!(event, Event::Empty(_));
-        match event {
-            Event::Start(e) | Event::Empty(e) => {
-                match e.local_name().as_ref() {
-                    b"Keyring" => {
-                        project = attr(&e, b"Project")?.unwrap_or_default();
-                        created = attr(&e, b"Created")?.unwrap_or_default();
-                    }
-                    b"Backbone" => {
-                        backbone = Some(parse_backbone(&e, keyring_key, iv)?);
-                    }
-                    b"Interface" => {
-                        // A new <Interface> begins; flush any prior one (defensive,
-                        // interfaces do not nest).
-                        if let Some(iface) = current_interface.take() {
-                            interfaces.push(iface);
-                        }
-                        let iface = parse_interface(&e, keyring_key, iv)?;
-                        if is_empty {
-                            interfaces.push(iface);
-                        } else {
-                            current_interface = Some(iface);
-                        }
-                    }
-                    b"GroupAddresses" => {
-                        in_group_addresses = !is_empty;
-                    }
-                    b"Group" => {
-                        if in_group_addresses {
-                            let (ga, key) = parse_group_key(&e, keyring_key, iv)?;
-                            group_keys.insert(ga, key);
-                        } else if let Some(iface) = current_interface.as_mut()
-                            && let Some(addr) = attr(&e, b"Address")?
-                        {
-                            let ga = parse_ga("Interface/Group/Address", &addr)?;
-                            iface.gas.push(ga);
-                            if let Some(senders) = attr(&e, b"Senders")? {
-                                iface.group_senders.insert(ga, senders);
-                            }
-                        }
-                    }
-                    b"Device" => {
-                        devices.push(parse_device(&e, keyring_key, iv)?);
-                    }
-                    _ => {}
-                }
-            }
-            Event::End(e) => match e.local_name().as_ref() {
-                b"Interface" => {
-                    if let Some(iface) = current_interface.take() {
-                        interfaces.push(iface);
-                    }
-                }
-                b"GroupAddresses" => in_group_addresses = false,
-                _ => {}
-            },
-            Event::Eof => break,
-            _ => {}
-        }
-    }
-
-    // Flush a trailing interface if the document ended without an explicit end.
-    if let Some(iface) = current_interface.take() {
-        interfaces.push(iface);
-    }
-
-    let factory_keys = devices
-        .iter()
-        .filter_map(|d| d.fdsk.clone().map(|k| (d.ia, k)))
-        .collect();
-    Ok(Keyring {
-        project,
-        created,
-        backbone,
-        interfaces,
-        devices,
-        group_keys,
-        factory_keys,
-    })
-}
-
-/// Parses a `<Backbone>` element (§4.5).
-fn parse_backbone(
-    e: &BytesStart,
-    keyring_key: &Key16,
-    iv: &[u8; KEY_LEN],
-) -> Result<Backbone, KeyringError> {
-    let key = decrypt_key(e, b"Key", "Backbone/Key", keyring_key, iv)?;
-    let multicast = require(e, b"MulticastAddress", "Backbone")?;
-    let multicast: Ipv4Addr = multicast
-        .parse()
-        .map_err(|_| KeyringError::InvalidAttribute {
-            attribute: "Backbone/MulticastAddress".to_string(),
-            reason: format!("not an IPv4 address: {multicast:?}"),
-        })?;
-    let latency_ms = match attr(e, b"Latency")? {
-        Some(s) => s.parse().map_err(|_| KeyringError::InvalidAttribute {
-            attribute: "Backbone/Latency".to_string(),
-            reason: format!("not a u16: {s:?}"),
-        })?,
-        None => 0,
-    };
-    Ok(Backbone {
-        key,
-        multicast,
-        latency_ms,
-    })
-}
-
-/// Parses an `<Interface>` element's own attributes (§4.5). Child `<Group>`
-/// elements are appended later by the walker.
-fn parse_interface(
-    e: &BytesStart,
-    keyring_key: &Key16,
-    iv: &[u8; KEY_LEN],
-) -> Result<Interface, KeyringError> {
-    let ia = parse_ia(
-        "Interface/IndividualAddress",
-        &require(e, b"IndividualAddress", "Interface")?,
-    )?;
-    let host = match attr(e, b"Host")? {
-        Some(s) => Some(parse_ia("Interface/Host", &s)?),
-        None => None,
-    };
-    let user_id = match attr(e, b"UserID")? {
-        Some(s) => s.parse().map_err(|_| KeyringError::InvalidAttribute {
-            attribute: "Interface/UserID".to_string(),
-            reason: format!("not a u8: {s:?}"),
-        })?,
-        None => 0,
-    };
-
-    // The Password/Authentication attributes are encrypted; decrypt and extract
-    // the password strings (§4.5). The keys are derived on demand (PBKDF2 is
-    // slow and a keyring lists every tunnelling user). Both are optional: a USB
-    // interface has neither.
-    let password = optional_password(e, b"Password", "Interface/Password", keyring_key, iv)?;
-    let authentication = optional_password(
-        e,
-        b"Authentication",
-        "Interface/Authentication",
-        keyring_key,
-        iv,
-    )?;
-
-    Ok(Interface {
-        interface_type: attr(e, b"Type")?.unwrap_or_default(),
-        ia,
-        host,
-        user_id,
-        password,
-        authentication,
-        gas: Vec::new(),
-        group_senders: HashMap::new(),
-    })
-}
-
-/// Parses a `<Device>` element (§4.5).
-fn parse_device(
-    e: &BytesStart,
-    keyring_key: &Key16,
-    iv: &[u8; KEY_LEN],
-) -> Result<Device, KeyringError> {
-    let ia = parse_ia(
-        "Device/IndividualAddress",
-        &require(e, b"IndividualAddress", "Device")?,
-    )?;
-    let tool_key = decrypt_key(e, b"ToolKey", "Device/ToolKey", keyring_key, iv)?;
-    let seq = match attr(e, b"SequenceNumber")? {
-        Some(s) => s.parse().map_err(|_| KeyringError::InvalidAttribute {
-            attribute: "Device/SequenceNumber".to_string(),
-            reason: format!("not a u64: {s:?}"),
-        })?,
-        None => 0,
-    };
-    let management_password = optional_password(
-        e,
-        b"ManagementPassword",
-        "Device/ManagementPassword",
-        keyring_key,
-        iv,
-    )?;
-    let authentication = optional_password(
-        e,
-        b"Authentication",
-        "Device/Authentication",
-        keyring_key,
-        iv,
-    )?;
-    let fdsk = match attr(e, b"FDSK")? {
-        Some(_) => Some(decrypt_key(e, b"FDSK", "Device/FDSK", keyring_key, iv)?),
-        None => None,
-    };
-    let serial = match attr(e, b"SerialNumber")? {
-        Some(s) => Some(s.parse().map_err(|reason| KeyringError::InvalidAttribute {
-            attribute: "Device/SerialNumber".to_string(),
-            reason,
-        })?),
-        None => None,
-    };
-    Ok(Device {
-        ia,
-        tool_key,
-        seq,
-        management_password,
-        authentication,
-        fdsk,
-        serial,
-    })
-}
-
 /// Decrypts an optional encrypted password attribute into a [`Password`].
 pub(crate) fn optional_password(
     e: &BytesStart,
@@ -783,20 +297,6 @@ pub(crate) fn optional_password(
         }
         None => Ok(None),
     }
-}
-
-/// Parses a `<GroupAddresses>/<Group>` element into `(address, key)` (§4.5).
-fn parse_group_key(
-    e: &BytesStart,
-    keyring_key: &Key16,
-    iv: &[u8; KEY_LEN],
-) -> Result<(GroupAddress, Key16), KeyringError> {
-    let ga = parse_ga(
-        "GroupAddresses/Group/Address",
-        &require(e, b"Address", "Group")?,
-    )?;
-    let key = decrypt_key(e, b"Key", "GroupAddresses/Group/Key", keyring_key, iv)?;
-    Ok((ga, key))
 }
 
 /// Reads a required attribute, erroring if absent.
@@ -959,6 +459,11 @@ pub(crate) fn parse_ga(attribute: &str, value: &str) -> Result<GroupAddress, Key
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::KeyStoreError;
+    use crate::keystore::parse_keyring;
+    use bussard_secure::crypto::latin1_bytes;
+    use bussard_secure::{pbkdf2_key, salt};
+    use std::net::Ipv4Addr;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1068,7 +573,7 @@ mod tests {
         let ia: IndividualAddress = "1.1.10".parse()?;
         assert_eq!(keyring.tool_key(ia).map(|k| *k.bytes()), Some([0x42; 16]));
         assert_eq!(keyring.devices.len(), 1);
-        assert_eq!(keyring.devices[0].seq, 42);
+        assert_eq!(keyring.devices[&ia].ets_sequence, Some(42));
         Ok(())
     }
 
@@ -1092,14 +597,20 @@ mod tests {
         let device_auth = iface.device_auth_key().ok_or("device auth missing")?;
         assert_eq!(device_auth.bytes(), expected_auth.bytes());
         // The interface's <Group> child is a sending GA, not a group key.
-        assert_eq!(iface.gas, vec!["1/2/3".parse::<GroupAddress>()?]);
+        assert_eq!(
+            iface.gas,
+            vec![("1/2/3".parse::<GroupAddress>()?, Some("1.1.10".to_string()))]
+        );
         Ok(())
     }
 
     #[test]
     fn test_parse_keyring_full_decrypts_device_ip_secure_passwords() -> TestResult {
         let keyring = parse_keyring(FULL, PASSWORD)?;
-        let device = &keyring.devices[0];
+        let device = keyring
+            .devices
+            .get(&"1.1.10".parse()?)
+            .ok_or("device missing")?;
         assert!(device.management_password.is_some());
         let auth = device
             .authentication
@@ -1117,7 +628,10 @@ mod tests {
         for xml in [EMPTY, FULL] {
             let err = parse_keyring(xml, "wrong-password").err();
             assert!(
-                matches!(err, Some(KeyringError::SignatureMismatch)),
+                matches!(
+                    err,
+                    Some(KeyStoreError::Keyring(KeyringError::SignatureMismatch))
+                ),
                 "expected SignatureMismatch, got {err:?}"
             );
         }
@@ -1132,7 +646,10 @@ mod tests {
         assert_ne!(tampered, FULL);
         let err = parse_keyring(&tampered, PASSWORD).err();
         assert!(
-            matches!(err, Some(KeyringError::SignatureMismatch)),
+            matches!(
+                err,
+                Some(KeyStoreError::Keyring(KeyringError::SignatureMismatch))
+            ),
             "expected SignatureMismatch, got {err:?}"
         );
     }
@@ -1143,12 +660,17 @@ mod tests {
         let broken = FULL.replacen("</Devices>", "</Devicez>", 1);
         let err = parse_keyring(&broken, PASSWORD).err();
         assert!(
-            matches!(err, Some(KeyringError::Xml(_))),
+            matches!(err, Some(KeyStoreError::Keyring(KeyringError::Xml(_)))),
             "expected Xml, got {err:?}"
         );
         let err = parse_keyring("<Keyring Created=\"x\" />", PASSWORD).err();
         assert!(
-            matches!(err, Some(KeyringError::MissingAttribute { .. })),
+            matches!(
+                err,
+                Some(KeyStoreError::Keyring(
+                    KeyringError::MissingAttribute { .. }
+                ))
+            ),
             "expected MissingAttribute, got {err:?}"
         );
     }

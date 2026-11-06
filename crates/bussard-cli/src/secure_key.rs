@@ -121,3 +121,26 @@ pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -
         )
     }
 }
+
+/// The group keys of the keyring at `keyring` as a [`GroupKeyring`] for
+/// `monitor`, `capture` and `learn` (issue #172), announcing how many it
+/// holds; `None` without a keyring. Loaded before connecting, so a wrong
+/// password fails fast.
+///
+/// # Errors
+///
+/// A keyring that cannot be loaded.
+pub fn group_keyring(
+    keyring: Option<&std::path::Path>,
+) -> anyhow::Result<Option<bussard_monitor::GroupKeyring>> {
+    let Some(path) = keyring else {
+        return Ok(None);
+    };
+    let store = bussard_service::secure::load_keys(path)
+        .with_context(|| format!("loading group keys from {}", path.display()))?;
+    eprintln!(
+        "keyring: {} group key(s) for secured group telegrams",
+        store.group_keys.len()
+    );
+    Ok(Some(bussard_monitor::GroupKeyring::new(store)))
+}

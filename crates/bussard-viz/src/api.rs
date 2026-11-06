@@ -232,11 +232,13 @@ pub async fn post_group_write(
     // Every check short of sending: protected (unless force), the DPT (the
     // `dpt` override wins, else groups.toml), then encode or validate the raw
     // payload's size.
+    let group_keys =
+        (state.security.group_keys.as_deref()).map(bussard_service::secure::group_key_map);
     let check = WriteCheck {
         dpt: req.dpt.as_deref(),
         dpt_policy: DptOverridePolicy::Trust,
         force: req.force,
-        group_keys: state.security.group_keys.as_deref(),
+        group_keys: group_keys.as_ref(),
     };
     let write =
         prepare_group_write(Some(model), ga, value, &check).map_err(|r| api_refusal(ga, r))?;
