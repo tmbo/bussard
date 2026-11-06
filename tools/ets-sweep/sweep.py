@@ -387,10 +387,12 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
     for m in re.finditer(r"(<Parameter\s[^>]*>)\s*(<Property\s[^>]*/>)", xml):
         param, prop = m.group(1), m.group(2)
         obj, pid = attr(prop, "ObjectIndex"), attr(prop, "PropertyId")
-        if obj is None and attr(prop, "ObjectType") == "0":
-            # The device object named by type (the Gira IR-Gateway's
-            # `target_hw_id`, PID 78, 2026-11-06).
-            obj = "0"
+        # A parameter that names the device object by type (`ObjectType="0"`)
+        # is not seeded: the Schneider M-0009 programs bind `HardwareType`
+        # (`09 FF FF FF FF FF`) that way while their own CompareProp expects
+        # `00 00 09 72 09 00`, and seeding it made ETS refuse four products
+        # ("Device not compatible", 2026-11-06). knx-sim serves the compared
+        # value; for the Gira IR-Gateway both agree.
         pid_ = attr(param, "Id")
         ptype, value = attr(param, "ParameterType"), attr(param, "Value") or "0"
         if obj is None or pid is None or not ptype:
