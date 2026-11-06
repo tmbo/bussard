@@ -470,6 +470,9 @@ pub struct FreshnessDecision {
     pub message: String,
     /// Whether the flash continues. `false` is a refusal: nothing is written.
     pub proceed: bool,
+    /// The refusal in one sentence ([`freshness_refusal`]), `Some` exactly
+    /// when `proceed` is `false`.
+    pub refusal: Option<String>,
     /// The one-line warning folded into the confirmation when the device is
     /// not factory-fresh, so a yes is given against what is being destroyed.
     pub prompt_note: Option<String>,
@@ -505,21 +508,24 @@ pub fn decide_freshness(
     force: bool,
     freshness: &Freshness,
 ) -> FreshnessDecision {
+    // The one gate (issue #895): the MCP's flash and load ask the same
+    // function, without `--force`.
+    let refusal = freshness_refusal(target, freshness, force);
+    let proceed = refusal.is_none();
     let dir = dir.display();
-    match freshness {
-        Freshness::Fresh => FreshnessDecision {
-            message: format!(
+    let (message, prompt_note) = match freshness {
+        Freshness::Fresh => (
+            format!(
                 "\npre-flight: no application is loaded on {target} — the device is \
                  factory-fresh.\n\n\
                  NOTE: a first flash assumes the device is factory-fresh; no backup is\n\
                  possible (there is no prior application to save). Recovery from a failed\n\
                  flash is re-running `bussard flash`."
             ),
-            proceed: true,
-            prompt_note: None,
-        },
-        Freshness::SameApplication { resident } => FreshnessDecision {
-            message: format!(
+            None,
+        ),
+        Freshness::SameApplication { resident } => (
+            format!(
                 "\npre-flight: {target} already runs this application ({resident}).\n\n\
                  NOTE: re-flashing the SAME application is allowed without --force — it is\n\
                  the documented recovery path for an interrupted flash. It is still a full\n\
@@ -527,12 +533,11 @@ pub fn decide_freshness(
                  defaults plus this model's parameter overrides, and the address,\n\
                  association and group-object tables are rewritten from the model's links."
             ),
-            proceed: true,
-            prompt_note: Some(format!(
+            Some(format!(
                 "{target} currently has {resident} Loaded; re-flashing the same application \
                  resets its parameters and tables."
             )),
-        },
+        ),
         Freshness::Resident {
             resident,
             objects,
@@ -540,95 +545,176 @@ pub fn decide_freshness(
         } => {
             let what = resident_words(resident.as_deref(), reason.as_deref());
             let where_ = objects.join(", ");
-            if force {
-                return FreshnessDecision {
-                    message: format!(
+            if proceed {
+                (
+                    format!(
                         "\nWARNING: --force — {target} via {gateway} is NOT factory-fresh: it has \
                          {what} Loaded ({where_}); this flash DESTROYS it, its parameters and its \
                          links, and takes NO backup."
                     ),
-                    proceed: true,
-                    prompt_note: Some(format!(
+                    Some(format!(
                         "{target} currently has {what} Loaded; this flash DESTROYS it (no backup)."
                     )),
-                };
-            }
-            FreshnessDecision {
-                message: format!(
-                    "\nREFUSING to flash {target}: it is not factory-fresh.\n\
-                     \x20 resident : {what}\n\
-                     \x20 loaded   : {where_}\n\
-                     A flash unloads and rewrites the application wholesale and takes NO backup,\n\
-                     so this would destroy the resident application, its parameters and its links.\n\
-                    \n\
-                     Two ways forward:\n\
-                     \x20 1. Capture what is on the device first: `bussard reconstruct {target} \
-                     --dir {dir}`\n\
-                     \x20    writes its links into the model, and `bussard apply {target}` backs \
-                     the tables\n\
-                     \x20    up to {dir}/captures/backups/ before it writes.\n\
-                     \x20 2. Re-run with --force to overwrite it anyway (destructive, no backup).\n\
-                    \n\
-                     Re-flashing the SAME application needs no --force; this device does not \
-                     report it."
-                ),
-                proceed: false,
-                prompt_note: None,
+                )
+            } else {
+                (
+                    format!(
+                        "\nREFUSING to flash {target}: it is not factory-fresh.\n\
+                         \x20 resident : {what}\n\
+                         \x20 loaded   : {where_}\n\
+                         A flash unloads and rewrites the application wholesale and takes NO backup,\n\
+                         so this would destroy the resident application, its parameters and its links.\n\
+                        \n\
+                         Two ways forward:\n\
+                         \x20 1. Capture what is on the device first: `bussard reconstruct {target} \
+                         --dir {dir}`\n\
+                         \x20    writes its links into the model, and `bussard apply {target}` backs \
+                         the tables\n\
+                         \x20    up to {dir}/captures/backups/ before it writes.\n\
+                         \x20 2. Re-run with --force to overwrite it anyway (destructive, no backup).\n\
+                        \n\
+                         Re-flashing the SAME application needs no --force; this device does not \
+                         report it."
+                    ),
+                    None,
+                )
             }
         }
         Freshness::Mismatch { reason } => {
-            if force {
-                return FreshnessDecision {
-                    message: format!(
+            if proceed {
+                (
+                    format!(
                         "\nWARNING: --force — {target} via {gateway} does not match this \
                          download: {reason}. Flashing anyway."
                     ),
-                    proceed: true,
-                    prompt_note: Some(format!("{target} does not match this download ({reason}).")),
-                };
-            }
-            FreshnessDecision {
-                message: format!(
-                    "\nREFUSING to flash {target}: {reason}.\n\
-                     Nothing was unloaded or written. Check that the address names the \
-                     device the model means,\n\
-                     or re-run with --force to flash anyway."
-                ),
-                proceed: false,
-                prompt_note: None,
+                    Some(format!("{target} does not match this download ({reason}).")),
+                )
+            } else {
+                (
+                    format!(
+                        "\nREFUSING to flash {target}: {reason}.\n\
+                         Nothing was unloaded or written. Check that the address names the \
+                         device the model means,\n\
+                         or re-run with --force to flash anyway."
+                    ),
+                    None,
+                )
             }
         }
         Freshness::Unknown { reason } => {
-            if force {
-                return FreshnessDecision {
-                    message: format!(
+            if proceed {
+                (
+                    format!(
                         "\nWARNING: --force — bussard could not read whether {target} via \
                          {gateway} is factory-fresh ({reason}); flashing anyway DESTROYS any \
                          application it carries, and takes NO backup."
                     ),
-                    proceed: true,
-                    prompt_note: Some(format!(
+                    Some(format!(
                         "{target}'s load state is unreadable; if it carries an application this \
                          flash DESTROYS it (no backup)."
                     )),
-                };
-            }
-            FreshnessDecision {
-                message: format!(
-                    "\nREFUSING to flash {target}: its load state is unreadable, so bussard \
-                     cannot tell\n\
-                     whether the device is factory-fresh ({reason}).\n\
-                     The device did NOT report an application as Loaded — the state is simply \
-                     unknown,\n\
-                     and a flash that takes no backup must not be what finds out.\n\
-                     Re-run once the device answers reliably, or with --force to flash anyway \
-                     (destructive\n\
-                     if it carries an application)."
-                ),
-                proceed: false,
-                prompt_note: None,
+                )
+            } else {
+                (
+                    format!(
+                        "\nREFUSING to flash {target}: its load state is unreadable, so bussard \
+                         cannot tell\n\
+                         whether the device is factory-fresh ({reason}).\n\
+                         The device did NOT report an application as Loaded — the state is simply \
+                         unknown,\n\
+                         and a flash that takes no backup must not be what finds out.\n\
+                         Re-run once the device answers reliably, or with --force to flash anyway \
+                         (destructive\n\
+                         if it carries an application)."
+                    ),
+                    None,
+                )
             }
         }
+    };
+    FreshnessDecision {
+        message,
+        proceed,
+        refusal,
+        prompt_note,
+    }
+}
+
+/// The factory-freshness gate of a flash (issue #79) in one sentence: why
+/// the flash must not run, `None` when it may. The one gate both surfaces
+/// ask (issue #895): `bussard flash` through [`decide_freshness`] with its
+/// `--force`, the MCP tier's flash and application load with `force` false,
+/// since a chat cannot pass `--force`.
+///
+/// A factory-fresh device and one that runs this application pass. A device
+/// that runs another application (identified, or a System 7 code sample that
+/// differs, or one whose id cannot be read), one that does not fit the
+/// download, and one whose state could not be read are refused unless
+/// `force`: a flash takes no backup, so it must not destroy what nobody
+/// agreed to destroy.
+pub fn freshness_refusal(
+    target: IndividualAddress,
+    gate: &Freshness,
+    force: bool,
+) -> Option<String> {
+    if force {
+        return None;
+    }
+    match gate {
+        Freshness::Fresh | Freshness::SameApplication { .. } => None,
+        Freshness::Resident {
+            resident, reason, ..
+        } => Some(format!(
+            "{target} runs {}, which a flash destroys with no backup; replacing it is `bussard \
+             flash --force {target}` at the CLI",
+            resident_words(resident.as_deref(), reason.as_deref())
+        )),
+        Freshness::Mismatch { reason } => Some(format!(
+            "{target} does not match this download: {reason}; nothing was written"
+        )),
+        Freshness::Unknown { reason } => Some(format!(
+            "{target}'s resident application could not be confirmed ({reason}), so a flash \
+             cannot tell what it replaces; check the device and plan again"
+        )),
+    }
+}
+
+/// Whether a plan can name what a flash of this verdict replaces: the device
+/// runs another application whose id was read, or (System 7) whose code
+/// sample says what differs. The MCP tier's application load (issue #750)
+/// names it in the plan's sentences, so the human's yes to that plan's
+/// digest is the chat's `--force` for [`freshness_refusal`]; a device that
+/// does not fit the download, whose state is unknown or whose application
+/// cannot be identified gives a plan nothing to name, and stays refused.
+pub fn names_replacement(gate: &Freshness) -> bool {
+    matches!(
+        gate,
+        Freshness::Resident {
+            resident: Some(_),
+            ..
+        } | Freshness::Resident {
+            reason: Some(_),
+            ..
+        }
+    )
+}
+
+/// What a flash finds on the device, in one line: the gate's verdict as a
+/// plan states it.
+pub fn freshness_line(gate: &Freshness) -> String {
+    match gate {
+        Freshness::Fresh => "no application is loaded (factory-fresh)".to_string(),
+        Freshness::SameApplication { resident } => {
+            format!("runs this application ({resident})")
+        }
+        Freshness::Resident {
+            resident, reason, ..
+        } => format!(
+            "runs {}",
+            resident_words(resident.as_deref(), reason.as_deref())
+        ),
+        Freshness::Mismatch { reason } => format!("does not match this download ({reason})"),
+        Freshness::Unknown { reason } => format!("unknown ({reason})"),
     }
 }
 
@@ -851,36 +937,6 @@ pub fn load_reason(
     }
 }
 
-/// Why a load of the pinned application must not be run on the strength of
-/// a plan's yes, `None` when it may: the device's state is unknown, it does
-/// not fit the download, or it runs an application bussard cannot identify
-/// (then nobody can say what the flash would destroy). A device that runs an
-/// identified other application may be replaced: the plan names it, and the
-/// yes is a yes to replacing it.
-pub fn load_refusal(target: IndividualAddress, gate: &Freshness) -> Option<String> {
-    match gate {
-        Freshness::Fresh | Freshness::SameApplication { .. } => None,
-        Freshness::Resident {
-            resident: Some(_), ..
-        }
-        | Freshness::Resident {
-            reason: Some(_), ..
-        } => None,
-        Freshness::Resident { .. } => Some(format!(
-            "{target} runs an application whose id (PID_PROGRAM_VERSION) cannot be read, so \
-             nobody can say what loading another one would replace; replacing it is `bussard \
-             flash --force {target}` at the CLI"
-        )),
-        Freshness::Mismatch { reason } => Some(format!(
-            "{target} does not match this download: {reason}; nothing was written"
-        )),
-        Freshness::Unknown { reason } => Some(format!(
-            "{target}'s resident application could not be confirmed ({reason}), so a flash \
-             cannot tell what it replaces; check the device and plan again"
-        )),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,24 +998,88 @@ mod tests {
             why.as_deref().is_some_and(|w| w.contains("M-0083 A-0007")),
             "{why:?}"
         );
-        assert_eq!(load_refusal(target()?, &gate), None);
         Ok(())
     }
 
     #[test]
-    fn test_load_refusal_unknown_and_unidentified_are_refused()
+    fn test_freshness_refusal_refuses_every_resident_application_without_force()
     -> Result<(), Box<dyn std::error::Error>> {
-        let unknown = Freshness::Unknown {
-            reason: "no answer".to_string(),
+        let identified = Freshness::Resident {
+            resident: Some("M-0083 A-0007 v35".to_string()),
+            objects: Vec::new(),
+            reason: None,
         };
-        assert!(load_refusal(target()?, &unknown).is_some());
+        let sys7 = Freshness::Resident {
+            resident: None,
+            objects: Vec::new(),
+            reason: Some("the code differs at 0x4000".to_string()),
+        };
         let unidentified = Freshness::Resident {
             resident: None,
             objects: Vec::new(),
             reason: None,
         };
-        assert!(load_refusal(target()?, &unidentified).is_some());
-        assert_eq!(load_refusal(target()?, &Freshness::Fresh), None);
+        let unknown = Freshness::Unknown {
+            reason: "no answer".to_string(),
+        };
+        let mismatch = Freshness::Mismatch {
+            reason: "another table format".to_string(),
+        };
+        for gate in [&identified, &sys7, &unidentified, &unknown, &mismatch] {
+            let refusal = freshness_refusal(target()?, gate, false);
+            assert!(refusal.is_some(), "{gate:?}");
+            assert_eq!(freshness_refusal(target()?, gate, true), None, "{gate:?}");
+            // The CLI's decision is the same gate.
+            let decision = decide_freshness(target()?, "gw", Path::new("knx"), false, gate);
+            assert!(!decision.proceed);
+            assert_eq!(decision.refusal, refusal);
+            let forced = decide_freshness(target()?, "gw", Path::new("knx"), true, gate);
+            assert!(forced.proceed && forced.refusal.is_none());
+        }
+        let names = freshness_refusal(target()?, &identified, false).unwrap_or_default();
+        assert!(names.contains("M-0083 A-0007 v35"), "{names}");
+        assert!(names.contains("bussard flash --force 1.1.7"), "{names}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_names_replacement_only_for_an_identified_application() {
+        let identified = Freshness::Resident {
+            resident: Some("M-0083 A-0007 v35".to_string()),
+            objects: Vec::new(),
+            reason: None,
+        };
+        let sys7 = Freshness::Resident {
+            resident: None,
+            objects: Vec::new(),
+            reason: Some("the code differs".to_string()),
+        };
+        let unidentified = Freshness::Resident {
+            resident: None,
+            objects: Vec::new(),
+            reason: None,
+        };
+        assert!(names_replacement(&identified) && names_replacement(&sys7));
+        assert!(!names_replacement(&unidentified));
+        assert!(!names_replacement(&Freshness::Unknown {
+            reason: "x".to_string()
+        }));
+        assert!(!names_replacement(&Freshness::Mismatch {
+            reason: "x".to_string()
+        }));
+    }
+
+    #[test]
+    fn test_freshness_refusal_passes_fresh_and_same_application()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let same = Freshness::SameApplication {
+            resident: "M-00FA A-0002 v1".to_string(),
+        };
+        for gate in [&Freshness::Fresh, &same] {
+            assert_eq!(freshness_refusal(target()?, gate, false), None);
+            let decision = decide_freshness(target()?, "gw", Path::new("knx"), false, gate);
+            assert!(decision.proceed && decision.refusal.is_none());
+        }
         Ok(())
     }
 }

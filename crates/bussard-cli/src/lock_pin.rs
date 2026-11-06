@@ -8,6 +8,7 @@ use anyhow::Context as _;
 use bussard_model::IndividualAddress;
 use bussard_model::schema::{ProductEntry, ProductOrigin};
 use bussard_prod::ProductData;
+use bussard_service::params::Selection;
 use bussard_service::setup::products;
 
 use crate::console::Console;
@@ -84,52 +85,27 @@ pub(crate) fn pin_explicit(
 }
 
 /// How an explicit `--product` / `--application` contradicts what
-/// `bussard.lock` pins for `device` (issue #228, item 4): a product archive
-/// with another SHA-256 than the pinned one, or another application than the
-/// lock's. `None` when the override agrees, or the lock pins nothing to
-/// contradict. An ETS project export is compared by application only: its
-/// own hash is never the pinned archive's.
+/// `bussard.lock` pins for `device`
+/// ([`bussard_service::setup::products::override_conflict`]).
 pub(crate) fn override_conflict(
     device: &bussard_model::schema::Device,
     product: Option<&Path>,
     application: Option<&str>,
 ) -> anyhow::Result<Option<String>> {
-    let target = device.address;
-    if let (Some(file), Some(entry)) = (product, device.lock.product_entry.as_ref()) {
-        let export = file
-            .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("knxproj"));
-        if !export && entry.file.is_some() {
-            let (sha256, _) = bussard_model::sha256_file(file)
-                .with_context(|| format!("hashing {}", file.display()))?;
-            if !sha256.eq_ignore_ascii_case(&entry.sha256) {
-                return Ok(Some(format!(
-                    "--product {} has sha256 {sha256}, but bussard.lock pins {} ({}) as the \
-                     product data of {target}",
-                    file.display(),
-                    entry.sha256,
-                    entry.file.as_deref().unwrap_or("?")
-                )));
-            }
-        }
-    }
-    if let Some(wanted) = application {
-        let pinned = bussard_model::identity::LockIdentity::of(device).application;
-        if let Some(pinned) = pinned
-            && pinned != wanted
-        {
-            return Ok(Some(format!(
-                "--application {wanted} is not the application bussard.lock pins for {target} \
-                 ({pinned})"
-            )));
-        }
-    }
-    Ok(None)
+    Ok(products::override_conflict(
+        device,
+        Selection {
+            product,
+            application,
+        },
+    )?)
 }
 
-/// Refuses an override that contradicts the lock unless `force`; with
-/// `force` an explicit product archive is pinned for the device (a reviewable
-/// lock change). `verb` names the command for the refusal.
+/// Refuses an override that contradicts the lock unless `force`
+/// ([`bussard_service::setup::products::enforce_override`], the rule the MCP
+/// tier shares); with `force` an explicit product archive is pinned for the
+/// device (a reviewable lock change). `verb` names the command for the
+/// refusal.
 pub(crate) fn enforce_override(
     dir: &Path,
     device: &bussard_model::schema::Device,
@@ -138,17 +114,13 @@ pub(crate) fn enforce_override(
     force: bool,
     verb: &str,
 ) -> anyhow::Result<()> {
-    let Some(conflict) = override_conflict(device, product, application)? else {
+    let selection = Selection {
+        product,
+        application,
+    };
+    let Some(conflict) = products::enforce_override(device, selection, force, verb)? else {
         return Ok(());
     };
-    if !force {
-        anyhow::bail!(
-            "refusing to {verb} {}: {conflict}. Pass --force to use it anyway (the product \
-             archive is then pinned for the device in bussard.lock), or drop the override to \
-             use what the lock pins",
-            device.address
-        );
-    }
     eprintln!("warning: {conflict}; --force given, using the override");
     if let Some(file) = product
         && !file
