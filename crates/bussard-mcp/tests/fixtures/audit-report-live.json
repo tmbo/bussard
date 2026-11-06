@@ -1,0 +1,331 @@
+{
+  "format_version": 1,
+  "live": {
+    "bus": {
+      "state": "connected",
+      "transport": "tunnel"
+    },
+    "gateway": {
+      "endpoint": "192.0.2.10:3671",
+      "error": null,
+      "individual_address": "1.1.255",
+      "name": "Mock Gate",
+      "tunnel_slots": [
+        {
+          "access": "open",
+          "authorisation_required": false,
+          "free": false,
+          "individual_address": "1.1.241",
+          "usable": true
+        },
+        {
+          "access": "needs tunnelling credentials",
+          "authorisation_required": true,
+          "free": true,
+          "individual_address": "1.1.242",
+          "usable": true
+        }
+      ],
+      "tunnels": 2,
+      "tunnels_in_use": 1
+    },
+    "scan": null,
+    "secure": {
+      "activated": 3,
+      "devices": [
+        {
+          "activated": true,
+          "address": "1.1.10",
+          "in_keyring": true,
+          "mask": "07B0",
+          "name": "Secure dimmer",
+          "plain_reads_refused": true,
+          "reachable_secured": true,
+          "status": "reachable_secured"
+        },
+        {
+          "activated": true,
+          "address": "1.1.12",
+          "in_keyring": false,
+          "mask": null,
+          "name": "Secure sensor",
+          "plain_reads_refused": true,
+          "reachable_secured": null,
+          "status": "not_in_keyring"
+        },
+        {
+          "activated": false,
+          "address": "1.1.13",
+          "in_keyring": null,
+          "mask": null,
+          "name": "Gone",
+          "plain_reads_refused": null,
+          "reachable_secured": null,
+          "status": "not_answering"
+        },
+        {
+          "activated": true,
+          "address": "1.1.14",
+          "in_keyring": true,
+          "mask": null,
+          "name": "Refused",
+          "plain_reads_refused": true,
+          "reachable_secured": false,
+          "status": "key_refused"
+        },
+        {
+          "activated": false,
+          "address": "1.1.15",
+          "in_keyring": false,
+          "mask": "0705",
+          "name": "Plain",
+          "plain_reads_refused": false,
+          "reachable_secured": null,
+          "status": "plain"
+        }
+      ],
+      "key_refused": 1,
+      "not_in_keyring": 1,
+      "reachable_secured": 1
+    },
+    "traffic": {
+      "per_ga": [
+        {
+          "ga": "1/0/1",
+          "name": "Light Kitchen",
+          "repeat_rate": 0.333,
+          "repeated": 1,
+          "sources": [
+            "1.1.2"
+          ],
+          "telegrams": 3
+        },
+        {
+          "ga": "1/0/2",
+          "name": "Light Kitchen Status",
+          "repeat_rate": 1.0,
+          "repeated": 1,
+          "sources": [
+            "1.1.1"
+          ],
+          "telegrams": 1
+        },
+        {
+          "ga": "1/0/3",
+          "name": "Undecoded",
+          "repeat_rate": 0.333,
+          "repeated": 1,
+          "sources": [
+            "1.2.3"
+          ],
+          "telegrams": 3
+        },
+        {
+          "ga": "1/0/4",
+          "name": "",
+          "repeat_rate": 0.0,
+          "repeated": 0,
+          "sources": [
+            "1.2.3"
+          ],
+          "telegrams": 1
+        },
+        {
+          "ga": "7/7/0",
+          "name": null,
+          "repeat_rate": 0.0,
+          "repeated": 0,
+          "sources": [
+            "1.0.200"
+          ],
+          "telegrams": 1
+        }
+      ],
+      "sender_no_listener": [
+        {
+          "ga": "1/0/2",
+          "in_model": true,
+          "name": "Light Kitchen Status"
+        },
+        {
+          "ga": "1/0/3",
+          "in_model": true,
+          "name": "Undecoded"
+        },
+        {
+          "ga": "1/0/4",
+          "in_model": true,
+          "name": ""
+        },
+        {
+          "ga": "7/7/0",
+          "in_model": false,
+          "name": null
+        }
+      ],
+      "telegrams": 9,
+      "unknown_sources": [
+        "1.0.200"
+      ],
+      "window_seconds": 30
+    }
+  },
+  "masks": [
+    {
+      "bussard_can": "unknown until the device is scanned",
+      "describe": true,
+      "devices": [
+        "1.2.3"
+      ],
+      "family": "unknown (no mask recorded)",
+      "flash": null,
+      "mask": null,
+      "medium": null,
+      "note": "the device file records no product mask; `bussard scan` reads it",
+      "plan_apply": null,
+      "reconstruct": null
+    },
+    {
+      "bussard_can": "plan/apply, flash, reconstruct, describe",
+      "describe": true,
+      "devices": [
+        "1.1.2"
+      ],
+      "family": "System 7",
+      "flash": true,
+      "mask": "0705",
+      "medium": "TP1",
+      "note": "memory-mapped tables (default 0x4000 / 0x4201), A_Authorize required; line-mode `reconstruct --line` records a stub instead of tables",
+      "plan_apply": true,
+      "reconstruct": true
+    },
+    {
+      "bussard_can": "plan/apply, flash, reconstruct, describe",
+      "describe": true,
+      "devices": [
+        "1.1.1",
+        "1.1.10",
+        "1.1.12"
+      ],
+      "family": "System B",
+      "flash": true,
+      "mask": "07B0",
+      "medium": "TP1",
+      "note": "tables live in device-allocated segments found via PID_TABLE_REFERENCE; full read and write support",
+      "plan_apply": true,
+      "reconstruct": true
+    }
+  ],
+  "model": {
+    "devices": 5,
+    "devices_per_line": [
+      {
+        "devices": 4,
+        "line": "1.1"
+      },
+      {
+        "devices": 1,
+        "line": "1.2"
+      }
+    ],
+    "devices_without_location": [
+      "1.1.2",
+      "1.1.10",
+      "1.1.12",
+      "1.2.3"
+    ],
+    "devices_without_name": [
+      "1.1.2"
+    ],
+    "findings": [
+      {
+        "ga": "1/0/2",
+        "ga_name": "Light Kitchen Status",
+        "message": "1/0/2 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "1/0/3",
+        "ga_name": "Undecoded",
+        "message": "1/0/3 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      },
+      {
+        "ga": "1/0/4",
+        "ga_name": null,
+        "message": "1/0/4 has senders but no listener (telegrams go nowhere)",
+        "type": "ga-no-listener"
+      }
+    ],
+    "group_addresses": 5,
+    "group_addresses_without_dpt": [
+      "1/0/3"
+    ],
+    "group_addresses_without_name": [
+      "1/0/4"
+    ],
+    "imported_from": null,
+    "info": {
+      "unlinked_com_objects": 0,
+      "unused_group_addresses": 1
+    },
+    "links": 5,
+    "links_to_unknown_devices": [],
+    "links_to_unknown_objects": [
+      {
+        "device": "1.1.1",
+        "name": null,
+        "object": 9
+      },
+      {
+        "device": "1.1.2",
+        "name": null,
+        "object": 1
+      },
+      {
+        "device": "1.2.3",
+        "name": null,
+        "object": 1
+      }
+    ],
+    "project": "Audit fixture",
+    "protected_group_addresses": [
+      "1/0/4"
+    ],
+    "secure_devices": [
+      {
+        "activated": true,
+        "address": "1.1.10",
+        "name": "Secure dimmer",
+        "secure_capable": true
+      },
+      {
+        "activated": false,
+        "address": "1.1.12",
+        "name": "Secure sensor",
+        "secure_capable": true
+      }
+    ]
+  },
+  "secure": {
+    "devices": [
+      {
+        "activated": true,
+        "address": "1.1.10",
+        "keyring_entry": true,
+        "name": "Secure dimmer",
+        "secure_capable": true
+      },
+      {
+        "activated": false,
+        "address": "1.1.12",
+        "keyring_entry": false,
+        "name": "Secure sensor",
+        "secure_capable": true
+      }
+    ],
+    "keyring_checked": true,
+    "with_keyring_entry": 1,
+    "without_keyring_entry": 1
+  }
+}

@@ -1,0 +1,23 @@
+version = 3
+
+[[device]]
+address = "1.1.1"
+mask = "07B0"
+objects = [
+  { number = 1, dpt = "1.001", flags = "CW" },
+  { number = 2, dpt = "1.001", flags = "CRT" },
+]
+
+[[device]]
+address = "1.1.2"
+mask = "0x0705"
+
+[[device]]
+address = "1.1.10"
+mask = "07B0"
+secure_capable = true
+
+[[device]]
+address = "1.1.12"
+mask = "07B0"
+secure_capable = true

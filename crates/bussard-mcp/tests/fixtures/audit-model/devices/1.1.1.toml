@@ -1,0 +1,11 @@
+address = "1.1.1"
+name = "Switch actuator"
+
+[location]
+floor = "Ground"
+room = "Kitchen"
+
+[links]
+1.listen = ["1/0/1"]
+2.send = "1/0/2"
+9.send = "1/0/3"
