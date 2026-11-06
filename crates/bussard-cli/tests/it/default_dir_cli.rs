@@ -9,10 +9,12 @@ use std::process::{Command, Output, Stdio};
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
-/// The small xknxproject JSON fixture shared with the import tests.
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json")
+/// The tiny project, written into a scratch directory of its own (outside
+/// the directory a test imports into).
+fn fixture() -> TestResult<PathBuf> {
+    let path = scratch("project")?.join("project.knxproj");
+    super::tiny_project::write(&path)?;
+    Ok(path)
 }
 
 /// A unique, empty, canonical temp directory.
@@ -51,10 +53,9 @@ fn bussard(cwd: &Path, args: &[&str]) -> TestResult<Output> {
 }
 
 fn import_args(extra: &[&'static str]) -> TestResult<Vec<String>> {
-    let fixture = fixture();
+    let fixture = fixture()?;
     let mut args = vec![
         "import".to_string(),
-        "--from-json".to_string(),
         fixture.to_str().ok_or("fixture path")?.to_string(),
         "--no-download".to_string(),
     ];

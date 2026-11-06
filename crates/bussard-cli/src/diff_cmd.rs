@@ -1,7 +1,7 @@
 //! The `bussard diff` subcommand (issue #99).
 //!
-//! Loads two projects into memory, each a `.knxproj`, a `.bussard` bundle, an
-//! xknxproject `.json` dump or a model directory, and prints what changes from
+//! Loads two projects into memory, each a `.knxproj`, a `.bussard` bundle or a
+//! model directory, and prints what changes from
 //! the first to the second as the same plain sentences `bussard status` uses
 //! ([`bussard_model::change::describe`]). Nothing is written.
 //!
@@ -39,8 +39,8 @@ pub struct Side {
 /// `bussard diff`.
 #[derive(Debug, clap::Args)]
 pub(crate) struct DiffArgs {
-    /// The first side: a `.knxproj`, a `.bussard` bundle, an xknxproject
-    /// `.json` dump or a project folder.
+    /// The first side: a `.knxproj`, a `.bussard` bundle or a project
+    /// folder.
     #[arg(value_name = "A")]
     a: PathBuf,
     /// The second side, in any of the same forms.
@@ -187,23 +187,15 @@ pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
             files: texts(bundle.model_files)?,
         });
     }
-    let is_json = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
-    let model = if is_json {
-        bussard_project::import_from_json(path)?
-    } else {
-        match bussard_project::import(path, password) {
-            Ok(model) => model,
-            Err(bussard_project::ImportError::PasswordRequired) => anyhow::bail!(
-                "{} is password-protected; pass --password (or --password-b for the second \
-                 side) or set BUSSARD_PROJECT_PASSWORD",
-                path.display()
-            ),
-            Err(err) => {
-                return Err(err).with_context(|| format!("importing {}", path.display()));
-            }
+    let model = match bussard_project::import(path, password) {
+        Ok(model) => model,
+        Err(bussard_project::ImportError::PasswordRequired) => anyhow::bail!(
+            "{} is password-protected; pass --password (or --password-b for the second \
+             side) or set BUSSARD_PROJECT_PASSWORD",
+            path.display()
+        ),
+        Err(err) => {
+            return Err(err).with_context(|| format!("importing {}", path.display()));
         }
     };
     let files = model.to_texts()?;

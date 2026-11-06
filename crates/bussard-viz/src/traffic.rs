@@ -25,7 +25,8 @@ use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
-use crate::state::{BusStatus, ModelHandle};
+use crate::state::BusStatus;
+use bussard_service::ModelHandle;
 
 /// The short, stable tag for a cEMI message code in the SSE telegram contract.
 ///
@@ -411,7 +412,7 @@ pub async fn feed_secured(
                         let snapshot = model.current();
                         let decoded = DecodedTelegram::from_frame_secured(
                             &frame.frame,
-                            Some(snapshot.model.as_ref()),
+                            Some(snapshot.as_ref()),
                             keyring.as_mut(),
                         );
                         // Carry the cEMI message code: the gateway's con-echo of
@@ -780,11 +781,12 @@ mod tests {
         use bussard_model::Model;
         use bussard_transport::ConnectionConfig;
 
-        use crate::state::{BusStatus, ModelHandle};
+        use crate::state::BusStatus;
+        use bussard_service::ModelHandle;
 
         // An empty model directory loads fine (every file is optional).
         let tmp = tempfile::tempdir()?;
-        let model = ModelHandle::new(Model::load(tmp.path())?);
+        let model = ModelHandle::fixed(Model::load(tmp.path())?);
 
         // A dead gateway on loopback: the actor tries once, fails, and moves
         // Connecting -> Reconnecting. ALWAYS 127.0.0.1 in tests.

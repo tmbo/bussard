@@ -43,7 +43,7 @@ use bussard_transport::TimestampedFrame;
 use bussard_transport::cemi::CemiFrame;
 use rusqlite::Connection;
 
-use crate::decode::{DecodedTelegram, DestinationRef};
+use crate::decode::DecodedTelegram;
 use crate::format::json_line;
 use crate::secure::GroupKeyring;
 use crate::timefmt;
@@ -442,12 +442,6 @@ impl CaptureStore {
             .conn
             .query_row("PRAGMA journal_mode", [], |r| r.get(0))?;
         Ok(mode)
-    }
-
-    /// Convenience for callers that hold a decoded destination and want to
-    /// restrict by it.
-    pub fn dest_ref_to_string(dest: DestinationRef) -> String {
-        dest.to_string()
     }
 }
 

@@ -26,7 +26,7 @@ use bussard_bus::BusHandle;
 use bussard_bus::ops::{self, WriteOptions};
 use bussard_model::tests_schema::{Expectation, TestCase, TestSuite};
 use bussard_model::text::{from_hex, hex};
-use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model, encode, parse_value};
+use bussard_model::{GroupAddress, IndividualAddress, Model, encode, parse_value};
 use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 
@@ -483,14 +483,6 @@ pub fn touches_protected(model: &Model, test: &TestCase) -> bool {
         .and_then(|ga| model.groups.groups.get(&ga))
         .map(|g| g.protected)
         .unwrap_or(false)
-}
-
-/// The DPT a test's write would encode against, if it can be resolved.
-pub fn write_dpt(model: &Model, test: &TestCase) -> Option<Dpt> {
-    let write = test.write.as_ref()?;
-    write
-        .dpt
-        .or_else(|| model.groups.groups.get(&write.ga).and_then(|g| g.dpt))
 }
 
 #[cfg(test)]

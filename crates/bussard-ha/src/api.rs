@@ -147,11 +147,6 @@ impl HaClient {
         })
     }
 
-    /// The base URL, without a trailing slash.
-    pub fn base_url(&self) -> &str {
-        &self.base
-    }
-
     /// `GET path`, decoded as JSON.
     ///
     /// # Errors

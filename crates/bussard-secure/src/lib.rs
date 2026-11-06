@@ -52,8 +52,9 @@ pub use asdu::{
 };
 pub use certificate::{Certificate, CertificateError};
 pub use crypto::{
-    CryptoError, aes_cbc_decrypt, aes_cbc_encrypt, keyring_encrypt_key, keyring_encrypt_password,
-    keyring_iv, keyring_password_prefix, pbkdf2_key, pbkdf2_sha256, random_bytes, salt,
+    CryptoError, X25519KeyPair, aes_cbc_decrypt, aes_cbc_encrypt, keyring_encrypt_key,
+    keyring_encrypt_password, keyring_iv, keyring_password_prefix, pbkdf2_key, pbkdf2_sha256,
+    random_bytes, salt,
 };
 pub use group::{Freshness, GroupPlain, decode_group, encode_group, is_group_data, peek_header};
 pub use key::{Key16, Password};

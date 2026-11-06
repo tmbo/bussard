@@ -36,8 +36,6 @@ pub enum FileKind {
     Product,
     /// An ETS keyring export, `.knxkeys`.
     Keyring,
-    /// An `xknxproject` JSON dump, `.json`.
-    Json,
 }
 
 impl FileKind {
@@ -49,7 +47,6 @@ impl FileKind {
             "bussard" => FileKind::Bundle,
             "knxprod" => FileKind::Product,
             "knxkeys" => FileKind::Keyring,
-            "json" => FileKind::Json,
             _ => return None,
         })
     }
@@ -74,7 +71,7 @@ mod tests {
             FileKind::of(Path::new("k.knxkeys")),
             Some(FileKind::Keyring)
         );
-        assert_eq!(FileKind::of(Path::new("d.json")), Some(FileKind::Json));
+        assert_eq!(FileKind::of(Path::new("d.json")), None);
         assert_eq!(FileKind::of(Path::new("notes.txt")), None);
         assert_eq!(FileKind::of(Path::new("noext")), None);
     }

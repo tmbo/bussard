@@ -72,13 +72,14 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
 use crate::cemi::{CemiFrame, Destination, MessageCode};
+use crate::channel::{Channel, ChannelKind, ChannelTask};
 use crate::config::{
-    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL,
-    HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureUser,
+    CONNECT_TIMEOUT, ConnectionConfig, HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT,
+    SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT, SecureUser,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
-use crate::knxnet::{self, ConnectionHeader, FAMILY_DEVICE_MANAGEMENT, Hpai, ServiceType};
+use crate::knxnet::{self, FAMILY_DEVICE_MANAGEMENT, ServiceType};
 use crate::secure::UserKeys;
 use crate::tpci::{self, TpciKind};
 use crate::tunnel::{Link, UdpLink, connect_handshake, open_secure, udp_socket};
@@ -238,25 +239,6 @@ pub fn decode_prop_con(cemi: &[u8]) -> Option<PropConfirmation> {
         data,
         error,
     })
-}
-
-/// The name of a cEMI local management error code (EMI 3/6/3 §4.1.7.3.7.2,
-/// p. 107).
-pub fn local_error_name(code: u8) -> &'static str {
-    match code {
-        0x00 => "unspecified error",
-        0x01 => "out of range",
-        0x02 => "out of max range",
-        0x03 => "out of min range",
-        0x04 => "memory error",
-        0x05 => "read only",
-        0x06 => "illegal command",
-        0x07 => "void DP (no such property)",
-        0x08 => "type conflict",
-        0x09 => "property index range error",
-        0x0A => "value temporarily not writeable",
-        _ => "undefined",
-    }
 }
 
 /// The application-layer return code (03_03_07 generic return codes) that
@@ -552,15 +534,10 @@ impl DeviceManagement {
         let (cmd_tx, cmd_rx) = mpsc::channel(16);
         let (frame_tx, frame_rx) = mpsc::unbounded_channel();
         let task = Task {
-            link,
-            channel: granted.channel_id,
-            hpai,
-            tx_seq: 0,
-            rx_seq: 0,
+            chan: Channel::new(link, DEVICE_MANAGEMENT, granted.channel_id, hpai),
             commands: cmd_rx,
             frames: frame_tx,
             keepalive,
-            ack_timeout: DEVICE_CONFIGURATION_REQUEST_TIMEOUT,
         };
         Ok(DeviceManagement {
             commands: cmd_tx,
@@ -754,25 +731,30 @@ impl BusConnection for DeviceManagement {
     }
 }
 
-/// The task that owns the link of one device management connection.
+/// The device management channel: DEVICE_CONFIGURATION_REQUEST confirmed by
+/// DEVICE_CONFIGURATION_ACK within [`DEVICE_CONFIGURATION_REQUEST_TIMEOUT`],
+/// repeated [`DEVICE_CONFIGURATION_REPEATS`] times (3/8/3 §2.3.2).
+const DEVICE_MANAGEMENT: ChannelKind = ChannelKind {
+    ack_service: ServiceType::DeviceConfigurationAck,
+    ack: knxnet::device_configuration_ack,
+    ack_context: "DEVICE_CONFIGURATION_ACK",
+    ack_timeout: DEVICE_CONFIGURATION_REQUEST_TIMEOUT,
+    retransmits: DEVICE_CONFIGURATION_REPEATS,
+};
+
+/// The task that owns the channel of one device management connection.
 struct Task {
-    link: Link,
-    channel: u8,
-    hpai: Hpai,
-    tx_seq: u8,
-    rx_seq: u8,
+    chan: Channel,
     commands: mpsc::Receiver<Command>,
     frames: mpsc::UnboundedSender<Result<Vec<u8>>>,
     keepalive: Duration,
-    /// [`DEVICE_CONFIGURATION_REQUEST_TIMEOUT`]; shorter in the unit tests.
-    ack_timeout: Duration,
 }
 
 impl Task {
     async fn run(mut self) {
         let mut buf = vec![0u8; 1024];
         let mut next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
-        let secure = !self.link.is_udp() && !self.keepalive.is_zero();
+        let secure = !self.chan.link.is_udp() && !self.keepalive.is_zero();
         let mut next_keepalive = Instant::now() + self.keepalive;
         loop {
             let keepalive_at = if secure {
@@ -788,49 +770,49 @@ impl Task {
                         let failed = result.is_err();
                         let _ = reply.send(result);
                         if failed {
-                            self.fail(TransportError::Timeout("DEVICE_CONFIGURATION_ACK"), &mut buf)
+                            self.fail(TransportError::Timeout(DEVICE_MANAGEMENT.ack_context), &mut buf)
                                 .await;
                             return;
                         }
                         next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
                     }
                     Some(Command::Close { reply }) => {
-                        let result = self.disconnect(&mut buf).await;
-                        self.link.close().await;
+                        let result = self.chan.disconnect(&mut buf).await;
+                        self.chan.link.close().await;
                         let _ = reply.send(result);
                         return;
                     }
                     None => {
-                        let _ = self.disconnect(&mut buf).await;
-                        self.link.close().await;
+                        let _ = self.chan.disconnect(&mut buf).await;
+                        self.chan.link.close().await;
                         return;
                     }
                 },
-                received = self.link.recv(&mut buf) => match received {
+                received = self.chan.link.recv(&mut buf) => match received {
                     Ok(n) => {
                         let datagram = buf[..n].to_vec();
                         if !self.handle_inbound(&datagram).await {
-                            self.link.close().await;
+                            self.chan.link.close().await;
                             return;
                         }
                     }
                     Err(err) => {
                         let _ = self.frames.send(Err(err));
-                        self.link.close().await;
+                        self.chan.link.close().await;
                         return;
                     }
                 },
                 () = time::sleep_until(next_heartbeat) => {
-                    if let Err(err) = self.heartbeat(&mut buf).await {
+                    if let Err(err) = self.heartbeat_with(HEARTBEAT_ATTEMPTS, HEARTBEAT_TIMEOUT, &mut buf).await {
                         self.fail(err, &mut buf).await;
                         return;
                     }
                     next_heartbeat = Instant::now() + HEARTBEAT_INTERVAL;
                 }
                 () = time::sleep_until(keepalive_at) => {
-                    if let Err(err) = self.link.keepalive().await {
+                    if let Err(err) = self.chan.link.keepalive().await {
                         let _ = self.frames.send(Err(err));
-                        self.link.close().await;
+                        self.chan.link.close().await;
                         return;
                     }
                     next_keepalive = Instant::now() + self.keepalive;
@@ -842,66 +824,28 @@ impl Task {
     /// Ends the connection after `err`: a DISCONNECT_REQUEST (best effort),
     /// the session closed, the error delivered to the reader.
     async fn fail(&mut self, err: TransportError, buf: &mut [u8]) {
-        let _ = self.disconnect(buf).await;
-        self.link.close().await;
+        let _ = self.chan.disconnect(buf).await;
+        self.chan.link.close().await;
         let _ = self.frames.send(Err(err));
     }
 
-    /// Sends one DEVICE_CONFIGURATION_REQUEST; over UDP waits for its ACK,
-    /// repeating it as 3/8/3 §2.3.2 says.
+    /// Sends one DEVICE_CONFIGURATION_REQUEST carrying `cemi`.
     async fn send(&mut self, cemi: &[u8], buf: &mut [u8]) -> Result<()> {
-        let seq = self.tx_seq;
-        let request = knxnet::device_configuration_request(
-            ConnectionHeader {
-                channel_id: self.channel,
-                seq,
-            },
-            cemi,
-        );
-        if !self.link.acks() {
-            self.link.send_data(&request).await?;
-            self.tx_seq = seq.wrapping_add(1);
-            return Ok(());
-        }
-        for attempt in 0..=DEVICE_CONFIGURATION_REPEATS {
-            if attempt > 0 {
-                tracing::debug!(seq, attempt, "repeating a DEVICE_CONFIGURATION_REQUEST");
-            }
-            self.link.send_data(&request).await?;
-            let deadline = Instant::now() + self.ack_timeout;
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Ok(received) = time::timeout(remaining, self.link.recv(buf)).await else {
-                    break;
-                };
-                let datagram = buf[..received?].to_vec();
-                let Ok(parsed) = knxnet::parse(&datagram) else {
-                    continue;
-                };
-                if parsed.service == ServiceType::DeviceConfigurationAck {
-                    let Ok((header, status)) = knxnet::parse_tunneling_ack(parsed.body) else {
-                        continue;
-                    };
-                    if header.channel_id != self.channel || header.seq != seq {
-                        continue;
-                    }
-                    if status == 0 {
-                        self.tx_seq = seq.wrapping_add(1);
-                        return Ok(());
-                    }
-                    tracing::debug!(seq, status, "DEVICE_CONFIGURATION_ACK with an error");
-                    break;
-                }
-                if !self.handle_inbound(&datagram).await {
-                    return Err(TransportError::Disconnected(self.channel));
-                }
-            }
-        }
-        Err(TransportError::Timeout("DEVICE_CONFIGURATION_ACK"))
+        self.send_sequenced(
+            |header| knxnet::device_configuration_request(header, cemi),
+            buf,
+        )
+        .await
+    }
+}
+
+impl ChannelTask for Task {
+    fn channel(&mut self) -> &mut Channel {
+        &mut self.chan
     }
 
     /// Handles one datagram from the server; `false` when the server ended
-    /// the connection.
+    /// the connection. Over TCP the requests are delivered unchecked.
     async fn handle_inbound(&mut self, datagram: &[u8]) -> bool {
         let Ok(parsed) = knxnet::parse(datagram) else {
             return true;
@@ -911,100 +855,25 @@ impl Task {
                 let Ok((header, cemi)) = knxnet::parse_tunneling_header(parsed.body) else {
                     return true;
                 };
-                if header.channel_id != self.channel {
+                if header.channel_id != self.chan.id {
                     return true;
                 }
-                if self.link.acks() {
-                    let expected = self.rx_seq;
-                    if header.seq == expected.wrapping_sub(1) {
-                        // A repeat of the last one: our ACK was lost.
-                        let ack = knxnet::device_configuration_ack(self.channel, header.seq, 0);
-                        let _ = self.link.send_data(&ack).await;
-                        return true;
-                    }
-                    if header.seq != expected {
-                        tracing::debug!(
-                            seq = header.seq,
-                            expected,
-                            "discarded a DEVICE_CONFIGURATION_REQUEST out of sequence"
-                        );
-                        return true;
-                    }
-                    let ack = knxnet::device_configuration_ack(self.channel, header.seq, 0);
-                    if let Err(err) = self.link.send_data(&ack).await {
-                        let _ = self.frames.send(Err(err));
-                        return false;
-                    }
-                    self.rx_seq = expected.wrapping_add(1);
+                if self.chan.link.acks() && !self.chan.accept_incoming(header.seq).await {
+                    return true;
                 }
                 let _ = self.frames.send(Ok(cemi.to_vec()));
                 true
             }
             ServiceType::DisconnectRequest => match knxnet::parse_disconnect_request(parsed.body) {
-                Ok(channel) if channel == self.channel => {
-                    let response = knxnet::disconnect_response(self.channel, 0);
-                    let _ = self.link.send(&response).await;
-                    let _ = self
-                        .frames
-                        .send(Err(TransportError::Disconnected(self.channel)));
+                Ok(channel) if channel == self.chan.id => {
+                    let response = knxnet::disconnect_response(channel, 0);
+                    let _ = self.chan.link.send(&response).await;
+                    let _ = self.frames.send(Err(TransportError::Disconnected(channel)));
                     false
                 }
                 _ => true,
             },
             _ => true,
-        }
-    }
-
-    /// Sends CONNECTIONSTATE_REQUESTs until one is answered with success,
-    /// as a tunnel does (Core 3/8/2 §5.4).
-    async fn heartbeat(&mut self, buf: &mut [u8]) -> Result<()> {
-        let request = knxnet::connectionstate_request(self.channel, self.hpai);
-        for _ in 0..HEARTBEAT_ATTEMPTS {
-            self.link.send(&request).await?;
-            let deadline = Instant::now() + HEARTBEAT_TIMEOUT;
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                let Ok(received) = time::timeout(remaining, self.link.recv(buf)).await else {
-                    break;
-                };
-                let datagram = buf[..received?].to_vec();
-                let Ok(parsed) = knxnet::parse(&datagram) else {
-                    continue;
-                };
-                if parsed.service == ServiceType::ConnectionstateResponse {
-                    if let Ok(status) = knxnet::parse_channel_status(parsed.body)
-                        && status.channel_id == self.channel
-                    {
-                        if status.status == 0 {
-                            return Ok(());
-                        }
-                        break;
-                    }
-                } else if !self.handle_inbound(&datagram).await {
-                    return Err(TransportError::Disconnected(self.channel));
-                }
-            }
-        }
-        Err(TransportError::HeartbeatLost)
-    }
-
-    /// The DISCONNECT_REQUEST / DISCONNECT_RESPONSE exchange (best effort).
-    async fn disconnect(&mut self, buf: &mut [u8]) -> Result<()> {
-        let request = knxnet::disconnect_request(self.channel, self.hpai);
-        self.link.send(&request).await?;
-        let deadline = Instant::now() + DISCONNECT_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            match time::timeout(remaining, self.link.recv(buf)).await {
-                Ok(Ok(n)) => {
-                    if let Ok(parsed) = knxnet::parse(&buf[..n])
-                        && parsed.service == ServiceType::DisconnectResponse
-                    {
-                        return Ok(());
-                    }
-                }
-                Ok(Err(_)) | Err(_) => return Ok(()),
-            }
         }
     }
 }
@@ -1115,16 +984,15 @@ mod tests {
         let (socket, hpai) = udp_socket(addr, std::net::Ipv4Addr::LOCALHOST).await?;
         let (_cmd_tx, commands) = mpsc::channel(1);
         let (frames, _rx) = mpsc::unbounded_channel();
+        let kind = ChannelKind {
+            ack_timeout,
+            ..DEVICE_MANAGEMENT
+        };
         let task = Task {
-            link: Link::Udp(UdpLink::new(socket, addr)),
-            channel: 0x81,
-            hpai,
-            tx_seq: 0,
-            rx_seq: 0,
+            chan: Channel::new(Link::Udp(UdpLink::new(socket, addr)), kind, 0x81, hpai),
             commands,
             frames,
             keepalive: Duration::ZERO,
-            ack_timeout,
         };
         Ok((task, server))
     }
@@ -1164,7 +1032,7 @@ mod tests {
             matches!(result, Err(TransportError::Timeout(_))),
             "{result:?}"
         );
-        task.disconnect(&mut buf).await?;
+        task.chan.disconnect(&mut buf).await?;
         let seqs = script.await?.map_err(|e| e.to_string())?;
         // The request and its three repeats, all under sequence 0.
         assert_eq!(seqs, vec![0, 0, 0, 0]);
@@ -1204,7 +1072,7 @@ mod tests {
         task.frames = frames_tx;
         let request = |seq: u8| {
             knxnet::device_configuration_request(
-                ConnectionHeader {
+                knxnet::ConnectionHeader {
                     channel_id: 0x81,
                     seq,
                 },

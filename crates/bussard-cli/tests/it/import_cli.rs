@@ -1,17 +1,18 @@
-//! `bussard import` end to end on the small xknxproject JSON fixture: the
-//! group addresses a device uses are declared, the model is validated after
-//! the write, and the summary names the devices written without product data.
-//! No bus and no network.
+//! `bussard import` and `init` end to end on the tiny fabricated project
+//! ([`super::tiny_project`]): the model is validated after the write, the
+//! keyring next to the project is recorded or imported. No bus and no
+//! network.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-/// The fixture shared with `bussard-project`'s import tests.
-fn fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json")
+/// The tiny project, written into `dir`.
+fn fixture(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
+    let path = dir.join("project.knxproj");
+    super::tiny_project::write(&path)?;
+    Ok(path)
 }
 
 fn tmp(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
@@ -42,59 +43,15 @@ fn bussard(args: &[&str], envs: &[(&str, &str)]) -> std::io::Result<Output> {
     cmd.output()
 }
 
-/// The fixture with the switch object also listening on `1/0/9`, which the
-/// project does not define.
-fn fixture_with_undefined_ga(dir: &Path) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let text = std::fs::read_to_string(fixture())?;
-    let text = text.replace(
-        "\"group_address_links\": [\"1/0/1\"]",
-        "\"group_address_links\": [\"1/0/1\", \"1/0/9\"]",
-    );
-    let path = dir.join("project.json");
-    std::fs::write(&path, text)?;
-    Ok(path)
-}
-
-#[test]
-fn test_import_declares_a_group_address_the_project_uses_but_does_not_define() -> TestResult {
-    let tmp = tmp("declare")?;
-    let project = fixture_with_undefined_ga(&tmp)?;
-    let dir = tmp.join("knx");
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            project.to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-        ],
-        &[],
-    )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(out.status.success(), "{stdout}\n{stderr}");
-    assert!(
-        stdout.contains("added 1/0/9 \"Test Switch Actuator object 0\""),
-        "{stdout}"
-    );
-    let groups = std::fs::read_to_string(dir.join("groups.toml"))?;
-    assert!(groups.contains("\"1/0/9\""), "{groups}");
-    // Validation runs after the write and prints its summary.
-    assert!(stdout.contains("validation: 0 error(s)"), "{stdout}");
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
-/// Writes a pointer index with the given entries.
 #[test]
 fn test_import_into_a_fresh_dir_writes_the_gitignore_with_env() -> TestResult {
     let tmp = tmp("gitignore")?;
     let dir = tmp.join("knx");
+    let project = fixture(&tmp)?;
     let out = bussard(
         &[
             "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
+            project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
         ],
@@ -114,102 +71,17 @@ fn test_import_into_a_fresh_dir_writes_the_gitignore_with_env() -> TestResult {
     Ok(())
 }
 
-fn index(dir: &Path, entries: serde_json::Value) -> Result<PathBuf, Box<dyn std::error::Error>> {
-    let path = dir.join("index.json");
-    std::fs::write(
-        &path,
-        serde_json::to_vec(&serde_json::json!({ "entries": entries }))?,
-    )?;
-    Ok(path)
-}
-
-#[test]
-fn test_import_names_the_order_numbers_it_found_no_product_data_for() -> TestResult {
-    let tmp = tmp("missing")?;
-    let dir = tmp.join("knx");
-    let empty = index(&tmp, serde_json::json!([]))?;
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", empty.to_str().ok_or("path")?)],
-    )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}");
-    // The device still gets its file.
-    assert!(dir.join("devices/1.1.1.toml").is_file());
-    assert!(
-        stdout.contains("1 device(s) written without product data"),
-        "{stdout}"
-    );
-    assert!(
-        stdout.contains(
-            "TST-1: not in bussard's product index. Download the product data (.knxprod) from \
-             the manufacturer's website"
-        ),
-        "{stdout}"
-    );
-    assert!(stdout.contains("bussard import-product <file>"), "{stdout}");
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
-#[test]
-fn test_import_no_download_lists_what_the_index_could_fetch() -> TestResult {
-    let tmp = tmp("no-download")?;
-    let dir = tmp.join("knx");
-    let known = index(
-        &tmp,
-        serde_json::json!([{
-            "manufacturer": "Test Manufacturer",
-            "manufacturer_id": "M-9999",
-            "order_numbers": ["TST-1"],
-            "name": "Test Switch Actuator",
-            "url": "file:///nonexistent/never-read.knxprod",
-            "sha256": "00",
-            "size": 1,
-            "filename": "never-read.knxprod",
-        }]),
-    )?;
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-            "--no-download",
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
-    )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(out.status.success(), "{stdout}");
-    assert!(
-        stdout.contains(
-            "TST-1: in bussard's product index but --no-download; run `bussard import-product \
-             --order-number TST-1"
-        ),
-        "{stdout}"
-    );
-    assert!(!dir.join("products").exists(), "nothing downloaded");
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
 /// The first run is one command: `init <project>` writes `bussard.toml`, then
 /// imports the project into the fresh directory (not a re-import).
 #[test]
 fn test_init_with_a_project_file_imports_it() -> TestResult {
     let tmp = tmp("init")?;
     let dir = tmp.join("knx");
+    let project = fixture(&tmp)?;
     let out = bussard(
         &[
             "init",
-            fixture().to_str().ok_or("path")?,
+            project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
             "--routing",
@@ -239,259 +111,6 @@ fn test_init_with_a_project_file_imports_it() -> TestResult {
     Ok(())
 }
 
-/// A tiny fabricated `.knxprod` whose catalogue maps `TST-1` to the fixture
-/// device's application (no vendor data committed).
-fn tst_knxprod(path: &Path) -> TestResult {
-    use std::io::Write as _;
-    const APP: &str = "M-9999_A-0001-1-0000";
-    let hardware = format!(
-        r#"<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><Hardware>
-<Products><Product OrderNumber="TST-1" /></Products>
-<Hardware2Programs><Hardware2Program><ApplicationProgramRef RefId="{APP}" /></Hardware2Program></Hardware2Programs>
-</Hardware></Manufacturer></ManufacturerData></KNX>"#
-    );
-    let app = format!(
-        r#"<?xml version="1.0" encoding="utf-8"?>
-<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><ApplicationPrograms>
-<ApplicationProgram Id="{APP}" ApplicationNumber="1" ApplicationVersion="1" MaskVersion="MV-07B0" Name="Test" LoadProcedureStyle="MergedProcedure"><Static /></ApplicationProgram>
-</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#
-    );
-    let mut zip = zip::ZipWriter::new(std::fs::File::create(path)?);
-    for (name, body) in [
-        ("knx_master.xml", "<KNX/>".to_string()),
-        ("M-9999/Hardware.xml", hardware),
-        (&format!("M-9999/{APP}.xml") as &str, app),
-    ] {
-        zip.start_file(name, zip::write::SimpleFileOptions::default())?;
-        zip.write_all(body.as_bytes())?;
-    }
-    zip.finish()?;
-    Ok(())
-}
-
-#[test]
-fn test_import_pins_the_downloaded_product_data_in_the_lock() -> TestResult {
-    use sha2::Digest as _;
-    let tmp = tmp("pin")?;
-    let dir = tmp.join("knx");
-    let knxprod = tmp.join("tst.knxprod");
-    tst_knxprod(&knxprod)?;
-    let bytes = std::fs::read(&knxprod)?;
-    let sha: String = sha2::Sha256::digest(&bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    let known = index(
-        &tmp,
-        serde_json::json!([{
-            "manufacturer": "Test Manufacturer",
-            "manufacturer_id": "M-9999",
-            "order_numbers": ["TST-1"],
-            "name": "Test Switch Actuator",
-            "url": format!("file://{}", knxprod.display()),
-            "sha256": sha,
-            "size": bytes.len(),
-            "filename": "tst.knxprod",
-        }]),
-    )?;
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-            "--yes-download",
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
-    )?;
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "{stdout}\n{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
-    assert!(lock.contains("version = 3\n"), "{lock}");
-    assert!(lock.contains("[[product]]"), "{lock}");
-    assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
-    assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");
-    assert!(
-        lock.contains("origin = { kind = \"index\", order_number = \"TST-1\""),
-        "{lock}"
-    );
-    assert!(
-        lock.contains(&format!("product_sha256 = \"{sha}\"")),
-        "{lock}"
-    );
-
-    // A re-import keeps the device linked to the archive.
-    let again = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-            "--no-download",
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
-    )?;
-    assert!(again.status.success());
-    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
-    assert!(
-        lock.contains(&format!("product_sha256 = \"{sha}\"")),
-        "{lock}"
-    );
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
-/// An index entry that names an inner `.knxprod` of a ZIP-served download
-/// (`inner`) stores that file, not the wrapper, and pins it: the wrapper holds
-/// two archives, which no later command could choose between.
-#[test]
-fn test_import_stores_the_indexed_inner_knxprod_of_a_wrapper() -> TestResult {
-    use sha2::Digest as _;
-    use std::io::Write as _;
-    let tmp = tmp("pin-inner")?;
-    let dir = tmp.join("knx");
-    let knxprod = tmp.join("tst.knxprod");
-    tst_knxprod(&knxprod)?;
-    let inner = std::fs::read(&knxprod)?;
-    let bundle = tmp.join("bundle.zip");
-    {
-        let mut zip = zip::ZipWriter::new(std::fs::File::create(&bundle)?);
-        let opts = zip::write::SimpleFileOptions::default();
-        zip.start_file("db/tst.knxprod", opts)?;
-        zip.write_all(&inner)?;
-        zip.start_file("db/older.knxprod", opts)?;
-        zip.write_all(&inner)?;
-        zip.finish()?;
-    }
-    let bytes = std::fs::read(&bundle)?;
-    let hex = |b: &[u8]| -> String {
-        sha2::Sha256::digest(b)
-            .iter()
-            .map(|x| format!("{x:02x}"))
-            .collect()
-    };
-    let known = index(
-        &tmp,
-        serde_json::json!([{
-            "manufacturer": "Test Manufacturer",
-            "manufacturer_id": "M-9999",
-            "order_numbers": ["TST-1"],
-            "name": "Test Switch Actuator",
-            "url": format!("file://{}", bundle.display()),
-            "sha256": hex(&bytes),
-            "size": bytes.len(),
-            "filename": "bundle.zip",
-            "inner": "db/tst.knxprod",
-        }]),
-    )?;
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-            "--yes-download",
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
-    )?;
-    assert!(
-        out.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(std::fs::read(dir.join("products/tst.knxprod"))?, inner);
-    assert!(!dir.join("products/bundle.zip").exists());
-    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
-    assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");
-    assert!(
-        lock.contains(&format!("sha256 = \"{}\"", hex(&inner))),
-        "{lock}"
-    );
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
-/// Issue #711: a vendor serves a ZIP bundling several products while the
-/// index entry's size and SHA-256 describe one inner `.knxprod` (Ekinex
-/// EK-E72). The matching inner file is stored and pinned; the others are
-/// ignored.
-#[test]
-fn test_import_stores_the_inner_knxprod_matching_the_index_of_a_bundle() -> TestResult {
-    use sha2::Digest as _;
-    use std::io::Write as _;
-    let tmp = tmp("bundle-inner-hash")?;
-    let dir = tmp.join("knx");
-    let knxprod = tmp.join("tst.knxprod");
-    tst_knxprod(&knxprod)?;
-    let inner = std::fs::read(&knxprod)?;
-    let bundle = tmp.join("bundle.zip");
-    {
-        let mut zip = zip::ZipWriter::new(std::fs::File::create(&bundle)?);
-        let opts = zip::write::SimpleFileOptions::default();
-        zip.start_file("APTST01.knxprod", opts)?;
-        zip.write_all(b"an older product of the bundle")?;
-        zip.start_file("APTST03.knxprod", opts)?;
-        zip.write_all(&inner)?;
-        zip.start_file("readme.txt", opts)?;
-        zip.write_all(b"four products")?;
-        zip.finish()?;
-    }
-    let hex = |b: &[u8]| -> String {
-        sha2::Sha256::digest(b)
-            .iter()
-            .map(|x| format!("{x:02x}"))
-            .collect()
-    };
-    let known = index(
-        &tmp,
-        serde_json::json!([{
-            "manufacturer": "Test Manufacturer",
-            "manufacturer_id": "M-9999",
-            "order_numbers": ["TST-1"],
-            "name": "Test Switch Actuator",
-            "url": format!("file://{}", bundle.display()),
-            "sha256": hex(&inner),
-            "size": inner.len(),
-            "filename": "APTST03.knxprod",
-        }]),
-    )?;
-    let out = bussard(
-        &[
-            "import",
-            "--from-json",
-            fixture().to_str().ok_or("path")?,
-            "--dir",
-            dir.to_str().ok_or("path")?,
-            "--yes-download",
-        ],
-        &[("BUSSARD_PRODUCT_INDEX", known.to_str().ok_or("path")?)],
-    )?;
-    assert!(
-        out.status.success(),
-        "{}\n{}",
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(std::fs::read(dir.join("products/APTST03.knxprod"))?, inner);
-    assert!(!dir.join("products/bundle.zip").exists());
-    assert!(!dir.join("products/APTST01.knxprod").exists());
-    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
-    assert!(
-        lock.contains("file = \"products/APTST03.knxprod\""),
-        "{lock}"
-    );
-    std::fs::remove_dir_all(&tmp)?;
-    Ok(())
-}
-
 /// Issue #205: a `.knxkeys` exported next to the project is recorded as
 /// `connection.keyring` (relative to the model directory), `init` prints the
 /// password reminder, and `validate` resolves the recorded path. The keyring
@@ -499,8 +118,7 @@ fn test_import_stores_the_inner_knxprod_matching_the_index_of_a_bundle() -> Test
 #[test]
 fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
     let tmp = tmp("init-keyring")?;
-    let project = tmp.join("project.json");
-    std::fs::copy(fixture(), &project)?;
+    let project = fixture(&tmp)?;
     let synthetic = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../knx-sim/examples/secure/synthetic.knxkeys");
     std::fs::copy(&synthetic, tmp.join("Site.knxkeys"))?;
@@ -571,8 +189,7 @@ fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
 #[test]
 fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> TestResult {
     let tmp = tmp("init-keystore")?;
-    let project = tmp.join("project.json");
-    std::fs::copy(fixture(), &project)?;
+    let project = fixture(&tmp)?;
     let synthetic = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../knx-sim/examples/secure/synthetic.knxkeys");
     std::fs::copy(&synthetic, tmp.join("Site.knxkeys"))?;
@@ -612,7 +229,6 @@ fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> Te
     let out = bussard(
         &[
             "import",
-            "--from-json",
             project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
@@ -628,7 +244,6 @@ fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> Te
     let out = bussard(
         &[
             "import",
-            "--from-json",
             project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,

@@ -42,7 +42,7 @@ struct Context<'a> {
 }
 
 fn random_b64<const N: usize>() -> Result<String, BoxError> {
-    Ok(URL_SAFE_NO_PAD.encode(bussard_secure::enroll::random::<N>()?))
+    Ok(URL_SAFE_NO_PAD.encode(bussard_secure::random_bytes::<N>()?))
 }
 
 /// `value` with every `{"$envelope": name}` replaced by that fixture.

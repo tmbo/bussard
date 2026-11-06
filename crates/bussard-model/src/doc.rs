@@ -11,8 +11,8 @@
 //!
 //! 1. [`InstallationDoc::build`] projects a [`Model`] (plus the cached
 //!    [`ProductModels`], when present) into a flat, sorted document model.
-//! 2. [`InstallationDoc::render`] turns that into a set of [`DocFile`]s, either
-//!    Markdown or self-contained HTML.
+//! 2. [`InstallationDoc::render`] turns that into a set of Markdown
+//!    [`DocFile`]s.
 //!
 //! # Determinism
 //!
@@ -33,20 +33,10 @@ use crate::address::GroupAddress;
 use crate::loader::Model;
 use crate::param_model::ProductModels;
 use crate::schema::Transport;
-use crate::text::escape_html;
 
 /// How many commits the change log carries. Enough to see the recent history of
 /// an installation without turning the folder into a repository mirror.
 const CHANGELOG_LIMIT: usize = 50;
-
-/// The rendered output format.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocFormat {
-    /// Markdown, one `.md` file per section.
-    Markdown,
-    /// Self-contained HTML, one `.html` file per section.
-    Html,
-}
 
 /// An error writing the rendered documentation to disk.
 #[derive(Debug, thiserror::Error)]
@@ -305,11 +295,11 @@ impl InstallationDoc {
         }
     }
 
-    /// Renders the documentation set into files, in the requested format.
+    /// Renders the documentation set into Markdown files, one per section.
     ///
     /// The returned paths are relative to the output directory and sorted, so
     /// writing them is a straight loop and two runs write the same bytes.
-    pub fn render(&self, format: DocFormat) -> Vec<DocFile> {
+    pub fn render(&self) -> Vec<DocFile> {
         let mut pages: Vec<(String, String)> = vec![
             ("index".to_string(), self.index_markdown()),
             ("devices".to_string(), self.devices_markdown()),
@@ -331,15 +321,9 @@ impl InstallationDoc {
 
         pages
             .into_iter()
-            .map(|(stem, markdown)| match format {
-                DocFormat::Markdown => DocFile {
-                    path: format!("{stem}.md"),
-                    content: markdown,
-                },
-                DocFormat::Html => DocFile {
-                    path: format!("{stem}.html"),
-                    content: html_page(&first_heading(&markdown), &markdown),
-                },
+            .map(|(stem, content)| DocFile {
+                path: format!("{stem}.md"),
+                content,
             })
             .collect()
     }
@@ -995,244 +979,6 @@ fn slug(value: &str) -> String {
     }
 }
 
-/// The text of the document's first `# ` heading, used as the HTML title.
-fn first_heading(markdown: &str) -> String {
-    markdown
-        .lines()
-        .find_map(|line| line.strip_prefix("# "))
-        .unwrap_or("bussard")
-        .to_string()
-}
-
-// ---------------------------------------------------------------------------
-// Markdown to HTML
-// ---------------------------------------------------------------------------
-
-/// Wraps rendered HTML in a self-contained page.
-///
-/// The style sheet is inline on purpose: each page must open from the file
-/// system with no server and no assets beside it, because that is how a handover
-/// folder is actually read.
-fn html_page(title: &str, markdown: &str) -> String {
-    format!(
-        "<!DOCTYPE html>\n\
-         <html lang=\"en\">\n\
-         <head>\n\
-         <meta charset=\"utf-8\">\n\
-         <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\
-         <title>{}</title>\n\
-         <style>\n{}\n</style>\n\
-         </head>\n\
-         <body>\n<main>\n{}</main>\n</body>\n</html>\n",
-        escape_html(title),
-        STYLE,
-        markdown_to_html(markdown)
-    )
-}
-
-/// The inline style sheet for the HTML pages: the viz server's palette, reduced
-/// to what a static document needs.
-const STYLE: &str = "\
-:root { color-scheme: light dark; --fg: #1b1f24; --bg: #ffffff; --muted: #5c6773; --line: #d8dee4; --accent: #0b6bcb; }
-@media (prefers-color-scheme: dark) {
-  :root { --fg: #e6edf3; --bg: #0d1117; --muted: #8b949e; --line: #30363d; --accent: #58a6ff; }
-}
-body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.6 system-ui, -apple-system, \"Segoe UI\", sans-serif; }
-main { max-width: 60rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
-h1, h2, h3 { line-height: 1.25; }
-h1 { border-bottom: 1px solid var(--line); padding-bottom: .3rem; }
-a { color: var(--accent); }
-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; background: color-mix(in srgb, var(--fg) 8%, transparent); padding: .1em .35em; border-radius: 4px; }
-table { border-collapse: collapse; width: 100%; margin: 1rem 0; font-size: .95rem; }
-th, td { border: 1px solid var(--line); padding: .4rem .6rem; text-align: left; vertical-align: top; }
-th { background: color-mix(in srgb, var(--fg) 6%, transparent); }
-ul { padding-left: 1.2rem; }
-p { margin: .8rem 0; }";
-
-/// Converts the Markdown subset this module emits into HTML.
-///
-/// The subset is fixed and small — headings, paragraphs, unordered lists, pipe
-/// tables, and inline bold/code/links — so a dedicated converter is a few dozen
-/// lines and costs no dependency. Anything outside the subset is passed through
-/// as escaped text rather than guessed at.
-fn markdown_to_html(markdown: &str) -> String {
-    let mut out = String::new();
-    let lines: Vec<&str> = markdown.lines().collect();
-    let mut i = 0;
-    while i < lines.len() {
-        let line = lines[i];
-        let trimmed = line.trim_end();
-
-        if trimmed.is_empty() {
-            i += 1;
-            continue;
-        }
-
-        if let Some(rest) = trimmed.strip_prefix("### ") {
-            let _ = writeln!(out, "<h3>{}</h3>", inline(rest));
-            i += 1;
-        } else if let Some(rest) = trimmed.strip_prefix("## ") {
-            let _ = writeln!(out, "<h2>{}</h2>", inline(rest));
-            i += 1;
-        } else if let Some(rest) = trimmed.strip_prefix("# ") {
-            let _ = writeln!(out, "<h1>{}</h1>", inline(rest));
-            i += 1;
-        } else if is_table_row(trimmed) && i + 1 < lines.len() && is_table_divider(lines[i + 1]) {
-            let header = table_cells(trimmed);
-            i += 2;
-            let _ = writeln!(out, "<table>");
-            let _ = write!(out, "<thead><tr>");
-            for cell in header {
-                let _ = write!(out, "<th>{}</th>", inline(&cell));
-            }
-            let _ = writeln!(out, "</tr></thead>");
-            let _ = writeln!(out, "<tbody>");
-            while i < lines.len() && is_table_row(lines[i].trim_end()) {
-                let _ = write!(out, "<tr>");
-                for cell in table_cells(lines[i].trim_end()) {
-                    let _ = write!(out, "<td>{}</td>", inline(&cell));
-                }
-                let _ = writeln!(out, "</tr>");
-                i += 1;
-            }
-            let _ = writeln!(out, "</tbody></table>");
-        } else if trimmed.starts_with("- ") {
-            let _ = writeln!(out, "<ul>");
-            while i < lines.len() {
-                let Some(item) = lines[i].trim_end().strip_prefix("- ") else {
-                    break;
-                };
-                let _ = writeln!(out, "<li>{}</li>", inline(item));
-                i += 1;
-            }
-            let _ = writeln!(out, "</ul>");
-        } else {
-            // A paragraph: consecutive non-empty, non-structural lines.
-            let mut paragraph = Vec::new();
-            while i < lines.len() {
-                let current = lines[i].trim_end();
-                if current.is_empty()
-                    || current.starts_with('#')
-                    || current.starts_with("- ")
-                    || is_table_row(current)
-                {
-                    break;
-                }
-                paragraph.push(current.trim());
-                i += 1;
-            }
-            let _ = writeln!(out, "<p>{}</p>", inline(&paragraph.join(" ")));
-        }
-    }
-    out
-}
-
-fn is_table_row(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1
-}
-
-fn is_table_divider(line: &str) -> bool {
-    is_table_row(line)
-        && line
-            .trim()
-            .trim_matches('|')
-            .split('|')
-            .all(|c| !c.trim().is_empty() && c.trim().chars().all(|ch| ch == '-' || ch == ':'))
-}
-
-fn table_cells(line: &str) -> Vec<String> {
-    let trimmed = line.trim();
-    let inner = &trimmed[1..trimmed.len() - 1];
-    // Split on unescaped pipes, honouring the `\|` escape `escape_cell` writes.
-    let mut cells = Vec::new();
-    let mut current = String::new();
-    let mut escaped = false;
-    for ch in inner.chars() {
-        if escaped {
-            if ch != '|' {
-                current.push('\\');
-            }
-            current.push(ch);
-            escaped = false;
-        } else if ch == '\\' {
-            escaped = true;
-        } else if ch == '|' {
-            cells.push(current.trim().to_string());
-            current = String::new();
-        } else {
-            current.push(ch);
-        }
-    }
-    if escaped {
-        current.push('\\');
-    }
-    cells.push(current.trim().to_string());
-    cells
-}
-
-/// Converts inline Markdown (bold, code, links) to HTML, escaping everything
-/// else. Link targets ending in `.md` are rewritten to `.html` so the HTML
-/// folder links within itself.
-fn inline(text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    let mut out = String::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let ch = chars[i];
-        if ch == '`'
-            && let Some(end) = find_char(&chars, i + 1, '`')
-        {
-            let code: String = chars[i + 1..end].iter().collect();
-            let _ = write!(out, "<code>{}</code>", escape_html(&code));
-            i = end + 1;
-            continue;
-        }
-        if ch == '*'
-            && i + 1 < chars.len()
-            && chars[i + 1] == '*'
-            && let Some(end) = find_pair(&chars, i + 2)
-        {
-            let bold: String = chars[i + 2..end].iter().collect();
-            let _ = write!(out, "<strong>{}</strong>", escape_html(&bold));
-            i = end + 2;
-            continue;
-        }
-        if ch == '['
-            && let Some(close) = find_char(&chars, i + 1, ']')
-            && close + 1 < chars.len()
-            && chars[close + 1] == '('
-            && let Some(paren) = find_char(&chars, close + 2, ')')
-        {
-            let label: String = chars[i + 1..close].iter().collect();
-            let target: String = chars[close + 2..paren].iter().collect();
-            let target = match target.strip_suffix(".md") {
-                Some(stem) => format!("{stem}.html"),
-                None => target,
-            };
-            let _ = write!(
-                out,
-                "<a href=\"{}\">{}</a>",
-                escape_html(&target),
-                escape_html(&label)
-            );
-            i = paren + 1;
-            continue;
-        }
-        out.push_str(&escape_html(ch.encode_utf8(&mut [0; 4])));
-        i += 1;
-    }
-    out
-}
-
-fn find_char(chars: &[char], from: usize, needle: char) -> Option<usize> {
-    (from..chars.len()).find(|&i| chars[i] == needle)
-}
-
-fn find_pair(chars: &[char], from: usize) -> Option<usize> {
-    (from..chars.len().saturating_sub(1)).find(|&i| chars[i] == '*' && chars[i + 1] == '*')
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1291,26 +1037,6 @@ mod tests {
         assert_eq!(slug("EG"), "eg");
         assert_eq!(slug("Wohnzimmer / Küche"), "wohnzimmer-k-che");
         assert_eq!(slug("!!!"), "unnamed");
-    }
-
-    #[test]
-    fn test_markdown_to_html_table_and_list() {
-        let md = "# Title\n\nSome text.\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n- one\n- two\n";
-        let html = markdown_to_html(md);
-        assert!(html.contains("<h1>Title</h1>"));
-        assert!(html.contains("<p>Some text.</p>"));
-        assert!(html.contains("<th>A</th>"));
-        assert!(html.contains("<td>2</td>"));
-        assert!(html.contains("<li>one</li>"));
-    }
-
-    #[test]
-    fn test_inline_rewrites_md_links_to_html() {
-        assert_eq!(
-            inline("see [Devices](devices.md)"),
-            "see <a href=\"devices.html\">Devices</a>"
-        );
-        assert_eq!(inline("a < b & c"), "a &lt; b &amp; c");
     }
 
     #[test]

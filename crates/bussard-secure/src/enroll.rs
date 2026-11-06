@@ -15,7 +15,7 @@
 //!
 //! # Key hygiene
 //!
-//! [`EnrollKeyPair`] and [`SessionKey`] zeroize on drop, have a redacted
+//! [`X25519KeyPair`] and [`SessionKey`] zeroize on drop, have a redacted
 //! `Debug` and no accessor for their bytes outside this module. Decrypted
 //! plaintext comes back as [`Zeroizing`] because it carries the certificate
 //! text, which holds the device's FDSK.
@@ -26,8 +26,9 @@ use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use x25519_dalek::{PublicKey, StaticSecret};
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::Zeroizing;
+
+use crate::crypto::{CryptoError, X25519KeyPair};
 
 /// The protocol label: the HKDF `info` prefix and the AAD prefix.
 pub const PROTOCOL: &str = "bussard-enroll-v2";
@@ -69,9 +70,9 @@ impl Direction {
 /// Errors of the enrolment crypto. None carries key or plaintext bytes.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum EnrollError {
-    /// The operating system's random source failed.
-    #[error("the OS random source failed: {0}")]
-    Random(String),
+    /// The OS random source failed.
+    #[error(transparent)]
+    Crypto(#[from] CryptoError),
     /// The X25519 shared secret was all zero (a low-order peer key).
     #[error("the peer public key is not contributory (all-zero shared secret)")]
     NonContributory,
@@ -86,49 +87,7 @@ pub enum EnrollError {
     Open,
 }
 
-/// An X25519 key pair of one side of a session: bussard's one-time pair
-/// `(b_sk, b_pk)` or a phone page's `(p_sk, p_pk)`.
-pub struct EnrollKeyPair {
-    secret: StaticSecret,
-    public: PublicKey,
-}
-
-impl std::fmt::Debug for EnrollKeyPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EnrollKeyPair")
-            .field("public", &URL_SAFE_NO_PAD.encode(self.public.as_bytes()))
-            .finish_non_exhaustive()
-    }
-}
-
-impl EnrollKeyPair {
-    /// A fresh key pair from the OS random source.
-    ///
-    /// # Errors
-    ///
-    /// [`EnrollError::Random`] when the random source fails.
-    pub fn generate() -> Result<Self, EnrollError> {
-        let mut bytes = random::<32>()?;
-        let pair = Self::from_secret(bytes);
-        bytes.zeroize();
-        Ok(pair)
-    }
-
-    /// The key pair whose secret scalar is `secret` (the test vectors and a
-    /// test's fake phone; production code calls [`EnrollKeyPair::generate`]).
-    #[must_use]
-    pub fn from_secret(secret: [u8; 32]) -> Self {
-        let secret = StaticSecret::from(secret);
-        let public = PublicKey::from(&secret);
-        Self { secret, public }
-    }
-
-    /// The public key.
-    #[must_use]
-    pub fn public(&self) -> [u8; PUBLIC_KEY_LEN] {
-        self.public.to_bytes()
-    }
-
+impl X25519KeyPair {
     /// bussard's side: the session key for the phone whose public key is
     /// `phone_pk`, in session `sid`.
     ///
@@ -161,7 +120,7 @@ impl EnrollKeyPair {
 
     /// The X25519 shared secret with `peer`, refusing the all-zero result.
     fn shared(&self, peer: &[u8; PUBLIC_KEY_LEN]) -> Result<Zeroizing<[u8; 32]>, EnrollError> {
-        let shared = self.secret.diffie_hellman(&PublicKey::from(*peer));
+        let shared = self.shared_secret(peer);
         if !shared.was_contributory() {
             return Err(EnrollError::NonContributory);
         }
@@ -212,14 +171,14 @@ impl SessionKey {
     ///
     /// # Errors
     ///
-    /// [`EnrollError::Random`] or [`EnrollError::Seal`].
+    /// [`EnrollError::Crypto`] or [`EnrollError::Seal`].
     pub fn seal_random(
         &self,
         direction: Direction,
         sid: &[u8; SESSION_ID_LEN],
         plaintext: &[u8],
     ) -> Result<([u8; NONCE_LEN], Vec<u8>), EnrollError> {
-        let nonce = random::<NONCE_LEN>()?;
+        let nonce = crate::crypto::random_bytes::<NONCE_LEN>()?;
         let sealed = self.seal(direction, sid, &nonce, plaintext)?;
         Ok((nonce, sealed))
     }
@@ -318,17 +277,6 @@ fn percent_encode(text: &str) -> String {
     out
 }
 
-/// `N` bytes from the OS random source (a session id, an owner token).
-///
-/// # Errors
-///
-/// [`EnrollError::Random`] when the random source fails.
-pub fn random<const N: usize>() -> Result<[u8; N], EnrollError> {
-    let mut out = [0u8; N];
-    getrandom::getrandom(&mut out).map_err(|e| EnrollError::Random(e.to_string()))?;
-    Ok(out)
-}
-
 /// HKDF-SHA256 (RFC 5869) with a 32-byte output: one expand block.
 fn derive_key(
     shared: &[u8; 32],
@@ -388,16 +336,16 @@ mod tests {
     }
 
     struct Session {
-        bussard: EnrollKeyPair,
-        phone: EnrollKeyPair,
+        bussard: X25519KeyPair,
+        phone: X25519KeyPair,
         sid: [u8; SESSION_ID_LEN],
     }
 
     fn session(v: &serde_json::Value) -> Result<Session, Box<dyn std::error::Error>> {
         let s = &v["session"];
         Ok(Session {
-            bussard: EnrollKeyPair::from_secret(hex(field(s, "bussard_secret")?)?),
-            phone: EnrollKeyPair::from_secret(hex(field(s, "phone_secret")?)?),
+            bussard: X25519KeyPair::from_secret(hex(field(s, "bussard_secret")?)?),
+            phone: X25519KeyPair::from_secret(hex(field(s, "phone_secret")?)?),
             sid: b64(field(s, "session_id")?)?,
         })
     }
@@ -453,7 +401,7 @@ mod tests {
         let key = session
             .bussard
             .bussard_key(&session.sid, &session.phone.public())?;
-        let other = EnrollKeyPair::from_secret(hex(field(&v["other_phone"], "phone_secret")?)?);
+        let other = X25519KeyPair::from_secret(hex(field(&v["other_phone"], "phone_secret")?)?);
         let other_key: [u8; 32] = hex(field(&v["other_phone"], "key")?)?;
         assert_eq!(
             *session
@@ -520,7 +468,7 @@ mod tests {
 
     #[test]
     fn test_bussard_key_rejects_low_order_point() -> TestResult {
-        let pair = EnrollKeyPair::generate()?;
+        let pair = X25519KeyPair::generate()?;
         let sid = [7u8; SESSION_ID_LEN];
         assert_eq!(
             pair.bussard_key(&sid, &[0u8; PUBLIC_KEY_LEN]).map(|_| ()),
@@ -538,8 +486,8 @@ mod tests {
 
     #[test]
     fn test_debug_redacts_keys() -> TestResult {
-        let pair = EnrollKeyPair::from_secret([9; 32]);
-        let key = pair.bussard_key(&[1; 16], &EnrollKeyPair::generate()?.public())?;
+        let pair = X25519KeyPair::from_secret([9; 32]);
+        let key = pair.bussard_key(&[1; 16], &X25519KeyPair::generate()?.public())?;
         assert_eq!(format!("{key:?}"), "SessionKey(<redacted>)");
         assert!(!format!("{pair:?}").contains("secret"));
         Ok(())

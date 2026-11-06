@@ -34,9 +34,9 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use bussard_secure::X25519KeyPair;
 use bussard_secure::enroll::{
-    Direction, EnrollError, EnrollKeyPair, NONCE_LEN, PUBLIC_KEY_LEN, SESSION_ID_LEN, SessionKey,
-    VERSION,
+    Direction, EnrollError, NONCE_LEN, PUBLIC_KEY_LEN, SESSION_ID_LEN, SessionKey, VERSION,
 };
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, Zeroizing};
@@ -469,7 +469,7 @@ enum Opened {
 /// bussard's side of one enrolment session.
 pub struct EnrollSession {
     sid: [u8; SESSION_ID_LEN],
-    keys: EnrollKeyPair,
+    keys: X25519KeyPair,
     owner_token: Zeroizing<[u8; 32]>,
     /// The session code, derived once (it is slow on purpose).
     code: OnceLock<String>,
@@ -500,14 +500,14 @@ impl EnrollSession {
     /// [`EnrollSessionError::Crypto`] when the OS random source fails.
     pub fn new() -> Result<Self, EnrollSessionError> {
         Ok(Self::from_parts(
-            bussard_secure::enroll::random()?,
-            EnrollKeyPair::generate()?,
-            bussard_secure::enroll::random()?,
+            bussard_secure::random_bytes().map_err(EnrollError::from)?,
+            X25519KeyPair::generate().map_err(EnrollError::from)?,
+            bussard_secure::random_bytes().map_err(EnrollError::from)?,
         ))
     }
 
     /// A session from fixed parts (the test vectors).
-    fn from_parts(sid: [u8; SESSION_ID_LEN], keys: EnrollKeyPair, owner_token: [u8; 32]) -> Self {
+    fn from_parts(sid: [u8; SESSION_ID_LEN], keys: X25519KeyPair, owner_token: [u8; 32]) -> Self {
         EnrollSession {
             sid,
             keys,
@@ -915,7 +915,7 @@ mod tests {
     #[test]
     fn test_link_omits_a_relay_on_the_page_origin() -> Result<(), Box<dyn std::error::Error>> {
         let session =
-            EnrollSession::from_parts([1; 16], EnrollKeyPair::from_secret([2; 32]), [3; 32]);
+            EnrollSession::from_parts([1; 16], X25519KeyPair::from_secret([2; 32]), [3; 32]);
         let same = session.link(
             "https://relay.example/enroll/",
             Some("https://relay.example/"),
@@ -974,11 +974,11 @@ mod tests {
     /// The vectors' session and phone.
     fn vector_session(
         v: &serde_json::Value,
-    ) -> Result<(EnrollSession, EnrollKeyPair), Box<dyn std::error::Error>> {
+    ) -> Result<(EnrollSession, X25519KeyPair), Box<dyn std::error::Error>> {
         let s = &v["session"];
         let sid = decode_fixed(str_of(s, "session_id")?).ok_or("sid")?;
-        let keys = EnrollKeyPair::from_secret(hex32(str_of(s, "bussard_secret")?)?);
-        let phone = EnrollKeyPair::from_secret(hex32(str_of(s, "phone_secret")?)?);
+        let keys = X25519KeyPair::from_secret(hex32(str_of(s, "bussard_secret")?)?);
+        let phone = X25519KeyPair::from_secret(hex32(str_of(s, "phone_secret")?)?);
         Ok((EnrollSession::from_parts(sid, keys, [0x42; 32]), phone))
     }
 
@@ -1020,7 +1020,7 @@ mod tests {
     /// Opens a down envelope with `phone`'s key; returns the plaintext.
     fn open_down(
         session: &EnrollSession,
-        phone: &EnrollKeyPair,
+        phone: &X25519KeyPair,
         envelope: &Envelope,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let key = phone.phone_key(&session.sid, &session.keys.public())?;
@@ -1218,7 +1218,7 @@ mod tests {
     fn test_handle_refuses_second_phone() -> TestResult {
         let v = vectors()?;
         let (mut session, _) = vector_session(&v)?;
-        let other = EnrollKeyPair::from_secret(hex32(str_of(&v["other_phone"], "phone_secret")?)?);
+        let other = X25519KeyPair::from_secret(hex32(str_of(&v["other_phone"], "phone_secret")?)?);
         let mut store = FakeStore::default();
         let messages = v["messages"].as_array().ok_or("messages")?;
         let other_hello = envelope(&v["other_phone"]["messages"][0]["envelope"])?;
@@ -1286,7 +1286,7 @@ mod tests {
         session.handle(&envelope(&v["messages"][0]["envelope"])?, &mut store)?;
         let mut answered = 0;
         for i in 0..20u8 {
-            let phone = EnrollKeyPair::from_secret([i + 1; 32]);
+            let phone = X25519KeyPair::from_secret([i + 1; 32]);
             let key = phone.phone_key(&session.sid, &session.keys.public())?;
             let (nonce, sealed) = key.seal_random(Direction::Up, &session.sid, b"{}")?;
             let env = Envelope {

@@ -10,7 +10,7 @@ use std::time::SystemTime;
 use bussard_model::text::hex;
 
 use owo_colors::{OwoColorize, Style};
-use serde_json::json;
+use serde::Serialize;
 
 use crate::decode::{ApciKind, DecodedTelegram, DestinationRef};
 use crate::secure::SecureStatus;
@@ -192,37 +192,61 @@ fn apci_style(apci: ApciKind) -> Style {
 /// record, and the viz server extends it with a `seq` field before streaming.
 /// Keep the field set here identical between both callers.
 pub fn json_value(t: &DecodedTelegram) -> serde_json::Value {
-    let dest_type = match t.destination {
-        DestinationRef::Group(_) => "group",
-        DestinationRef::Individual(_) => "individual",
+    let record = JsonRecord {
+        ts_utc: format_rfc3339(t.timestamp),
+        source: t.source.to_string(),
+        source_name: t.source_name.as_deref(),
+        destination: t.destination.to_string(),
+        destination_name: t.destination_name.as_deref(),
+        dest_type: match t.destination {
+            DestinationRef::Group(_) => "group",
+            DestinationRef::Individual(_) => "individual",
+        },
+        apci: t.apci.tag(),
+        payload: hex(&t.payload),
+        value: t.value.as_ref().map(|v| v.to_string()),
+        dpt: t.dpt.map(|d| d.to_string()),
+        object_name: t.object_name.as_deref(),
+        note: t.decode_note.as_deref(),
+        secure: t.secure.as_ref().map(|info| JsonSecure {
+            secured: info.verified(),
+            secure_status: info.status.tag(),
+            secure_seq: info.sequence,
+            secure_raw: info.raw_asdu.as_deref().map(hex),
+            secure_warning: info.warning.as_deref(),
+        }),
     };
-    let payload_hex = hex(&t.payload);
+    // Strings, numbers, booleans and options only: serialization cannot fail.
+    serde_json::to_value(record).unwrap_or_default()
+}
 
-    let mut value = json!({
-        "ts_utc": format_rfc3339(t.timestamp),
-        "source": t.source.to_string(),
-        "source_name": t.source_name,
-        "destination": t.destination.to_string(),
-        "destination_name": t.destination_name,
-        "dest_type": dest_type,
-        "apci": t.apci.tag(),
-        "payload": payload_hex,
-        "value": t.value.as_ref().map(|v| v.to_string()),
-        "dpt": t.dpt.map(|d| d.to_string()),
-        "object_name": t.object_name,
-        "note": t.decode_note,
-    });
-    if let (Some(info), Some(obj)) = (&t.secure, value.as_object_mut()) {
-        obj.insert("secured".into(), json!(info.verified()));
-        obj.insert("secure_status".into(), json!(info.status.tag()));
-        obj.insert("secure_seq".into(), json!(info.sequence));
-        obj.insert(
-            "secure_raw".into(),
-            json!(info.raw_asdu.as_deref().map(hex)),
-        );
-        obj.insert("secure_warning".into(), json!(info.warning));
-    }
-    value
+/// The JSON Lines record of [`json_value`]; the field names are the contract.
+#[derive(Serialize)]
+struct JsonRecord<'a> {
+    ts_utc: String,
+    source: String,
+    source_name: Option<&'a str>,
+    destination: String,
+    destination_name: Option<&'a str>,
+    dest_type: &'static str,
+    apci: &'static str,
+    payload: String,
+    value: Option<String>,
+    dpt: Option<String>,
+    object_name: Option<&'a str>,
+    note: Option<&'a str>,
+    #[serde(flatten)]
+    secure: Option<JsonSecure<'a>>,
+}
+
+/// The KNX Data Secure fields of a [`JsonRecord`].
+#[derive(Serialize)]
+struct JsonSecure<'a> {
+    secured: bool,
+    secure_status: &'static str,
+    secure_seq: u64,
+    secure_raw: Option<String>,
+    secure_warning: Option<&'a str>,
 }
 
 /// A single JSON Lines record for a telegram, with stable field names.
@@ -460,6 +484,20 @@ mod tests {
         // A plain telegram carries none of the secure fields.
         let plain = json_value(&sample()?);
         assert!(plain.get("secured").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_json_line_snapshot() -> TestResult {
+        assert_eq!(
+            json_line(&sample()?),
+            r#"{"apci":"write","dest_type":"group","destination":"3/2/0","destination_name":"Windalarm","dpt":"1.005","note":null,"object_name":"Windalarm 1","payload":"01","source":"1.1.30","source_name":"Meteodata","ts_utc":"1970-01-01T00:00:01.500Z","value":"Alarm"}"#
+        );
+        let line = json_line(&secured(SecureStatus::MacFailed, Some("stale"))?);
+        assert_eq!(
+            line,
+            r#"{"apci":"write","dest_type":"group","destination":"3/2/0","destination_name":"Windalarm","dpt":"1.005","note":null,"object_name":"Windalarm 1","payload":"01","secure_raw":"10ab","secure_seq":275080000001,"secure_status":"mac_failed","secure_warning":"stale","secured":false,"source":"1.1.30","source_name":"Meteodata","ts_utc":"1970-01-01T00:00:01.500Z","value":"Alarm"}"#
+        );
         Ok(())
     }
 }

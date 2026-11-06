@@ -47,6 +47,8 @@ tokio = { workspace = true }
 serde_json = { workspace = true }
 # The mock device the property read-back test reads from (a workspace crate).
 bussard-testkit = { workspace = true }
+# Fabricated .knxprod archives and download wrappers in the product-store tests.
+zip = { workspace = true }
 
 [lints]
 workspace = true

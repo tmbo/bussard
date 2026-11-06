@@ -31,7 +31,8 @@ use bussard_mcp::state::{BusStatus, ReadLimiter};
 use bussard_model::Model;
 use bussard_project::KeyStore;
 use bussard_project::keystore::SerialNumber;
-use bussard_secure::enroll::{Direction, EnrollKeyPair, SessionKey};
+use bussard_secure::X25519KeyPair;
+use bussard_secure::enroll::{Direction, SessionKey};
 use bussard_service::enroll_session::Timeouts;
 use bussard_service::enroll_session::{DownMessage, EnrollStatus, Envelope};
 use bussard_transport::TransportKind;
@@ -315,7 +316,7 @@ fn percent_decode(text: &str) -> Result<String, BoxError> {
 /// The enrolment page, minus the camera: the protocol crypto over the
 /// relay's phone-side endpoints, as `web/enroll/` does it.
 struct FakePhone {
-    keys: EnrollKeyPair,
+    keys: X25519KeyPair,
     key: SessionKey,
     sid: [u8; 16],
     session_url: String,
@@ -341,7 +342,7 @@ impl FakePhone {
             .decode(params.get("k").ok_or("no key")?)?
             .as_slice()
             .try_into()?;
-        let keys = EnrollKeyPair::generate()?;
+        let keys = X25519KeyPair::generate()?;
         let key = keys.phone_key(&sid, &b_pk)?;
         Ok(FakePhone {
             keys,

@@ -64,7 +64,9 @@ use bussard_service::{BusService, WritePolicy};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::WriteGate;
 
-use crate::state::{AppState, BusStatus, ModelHandle, Security};
+use bussard_service::ModelHandle;
+
+use crate::state::{AppState, BusStatus, Projection, Security};
 use crate::traffic::TrafficHub;
 
 /// Configuration for the viz server.
@@ -209,7 +211,7 @@ pub fn build_state(config: &VizConfig) -> Result<BuiltState, VizError> {
         dir: config.dir.display().to_string(),
         source,
     })?;
-    let model = ModelHandle::watching(config.dir.clone(), model);
+    let model = ModelHandle::new(config.dir.clone(), model);
     let security = Security {
         allow_writes: config.allow_writes,
         allowed_hosts: std::sync::Arc::new(
@@ -303,6 +305,7 @@ pub fn state_with_feed(
     };
     let state = AppState {
         model,
+        projection: Projection::default(),
         dir,
         hub,
         bus,
@@ -364,7 +367,8 @@ mod tests {
             devices: BTreeMap::new(),
         };
         AppState {
-            model: ModelHandle::new(model),
+            model: ModelHandle::fixed(model),
+            projection: Projection::default(),
             dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
@@ -386,12 +390,9 @@ mod tests {
 
     #[test]
     fn test_state_with_feed_without_bus_is_model_only() {
-        let shared = bussard_service::ModelHandle::fixed(
-            empty_state().model.current().model.as_ref().clone(),
-        );
-        let model = ModelHandle::from_shared(shared.clone(), None);
+        let shared = ModelHandle::fixed(empty_state().model.current().as_ref().clone());
         let (state, feeder) = state_with_feed(
-            model,
+            shared.clone(),
             std::path::PathBuf::from("."),
             None,
             Security::default(),
@@ -401,16 +402,16 @@ mod tests {
         assert!(!state.security.allow_writes);
         // The page projects the caller's handle: an install there is the next
         // version here.
-        let before = state.model.current().version;
-        shared.install(empty_state().model.current().model.as_ref().clone());
-        assert!(state.model.current().version > before);
+        let before = state.model_json().0;
+        shared.install(empty_state().model.current().as_ref().clone());
+        assert!(state.model_json().0 > before);
     }
 
     #[test]
     fn test_empty_model_projection_shape() {
         let state = empty_state();
-        let snapshot = state.model.current();
-        let v: &Value = snapshot.json.as_ref();
+        let (_, json) = state.model_json();
+        let v: &Value = json.as_ref();
         assert_eq!(v["stats"]["devices"], 0);
         assert_eq!(v["stats"]["groups"], 0);
         assert!(v["devices"].as_array().expect("devices").is_empty());
@@ -564,7 +565,8 @@ mod tests {
             devices: BTreeMap::new(),
         };
         AppState {
-            model: ModelHandle::new(model),
+            model: ModelHandle::fixed(model),
+            projection: Projection::default(),
             dir: std::path::PathBuf::from("."),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
@@ -997,7 +999,8 @@ mod tests {
     fn state_from_dir(dir: &Path) -> AppState {
         let model = Model::load(dir).expect("model loads from dir");
         AppState {
-            model: ModelHandle::new(model),
+            model: ModelHandle::fixed(model),
+            projection: Projection::default(),
             dir: dir.to_path_buf(),
             hub: TrafficHub::new(),
             bus: BusStatus::none(),
@@ -1037,12 +1040,12 @@ mod tests {
         // disk and reload: the swap must report the new stats and version 2.
         let tmp = tempfile::tempdir()?;
         let state = state_from_dir(tmp.path());
-        assert_eq!(state.model.current().version, 1);
-        assert_eq!(state.model.current().json["stats"]["groups"], 0);
+        assert_eq!(state.model_json().0, 1);
+        assert_eq!(state.model_json().1["stats"]["groups"], 0);
 
         write_valid_groups(tmp.path());
 
-        let handle = state.model.clone();
+        let handle = state.clone();
         let (status, body) = call(state, empty_post("/api/reload")).await;
         assert_eq!(status, StatusCode::OK);
         let v = json(&body);
@@ -1051,8 +1054,8 @@ mod tests {
         assert_eq!(v["stats"]["groups"], 1);
 
         // The swap is visible through the shared handle.
-        assert_eq!(handle.current().version, 2);
-        assert_eq!(handle.current().json["stats"]["groups"], 1);
+        assert_eq!(handle.model_json().0, 2);
+        assert_eq!(handle.model_json().1["stats"]["groups"], 1);
         Ok(())
     }
 
@@ -1064,13 +1067,13 @@ mod tests {
         let tmp = tempfile::tempdir()?;
         write_valid_groups(tmp.path());
         let state = state_from_dir(tmp.path());
-        assert_eq!(state.model.current().version, 1);
-        assert_eq!(state.model.current().json["stats"]["groups"], 1);
+        assert_eq!(state.model_json().0, 1);
+        assert_eq!(state.model_json().1["stats"]["groups"], 1);
 
         // Corrupt the file: not valid TOML for the Groups schema.
         std::fs::write(tmp.path().join("groups.toml"), b": : not toml : :\n")?;
 
-        let handle = state.model.clone();
+        let handle = state.clone();
         let (status, body) = call(state, empty_post("/api/reload")).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(json(&body)["error"]["code"], "model_invalid");
@@ -1084,8 +1087,8 @@ mod tests {
         );
 
         // The good model is untouched: still version 1, still one group.
-        assert_eq!(handle.current().version, 1);
-        assert_eq!(handle.current().json["stats"]["groups"], 1);
+        assert_eq!(handle.model_json().0, 1);
+        assert_eq!(handle.model_json().1["stats"]["groups"], 1);
         Ok(())
     }
 

@@ -163,7 +163,7 @@ impl TunnelReconnect {
 
     /// How long a TCP liveness probe waits for its answer: the shorter of the
     /// read deadline and [`TCP_LINK_PROBE_TIMEOUT`].
-    pub fn tcp_probe_timeout(&self) -> Duration {
+    pub(crate) fn tcp_probe_timeout(&self) -> Duration {
         self.tcp_read_deadline.min(TCP_LINK_PROBE_TIMEOUT)
     }
 
@@ -447,12 +447,6 @@ impl ConnectionConfig {
     /// This configuration with KNXnet/IP Secure tunnelling credentials.
     pub fn with_secure(mut self, secure: Option<SecureTunnelConfig>) -> Self {
         self.secure = secure;
-        self
-    }
-
-    /// This configuration with a different multicast TTL for routing.
-    pub fn with_multicast_ttl(mut self, ttl: u32) -> Self {
-        self.multicast_ttl = ttl;
         self
     }
 
