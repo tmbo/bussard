@@ -21,11 +21,12 @@ use bussard_model::IndividualAddress;
 use bussard_service::backup::{
     BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
+use bussard_service::line::WalkEvent;
 use bussard_service::reconstruct::{Diff, DifferenceKind, build_report};
 use bussard_service::reconstruct_line::{
-    OutDir, SweepObserver, build_summary, check_out_dir, discovery_timeouts,
-    inject_reconstruct_banners, sweep_line, synthesize_model,
+    OutDir, build_summary, check_out_dir, inject_reconstruct_banners, sweep_line, synthesize_model,
 };
+use bussard_service::scan::LineRange;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{FactsCache, identity_line};
 use rmcp::ErrorData;
@@ -297,7 +298,6 @@ impl BussardMcp {
                 model: &model,
                 source,
                 facts: &facts,
-                probe_timeouts: bussard_mgmt::Timeouts::discovery(),
                 tool_key: &tool_key,
                 user_memory_above_64k: &user_memory,
             };
@@ -426,35 +426,6 @@ impl BussardMcp {
             format!("{target}'s link tables match your project.")
         });
         Ok(out)
-    }
-}
-
-/// A [`SweepObserver`] that reports the sweep as the job's step.
-struct JobProgress {
-    /// The job table.
-    jobs: Arc<crate::jobs::JobTable>,
-    /// The sweep's job.
-    job: String,
-    /// The addresses to probe.
-    total: usize,
-    /// The addresses probed so far.
-    probed: usize,
-}
-
-impl SweepObserver for JobProgress {
-    fn probing(&mut self, addr: IndividualAddress, found: usize) {
-        self.jobs.step(
-            &self.job,
-            format!(
-                "probing {addr} ({} of {}), {found} device(s) found",
-                self.probed + 1,
-                self.total
-            ),
-        );
-    }
-
-    fn advance(&mut self) {
-        self.probed += 1;
     }
 }
 
@@ -622,22 +593,27 @@ impl BussardMcp {
                 .checked_source(false)
                 .await
                 .map_err(|e| e.to_string())?;
-            let mut progress = JobProgress {
-                jobs: Arc::clone(&state.jobs),
-                job: job.to_string(),
-                total: usize::from(to.saturating_sub(from)) + 1,
-                probed: 0,
-            };
-            let found = sweep_line(
-                service,
+            let jobs = Arc::clone(&state.jobs);
+            let range = LineRange {
                 area,
-                line_no,
+                line: line_no,
                 from,
                 to,
-                source,
-                discovery_timeouts(),
-                &mut progress,
-            )
+            };
+            let found = sweep_line(service, range, source, &mut |event| {
+                if let WalkEvent::Probing {
+                    address,
+                    index,
+                    total,
+                    found,
+                } = event
+                {
+                    jobs.step(
+                        job,
+                        format!("probing {address} ({index} of {total}), {found} device(s) found"),
+                    );
+                }
+            })
             .await;
             drop(warm);
             found

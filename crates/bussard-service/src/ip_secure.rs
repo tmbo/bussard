@@ -1236,12 +1236,9 @@ async fn connection(
             .checked_source(ctx.skip_address_check)
             .await
             .map_err(|source| SwitchError::Service { stage, source })?;
-        let options = crate::L4Options {
-            source: crate::SourcePolicy::Known(source),
-            tool_key: Some(key),
-            authorize: crate::Authorize::Skip,
-            ..crate::L4Options::default()
-        };
+        let options =
+            crate::L4Options::secured(source, Some(key), bussard_secure::SequenceHighWater::new())
+                .with_authorize(crate::Authorize::Skip);
         let mut l4 = bus
             .connect_l4(plan.target, &options)
             .await
@@ -1383,12 +1380,9 @@ pub async fn run_switch(
             .checked_source(ctx.skip_address_check)
             .await
             .map_err(|source| SwitchError::Service { stage, source })?;
-        let options = crate::L4Options {
-            source: crate::SourcePolicy::Known(source),
-            tool_key: Some(key),
-            authorize: crate::Authorize::Skip,
-            ..crate::L4Options::default()
-        };
+        let options =
+            crate::L4Options::secured(source, Some(key), bussard_secure::SequenceHighWater::new())
+                .with_authorize(crate::Authorize::Skip);
         bus.with_l4(plan.target, &options, async |l4| {
             verify(l4, plan).await.map_err(BodyError::Step)
         })

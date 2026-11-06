@@ -98,10 +98,7 @@ pub async fn identify_plain(
     address: IndividualAddress,
     options: &L4Options,
 ) -> Option<Identity> {
-    let options = L4Options {
-        tool_key: None,
-        ..options.clone()
-    };
+    let options = options.clone().with_tool_key(None);
     session(service, address, &options, true).await.ok()
 }
 
@@ -114,10 +111,7 @@ pub async fn identify_secured(
     options: &L4Options,
     tool_key: Key16,
 ) -> Option<Identity> {
-    let options = L4Options {
-        tool_key: Some(tool_key),
-        ..options.clone()
-    };
+    let options = options.clone().with_tool_key(Some(tool_key));
     session(service, address, &options, false).await.ok()
 }
 
@@ -137,11 +131,10 @@ pub async fn answers_under_factory_key(
     options: &L4Options,
     fdsk: Key16,
 ) -> bool {
-    let options = L4Options {
-        factory_key: None,
-        authorize: crate::Authorize::Skip,
-        ..options.clone()
-    };
+    let options = options
+        .clone()
+        .with_factory_key(None)
+        .with_authorize(crate::Authorize::Skip);
     identify_secured(service, address, &options, fdsk)
         .await
         .is_some()
@@ -251,10 +244,7 @@ pub async fn probe_classified(
 ) -> Result<(Identity, SecureStatus), ProbeMiss> {
     let had_key = tool_key.is_some();
     if let Some(key) = tool_key {
-        let secured = L4Options {
-            tool_key: Some(key),
-            ..options.clone()
-        };
+        let secured = options.clone().with_tool_key(Some(key));
         match session(service, address, &secured, false).await {
             Ok(identity) => return Ok((identity, SecureStatus::Activated)),
             Err(ProbeMiss::NegativeConfirmation) => return Err(ProbeMiss::NegativeConfirmation),
@@ -262,10 +252,7 @@ pub async fn probe_classified(
         }
         tracing::debug!("{address} did not answer the secured probe; trying the plain probe");
     }
-    let plain = L4Options {
-        tool_key: None,
-        ..options.clone()
-    };
+    let plain = options.clone().with_tool_key(None);
     let identity = session(service, address, &plain, true).await?;
     let status = match (identity.mask_hidden(), had_key) {
         (false, _) => SecureStatus::Plain,

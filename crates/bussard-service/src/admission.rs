@@ -580,12 +580,12 @@ pub async fn resolve_unknown(
             unread.push(format!("{device}: no tool key in the keyring or key store"));
             continue;
         };
-        let options = crate::bus::L4Options {
-            source: crate::bus::SourcePolicy::Known(sender),
-            tool_key: Some(tool_key),
-            factory_key: keys.fdsk(*device),
-            ..crate::bus::L4Options::default()
-        };
+        let options = crate::bus::L4Options::secured(
+            sender,
+            Some(tool_key),
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_factory_key(keys.fdsk(*device));
         let table = service
             .with_l4(*device, &options, async |l4| {
                 Ok::<_, crate::ServiceError>(

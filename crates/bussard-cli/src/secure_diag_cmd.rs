@@ -118,14 +118,14 @@ fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let diag = runtime
         .block_on(async move {
             let service = open_service(config, policy).await?;
-            let options = L4Options {
-                source: SourcePolicy::Check {
+            let options = L4Options::secured(
+                SourcePolicy::Check {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                factory_key,
-                ..L4Options::default()
-            };
+                bussard_secure::SequenceHighWater::new(),
+            )
+            .with_factory_key(factory_key);
             let outcome = if clear {
                 bussard_service::security_diag::clear(&service, target, &options).await
             } else {

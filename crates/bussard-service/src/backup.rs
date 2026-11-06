@@ -40,16 +40,17 @@ use bussard_download::backup::{
 };
 use bussard_download::{LiveRead, Sys7TableBases};
 use bussard_mgmt::{
-    L4Channel, Layer4Connection, MaskProfile, Timeouts, read_mcb_table, read_memory_range,
+    L4Channel, Layer4Connection, MaskProfile, read_mcb_table, read_memory_range,
     read_table_reference, system_type,
 };
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::Key16;
 
 use crate::identity::read_order;
+use crate::line::{LineError, WalkEvent, model_devices_on_line, parse_line, walk};
 use crate::secure::SecureKeyError;
 use crate::util::session_error_detail;
-use crate::{Authorize, BusService, FactsCache, L4Options, Management, ServiceError, SourcePolicy};
+use crate::{BusService, FactsCache, L4Options, Management, ServiceError};
 
 /// The largest parameter image a backup will pull off a device.
 ///
@@ -67,11 +68,8 @@ pub enum TargetError {
     #[error("parsing device address {0:?}")]
     Address(String),
     /// A `--line` argument is not `area.line`.
-    #[error("invalid line {0:?}; expected area.line like \"1.1\"")]
-    Line(String),
-    /// The area or line is out of range.
-    #[error("area and line must each be 0-15 (got {0:?})")]
-    LineRange(String),
+    #[error(transparent)]
+    Line(#[from] LineError),
 }
 
 /// Resolves the devices to back up: the explicit `addresses` (sorted, without
@@ -98,38 +96,15 @@ pub fn select_targets(
         out.dedup();
         return Ok(out);
     }
-    let all = model.devices.keys().copied();
     match line {
         Some(line) => {
             let (area, line_no) = parse_line(line)?;
-            Ok(all
-                .filter(|ia| ia.area() == area && ia.line() == line_no)
+            Ok(model_devices_on_line(model, area, line_no)
+                .map(|(ia, _)| *ia)
                 .collect())
         }
-        None => Ok(all.collect()),
+        None => Ok(model.devices.keys().copied().collect()),
     }
-}
-
-/// Parses `area.line` (e.g. `1.1`) into its two parts.
-///
-/// # Errors
-///
-/// [`TargetError::Line`] or [`TargetError::LineRange`].
-pub fn parse_line(line: &str) -> Result<(u8, u8), TargetError> {
-    let parts: Vec<&str> = line.split('.').collect();
-    if parts.len() != 2 {
-        return Err(TargetError::Line(line.to_string()));
-    }
-    let area: u8 = parts[0]
-        .parse()
-        .map_err(|_| TargetError::Line(line.to_string()))?;
-    let line_no: u8 = parts[1]
-        .parse()
-        .map_err(|_| TargetError::Line(line.to_string()))?;
-    if area > 15 || line_no > 15 {
-        return Err(TargetError::LineRange(line.to_string()));
-    }
-    Ok((area, line_no))
 }
 
 /// Where a backup run started at `started` goes by default:
@@ -146,22 +121,6 @@ pub struct DeviceCapture {
     pub entry: ManifestEntry,
     /// The device's backup, when its tables were read.
     pub backup: Option<DeviceBackup>,
-}
-
-/// What a running backup reports, for a surface that shows progress.
-#[derive(Debug)]
-pub enum BackupProgress<'a> {
-    /// The `index`-th of `total` targets (1-based) is being read.
-    Reading {
-        /// 1-based position of the target.
-        index: usize,
-        /// How many targets the run has.
-        total: usize,
-        /// The device.
-        target: IndividualAddress,
-    },
-    /// A device's read ended (whatever the outcome).
-    Captured(&'a DeviceCapture),
 }
 
 /// Resolves the Data Secure tool key of a device: the device and whether the
@@ -184,8 +143,6 @@ pub struct BackupInputs<'a> {
     pub source: IndividualAddress,
     /// The device facts store (issue #209).
     pub facts: &'a FactsCache,
-    /// The budget of the presence probe (`scan`'s discovery budget).
-    pub probe_timeouts: Timeouts,
     /// The tool key resolver.
     pub tool_key: ToolKeyFn<'a>,
     /// The `A_UserMemory_Read` choice per device.
@@ -193,25 +150,23 @@ pub struct BackupInputs<'a> {
 }
 
 /// Reads every target in turn over one bus connection, leasing it per device,
-/// and reports each step to `progress`.
+/// and reports each step to `progress` ([`walk`]).
 pub async fn capture_devices(
     service: &BusService,
     inputs: BackupInputs<'_>,
     targets: &[IndividualAddress],
-    progress: &mut (dyn FnMut(BackupProgress<'_>) + Send),
+    progress: &mut (dyn FnMut(WalkEvent<'_, DeviceCapture>) + Send),
 ) -> Vec<DeviceCapture> {
-    let mut out = Vec::with_capacity(targets.len());
-    for (n, &target) in targets.iter().enumerate() {
-        progress(BackupProgress::Reading {
-            index: n + 1,
-            total: targets.len(),
-            target,
-        });
-        let capture = capture_one(service, inputs, target).await;
-        progress(BackupProgress::Captured(&capture));
-        out.push(capture);
-    }
-    out
+    walk(
+        targets,
+        |capture: &DeviceCapture| capture.backup.is_some(),
+        |target| capture_one(service, inputs, target),
+        progress,
+    )
+    .await
+    .into_iter()
+    .map(|step| step.outcome)
+    .collect()
 }
 
 /// Writes the captures of a run into `out_dir`: one file per backed-up device
@@ -258,7 +213,7 @@ async fn capture_one(
     };
     // Presence first, on the fast discovery budget: an absent device is ruled
     // out in about three seconds instead of the full management budget.
-    let mask = match probe_mask(service, inputs.source, target, inputs.probe_timeouts).await {
+    let mask = match probe_mask(service, inputs.source, target).await {
         Probe::Present(mask) => mask,
         Probe::Absent => return DeviceCapture::unreachable(target),
         Probe::Error(detail) => return DeviceCapture::failed(target, detail),
@@ -268,13 +223,11 @@ async fn capture_one(
     // Authorize with the free-access key before reading, as ETS does and as
     // System 7 requires before any memory access. Best-effort on a read-only
     // run.
-    let options = L4Options {
-        source: SourcePolicy::Known(inputs.source),
+    let options = L4Options::secured(
+        inputs.source,
         tool_key,
-        high_water: bussard_secure::SequenceHighWater::new(),
-        authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
-        ..L4Options::default()
-    };
+        bussard_secure::SequenceHighWater::new(),
+    );
     let device = inputs.model.devices.get(&target).map(|d| &d.device);
     let user_memory = inputs.user_memory_above_64k;
     let session = service
@@ -371,19 +324,13 @@ enum Probe {
     Error(String),
 }
 
-/// Reads the device descriptor on the discovery budget.
+/// Reads the device descriptor on the discovery budget (`scan`'s).
 async fn probe_mask(
     service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
-    timeouts: Timeouts,
 ) -> Probe {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts,
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
+    let options = L4Options::discovery(source);
     let session = service
         .with_l4(target, &options, async |dev| {
             Ok::<_, ServiceError>(match bussard_mgmt::read_device_descriptor(dev).await {
@@ -627,12 +574,5 @@ mod tests {
         let targets = select_targets(&model, &["1.1.9".to_string()], Some("1.1"))?;
         assert_eq!(targets, vec!["1.1.9".parse::<IndividualAddress>()?]);
         Ok(())
-    }
-
-    #[test]
-    fn test_parse_line_rejects_nonsense() {
-        assert!(parse_line("1").is_err());
-        assert!(parse_line("16.1").is_err());
-        assert!(parse_line("1.1.4").is_err());
     }
 }

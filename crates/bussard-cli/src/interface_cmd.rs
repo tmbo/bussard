@@ -24,7 +24,7 @@ use bussard_service::knxnet::{
     write_interface_backup,
 };
 use bussard_service::property_plan::PropertyRow;
-use bussard_service::{L4Options, SourcePolicy, WritePolicy};
+use bussard_service::{L4Options, WritePolicy};
 use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{BusSession, ConnOverrides, enforce_write_gate, gateway_display};
@@ -110,12 +110,11 @@ impl Session<'_> {
         let tool_key = crate::timing::time("tool keys", || {
             bussard_service::secure::resolve(self.target, self.tool_key_source, activated)
         })?;
-        Ok(L4Options {
-            source: SourcePolicy::Known(source),
+        Ok(L4Options::secured(
+            source,
             tool_key,
-            high_water: bussard_secure::SequenceHighWater::new(),
-            ..L4Options::default()
-        })
+            bussard_secure::SequenceHighWater::new(),
+        ))
     }
 
     /// The device's name in the model.

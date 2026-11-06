@@ -27,7 +27,7 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 
-use crate::bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
+use crate::bus::{Authorize, BusService, L4Options, Management};
 use crate::download::{FlashObserver, FlashRun};
 use crate::error::ServiceError;
 use crate::facts::{FactsCache, FactsSource, FactsWant};
@@ -163,15 +163,9 @@ pub async fn probe<P>(
     let mut attempt = 1u32;
     loop {
         let losses_before = handle.link_losses();
-        let probe_options = L4Options {
-            source: SourcePolicy::Known(source),
-            tool_key: tool_key.clone(),
-            // A device reset to default is named, not flashed (issue #532).
-            factory_key: factory_key.clone(),
-            high_water: high_water.clone(),
-            authorize: Authorize::Skip,
-            ..L4Options::default()
-        };
+        let probe_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+            .with_factory_key(factory_key.clone())
+            .with_authorize(Authorize::Skip);
         // What this read-only pass learns about the device, handed to the
         // write phase so it does not rediscover any of it.
         let mut facts = DeviceFacts::default();

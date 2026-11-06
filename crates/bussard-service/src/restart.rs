@@ -405,16 +405,16 @@ mod tests {
             WritePolicy::transmit(false),
         )?;
         service.wait_connected(Duration::from_secs(5)).await;
-        let options = L4Options {
-            source: SourcePolicy::Check { skip: true },
-            tool_key: tool_key.map(bussard_secure::Key16::new),
-            timeouts: bussard_mgmt::Timeouts {
-                ack_timeout: Duration::from_millis(300),
-                response_timeout: Duration::from_millis(300),
-                ..bussard_mgmt::Timeouts::default()
-            },
-            ..L4Options::default()
-        };
+        let options = L4Options::secured(
+            SourcePolicy::Check { skip: true },
+            tool_key.map(bussard_secure::Key16::new),
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_timeouts(bussard_mgmt::Timeouts {
+            ack_timeout: Duration::from_millis(300),
+            response_timeout: Duration::from_millis(300),
+            ..bussard_mgmt::Timeouts::default()
+        });
         let result = restart_device(&service, "1.1.39".parse()?, &options, form, quick()).await;
         service.close().await;
         let (basic, secured) = gw

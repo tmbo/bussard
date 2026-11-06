@@ -10,7 +10,7 @@
 //!
 //! `bussard scan` and the MCP server's `knx_find_devices` both run
 //! [`sweep`]; the CLI prints the table and the tool returns JSON, and each
-//! reports progress through the [`SweepEvent`] callback.
+//! reports progress through the [`WalkEvent`] callback.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -21,8 +21,9 @@ use bussard_model::identity::{IdentityCheck, ReportedIdentity};
 use bussard_model::schema::Device;
 use bussard_secure::Key16;
 
-use crate::bus::{Authorize, BusService, L4Options, SourcePolicy};
+use crate::bus::{BusService, L4Options};
 use crate::identity::{self, Identity, ProbeMiss, SecureStatus};
+use crate::line::{WalkEvent, walk};
 
 /// Environment variable that overrides the per-attempt discovery timeout in
 /// milliseconds. Set only by integration tests to keep a mock sweep fast;
@@ -54,58 +55,6 @@ pub fn discovery_timeouts() -> Timeouts {
     }
 }
 
-/// The session options of a probe: the sweep's checked source, the discovery
-/// timeouts, and no authorize at connect (the probe authorizes after the
-/// descriptor read, as ETS does).
-pub fn probe_options(source: IndividualAddress) -> L4Options {
-    L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    }
-}
-
-/// Why a line could not be parsed.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum LineError {
-    /// Fewer than two dot-separated parts.
-    #[error("invalid line {0:?}; expected area.line like \"1.1\"")]
-    Shape(String),
-    /// The area part is not a number.
-    #[error("invalid area in {0:?}")]
-    Area(String),
-    /// The line part is not a number.
-    #[error("invalid line in {0:?}")]
-    Line(String),
-    /// The area or the line is above 15.
-    #[error("area and line must each be 0–15 (got {0:?})")]
-    Range(String),
-}
-
-/// Parses a `area.line` (e.g. `1.1`) or a full `area.line.device` (ignoring
-/// the device part) into `(area, line)`.
-///
-/// # Errors
-///
-/// A [`LineError`] naming what is wrong with `line`.
-pub fn parse_line(line: &str) -> Result<(u8, u8), LineError> {
-    let parts: Vec<&str> = line.split('.').collect();
-    if parts.len() < 2 {
-        return Err(LineError::Shape(line.to_string()));
-    }
-    let area: u8 = parts[0]
-        .parse()
-        .map_err(|_| LineError::Area(line.to_string()))?;
-    let line_no: u8 = parts[1]
-        .parse()
-        .map_err(|_| LineError::Line(line.to_string()))?;
-    if area > 15 || line_no > 15 {
-        return Err(LineError::Range(line.to_string()));
-    }
-    Ok((area, line_no))
-}
-
 /// The addresses one sweep probes: `area.line.from` … `area.line.to`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LineRange {
@@ -134,6 +83,16 @@ impl LineRange {
         address.area() == self.area
             && address.line() == self.line
             && (self.from..=self.to).contains(&address.device())
+    }
+
+    /// The range's addresses, in order.
+    pub fn addresses(&self) -> Vec<IndividualAddress> {
+        if self.from > self.to {
+            return Vec::new();
+        }
+        (self.from..=self.to)
+            .filter_map(|device| IndividualAddress::new(self.area, self.line, device).ok())
+            .collect()
     }
 
     /// The worst-case sweep time ([`PER_ADDRESS_ESTIMATE`] per address).
@@ -272,25 +231,8 @@ pub fn secure_label(status: SecureStatus) -> Option<&'static str> {
     }
 }
 
-/// What the sweep reports while it runs.
-#[derive(Debug, Clone, Copy)]
-pub enum SweepEvent<'a> {
-    /// The sweep is about to probe `address`; `found` devices answered so
-    /// far.
-    Probing {
-        /// The address probed next.
-        address: IndividualAddress,
-        /// Devices found so far.
-        found: usize,
-    },
-    /// The probe of one address ended; `found` devices answered so far.
-    Probed {
-        /// How the address turned out.
-        timing: &'a AddressTiming,
-        /// Devices found so far, this one included.
-        found: usize,
-    },
-}
+/// What one probe of a sweep returned: the device, or why there was none.
+pub type ProbeOutcome = Result<(Identity, SecureStatus), ProbeMiss>;
 
 /// Sweeps every device address of `range`, returning the responders.
 ///
@@ -298,49 +240,38 @@ pub enum SweepEvent<'a> {
 /// for its connection-oriented session (TP1 etiquette: one open connection
 /// at a time), releasing the lease before the next address. `source` is the
 /// checked source address; `key_for` gives the tool key of a keyring-listed
-/// address; `on_event` hears each probe start and end.
+/// address; `on_event` hears each probe start and end ([`walk`]).
 pub async fn sweep(
     service: &BusService,
     range: LineRange,
     source: IndividualAddress,
     key_for: &(dyn Fn(IndividualAddress) -> Option<Key16> + Sync),
-    on_event: &mut (dyn FnMut(SweepEvent<'_>) + Send),
+    on_event: &mut (dyn FnMut(WalkEvent<'_, ProbeOutcome>) + Send),
 ) -> Sweep {
     let started = Instant::now();
+    let options = L4Options::discovery(source);
+    let walked = walk(
+        &range.addresses(),
+        Result::is_ok,
+        |addr| identity::probe_classified(service, addr, &options, key_for(addr)),
+        on_event,
+    )
+    .await;
     let mut found = Vec::new();
-    let mut timings = Vec::new();
-    if range.from <= range.to {
-        for device in range.from..=range.to {
-            let addr = match IndividualAddress::new(range.area, range.line, device) {
-                Ok(a) => a,
-                Err(_) => continue,
-            };
-            on_event(SweepEvent::Probing {
-                address: addr,
-                found: found.len(),
-            });
-            let probe_started = Instant::now();
-            let outcome =
-                identity::probe_classified(service, addr, &probe_options(source), key_for(addr))
-                    .await;
-            let miss = match outcome {
-                Ok((identity, status)) => {
-                    found.push(Found::from_identity(identity, status));
-                    None
-                }
-                Err(miss) => Some(miss),
-            };
-            let timing = AddressTiming {
-                address: addr,
-                elapsed: probe_started.elapsed(),
-                miss,
-            };
-            on_event(SweepEvent::Probed {
-                timing: &timing,
-                found: found.len(),
-            });
-            timings.push(timing);
-        }
+    let mut timings = Vec::with_capacity(walked.len());
+    for step in walked {
+        let miss = match step.outcome {
+            Ok((identity, status)) => {
+                found.push(Found::from_identity(identity, status));
+                None
+            }
+            Err(miss) => Some(miss),
+        };
+        timings.push(AddressTiming {
+            address: step.address,
+            elapsed: step.elapsed,
+            miss,
+        });
     }
     Sweep {
         found,
@@ -446,22 +377,6 @@ pub fn observe_identity(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_parse_line_accepts_area_line() -> Result<(), LineError> {
-        assert_eq!(parse_line("1.1")?, (1, 1));
-        assert_eq!(parse_line("15.15")?, (15, 15));
-        // A full address ignores the device part.
-        assert_eq!(parse_line("2.3.55")?, (2, 3));
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_line_rejects_bad_input() {
-        assert!(matches!(parse_line("1"), Err(LineError::Shape(_))));
-        assert!(matches!(parse_line("16.1"), Err(LineError::Range(_))));
-        assert!(matches!(parse_line("x.y"), Err(LineError::Area(_))));
-    }
 
     #[test]
     fn test_line_range_count_and_estimate() {

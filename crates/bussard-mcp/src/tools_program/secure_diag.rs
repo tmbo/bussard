@@ -6,8 +6,8 @@
 
 use bussard_model::IndividualAddress;
 use bussard_secure::SequenceHighWater;
+use bussard_service::L4Options;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::{L4Options, SourcePolicy};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -58,13 +58,8 @@ impl BussardMcp {
         let mut warm = self.warm().lock().await;
         warm.release().await;
         let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-        let options = L4Options {
-            source: SourcePolicy::Known(source),
-            tool_key,
-            factory_key,
-            high_water: SequenceHighWater::new(),
-            ..L4Options::default()
-        };
+        let options = L4Options::secured(source, tool_key, SequenceHighWater::new())
+            .with_factory_key(factory_key);
         let read = bussard_service::security_diag::read(&service, target, &options)
             .await
             .map_err(|e| {

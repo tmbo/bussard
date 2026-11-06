@@ -33,7 +33,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::identity::{Identity, SecureStatus, read_identity, read_manufacturer, read_order};
 use crate::secure::ToolKeys;
-use crate::{Authorize, BusService, L4Options, Management, ServiceError, SourcePolicy};
+use crate::{Authorize, BusService, L4Options, Management, ServiceError};
 
 /// The line to allocate on when the model has no devices to infer one from.
 pub const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -266,12 +266,7 @@ pub async fn probe_occupant(
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> Option<Occupant> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: crate::scan::discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
+    let options = L4Options::discovery(source);
     service
         .with_l4(target, &options, async |dev| {
             let mask = match bussard_mgmt::read_device_descriptor(dev).await {
@@ -485,13 +480,8 @@ pub async fn identify(
     tool_key: Option<Key16>,
 ) -> Result<Verified, ServiceError> {
     let secured = tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        tool_key,
-        high_water: SequenceHighWater::new(),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, tool_key, SequenceHighWater::new())
+        .with_authorize(Authorize::Skip);
     service
         .with_l4(address, &options, async |l4| {
             let identity = read_identity(l4, !secured).await?;
@@ -572,13 +562,8 @@ async fn verify_session(
     key: &VerifyKey,
 ) -> Result<Verified, VerifyError> {
     let secured = key.tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        tool_key: key.tool_key.clone(),
-        high_water: SequenceHighWater::new(),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, key.tool_key.clone(), SequenceHighWater::new())
+        .with_authorize(Authorize::Skip);
     let session = service
         .with_l4(target, &options, async |dev| {
             Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode, secured).await)

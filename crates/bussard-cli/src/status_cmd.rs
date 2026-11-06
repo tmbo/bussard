@@ -82,16 +82,15 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
     let read = runtime
         .block_on(async move {
             let service = open_service(config, WritePolicy::ReadOnly).await?;
-            let options = L4Options {
-                source: SourcePolicy::Check {
+            let options = L4Options::secured(
+                SourcePolicy::Check {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                factory_key,
-                high_water: bussard_secure::SequenceHighWater::new(),
-                authorize,
-                ..L4Options::default()
-            };
+                bussard_secure::SequenceHighWater::new(),
+            )
+            .with_factory_key(factory_key)
+            .with_authorize(authorize);
             let outcome = service
                 .with_l4(target, &options, async |l4| {
                     read_live_status(l4, &facts)

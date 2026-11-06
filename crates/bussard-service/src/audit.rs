@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::identity::{self, HIDDEN_MASK};
 use crate::secure::ToolKeys;
-use crate::{Authorize, BusService, L4Options, SourcePolicy};
+use crate::{Authorize, BusService, L4Options};
 
 /// Version of the audit JSON contract. Bumped on a breaking change.
 pub const AUDIT_FORMAT_VERSION: u32 = 1;
@@ -783,12 +783,9 @@ impl SecureLiveReport {
 /// The options of the MCP server's Secure probe: the bus's group source,
 /// discovery timeouts, no authorize.
 pub fn secure_probe_options(service: &BusService) -> L4Options {
-    L4Options {
-        source: SourcePolicy::Known(bussard_bus::ops::group_source(service.handle())),
-        timeouts: bussard_mgmt::Timeouts::discovery(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    }
+    L4Options::read_only(bussard_bus::ops::group_source(service.handle()))
+        .with_timeouts(bussard_mgmt::Timeouts::discovery())
+        .with_authorize(Authorize::Skip)
 }
 
 /// Whether the live audit probes `address` as a Data Secure device without
@@ -884,7 +881,7 @@ pub async fn scan_model_devices(
     let mut lines: BTreeMap<(u8, u8), ScanLine> = BTreeMap::new();
     let mut answered_count = 0usize;
     let mut secure_probes = Vec::new();
-    let options = crate::scan::probe_options(source);
+    let options = L4Options::discovery(source);
 
     for (addr, loaded) in &model.devices {
         progress(*addr);

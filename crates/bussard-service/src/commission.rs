@@ -28,6 +28,7 @@
 //! them and keeps the line's bookkeeping. Nothing here prints or asks: the CLI
 //! keeps its prompts and lines, the MCP tool its questions and JSON (#314).
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use bussard_mgmt::manufacturers;
@@ -38,6 +39,7 @@ use crate::assign::{
     AssignError, Occupant, Verified, VerifyError, VerifyKey, identify, probe_occupant,
     still_in_programming_mode, verify_assignment_with, write_address,
 };
+use crate::line::{WalkEvent, model_devices_on_line, walk};
 use crate::{BusService, ServiceError};
 
 /// Why a commission step failed.
@@ -80,10 +82,7 @@ pub struct Target {
 
 /// The model's devices on `area.line`, in address order.
 pub fn targets_on_line(model: &Model, area: u8, line_no: u8) -> Vec<Target> {
-    model
-        .devices
-        .iter()
-        .filter(|(ia, _)| ia.area() == area && ia.line() == line_no)
+    model_devices_on_line(model, area, line_no)
         .map(|(ia, loaded)| {
             let device = &loaded.device;
             let product = device.product.as_ref();
@@ -216,7 +215,7 @@ pub struct LineRun {
     /// The model's devices on it.
     targets: Vec<Target>,
     /// The pre-pass verdicts for the addresses that already answer.
-    verdicts: Vec<(IndividualAddress, Status)>,
+    verdicts: BTreeMap<IndividualAddress, Status>,
     /// Where the walk is.
     cursor: usize,
     /// What happened so far, in the order it happened.
@@ -229,7 +228,7 @@ impl LineRun {
         LineRun {
             line: format!("{area}.{line_no}"),
             targets: targets_on_line(model, area, line_no),
-            verdicts: Vec::new(),
+            verdicts: BTreeMap::new(),
             cursor: 0,
             outcomes: Vec::new(),
         }
@@ -246,7 +245,7 @@ impl LineRun {
     }
 
     /// Records the pre-pass verdicts ([`probe_line`]).
-    pub fn set_verdicts(&mut self, verdicts: Vec<(IndividualAddress, Status)>) {
+    pub fn set_verdicts(&mut self, verdicts: BTreeMap<IndividualAddress, Status>) {
         self.verdicts = verdicts;
     }
 
@@ -254,7 +253,7 @@ impl LineRun {
     pub fn pending(&self) -> usize {
         self.targets
             .iter()
-            .filter(|t| !self.verdicts.iter().any(|(a, _)| *a == t.address))
+            .filter(|t| !self.verdicts.contains_key(&t.address))
             .count()
     }
 
@@ -263,7 +262,7 @@ impl LineRun {
     pub fn advance(&mut self) -> Option<Next> {
         let target = self.targets.get(self.cursor)?.clone();
         self.cursor += 1;
-        if let Some((_, status)) = self.verdicts.iter().find(|(a, _)| *a == target.address) {
+        if let Some(status) = self.verdicts.get(&target.address) {
             let outcome = Outcome::of(&target, status.clone());
             self.outcomes.push(outcome.clone());
             return Some(Next::Settled(outcome));
@@ -306,21 +305,28 @@ impl LineRun {
 
 /// The read-only pre-pass: which of `targets`' addresses already answer, and
 /// what that means for each ([`occupied_status`]). `on_probe` hears each
-/// address before it is probed.
+/// probe start and end ([`walk`]).
 pub async fn probe_line(
     service: &BusService,
     source: IndividualAddress,
     targets: &[Target],
-    on_probe: &mut (dyn FnMut(IndividualAddress) + Send),
-) -> Vec<(IndividualAddress, Status)> {
-    let mut verdicts = Vec::new();
-    for target in targets {
-        on_probe(target.address);
-        if let Some(occupant) = probe_occupant(service, source, target.address).await {
-            verdicts.push((target.address, occupied_status(target, &occupant)));
-        }
-    }
-    verdicts
+    on_probe: &mut (dyn FnMut(WalkEvent<'_, Option<Status>>) + Send),
+) -> BTreeMap<IndividualAddress, Status> {
+    let addresses: Vec<IndividualAddress> = targets.iter().map(|t| t.address).collect();
+    walk(
+        &addresses,
+        Option::is_some,
+        |address| async move {
+            let target = targets.iter().find(|t| t.address == address)?;
+            let occupant = probe_occupant(service, source, address).await?;
+            Some(occupied_status(target, &occupant))
+        },
+        on_probe,
+    )
+    .await
+    .into_iter()
+    .filter_map(|step| Some((step.address, step.outcome?)))
+    .collect()
 }
 
 /// What an answer at a model address means for that device (issue #530):
@@ -691,11 +697,11 @@ mod tests {
         let mut run = LineRun {
             line: "1.1".to_string(),
             targets: vec![first.clone(), second.clone()],
-            verdicts: Vec::new(),
+            verdicts: BTreeMap::new(),
             cursor: 0,
             outcomes: Vec::new(),
         };
-        run.set_verdicts(vec![(first.address, Status::AlreadyPresent)]);
+        run.set_verdicts(BTreeMap::from([(first.address, Status::AlreadyPresent)]));
         assert_eq!(run.pending(), 1);
         assert!(
             matches!(run.advance(), Some(Next::Settled(o)) if o.status == Status::AlreadyPresent)

@@ -38,6 +38,13 @@ pub enum SourcePolicy {
     Known(IndividualAddress),
 }
 
+impl From<IndividualAddress> for SourcePolicy {
+    /// A source the caller already checked: [`SourcePolicy::Known`].
+    fn from(source: IndividualAddress) -> Self {
+        SourcePolicy::Known(source)
+    }
+}
+
 /// How a management session authorizes after `T_Connect`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Authorize {
@@ -83,6 +90,66 @@ impl Default for L4Options {
             timeouts: Timeouts::default(),
             authorize: Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
         }
+    }
+}
+
+impl L4Options {
+    /// Plain management from `source` on the default budget with a
+    /// best-effort free-access authorize: what a read-only device command
+    /// wants.
+    pub fn read_only(source: impl Into<SourcePolicy>) -> L4Options {
+        L4Options {
+            source: source.into(),
+            ..L4Options::default()
+        }
+    }
+
+    /// A presence probe from `source`: the discovery budget
+    /// ([`crate::scan::discovery_timeouts`]) and no authorize at connect (a
+    /// probe authorizes after the descriptor read, as ETS does).
+    pub fn discovery(source: impl Into<SourcePolicy>) -> L4Options {
+        L4Options {
+            timeouts: crate::scan::discovery_timeouts(),
+            authorize: Authorize::Skip,
+            ..L4Options::read_only(source)
+        }
+    }
+
+    /// [`read_only`](Self::read_only) over KNX Data Secure with `tool_key`
+    /// (plain when `None`), sharing the command's sequence `high_water`.
+    pub fn secured(
+        source: impl Into<SourcePolicy>,
+        tool_key: Option<Key16>,
+        high_water: SequenceHighWater,
+    ) -> L4Options {
+        L4Options {
+            tool_key,
+            high_water,
+            ..L4Options::read_only(source)
+        }
+    }
+
+    /// These options with the authorize step `authorize`.
+    pub fn with_authorize(self, authorize: Authorize) -> L4Options {
+        L4Options { authorize, ..self }
+    }
+
+    /// These options with the tool key `tool_key` (plain when `None`).
+    pub fn with_tool_key(self, tool_key: Option<Key16>) -> L4Options {
+        L4Options { tool_key, ..self }
+    }
+
+    /// These options with the factory default setup key `factory_key`.
+    pub fn with_factory_key(self, factory_key: Option<Key16>) -> L4Options {
+        L4Options {
+            factory_key,
+            ..self
+        }
+    }
+
+    /// These options on the timeout budget `timeouts`.
+    pub fn with_timeouts(self, timeouts: Timeouts) -> L4Options {
+        L4Options { timeouts, ..self }
     }
 }
 

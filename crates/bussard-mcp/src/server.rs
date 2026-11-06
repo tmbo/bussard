@@ -24,7 +24,7 @@ use bussard_service::admission::Admission;
 use bussard_service::describe::walk_objects;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
-    DptOverridePolicy, L4Options, ServiceError, SourcePolicy, WriteCheck, WriteRefusal, WriteValue,
+    DptOverridePolicy, L4Options, ServiceError, WriteCheck, WriteRefusal, WriteValue,
     group_key_for, prepare_group_write,
 };
 use rmcp::ErrorData;
@@ -1049,12 +1049,12 @@ impl BussardMcp {
 
         // Authorize (free access) as ETS does before configuration access; a
         // best-effort read tolerates a device without authorize.
-        let options = L4Options {
-            source: SourcePolicy::Known(ops::group_source(service.handle())),
+        let options = L4Options::secured(
+            ops::group_source(service.handle()),
             tool_key,
-            factory_key,
-            ..L4Options::default()
-        };
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_factory_key(factory_key);
         // The warm connection (issue #215): a call to the device the previous
         // call talked to, within the idle window and on the same tunnel, reuses
         // its connection; anything else kept is disconnected first. The lock is

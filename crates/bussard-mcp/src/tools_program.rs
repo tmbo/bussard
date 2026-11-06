@@ -107,7 +107,7 @@ use bussard_service::params::{
     resolve_product,
 };
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
-use bussard_service::{Authorize, BusService, FactsCache, L4Options, SourcePolicy};
+use bussard_service::{Authorize, BusService, FactsCache, L4Options};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
@@ -2382,15 +2382,8 @@ impl BussardMcp {
                     tier.jobs.step(job, "waiting for the device to restart");
                     let back = match self.state().bus.service() {
                         Some(service) => {
-                            let options = L4Options {
-                                source: SourcePolicy::Known(source),
-                                tool_key: tool_key.clone(),
-                                high_water: high_water.clone(),
-                                authorize: Authorize::BestEffort(
-                                    bussard_mgmt::apci::FREE_ACCESS_KEY,
-                                ),
-                                ..L4Options::default()
-                            };
+                            let options =
+                                L4Options::secured(source, tool_key.clone(), high_water.clone());
                             bussard_service::restart::wait_until_back(
                                 service,
                                 target,
@@ -2479,13 +2472,8 @@ impl BussardMcp {
                         built.plan.writes.parameter_octets
                     ),
                 );
-                let read_options = L4Options {
-                    source: SourcePolicy::Known(source),
-                    tool_key: tool_key.clone(),
-                    high_water: high_water.clone(),
-                    authorize,
-                    ..L4Options::default()
-                };
+                let read_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+                    .with_authorize(authorize);
                 let mut observer = JobObserver {
                     jobs: &tier.jobs,
                     job,
@@ -2568,13 +2556,8 @@ impl BussardMcp {
                     origin.truth()
                 ),
             );
-            let read_options = L4Options {
-                source: SourcePolicy::Known(source),
-                tool_key: tool_key.clone(),
-                high_water: high_water.clone(),
-                authorize,
-                ..L4Options::default()
-            };
+            let read_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+                .with_authorize(authorize);
             let readback = bussard_service::verify::read_back_on(
                 service,
                 target,

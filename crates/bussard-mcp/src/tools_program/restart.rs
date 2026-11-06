@@ -17,8 +17,8 @@ use std::time::Instant;
 use bussard_download::RestartForm;
 use bussard_model::IndividualAddress;
 use bussard_secure::SequenceHighWater;
+use bussard_service::L4Options;
 use bussard_service::restart::{RestartWait, restart_choice, restart_device};
-use bussard_service::{L4Options, SourcePolicy};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -249,12 +249,8 @@ impl BussardMcp {
         }
         let material = self.plan_material(target, &model)?;
         let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-        let options = L4Options {
-            source: SourcePolicy::Known(source),
-            tool_key: material.tool_key.clone(),
-            high_water: SequenceHighWater::new(),
-            ..L4Options::default()
-        };
+        let options =
+            L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
         let result = json!({
             "method": "restart",
             "address": target.to_string(),

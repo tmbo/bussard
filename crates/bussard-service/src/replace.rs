@@ -48,7 +48,7 @@ use bussard_model::{IndividualAddress, Model};
 
 use crate::assign::Verified;
 use crate::identity::read_identity;
-use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
+use crate::{Authorize, BusService, L4Options, ServiceError};
 
 /// Why a replace step failed.
 #[derive(Debug, thiserror::Error)]
@@ -295,11 +295,7 @@ pub async fn identify(
     let mut pressed = Pressed::unread(current);
     // Authorize comes after the descriptor read (below), so the session opens
     // without it.
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
+    let options = L4Options::read_only(source).with_authorize(Authorize::Skip);
     let _ = service
         .with_l4(current, &options, async |dev| {
             match read_identity(dev, false).await {
