@@ -696,11 +696,8 @@ fn test_mcp_knx_setup_uses_the_keyring_tunnel_users_without_a_restart() -> TestR
     std::fs::create_dir_all(&tmp)?;
     let knx = tmp.join("knx");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let project = tmp.join("project.json");
-    std::fs::copy(
-        root.join("../bussard-project/tests/fixtures/tiny.xknxproject.json"),
-        &project,
-    )?;
+    let project = tmp.join("project.knxproj");
+    super::tiny_project::write(&project)?;
     std::fs::copy(
         root.join("../../knx-sim/examples/secure/synthetic.knxkeys"),
         tmp.join("Site.knxkeys"),

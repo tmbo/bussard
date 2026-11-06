@@ -360,7 +360,7 @@ enum Command {
     /// skeleton, then import the ETS project (the one given, or the one
     /// `.knxproj` next to the directory) or offer to scan the line.
     Init(init_cmd::InitArgs),
-    /// Import a `.knxproj`, a `.bussard` bundle or an xknxproject JSON dump.
+    /// Import a `.knxproj` or a `.bussard` bundle.
     Import(import_cmd::ImportArgs),
     /// Write the project and its history as one `.bussard` file to hand over.
     Export(export_cmd::ExportArgs),

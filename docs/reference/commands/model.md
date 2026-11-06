@@ -22,7 +22,7 @@ Tunnelling: 4 tunnels, 1 in use.
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project (a `.knxproj`, or an xknxproject `.json` dump) to import right after writing the skeleton. |
+| `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project (a `.knxproj`) to import right after writing the skeleton. |
 | `--password <PASSWORD>` | | Project password, as for `import`. |
 | `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
 | `--no-download` | off | Do not download missing product data; list it instead. |
@@ -49,10 +49,10 @@ Behaviour:
 
 ## `bussard import [PROJECT]`
 
-Import an ETS `.knxproj`, a `.bussard` bundle (see [`export`](#bussard-export-file)) or an xknxproject JSON dump into the project, fetch missing product data, then validate.
+Import an ETS `.knxproj` or a `.bussard` bundle (see [`export`](#bussard-export-file)) into the project, fetch missing product data, then validate.
 
 ```console
-$ bussard import [PROJECT] [--from-json <FILE>] [--password <PASSWORD>] [--mine | --theirs | --interactive]
+$ bussard import <PROJECT> [--password <PASSWORD>] [--mine | --theirs | --interactive]
 ```
 
 When product data is still missing, the summary says where to get it:
@@ -66,8 +66,7 @@ product data still missing:
 
 | Flag / arg | Default | Meaning |
 |---|---|---|
-| `[PROJECT]` | | The `.knxproj` or `.bussard` file to import. Omit it with `--from-json`. |
-| `--from-json <FILE>` | | Import from an xknxproject JSON dump instead of a `.knxproj`. |
+| `<PROJECT>` | | The `.knxproj` or `.bussard` file to import. |
 | `--password <PASSWORD>` | `BUSSARD_PROJECT_PASSWORD`, then a prompt | Project password. |
 | `--mine` | off | On a re-import, keep this project's value for every hand-edited conflict and exit 0. |
 | `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
@@ -130,7 +129,7 @@ The bundle format is on [Project folder](../model-directory.md).
 
 ## `bussard diff <A> <B>`
 
-Explain what changes from `A` to `B` as the plain sentences `bussard status` prints. Each side is a `.knxproj`, a `.bussard` bundle, an xknxproject `.json` dump or a project folder. Both are loaded in memory; nothing is written.
+Explain what changes from `A` to `B` as the plain sentences `bussard status` prints. Each side is a `.knxproj`, a `.bussard` bundle or a project folder. Both are loaded in memory; nothing is written.
 
 ```console
 $ bussard diff <A> <B> [--raw | --checklist] [--password <PASSWORD>] [--password-b <PASSWORD>]

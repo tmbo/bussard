@@ -1,6 +1,5 @@
 //! Writing an imported model into a directory that may already hold one:
-//! `bussard import` of a `.knxproj`, an `xknxproject` JSON dump or a
-//! `.bussard` bundle, and `knx_import_file` (issue #743). A fresh directory
+//! `bussard import` of a `.knxproj` or a `.bussard` bundle, and `knx_import_file` (issue #743). A fresh directory
 //! gets [`crate::setup::import::write_fresh`].
 //!
 //! A **re-import** does not clobber: it refreshes the generated sections

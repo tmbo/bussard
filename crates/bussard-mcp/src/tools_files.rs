@@ -1,8 +1,8 @@
 //! File import and export tools (issues #743, #744).
 //!
 //! `knx_import_file` brings in what ETS or a vendor hands over: a `.knxproj`,
-//! a `.bussard` bundle, an `xknxproject` JSON dump, a `.knxprod` (or vendor
-//! product data by order number) or a `.knxkeys` keyring. `knx_export` writes
+//! a `.bussard` bundle, a `.knxprod` (or vendor product data by order
+//! number) or a `.knxkeys` keyring. `knx_export` writes
 //! the bundle, the group plan for ETS, the keyring or the handover
 //! documentation. Both run the functions `bussard import`, `bussard
 //! import-product`, `bussard keys`, `bussard export`, `bussard export-groups`
@@ -75,8 +75,8 @@ impl DownloadPrompt for ChatDownload {
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct ImportFileArgs {
     /// The file to import: a `.knxproj` (ETS project export), a `.bussard`
-    /// bundle, a `.json` xknxproject dump, a `.knxprod` (vendor product data)
-    /// or a `.knxkeys` (ETS keyring). Give this or `order_number`.
+    /// bundle, a `.knxprod` (vendor product data) or a `.knxkeys` (ETS
+    /// keyring). Give this or `order_number`.
     #[serde(default)]
     pub path: Option<String>,
     /// Fetch vendor product data by order number from bussard's product
@@ -164,8 +164,7 @@ impl BussardMcp {
     #[tool(
         description = "Import a file from ETS or a vendor into the project, as `bussard import`, \
         `bussard import-product` and `bussard keys import` do, chosen by the file type: a \
-        .knxproj (ETS project export) or .bussard bundle or .json xknxproject dump is written \
-        into the project (a re-import keeps hand-edited names, rooms and descriptions and lists \
+        .knxproj (ETS project export) or .bussard bundle is written into the project (a re-import keeps hand-edited names, rooms and descriptions and lists \
         each one that differs; pass theirs: true to take the incoming values); a .knxprod is \
         stored as product data and its product models generated; a .knxkeys is merged into the \
         key store bussard.keys. Vendor product data by order number: {order_number, download: \
@@ -276,7 +275,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
     match (args.path.as_deref(), args.order_number.as_deref()) {
         (Some(_), Some(_)) => Err(refused("give either path or order_number, not both", &out)),
         (None, None) => Err(refused(
-            "give path (a .knxproj, .bussard, .json, .knxprod or .knxkeys file) or \
+            "give path (a .knxproj, .bussard, .knxprod or .knxkeys file) or \
              order_number with download: true",
             &out,
         )),
@@ -298,7 +297,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
         (Some(raw), None) => {
             let path = PathBuf::from(raw);
             match FileKind::of(&path) {
-                Some(FileKind::Project | FileKind::Json) => {
+                Some(FileKind::Project) => {
                     match import_project(dir, &path, args, None, &mut prompt, &mut out) {
                         ProjectRun::Done(value) => Ok(value),
                         run => Err(run.into_value()),
@@ -325,7 +324,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
                 Some(FileKind::Keyring) => import_keyring(dir, &path, args, &out),
                 None => Err(refused(
                     format!(
-                        "{raw} is not a file bussard imports: give a .knxproj, .bussard, .json, \
+                        "{raw} is not a file bussard imports: give a .knxproj, .bussard, \
                          .knxprod or .knxkeys"
                     ),
                     &out,
@@ -451,7 +450,7 @@ impl BussardMcp {
     }
 }
 
-/// Imports a `.knxproj` or `.json` dump as `bussard import` does: loaded
+/// Imports a `.knxproj` as `bussard import` does: loaded
 /// with the project password ([`setup::import::load_project`]; `password`,
 /// else the argument, else the server's), written over the model
 /// ([`import::write_model`]), then the one `.knxkeys` next to it merged
@@ -501,7 +500,7 @@ fn import_project(
             };
         }
     };
-    let project = (!setup::is_json(path)).then_some(path);
+    let project = Some(path);
     let written = import::write_model(
         model,
         dir,
@@ -676,7 +675,10 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
         }
         "doc" => {
             let out = out_path.ok_or_else(|| needs_out("doc"))?;
-            if let Some(other) = args.format.as_deref().filter(|f| !matches!(*f, "md" | "markdown"))
+            if let Some(other) = args
+                .format
+                .as_deref()
+                .filter(|f| !matches!(*f, "md" | "markdown"))
             {
                 return Err(refused(
                     format!("format {other:?}: the documentation is Markdown (md) only"),

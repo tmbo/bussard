@@ -66,6 +66,7 @@ mod status_device_mock;
 mod synthetic_captures;
 mod synthetic_streams;
 mod test_runner_mock;
+mod tiny_project;
 mod validate_invariants_cli;
 mod validate_keyring_cli;
 mod validate_secure_links_cli;

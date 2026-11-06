@@ -1,5 +1,4 @@
-//! Adversarial importer tests: hostile JSON dumps and corrupt/hostile
-//! `.knxproj` ZIP containers.
+//! Adversarial importer tests: corrupt and hostile `.knxproj` ZIP containers.
 //!
 //! The container is opened only through the public `bussard_project::import`
 //! entry point (the `container` module is private), so these tests build real
@@ -8,131 +7,9 @@
 
 use std::io::Write;
 
-use bussard_project::{ImportError, import, import_from_json_str};
+use bussard_project::{ImportError, import};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
-
-// ---------------------------------------------------------------------------
-// Hostile JSON dumps (--from-json escape hatch).
-// ---------------------------------------------------------------------------
-
-#[test]
-fn empty_json_object_yields_empty_model() -> Result<(), Box<dyn std::error::Error>> {
-    let m = import_from_json_str("{}")?;
-    assert!(m.groups.groups.is_empty());
-    assert!(m.devices.is_empty());
-    Ok(())
-}
-
-#[test]
-fn malformed_json_is_clean_error() -> Result<(), Box<dyn std::error::Error>> {
-    let r = std::panic::catch_unwind(|| import_from_json_str("{ not json"));
-    assert!(r.is_ok(), "malformed JSON must not panic");
-    assert!(matches!(
-        r.map_err(|_| "import panicked")?,
-        Err(ImportError::Json { .. })
-    ));
-    Ok(())
-}
-
-#[test]
-fn ga_out_of_range_in_json_is_malformed_error() {
-    let json = r#"{
-        "group_addresses": {
-            "x": { "name": "bad", "address": "99/0/0" }
-        }
-    }"#;
-    let r = import_from_json_str(json);
-    assert!(
-        matches!(r, Err(ImportError::Malformed { .. })),
-        "out-of-range GA should be Malformed, got {r:?}"
-    );
-}
-
-#[test]
-fn invalid_ia_in_device_is_malformed_error() {
-    let json = r#"{
-        "devices": {
-            "d": { "name": "dev", "individual_address": "1.1" }
-        }
-    }"#;
-    assert!(matches!(
-        import_from_json_str(json),
-        Err(ImportError::Malformed { .. })
-    ));
-}
-
-#[test]
-fn invalid_ga_in_com_object_link_is_malformed_error() {
-    let json = r#"{
-        "devices": {
-            "d": { "name": "dev", "individual_address": "1.1.4" }
-        },
-        "communication_objects": {
-            "c": {
-                "number": 1,
-                "device_address": "1.1.4",
-                "group_address_links": ["not-a-ga"]
-            }
-        }
-    }"#;
-    assert!(matches!(
-        import_from_json_str(json),
-        Err(ImportError::Malformed { .. })
-    ));
-}
-
-#[test]
-fn com_object_for_unknown_device_is_dropped_not_crashed() -> Result<(), Box<dyn std::error::Error>>
-{
-    // A com-object whose device_address has no matching device: the com-object
-    // table insert is skipped (device missing), and since it has GAs it still
-    // creates a links entry for that IA. Must not panic.
-    let json = r#"{
-        "communication_objects": {
-            "c": {
-                "number": 1,
-                "device_address": "9.9.9",
-                "group_address_links": ["1/0/0"]
-            }
-        }
-    }"#;
-    let r = std::panic::catch_unwind(|| import_from_json_str(json));
-    assert!(r.is_ok(), "orphan com-object must not panic");
-    let m = r.map_err(|_| "import panicked")??;
-    // A link entry exists for the orphan device IA even though no device file
-    // defines it (this is exactly what validation rule E013 later flags).
-    assert!(m.links.links.contains_key(&"9.9.9".parse()?));
-    Ok(())
-}
-
-#[test]
-fn wrong_type_in_json_is_clean_error() {
-    // `number` must be an integer; give it a string.
-    let json = r#"{
-        "communication_objects": {
-            "c": { "number": "oops", "device_address": "1.1.4" }
-        }
-    }"#;
-    assert!(matches!(
-        import_from_json_str(json),
-        Err(ImportError::Json { .. })
-    ));
-}
-
-#[test]
-fn huge_object_number_at_u16_boundary() {
-    // 65535 is fine; 65536 overflows u16 -> JSON error.
-    let ok =
-        r#"{ "communication_objects": { "c": { "number": 65535, "device_address": "1.1.4" } } }"#;
-    assert!(import_from_json_str(ok).is_ok());
-    let bad =
-        r#"{ "communication_objects": { "c": { "number": 65536, "device_address": "1.1.4" } } }"#;
-    assert!(matches!(
-        import_from_json_str(bad),
-        Err(ImportError::Json { .. })
-    ));
-}
 
 // ---------------------------------------------------------------------------
 // Corrupt / hostile ZIP containers via the public `import`.

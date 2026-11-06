@@ -198,11 +198,11 @@ fn test_diff_rename_is_one_change_and_same_project_is_empty() -> TestResult {
     );
 
     // Two imports of the same project: no differences.
-    let json = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json");
-    let copy = root.join("tiny-again.json");
-    std::fs::copy(&json, &copy)?;
-    let out = run(&["diff", s(&json)?, s(&copy)?], 0)?;
+    let project = root.join("tiny.knxproj");
+    super::tiny_project::write(&project)?;
+    let copy = root.join("tiny-again.knxproj");
+    std::fs::copy(&project, &copy)?;
+    let out = run(&["diff", s(&project)?, s(&copy)?], 0)?;
     assert!(out.contains("No differences"), "{out}");
     std::fs::remove_dir_all(&root)?;
     Ok(())
@@ -214,18 +214,11 @@ fn test_diff_rename_is_one_change_and_same_project_is_empty() -> TestResult {
 #[test]
 fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
     let root = temp_dir("checklist")?;
-    let json = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../bussard-project/tests/fixtures/tiny.xknxproject.json");
+    let project = root.join("tiny.knxproj");
+    super::tiny_project::write(&project)?;
     let model = root.join("knx");
     run(
-        &[
-            "import",
-            "--from-json",
-            s(&json)?,
-            "--dir",
-            s(&model)?,
-            "--no-download",
-        ],
+        &["import", s(&project)?, "--dir", s(&model)?, "--no-download"],
         0,
     )?;
     let groups = std::fs::read_to_string(model.join("groups.toml"))?;
@@ -242,10 +235,10 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
         model.join("devices/1.1.1.toml"),
         device
             .replace(
-                "0.listen = [\"1/0/1\"]",
-                "0.listen = [\"1/0/1\", \"1/0/3\"]",
+                "on-off.listen = [\"1/0/1\"]",
+                "on-off.listen = [\"1/0/1\", \"1/0/3\"]",
             )
-            .replace("1.send = \"1/0/2\"", "1.send = \"1/0/3\""),
+            .replace("status.send = \"1/0/2\"", "status.send = \"1/0/3\""),
     )?;
     let config = std::fs::read_to_string(model.join("bussard.toml"))?;
     std::fs::write(
@@ -254,7 +247,7 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
     )?;
     let before = model_bytes(&model)?;
 
-    let out = run(&["diff", s(&json)?, s(&model)?, "--checklist"], 0)?;
+    let out = run(&["diff", s(&project)?, s(&model)?, "--checklist"], 0)?;
     let at = |needle: &str| {
         out.find(needle)
             .ok_or_else(|| format!("no {needle:?} in\n{out}"))
@@ -265,8 +258,9 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
          middle group 1/0 \"Lighting\")",
     )?;
     let device = at("## 1.1.1 Test Switch Actuator")?;
-    let listen = at("- [ ] Objekt 0 \"Switch output A\": listens 1/0/1, 1/0/3 (was 1/0/1)")?;
-    let send = at("- [ ] Objekt 1 \"Status output A\": sends 1/0/3 (was 1/0/2)")?;
+    let listen =
+        at("- [ ] Objekt 0 \"Switch output A\" (On/Off): listens 1/0/1, 1/0/3 (was 1/0/1)")?;
+    let send = at("- [ ] Objekt 1 \"Status output A\" (Status): sends 1/0/3 (was 1/0/2)")?;
     let notes = at("## Not in ETS by hand")?;
     assert!(groups < new_ga && new_ga < device, "{out}");
     assert!(device < listen && listen < send && send < notes, "{out}");
@@ -281,7 +275,10 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
     );
     assert!(out.contains(&closing), "{out}");
 
-    let out = run(&["diff", s(&json)?, s(&model)?, "--checklist", "--json"], 0)?;
+    let out = run(
+        &["diff", s(&project)?, s(&model)?, "--checklist", "--json"],
+        0,
+    )?;
     let value: serde_json::Value = serde_json::from_str(&out)?;
     assert_eq!(value["schema"], 1);
     assert_eq!(value["items"], 3);
@@ -296,7 +293,7 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
 
     // The plain `--json` keeps its shape: a link sentence names the device
     // by its unique name and the change's `device` keeps the address (#306).
-    let out = run(&["diff", s(&json)?, s(&model)?, "--json"], 0)?;
+    let out = run(&["diff", s(&project)?, s(&model)?, "--json"], 0)?;
     let value: serde_json::Value = serde_json::from_str(&out)?;
     let changes = value["changes"].as_array().ok_or("changes")?;
     assert!(

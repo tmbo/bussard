@@ -160,8 +160,8 @@ impl std::fmt::Debug for SetupMcp {
 /// Arguments for `knx_setup`. Its `Debug` never shows the password.
 #[derive(Default, Deserialize, JsonSchema)]
 pub struct SetupArgs {
-    /// The ETS project export to import: a `.knxproj` (or an xknxproject
-    /// `.json` dump), as a path on this computer. Omit it to import the one
+    /// The ETS project export to import: a `.knxproj`, as a path on this
+    /// computer. Omit it to import the one
     /// `.knxproj` lying next to the project folder, or to start without a
     /// project when there is none.
     #[serde(default)]
