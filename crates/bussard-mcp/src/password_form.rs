@@ -21,16 +21,14 @@
 
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::elicit::{self, Shown, lock};
 use bussard_secure::Password;
 use bussard_viz::password_page::{PasswordPage, PasswordPrompt, Submission, Verdict};
 use rmcp::RoleServer;
-use rmcp::model::{
-    CallToolResponse, CallToolResult, ElicitRequest, ElicitRequestParams, ElicitResult,
-    ElicitationAction, InputRequest, InputRequests, InputRequiredResult, ProtocolVersion,
-};
+use rmcp::model::{CallToolResponse, CallToolResult, ElicitRequestParams, ElicitationAction};
 use rmcp::service::RequestContext;
 use serde_json::json;
 use tokio::sync::mpsc;
@@ -122,14 +120,6 @@ impl PasswordForms {
     }
 }
 
-/// A lock that survives a panicked holder.
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
-
 /// Where a tool stands after asking for the form.
 pub enum Step {
     /// The client cannot show a URL: refuse as before.
@@ -149,14 +139,6 @@ impl std::fmt::Debug for Step {
             Step::Open(_) => "Open",
         })
     }
-}
-
-/// Whether the client of this call declared URL-mode elicitation.
-pub fn shows_urls(context: &RequestContext<RoleServer>) -> bool {
-    context
-        .client_capabilities()
-        .and_then(|caps| caps.elicitation)
-        .is_some_and(|elicitation| elicitation.url.is_some())
 }
 
 /// A tool result that ends the call without an import.
@@ -186,7 +168,7 @@ pub async fn ask(
     context: &RequestContext<RoleServer>,
     file: Option<String>,
 ) -> Step {
-    if !shows_urls(context) {
+    if !elicit::shows_urls(context) {
         return Step::Unsupported;
     }
     let (sender, submissions) = mpsc::channel(1);
@@ -198,7 +180,7 @@ pub async fn ask(
             );
         }
     };
-    let id = match new_id() {
+    let id = match elicit::new_id() {
         Ok(id) => id,
         Err(err) => return Step::Answer(not_imported(&err, NEVER_IN_CHAT).into()),
     };
@@ -218,26 +200,14 @@ pub async fn ask(
         page: Mutex::new(Some(page)),
         submissions: tokio::sync::Mutex::new(submissions),
     });
-    if context
-        .protocol_version()
-        .is_some_and(|v| v >= ProtocolVersion::V_2026_07_28)
-    {
-        forms.put(form);
-        let mut requests = InputRequests::new();
-        requests.insert(
-            INPUT_KEY.to_owned(),
-            InputRequest::Elicitation(ElicitRequest::new(params)),
-        );
-        return Step::Answer(
-            InputRequiredResult::new(Some(requests), Some(format!("{REQUEST_STATE_PREFIX}{id}")))
-                .into(),
-        );
-    }
-    match context.peer.create_elicitation(params).await {
-        Ok(result) => after_elicitation(form, result.action),
-        Err(err) => {
-            // Logged only: a client's error text could echo the URL.
-            tracing::warn!(%err, "password form: the client did not show the form");
+    let state = format!("{REQUEST_STATE_PREFIX}{id}");
+    match elicit::show(context, INPUT_KEY, state, params).await {
+        Shown::Pending(response) => {
+            forms.put(form);
+            Step::Answer(response)
+        }
+        Shown::Answered(action) => after_elicitation(form, action),
+        Shown::Failed => {
             form.finish();
             Step::Answer(
                 not_imported("the chat app did not show the password form", NEVER_IN_CHAT).into(),
@@ -270,11 +240,7 @@ pub fn resume(
             .into(),
         );
     };
-    let action = responses
-        .and_then(|responses| responses.get(INPUT_KEY).cloned())
-        .and_then(|value| serde_json::from_value::<ElicitResult>(value).ok())
-        .map_or(ElicitationAction::Cancel, |answer| answer.action);
-    after_elicitation(form, action)
+    after_elicitation(form, elicit::answer(responses, INPUT_KEY))
 }
 
 /// The step once the human answered the elicitation of `form`.
@@ -427,11 +393,4 @@ fn store_password(model_dir: &Path, password: &Password) -> Result<PathBuf, Stri
     bussard_model::dotenv::remember(ENV_KEY, password.expose());
     tracing::info!("password form: stored {ENV_KEY} in {}", file.display());
     Ok(file)
-}
-
-/// A fresh random elicitation id.
-fn new_id() -> Result<String, String> {
-    let mut bytes = [0u8; 16];
-    getrandom::getrandom(&mut bytes).map_err(|e| format!("drawing a random id: {e}"))?;
-    Ok(bussard_model::text::hex(&bytes))
 }
