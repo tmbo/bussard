@@ -30,7 +30,7 @@
 //! The diff therefore compares **GA sets per object** — a model `send:` and a
 //! model `listen:` entry are treated alike.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
@@ -46,21 +46,90 @@ use bussard_service::reconstruct_line::{
 };
 use bussard_transport::TransportKind;
 
+use crate::cli::{ProductSelection, Resolved, Run, Spec};
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_optional, load_model_required, open_service,
-    resolve_config,
+    ConnOverrides, load_model_optional, load_model_required, open_checked, resolve_config,
 };
 use crate::scan_cmd::parse_line;
 
+/// `bussard reconstruct`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ReconstructArgs {
+    /// The single device to read, e.g. `1.1.4` (mutually exclusive with
+    /// `--line`).
+    #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+    address: Option<String>,
+    /// Sweep a whole line, e.g. `1.1`, and synthesize a fresh project from
+    /// every System B device's tables (requires `--out`).
+    #[arg(long, value_name = "LINE", conflicts_with_all = ["address", "keyring"])]
+    line: Option<String>,
+    /// The first device number to probe in line mode (0–255).
+    #[arg(long, value_name = "N", default_value_t = 0, requires = "line")]
+    from: u8,
+    /// The last device number to probe in line mode (0–255).
+    #[arg(long, value_name = "N", default_value_t = 255, requires = "line")]
+    to: u8,
+    /// Line mode only: the fresh project folder to synthesize into. Must be
+    /// absent or empty: reconstruction never merges into an existing project.
+    #[arg(long, value_name = "DIR", requires = "line")]
+    out: Option<PathBuf>,
+    #[command(flatten)]
+    product: ProductSelection,
+    /// Read the links and tables only: skip the parameter read-back and the
+    /// product parse behind it. On a large parameter segment
+    /// that read-back is most of the command's time.
+    // Issue #215.
+    #[arg(long, conflicts_with_all = ["line", "product", "application"])]
+    no_parameters: bool,
+    /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+    /// escape hatch for a simulator or a device with a synthetic key. Prefer
+    /// `--keyring` for a real installation: a process argument is visible to
+    /// other users on the machine.
+    #[arg(long, value_name = "HEX", conflicts_with_all = ["keyring", "line"])]
+    tool_key: Option<String>,
+}
+
+impl Run for ReconstructArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let overrides = g.mgmt_with_facts();
+        match (&self.line, &self.address) {
+            (Some(line), _) => run_line(
+                line,
+                self.from,
+                self.to,
+                self.out.as_deref(),
+                g.dir(),
+                g.json,
+                overrides,
+            ),
+            (None, Some(address)) => run(
+                address,
+                g.dir(),
+                g.json,
+                overrides,
+                self.product.selection(),
+                self.no_parameters,
+                g.tool_keys(self.tool_key.as_deref()),
+            ),
+            // clap requires ADDRESS without --line.
+            (None, None) => anyhow::bail!("give a device ADDRESS or --line"),
+        }
+    }
+}
+
 /// Runs `bussard reconstruct`.
-pub fn run(
+fn run(
     address: &str,
     dir: &Path,
     json: bool,
     overrides: ConnOverrides,
-    selection: crate::param_readback::Selection<'_>,
+    selection: bussard_service::params::Selection<'_>,
     no_parameters: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    tool_key_source: bussard_service::secure::ToolKeySource<'_>,
 ) -> anyhow::Result<ExitCode> {
     let target: IndividualAddress = address
         .parse()
@@ -90,13 +159,13 @@ pub fn run(
             selection,
             model.as_ref(),
             target,
-            crate::param_readback::MissingProduct::Warn,
+            bussard_service::params::MissingProduct::Warn,
         )?
     };
     let model_ref = model.as_ref();
     let product_ref = product.as_ref();
 
-    let facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    let facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
     let (read_result, params, identity, _, _, _) = crate::plan_cmd::read_device(
         config,
         target,
@@ -133,7 +202,7 @@ pub fn run(
     } else {
         print_text(&report);
         if let Some(identity) = &report.identity {
-            println!("{}", crate::device_facts::identity_line(target, identity));
+            println!("{}", bussard_service::identity_line(target, identity));
         }
         match &report.parameters {
             Some(params) => crate::param_readback::print_text(params, target),
@@ -217,7 +286,7 @@ fn print_text(report: &ReconstructReport) {
 // ===========================================================================
 
 /// Runs `bussard reconstruct --line`.
-pub fn run_line(
+fn run_line(
     line: &str,
     from: u8,
     to: u8,
@@ -259,9 +328,8 @@ pub fn run_line(
     let conn = overrides.clone();
     let runtime = tokio::runtime::Runtime::new()?;
     let found = runtime.block_on(async move {
-        let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let source = checked_source_or_close(&service, &conn).await?;
-        let mut progress = Progress(crate::progress::SweepDisplay::new(
+        let (service, source) = open_checked(config, WritePolicy::ReadOnly, &conn).await?;
+        let mut progress = Progress(crate::progress::Display::sweep(
             "reconstructing",
             usize::from(to.saturating_sub(from)) + 1,
             json,
@@ -277,7 +345,7 @@ pub fn run_line(
                 discovery_timeouts(),
                 &mut progress,
             ) => {
-                progress.0.finish();
+                progress.0.finish(true);
                 eprintln!(
                     "\rsweep complete: {} device(s) found            ",
                     found.len()
@@ -336,7 +404,7 @@ fn ensure_empty_out(out: &Path) -> anyhow::Result<()> {
 
 /// The CLI's sweep progress: a line rewritten in place, or the live view on
 /// an interactive terminal (issue #147).
-struct Progress(crate::progress::SweepDisplay);
+struct Progress(crate::progress::Display);
 
 impl SweepObserver for Progress {
     fn probing(&mut self, addr: IndividualAddress, found: usize) {

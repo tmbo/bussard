@@ -32,33 +32,56 @@ use bussard_monitor::acceptance::{ManualDecision, ManualStep, RunOptions};
 use bussard_monitor::{DecodedTelegram, TelegramRing, acceptance};
 use bussard_service::{BusService, WritePolicy};
 
+use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{
     ConnOverrides, enforce_write_gate, gateway_display, load_model_required, resolve_config,
 };
 use crate::write_cmd::protected_refusal;
 
-/// The flags of the `test` subcommand.
-#[derive(Debug, Clone, Default)]
-pub struct TestOptions {
+/// `bussard test`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub(crate) struct TestArgs {
     /// The test file to run (default: `<dir>/tests.toml`).
-    pub file: Option<PathBuf>,
-    /// Emit the report as JSON instead of text.
-    pub json: bool,
-    /// Together with `allow_protected: true` in the file, permit tests that
-    /// write to a protected group address.
-    pub force: bool,
-    /// Do not carry out `manual:` steps; report them as skipped.
-    pub skip_manual: bool,
-    /// Run only the named tests (repeatable).
-    pub only: Vec<String>,
-    /// Skip the confirmation prompt.
-    pub yes: bool,
-    /// Permit a run against a non-loopback (real) gateway.
-    pub allow_remote_gateway: bool,
+    #[arg(long, value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Override the protected-group-address refusal: write to a group
+    /// address marked `protected = true` in `groups.toml`. A test also
+    /// needs `allow_protected = true` in the test file.
+    #[arg(long)]
+    force: bool,
+    /// Report `manual:` steps as skipped instead of carrying them out.
+    #[arg(long)]
+    skip_manual: bool,
+    /// Run only the named test (repeatable).
+    #[arg(long, value_name = "NAME")]
+    only: Vec<String>,
+    #[command(flatten)]
+    consent: Consent,
+    /// Instead of running `tests.toml`: open a KNXnet/IP Secure session,
+    /// stay idle (no keepalive, no tunnel) for SECS seconds, and report
+    /// whether the interface dropped it. Read-only: nothing
+    /// is written to the bus and no tunnel slot is taken.
+    // Issue #197.
+    #[arg(long, value_name = "SECS", conflicts_with_all = ["file", "force", "skip_manual", "only"])]
+    secure_idle: Option<u64>,
+}
+
+impl Run for TestArgs {
+    fn spec(&self) -> Spec {
+        Spec::TUNNEL.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match self.secure_idle {
+            Some(secs) => run_secure_idle(g.dir(), Duration::from_secs(secs), g.json, g.group()),
+            None => run(&self, g),
+        }
+    }
 }
 
 /// Runs `bussard test`.
-pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow::Result<ExitCode> {
+fn run(options: &TestArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, overrides) = (g.dir(), g.group());
     // A test run writes to the bus, so a present-but-broken model is a hard
     // error: a parse failure must never fail the protected-GA gate open.
     let model = load_model_required(dir)?.ok_or_else(|| {
@@ -83,7 +106,7 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
         );
     }
     let suite = tests_schema::load_tests(&path)?;
-    let selected = selected_tests(&suite, &options);
+    let selected = selected_tests(&suite, options);
     if selected == 0 {
         println!("no tests to run in {}", path.display());
         return Ok(ExitCode::SUCCESS);
@@ -91,21 +114,28 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
 
     // Both halves of the protected gate, reported before anything is sent.
     let allow_protected = suite.allow_protected && options.force;
-    report_protected(&suite, &model, &options, allow_protected);
+    report_protected(&suite, &model, options, allow_protected);
 
     let config = resolve_config(Some(&model), &overrides)?;
     let gateway = gateway_display(&config);
-    enforce_write_gate(&config, options.allow_remote_gateway)?;
+    enforce_write_gate(&config, g.allow_remote_gateway)?;
     eprintln!("gateway: {gateway}");
 
-    if !confirm(selected, &gateway, options.yes)? {
+    if !confirm(selected, &gateway, options.consent.yes)? {
         eprintln!("aborted; nothing was written.");
         return Ok(ExitCode::FAILURE);
     }
 
-    let report = execute(&suite, &model, &options, allow_protected, config)?;
+    let report = execute(
+        &suite,
+        &model,
+        options,
+        allow_protected,
+        g.allow_remote_gateway,
+        config,
+    )?;
 
-    if options.json {
+    if g.json {
         crate::output::print(crate::output::schema::TEST, &report.to_json())?;
     } else {
         print!("{}", report.text());
@@ -121,7 +151,7 @@ pub fn run(dir: &Path, options: TestOptions, overrides: ConnOverrides) -> anyhow
 /// Secure session, stays idle without keepalive for `idle`, and reports
 /// whether the interface dropped it. Read-only: no tunnel, no bus traffic, so
 /// no write gate and no confirmation.
-pub fn run_secure_idle(
+fn run_secure_idle(
     dir: &Path,
     idle: Duration,
     json: bool,
@@ -206,8 +236,9 @@ fn idle_json(report: &bussard_transport::SecureIdleReport) -> serde_json::Value 
 fn execute(
     suite: &TestSuite,
     model: &Model,
-    options: &TestOptions,
+    options: &TestArgs,
     allow_protected: bool,
+    allow_remote_gateway: bool,
     config: bussard_transport::ConnectionConfig,
 ) -> anyhow::Result<acceptance::Report> {
     let run_options = RunOptions {
@@ -225,7 +256,7 @@ fn execute(
     // applies the write gate as it opens (already checked in `run`).
     let service = {
         let _context = runtime.enter();
-        BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?
+        BusService::open(config, WritePolicy::transmit(allow_remote_gateway))?
     };
     Ok(runtime.block_on(async move {
         let handle = service.handle().clone();
@@ -257,7 +288,7 @@ fn execute(
 }
 
 /// How many tests the `--only` filter selects.
-fn selected_tests(suite: &TestSuite, options: &TestOptions) -> usize {
+fn selected_tests(suite: &TestSuite, options: &TestArgs) -> usize {
     if options.only.is_empty() {
         return suite.tests.len();
     }
@@ -275,12 +306,7 @@ fn selected_tests(suite: &TestSuite, options: &TestOptions) -> usize {
 
 /// Says, before anything is sent, which tests the protected-GA gate will refuse
 /// and how to permit them.
-fn report_protected(
-    suite: &TestSuite,
-    model: &Model,
-    options: &TestOptions,
-    allow_protected: bool,
-) {
+fn report_protected(suite: &TestSuite, model: &Model, options: &TestArgs, allow_protected: bool) {
     for test in &suite.tests {
         if !acceptance::touches_protected(model, test) {
             continue;
@@ -427,13 +453,13 @@ mod tests {
     #[test]
     fn test_selected_tests_counts_the_only_filter() -> R {
         let suite = suite()?;
-        assert_eq!(selected_tests(&suite, &TestOptions::default()), 2);
-        let options = TestOptions {
+        assert_eq!(selected_tests(&suite, &TestArgs::default()), 2);
+        let options = TestArgs {
             only: vec!["kitchen light".to_string()],
             ..Default::default()
         };
         assert_eq!(selected_tests(&suite, &options), 1);
-        let options = TestOptions {
+        let options = TestArgs {
             only: vec!["nothing by that name".to_string()],
             ..Default::default()
         };
@@ -454,7 +480,7 @@ mod tests {
         ] {
             let mut suite = suite.clone();
             suite.allow_protected = file_flag;
-            let options = TestOptions {
+            let options = TestArgs {
                 force,
                 ..Default::default()
             };

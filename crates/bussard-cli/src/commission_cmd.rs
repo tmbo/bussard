@@ -44,30 +44,55 @@ use bussard_service::commission::{
 };
 use bussard_service::{BusService, WritePolicy};
 
+use crate::apply_cmd::ApplyArgs;
 use crate::assign_cmd;
+use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display,
-    load_model_required, resolve_config, session_open_error,
+    checked_source_or_close, enforce_write_gate, gateway_display, load_model_required,
+    resolve_config, session_open_error,
 };
-use crate::secure_key::ToolKeySource;
+use crate::flash_cmd::FlashArgs;
 
-/// The flags `commission` takes, bundled so the runner keeps one signature.
-pub struct CommissionOptions<'a> {
-    /// Also flash the device's application program after assigning it.
-    pub flash: bool,
-    /// Also apply the model's link tables after assigning (and flashing) it.
-    pub apply: bool,
-    /// Append one label row per commissioned device to this CSV file.
-    pub labels: Option<&'a Path>,
-    /// The vendor `.knxprod` to flash from; without it the model directory's
-    /// `vendor/` cache is searched by order number.
-    pub product: Option<&'a Path>,
-    /// Skip the single run confirmation (for a non-TTY bench script).
-    pub yes: bool,
-    /// Emit the JSON summary instead of the table.
-    pub json: bool,
-    /// Permit writes to a non-loopback gateway.
-    pub allow_remote_gateway: bool,
+/// `bussard commission`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct CommissionArgs {
+    /// The line to commission, e.g. `1.1`.
+    #[arg(long, value_name = "LINE")]
+    line: String,
+    /// Also flash each device's application program after assigning it.
+    #[arg(long)]
+    flash: bool,
+    /// Also apply the project's link tables after assigning (and flashing).
+    #[arg(long)]
+    apply: bool,
+    /// Append one label row per commissioned device to this CSV file
+    /// (columns `address;name;order_number;floor;room`).
+    #[arg(long, value_name = "FILE")]
+    labels: Option<PathBuf>,
+    /// The vendor `.knxprod` to flash from. Default: the archive
+    /// `bussard.lock` pins for each device in `<dir>/products/`.
+    #[arg(long, value_name = "FILE", requires = "flash")]
+    product: Option<PathBuf>,
+    #[command(flatten)]
+    consent: Consent,
+    /// The raw 32-hex-character KNX Data Secure tool key — the test/bench
+    /// escape hatch. Prefer `--keyring` for a real installation.
+    #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+    tool_key: Option<String>,
+}
+
+impl Run for CommissionArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.is_some())
+    }
+
+    fn early_consent(&self) -> Option<(bool, String)> {
+        Some((self.consent.yes, format!("commission line {}", self.line)))
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
 }
 
 /// The stable JSON shape of one device row.
@@ -99,13 +124,8 @@ struct CommissionJson {
 type Products = BTreeMap<IndividualAddress, PathBuf>;
 
 /// Runs `bussard commission`.
-pub fn run(
-    line: &str,
-    dir: &Path,
-    options: CommissionOptions<'_>,
-    tool_key_source: ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (line, dir, overrides) = (options.line.as_str(), g.dir(), g.mgmt());
     let (area, line_no) = crate::line_cmd::parse_line(line)?;
     let line = format!("{area}.{line_no}");
 
@@ -123,7 +143,7 @@ pub fn run(
     };
     let config = resolve_config(Some(&model), &overrides)?;
     // Safety envelope (issue #74): the same gate every write goes through.
-    enforce_write_gate(&config, options.allow_remote_gateway)?;
+    enforce_write_gate(&config, g.allow_remote_gateway)?;
     let gateway = gateway_display(&config);
 
     let mut walk = LineRun::new(&model, area, line_no);
@@ -143,7 +163,7 @@ pub fn run(
                 continue;
             };
             let device = model.devices.get(&target.address).map(|d| &d.device);
-            match crate::product_store::resolve(dir, options.product, device, &order) {
+            match crate::product_store::resolve(dir, options.product.as_deref(), device, &order) {
                 Ok(path) => {
                     products.insert(target.address, path);
                 }
@@ -169,8 +189,7 @@ pub fn run(
         let targets = walk.targets().to_vec();
         let conn = overrides.clone();
         runtime.block_on(async move {
-            let service =
-                BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
+            let service = BusService::open(config, WritePolicy::transmit(g.allow_remote_gateway))?;
             let _ = service
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
@@ -192,7 +211,7 @@ pub fn run(
     let pending = walk.pending();
     if pending == 0 {
         eprintln!("every device the model has on line {line} already answers at its address.");
-    } else if !confirm(&line, pending, &gateway, options.yes)? {
+    } else if !confirm(&line, pending, &gateway, options.consent.yes)? {
         eprintln!("aborted — nothing was written.");
         return Ok(ExitCode::FAILURE);
     }
@@ -232,10 +251,8 @@ pub fn run(
             &config,
             &target,
             products.get(&target.address).cloned(),
-            dir,
-            &options,
-            tool_key_source,
-            &overrides,
+            options,
+            g,
         );
         if let Some(detail) = outcome.status.detail() {
             eprintln!("  failed: {detail}");
@@ -244,7 +261,7 @@ pub fn run(
         // and stick it while the next device is on the bench. Under `--json` it
         // rides in the summary instead, keeping stdout parseable.
         if let Some(label) = &outcome.label {
-            if options.json {
+            if g.json {
                 eprintln!("  {label}");
             } else {
                 println!("{label}");
@@ -257,7 +274,7 @@ pub fn run(
     // Labels are appended after each device would risk a half-written row on a
     // crash; writing them in one pass at the end keeps the CSV consistent with
     // the summary the operator just read.
-    let labels_file = match options.labels {
+    let labels_file = match options.labels.as_deref() {
         Some(path) => {
             append_labels(path, outcomes, walk.targets())
                 .with_context(|| format!("writing the labels CSV {}", path.display()))?;
@@ -268,12 +285,12 @@ pub fn run(
 
     let failed = walk.totals().failed;
 
-    if options.json {
+    if g.json {
         let out = to_json(&line, &gateway, outcomes, labels_file);
         crate::output::print(crate::output::schema::COMMISSION, &out)?;
     } else {
         print_summary(&line, &gateway, outcomes);
-        if let Some(path) = options.labels {
+        if let Some(path) = options.labels.as_deref() {
             println!("labels appended to {}", path.display());
         }
     }
@@ -286,25 +303,22 @@ pub fn run(
 
 /// Commissions one device: prompt, wait, verify the product, assign, then the
 /// optional flash / apply and the label.
-#[allow(clippy::too_many_arguments)] // one call site; the run's state, spelled out
 fn commission_one(
     runtime: &tokio::runtime::Runtime,
     config: &bussard_transport::ConnectionConfig,
     target: &Target,
     product: Option<PathBuf>,
-    dir: &Path,
-    options: &CommissionOptions<'_>,
-    tool_key_source: ToolKeySource<'_>,
-    overrides: &ConnOverrides,
+    options: &CommissionArgs,
+    g: &Resolved,
 ) -> Outcome {
+    let (dir, overrides) = (g.dir(), &g.mgmt());
     let fail = |detail: String| Outcome::failed(target, detail);
 
     // The bus half: wait for the button, read the identity, write the address.
     let assigned = {
         let config = config.clone();
         runtime.block_on(async move {
-            let service =
-                BusService::open(config, WritePolicy::transmit(options.allow_remote_gateway))?;
+            let service = BusService::open(config, WritePolicy::transmit(g.allow_remote_gateway))?;
             let _ = service
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
@@ -343,24 +357,17 @@ fn commission_one(
             return fail(format!("no product data resolved for {order}"));
         };
         eprintln!("  flashing from {}", product.display());
-        let flashed = crate::flash_cmd::run(
-            &target.address.to_string(),
-            Some(&product),
-            None,
-            Some(&order),
-            dir,
-            true,
-            false,
-            false,
-            false,
-            false,
-            options.allow_remote_gateway,
-            None,
-            tool_key_source,
-            None,
-            overrides.clone(),
-            crate::flash_cmd::FlashOutput::default(),
-        );
+        let flashed = FlashArgs {
+            address: target.address.to_string(),
+            product: Some(product),
+            order_number: Some(order),
+            consent: Consent { yes: true },
+            tool_key: ToolKey {
+                tool_key: options.tool_key.clone(),
+            },
+            ..FlashArgs::default()
+        }
+        .run(&g.step());
         match flashed {
             Ok(code) if exited_ok(&code) => {}
             Ok(_) => return fail("the flash did not complete (see the output above)".to_string()),
@@ -370,16 +377,15 @@ fn commission_one(
 
     if options.apply {
         eprintln!("  applying the model's links");
-        let applied = crate::apply_cmd::run(
-            &target.address.to_string(),
-            dir,
-            true,
-            options.allow_remote_gateway,
-            tool_key_source,
-            None,
-            overrides.clone(),
-            crate::apply_cmd::ApplyInputs::default(),
-        );
+        let applied = ApplyArgs {
+            address: Some(target.address.to_string()),
+            consent: Consent { yes: true },
+            tool_key: ToolKey {
+                tool_key: options.tool_key.clone(),
+            },
+            ..ApplyArgs::default()
+        }
+        .run(&g.step());
         match applied {
             Ok(code) if exited_ok(&code) => {}
             Ok(_) => return fail("the apply did not complete (see the output above)".to_string()),

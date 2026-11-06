@@ -21,9 +21,7 @@ use std::path::Path;
 
 use bussard_model::{IndividualAddress, Model};
 
-pub(crate) use bussard_service::params::{
-    MissingProduct, ParamState, ProductSource, Readback, Selection, read_state,
-};
+use bussard_service::params::{MissingProduct, ProductSource, Readback, Selection};
 
 /// Resolves the product file and application for `target`
 /// ([`bussard_service::params::resolve_product`]), printing the warning a
@@ -41,7 +39,7 @@ pub(crate) fn resolve(
         model,
         target,
         missing,
-        Some(crate::product_cache::record_parse),
+        Some(crate::timing::record_product_parse),
     )
     .map_err(|e| anyhow::anyhow!(e))?;
     if let Some(warning) = lookup.warning {

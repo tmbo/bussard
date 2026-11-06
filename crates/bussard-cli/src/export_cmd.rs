@@ -4,22 +4,41 @@
 //! and a manifest with counts and a SHA-256 digest. Nothing vendor-derived,
 //! local or secret goes in; see [`bussard_model::bundle`].
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bussard_model::bundle;
 use bussard_model::history::History;
 
+use crate::cli::{Resolved, Run, Spec};
+
+/// `bussard export`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ExportArgs {
+    /// The bundle to write (default: next to the project folder, named
+    /// after it and today's date).
+    #[arg(value_name = "FILE")]
+    file: Option<PathBuf>,
+    /// Leave the `.bussard/history` snapshots out.
+    #[arg(long)]
+    no_history: bool,
+}
+
+impl Run for ExportArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self.file.as_deref(), g.dir(), self.no_history, g.json)
+    }
+}
+
 /// Runs `bussard export [FILE] [--no-history] [--json]`.
 ///
 /// Without `FILE` the bundle goes next to the model directory, named after it
 /// and today's date.
-pub fn run(
-    file: Option<&Path>,
-    dir: &Path,
-    no_history: bool,
-    json: bool,
-) -> anyhow::Result<ExitCode> {
+fn run(file: Option<&Path>, dir: &Path, no_history: bool, json: bool) -> anyhow::Result<ExitCode> {
     let (out, manifest) = bussard_service::files::export::bundle(dir, file, !no_history)?;
 
     if json {

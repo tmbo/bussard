@@ -35,6 +35,7 @@ use bussard_service::setup::{
 };
 use bussard_transport::knxnet::GatewayInfo;
 
+use crate::cli::{Resolved, Run, Spec};
 use crate::console::Console;
 
 /// Injection point for discovery so tests never touch the network.
@@ -49,39 +50,52 @@ type DiscoverFn = fn() -> anyhow::Result<Vec<GatewayInfo>>;
 /// budget against an unreachable endpoint.
 type ProbeFn = fn(SocketAddrV4);
 
-/// What `init` does after the skeleton: import a project, or scan a line.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct FirstRun {
-    /// The project to import (`.knxproj`, or an xknxproject `.json` dump).
-    pub project: Option<std::path::PathBuf>,
-    /// The project password (`--password`).
-    pub password: Option<String>,
-    /// The product-data download answer for the import.
-    pub consent: crate::product_fetch::Consent,
-    /// `--scan <LINE>`: scan this line after writing, without asking.
-    pub scan: Option<String>,
-    /// `--yes`: initialise a non-empty directory without asking.
-    pub yes: bool,
+/// `bussard init`: what it does after the skeleton, import a project or
+/// scan a line.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub(crate) struct InitArgs {
+    /// The ETS project to import right away (`.knxproj`, or an
+    /// xknxproject `.json` dump). Default: the one `.knxproj` next to the
+    /// project folder, when there is exactly one.
+    #[arg(value_name = "PROJECT")]
+    project: Option<PathBuf>,
+    /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
+    #[arg(long)]
+    password: Option<String>,
+    /// Download missing vendor product data without asking. Without a
+    /// terminal and without this flag nothing is downloaded; the missing
+    /// order numbers are listed.
+    #[arg(long, conflicts_with = "no_download")]
+    yes_download: bool,
+    /// Do not download missing product data; list it instead.
+    #[arg(long)]
+    no_download: bool,
+    /// Without a project: scan this line after writing the skeleton and
+    /// list what answers, without asking (for scripts).
+    #[arg(long, value_name = "LINE", conflicts_with = "project")]
+    scan: Option<String>,
+    /// Skip the confirmation prompt: initialise a non-empty directory.
+    #[arg(long)]
+    yes: bool,
 }
 
-/// Creates a fresh `knx/` model directory, then imports the project given (or
-/// the one `.knxproj` found next to it) or offers a line scan.
-pub fn run(
-    dir: &Path,
-    gateway: Option<&str>,
-    routing: bool,
-    first: FirstRun,
-) -> anyhow::Result<ExitCode> {
-    let find_project = first.project.is_none() && first.scan.is_none();
-    run_setup(
-        dir,
-        gateway,
-        routing,
-        real_discover,
-        real_probe,
-        first,
-        find_project,
-    )
+impl Run for InitArgs {
+    fn spec(&self) -> Spec {
+        Spec::CREATES
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let find_project = self.project.is_none() && self.scan.is_none();
+        run_setup(
+            g.dir(),
+            g.gateway.as_deref(),
+            g.routing,
+            real_discover,
+            real_probe,
+            self,
+            find_project,
+        )
+    }
 }
 
 /// The real discovery source used outside tests.
@@ -103,7 +117,7 @@ struct Terminal {
     /// `--yes`.
     yes: bool,
     /// The product-data download answer.
-    consent: crate::product_fetch::Consent,
+    consent: crate::confirm::DownloadConsent,
 }
 
 impl DownloadPrompt for Terminal {
@@ -223,7 +237,7 @@ fn run_setup(
     routing: bool,
     discover: DiscoverFn,
     probe: ProbeFn,
-    first: FirstRun,
+    first: InitArgs,
     find_project: bool,
 ) -> anyhow::Result<ExitCode> {
     let request = SetupRequest {
@@ -238,7 +252,10 @@ fn run_setup(
         discover,
         probe,
         yes: first.yes,
-        consent: first.consent,
+        consent: crate::confirm::DownloadConsent {
+            yes_download: first.yes_download,
+            no_download: first.no_download,
+        },
     };
     let outcome = setup::run(&request, &mut hooks, &mut Console)?;
     let resolution = match outcome {
@@ -311,7 +328,7 @@ fn run_with(
     routing: bool,
     discover: DiscoverFn,
     probe: ProbeFn,
-    first: FirstRun,
+    first: InitArgs,
 ) -> anyhow::Result<ExitCode> {
     run_setup(dir, gateway, routing, discover, probe, first, false)
 }
@@ -496,9 +513,9 @@ mod tests {
             true,
             no_gateways,
             no_probe,
-            FirstRun {
+            InitArgs {
                 yes: true,
-                ..FirstRun::default()
+                ..InitArgs::default()
             },
         )?;
         assert_eq!(code, ExitCode::FAILURE);
@@ -517,7 +534,7 @@ mod tests {
         let dir = temp_dir("nonempty");
         std::fs::create_dir_all(&dir)?;
         std::fs::write(dir.join("something.txt"), "hi")?;
-        let result = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default());
+        let result = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default());
         let err = result
             .err()
             .ok_or("a non-empty dir without --yes must be refused")?;
@@ -545,9 +562,9 @@ mod tests {
             true,
             no_gateways,
             no_probe,
-            FirstRun {
+            InitArgs {
                 yes: true,
-                ..FirstRun::default()
+                ..InitArgs::default()
             },
         )?;
         assert_eq!(code, ExitCode::SUCCESS);
@@ -567,7 +584,7 @@ mod tests {
     #[test]
     fn test_run_with_fresh_dir_ignores_env() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("fresh-env");
-        run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
         let ignore = std::fs::read_to_string(dir.join(".gitignore"))?;
         assert!(
             ignore.contains("# passwords for bussard, read automatically; never commit\n.env\n"),
@@ -641,7 +658,7 @@ mod tests {
         let dir = temp_dir("empty");
         std::fs::create_dir_all(&dir)?;
 
-        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.toml").exists());
 
@@ -664,7 +681,7 @@ mod tests {
             false,
             boom,
             no_probe,
-            FirstRun::default(),
+            InitArgs::default(),
         )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
@@ -700,7 +717,7 @@ mod tests {
             false,
             boom,
             record_probe,
-            FirstRun::default(),
+            InitArgs::default(),
         )?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(
@@ -716,7 +733,7 @@ mod tests {
     #[test]
     fn routing_writes_routing_config() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("routing");
-        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
 
         let text = std::fs::read_to_string(dir.join("bussard.toml"))?;
@@ -737,7 +754,7 @@ mod tests {
             false,
             one_gateway,
             no_probe,
-            FirstRun::default(),
+            InitArgs::default(),
         )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
@@ -759,7 +776,7 @@ mod tests {
             false,
             no_gateways,
             no_probe,
-            FirstRun::default(),
+            InitArgs::default(),
         )?;
         assert_eq!(code, ExitCode::SUCCESS);
 
@@ -775,7 +792,7 @@ mod tests {
     #[test]
     fn skeleton_is_complete_and_validates() -> Result<(), Box<dyn std::error::Error>> {
         let dir = temp_dir("skeleton");
-        run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
 
         for f in ["bussard.toml", "groups.toml", "README.md", ".gitignore"] {
             assert!(dir.join(f).exists(), "missing {f}");
@@ -799,7 +816,7 @@ mod tests {
         let dir = temp_dir("absent");
         // Deliberately do not create it.
         assert!(!dir.exists());
-        let code = run_with(&dir, None, true, no_gateways, no_probe, FirstRun::default())?;
+        let code = run_with(&dir, None, true, no_gateways, no_probe, InitArgs::default())?;
         assert_eq!(code, ExitCode::SUCCESS);
         assert!(dir.join("bussard.toml").exists());
 

@@ -1,11 +1,12 @@
 //! The `bussard capture` subcommand: stream decoded telegrams into SQLite.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
+use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
     CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, GroupKeyring,
@@ -13,19 +14,36 @@ use bussard_monitor::{
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
-use crate::conn_cmd::{ConnOverrides, load_model_optional, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{load_model_optional, resolve_config};
+
+/// `bussard capture`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct CaptureArgs {
+    /// The database file to write (created if absent).
+    #[arg(long, value_name = "DB")]
+    to: PathBuf,
+    /// Only capture telegrams matching this filter (see `monitor --filter`).
+    #[arg(long, value_name = "EXPR")]
+    filter: Option<String>,
+}
+
+impl Run for CaptureArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self.to, self.filter.as_deref(), g)
+    }
+}
 
 /// How often the running count is printed to stderr.
 const COUNT_INTERVAL: Duration = Duration::from_secs(3);
 
 /// Runs `bussard capture --to <db>`.
-pub fn run(
-    to: &Path,
-    dir: &Path,
-    filter_expr: Option<&str>,
-    keyring: Option<&Path>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(to: &Path, filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, keyring, overrides) = (g.dir(), g.keyring(), g.group());
     let filter = match filter_expr {
         Some(expr) => Filter::parse(expr)?,
         None => Filter::default(),
@@ -35,13 +53,19 @@ pub fn run(
     // KNX Data Secure group telegrams (issue #172): the raw cEMI keeps the
     // secured bytes; the decoded snapshot carries the decrypted value and the
     // `secured` flag.
-    let group_keys = crate::secure_key::group_keys(keyring)?.map(|keys| {
-        eprintln!(
-            "keyring: {} group key(s) for secured group telegrams",
-            keys.len()
-        );
-        GroupKeyring::new(keys)
-    });
+    let group_keys = keyring
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?
+        .map(|keys| {
+            eprintln!(
+                "keyring: {} group key(s) for secured group telegrams",
+                keys.len()
+            );
+            GroupKeyring::new(keys)
+        });
 
     let writer = CaptureWriter::open(to)?;
     eprintln!("capturing to {} (Ctrl-C to stop)", to.display());

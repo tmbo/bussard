@@ -10,7 +10,6 @@
 //! again afterwards. The exit code is honest: a confirmed restart the device
 //! does not accept, or a device that does not come back, exits non-zero.
 
-use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -19,10 +18,35 @@ use bussard_model::IndividualAddress;
 use bussard_service::restart::{RestartWait, restart_choice, restart_device};
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 
+use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, open_service,
-    resolve_config,
+    enforce_write_gate, gateway_display, load_model_required, open_service, resolve_config,
 };
+
+/// `bussard restart`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct RestartArgs {
+    /// The device to restart, e.g. `1.1.39`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// How many seconds the device may take to answer again.
+    #[arg(long, value_name = "SECONDS", default_value_t = 30)]
+    timeout: u64,
+    #[command(flatten)]
+    consent: Consent,
+    #[command(flatten)]
+    tool_key: BenchToolKey,
+}
+
+impl Run for RestartArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
+}
 
 /// The `restart <ADDRESS> --json` report.
 #[derive(Debug, serde::Serialize)]
@@ -47,23 +71,19 @@ struct Report {
 }
 
 /// Runs `bussard restart <ADDRESS>`.
-#[allow(clippy::too_many_arguments)] // the subcommand's flags, 1:1
-pub fn run(
-    address: &str,
-    timeout: u64,
-    yes: bool,
-    allow_remote_gateway: bool,
-    dir: &Path,
-    json: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: &RestartArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, timeout, yes) = (args.address.as_str(), args.timeout, args.consent.yes);
+    let (allow_remote_gateway, dir, json, overrides) =
+        (g.allow_remote_gateway, g.dir(), g.json, g.mgmt());
+    let tool_key_source = g.tool_keys(args.tool_key.tool_key.as_deref());
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
     let model = load_model_required(dir)?;
-    let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let tool_key = crate::secure_key::resolve(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model.as_ref(), target);
+    let tool_key = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve(target, tool_key_source, activated)
+    })?;
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
     // The form ETS uses for this device, from its product data (issue #452).

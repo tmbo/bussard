@@ -32,9 +32,8 @@ use bussard_service::secure::ToolKeys;
 pub(crate) use bussard_service::scan::Found;
 
 use crate::assign_cmd::hex;
-use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, load_model_required, open_service, resolve_config,
-};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{ConnOverrides, load_model_required, open_checked, resolve_config};
 use crate::style::{Cell, Style, Symbol, Table, Tone, count};
 
 /// The discovery timeout budget ([`scan::discovery_timeouts`]), honouring
@@ -43,8 +42,40 @@ pub(crate) fn discovery_timeouts() -> Timeouts {
     scan::discovery_timeouts()
 }
 
-/// Runs `bussard scan`.
-pub fn run(
+/// `bussard scan`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ScanArgs {
+    /// The line to scan, e.g. `1.1`.
+    #[arg(value_name = "LINE", default_value = "1.1")]
+    line: String,
+    /// The first device number to probe (0–255).
+    #[arg(long, value_name = "N", default_value_t = 0)]
+    from: u8,
+    /// The last device number to probe (0–255).
+    #[arg(long, value_name = "N", default_value_t = 255)]
+    to: u8,
+}
+
+impl Run for ScanArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(
+            &self.line,
+            self.from,
+            self.to,
+            g.dir(),
+            g.json,
+            g.keyring(),
+            g.mgmt(),
+        )
+    }
+}
+
+/// Runs `bussard scan` (also the first-run scan of `init`).
+pub(crate) fn run(
     line: &str,
     from: u8,
     to: u8,
@@ -64,7 +95,7 @@ pub fn run(
     let config = resolve_config(model.as_ref(), &overrides)?;
     // The keyring's tool keys (issue #203): a listed device is identified over
     // A_SecureData. Decrypted once for the whole sweep.
-    let keys = ToolKeys::load(crate::secure_key::ToolKeySource {
+    let keys = ToolKeys::load(bussard_service::secure::ToolKeySource {
         keyring,
         tool_key: None,
     })
@@ -96,8 +127,7 @@ pub fn run(
         // other source, and the gateway only routes replies back to the
         // assigned address (issue #30). Fall back to 0.0.255 on a routing
         // transport that assigns none.
-        let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let source = checked_source_or_close(&service, &overrides).await?;
+        let (service, source) = open_checked(config, WritePolicy::ReadOnly, &overrides).await?;
         // Guard the sweep with Ctrl-C: on interrupt, stop sweeping and fall
         // through to a clean close so the gateway tunnel slot is released
         // rather than leaked (~2 min hold) — see issue #31.
@@ -166,14 +196,14 @@ async fn sweep(
     json: bool,
     key_for: &(dyn Fn(IndividualAddress) -> Option<Key16> + Sync),
 ) -> Sweep {
-    let display = crate::progress::SweepDisplay::new("scanning", range.count(), json);
+    let mut display = crate::progress::Display::sweep("scanning", range.count(), json);
     let swept = scan::sweep(service, range, source, key_for, &mut |event| match event {
         SweepEvent::Probing { address, found } => display.probing(address, found),
         SweepEvent::Probed { .. } => display.advance(),
     })
     .await;
-    display.finish();
-    if matches!(display, crate::progress::SweepDisplay::Plain { .. }) {
+    display.finish(true);
+    if !display.is_live() {
         // End the progress line the plain display rewrites in place.
         eprintln!();
     }
@@ -349,7 +379,7 @@ fn render_report(
     }
     for f in &report.found {
         if let Some(check) = f.identity.as_ref().filter(|c| c.is_drift()) {
-            notes.push(style.warn(&crate::device_facts::identity_line(f.address, check)));
+            notes.push(style.warn(&bussard_service::identity_line(f.address, check)));
         }
     }
     notes.extend(news.lines(style));

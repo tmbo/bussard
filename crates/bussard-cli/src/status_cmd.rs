@@ -19,7 +19,6 @@
 //! The session's reads and the report live in [`bussard_service::status`],
 //! which `knx_show_device {live: true}` calls too (issue #747).
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context;
@@ -28,29 +27,56 @@ use bussard_model::knxnet::KnxnetFacts;
 use bussard_service::status::{StatusReport, read_live_status, status_report};
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{load_model_required, open_service, resolve_config};
 use crate::style::Style;
 
+/// `bussard status`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct StatusArgs {
+    /// The device to read, e.g. `1.1.200`. Without it, the project's change
+    /// summary.
+    #[arg(value_name = "ADDRESS")]
+    address: Option<String>,
+    /// Print the file-level diff instead of the plain-language rendering.
+    #[arg(long, conflicts_with = "address")]
+    raw: bool,
+}
+
+impl Run for StatusArgs {
+    fn spec(&self) -> Spec {
+        // `status <ADDRESS>` reads a device; plain `status` reads files.
+        match self.address {
+            Some(_) => Spec::BUS.json(),
+            None => Spec::FILES.json(),
+        }
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match &self.address {
+            Some(address) => run(address, g),
+            None => crate::history_cmd::run_status(g.dir(), g.json, self.raw),
+        }
+    }
+}
+
 /// Runs `bussard status <ADDRESS>`.
-pub fn run(
-    address: &str,
-    dir: &Path,
-    json: bool,
-    refresh_facts: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, json) = (g.dir(), g.json);
+    let tool_key_source = g.tool_keys(None);
+    let overrides = g.mgmt();
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
     let model = load_model_required(dir)?;
-    let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let (tool_key, factory_key) =
-        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model.as_ref(), target);
+    let (tool_key, factory_key) = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_session_keys(target, tool_key_source, activated)
+    })?;
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
-    let mut facts = crate::device_facts::cache(dir, model.is_some(), refresh_facts);
-    let authorize = crate::device_facts::read_only_authorize(&mut facts, target);
+    let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), g.refresh_facts);
+    let authorize = bussard_service::status::read_only_authorize(&mut facts, target);
 
     let runtime = tokio::runtime::Runtime::new()?;
     let read = runtime
@@ -135,7 +161,7 @@ fn render_text(
         style,
     );
     if let Some(identity) = &report.identity {
-        let line = crate::device_facts::identity_line(target, identity);
+        let line = bussard_service::identity_line(target, identity);
         let line = if identity.is_drift() {
             style.warn(&line)
         } else {

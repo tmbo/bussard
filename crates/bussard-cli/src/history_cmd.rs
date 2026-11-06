@@ -19,6 +19,63 @@ use bussard_model::change::{ChangeSet, describe, render_text};
 use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotReason};
 use bussard_model::{Model, schema};
 
+use crate::cli::{Resolved, Run, Spec};
+
+/// `bussard history`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct HistoryArgs {}
+
+impl Run for HistoryArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run_history(g.dir(), g.json)
+    }
+}
+
+/// `bussard show`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ShowArgs {
+    /// The snapshot: its id, or its number from `bussard history`.
+    #[arg(value_name = "SNAPSHOT")]
+    snapshot: String,
+    /// A second snapshot: show the change from the first one to this one.
+    #[arg(value_name = "SNAPSHOT")]
+    to: Option<String>,
+}
+
+impl Run for ShowArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run_show(g.dir(), &self.snapshot, self.to.as_deref(), g.json)
+    }
+}
+
+/// `bussard undo`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct UndoArgs {
+    /// The snapshot to restore: its id, or its number from `bussard history`
+    /// (default: the newest one that differs from the working files, which
+    /// reverts the last change).
+    #[arg(value_name = "SNAPSHOT")]
+    snapshot: Option<String>,
+}
+
+impl Run for UndoArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run_undo(g.dir(), self.snapshot.as_deref(), g.json)
+    }
+}
+
 /// The model files a raw diff compares, in the order it prints them.
 const TOP_LEVEL_FILES: [&str; 5] = bussard_model::loader::MODEL_FILES;
 
@@ -49,7 +106,7 @@ pub fn pending_changes(dir: &Path) -> Option<Pending> {
 /// Runs `bussard status`: what has changed since the last snapshot.
 ///
 /// Always exits 0 — "nothing pending" is an answer, not a failure.
-pub fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode> {
+pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let latest = history
         .latest()
@@ -133,7 +190,7 @@ pub fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<ExitCode>
 }
 
 /// Runs `bussard history`: the snapshot list, oldest first.
-pub fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
+fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let snapshots = history.list().context("reading .bussard/history")?;
     let summaries = history.summaries(&snapshots, 0..snapshots.len());
@@ -184,12 +241,7 @@ pub fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
 
 /// Runs `bussard show <id|N> [<id|N>]`: the change one snapshot introduced, or
 /// the change between two snapshots.
-pub fn run_show(
-    dir: &Path,
-    first: &str,
-    second: Option<&str>,
-    json: bool,
-) -> anyhow::Result<ExitCode> {
+fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let snapshots = history.list().context("reading .bussard/history")?;
     if snapshots.is_empty() {
@@ -255,7 +307,7 @@ pub fn run_show(
 /// the last change).
 ///
 /// Files only. Devices keep their tables until a human runs `plan` and `apply`.
-pub fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
+fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
     let history = History::open(dir);
     let snapshots = history.list().context("reading .bussard/history")?;
     // What `undo --json` prints when nothing was restored.

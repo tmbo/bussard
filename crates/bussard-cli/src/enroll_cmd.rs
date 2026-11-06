@@ -31,21 +31,29 @@ use serde_json::json;
 /// The long-poll wait: how long a `q` or Ctrl-C takes at most to be noticed.
 const WAIT_SECS: u64 = 3;
 
-/// The options of `bussard keys enroll`.
-#[derive(Debug)]
-pub struct EnrollOptions {
-    /// `--relay`: the relay base URL.
-    pub relay: Option<String>,
-    /// `--page`: the enrolment page the link opens.
-    pub page: Option<String>,
-    /// `--no-qr`: leave the QR code out.
-    pub no_qr: bool,
-    /// `--local`: serve the page and the relay on loopback.
-    pub local: bool,
+/// `bussard keys enroll`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct EnrollArgs {
+    /// The relay base URL. Default: `relay` in the `[enroll]` table of
+    /// bussard.toml, else the hosted relay. The hosted page talks only
+    /// to the hosted relay; another relay needs its own page (`--page`).
+    #[arg(long, value_name = "URL")]
+    relay: Option<String>,
+    /// The enrolment page the link opens. Default: `page` in `[enroll]`,
+    /// else the hosted page.
+    #[arg(long, value_name = "URL")]
+    page: Option<String>,
+    /// Leave out the QR code.
+    #[arg(long)]
+    no_qr: bool,
+    /// Serve the page and the relay on 127.0.0.1 instead, for a browser
+    /// on this computer (a webcam or typed codes); no hosted relay.
+    #[arg(long, conflicts_with_all = ["relay", "page"])]
+    local: bool,
 }
 
 /// Runs `bussard keys enroll`.
-pub fn run(dir: &Path, options: EnrollOptions, json_out: bool) -> anyhow::Result<ExitCode> {
+pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Result<ExitCode> {
     let config = bussard_model::loader::load_config(dir)
         .with_context(|| format!("reading {}", dir.join("bussard.toml").display()))?
         .enroll

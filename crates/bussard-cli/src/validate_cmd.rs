@@ -15,10 +15,25 @@ use std::process::ExitCode;
 
 use bussard_model::{Diagnostic, Model, Severity, validate_in_dir};
 
+use crate::cli::{Resolved, Run, Spec};
 use crate::style::{Style, Tone, count};
 
+/// `bussard validate`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ValidateArgs {}
+
+impl Run for ValidateArgs {
+    fn spec(&self) -> Spec {
+        Spec::FILES.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(g.dir(), g.json)
+    }
+}
+
 /// Runs the validate command over the model in `dir`.
-pub fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
+fn run(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let model = Model::load(dir)?;
     let mut diagnostics = validate_in_dir(&model, dir);
     diagnostics.extend(keyring_diagnostics(&model, dir));

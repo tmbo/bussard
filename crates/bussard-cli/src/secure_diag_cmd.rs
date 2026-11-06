@@ -6,16 +6,61 @@
 //! resets the report, and reads both back: the command fails unless the
 //! counters read zero and the report clear afterwards.
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 
-use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, load_model_required, open_service, resolve_config,
-};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{enforce_write_gate, load_model_required, open_service, resolve_config};
+
+/// The `bussard secure` subcommands (issue #533).
+#[derive(Debug, clap::Subcommand)]
+pub(crate) enum SecureCommand {
+    /// Read a Data Secure device's security failures log (PID 55: the
+    /// sequence, cryptographic and access error counters and the latest
+    /// failure), its security report (PID 57) and whether it broadcasts the
+    /// report (PID 58), with its tool key.
+    ///
+    /// After a secured write that did nothing, the counts tell the causes
+    /// apart: no new count means the sender is not in the device's security
+    /// individual address table, a cryptographic count a wrong or stale group
+    /// key, an access count a group-object security flag mismatch.
+    Diag(DiagArgs),
+}
+
+/// `bussard secure diag`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct DiagArgs {
+    /// The device, e.g. `1.1.5`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// Clear the log and reset the report after a confirmation, then read
+    /// both back.
+    #[arg(long)]
+    clear: bool,
+    /// Skip the confirmation prompt of --clear.
+    #[arg(long)]
+    yes: bool,
+    /// The raw 32-hex-character KNX Data Secure tool key, for a test
+    /// device. Prefer `--keyring`.
+    #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
+    tool_key: Option<String>,
+}
+
+impl Run for SecureCommand {
+    fn spec(&self) -> Spec {
+        let SecureCommand::Diag(args) = self;
+        Spec::BUS.json().tool_key(args.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        match self {
+            SecureCommand::Diag(args) => run(&args, g),
+        }
+    }
+}
 
 /// The `secure diag --json` report.
 #[derive(Debug, serde::Serialize)]
@@ -29,25 +74,19 @@ struct Report<'a> {
 }
 
 /// Runs `bussard secure diag`.
-#[allow(clippy::too_many_arguments)] // one command's flags, passed through
-pub fn run(
-    address: &str,
-    dir: &Path,
-    json: bool,
-    clear: bool,
-    yes: bool,
-    allow_remote_gateway: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, clear, yes) = (args.address.as_str(), args.clear, args.yes);
+    let (dir, json, allow_remote_gateway) = (g.dir(), g.json, g.allow_remote_gateway);
+    let (tool_key_source, overrides) = (g.tool_keys(args.tool_key.as_deref()), g.mgmt());
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
     let model = load_model_required(dir)?;
     // The log is tool-only (KNX 3/5/1 §6.3.9.2): a tool key is required, so
     // the device counts as activated for the key rule.
-    let (tool_key, factory_key) =
-        crate::secure_key::resolve_session_keys(target, tool_key_source, true)?;
+    let (tool_key, factory_key) = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_session_keys(target, tool_key_source, true)
+    })?;
     if tool_key.is_none() {
         bail!(
             "{target}: the security failures log is readable with the device's tool key only: \

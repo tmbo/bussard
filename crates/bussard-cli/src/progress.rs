@@ -389,110 +389,223 @@ pub(crate) struct FlashState {
     eta: FlashEta,
 }
 
-/// The progress renderer of `flash` and `flash --parameters-only`.
-pub(crate) enum FlashDisplay {
-    /// Today's plain lines: `  [k/n] label` and a `\r`-rewritten byte counter.
-    Plain,
-    /// The live view.
-    Live {
-        /// The bar on screen.
-        bar: ProgressBar,
-        /// Shared with the template keys.
-        state: Arc<Mutex<FlashState>>,
-        /// The two templates: a step without a byte stream, and a stream.
-        styles: Box<(ProgressStyle, ProgressStyle)>,
-        /// Whether the streaming style is on screen.
-        streaming: bool,
-    },
+/// The flash display's live parts: the state its template keys read and its
+/// two templates.
+struct FlashLive {
+    /// Shared with the template keys.
+    state: Arc<Mutex<FlashState>>,
+    /// A step without a byte stream, and a stream.
+    styles: (ProgressStyle, ProgressStyle),
+    /// Whether the streaming style is on screen.
+    streaming: bool,
 }
 
-impl FlashDisplay {
-    /// The renderer for executing `plan`; plain unless the live view is allowed
-    /// (see the module docs) for a command run with `json`.
-    pub(crate) fn new(plan: &FlashPlan, json: bool) -> Self {
+/// What a [`Display`] shows.
+enum Kind {
+    /// A spinner for a step without finer progress events (`apply`'s table
+    /// write): the label, elapsed time and the last bus event. Plain mode
+    /// prints nothing.
+    Task,
+    /// An address sweep (`scan`, `reconstruct --line`): a bar over the address
+    /// range; plain mode rewrites `<verb> <addr>…  <n> found` in place.
+    Sweep {
+        /// `scanning` or `reconstructing`.
+        verb: &'static str,
+    },
+    /// `flash` and `flash --parameters-only`: the step, a byte bar for a
+    /// streamed segment and the ETA; plain mode prints `  [k/n] label` and a
+    /// `\r`-rewritten byte counter. `None` in plain mode.
+    Flash(Option<Box<FlashLive>>),
+}
+
+/// The progress renderer of a long-running bus command: the live view on an
+/// interactive terminal, the plain lines otherwise (see the module docs).
+pub(crate) struct Display {
+    /// The bar on screen; `None` in plain mode or once finished.
+    bar: Option<ProgressBar>,
+    /// Whether it was drawn live (a finished live display stays live).
+    live: bool,
+    /// What it shows.
+    kind: Kind,
+}
+
+/// The task template.
+const TASK_TEMPLATE: &str = "{spinner} {wide_msg}  elapsed {clock}\n  {event}";
+/// The sweep template.
+const SWEEP_TEMPLATE: &str = "{spinner} {wide_msg}\n  [{bar:32}] {pos}/{len} addresses  elapsed {clock}  eta ~{eta}\n  {event}";
+/// The flash templates: a step without a byte stream, and a streamed segment.
+const FLASH_TEMPLATES: (&str, &str) = (
+    "{spinner} [{step}] {wide_msg}\n  elapsed {clock}{eta}\n  {event}",
+    "{spinner} [{step}] {wide_msg}\n  [{bar:32}] {pos}/{len} bytes  elapsed {clock}{eta}\n  {event}",
+);
+
+/// `template` with the `{clock}` and `{event}` keys, and the bar characters.
+fn style(template: &str) -> Option<ProgressStyle> {
+    Some(
+        ProgressStyle::with_template(template)
+            .ok()?
+            .progress_chars("=> ")
+            .with_key("clock", clock_key)
+            .with_key("event", event_key),
+    )
+}
+
+impl Display {
+    /// The plain display of `kind`.
+    fn plain(kind: Kind) -> Self {
+        Self {
+            bar: None,
+            live: false,
+            kind,
+        }
+    }
+
+    /// The live display of `kind` on `bar`.
+    fn live(bar: ProgressBar, kind: Kind) -> Self {
+        Self {
+            bar: Some(bar),
+            live: true,
+            kind,
+        }
+    }
+
+    /// A spinner labelled `label`; nothing unless the live view is allowed.
+    pub(crate) fn task(label: String, json: bool) -> Self {
+        match style(TASK_TEMPLATE).filter(|_| live(json)) {
+            Some(style) => {
+                let bar = start_bar(style);
+                bar.set_message(label);
+                Self::live(bar, Kind::Task)
+            }
+            None => Self::plain(Kind::Task),
+        }
+    }
+
+    /// The renderer for a sweep over `count` addresses; `verb` names the probe.
+    pub(crate) fn sweep(verb: &'static str, count: usize, json: bool) -> Self {
+        let kind = Kind::Sweep { verb };
+        match style(SWEEP_TEMPLATE).filter(|_| live(json)) {
+            Some(style) => {
+                let bar = start_bar(style);
+                bar.set_length(count as u64);
+                Self::live(bar, kind)
+            }
+            None => Self::plain(kind),
+        }
+    }
+
+    /// The renderer for executing `plan`.
+    pub(crate) fn flash(plan: &FlashPlan, json: bool) -> Self {
         if !live(json) {
-            return Self::Plain;
+            return Self::plain(Kind::Flash(None));
         }
         let state = Arc::new(Mutex::new(FlashState {
             step: String::new(),
             eta: FlashEta::for_plan(plan),
         }));
         let Some(styles) = flash_styles(&state) else {
-            return Self::Plain;
+            return Self::plain(Kind::Flash(None));
         };
         let bar = start_bar(styles.0.clone());
-        Self::Live {
-            bar,
+        let flash = FlashLive {
             state,
-            styles: Box::new(styles),
+            styles,
             streaming: false,
+        };
+        Self::live(bar, Kind::Flash(Some(Box::new(flash))))
+    }
+
+    /// Whether the live view is on screen (or was, before [`Display::finish`]).
+    pub(crate) fn is_live(&self) -> bool {
+        self.live
+    }
+
+    /// Renders one flash executor event.
+    pub(crate) fn on_progress(&mut self, progress: Progress) {
+        let (Some(bar), Kind::Flash(Some(flash))) = (&self.bar, &mut self.kind) else {
+            if matches!(self.kind, Kind::Flash(None)) {
+                plain_flash_line(progress);
+            }
+            return;
+        };
+        match progress {
+            Progress::Step {
+                index,
+                total,
+                label,
+            } => {
+                if let Ok(mut s) = flash.state.lock() {
+                    s.step = format!("{index}/{total}");
+                    s.eta.next_step(index, total, Instant::now());
+                }
+                if flash.streaming {
+                    bar.set_style(flash.styles.0.clone());
+                    flash.streaming = false;
+                }
+                bar.set_message(label);
+            }
+            Progress::Bytes { written, total } => {
+                let (pos, len) = match flash.state.lock() {
+                    Ok(mut s) => {
+                        s.eta.bytes(written, total, Instant::now());
+                        s.eta.step_bar()
+                    }
+                    Err(_) => (written as u64, total as u64),
+                };
+                // Length and position first, so the streaming style never
+                // draws the previous segment's counts.
+                bar.set_length(len);
+                bar.set_position(pos);
+                if !flash.streaming {
+                    bar.set_style(flash.styles.1.clone());
+                    flash.streaming = true;
+                }
+            }
+            // The bar follows the walk; the written count is in the
+            // plain trace and the MCP job (issue #320).
+            Progress::Written { .. } => {}
         }
     }
 
-    /// Renders one executor event.
-    pub(crate) fn on_progress(&mut self, progress: Progress) {
-        match self {
-            Self::Plain => plain_flash_line(progress),
-            Self::Live {
-                bar,
-                state,
-                styles,
-                streaming,
-            } => match progress {
-                Progress::Step {
-                    index,
-                    total,
-                    label,
-                } => {
-                    if let Ok(mut s) = state.lock() {
-                        s.step = format!("{index}/{total}");
-                        s.eta.next_step(index, total, Instant::now());
-                    }
-                    if *streaming {
-                        bar.set_style(styles.0.clone());
-                        *streaming = false;
-                    }
-                    bar.set_message(label);
-                }
-                Progress::Bytes { written, total } => {
-                    let (pos, len) = match state.lock() {
-                        Ok(mut s) => {
-                            s.eta.bytes(written, total, Instant::now());
-                            s.eta.step_bar()
-                        }
-                        Err(_) => (written as u64, total as u64),
-                    };
-                    // Length and position first, so the streaming style never
-                    // draws the previous segment's counts.
-                    bar.set_length(len);
-                    bar.set_position(pos);
-                    if !*streaming {
-                        bar.set_style(styles.1.clone());
-                        *streaming = true;
-                    }
-                }
-                // The bar follows the walk; the written count is in the
-                // plain trace and the MCP job (issue #320).
-                Progress::Written { .. } => {}
-            },
+    /// Reports that `addr` is being probed, with `found` responders so far.
+    pub(crate) fn probing(&self, addr: impl std::fmt::Display, found: usize) {
+        let Kind::Sweep { verb } = self.kind else {
+            return;
+        };
+        match &self.bar {
+            Some(bar) => bar.set_message(format!("{verb} {addr}…  {found} found")),
+            None => {
+                eprint!("\r{verb} {addr}…  {found} found   ");
+                let _ = std::io::stderr().flush();
+            }
+        }
+    }
+
+    /// Reports that one address was probed.
+    pub(crate) fn advance(&self) {
+        if let Some(bar) = &self.bar {
+            bar.inc(1);
         }
     }
 
     /// Takes the live view off the screen: cleared on `success`, left drawn on
-    /// a failure so the step it stopped at stays visible. Plain is a no-op.
-    pub(crate) fn finish(self, success: bool) {
-        if let Self::Live { bar, .. } = &self {
-            stop_bar(bar, !success);
+    /// a failure so the step it stopped at stays visible. A sweep is always
+    /// cleared, before its summary line is printed. Plain is a no-op.
+    pub(crate) fn finish(&mut self, success: bool) {
+        if let Some(bar) = self.bar.take() {
+            let sweep = matches!(self.kind, Kind::Sweep { .. });
+            stop_bar(&bar, !success && !sweep);
         }
     }
 }
 
-impl Drop for FlashDisplay {
+impl Drop for Display {
     fn drop(&mut self) {
-        if let Self::Live { bar, .. } = self
+        if let Some(bar) = self.bar.take()
             && !bar.is_finished()
         {
-            stop_bar(bar, true);
+            // An interrupted flash or task keeps the step it stopped at.
+            stop_bar(&bar, !matches!(self.kind, Kind::Sweep { .. }));
         }
     }
 }
@@ -522,7 +635,8 @@ fn plain_flash_line(progress: Progress) {
     }
 }
 
-/// The flash templates: (step without a stream, streaming segment).
+/// The flash templates with their `{step}` and `{eta}` keys, which read
+/// `state`: (step without a stream, streaming segment).
 fn flash_styles(state: &Arc<Mutex<FlashState>>) -> Option<(ProgressStyle, ProgressStyle)> {
     let step_state = Arc::clone(state);
     let step_key = move |_: &ProgressState, w: &mut dyn std::fmt::Write| {
@@ -542,135 +656,12 @@ fn flash_styles(state: &Arc<Mutex<FlashState>>) -> Option<(ProgressStyle, Progre
     };
     let build = |template: &str| -> Option<ProgressStyle> {
         Some(
-            ProgressStyle::with_template(template)
-                .ok()?
-                .progress_chars("=> ")
+            style(template)?
                 .with_key("step", step_key.clone())
-                .with_key("eta", eta_key.clone())
-                .with_key("clock", clock_key)
-                .with_key("event", event_key),
+                .with_key("eta", eta_key.clone()),
         )
     };
-    let step = build("{spinner} [{step}] {wide_msg}\n  elapsed {clock}{eta}\n  {event}")?;
-    let stream = build(
-        "{spinner} [{step}] {wide_msg}\n  [{bar:32}] {pos}/{len} bytes  elapsed {clock}{eta}\n  {event}",
-    )?;
-    Some((step, stream))
-}
-
-/// The progress renderer of an address sweep (`scan`, `reconstruct --line`).
-pub(crate) enum SweepDisplay {
-    /// Today's `\r`-rewritten `<verb> <addr>…  <n> found` line.
-    Plain {
-        /// `scanning` or `reconstructing`.
-        verb: &'static str,
-    },
-    /// The live view: a bar over the address range.
-    Live {
-        /// The bar on screen.
-        bar: ProgressBar,
-        /// `scanning` or `reconstructing`.
-        verb: &'static str,
-    },
-}
-
-impl SweepDisplay {
-    /// The renderer for a sweep over `count` addresses; `verb` names the probe.
-    pub(crate) fn new(verb: &'static str, count: usize, json: bool) -> Self {
-        if !live(json) {
-            return Self::Plain { verb };
-        }
-        let Ok(style) = ProgressStyle::with_template(
-            "{spinner} {wide_msg}\n  [{bar:32}] {pos}/{len} addresses  elapsed {clock}  eta ~{eta}\n  {event}",
-        ) else {
-            return Self::Plain { verb };
-        };
-        let style = style
-            .progress_chars("=> ")
-            .with_key("clock", clock_key)
-            .with_key("event", event_key);
-        let bar = start_bar(style);
-        bar.set_length(count as u64);
-        Self::Live { bar, verb }
-    }
-
-    /// Reports that `addr` is being probed, with `found` responders so far.
-    pub(crate) fn probing(&self, addr: impl std::fmt::Display, found: usize) {
-        match self {
-            Self::Plain { verb } => {
-                eprint!("\r{verb} {addr}…  {found} found   ");
-                let _ = std::io::stderr().flush();
-            }
-            Self::Live { bar, verb } => {
-                bar.set_message(format!("{verb} {addr}…  {found} found"));
-            }
-        }
-    }
-
-    /// Reports that one address was probed.
-    pub(crate) fn advance(&self) {
-        if let Self::Live { bar, .. } = self {
-            bar.inc(1);
-        }
-    }
-
-    /// Takes the live view off the screen before the summary line is printed.
-    pub(crate) fn finish(&self) {
-        if let Self::Live { bar, .. } = self {
-            stop_bar(bar, false);
-        }
-    }
-}
-
-impl Drop for SweepDisplay {
-    fn drop(&mut self) {
-        if let Self::Live { bar, .. } = self
-            && !bar.is_finished()
-        {
-            stop_bar(bar, false);
-        }
-    }
-}
-
-/// A spinner for a step without finer progress events (`apply`'s table write):
-/// the label, elapsed time and the last bus event. Plain mode prints nothing.
-pub(crate) struct TaskDisplay(Option<ProgressBar>);
-
-impl TaskDisplay {
-    /// A spinner labelled `label`; nothing unless the live view is allowed.
-    pub(crate) fn new(label: String, json: bool) -> Self {
-        if !live(json) {
-            return Self(None);
-        }
-        let Ok(style) =
-            ProgressStyle::with_template("{spinner} {wide_msg}  elapsed {clock}\n  {event}")
-        else {
-            return Self(None);
-        };
-        let bar = start_bar(
-            style
-                .with_key("clock", clock_key)
-                .with_key("event", event_key),
-        );
-        bar.set_message(label);
-        Self(Some(bar))
-    }
-
-    /// Takes the spinner off the screen: cleared on `success`, left drawn on a
-    /// failure.
-    pub(crate) fn finish(mut self, success: bool) {
-        if let Some(bar) = self.0.take() {
-            stop_bar(&bar, !success);
-        }
-    }
-}
-
-impl Drop for TaskDisplay {
-    fn drop(&mut self) {
-        if let Some(bar) = self.0.take() {
-            stop_bar(&bar, true);
-        }
-    }
+    Some((build(FLASH_TEMPLATES.0)?, build(FLASH_TEMPLATES.1)?))
 }
 
 #[cfg(test)]
@@ -736,15 +727,9 @@ mod tests {
         // live view; with `--json` it is refused regardless.
         init(false);
         assert!(!live(false));
-        assert!(matches!(
-            SweepDisplay::new("scanning", 3, false),
-            SweepDisplay::Plain { .. }
-        ));
-        assert!(matches!(
-            SweepDisplay::new("scanning", 3, true),
-            SweepDisplay::Plain { .. }
-        ));
-        assert!(TaskDisplay::new("apply".to_string(), true).0.is_none());
+        assert!(!Display::sweep("scanning", 3, false).is_live());
+        assert!(!Display::sweep("scanning", 3, true).is_live());
+        assert!(!Display::task("apply".to_string(), true).is_live());
     }
 
     #[test]

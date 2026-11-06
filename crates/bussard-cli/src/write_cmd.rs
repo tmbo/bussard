@@ -17,7 +17,6 @@
 //! `--force` is given (see the design document §8), and the service is opened
 //! under the non-loopback write gate (issue #74).
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
@@ -29,32 +28,51 @@ use bussard_service::{
     prepare_group_write,
 };
 
+use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{
-    ConnOverrides, enforce_write_gate, gateway_display, load_model_required, open_service,
-    resolve_config,
+    enforce_write_gate, gateway_display, load_model_required, open_service, resolve_config,
 };
+
+/// `bussard write`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct WriteArgs {
+    /// The group address to write, e.g. `3/0/4`.
+    #[arg(value_name = "GA")]
+    ga: String,
+    /// The value: `on`/`off`, `up`/`down`, a number, a percentage like `75%`, …
+    #[arg(value_name = "VALUE")]
+    value: String,
+    /// The DPT to encode as (default: the GA's DPT from `groups.toml`).
+    #[arg(long, value_name = "DPT")]
+    dpt: Option<String>,
+    /// Override the protected-group-address refusal: write to a group
+    /// address marked `protected = true` in `groups.toml`.
+    #[arg(long)]
+    force: bool,
+    #[command(flatten)]
+    consent: Consent,
+}
+
+impl Run for WriteArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
+}
 
 /// Sends a `GroupValueWrite` to the bus.
 ///
 /// Resolves the DPT (`--dpt` wins, else the GA's DPT from the model), refuses
 /// protected GAs without `--force`, encodes the human value, transmits, and
 /// confirms. Returns a failure exit code on parse/encode/connect/send errors.
-///
-/// The argument list mirrors the `write` subcommand's flags 1:1; bundling them
-/// would only obscure that mapping, so the clippy arity lint is allowed here.
-#[allow(clippy::too_many_arguments)]
-pub fn run(
-    ga_str: &str,
-    value: &str,
-    dpt_override: Option<&str>,
-    force: bool,
-    yes: bool,
-    allow_remote_gateway: bool,
-    dir: &Path,
-    keyring: Option<&Path>,
-    json: bool,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (ga_str, value, dpt_override) =
+        (args.ga.as_str(), args.value.as_str(), args.dpt.as_deref());
+    let (force, yes, allow_remote_gateway) = (args.force, args.consent.yes, g.allow_remote_gateway);
+    let (dir, keyring, json, overrides) = (g.dir(), g.keyring(), g.json, g.group());
     let ga: GroupAddress = ga_str
         .parse()
         .map_err(|_| anyhow!("invalid group address {ga_str:?}"))?;
@@ -65,7 +83,12 @@ pub fn run(
     let model = load_model_required(dir)?;
     // KNX Data Secure group keys (issue #172): a secured GA is sealed under its
     // group key; a secured GA without one is refused below.
-    let group_keys = crate::secure_key::group_keys(keyring)?;
+    let group_keys = keyring
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?;
 
     // Every check short of sending: protected (unless --force), the DPT
     // (--dpt wins, else groups.toml), parse and encode.
@@ -116,7 +139,7 @@ pub fn run(
     // from their PID 54 before sending.
     let keys = match (secured, keyring) {
         (true, Some(path)) => {
-            bussard_service::secure::ToolKeys::load(crate::secure_key::ToolKeySource {
+            bussard_service::secure::ToolKeys::load(bussard_service::secure::ToolKeySource {
                 keyring: Some(path),
                 tool_key: None,
             })?

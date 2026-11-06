@@ -26,30 +26,37 @@ use bussard_service::secure::ToolKeys;
 use bussard_service::{BusService, WritePolicy};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportKind};
 
+use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{
     ConnOverrides, checked_source_or_close, load_model_required, resolve_config,
 };
 use crate::style::{Cell, Style, Table, Tone, count};
 
-/// Options for one `bussard audit` run.
-pub struct AuditOptions<'a> {
-    /// Emit JSON instead of the text report.
-    pub json: bool,
-    /// Add the live part (gateway, traffic sample, scan delta).
-    pub live: bool,
-    /// The traffic-sample window for `--live`.
-    pub window: Duration,
-    /// A `.knxkeys` keyring to check Secure devices against; with `--live`
-    /// its tool keys probe them over KNX Data Secure (issue #203).
-    pub keyring: Option<&'a Path>,
+/// `bussard audit`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct AuditArgs {
+    /// Add the live part: gateway description, traffic sample and a probe of
+    /// every device in the project. Read tier only; never sends a group telegram.
+    #[arg(long)]
+    live: bool,
+    /// Traffic-sample window in seconds for `--live`.
+    #[arg(long, value_name = "SECS", default_value_t = 30, requires = "live")]
+    window: u64,
+}
+
+impl Run for AuditArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g)
+    }
 }
 
 /// Runs `bussard audit`. Exits 0 on a completed audit, whatever it found.
-pub fn run(
-    dir: &Path,
-    options: AuditOptions<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(options: AuditArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, overrides) = (g.dir(), g.mgmt());
     let Some(model) = load_model_required(dir)? else {
         bail!(
             "`bussard audit` needs a model; none was found at {} (run `bussard init` or \
@@ -58,8 +65,8 @@ pub fn run(
         );
     };
 
-    let keys = ToolKeys::load(crate::secure_key::ToolKeySource {
-        keyring: options.keyring,
+    let keys = ToolKeys::load(bussard_service::secure::ToolKeySource {
+        keyring: g.keyring(),
         tool_key: None,
     })
     .context("loading the keyring for audit")?;
@@ -74,13 +81,13 @@ pub fn run(
             &model,
             dir,
             config,
-            options.window,
+            Duration::from_secs(options.window),
             &overrides,
             &keys,
         ))?);
     }
 
-    if options.json {
+    if g.json {
         // Through a `Value`, as `knx_audit` returns it: the keys come out
         // sorted, the order the JSON contract has always had.
         let value = serde_json::to_value(&report).context("serialising the audit")?;
@@ -404,7 +411,7 @@ pub fn render_text(report: &AuditReport, style: Style) -> String {
                 secure
             ));
             if let (Some(check), Ok(address)) = (&d.identity, d.address.parse()) {
-                let identity = crate::device_facts::identity_line(address, check);
+                let identity = bussard_service::identity_line(address, check);
                 let identity = if check.is_drift() {
                     style.warn(&identity)
                 } else {

@@ -23,40 +23,66 @@ use bussard_model::schema::Device;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::assign::{ProgrammingWait, WaitEvent, wait_for_programming_mode};
 use bussard_service::identity::SecureStatus;
-use bussard_service::secure::ToolKeys;
+use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::{BusService, WritePolicy};
 
+use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{
-    ConnOverrides, checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
+    checked_source_or_close, enforce_write_gate, gateway_display, resolve_config,
 };
 
-/// The on/off flags of one `bussard assign` run.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct AssignFlags {
-    /// `--yes`: skip the confirmation prompt.
-    pub yes: bool,
-    /// `--allow-remote-gateway`: permit a write through a non-loopback gateway.
-    pub allow_remote_gateway: bool,
-    /// `--json`: print the result as a JSON document.
-    pub json: bool,
-    /// `--force`: write the address although another device answers at it.
-    pub force: bool,
+/// `bussard assign`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct AssignArgs {
+    /// The address to assign, e.g. `1.1.47` (default: next free on the line).
+    #[arg(value_name = "ADDRESS")]
+    address: Option<String>,
+    #[command(flatten)]
+    consent: Consent,
+    /// A raw KNX Data Secure tool key (32 hex characters) to verify a
+    /// secured device with after the address write.
+    /// Overrides the keyring, which lists devices by address and
+    /// so only knows the new address once ETS re-exports it. For a test or
+    /// bench device: process arguments are visible to other users.
+    // Issue #203.
+    #[arg(long, value_name = "HEX")]
+    tool_key: Option<String>,
+    /// Write the address although another device already answers at it
+    /// (the check is step 1 of the standard's address write).
+    // Issue #530.
+    #[arg(long)]
+    force: bool,
+}
+
+impl Run for AssignArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.json().tool_key(self.tool_key.is_some())
+    }
+
+    fn early_consent(&self) -> Option<(bool, String)> {
+        let action = match &self.address {
+            Some(address) => format!("assign {address}"),
+            None => "assign the next free address".to_string(),
+        };
+        Some((self.consent.yes, action))
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
 }
 
 /// Runs `bussard assign`.
-pub fn run(
-    address: Option<&str>,
-    dir: &Path,
-    flags: AssignFlags,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
-    let AssignFlags {
-        yes,
-        allow_remote_gateway,
-        json,
-        force,
-    } = flags;
+fn run(args: &AssignArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, yes, force) = (args.address.as_deref(), args.consent.yes, args.force);
+    let (dir, allow_remote_gateway, json, overrides) =
+        (g.dir(), g.allow_remote_gateway, g.json, g.mgmt());
+    // `--tool-key` overrides the keyring's device entries; the keyring
+    // still opens a KNXnet/IP Secure tunnel (issue #203).
+    let tool_key_source = ToolKeySource {
+        keyring: g.keyring().filter(|_| args.tool_key.is_none()),
+        tool_key: args.tool_key.as_deref(),
+    };
     // A non-TTY run without --yes was refused before this (issue #74), by
     // `confirm::require_terminal_or_yes` in `main`.
     // 1. Load the model. Address allocation needs it; an explicit --address on an
@@ -249,8 +275,9 @@ async fn assign_flow(
         let modelled = model
             .and_then(|m| m.devices.get(&target))
             .map(|d| &d.device);
-        let check = crate::device_facts::observe(dir, model.is_some(), target, mask, modelled);
-        println!("  {}", crate::device_facts::identity_line(target, &check));
+        let check =
+            bussard_service::scan::observe_identity(dir, model.is_some(), target, mask, modelled);
+        println!("  {}", bussard_service::identity_line(target, &check));
     }
 
     // A certificate entered before the device had an address (issue #728):

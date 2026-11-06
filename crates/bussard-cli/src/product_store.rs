@@ -14,67 +14,14 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
-use bussard_model::schema::{Device, ProductEntry};
-
-/// Writes `bytes` into `<dir>/products/` under `name` and returns the path
-/// ([`bussard_service::setup::products::store_bytes`]): an identical file is
-/// kept, a different one of that name never overwritten.
-#[cfg(test)]
-pub(crate) fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
-    Ok(bussard_service::setup::products::store_bytes(
-        dir, name, bytes,
-    )?)
-}
+use bussard_model::schema::Device;
+use bussard_service::params;
 
 /// Copies `src` into the store under its own file name
-/// ([`bussard_service::files::products::store_file`]). A file already in the
-/// store is returned as it is.
+/// ([`bussard_service::files::products::store_file`]); `lock_pin` uses it until
+/// the lock-pin rule moves to the service (#895).
 pub(crate) fn store_file(dir: &Path, src: &Path) -> anyhow::Result<PathBuf> {
     Ok(bussard_service::files::products::store_file(dir, src)?)
-}
-
-/// Lowercase hex SHA-256 of `bytes`.
-#[cfg(test)]
-fn sha256_hex(bytes: &[u8]) -> String {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
-}
-
-/// The archive `entry` pins, verified
-/// ([`bussard_service::params::verified_path`]).
-///
-/// # Errors
-///
-/// The file is missing (or the entry names none), or its content changed.
-pub(crate) fn verified_path(
-    dir: &Path,
-    what: &str,
-    entry: &ProductEntry,
-) -> anyhow::Result<PathBuf> {
-    Ok(bussard_service::params::verified_path(dir, what, entry)?)
-}
-
-/// The archive a model device's product data comes from
-/// ([`bussard_service::params::device_archive`]).
-///
-/// # Errors
-///
-/// The pinned archive is missing or its content changed.
-pub(crate) fn device_archive(dir: &Path, device: &Device) -> anyhow::Result<Option<PathBuf>> {
-    Ok(bussard_service::params::device_archive(dir, device)?)
-}
-
-/// The archive the lock pins for an order number
-/// ([`bussard_service::params::archive_for_order`]).
-///
-/// # Errors
-///
-/// A matching entry's archive is missing or changed.
-pub(crate) fn archive_for_order(dir: &Path, order: &str) -> anyhow::Result<Option<PathBuf>> {
-    Ok(bussard_service::params::archive_for_order(dir, order)?)
 }
 
 /// The product archive for `order` on a device of the model (`device`, when
@@ -95,13 +42,13 @@ pub(crate) fn resolve(
         return Ok(path.to_path_buf());
     }
     if let Some(path) = device
-        .map(|d| device_archive(dir, d))
+        .map(|d| params::device_archive(dir, d))
         .transpose()?
         .flatten()
     {
         return Ok(path);
     }
-    match archive_for_order(dir, order)? {
+    match params::archive_for_order(dir, order)? {
         Some(path) => Ok(path),
         None => bail!(
             "bussard.lock pins no product data for order number {order:?}; run `bussard \
@@ -120,37 +67,40 @@ pub(crate) fn pinned_application(
     let entry = bussard_model::lock_products::lock_entries(dir)
         .into_iter()
         .find(|e| e.file.is_some() && e.applications.iter().any(|a| a == app_ref))?;
-    let path = verified_path(dir, app_ref, &entry).ok()?;
-    let language = crate::product_cache::model_language(None, dir);
-    let product = crate::product_cache::read(&path, None, dir, language.as_deref(), |_| {
-        bussard_prod::AppSelection::Exact(vec![app_ref.to_string()])
-    })
+    let path = params::verified_path(dir, app_ref, &entry).ok()?;
+    let language = params::model_language(None, dir);
+    let product = params::read_product(
+        &path,
+        None,
+        dir,
+        language.as_deref(),
+        |_| bussard_prod::AppSelection::Exact(vec![app_ref.to_string()]),
+        Some(crate::timing::record_product_parse),
+    )
     .ok()?;
     product.applications.into_iter().find(|a| a.id == app_ref)
-}
-
-/// The one-shot migration from earlier layouts, and the regeneration of the
-/// product models ([`bussard_service::files::products::prepare`]). Runs
-/// before a command that reads an existing model, and in `import` and
-/// `import-product`. Failures are warnings.
-pub(crate) fn prepare(dir: &Path) {
-    bussard_service::files::products::prepare(dir, &mut crate::console::Console);
-}
-
-/// Writes the product model of every application a device in the lock pins
-/// that `.bussard/models/` lacks, or only of `only` when given (see
-/// [`bussard_prod::product_model::complete_models`], which the MCP and `viz`
-/// servers run on their model reload too).
-///
-/// Failures are warnings: the command itself reports what it cannot do.
-pub(crate) fn complete_models(dir: &Path, only: Option<&str>) {
-    bussard_service::setup::products::complete_models(dir, only, &mut crate::console::Console);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_model::schema::ProductOrigin;
+    use bussard_model::schema::{ProductEntry, ProductOrigin};
+    use bussard_service::params::verified_path;
+
+    fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<PathBuf> {
+        Ok(bussard_service::setup::products::store_bytes(
+            dir, name, bytes,
+        )?)
+    }
+
+    /// Lowercase hex SHA-256 of `bytes`.
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        sha2::Sha256::digest(bytes)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect()
+    }
 
     fn scratch(tag: &str) -> anyhow::Result<PathBuf> {
         let dir = std::env::temp_dir().join(format!("bussard-store-{tag}-{}", std::process::id()));
@@ -223,6 +173,23 @@ mod tests {
             "{err}"
         );
         std::fs::remove_dir_all(&dir)?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_cache_dir_needs_a_model_directory() -> Result<(), Box<dyn std::error::Error>> {
+        use bussard_prod::product_model::{CACHE_ENV, cache_dir};
+        let root =
+            std::env::temp_dir().join(format!("bussard-product-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        assert!(cache_dir(&root.join("absent")).is_none());
+        if std::env::var(CACHE_ENV).is_err() {
+            assert_eq!(
+                cache_dir(&root),
+                Some(root.join(".bussard").join("products"))
+            );
+        }
+        std::fs::remove_dir_all(&root)?;
         Ok(())
     }
 }

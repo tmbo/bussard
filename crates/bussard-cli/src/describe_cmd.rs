@@ -17,7 +17,6 @@
 //! `A_DeviceDescriptor_Read`, `A_PropertyValue_Read` (for object discovery) and
 //! `A_PropertyDescription_Read`. It never writes.
 
-use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
@@ -28,7 +27,36 @@ use bussard_service::describe::{object_type_name, pid_name};
 use bussard_service::facts::property_desc;
 use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, SourcePolicy, WritePolicy};
 
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::cli::{Resolved, Run, Spec, ToolKey};
+use crate::conn_cmd::{load_model_required, resolve_config};
+
+/// `bussard describe`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct DescribeArgs {
+    /// The device to introspect, e.g. `1.1.4`.
+    #[arg(value_name = "ADDRESS")]
+    address: String,
+    /// Skip nothing: walk every object's property descriptions again, even
+    /// when the device facts (`<dir>/.bussard/facts/<ia>.toml`) already
+    /// hold them.
+    #[arg(long)]
+    full: bool,
+    #[command(flatten)]
+    tool_key: ToolKey,
+}
+
+impl Run for DescribeArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+            .json()
+            .tool_key(self.tool_key.tool_key.is_some())
+            .device_management()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(&self, g)
+    }
+}
 use crate::style::{Cell, Style, Table, Tone};
 
 /// One interface object plus its enumerated properties, shaped for text and
@@ -174,14 +202,9 @@ enum SecuredManagement {
 }
 
 /// Runs `bussard describe`.
-pub fn run(
-    address: &str,
-    dir: &Path,
-    json: bool,
-    facts_options: FactsOptions,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(args: &DescribeArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (address, dir, json, overrides) = (args.address.as_str(), g.dir(), g.json, g.mgmt());
+    let tool_key_source = g.tool_keys(args.tool_key.tool_key.as_deref());
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -197,20 +220,21 @@ pub fn run(
     // A keyring without an entry for the target serves the tunnel only; the
     // device is read in the clear unless the model says it is activated
     // (issue #189).
-    let activated = crate::secure_key::model_activated(model.as_ref(), target);
-    let (tool_key, factory_key) =
-        crate::secure_key::resolve_session_keys(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model.as_ref(), target);
+    let (tool_key, factory_key) = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_session_keys(target, tool_key_source, activated)
+    })?;
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
     // Device facts live next to the model; without one they are read each time.
-    let mut facts = crate::device_facts::cache(dir, model.is_some(), facts_options.refresh);
+    let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), g.refresh_facts);
     // Authorize (free access) as ETS does before configuration access (issue
     // #52 finding #1), best-effort for a read; skipped for a device the facts
     // say never answers it (the unanswered request costs the full response
     // timeout), a stale verdict being corrected on the same connection.
-    let authorize = crate::device_facts::read_only_authorize(&mut facts, target);
-    let full = facts_options.full;
+    let authorize = bussard_service::status::read_only_authorize(&mut facts, target);
+    let full = args.full;
 
     let runtime = tokio::runtime::Runtime::new()?;
     // Read-only on the bus: descriptor, property and description reads. The
@@ -512,15 +536,6 @@ async fn introspect<Ch: bussard_mgmt::L4Channel>(
     })
 }
 
-/// The device-facts flags of `describe` (issue #209).
-#[derive(Debug, Clone, Copy, Default)]
-pub struct FactsOptions {
-    /// `--full`: walk the property descriptions even when the facts hold them.
-    pub full: bool,
-    /// `--refresh-facts`: ignore the stored facts and read them again.
-    pub refresh: bool,
-}
-
 /// What [`introspect`] read off the bus, before `run` adds the model's view.
 struct Introspection {
     /// A stderr note when the report came from stored facts.
@@ -628,7 +643,7 @@ fn render_text(report: &Report, name: Option<&str>, style: Style) -> String {
         ));
     }
     if let (Some(identity), Ok(target)) = (&report.identity, report.address.parse()) {
-        let line = crate::device_facts::identity_line(target, identity);
+        let line = bussard_service::identity_line(target, identity);
         let line = if identity.is_drift() {
             style.warn(&line)
         } else {

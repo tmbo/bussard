@@ -35,27 +35,74 @@
 //! (a device that does not run the application, such as a factory-fresh one,
 //! is refused), and a backup of the memory it overwrites.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_download::backup::{find_device_backup, read_device_backup};
 use bussard_model::IndividualAddress;
+use bussard_service::secure::ToolKeySource;
 
 use crate::apply_cmd::{self, DesiredSource};
-use crate::conn_cmd::{ConnOverrides, load_model_required, resolve_config};
+use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec};
+use crate::conn_cmd::{load_model_required, resolve_config};
+
+/// `bussard restore`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct RestoreArgs {
+    /// `<BACKUP_DIR> <ADDRESS>`: the backup directory (a `bussard backup`
+    /// run, or `<dir>/captures/backups` for the per-device snapshots
+    /// `apply` leaves) and the device, e.g. `1.1.4`. With `--parameters`,
+    /// only `<ADDRESS>`.
+    #[arg(value_name = "BACKUP_DIR> <ADDRESS", num_args = 1..=2, required = true)]
+    args: Vec<String>,
+    /// Replay this parameter backup
+    /// (`<dir>/captures/backups/parameters/<ia>-<ts>.json`) instead of
+    /// link tables: refused unless the backup's device, application and
+    /// mask match; writes only the octets a parameter is placed in under
+    /// the project's configuration, keeps device-managed octets, verifies by
+    /// read-back.
+    #[arg(long, value_name = "BACKUP_JSON")]
+    parameters: Option<PathBuf>,
+    #[command(flatten)]
+    consent: Consent,
+    #[command(flatten)]
+    tool_key: BenchToolKey,
+}
+
+impl Run for RestoreArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS.tool_key(self.tool_key.tool_key.is_some())
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let tool_keys = g.tool_keys(self.tool_key.tool_key.as_deref());
+        let yes = self.consent.yes;
+        match (&self.parameters, self.args.as_slice()) {
+            (Some(backup), [address]) => run_parameters(backup, address, yes, tool_keys, g),
+            (None, [backup_dir, address]) => run(Path::new(backup_dir), address, yes, tool_keys, g),
+            (Some(_), _) => anyhow::bail!(
+                "`restore --parameters <BACKUP_JSON>` takes one more argument, the device \
+                 address: `bussard restore --parameters <BACKUP_JSON> <ADDRESS>`"
+            ),
+            (None, _) => anyhow::bail!(
+                "`restore` takes the backup directory and the device address: `bussard restore \
+                 <BACKUP_DIR> <ADDRESS>` (or `bussard restore --parameters <BACKUP_JSON> \
+                 <ADDRESS>`)"
+            ),
+        }
+    }
+}
 
 /// Runs `bussard restore`.
-#[allow(clippy::too_many_arguments)] // one command's worth of flags
-pub fn run(
+fn run(
     backup_dir: &Path,
     address: &str,
-    dir: &Path,
     yes: bool,
-    allow_remote_gateway: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
+    tool_key_source: ToolKeySource<'_>,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
+    let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -109,17 +156,15 @@ pub fn run(
 }
 
 /// Runs `bussard restore --parameters <backup> <address>` (module docs).
-#[allow(clippy::too_many_arguments)] // one command's worth of flags
-pub fn run_parameters(
+fn run_parameters(
     backup_path: &Path,
     address: &str,
-    dir: &Path,
     yes: bool,
-    allow_remote_gateway: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    overrides: ConnOverrides,
+    tool_key_source: ToolKeySource<'_>,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
     use bussard_service::{L4Options, SourcePolicy};
+    let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
 
     let target: IndividualAddress = address
         .parse()
@@ -138,10 +183,10 @@ pub fn run_parameters(
     let config = resolve_config(Some(&model), &overrides)?;
     let product = crate::param_readback::resolve(
         dir,
-        crate::param_readback::Selection::default(),
+        bussard_service::params::Selection::default(),
         Some(&model),
         target,
-        crate::param_readback::MissingProduct::Refuse,
+        bussard_service::params::MissingProduct::Refuse,
     )?;
     let Some(product) = product else {
         bail!(
@@ -157,8 +202,10 @@ pub fn run_parameters(
         backup.mask
     );
 
-    let activated = crate::secure_key::model_activated(Some(&model), target);
-    let material = crate::secure_key::resolve_material(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(Some(&model), target);
+    let material = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_material(target, tool_key_source, activated)
+    })?;
     let tool_key = material.tool_key.clone();
     let secure_seq = bussard_secure::SequenceHighWater::new();
     crate::conn_cmd::enforce_write_gate(&config, allow_remote_gateway)?;
@@ -171,23 +218,23 @@ pub fn run_parameters(
     )?;
     let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
     let service = bus.service();
-    let mut facts = crate::device_facts::cache(dir, true, overrides.refresh_facts);
+    let mut facts = crate::conn_cmd::facts_cache(dir, true, overrides.refresh_facts);
     let read_options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
         high_water: secure_seq.clone(),
-        authorize: crate::device_facts::read_only_authorize(&mut facts, target),
+        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
     let device = model.devices.get(&target).map(|d| &d.device);
     let read = runtime.block_on(async {
         service
             .with_l4(target, &read_options, async |l4| {
-                let identified = crate::device_facts::identify(l4, &facts, device).await?;
+                let identified = bussard_service::identify(l4, &facts, device).await?;
                 let read = crate::plan_cmd::read_live_tables(l4, None).await?;
                 let state = match &read {
                     crate::plan_cmd::LiveRead::Tables(live) => Some(
-                        crate::param_readback::read_state(
+                        bussard_service::params::read_state(
                             l4,
                             &product,
                             Some(&model),
@@ -204,8 +251,8 @@ pub fn run_parameters(
     });
     let (read, identified, state) = read?;
     if let Some(check) = &identified.check {
-        eprintln!("{}", crate::device_facts::identity_line(target, check));
-        if let Err(err) = crate::device_facts::refuse_drift(target, check, "restore to") {
+        eprintln!("{}", bussard_service::identity_line(target, check));
+        if let Some(err) = bussard_service::drift_refusal(target, check, "restore to") {
             eprintln!("{err}");
             return Ok(ExitCode::FAILURE);
         }

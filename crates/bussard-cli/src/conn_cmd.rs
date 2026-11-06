@@ -250,6 +250,21 @@ pub fn resolve_keyring(
     })
 }
 
+/// The device facts store (issue #209) of a command run against the model in
+/// `dir`: a disabled one for `model_loaded == false` (no model, so nothing is
+/// written next to it).
+pub(crate) fn facts_cache(
+    dir: &Path,
+    model_loaded: bool,
+    refresh: bool,
+) -> bussard_service::FactsCache {
+    if model_loaded {
+        bussard_service::FactsCache::new(dir, refresh)
+    } else {
+        bussard_service::FactsCache::disabled()
+    }
+}
+
 /// The source individual address for a **connection-oriented** device command,
 /// checked against the bus first.
 ///
@@ -269,33 +284,38 @@ pub fn resolve_keyring(
 ///
 /// Group-only commands (`read`, `write`, `monitor`, `capture`, `learn`, `test`) are
 /// connectionless and do not need this.
-pub async fn checked_source(
+///
+/// A refusal closes `service` before the error returns. Every device command
+/// owns its [`BusService`] for the length of one runtime block and closes it
+/// when it is done; the refusal happens before any of that, so without the
+/// close the gateway would hold the tunnel slot open for its full idle timeout
+/// (about two minutes) after a command that did nothing — see issue #31 for
+/// the same hazard on Ctrl-C.
+pub async fn checked_source_or_close(
     service: &BusService,
     overrides: &ConnOverrides,
 ) -> anyhow::Result<IndividualAddress> {
     // The probe and its refusal live in `bussard_mgmt` (behind the service) so
     // the MCP programming tier refuses on the same evidence.
-    Ok(service.checked_source(overrides.skip_address_check).await?)
-}
-
-/// [`checked_source`], closing `service` before returning an error.
-///
-/// Every device command owns its [`BusService`] for the length of one runtime
-/// block and closes it when it is done. A refusal from the source-address check
-/// happens before any of that, so without this the gateway would hold the tunnel
-/// slot open for its full idle timeout (about two minutes) after a command that
-/// did nothing — see issue #31 for the same hazard on Ctrl-C.
-pub async fn checked_source_or_close(
-    service: &BusService,
-    overrides: &ConnOverrides,
-) -> anyhow::Result<IndividualAddress> {
-    match checked_source(service, overrides).await {
+    match service.checked_source(overrides.skip_address_check).await {
         Ok(source) => Ok(source),
         Err(err) => {
             service.close().await;
-            Err(err)
+            Err(err.into())
         }
     }
+}
+
+/// [`open_service`] followed by [`checked_source_or_close`]: the bus of a
+/// connection-oriented device command and the source it presents.
+pub async fn open_checked(
+    config: ConnectionConfig,
+    policy: WritePolicy,
+    overrides: &ConnOverrides,
+) -> anyhow::Result<(BusService, IndividualAddress)> {
+    let service = open_service(config, policy).await?;
+    let source = checked_source_or_close(&service, overrides).await?;
+    Ok((service, source))
 }
 
 /// A management session that could not be opened, as an error for the

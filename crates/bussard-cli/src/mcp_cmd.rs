@@ -18,7 +18,111 @@ use bussard_mcp::McpConfig;
 use bussard_mcp::http::{HttpOptions, TOKEN_ENV};
 use bussard_model::Model;
 
+use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{ConnOverrides, resolve_config};
+
+/// `bussard mcp`. The tier flags' help comes from `bussard_mcp::tier_help`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct McpArgs {
+    #[arg(long, help = bussard_mcp::tier_help::passive_help())]
+    passive: bool,
+    #[arg(
+        long,
+        conflicts_with = "passive",
+        help = bussard_mcp::tier_help::allow_writes_help()
+    )]
+    allow_writes: bool,
+    // The programming tools write one device after an approved plan
+    // (issues #118, #717).
+    #[arg(
+        long,
+        conflicts_with = "passive",
+        help = bussard_mcp::tier_help::allow_programming_help()
+    )]
+    allow_programming: bool,
+    /// How many minutes a `knx_plan_device` digest stays valid for
+    /// `knx_apply_device`.
+    #[arg(
+        long,
+        value_name = "MINUTES",
+        default_value_t = 10,
+        requires = "allow_programming"
+    )]
+    plan_ttl_minutes: u64,
+    #[arg(long, help = bussard_mcp::tier_help::no_model_edits_help())]
+    no_model_edits: bool,
+    /// Path to a capture SQLite database to extend `knx_recent_telegrams`
+    /// history beyond the in-memory ring window.
+    #[arg(long, value_name = "PATH")]
+    capture_db: Option<PathBuf>,
+    // The Home Assistant tier needs a `[home_assistant]` table (issue #280).
+    #[arg(long, help = bussard_mcp::tier_help::allow_home_assistant_help())]
+    allow_home_assistant: bool,
+    // `--listen`, `--allow-remote-clients` and `--allow-host`: issue #265.
+    /// Serve MCP over streamable HTTP instead of stdio, at
+    /// `http://<ADDR>/mcp`. Without a value it binds
+    /// 127.0.0.1:0 (a free port) and prints the URL. Same tools and gates
+    /// as stdio. bussard does not terminate TLS or authenticate clients on
+    /// a loopback bind: a client that needs HTTPS goes through a reverse
+    /// proxy or tunnel that does both. A non-loopback address is refused
+    /// without `--allow-remote-clients`. `BUSSARD_MCP_TOKEN`, when set, is
+    /// the bearer token every request must carry.
+    #[arg(
+        long,
+        value_name = "ADDR",
+        num_args = 0..=1,
+        default_missing_value = bussard_mcp::http::DEFAULT_LISTEN
+    )]
+    listen: Option<SocketAddr>,
+    /// Permit a non-loopback `--listen` address. Every request must then
+    /// carry `Authorization: Bearer <token>`: the token is
+    /// `BUSSARD_MCP_TOKEN`, or one generated at start and printed once.
+    /// The `Host` header check is off, so a reverse proxy may forward any
+    /// host name.
+    #[arg(long, requires = "listen")]
+    allow_remote_clients: bool,
+    /// Accept this `Host` header on a loopback `--listen` too (repeatable),
+    /// for a reverse proxy or tunnel that forwards its public host name.
+    /// Without it only localhost, 127.0.0.1 and ::1 are accepted, which
+    /// blocks DNS rebinding from a browser.
+    #[arg(long, value_name = "HOST", requires = "listen")]
+    allow_host: Vec<String>,
+    /// Where `knx_viz` serves the browser page, read-only like a bare
+    /// `bussard viz`. Without it the page binds 127.0.0.1:0, a free port,
+    /// on the first `knx_viz`.
+    #[arg(long, value_name = "ADDR")]
+    viz_listen: Option<SocketAddr>,
+}
+
+impl Run for McpArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(
+            g.dir(),
+            g.group(),
+            McpModes {
+                passive: self.passive,
+                allow_writes: self.allow_writes,
+                allow_programming: self.allow_programming,
+                plan_ttl: std::time::Duration::from_secs(self.plan_ttl_minutes.saturating_mul(60)),
+                allow_remote_gateway: g.allow_remote_gateway,
+                no_model_edits: self.no_model_edits,
+                allow_home_assistant: self.allow_home_assistant,
+                viz_listen: self.viz_listen,
+            },
+            self.capture_db,
+            g.keyring.clone(),
+            self.listen.map(|addr| Listen {
+                addr,
+                allow_remote_clients: self.allow_remote_clients,
+                allow_host: self.allow_host,
+            }),
+        )
+    }
+}
 
 /// Runs `bussard mcp`.
 ///
@@ -41,7 +145,7 @@ use crate::conn_cmd::{ConnOverrides, resolve_config};
 /// The server's tier flags, bundled so the subcommand's five booleans do not
 /// become five positional arguments.
 #[derive(Debug, Clone, Copy)]
-pub struct McpModes {
+struct McpModes {
     /// Never transmit on the bus.
     pub passive: bool,
     /// Register `knx_write_group`.
@@ -63,7 +167,7 @@ pub struct McpModes {
 
 /// `--listen` and its companions: serve streamable HTTP instead of stdio.
 #[derive(Debug, Clone)]
-pub struct Listen {
+struct Listen {
     /// The address to bind (`127.0.0.1:0` when `--listen` has no value).
     pub addr: SocketAddr,
     /// `--allow-remote-clients`: permit a non-loopback bind, with a token.
@@ -73,7 +177,7 @@ pub struct Listen {
 }
 
 /// Runs `bussard mcp`, over stdio or, with `listen`, over streamable HTTP.
-pub fn run(
+fn run(
     dir: &Path,
     overrides: ConnOverrides,
     modes: McpModes,

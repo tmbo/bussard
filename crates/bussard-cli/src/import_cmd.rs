@@ -14,15 +14,83 @@
 //! store `bussard.keys` (issue #241, [`crate::keys_cmd::import_neighbour`]).
 
 use std::io::IsTerminal;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use bussard_model::Model;
 use bussard_service::files::import::ImportOutcome;
 use bussard_service::setup::{DownloadPrompt, SetupError};
 
+use crate::cli::{Resolved, Run, Spec};
+use crate::confirm::DownloadConsent;
 use crate::console::Console;
 use crate::import_bundle::ConflictChoice;
+
+/// `bussard import`.
+#[derive(Debug, clap::Args)]
+pub(crate) struct ImportArgs {
+    /// The `.knxproj` or `.bussard` file to import (omit with `--from-json`).
+    #[arg(value_name = "PROJECT", required_unless_present = "from_json")]
+    project: Option<PathBuf>,
+    /// Import from an xknxproject JSON dump instead of a `.knxproj`.
+    #[arg(long, value_name = "FILE", conflicts_with = "project")]
+    from_json: Option<PathBuf>,
+    /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
+    #[arg(long)]
+    password: Option<String>,
+    /// On a re-import, keep this project's value for every hand-edited
+    /// conflict and exit 0.
+    #[arg(long, conflicts_with_all = ["theirs", "interactive"])]
+    mine: bool,
+    /// On a re-import, take the incoming value for every hand-edited conflict.
+    #[arg(long, conflicts_with = "interactive")]
+    theirs: bool,
+    /// On a re-import, ask per conflict (needs a terminal).
+    #[arg(long)]
+    interactive: bool,
+    /// Download missing vendor product data without asking. Without a
+    /// terminal and without this flag nothing is downloaded; the missing
+    /// order numbers are listed.
+    #[arg(long, conflicts_with = "no_download")]
+    yes_download: bool,
+    /// Do not look up or download missing product data; list it instead.
+    #[arg(long)]
+    no_download: bool,
+    /// Skip the confirmation prompt: import into a non-empty directory
+    /// that holds no project yet.
+    #[arg(long)]
+    yes: bool,
+}
+
+impl Run for ImportArgs {
+    fn spec(&self) -> Spec {
+        Spec::CREATES
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let dir = g.dir();
+        if !crate::init_cmd::confirm_target(dir, self.yes, crate::init_cmd::TargetVerb::Import)? {
+            eprintln!("Not confirmed; nothing written.");
+            return Ok(ExitCode::FAILURE);
+        }
+        let choice = ConflictChoice::from_flags(self.mine, self.theirs, self.interactive);
+        let consent = DownloadConsent {
+            yes_download: self.yes_download,
+            no_download: self.no_download,
+        };
+        if let Some(json) = self.from_json {
+            run_json(&json, dir, choice, consent)
+        } else if let Some(project) = self.project {
+            if bussard_model::bundle::is_bundle_path(&project) {
+                crate::import_bundle::run_bundle(&project, dir, choice)
+            } else {
+                run_knxproj(&project, dir, self.password, choice, consent)
+            }
+        } else {
+            anyhow::bail!("provide a .knxproj path or --from-json <file>")
+        }
+    }
+}
 
 /// Exit code returned when a re-import left hand-authored conflicts un-applied.
 /// Distinct from success (0) so scripts/CI can detect that a human must
@@ -39,12 +107,12 @@ pub(crate) const EXIT_CONFLICTS: u8 = 3;
 /// wiring, parameters) from the project and always preserves hand-authored
 /// fields, reporting any difference instead of overwriting it. There is no flag
 /// for that: it is the only behaviour the merge implements.
-pub fn run_knxproj(
+fn run_knxproj(
     path: &Path,
     dir: &Path,
     password_flag: Option<String>,
     choice: ConflictChoice,
-    consent: crate::product_fetch::Consent,
+    consent: DownloadConsent,
 ) -> anyhow::Result<ExitCode> {
     let model = load_project(path, dir, password_flag)?;
     let code = write_model(model, dir, choice, "project", Some(consent), Some(path))?;
@@ -78,11 +146,11 @@ pub(crate) fn ask_password() -> Result<Option<String>, SetupError> {
 }
 
 /// Runs `bussard import --from-json`.
-pub fn run_json(
+fn run_json(
     path: &Path,
     dir: &Path,
     choice: ConflictChoice,
-    consent: crate::product_fetch::Consent,
+    consent: DownloadConsent,
 ) -> anyhow::Result<ExitCode> {
     let model = bussard_project::import_from_json(path)?;
     let code = write_model(model, dir, choice, "project", Some(consent), None)?;
@@ -98,7 +166,7 @@ pub fn run_json(
 /// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
 /// names the incoming side in sentences (`"project"` or `"bundle"`).
 /// `fetch` runs the product-data download step for the devices' order
-/// numbers ([`crate::product_fetch`]); `None` skips it. `project` is the ETS
+/// numbers ([`crate::confirm::DownloadConsent`]); `None` skips it. `project` is the ETS
 /// export read, which `bussard.lock` pins as the devices' product source
 /// until a vendor archive serves them (lock v2, issue #228).
 pub(crate) fn write_model(
@@ -106,7 +174,7 @@ pub(crate) fn write_model(
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
-    fetch: Option<crate::product_fetch::Consent>,
+    fetch: Option<DownloadConsent>,
     project: Option<&Path>,
 ) -> anyhow::Result<ExitCode> {
     let mut fetch = fetch;

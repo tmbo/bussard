@@ -53,7 +53,7 @@
 //! against the live reference bus is out of scope until that device exists. The
 //! command still gates on the mask family and always writes a backup first.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
@@ -65,10 +65,12 @@ use bussard_download::{
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::IndividualAddress;
+use bussard_service::secure::ToolKeySource;
 use bussard_service::{L4Options, SourcePolicy};
 
 use bussard_transport::ConnectionConfig;
 
+use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
     BusSession, ConnOverrides, enforce_write_gate, gateway_display, load_model_required,
     resolve_config,
@@ -107,35 +109,102 @@ impl DesiredSource {
     }
 }
 
-/// What `apply <ADDRESS>` takes beyond the connection: the product data
-/// selection for the parameter half, and the approved plan's hash.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct ApplyInputs<'a> {
-    /// `--product` / `--application`.
-    pub selection: crate::param_readback::Selection<'a>,
-    /// `--plan <hash>`: the `state_hash` of the plan the human approved.
-    pub plan_hash: Option<&'a str>,
-    /// `--force`: use a `--product` / `--application` that contradicts
-    /// `bussard.lock`, and pin the product archive for the device.
+/// `bussard apply`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub(crate) struct ApplyArgs {
+    /// The device to write, e.g. `1.1.4` (mutually exclusive with
+    /// `--line`).
+    #[arg(value_name = "ADDRESS", required_unless_present = "line")]
+    pub address: Option<String>,
+    /// Apply to every device the project has on this line, e.g. `1.1`, in
+    /// address order: one confirmation for the run, one summary table, and a
+    /// resumable state file.
+    // Issue #100.
+    #[arg(long, value_name = "LINE", conflicts_with = "address")]
+    pub line: Option<String>,
+    /// Line mode only: continue the run recorded in
+    /// `<dir>/captures/apply-line-<line>.json`, skipping the devices it
+    /// already finished.
+    #[arg(long, requires = "line")]
+    pub resume: bool,
+    #[command(flatten)]
+    pub consent: Consent,
+    /// Refuse unless the device state still hashes to this `state_hash`
+    /// from `bussard plan --json`: the plan a human approved is the plan
+    /// written.
+    #[arg(long = "plan", value_name = "HASH", conflicts_with = "line")]
+    pub plan_hash: Option<String>,
+    /// Use a `--product` / `--application` that contradicts `bussard.lock`
+    /// (the product archive is then pinned for the device).
+    #[arg(long, conflicts_with = "line")]
     pub force: bool,
-    /// `--allow-self-reconfigure`: an IP interface plan that reconfigures the
-    /// interface the command tunnels through is written (issue #391).
+    /// The device's vendor `.knxprod`, to compare and write its parameter
+    /// memory. Default: the archive `bussard.lock` pins for the device in
+    /// `<dir>/products/`. One that contradicts the lock needs `--force`.
+    #[arg(long, value_name = "FILE", conflicts_with = "line")]
+    pub product: Option<PathBuf>,
+    /// The application program id to decode the parameters with (default:
+    /// the program the lock pins, else the order number, else the sole one).
+    #[arg(long, value_name = "REF", conflicts_with = "line")]
+    pub application: Option<String>,
+    #[command(flatten)]
+    pub tool_key: ToolKey,
+    /// Also list this individual address (bussard's own tunnel address) as a
+    /// secured sender, sequence 0, in the security individual address table
+    /// (PID 54) the security object is reprogrammed with, so the device
+    /// accepts `bussard write --keyring` to its secured group addresses.
+    /// Off by default: without it the device drops bussard's secured group
+    /// telegrams silently. See https://bussard.tmbo.dev/docs/explanation/safety/.
+    #[arg(long, value_name = "IA", conflicts_with = "line")]
+    pub secure_sender: Option<IndividualAddress>,
+    /// For a KNX IP interface (a device file with a `[knxnet]` table):
+    /// write a change of its IP assignment, static address set or tunnel
+    /// addresses (PID 53) although bussard tunnels through that
+    /// interface. The tunnel drops (for PID 53: may drop) when the
+    /// interface applies it, so the read-back may not reach the device;
+    /// without this flag such a plan is refused.
+    #[arg(long, conflicts_with = "line")]
     pub allow_self_reconfigure: bool,
+}
+
+impl Run for ApplyArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+            .json()
+            .tool_key(self.tool_key.tool_key.is_some())
+            .device_management()
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        let tool_keys = g.tool_keys(self.tool_key.tool_key.as_deref());
+        match (&self.line, &self.address) {
+            (Some(line), _) => {
+                crate::line_cmd::run_apply(line, self.consent.yes, self.resume, tool_keys, g)
+            }
+            (None, _) if g.json => anyhow::bail!(
+                "`bussard apply --json` needs --line: a single-device apply has no JSON output"
+            ),
+            (None, Some(address)) => run(address, &self, tool_keys, g),
+            // clap requires ADDRESS without --line.
+            (None, None) => anyhow::bail!("give a device ADDRESS or --line"),
+        }
+    }
 }
 
 /// Writes the model to a device: validate, plan, ask once, back up, write the
 /// minimum, verify.
-#[allow(clippy::too_many_arguments)] // mirrors the subcommand's flags 1:1
-pub fn run(
+fn run(
     address: &str,
-    dir: &Path,
-    yes: bool,
-    allow_remote_gateway: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
-    secure_sender: Option<IndividualAddress>,
-    overrides: ConnOverrides,
-    inputs: ApplyInputs<'_>,
+    args: &ApplyArgs,
+    tool_key_source: ToolKeySource<'_>,
+    g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
+    let (dir, yes, allow_remote_gateway) = (g.dir(), args.consent.yes, g.allow_remote_gateway);
+    let (secure_sender, overrides) = (args.secure_sender, g.mgmt_with_facts());
+    let selection = bussard_service::params::Selection {
+        product: args.product.as_deref(),
+        application: args.application.as_deref(),
+    };
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
@@ -167,19 +236,19 @@ pub fn run(
         crate::lock_pin::enforce_override(
             dir,
             &loaded.device,
-            inputs.selection.product,
-            inputs.selection.application,
-            inputs.force,
+            selection.product,
+            selection.application,
+            args.force,
             "apply to",
         )?;
     }
     // The product data the parameter half decodes with, when it is at hand.
     let product = crate::param_readback::resolve(
         dir,
-        inputs.selection,
+        selection,
         Some(&model),
         target,
-        crate::param_readback::MissingProduct::Refuse,
+        bussard_service::params::MissingProduct::Refuse,
     )?;
     // A KNX IP interface (a `[knxnet]` table, no links) is written as
     // properties of its KNXnet/IP parameter object (issue #391); a
@@ -197,8 +266,8 @@ pub fn run(
             crate::interface_cmd::InterfaceApplyInputs {
                 yes,
                 allow_remote_gateway,
-                plan_hash: inputs.plan_hash,
-                allow_self_reconfigure: inputs.allow_self_reconfigure,
+                plan_hash: args.plan_hash.as_deref(),
+                allow_self_reconfigure: args.allow_self_reconfigure,
             },
         );
     }
@@ -219,7 +288,7 @@ pub fn run(
         Some(&model),
         ModelWrite {
             product: product.as_ref(),
-            plan_hash: inputs.plan_hash,
+            plan_hash: args.plan_hash.as_deref(),
         },
     )
 }
@@ -230,7 +299,7 @@ pub fn run(
 #[derive(Default, Clone, Copy)]
 pub(crate) struct ModelWrite<'a> {
     /// The product data for the parameter half, when at hand.
-    pub product: Option<&'a crate::param_readback::ProductSource>,
+    pub product: Option<&'a bussard_service::params::ProductSource>,
     /// `--plan <hash>`.
     pub plan_hash: Option<&'a str>,
 }
@@ -264,7 +333,7 @@ pub(crate) fn apply_desired(
     config: ConnectionConfig,
     yes: bool,
     allow_remote_gateway: bool,
-    tool_key_source: crate::secure_key::ToolKeySource<'_>,
+    tool_key_source: bussard_service::secure::ToolKeySource<'_>,
     secure_sender: Option<IndividualAddress>,
     origin: &DesiredSource,
     overrides: &ConnOverrides,
@@ -276,8 +345,10 @@ pub(crate) fn apply_desired(
     // is security-activated and a tool key is given. One high-water mark for the
     // whole command keeps the send sequence monotonic across both connections
     // (spec §5.9).
-    let activated = crate::secure_key::model_activated(model, target);
-    let material = crate::secure_key::resolve_material(target, tool_key_source, activated)?;
+    let activated = bussard_service::secure::model_activated(model, target);
+    let material = crate::timing::time("tool keys", || {
+        bussard_service::secure::resolve_material(target, tool_key_source, activated)
+    })?;
     let tool_key = material.tool_key.clone();
     let secure_seq = bussard_secure::SequenceHighWater::new();
     let desired = desired.clone();
@@ -341,7 +412,7 @@ pub(crate) fn apply_desired(
     // The device facts (issue #209): checked (or read) on the read connection,
     // they spare the table reader its object walk, and the write phase below
     // gets them as a seed so its discovery and read-back do not walk again.
-    let mut facts = crate::device_facts::cache(dir, model.is_some(), overrides.refresh_facts);
+    let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
     let read_options = L4Options {
         source: SourcePolicy::Known(source),
         tool_key: tool_key.clone(),
@@ -354,7 +425,7 @@ pub(crate) fn apply_desired(
         // Best-effort on this read-only pre-pass, and skipped for a device
         // whose facts record that it never answers (issue #215; a stale set
         // presents the key on the same connection).
-        authorize: crate::device_facts::read_only_authorize(&mut facts, target),
+        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
         ..L4Options::default()
     };
     let facts = facts;
@@ -367,11 +438,11 @@ pub(crate) fn apply_desired(
         service
             .with_l4(target, &read_options, async |l4| {
                 // The facts and the identity verdict (issue #228, item 5).
-                let identified = crate::device_facts::identify(l4, &facts, model_device).await?;
+                let identified = bussard_service::identify(l4, &facts, model_device).await?;
                 let read = plan_cmd::read_live_tables(l4, write.product).await?;
                 let params = match (&read, write.product) {
                     (plan_cmd::LiveRead::Tables(live), Some(product)) => Some(
-                        crate::param_readback::read_state(
+                        bussard_service::params::read_state(
                             l4,
                             product,
                             model,
@@ -398,16 +469,16 @@ pub(crate) fn apply_desired(
     // instead of a cache (issue #336).
     bussard_service::security_change::forget_flags(dir, target);
     let established = identified.established;
-    let write_seed = crate::device_facts::seed_of(established.as_ref());
+    let write_seed = bussard_service::seed_of(established.as_ref());
 
     // One identity verdict (issue #228, item 5): a device that reports
     // another application (or mask) than bussard.lock pins cannot take the
     // model's parameters and tables; it needs a flash first. A restore writes
     // a backup, not the model, so it only reports the verdict.
     if let Some(check) = &identified.check {
-        eprintln!("{}", crate::device_facts::identity_line(target, check));
+        eprintln!("{}", bussard_service::identity_line(target, check));
         if matches!(origin, DesiredSource::Model)
-            && let Err(err) = crate::device_facts::refuse_drift(target, check, "apply to")
+            && let Some(err) = bussard_service::drift_refusal(target, check, "apply to")
         {
             eprintln!("{err}");
             return Ok(ExitCode::FAILURE);
@@ -786,13 +857,13 @@ fn write_tables_then_parameters(
     // Progress (issue #147): the table write emits no finer events, so the live
     // view is a spinner with elapsed time and the last bus event; plain runs
     // print nothing extra.
-    let display = crate::progress::TaskDisplay::new(
+    let mut display = crate::progress::Display::task(
         format!("{} {target}: writing the tables", origin.verb()),
         false,
     );
     let outcome = runtime.block_on(async {
         let channel = service.lease_channel().await?;
-        let secure = crate::secure_key::layer(tool_key, secure_seq);
+        let secure = bussard_service::secure::layer(tool_key, secure_seq);
         anyhow::Ok(
             write_tables_seeded(
                 channel, target, source, mask, desired, images, secure, load, write_seed,
@@ -960,7 +1031,7 @@ fn write_parameters(
         }
     };
     // The one parameter write (issue #274), shared with `knx_apply_device`.
-    let mut observer = ParamDisplay(Some(crate::progress::FlashDisplay::new(partial, false)));
+    let mut observer = ParamDisplay(Some(crate::progress::Display::flash(partial, false)));
     let outcome = runtime.block_on(bussard_service::download::write_parameters(
         service,
         target,
@@ -1000,12 +1071,12 @@ fn write_parameters(
 }
 
 /// The progress display of the parameter download.
-pub(crate) struct ParamDisplay(Option<crate::progress::FlashDisplay>);
+pub(crate) struct ParamDisplay(Option<crate::progress::Display>);
 
 impl ParamDisplay {
     /// The display of `partial`'s download.
     pub(crate) fn new(partial: &bussard_download::FlashPlan) -> Self {
-        ParamDisplay(Some(crate::progress::FlashDisplay::new(partial, false)))
+        ParamDisplay(Some(crate::progress::Display::flash(partial, false)))
     }
 }
 
@@ -1017,7 +1088,7 @@ impl bussard_service::download::FlashObserver for ParamDisplay {
     }
 
     fn finished(&mut self, verified: bool) {
-        if let Some(display) = self.0.take() {
+        if let Some(mut display) = self.0.take() {
             display.finish(verified);
         }
     }

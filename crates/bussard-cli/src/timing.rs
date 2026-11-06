@@ -29,6 +29,12 @@ pub fn record(phase: &'static str, took: Duration, detail: impl Into<String>) {
     }
 }
 
+/// Records one product parse as the `product parse` phase (issue #214); the
+/// parsed-product cache calls it through [`bussard_service::params`].
+pub fn record_product_parse(took: Duration, detail: String) {
+    record("product parse", took, detail);
+}
+
 /// Runs `f`, recording its duration as `phase`.
 pub fn time<T>(phase: &'static str, f: impl FnOnce() -> T) -> T {
     let started = Instant::now();

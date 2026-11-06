@@ -29,7 +29,6 @@
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
-use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
 
@@ -40,36 +39,53 @@ use bussard_monitor::infer::{self, DptCandidate};
 use bussard_monitor::{ApciKind, DecodedTelegram, Filter, GroupKeyring, TelegramRing};
 use bussard_service::{BusService, WritePolicy};
 
-use crate::conn_cmd::{ConnOverrides, gateway_display, load_model_required, resolve_config};
+use crate::cli::{Resolved, Run, Spec};
+use crate::conn_cmd::{gateway_display, load_model_required, resolve_config};
 
-/// The flags of the `learn` subcommand.
-#[derive(Debug, Clone, Default)]
-pub struct LearnOptions {
-    /// Learn exactly these group addresses, in order (`--ga`, repeatable).
-    pub gas: Vec<String>,
-    /// Learn every group address in the model whose name is still a
-    /// placeholder.
-    pub unnamed: bool,
-    /// Learn every group address in the model with no DPT.
-    pub untyped: bool,
-    /// Accept the top candidate and the proposed name without prompting.
-    pub yes: bool,
+/// `bussard learn`.
+#[derive(Debug, Clone, Default, clap::Args)]
+pub(crate) struct LearnArgs {
+    /// Learn this group address (repeatable). Without it, `--unnamed` /
+    /// `--untyped` pick targets from the project, and a bare `learn` takes
+    /// whatever appears on the bus.
+    #[arg(long = "ga", value_name = "GA")]
+    gas: Vec<String>,
+    /// Learn every group address in the project whose name is a placeholder.
+    #[arg(long)]
+    unnamed: bool,
+    /// Learn every group address in the project that has no DPT.
+    #[arg(long)]
+    untyped: bool,
+    /// Skip the confirmation prompt: accept the top DPT candidate and the
+    /// proposed name. Without a terminal the command is refused unless
+    /// this is given.
+    #[arg(long)]
+    yes: bool,
     /// How long to wait for each telegram, in seconds.
-    pub timeout_seconds: u64,
-    /// The `.knxkeys` keyring whose group keys decrypt secured group telegrams
-    /// (`--keyring`, else `connection.keyring`).
-    pub keyring: Option<PathBuf>,
+    #[arg(long, value_name = "SECS", default_value_t = 30)]
+    timeout: u64,
+}
+
+impl Run for LearnArgs {
+    fn spec(&self) -> Spec {
+        Spec::BUS
+    }
+
+    fn early_consent(&self) -> Option<(bool, String)> {
+        Some((self.yes, "learn group addresses".to_string()))
+    }
+
+    fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
+        run(self, g)
+    }
 }
 
 /// The APCI of `A_SecureData`, the envelope of a KNX Data Secure telegram.
 const APCI_SECURE_DATA: u16 = 0x03F1;
 
 /// Runs `bussard learn`.
-pub fn run(
-    dir: &Path,
-    options: LearnOptions,
-    overrides: ConnOverrides,
-) -> anyhow::Result<ExitCode> {
+fn run(options: LearnArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
+    let (dir, overrides) = (g.dir(), g.group());
     // Learn writes the model, so a present-but-broken model is a hard error
     // (the same rule the write commands follow); an absent directory is a fresh
     // project we are about to populate.
@@ -80,19 +96,26 @@ pub fn run(
     let interactive = std::io::stdin().is_terminal();
 
     let targets = resolve_targets(&model, &options)?;
-    let timeout = Duration::from_secs(options.timeout_seconds.clamp(1, 3600));
+    let timeout = Duration::from_secs(options.timeout.clamp(1, 3600));
 
     let config = resolve_config(Some(&model), &overrides)?;
     // KNX Data Secure group telegrams (issue #204): the same group keys and
     // decode path as `monitor`. Loaded before connecting so a wrong password
     // fails fast.
-    let group_keys = crate::secure_key::group_keys(options.keyring.as_deref())?.map(|keys| {
-        eprintln!(
-            "keyring: {} group key(s) for secured group telegrams",
-            keys.len()
-        );
-        GroupKeyring::new(keys)
-    });
+    let group_keys = g
+        .keyring()
+        .map(|path| {
+            bussard_service::secure::load_group_keys(path)
+                .with_context(|| format!("loading group keys from {}", path.display()))
+        })
+        .transpose()?
+        .map(|keys| {
+            eprintln!(
+                "keyring: {} group key(s) for secured group telegrams",
+                keys.len()
+            );
+            GroupKeyring::new(keys)
+        });
     eprintln!(
         "gateway: {} (listening only, never transmits)",
         gateway_display(&config)
@@ -181,7 +204,7 @@ enum Target {
 }
 
 /// Resolves the list of things to learn from the flags and the model.
-fn resolve_targets(model: &Model, options: &LearnOptions) -> anyhow::Result<Vec<Target>> {
+fn resolve_targets(model: &Model, options: &LearnArgs) -> anyhow::Result<Vec<Target>> {
     if !options.gas.is_empty() {
         return options
             .gas
@@ -226,7 +249,7 @@ async fn learn_loop(
     model: &mut Model,
     ring: &TelegramRing,
     targets: &[Target],
-    options: &LearnOptions,
+    options: &LearnArgs,
     timeout: Duration,
     interactive: bool,
 ) -> anyhow::Result<Changes> {
@@ -358,7 +381,7 @@ fn consider(
     ga: GroupAddress,
     telegram: &DecodedTelegram,
     earlier: &[Vec<u8>],
-    options: &LearnOptions,
+    options: &LearnArgs,
     interactive: bool,
 ) -> anyhow::Result<Decision> {
     let sender = telegram.source;
@@ -457,7 +480,7 @@ fn maybe_link(
     sender: IndividualAddress,
     ga: GroupAddress,
     already_linked: bool,
-    options: &LearnOptions,
+    options: &LearnArgs,
     interactive: bool,
 ) -> anyhow::Result<bool> {
     if already_linked {
@@ -648,7 +671,7 @@ mod tests {
     #[test]
     fn test_resolve_targets_from_explicit_gas() -> R {
         let model = empty_model();
-        let options = LearnOptions {
+        let options = LearnArgs {
             gas: vec!["1/0/1".to_string(), "1/0/2".to_string()],
             ..Default::default()
         };
@@ -661,7 +684,7 @@ mod tests {
     #[test]
     fn test_resolve_targets_rejects_a_bad_ga() {
         let model = empty_model();
-        let options = LearnOptions {
+        let options = LearnArgs {
             gas: vec!["nope".to_string()],
             ..Default::default()
         };
@@ -686,7 +709,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let options = LearnOptions {
+        let options = LearnArgs {
             untyped: true,
             ..Default::default()
         };
@@ -698,7 +721,7 @@ mod tests {
     #[test]
     fn test_resolve_targets_defaults_to_open_ended() -> R {
         let model = empty_model();
-        let targets = resolve_targets(&model, &LearnOptions::default())?;
+        let targets = resolve_targets(&model, &LearnArgs::default())?;
         assert_eq!(targets, vec![Target::Any]);
         Ok(())
     }
