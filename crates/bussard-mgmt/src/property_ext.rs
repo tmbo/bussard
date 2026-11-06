@@ -234,6 +234,7 @@ pub fn decode_property_ext_value(payload: &[u8]) -> Option<PropertyExtValue> {
 }
 
 /// Encodes an `A_PropertyExtValue_Response` payload (device side / mocks).
+#[cfg(test)]
 pub fn encode_property_ext_value_response(
     addr: &PropertyExtAddress,
     count: u8,
@@ -257,6 +258,7 @@ pub struct PropertyExtWriteConResponse {
 }
 
 /// Encodes an `A_PropertyExtValue_WriteConResponse` payload (device side).
+#[cfg(test)]
 pub fn encode_property_ext_write_con_response(
     addr: &PropertyExtAddress,
     count: u8,
@@ -401,6 +403,7 @@ pub struct FunctionPropertyExtState {
 }
 
 /// Encodes an `A_FunctionPropertyExt_State_Response` payload (device side).
+#[cfg(test)]
 pub fn encode_function_property_ext_state_response(
     addr: &PropertyExtAddress,
     return_code: u8,
