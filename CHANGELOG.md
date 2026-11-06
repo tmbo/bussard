@@ -10,6 +10,30 @@ Unreleased section with them included.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-06
+
+The same code as 0.9.0 with the release pipeline repaired: the Windows asset
+builds again (the build step ran under PowerShell), the release notes are capped
+at GitHub's body limit with a link to the full entry, and the Homebrew tap
+updates. 0.9.0 stays published without a Windows asset; see its entry for what
+this release contains.
+
+### Fixed
+
+- knx-sim takes the last `Count` octets of a longer `LdCtrlCompareProp`
+  `InlineData` as the compared value (the leading octets are padding), and the
+  ETS sweep seeds a device property a parameter names by `ObjectType="0"`:
+  the Gira IR-Gateway's hardware type is `00 00 00 20 00 03` (#422).
+- knx-sim sizes a property a product declares with `LdCtrlDeclarePropDesc` as
+  an array of the declared type as far as its writes reach, so ETS can read
+  the Gira Eco's PID 69 in chunks, and it answers `A_FunctionPropertyExt_Command`
+  on a function property a product calls by object type (the Gira
+  IR-Gateway's PID 208 of type 65281) (#422).
+- knx-sim answers a load event on a vendor object addressed by type with the
+  next transport sequence number: the answer skipped one, ETS refused it with
+  T_NAK, and the Gira Eco download ended with "Connection closed by remote
+  device" (#422).
+
 ## [0.9.0] - 2026-11-06
 
 The first public release (#92). This entry describes what bussard does at the
