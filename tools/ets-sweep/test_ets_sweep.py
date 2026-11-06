@@ -716,6 +716,66 @@ class TestProductProperties(unittest.TestCase):
                              [{"object": 0, "pid": 78, "value": "09ffffffffff"}])
 
 
+class TestModuleParameters(unittest.TestCase):
+    """A module definition's parameters are relative to the module instance,
+    not device-object properties (#422, Schneider STXF121)."""
+
+    def test_product_properties_skips_module_defs(self):
+        import zipfile
+
+        import sweep
+
+        app = "M-0009_A-E0EE-10-ADF8"
+        xml = f"""<KNX><ApplicationProgram Id="{app}"><Static>
+          <ParameterTypes><ParameterType Id="{app}_PT-1" Name="b"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="{app}_P-1" Name="top" ParameterType="{app}_PT-1" Value="7"><Property ObjectIndex="0" PropertyId="25" Offset="0" BitOffset="0" /></Parameter></Parameters>
+          </Static><ModuleDefs><ModuleDef Id="{app}_MD-1" Name="MeteringSensor"><Static>
+          <Parameters><Parameter Id="{app}_MD-1_P-1" Name="m" ParameterType="{app}_PT-1" Value="0"><Property ObjectIndex="0" PropertyId="208" Offset="0" BitOffset="0" /></Parameter></Parameters>
+          </Static></ModuleDef></ModuleDefs></ApplicationProgram></KNX>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr(f"M-0009/{app}.xml", xml)
+            self.assertEqual(sweep.product_properties(path, app), [{"object": 0, "pid": 25, "value": "07"}])
+
+
+class TestLearnedProperties(unittest.TestCase):
+    """Only what ETS's log required is learned; a seed is not (#422)."""
+
+    def test_run_learning_keeps_only_ets_requirements(self):
+        from unittest import mock
+
+        import sweep
+
+        seed = [{"object": 0, "pid": 78, "value": "09ffffffffff"}]
+        required = {"object": 0, "pid": 78, "value": "000009720900"}
+        runs = iter([{"outcome": "ets-failed", "ets_required": [required]},
+                     {"outcome": "captured", "ets_required": []}])
+        with mock.patch.object(sweep, "run_one", side_effect=lambda *a, **k: next(runs)):
+            r = sweep.run_learning(None, Path("p.knxprod"), "M-0009_A-7209-10-6610", "TJAS471", properties=seed)
+        self.assertEqual(r["learned_properties"], [required])
+        # A clean first run learns nothing, whatever was seeded.
+        with mock.patch.object(sweep, "run_one", return_value={"outcome": "captured"}):
+            r = sweep.run_learning(None, Path("p.knxprod"), "M-0009_A-7209-10-6610", "TJAS471", properties=seed)
+        self.assertEqual(r["learned_properties"], [])
+        # Earlier learning is carried.
+        with mock.patch.object(sweep, "run_one", return_value={"outcome": "captured"}):
+            r = sweep.run_learning(None, Path("p.knxprod"), "M-0009_A-7209-10-6610", "TJAS471",
+                                   properties=seed, learned=[required])
+        self.assertEqual(r["learned_properties"], [required])
+
+    def test_learned_from_ets_drops_seeded_entries(self):
+        from unittest import mock
+
+        import sweep
+
+        seeded = {"object": 0, "pid": 78, "value": "000009720900"}
+        real = {"object": 0, "pid": 15, "value": "0102"}
+        with mock.patch.object(sweep, "product_properties", return_value=[seeded]):
+            self.assertEqual(defaults.learned_from_ets(Path("p.knxprod"), "M-0009_A-7209-10-6610",
+                                                       {"learned_properties": [seeded, real]}), [real])
+
+
 class TestCaptureIpEnabled(unittest.TestCase):
     """An IP-enabled TP product (syn-ip-enabled-tp, #455): the sim gets the
     KNXnet/IP object, the row plans with the sweep project's [knxnet] table."""

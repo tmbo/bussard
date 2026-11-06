@@ -376,6 +376,10 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
         if not name:
             return []
         xml = z.read(name).decode("utf-8", "replace")
+        # A module definition's parameters name objects relative to the
+        # module instance's base (the Schneider STXF121's `ObjectIndex="0"`
+        # PID 208 is objects 6 to 9): not the device object (2026-11-06).
+        xml = re.sub(r"<ModuleDefs>.*?</ModuleDefs>", "", xml, flags=re.S)
     except (OSError, zipfile.BadZipFile):
         return []
 
@@ -638,21 +642,32 @@ def write_ops(out: Path, ia: str, keyring: Path | None = None, password: str | N
     return sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
 
 
-def run_learning(c, knxprod: Path, app: str, search: str, *, attempts: int = 3, **kw) -> dict:
+def run_learning(c, knxprod: Path, app: str, search: str, *, attempts: int = 3,
+                 learned: list[dict] | None = None, **kw) -> dict:
     """run_one, and when ETS refuses the device for an identity mismatch,
     again with the identity ETS logged as required, up to `attempts` runs.
-    The learned properties are kept in the result."""
+
+    `learned` is what earlier runs learned from ETS. The result's
+    `learned_properties` holds that, updated with what ETS required in these
+    runs, and nothing else: the seeded `properties` (product parameters,
+    guessed identities) are not learned. Recording the whole seed made a bad
+    seed stick to the row after its source was fixed (the Schneider STJA rows
+    kept `09ffffffffff` for PID 78, 2026-11-06)."""
     props: list[dict] = list(kw.pop("properties", None) or [])
+    learned = list(learned or [])
     r: dict = {}
     for attempt in range(attempts):
         r = run_one(c, knxprod, app, search, properties=props or None, **kw)
         r["attempt"] = attempt + 1
         new = [p for p in r.get("ets_required", []) if p not in props]
+        if new:
+            keys = {(n["object"], n["pid"]) for n in new}
+            learned = [p for p in learned if (p["object"], p["pid"]) not in keys] + new
         if r["outcome"] != "ets-failed" or not new:
             break
         # A later requirement on the same property replaces the earlier one.
-        props = [p for p in props if (p["object"], p["pid"]) not in {(n["object"], n["pid"]) for n in new}] + new
-    r["learned_properties"] = props
+        props = [p for p in props if (p["object"], p["pid"]) not in keys] + new
+    r["learned_properties"] = learned
     return r
 
 
