@@ -105,27 +105,11 @@ impl PairingCertificate {
             EnrollStatus::Unassigned => "wait",
             EnrollStatus::Conflict | EnrollStatus::Invalid | EnrollStatus::Error => "bad",
         };
-        let detail = match outcome.status {
-            EnrollStatus::Stored => match (&outcome.ia, &outcome.name) {
-                (Some(ia), Some(name)) if !name.is_empty() => format!("for {ia} {name}"),
-                (Some(ia), _) => format!("for {ia}"),
-                (None, _) => String::new(),
-            },
-            EnrollStatus::Unassigned => "no device in your project has this serial number; \
-                bussard matches it once it finds the device (bussard scan)"
-                .to_string(),
-            EnrollStatus::AlreadyStored => String::new(),
-            EnrollStatus::Conflict => {
-                "your key store holds a different key for this device".to_string()
-            }
-            EnrollStatus::Invalid => "check the code".to_string(),
-            EnrollStatus::Error => outcome.message.clone().unwrap_or_default(),
-        };
         PairingCertificate {
             serial: outcome.serial.clone().unwrap_or_else(|| "-".to_string()),
             state: outcome.status.as_str(),
             badge: outcome.status.badge(),
-            detail,
+            detail: outcome.detail().unwrap_or_default(),
             tone,
         }
     }

@@ -278,6 +278,31 @@ pub struct CertificateOutcome {
 }
 
 impl CertificateOutcome {
+    /// The line under the badge, in the words of `dev/glossary.md`
+    /// ("Certificate states"); `None` when the badge says it all.
+    #[must_use]
+    pub fn detail(&self) -> Option<String> {
+        Some(match self.status {
+            EnrollStatus::Stored => match (&self.ia, &self.name) {
+                (Some(ia), Some(name)) if !name.is_empty() => format!("for {ia} {name}"),
+                (Some(ia), _) => format!("for {ia}"),
+                (None, _) => return None,
+            },
+            EnrollStatus::Unassigned => "no device in your project has this serial number; \
+                bussard matches it once it finds the device (bussard scan)"
+                .to_string(),
+            EnrollStatus::AlreadyStored => return None,
+            EnrollStatus::Conflict => {
+                "your key store holds a different key for this device".to_string()
+            }
+            EnrollStatus::Invalid => "check the code".to_string(),
+            EnrollStatus::Error => self
+                .message
+                .clone()
+                .unwrap_or_else(|| "for an unknown reason".to_string()),
+        })
+    }
+
     /// An `error` outcome with `message` and no serial.
     #[must_use]
     pub fn error(message: impl Into<String>) -> Self {
