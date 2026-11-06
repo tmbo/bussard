@@ -13,11 +13,12 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{
-    FlashPlan, FlashStep, build_table_images, kept_octets, plan_flash, template_ops_for,
-};
+use bussard_download::flash::kept_octets;
+use bussard_download::{FlashPlan, FlashStep, build_table_images, template_ops_for};
 use bussard_prod::ProductData;
 use zip::write::SimpleFileOptions;
+
+use crate::support::plan_flash_default;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -59,8 +60,14 @@ fn plan(
     let app = product.applications.first().ok_or("one application")?;
     let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
     let target: bussard_model::IndividualAddress = "1.1.1".parse()?;
-    let tables = build_table_images(None, target, app, overrides);
-    Ok(plan_flash(
+    let tables = build_table_images(
+        None,
+        target,
+        app,
+        overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
         app,
         "1.1.1",
         0x07B0,

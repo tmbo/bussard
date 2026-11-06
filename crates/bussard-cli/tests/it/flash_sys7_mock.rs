@@ -257,7 +257,7 @@ fn test_flash_system7_links_lost_on_the_device_fail_with_the_link() -> TestResul
     let device = system7_device(device_ia()?, &SYS7_CODE).with_hook(|dev, apci, _| {
         if apci == bussard_testkit::consts::A_RESTART {
             dev.memory.insert(
-                u32::from(bussard_download::SYS7_ASSOCIATION_TABLE_ADDR),
+                u32::from(bussard_download::compute_sys7::SYS7_ASSOCIATION_TABLE_ADDR),
                 0x00,
             );
         }

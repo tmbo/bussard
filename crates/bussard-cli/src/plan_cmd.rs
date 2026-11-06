@@ -86,14 +86,14 @@ pub(crate) fn table_bases(
 }
 
 /// Reads a device's live tables on an open (and authorized) connection, picking
-/// the reader by mask family (see [`bussard_download::read_live_tables_at`]).
+/// the reader by mask family (see [`bussard_download::read_live_tables`]).
 /// With the device's `product`, a System 7 device that does not answer
 /// `PID_TABLE_REFERENCE` is read where the product puts its tables.
 pub(crate) async fn read_live_tables<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     product: Option<&crate::param_readback::ProductSource>,
 ) -> anyhow::Result<LiveRead> {
-    Ok(bussard_download::read_live_tables_at(l4, table_bases(product)).await?)
+    Ok(bussard_download::read_live_tables(l4, table_bases(product)).await?)
 }
 
 /// Reads the device's security individual address table (PID 54) when

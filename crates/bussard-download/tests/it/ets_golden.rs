@@ -21,10 +21,13 @@ use std::collections::BTreeMap;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
-use bussard_download::{
-    FlashStep, LinkedObject, SegmentFill, dynamic_group_object_table, plan_flash,
-};
+use bussard_download::FlashStep;
+use bussard_download::compute::LinkedObject;
+use bussard_download::compute::dynamic_group_object_table;
+use bussard_download::flash::SegmentFill;
 use bussard_prod::{ApplicationProgram, compute_parameter_image, parse_application_program};
+
+use crate::support::plan_flash_default;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 type Error = Box<dyn std::error::Error>;
@@ -180,8 +183,13 @@ fn test_f50_group_object_table_matches_ets() -> TestResult {
         .into_iter()
         .map(|o| (o, LinkedObject::default()))
         .collect();
-    let ours =
-        dynamic_group_object_table(&app, &overrides(), &linked).ok_or("no group-object table")?;
+    let ours = dynamic_group_object_table(
+        &app,
+        &overrides(),
+        &linked,
+        &bussard_prod::dynamic::DynamicMemo::new(&app),
+    )
+    .ok_or("no group-object table")?;
     let d = diff(&ours, &ets);
     assert!(
         d.is_empty(),
@@ -219,7 +227,7 @@ fn test_f50_plan_allocates_the_parameter_segment_with_fill() -> TestResult {
     let Some(app) = load(&F50)? else {
         return Ok(());
     };
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.18",
         0x07B0,
@@ -274,8 +282,13 @@ fn test_a3030_group_object_table_matches_ets() -> TestResult {
         (95, "O-95_R-71", "CWU"),
         (96, "O-96_R-90", "CRTU"),
     ];
-    let ours = dynamic_group_object_table(&app, &BTreeMap::new(), &linked(&objects)?)
-        .ok_or("no group-object table")?;
+    let ours = dynamic_group_object_table(
+        &app,
+        &BTreeMap::new(),
+        &linked(&objects)?,
+        &bussard_prod::dynamic::DynamicMemo::new(&app),
+    )
+    .ok_or("no group-object table")?;
     assert_image("A-3030 obj3", &ours, &fixture("a3030-obj3.hex")?);
     Ok(())
 }
@@ -314,8 +327,13 @@ fn test_a0ed_group_object_table_matches_ets() -> TestResult {
         .into_iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
-    let ours = dynamic_group_object_table(&app, &overrides, &linked(&objects)?)
-        .ok_or("no group-object table")?;
+    let ours = dynamic_group_object_table(
+        &app,
+        &overrides,
+        &linked(&objects)?,
+        &bussard_prod::dynamic::DynamicMemo::new(&app),
+    )
+    .ok_or("no group-object table")?;
     assert_image("A-A0ED obj3", &ours, &fixture("a0ed-obj3.hex")?);
     Ok(())
 }
@@ -344,8 +362,13 @@ fn test_helios_tables_match_ets() -> TestResult {
         (34, "O-34_R-34", "CW"),
         (35, "O-35_R-35", "CRT"),
     ];
-    let ours = dynamic_group_object_table(&app, &BTreeMap::new(), &linked(&objects)?)
-        .ok_or("no group-object table")?;
+    let ours = dynamic_group_object_table(
+        &app,
+        &BTreeMap::new(),
+        &linked(&objects)?,
+        &bussard_prod::dynamic::DynamicMemo::new(&app),
+    )
+    .ok_or("no group-object table")?;
     assert_image("Helios obj3", &ours, &fixture("helios-obj3.hex")?);
     let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
     let segment = format!("{}_RS-04-00000", source.app_id);
@@ -397,7 +420,7 @@ fn test_d141_22_inactive_channel_condition_leaves_the_fill() -> TestResult {
         [("P-388_R-471".to_string(), p388.to_string())].into()
     };
 
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.12",
         0x07B0,
@@ -445,7 +468,7 @@ fn test_d142_21_inactive_extension_module_leaves_the_fill() -> TestResult {
     let with = |p388: &str| -> BTreeMap<String, String> {
         [("P-388_R-471".to_string(), p388.to_string())].into()
     };
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.18",
         0x07B0,
@@ -495,7 +518,7 @@ fn test_d142_21_partial_write_skips_unreached_selectors() -> TestResult {
         return Ok(());
     };
     let overrides: BTreeMap<String, String> = [("P-388_R-471".to_string(), "0".to_string())].into();
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.18",
         0x07B0,
@@ -564,7 +587,7 @@ fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult 
         .ops
         .clone();
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.47",
         0x07B0,
@@ -605,7 +628,7 @@ fn test_a2088_11_plan_ends_at_the_restart_without_lsm5() -> TestResult {
     let Some(app) = load_from_project(A2088_11)? else {
         return Ok(());
     };
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.49",
         0x0705,

@@ -634,6 +634,7 @@ pub(super) fn plan_flash_properties(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flash::test_support::plan_flash_default;
     use bussard_prod::application::LoadGuard;
     use bussard_prod::application::parse_application_program;
     use bussard_prod::dynamic::DynamicMemo;
@@ -1072,7 +1073,7 @@ mod tests {
                         continue;
                     }
                 };
-                let plan = crate::flash::plan_flash(
+                let plan = plan_flash_default(
                     app,
                     "1.1.1",
                     device_mask,

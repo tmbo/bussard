@@ -573,7 +573,7 @@ pub async fn read_state<Ch: L4Channel>(
     // the read-back plan, the decode, the group-object change and the octet
     // attribution below (issue #367).
     let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-    let plan = match bussard_download::plan_for_readback_with(
+    let plan = match bussard_download::plan_for_readback(
         &source.product,
         app,
         model,
@@ -590,7 +590,13 @@ pub async fn read_state<Ch: L4Channel>(
         }
     };
     let access = plan.sys7_lsm_access();
-    let resident = probe_resident_state(l4, device_mask, access.as_ref()).await;
+    let resident = probe_resident_state(
+        l4,
+        device_mask,
+        access.as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     // The parameter-only download's rule: the same program (any build hash)
     // on System B, every driven LSM Loaded and the product's code on System 7.
     if let Err(why) = bussard_download::identity_gate(&plan, Some(&resident)) {
@@ -615,7 +621,7 @@ pub async fn read_state<Ch: L4Channel>(
         state.refused_resident = Some(resident);
         return state;
     }
-    let regions = read_parameter_regions(l4, &plan).await;
+    let regions = read_parameter_regions(l4, &plan, &[]).await;
     // The properties the parameters live in, on the same connection (issue
     // #706).
     let properties = bussard_download::read_parameter_properties(l4, &plan, app).await;
@@ -628,10 +634,8 @@ pub async fn read_state<Ch: L4Channel>(
     }
     let current = regions_memory(&regions);
     let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let decoded =
-        bussard_download::decode_parameters_with(app, &overrides, &bases, &current, &memo);
-    let change =
-        bussard_download::group_object_change_with(app, &decoded.values, &overrides, &memo);
+    let decoded = bussard_download::decode_parameters(app, &overrides, &bases, &current, &memo);
+    let change = bussard_download::group_object_change(app, &decoded.values, &overrides, &memo);
     // Issue #411: a System 7 load-procedure `<choose>` that allocates the
     // segments differently under the model's values needs the full download
     // that sends the new allocation records.
@@ -649,7 +653,7 @@ pub async fn read_state<Ch: L4Channel>(
         .parameters_only(&regions)
         .map(|partial| {
             let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
-                bussard_download::attribute_octets_with(
+                bussard_download::attribute_octets(
                     app,
                     &overrides,
                     &bases,
@@ -790,7 +794,7 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
     // The plan and the decode share one evaluation of the model's values
     // (issue #367).
     let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-    let plan = match bussard_download::plan_for_readback_with(
+    let plan = match bussard_download::plan_for_readback(
         product,
         app,
         model,
@@ -801,15 +805,14 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
         Ok(plan) => plan,
         Err(err) => return noted(format!("the parameter memory cannot be located: {err}")),
     };
-    let regions = read_parameter_regions(l4, &plan).await;
+    let regions = read_parameter_regions(l4, &plan, &[]).await;
     let expects_parameters = plan.param_images.values().any(|b| !b.is_empty());
     if regions.is_empty() && expects_parameters {
         return noted("the parameter memory could not be read back".into());
     }
     let current = regions_memory(&regions);
     let (overrides, bases) = bussard_download::model_parameters(model, target);
-    let decoded =
-        bussard_download::decode_parameters_with(app, &overrides, &bases, &current, &memo);
+    let decoded = bussard_download::decode_parameters(app, &overrides, &bases, &current, &memo);
     let device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);

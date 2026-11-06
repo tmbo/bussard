@@ -128,10 +128,7 @@ pub use labels::trace;
 pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
-pub use plan::{
-    kept_octets, plan_flash, plan_flash_with_memo, plan_flash_with_object_flags, same_program,
-    select_application,
-};
+pub use plan::{kept_octets, plan_flash, same_program, select_application};
 pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
@@ -1815,8 +1812,7 @@ impl FlashOutcome {
 
 #[cfg(test)]
 mod tests {
-
-    use crate::flash::plan::plan_flash;
+    use crate::flash::test_support::plan_flash_default;
 
     #[test]
     fn test_security_activated_uses_the_tool_key_hint() {
@@ -1835,7 +1831,7 @@ mod tests {
     #[test]
     fn estimates_are_sane() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -1863,7 +1859,7 @@ mod tests {
     {
         use super::{FlashStep, KnxnetIpProgram, KnxnetIpWrite, PropObject};
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -1913,7 +1909,7 @@ mod tests {
         use super::FlashStep;
         use bussard_mgmt::LoadControl;
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2007,7 +2003,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         use super::FlashStep;
         let app = fabricated_app();
-        let mut plan = plan_flash(
+        let mut plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,

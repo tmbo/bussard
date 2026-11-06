@@ -735,6 +735,8 @@ fn run_loop(
         &BTreeMap::new(),
         None,
         &empty_tables,
+        &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
     ) {
         return Err(Stop::Skip(format!("bussard does not flash it: {e}")));
     }
@@ -855,6 +857,8 @@ fn run_property_loop(
         &BTreeMap::new(),
         None,
         &BTreeMap::new(),
+        &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
     )
     .map_err(|e| Stop::Skip(format!("bussard does not flash it: {e}")))?;
     if !plan.is_property_only() {

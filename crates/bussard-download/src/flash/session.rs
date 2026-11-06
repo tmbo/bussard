@@ -341,9 +341,9 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
 /// does not implement authorize burns a full `RESPONSE_TIMEOUT` answering
 /// nothing), and another `PID_MAX_APDU_LENGTH` read.
 ///
-/// Handing the pre-flight's findings to [`Session::open_with_facts`] removes
+/// Handing the pre-flight's findings to [`Session::open`] removes
 /// that duplication. Every field is optional/empty-tolerant: an empty
-/// [`DeviceFacts`] (or [`Session::open_with_key`], which supplies none) restores
+/// [`DeviceFacts`] restores
 /// the rediscover-everything behaviour byte-for-byte, which is what the mock and
 /// oracle tests pin.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -512,31 +512,6 @@ pub struct VerifyEchoes {
 }
 
 impl<C: Connector> Session<C> {
-    /// Opens the connection and wraps it in a session, authorizing it with the
-    /// free-access key.
-    ///
-    /// Equivalent to [`open_with_key`](Session::open_with_key) with `None` — the
-    /// connection presents [`FREE_ACCESS_KEY`](bussard_mgmt::apci::FREE_ACCESS_KEY)
-    /// right after connect (issue #52 finding #1). A device that does not implement
-    /// authorize is tolerated; a non-zero granted level fails with
-    /// `MgmtError::AccessDenied`.
-    pub async fn open(connector: C) -> Result<Session<C>, WriteError> {
-        Session::open_with_key(connector, None).await
-    }
-
-    /// Opens the connection and authorizes it with `bcu_key` (or the free-access
-    /// key when `None`).
-    ///
-    /// Equivalent to [`open_with_facts`](Session::open_with_facts) with an empty
-    /// [`DeviceFacts`]: the session discovers everything itself, which is the
-    /// standalone-library behaviour the mock and oracle wire traces pin.
-    pub async fn open_with_key(
-        connector: C,
-        bcu_key: Option<u32>,
-    ) -> Result<Session<C>, WriteError> {
-        Session::open_with_facts(connector, bcu_key, DeviceFacts::default()).await
-    }
-
     /// Opens the connection with what a read-only pre-flight already learned
     /// about the device ([`DeviceFacts`]).
     ///
@@ -550,8 +525,16 @@ impl<C: Connector> Session<C> {
     ///   numbered exchange against the tight per-connection budget.
     ///
     /// The object table is not used here; it is consumed by [`flash`](super::flash) in place of
-    /// its own discovery walk.
-    pub async fn open_with_facts(
+    /// its own discovery walk. An empty [`DeviceFacts`] makes the session
+    /// discover everything itself, which is the standalone-library behaviour
+    /// the mock and oracle wire traces pin.
+    ///
+    /// The connection is authorized with `bcu_key`, or with
+    /// [`FREE_ACCESS_KEY`](bussard_mgmt::apci::FREE_ACCESS_KEY) when `None`,
+    /// right after connect (issue #52 finding #1). A device that does not
+    /// implement authorize is tolerated; a non-zero granted level fails with
+    /// `MgmtError::AccessDenied`.
+    pub async fn open(
         mut connector: C,
         bcu_key: Option<u32>,
         facts: DeviceFacts,
@@ -580,7 +563,7 @@ impl<C: Connector> Session<C> {
     /// * `Denied` fails as [`MgmtError::AccessDenied`], as the fresh open would;
     /// * `Unsupported` is cached, so later reconnects skip the request as well;
     /// * no verdict (the pre-flight skipped the request on the device facts'
-    ///   word) authorizes exactly as [`open_with_facts`](Session::open_with_facts)
+    ///   word) authorizes exactly as [`open`](Session::open)
     ///   does on a fresh connection.
     ///
     /// The connector is kept, so the session reconnects after a restart and
@@ -605,7 +588,7 @@ impl<C: Connector> Session<C> {
         Session::finish_open(connector, l4, bcu_key, facts, true).await
     }
 
-    /// The shared tail of [`open_with_facts`](Session::open_with_facts) and
+    /// The shared tail of [`open`](Session::open) and
     /// [`adopt_with_facts`](Session::adopt_with_facts): authorize (or, for an
     /// `adopted` connection, apply the verdict it already recorded), seed the
     /// max APDU, and build the session.
@@ -753,7 +736,7 @@ impl<C: Connector> Session<C> {
     /// Whether this session can re-open its connection after a device restart.
     ///
     /// True when the session was opened from a [`Connector`] it can call again
-    /// ([`Session::open`]/[`open_with_key`](Session::open_with_key)); false when it
+    /// ([`Session::open`]); false when it
     /// wraps a single already-open connection ([`Session::from_connection`]), which
     /// has no way to reconnect. The terminal-restart verify uses this to decide
     /// whether to re-read the load state *after* the reboot (a real device) or

@@ -335,7 +335,7 @@ async fn read_one(
         .filter(|s| !s.is_empty());
 
     let read_at = SystemTime::now();
-    let live = bussard_download::read_live_tables_at(dev.l4_mut(), Sys7TableBases::default()).await;
+    let live = bussard_download::read_live_tables(dev.l4_mut(), Sys7TableBases::default()).await;
     match live {
         Err(err) => DeviceCapture::failed(target, format!("reading the tables: {err}")),
         Ok(LiveRead::UnsupportedMask { mask, .. }) => DeviceCapture {

@@ -323,14 +323,15 @@ pub fn trace(plan: &FlashPlan) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flash::plan::plan_flash;
+    use crate::flash::test_support::plan_flash_default;
+
     use crate::flash::test_support::{fabricated_app, no_overrides};
     use std::collections::BTreeMap;
 
     #[test]
     fn trace_renders_every_step() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,

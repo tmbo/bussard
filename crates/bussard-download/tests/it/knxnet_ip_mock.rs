@@ -3,7 +3,9 @@
 //! sweep capture shows, written to the object the device has, each write
 //! read back; a device without the object fails the step.
 
-use bussard_download::{KnxnetIpProgram, PropObject, knxnet_ip_program, write_knxnet_ip};
+use bussard_download::flash::KnxnetIpProgram;
+use bussard_download::flash::write_knxnet_ip;
+use bussard_download::{PropObject, knxnet_ip_program};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_prod::application::ApplicationProgram;

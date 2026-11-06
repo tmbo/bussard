@@ -18,7 +18,9 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bussard_download::{FlashStep, plan_flash};
+use bussard_download::FlashStep;
+
+use crate::support::plan_flash_default;
 
 /// The corpus's vendor directory, or `None` (skip) when unset.
 /// `BUSSARD_PRODUCT_CORPUS` may name the product-corpus root, its `cache/`, or
@@ -93,7 +95,7 @@ fn plan_for(
     app: &bussard_prod::ApplicationProgram,
 ) -> std::result::Result<bussard_download::FlashPlan, bussard_download::PlanError> {
     let mask = app_mask(app).expect("app declares a hex mask");
-    plan_flash(
+    plan_flash_default(
         app,
         "1.1.99",
         mask,
@@ -283,8 +285,8 @@ fn test_sys7_profile_from_hawk_verify_mode_meteodata_master() {
     let h0705 = master.hawk_config("0705").expect("MV-0705 Hawk block");
     assert_eq!(h0701.verify_mode(), None);
     assert_eq!(h0705.verify_mode(), Some(1));
-    let p0701 = bussard_download::sys7_profile_from_hawk(h0701).expect("0701 profile");
-    let p0705 = bussard_download::sys7_profile_from_hawk(h0705).expect("0705 profile");
+    let p0701 = bussard_download::flash::sys7_profile_from_hawk(h0701).expect("0701 profile");
+    let p0705 = bussard_download::flash::sys7_profile_from_hawk(h0705).expect("0705 profile");
     assert_eq!(p0701.verify_mode, None);
     assert!(p0701.read_compare_write());
     assert_eq!(p0705.verify_mode, Some(1));
@@ -298,7 +300,7 @@ fn test_sys7_profile_from_hawk_verify_mode_meteodata_master() {
         .find(|a| a.id.starts_with("M-0048_A-140C"))
         .expect("Meteodata app");
     for hawk in [Some(h0701), None] {
-        let plan = bussard_download::plan_flash_sys7_with_hawk(
+        let plan = bussard_download::flash::plan_flash_sys7_with_hawk(
             app,
             "1.1.202",
             0x0701,
@@ -358,7 +360,7 @@ fn test_compute_parameter_image_placed_meteodata_c4_page_is_writable() {
             "offset {offset} placed: {as4800:?}"
         );
     }
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         app,
         "1.1.202",
         0x0701,

@@ -123,7 +123,7 @@ pub struct ParamPlan {
     /// A note explaining a degraded plan (System 7, or no readback at all).
     pub note: Option<String>,
     /// The parameters placed in octets the download leaves as the device
-    /// holds them (issue #411, [`crate::KeptOctets`]): not written, so not
+    /// holds them (issue #411, [`crate::flash::KeptOctets`]): not written, so not
     /// among the changes. `old` is the device's value, `new` the model's.
     pub kept: Vec<ParamChange>,
 }
@@ -158,7 +158,13 @@ pub fn param_plan(
     current: &CurrentMemory,
 ) -> ParamPlan {
     if !current.is_empty() {
-        let decoded = decode_parameters(app, overrides, base_offsets, current);
+        let decoded = decode_parameters(
+            app,
+            overrides,
+            base_offsets,
+            current,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
+        );
         return ParamPlan {
             changes: decoded.differences,
             unknown: decoded.unknown,
@@ -260,24 +266,14 @@ pub fn non_default_parameters(
     base_offsets: &BTreeMap<String, u32>,
     current: &CurrentMemory,
 ) -> Vec<ParamReading> {
-    decode_parameters(app, overrides, base_offsets, current).non_default
-}
-
-/// The raw values the device holds, keyed like a device file's
-/// `parameters:` block: the override shape
-/// [`bussard_prod::dynamic::evaluate_dynamic`] takes.
-///
-/// Starts from `overrides` (the model's values) and replaces every value the
-/// device memory in `current` answers for. A parameter with no memory (a
-/// display-only selector) keeps the model's value, since the device does not
-/// hold one.
-pub fn current_parameter_values(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-) -> BTreeMap<String, String> {
-    decode_parameters(app, overrides, base_offsets, current).values
+    decode_parameters(
+        app,
+        overrides,
+        base_offsets,
+        current,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    )
+    .non_default
 }
 
 /// How a parameter change would reshape the group-object table (issue #119).
@@ -305,25 +301,13 @@ impl GroupObjectChange {
 
 /// Compares the group-object table the application's Dynamic section yields for
 /// the `before` and `after` parameter values (both keyed like
-/// [`current_parameter_values`] returns them).
+/// [`DecodedParameters::values`](crate::param_decode::DecodedParameters::values) holds them).
+///
+/// The Dynamic section is evaluated through `memo` (issue #367): each side
+/// is evaluated once for both the shown objects and the table image, and a
+/// side a parameter decode with the same memo already evaluated is not
+/// evaluated again.
 pub fn group_object_change(
-    app: &ApplicationProgram,
-    before: &BTreeMap<String, String>,
-    after: &BTreeMap<String, String>,
-) -> GroupObjectChange {
-    group_object_change_with(
-        app,
-        before,
-        after,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
-    )
-}
-
-/// [`group_object_change`], evaluating the Dynamic section through `memo`
-/// (issue #367): each side is evaluated once for both the shown objects and
-/// the table image, and a side a parameter decode with the same memo already
-/// evaluated is not evaluated again. The change is the same.
-pub fn group_object_change_with(
     app: &ApplicationProgram,
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
@@ -341,8 +325,8 @@ pub fn group_object_change_with(
     GroupObjectChange {
         shown: new.difference(&old).copied().collect(),
         hidden: old.difference(&new).copied().collect(),
-        table_differs: crate::compute::dynamic_group_object_table_with(app, before, &linked, memo)
-            != crate::compute::dynamic_group_object_table_with(app, after, &linked, memo),
+        table_differs: crate::compute::dynamic_group_object_table(app, before, &linked, memo)
+            != crate::compute::dynamic_group_object_table(app, after, &linked, memo),
     }
 }
 
@@ -371,18 +355,12 @@ pub const SYS7_NOTE: &str = "System 7 device: parameters are written as whole ab
 ///
 /// Returns an empty map for a System 7 plan, whose parameters are written as
 /// whole absolute regions rather than a segment image (see [`SYS7_NOTE`]).
+///
+/// `objects` is the interface-object table the caller already walked on
+/// this connection (the flash pre-flight's freshness probe), so the read-back
+/// does not sweep `PID_OBJECT_TYPE` again. An empty `objects` walks the
+/// table as usual.
 pub async fn read_current_parameter_memory<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-) -> CurrentMemory {
-    read_current_parameter_memory_with_objects(l4, plan, &[]).await
-}
-
-/// [`read_current_parameter_memory`] with the interface-object table the
-/// caller already walked on this connection (the flash pre-flight's
-/// freshness probe), so the read-back does not sweep `PID_OBJECT_TYPE` again.
-/// An empty `objects` walks the table as usual.
-pub async fn read_current_parameter_memory_with_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
     objects: &[(u8, u16)],
@@ -390,7 +368,7 @@ pub async fn read_current_parameter_memory_with_objects<Ch: L4Channel>(
     if plan.is_sys7() {
         return CurrentMemory::new();
     }
-    read_parameter_regions_with_objects(l4, plan, objects)
+    read_parameter_regions(l4, plan, objects)
         .await
         .into_iter()
         .map(|(segment, region)| (segment, region.bytes))
@@ -548,16 +526,10 @@ fn whole_region(plan: &FlashPlan, offset: u32, image: &crate::flash::ImageRef) -
 /// in 215-octet `A_MemoryExtended_Read`s under Data Secure (228 plain, 63 for
 /// the plain service below `0xFFFF`) instead of the 12-octet standard-frame
 /// floor. A device that does not expose the property keeps the floor.
+///
+/// `objects` is an interface-object table the caller already read on this
+/// connection; an empty `objects` walks it here.
 pub async fn read_parameter_regions<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-) -> ParamRegions {
-    read_parameter_regions_with_objects(l4, plan, &[]).await
-}
-
-/// [`read_parameter_regions`] with an interface-object table the caller
-/// already read on this connection; an empty `objects` walks it here.
-pub async fn read_parameter_regions_with_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
     objects: &[(u8, u16)],
@@ -900,10 +872,17 @@ mod tests {
     }
 
     #[test]
-    fn test_current_parameter_values_decodes_every_ref() {
+    fn test_decode_parameters_values_decodes_every_ref() {
         let app = gated_app();
         let current = BTreeMap::from([("M-1_A-2_RS-1".to_string(), vec![9, 0b1000_0000])]);
-        let values = current_parameter_values(&app, &BTreeMap::new(), &BTreeMap::new(), &current);
+        let values = decode_parameters(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )
+        .values;
         assert_eq!(values.get("P-0_R-1").map(String::as_str), Some("9"));
         assert_eq!(values.get("P-1_R-2").map(String::as_str), Some("1"));
     }
@@ -913,14 +892,36 @@ mod tests {
         let app = gated_app();
         let off = BTreeMap::from([("P-1_R-2".to_string(), "0".to_string())]);
         let on = BTreeMap::from([("P-1_R-2".to_string(), "1".to_string())]);
-        let change = group_object_change(&app, &off, &on);
+        let change = group_object_change(
+            &app,
+            &off,
+            &on,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert_eq!(change.shown, vec![2]);
         assert!(change.hidden.is_empty());
         assert!(!change.is_empty());
-        assert_eq!(group_object_change(&app, &on, &off).hidden, vec![2]);
+        assert_eq!(
+            group_object_change(
+                &app,
+                &on,
+                &off,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
+            .hidden,
+            vec![2]
+        );
         // A threshold change leaves the table alone.
         let thr = BTreeMap::from([("P-0_R-1".to_string(), "12".to_string())]);
-        assert!(group_object_change(&app, &off, &thr).is_empty());
+        assert!(
+            group_object_change(
+                &app,
+                &off,
+                &thr,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
+            .is_empty()
+        );
     }
 
     #[test]

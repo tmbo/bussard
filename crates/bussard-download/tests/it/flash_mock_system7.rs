@@ -25,14 +25,14 @@
 //! **The flash and apply paths are only ever exercised here — never against a
 //! live bus.**
 
+use bussard_download::DeviceFacts;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use bussard_download::{
-    FlashStep, Session, apply_sys7_tables, compute_tables, flash, plan, plan_flash,
-    read_sys7_tables, sys7_table_images,
-};
+use bussard_download::apply_sys7::apply_sys7_tables;
+use bussard_download::tables_sys7::read_sys7_tables;
+use bussard_download::{FlashStep, Session, compute_tables, flash, plan, sys7_table_images};
 use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
@@ -42,6 +42,8 @@ use bussard_transport::cemi::Destination;
 use bussard_transport::knxnet::ServiceType;
 use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{ConnectionConfig, Transport};
+
+use crate::support::plan_flash_default;
 
 const CHANNEL: u8 = 0x37;
 
@@ -1012,7 +1014,7 @@ async fn setup(
 /// single-connection session (System 7 requires authorize before memory access).
 async fn authed_session<Ch: bussard_mgmt::L4Channel>(
     mut l4: Layer4Connection<Ch>,
-) -> Result<Session<bussard_download::SingleConnector<Ch>>, Box<dyn std::error::Error>> {
+) -> Result<Session<bussard_download::flash::SingleConnector<Ch>>, Box<dyn std::error::Error>> {
     // The mock grants the free-access key.
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
     Ok(Session::from_connection(l4))
@@ -1050,7 +1052,7 @@ async fn run_full_flash(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>>
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = mdt_canonical_app()?;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -1125,7 +1127,7 @@ async fn run_intermediate_flash(mode: LsmMode) -> Result<Shared, Box<dyn std::er
     .await?;
     let target: bussard_model::IndividualAddress = DEVICE.parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &mdt_canonical_app()?,
         DEVICE,
         MASK_0705,
@@ -1209,7 +1211,7 @@ async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn 
             milliseconds: Some(200),
         },
     );
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -1267,7 +1269,7 @@ async fn flash_system7_verify_mismatch_fails() -> Result<(), Box<dyn std::error:
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = mdt_canonical_app()?;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -1327,10 +1329,10 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         source: "0.0.255".parse()?,
         timeouts: Some(fast_timeouts()),
     };
-    let mut session = Session::open_with_key(connector, None).await?;
+    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
     let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -1397,10 +1399,10 @@ async fn run_flash_with_reboot(
         source: "0.0.255".parse()?,
         timeouts: None,
     };
-    let mut session = Session::open_with_key(connector, None).await?;
+    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
     let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -1531,7 +1533,7 @@ async fn sys7_preflight_then_flash(
     unsafe {
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
     }
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &mdt_canonical_app()?,
         DEVICE,
         MASK_0705,
@@ -1553,7 +1555,13 @@ async fn sys7_preflight_then_flash(
         .await?;
     let mask = bussard_mgmt::read_device_descriptor(&mut l4).await?;
     let max_apdu = l4.negotiate_max_apdu().await.ok().flatten();
-    let resident = bussard_download::probe_resident_state(&mut l4, mask, None).await;
+    let resident = bussard_download::probe_resident_state(
+        &mut l4,
+        mask,
+        None,
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     let facts = bussard_download::DeviceFacts {
         object_table: resident.object_table.clone(),
         authorize: Some(authorize),
@@ -1565,7 +1573,7 @@ async fn sys7_preflight_then_flash(
         Session::adopt_with_facts(connector, l4, None, facts).await?
     } else {
         let _ = l4.disconnect().await;
-        Session::open_with_facts(connector, None, facts).await?
+        Session::open(connector, None, facts).await?
     };
     let options = bussard_download::FlashOptions {
         bcu_key: None,
@@ -1735,7 +1743,7 @@ async fn flash_system7_memory_mapped_post_restart_lsm5_tail_is_not_run()
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = theben_post_restart_lsm5_app()?;
     // Mask 0x0701 → memory-mapped LSM realisation by mask-family default.
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         0x0701,
@@ -1856,7 +1864,7 @@ async fn test_flash_sys7_post_restart_step_on_absent_object_warns()
     state.lock().map_err(|e| e.to_string())?.absent_objects = vec![5];
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut plan = plan_flash(
+    let mut plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",
         0x0705,
@@ -1987,7 +1995,7 @@ async fn run_read_compare_flash(
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let app = theben_read_compare_app(&format!("MV-{mask:04X}"))?;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &app,
         "1.1.99",
         mask,
@@ -2160,7 +2168,7 @@ async fn run_masked_param_flash(
     let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &masked_param_app()?,
         "1.1.99",
         0x0701,
@@ -2293,7 +2301,7 @@ async fn test_flash_sys7_stale_placed_octet_under_masked_run_fails_verification(
 /// Plans the MDT canonical System 7 app against the mock's mask.
 fn sys7_plan() -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
     let app = mdt_canonical_app()?;
-    Ok(plan_flash(
+    Ok(plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -2314,9 +2322,13 @@ async fn sys7_probe(
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let mut l4 = Layer4Connection::connect(bus, target, source).await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
-    let resident =
-        bussard_download::probe_resident_state(&mut l4, MASK_0705, plan.sys7_lsm_access().as_ref())
-            .await;
+    let resident = bussard_download::probe_resident_state(
+        &mut l4,
+        MASK_0705,
+        plan.sys7_lsm_access().as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     let _ = l4.disconnect().await;
     Ok(resident)
 }
@@ -2428,7 +2440,13 @@ async fn test_probe_resident_state_sys7_without_a_plan_follows_the_env_realisati
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     l4.authorize_or_fail(0xFFFF_FFFF).await?;
-    let resident = bussard_download::probe_resident_state(&mut l4, MASK_0705, None).await;
+    let resident = bussard_download::probe_resident_state(
+        &mut l4,
+        MASK_0705,
+        None,
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     let _ = l4.disconnect().await;
 
     assert!(
@@ -2611,7 +2629,8 @@ async fn test_read_sys7_tables_at_survives_a_refused_object_table_read()
     seed_apply_device(&state, target.raw());
     lock(&state).refused_reads = Some(OBJECT_TABLE..OBJECT_TABLE + 0x400);
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     assert_eq!(live.tables.addresses, vec![ga("1/0/1")?]);
     assert_eq!(live.tables.associations, vec![(1, 1)]);
     assert_eq!(live.group_object_base, None);
@@ -2642,7 +2661,7 @@ async fn test_sys7_table_images_refuses_growth_without_a_known_segment_end()
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = read_sys7_tables(&mut l4).await?;
+    let live = read_sys7_tables(&mut l4, bussard_download::Sys7TableBases::default()).await?;
     assert_eq!(live.address_capacity, 5, "CNT + own IA + one GA");
     let notes = live.tables.notes.join(" | ");
     assert!(notes.contains("segment end is unknown"), "{notes}");
@@ -2652,7 +2671,7 @@ async fn test_sys7_table_images_refuses_growth_without_a_known_segment_end()
     assert!(
         matches!(
             err,
-            bussard_download::Sys7ApplyError::RegionOverflow {
+            bussard_download::apply_sys7::Sys7ApplyError::RegionOverflow {
                 table: "address",
                 len: 7,
                 capacity: 5,
@@ -2683,7 +2702,8 @@ async fn test_apply_sys7_tables_refuses_an_unloaded_application()
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     assert!(!images.group_object_image.is_empty());
     {
@@ -2708,7 +2728,7 @@ async fn test_apply_sys7_tables_refuses_an_unloaded_application()
     assert!(
         matches!(
             err,
-            bussard_download::Sys7ApplyError::ApplicationNotLoaded { .. }
+            bussard_download::apply_sys7::Sys7ApplyError::ApplicationNotLoaded { .. }
         ),
         "{err}"
     );
@@ -2733,7 +2753,8 @@ async fn test_apply_sys7_tables_completes_lsm_3_after_a_failed_object_write()
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     let flag = images
         .flag_writes
@@ -2782,7 +2803,8 @@ async fn test_apply_sys7_tables_rewrites_lsm_3_without_a_flag_change()
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let go_image = seed_apply_device(&state, target.raw());
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     let images = sys7_table_images(&live, &desired_links()?)?;
     assert!(images.flag_writes.is_empty());
     assert_eq!(images.group_object_image, go_image);
@@ -2844,7 +2866,7 @@ async fn test_apply_sys7_tables_sends_the_product_records_and_skips_the_own_addr
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     // The device holds a vendor placeholder in its own-address slot.
     seed_apply_device(&state, 0x0000);
-    let segment = |address: u32, size: u32| bussard_download::Sys7SegmentOp {
+    let segment = |address: u32, size: u32| bussard_download::flash::Sys7SegmentOp {
         address,
         size,
         access: Some(255),
@@ -2858,7 +2880,7 @@ async fn test_apply_sys7_tables_sends_the_product_records_and_skips_the_own_addr
         ..bases_with_object_table()
     };
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+    let live = bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases).await?;
     assert_eq!(live.own_ia, 0x0000);
     let images = sys7_table_images(&live, &desired_first_link_on_object_2()?)?;
     {
@@ -2945,7 +2967,8 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     let mut l4 = authed_connection(&mut bus, target).await?;
 
     // --- plan: read the live tables and diff them -----------------------------
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     assert_eq!(live.tables.mask, MASK_0705);
     assert_eq!(live.own_ia, own_ia, "entry 0 is the device's own IA");
     assert_eq!(live.tables.addresses, vec![ga("1/0/1")?]);
@@ -2984,7 +3007,7 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     );
     assert_eq!(
         images.flag_writes,
-        vec![bussard_download::Sys7FlagWrite {
+        vec![bussard_download::apply_sys7::Sys7FlagWrite {
             object: 2,
             address: OBJECT_TABLE + 3 + 4 * 2 + 2,
             from: 0xDB,
@@ -3005,7 +3028,8 @@ async fn run_table_apply(mode: LsmMode) -> Result<(), Box<dyn std::error::Error>
     assert!(outcome.ok(), "apply must verify: {outcome:?}");
 
     // --- reconstruct: read it all back and confirm the model is on the device --
-    let after = bussard_download::read_sys7_tables_at(&mut l4, bases_with_object_table()).await?;
+    let after =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_with_object_table()).await?;
     assert_eq!(after.tables.addresses, desired.addresses);
     assert_eq!(after.tables.associations, desired.associations);
     assert!(
@@ -3111,11 +3135,11 @@ async fn test_read_sys7_tables_at_reads_the_product_association_base()
         packed_end: None,
         ..Default::default()
     };
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+    let live = bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases).await?;
     assert_eq!(live.association_base, 0x41FF);
     assert_eq!(live.tables.associations, vec![(1, 1), (2, 1)]);
     assert_eq!(live.tables.resolved.len(), 2);
-    let fallback = read_sys7_tables(&mut l4).await?;
+    let fallback = read_sys7_tables(&mut l4, bussard_download::Sys7TableBases::default()).await?;
     assert_eq!(fallback.association_base, 0x4201);
     assert_ne!(fallback.tables.associations, live.tables.associations);
     drop(l4);
@@ -3147,7 +3171,7 @@ async fn test_read_sys7_tables_at_reads_a_packed_association_table()
         packed_end: Some(0x43FE),
         ..Default::default()
     };
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+    let live = bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases).await?;
     assert_eq!(live.association_base, 0x4007);
     assert_eq!(live.packed_end, Some(0x43FE));
     assert_eq!(live.tables.associations, vec![(1, 1), (2, 2)]);
@@ -3198,7 +3222,7 @@ async fn read_system7_tables_never_invents_links_from_unprogrammed_memory()
         }
     }
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = read_sys7_tables(&mut l4).await?;
+    let live = read_sys7_tables(&mut l4, bussard_download::Sys7TableBases::default()).await?;
     assert_eq!(
         live.tables.addresses.len(),
         254,
@@ -3239,9 +3263,9 @@ async fn read_system7_tables_refuses_a_count_its_region_cannot_hold()
     // descriptors needs 1023 octets; the 0x4000 region holds 513, so the reader
     // refuses the count rather than reading a kilobyte of neighbouring memory —
     // the same check `decode_sys7_group_object_table` makes offline.
-    let err = bussard_download::decode_sys7_group_object_table(
+    let err = bussard_download::compute_sys7::decode_sys7_group_object_table(
         &[0xFF, 0x07, 0x00],
-        bussard_download::SYS7_ADDRESS_REGION_LEN,
+        bussard_download::compute_sys7::SYS7_ADDRESS_REGION_LEN,
     )
     .expect_err("an oversized count must be refused");
     let text = err.to_string();
@@ -3264,7 +3288,9 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
     seed_tables(&state, own_ia, &[0x0801], &[(1, 1)], &go_image);
 
     let mut l4 = authed_connection(&mut bus, target).await?;
-    let live = bussard_download::read_sys7_tables_at(&mut l4, bases_without_object_table()).await?;
+    let live =
+        bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases_without_object_table())
+            .await?;
     let desired = desired_links()?;
     let images = sys7_table_images(&live, &desired)?;
     let profile = bussard_mgmt::MaskProfile::from_mask(MASK_0705)
@@ -3280,7 +3306,10 @@ async fn apply_system7_tables_fails_on_a_verify_mismatch() -> Result<(), Box<dyn
     .await
     .expect_err("a corrupted store must fail the read-back verify");
     assert!(
-        matches!(err, bussard_download::Sys7ApplyError::VerifyMismatch { .. }),
+        matches!(
+            err,
+            bussard_download::apply_sys7::Sys7ApplyError::VerifyMismatch { .. }
+        ),
         "expected a verify mismatch, got {err}"
     );
     {
@@ -3368,7 +3397,7 @@ fn parameters_only_fixture(
     }
     let app = mdt_app_with_parameters()?;
     let overrides = std::collections::BTreeMap::from([("P-1_R-2".to_string(), "9".to_string())]);
-    let full = plan_flash(
+    let full = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,
@@ -3390,7 +3419,7 @@ async fn run_parameters_only_refuses_unloaded_lsm3(
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     let mut session = authed_session(l4).await?;
-    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let partial = full.parameters_only(&regions)?;
     let result = flash(
         &mut session,
@@ -3449,7 +3478,7 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     let mut session = authed_session(l4).await?;
-    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let region = regions
         .get("M-0083_A-E_AS-4")
         .ok_or("the System 7 parameter segment must be read back")?;
@@ -3496,14 +3525,14 @@ async fn run_parameters_only_sys7(mode: LsmMode) -> Result<(), Box<dyn std::erro
         |_p| {},
     )
     .await?;
-    let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let after = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     drop(handle);
     let _ = session.into_disconnect().await;
     assert!(
         outcome.ok(),
         "the parameter-only download must verify: {outcome:?}"
     );
-    let readings = bussard_download::non_default_parameters(
+    let readings = bussard_download::param_plan::non_default_parameters(
         &app,
         &BTreeMap::new(),
         &BTreeMap::new(),
@@ -3562,8 +3591,13 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
 
     // The read of the plan: the gate, the code sample, the regions.
     let access = full.sys7_lsm_access();
-    let resident =
-        bussard_download::probe_resident_state(session.l4(), MASK_0705, access.as_ref()).await;
+    let resident = bussard_download::probe_resident_state(
+        session.l4(),
+        MASK_0705,
+        access.as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     bussard_download::identity_gate(&full, Some(&resident))?;
     // Code that is not the product's reads as another application ...
     let mismatch = bussard_download::sys7_code_mismatch(session.l4(), &full).await;
@@ -3587,7 +3621,7 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
         bussard_download::sys7_code_mismatch(session.l4(), &full).await,
         None
     );
-    let regions = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let regions = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     let partial = full.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 1);
 
@@ -3600,7 +3634,7 @@ async fn run_parameter_engine_sys7(mode: LsmMode) -> Result<(), Box<dyn std::err
     )
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
-    let after = bussard_download::read_parameter_regions(session.l4(), &full).await;
+    let after = bussard_download::read_parameter_regions(session.l4(), &full, &[]).await;
     drop(handle);
     let _ = session.into_disconnect().await;
     let skip = bussard_download::runtime_segments(&full);
@@ -3645,8 +3679,13 @@ async fn run_sys7_identity(mode: LsmMode) -> Result<(), Box<dyn std::error::Erro
     let l4 = Layer4Connection::connect(&mut bus, target, source).await?;
     let mut session = authed_session(l4).await?;
     let access = full.sys7_lsm_access();
-    let resident =
-        bussard_download::probe_resident_state(session.l4(), MASK_0705, access.as_ref()).await;
+    let resident = bussard_download::probe_resident_state(
+        session.l4(),
+        MASK_0705,
+        access.as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     let freshness = bussard_download::assess_freshness(&resident, &full.identity);
     assert!(bussard_download::needs_sys7_identity(&full, &resident));
 
@@ -3689,8 +3728,13 @@ async fn run_sys7_identity(mode: LsmMode) -> Result<(), Box<dyn std::error::Erro
 
     // LSM 3 not Loaded: not this application, whatever the code says.
     lock(&state).lsm_states.insert(3, LS_UNLOADED);
-    let partial =
-        bussard_download::probe_resident_state(session.l4(), MASK_0705, access.as_ref()).await;
+    let partial = bussard_download::probe_resident_state(
+        session.l4(),
+        MASK_0705,
+        access.as_ref(),
+        bussard_download::ProbeScope::Decisive,
+    )
+    .await;
     let unloaded = bussard_download::sys7_identity(session.l4(), &full, &partial).await;
     assert!(
         matches!(&unloaded, bussard_download::Sys7Identity::Resident { reason } if reason.contains("LSM 3")),
@@ -3758,8 +3802,8 @@ async fn run_parity_flash_with(
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
     }
-    let mut session = Session::open_with_key(connector, None).await?;
-    let plan = plan_flash(
+    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
@@ -3876,7 +3920,7 @@ async fn test_flash_sys7_leaves_verify_mode_alone_when_already_on()
     set_sys7_lsm_env(LsmMode::Property);
     let (mut bus, state, handle) = setup(LsmMode::Property, Fault::None).await?;
     lock(&state).device_control = DEVICE_CONTROL_VERIFY_MODE | 0x01;
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
@@ -4019,8 +4063,8 @@ async fn run_flash_across_restart_outage(
             absent_on_negative_confirmation: false,
         }),
     };
-    let mut session = Session::open_with_key(connector, None).await?;
-    let plan = plan_flash(
+    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",
         MASK_0705,
@@ -4147,7 +4191,7 @@ async fn test_flash_system7_streams_each_allocation_its_part()
     let target: bussard_model::IndividualAddress = "1.1.99".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
     let overrides: BTreeMap<String, String> = [("P-1_R-1".to_string(), "1".to_string())].into();
-    let plan = plan_flash(
+    let plan = plan_flash_default(
         &split_segment_app()?,
         "1.1.99",
         MASK_0705,
@@ -4212,7 +4256,7 @@ async fn test_write_sys7_refuses_without_task_identity() -> Result<(), Box<dyn s
             address_size: Some(0x201),
             ..Default::default()
         };
-        let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+        let live = bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases).await?;
         let _ = l4.disconnect().await;
         live
     };
@@ -4231,7 +4275,7 @@ async fn test_write_sys7_refuses_without_task_identity() -> Result<(), Box<dyn s
     assert!(
         matches!(
             result,
-            Err(bussard_download::Sys7ApplyError::NoTaskIdentity)
+            Err(bussard_download::apply_sys7::Sys7ApplyError::NoTaskIdentity)
         ),
         "{result:?}"
     );
@@ -4266,7 +4310,7 @@ async fn test_write_sys7_task_segments_carry_the_product_identity()
     };
     let live = {
         let mut l4 = authed_connection(&mut bus, target).await?;
-        let live = bussard_download::read_sys7_tables_at(&mut l4, bases).await?;
+        let live = bussard_download::tables_sys7::read_sys7_tables(&mut l4, bases).await?;
         let _ = l4.disconnect().await;
         live
     };
@@ -4307,7 +4351,7 @@ async fn test_flash_sys7_skip_prelude_unloads_only_the_procedure_lsms()
 -> Result<(), Box<dyn std::error::Error>> {
     set_sys7_lsm_env(LsmMode::Property);
     let app = mdt_canonical_app()?;
-    let planned = plan_flash(
+    let planned = plan_flash_default(
         &app,
         "1.1.99",
         MASK_0705,

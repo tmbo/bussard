@@ -35,7 +35,7 @@
 //! The device's own `PID_TABLE_REFERENCE` (objects 1 and 2) wins: the Jung 0705
 //! devices answer it. A device that does not answer is read where its product's
 //! load procedure allocates LSM 1 and LSM 2 ([`crate::sys7_table_bases`], passed
-//! to [`read_sys7_tables_at`]), as ETS takes them from the product: most MDT /
+//! to [`read_sys7_tables`]), as ETS takes them from the product: most MDT /
 //! Theben / Zennio programs use `0x4000` / `0x4201`, but the Jung and Siemens
 //! 0705 programs put the association table at `0x41FF` and the MDT
 //! `M-0083_A-0041-14` (0701) at `0x4041`. Without a product (`reconstruct`, a
@@ -180,18 +180,13 @@ pub struct Sys7LiveTables {
 /// behind `A_Authorize`, `[system7-spec §6]`). The mask is re-read here and
 /// refused unless it is System 7, so this can never be pointed at a System B
 /// device by accident.
+///
+/// `bases` are the table bases the device's product allocates
+/// ([`crate::sys7_table_bases`]), the fallback when the device does not
+/// answer `PID_TABLE_REFERENCE`. A product that puts its association table
+/// at `0x41FF` otherwise reads back from `0x4201`, two octets into the table,
+/// and a write would land there too.
 pub async fn read_sys7_tables<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-) -> Result<Sys7LiveTables, Sys7TablesError> {
-    read_sys7_tables_at(l4, Sys7TableBases::default()).await
-}
-
-/// [`read_sys7_tables`] with the table bases the device's product allocates
-/// ([`crate::sys7_table_bases`]) as the fallback when the device does not
-/// answer `PID_TABLE_REFERENCE`, in place of the corpus defaults. A product
-/// that puts its association table at `0x41FF` otherwise reads back from
-/// `0x4201`, two octets into the table, and a write would land there too.
-pub async fn read_sys7_tables_at<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     bases: Sys7TableBases,
 ) -> Result<Sys7LiveTables, Sys7TablesError> {

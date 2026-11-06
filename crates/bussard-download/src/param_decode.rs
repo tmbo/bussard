@@ -72,7 +72,7 @@ pub struct DecodedParameters {
     /// empty for an application without a Dynamic-built image.
     pub unshown: Vec<String>,
     /// The shown parameters placed in octets the load procedure leaves as
-    /// the device holds them (issue #411, [`crate::KeptOctets`]): a download
+    /// the device holds them (issue #411, [`crate::flash::KeptOctets`]): a download
     /// does not write them, so what the device holds there carries no
     /// verdict against the model. `old` is the device's value (`Unknown`
     /// when unreadable), `new` the model's. Never in `differences`, sorted
@@ -84,28 +84,13 @@ pub struct DecodedParameters {
 /// code-segment id) against the model's `overrides` (keyed like
 /// [`bussard_prod::compute_parameter_image`] takes them) and module-instance
 /// `base_offsets`.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367): the
+/// model's values are evaluated once for the placements, the differences and
+/// the unshown overrides, and once more for each distinct set of values the
+/// device holds. A caller that planned the read-back with the same memo
+/// shares those evaluations too.
 pub fn decode_parameters(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-) -> DecodedParameters {
-    decode_parameters_with(
-        app,
-        overrides,
-        base_offsets,
-        current,
-        &DynamicMemo::new(app),
-    )
-}
-
-/// [`decode_parameters`], evaluating the Dynamic section through `memo`
-/// (issue #367): the model's values are evaluated once for the placements,
-/// the differences and the unshown overrides, and once more for each
-/// distinct set of values the device holds. A caller that planned the
-/// read-back with the same memo shares those evaluations too. The decoding
-/// is the same.
-pub fn decode_parameters_with(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
@@ -398,28 +383,9 @@ pub struct OctetRange {
 /// function-block selector. Module parameters are attributed through the
 /// configuration's own placements only. Consecutive octets with the same
 /// owners form one range.
+///
+/// The Dynamic section is evaluated through `memo` (issue #367).
 pub fn attribute_octets(
-    app: &ApplicationProgram,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    current: &CurrentMemory,
-    image: &CurrentMemory,
-    changed: &BTreeMap<String, Vec<(usize, u8)>>,
-) -> Vec<OctetRange> {
-    attribute_octets_with(
-        app,
-        overrides,
-        base_offsets,
-        current,
-        image,
-        changed,
-        &DynamicMemo::new(app),
-    )
-}
-
-/// [`attribute_octets`], evaluating the Dynamic section through `memo`
-/// (issue #367). The ranges are the same.
-pub fn attribute_octets_with(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
@@ -1249,7 +1215,13 @@ mod tests {
                 12, 9, 5, 0x10, 66, 8, 70, 5, 0x06, 0xD6, 30, 1, 0, 1, 0xAA, 0
             ]
         );
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         // Every value but the display-only concept, which has no memory.
         assert_eq!(
@@ -1313,8 +1285,15 @@ mod tests {
             let desired = segment[offset];
             segment[offset] = held;
             let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(offset, desired ^ held)])]);
-            let ranges =
-                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
+            let ranges = attribute_octets(
+                &app,
+                &model,
+                &BTreeMap::new(),
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app),
+            );
             assert_eq!(ranges.len(), 1, "octet {offset}: {ranges:?}");
             let got: Vec<(&str, OctetRole)> = ranges[0]
                 .owners
@@ -1341,6 +1320,7 @@ mod tests {
             &current,
             &hidden_image,
             &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         );
         let got: Vec<(&str, OctetRole)> = ranges
             .iter()
@@ -1350,7 +1330,15 @@ mod tests {
 
         // Consecutive octets with the same owners form one range.
         let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(14, 0xFF), (15, 0xFF)])]);
-        let ranges = attribute_octets(&app, &model, &BTreeMap::new(), &image, &image, &changed);
+        let ranges = attribute_octets(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &image,
+            &image,
+            &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert_eq!(ranges.len(), 1, "{ranges:?}");
         assert_eq!((ranges[0].offset, ranges[0].length), (14, 2));
         Ok(())
@@ -1408,8 +1396,15 @@ mod tests {
             segment[15] = 33;
             segment[2] ^= 0x01;
             let changed = BTreeMap::from([("A_RS-1".to_string(), vec![(2, 0x01), (15, 33)])]);
-            let ranges =
-                attribute_octets(&app, &model, &BTreeMap::new(), &current, &image, &changed);
+            let ranges = attribute_octets(
+                &app,
+                &model,
+                &BTreeMap::new(),
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app),
+            );
             assert_eq!(ranges.len(), 2, "{ranges:?}");
 
             let hidden = &ranges[0].owners;
@@ -1460,14 +1455,26 @@ mod tests {
         let model = map(&[("P-1_R-1", "0"), ("P-2_R-2", "5"), ("UP-3_R-3", "2")]);
         let current = device(&app, &model)?;
         assert_eq!(current["A_RS-1"][..3], [10, 0x20, 7]);
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["UP-3_R-3"]);
         assert_eq!(decoded.non_default[0].line(), "Mode: On (default Auto)");
 
         // A factory image of the same configuration holds only defaults.
         let defaults = device(&app, &BTreeMap::new())?;
-        let decoded = decode_parameters(&app, &BTreeMap::new(), &BTreeMap::new(), &defaults);
+        let decoded = decode_parameters(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &defaults,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.non_default.is_empty(), "{:?}", decoded.non_default);
         assert!(decoded.differences.is_empty());
         Ok(())
@@ -1482,7 +1489,13 @@ mod tests {
         // Concept 0 hides `hidden` (P-2_R-2): its value 5 is never written.
         let model = map(&[("P-1_R-1", "0"), ("P-2_R-2", "5"), ("UP-3_R-3", "2")]);
         let current = device(&app, &model)?;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.unshown, ["P-2_R-2"]);
 
@@ -1500,7 +1513,13 @@ mod tests {
             ("MD-1_M-1_MI-1_P-3_R-6", "8"),
         ]);
         let current = device(&app, &model)?;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.unshown.is_empty(), "{:?}", decoded.unshown);
         Ok(())
     }
@@ -1514,7 +1533,13 @@ mod tests {
         segment[8..10].copy_from_slice(&[0x07, 0x08]); // 18 °C
         segment[10..13].copy_from_slice(&[0, 2, 0]); // 120 s
         segment[7] = 9; // instance M-2's debounce
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         let lines: Vec<String> = decoded.differences.iter().map(ParamChange::line).collect();
         assert_eq!(
             lines,
@@ -1544,7 +1569,13 @@ mod tests {
         let segment = current.get_mut("A_RS-1").ok_or("no segment")?;
         assert_eq!(segment[13], 1);
         segment[13] = 0;
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["P-10_R-10"]);
         assert_eq!(keys(&decoded.device_managed), ["P-8_R-8"]);
@@ -1562,7 +1593,13 @@ mod tests {
         let model = map(&[("P-5_R-5", "999.7")]);
         let current = device(&app, &model)?;
         assert_eq!(current["A_RS-1"][8..10], [0x36, 0x1A]);
-        let decoded = decode_parameters(&app, &model, &BTreeMap::new(), &current);
+        let decoded = decode_parameters(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.non_default[0].value, "999.68");
         Ok(())
@@ -1613,22 +1650,40 @@ mod tests {
         let (shared_image, _) =
             bussard_prod::compute_parameter_image_placed_with(&app, &model, &bases, &memo)?;
         assert_eq!(memo.evaluations(), 1);
-        let shared = decode_parameters_with(&app, &model, &bases, &current, &memo);
-        let change =
-            crate::param_plan::group_object_change_with(&app, &shared.values, &model, &memo);
-        let octets = attribute_octets_with(&app, &model, &bases, &current, &image, &changed, &memo);
+        let shared = decode_parameters(&app, &model, &bases, &current, &memo);
+        let change = crate::param_plan::group_object_change(&app, &shared.values, &model, &memo);
+        let octets = attribute_octets(&app, &model, &bases, &current, &image, &changed, &memo);
 
-        let fresh = decode_parameters(&app, &model, &bases, &current);
+        let fresh = decode_parameters(
+            &app,
+            &model,
+            &bases,
+            &current,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(!fresh.differences.is_empty());
         assert_eq!(shared_image, image);
         assert_eq!(shared, fresh);
         assert_eq!(
             change,
-            crate::param_plan::group_object_change(&app, &fresh.values, &model)
+            crate::param_plan::group_object_change(
+                &app,
+                &fresh.values,
+                &model,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
         );
         assert_eq!(
             octets,
-            attribute_octets(&app, &model, &bases, &current, &image, &changed)
+            attribute_octets(
+                &app,
+                &model,
+                &bases,
+                &current,
+                &image,
+                &changed,
+                &bussard_prod::dynamic::DynamicMemo::new(&app)
+            )
         );
         // The model's values were evaluated once for all four steps; the
         // device's values add their own.
@@ -1644,7 +1699,15 @@ mod tests {
         let image = device(&app, &model)?;
         let changed: BTreeMap<String, Vec<(usize, u8)>> =
             image.keys().map(|s| (s.clone(), Vec::new())).collect();
-        let octets = attribute_octets(&app, &model, &BTreeMap::new(), &image, &image, &changed);
+        let octets = attribute_octets(
+            &app,
+            &model,
+            &BTreeMap::new(),
+            &image,
+            &image,
+            &changed,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert!(octets.is_empty());
         Ok(())
     }

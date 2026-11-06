@@ -497,7 +497,8 @@ impl FlashPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flash::plan::plan_flash;
+    use crate::flash::test_support::plan_flash_default;
+
     use crate::flash::test_support::fabricated_app;
     use crate::param_plan::ParamRegion;
 
@@ -520,7 +521,7 @@ mod tests {
         // parameter write lands in, the write, LoadCompleted, restart.
         let app = fabricated_app();
         let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
-        let full = plan_flash(
+        let full = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -577,7 +578,7 @@ mod tests {
         // Fill="255"` is allocated with `00 ff`, as ETS sends it; a `par`
         // record that would fill (Mode 1) is not taken over.
         let app = fabricated_app();
-        let mut full = plan_flash(
+        let mut full = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -612,7 +613,7 @@ mod tests {
     #[test]
     fn test_parameters_only_refuses_an_unread_segment() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let full = plan_flash(
+        let full = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -636,7 +637,7 @@ mod tests {
     fn test_restoring_writes_placed_octets_and_keeps_skipped_ones()
     -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let full = plan_flash(
+        let full = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -675,7 +676,7 @@ mod tests {
     fn test_changed_octets_zero_when_the_device_already_matches()
     -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let full = plan_flash(
+        let full = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,

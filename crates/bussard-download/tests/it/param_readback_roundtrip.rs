@@ -25,8 +25,7 @@ use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 
 use bussard_download::{
-    decode_parameters, group_object_change, plan_flash_with_object_flags,
-    planned_parameter_regions, regions_memory,
+    decode_parameters, group_object_change, plan_flash, planned_parameter_regions, regions_memory,
 };
 use bussard_prod::application::ParameterType;
 use bussard_prod::dynamic::evaluate_dynamic;
@@ -207,7 +206,7 @@ fn round_trip(
     // The table contents do not matter here; the plan only needs one per
     // table object a master template writes.
     let tables: BTreeMap<u32, Vec<u8>> = [(1, vec![0, 0]), (2, vec![0]), (3, vec![0])].into();
-    let plan = plan_flash_with_object_flags(
+    let plan = plan_flash(
         app,
         "1.1.250",
         mask,
@@ -216,17 +215,29 @@ fn round_trip(
         template.as_deref(),
         &tables,
         &BTreeMap::new(),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
     )?;
     let regions = planned_parameter_regions(&plan);
     if regions.is_empty() {
         return Err("the plan writes no readable parameter region".into());
     }
-    let decoded = decode_parameters(app, values, bases, &regions_memory(&regions));
+    let decoded = decode_parameters(
+        app,
+        values,
+        bases,
+        &regions_memory(&regions),
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     let listed: BTreeSet<String> = decoded.non_default.iter().map(|r| r.key.clone()).collect();
     // The parameter-only download's refusal compares the group-object table
     // of the decoded values with the model's: it must see no change here.
     let mut differences: Vec<String> = decoded.differences.iter().map(|c| c.line()).collect();
-    let objects = group_object_change(app, &decoded.values, values);
+    let objects = group_object_change(
+        app,
+        &decoded.values,
+        values,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
     if !objects.is_empty() {
         differences.push(format!("group-object table would change: {objects:?}"));
     }

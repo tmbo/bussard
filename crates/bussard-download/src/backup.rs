@@ -493,7 +493,7 @@ pub fn parameter_backups_dir(model_dir: &Path) -> PathBuf {
 
 /// Writes a [`ParameterBackup`] into `dir` as `<address>-<unix time>.json`,
 /// creating the directory if needed, and returns the file written.
-pub fn write_parameter_backup(
+pub(crate) fn write_parameter_backup(
     dir: &Path,
     backup: &ParameterBackup,
 ) -> Result<PathBuf, BackupError> {

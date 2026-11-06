@@ -235,65 +235,19 @@ pub fn same_program(a: &str, b: &str) -> bool {
 /// itself from the supplied bytes instead of the app's code segments; an index
 /// with no entry is left to the normal code/parameter resolution (obj4, the app
 /// segment). Empty for a single-object flash.
-pub fn plan_flash(
-    app: &ApplicationProgram,
-    device: &str,
-    device_mask: u16,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    template_ops: Option<&[LoadOp]>,
-    table_images: &BTreeMap<u32, Vec<u8>>,
-) -> std::result::Result<FlashPlan, PlanError> {
-    plan_flash_with_object_flags(
-        app,
-        device,
-        device_mask,
-        overrides,
-        base_offsets,
-        template_ops,
-        table_images,
-        &BTreeMap::new(),
-    )
-}
-
-/// [`plan_flash`] with the project's flags of the linked com-objects, keyed by
-/// object number.
 ///
-/// Only a System 7 plan reads them (the CONFIG octet of a linked descriptor).
-/// They take precedence over the flags decoded from the System B group-object
-/// table image, which cannot carry object 0: that table is 1-based, word 0 is
-/// its count (1.1.1, 2116REG: object 0 is linked with the project's T W R C,
-/// ETS wrote `5f`, the ref's own T W C gave `57`).
-#[allow(clippy::too_many_arguments)] // plan_flash's inputs plus one map.
-pub fn plan_flash_with_object_flags(
-    app: &ApplicationProgram,
-    device: &str,
-    device_mask: u16,
-    overrides: &BTreeMap<String, String>,
-    base_offsets: &BTreeMap<String, u32>,
-    template_ops: Option<&[LoadOp]>,
-    table_images: &BTreeMap<u32, Vec<u8>>,
-    object_flags: &BTreeMap<u16, bussard_model::Flags>,
-) -> std::result::Result<FlashPlan, PlanError> {
-    plan_flash_with_memo(
-        app,
-        device,
-        device_mask,
-        overrides,
-        base_offsets,
-        template_ops,
-        table_images,
-        object_flags,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
-    )
-}
-
-/// [`plan_flash_with_object_flags`], evaluating the Dynamic section through
-/// `memo` (issue #367), so a caller that evaluates the same overrides for
-/// other reasons (the group-object table image, a parameter decode) shares
-/// the evaluation. The plan is the same.
-#[allow(clippy::too_many_arguments)] // plan_flash_with_object_flags's inputs plus the memo.
-pub fn plan_flash_with_memo(
+/// `object_flags` are the project's flags of the linked com-objects, keyed by
+/// object number. Only a System 7 plan reads them (the CONFIG octet of a
+/// linked descriptor). They take precedence over the flags decoded from the
+/// System B group-object table image, which cannot carry object 0: that table
+/// is 1-based, word 0 is its count (1.1.1, 2116REG: object 0 is linked with
+/// the project's T W R C, ETS wrote `5f`, the ref's own T W C gave `57`).
+///
+/// The Dynamic section is evaluated through `memo` (issue #367), so a caller
+/// that evaluates the same overrides for other reasons (the group-object table
+/// image, a parameter decode) shares the evaluation.
+#[allow(clippy::too_many_arguments)] // the plan's inputs; a struct would only rename them
+pub fn plan_flash(
     app: &ApplicationProgram,
     device: &str,
     device_mask: u16,
@@ -1889,6 +1843,7 @@ pub(super) fn resolve_abs_image(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::flash::test_support::plan_flash_default;
     use crate::flash::test_support::{fabricated_app, no_overrides};
     use bussard_prod::application::parse_application_program;
 
@@ -1927,7 +1882,7 @@ mod tests {
     #[test]
     fn plan_lowers_supported_procedure() -> Result<(), Box<dyn std::error::Error>> {
         let app = fabricated_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2019,7 +1974,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-P", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2077,7 +2032,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-MR", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2149,7 +2104,7 @@ mod tests {
         let plan_for =
             |delay: &str| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
                 let app = parse_application_program("M-1_A-DL", app_xml(delay).as_bytes())?;
-                Ok(plan_flash(
+                Ok(plan_flash_default(
                     &app,
                     "1.1.4",
                     0x07B0,
@@ -2200,7 +2155,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-FILL", fill_xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2242,7 +2197,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-DATP", da_tp_xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2297,7 +2252,7 @@ mod tests {
          </ApplicationProgram></KNX>"#
             );
             let app = parse_application_program("M-1_A-MR", xml.as_bytes())?;
-            let mut plan = plan_flash(
+            let mut plan = plan_flash_default(
                 &app,
                 "1.1.4",
                 0x07B0,
@@ -2331,7 +2286,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-MR2", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2356,7 +2311,7 @@ mod tests {
         // (System 7 masks 0705/0701 are now supported — issue #49 — so they no
         // longer hit this gate; see `plan_lowers_system_7`.)
         let app = fabricated_app();
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x0300,
@@ -2376,7 +2331,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         // A security-activated device answers a plain descriptor read with FFFF.
         let app = fabricated_app();
-        match plan_flash(
+        match plan_flash_default(
             &app,
             "1.1.2",
             0xFFFF,
@@ -2398,7 +2353,7 @@ mod tests {
         // App declares MV-07B0 but the device is a different System B medium
         // (0x57B0 IP): the exact-mask compare refuses it.
         let app = fabricated_app();
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x57B0,
@@ -2430,7 +2385,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-2", xml.as_bytes())?;
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2475,7 +2430,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-3", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2549,7 +2504,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-83_A-7", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2613,9 +2568,15 @@ mod tests {
         let app = parse_application_program("M-2_A-2", xml.as_bytes())?;
         let template = bussard_prod::MasterTemplate::builtin_for_mask("07B0")
             .ok_or("a built-in 07B0 template")?;
-        let tables = crate::build_table_images(None, "1.1.1".parse()?, &app, &no_overrides());
+        let tables = crate::build_table_images(
+            None,
+            "1.1.1".parse()?,
+            &app,
+            &no_overrides(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         assert_eq!(tables.get(&3), Some(&vec![0, 0]));
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.1",
             0x07B0,
@@ -2685,7 +2646,7 @@ mod tests {
     /// MCB check and the plan image use the same length.
     #[test]
     fn test_plan_flash_write_rel_mem_honours_size() -> Result<(), Box<dyn std::error::Error>> {
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &write_size_app(2)?,
             "1.1.4",
             0x07B0,
@@ -2725,7 +2686,7 @@ mod tests {
     #[test]
     fn test_plan_flash_write_rel_mem_refuses_a_parameter_past_size()
     -> Result<(), Box<dyn std::error::Error>> {
-        let err = plan_flash(
+        let err = plan_flash_default(
             &write_size_app(10)?,
             "1.1.4",
             0x07B0,
@@ -2782,7 +2743,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-2_A-806", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2840,7 +2801,7 @@ mod tests {
         // deduped — the fabricated app allocates a 6-byte code segment and a
         // 1-byte parameter segment.
         let app = fabricated_app();
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2884,7 +2845,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-4", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -2977,7 +2938,7 @@ mod tests {
         if let Some(v) = variant {
             overrides.insert("P-579_R-1032".to_string(), v.to_string());
         }
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3085,7 +3046,7 @@ mod tests {
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-6", xml.as_bytes())?;
         let plan_for = |keep: &str| {
-            plan_flash(
+            plan_flash_default(
                 &app,
                 "1.1.4",
                 0x07B0,
@@ -3134,7 +3095,7 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-999_R-1".to_string(), "1".to_string());
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3161,7 +3122,7 @@ mod tests {
         let app = fabricated_app();
         let mut ov = BTreeMap::new();
         ov.insert("P-0_R-1".to_string(), "99".to_string());
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3219,7 +3180,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-7", xml.as_bytes())?;
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3264,7 +3225,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-7b", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3301,7 +3262,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-8", xml.as_bytes())?;
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3337,7 +3298,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-A", xml.as_bytes())?;
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3384,7 +3345,7 @@ mod tests {
         // A WriteProp carrying InlineData lowers to an executable WriteProp step
         // with the decoded value — a real write in the plan, not a skipped no-op.
         let app = app_with_write_prop("0102", "0", "204");
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3442,7 +3403,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-B", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3480,7 +3441,7 @@ mod tests {
         // the property-write primitive addresses is refused at pre-flight rather
         // than dropped at execute time.
         let app = app_with_write_prop("01", "9999", "204");
-        let err = plan_flash(
+        let err = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3524,7 +3485,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-1_A-DA", xml.as_bytes())?;
-        let plan = plan_flash(
+        let plan = plan_flash_default(
             &app,
             "1.1.4",
             0x07B0,
@@ -3615,8 +3576,9 @@ mod tests {
             bussard_model::IndividualAddress::from_raw(0x1101),
             app,
             &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(app),
         );
-        plan_flash(
+        plan_flash_default(
             app,
             "1.1.1",
             0x07B0,
@@ -3713,7 +3675,7 @@ mod tests {
     fn test_plan_flash_product_procedure_without_table_images_refuses()
     -> Result<(), Box<dyn std::error::Error>> {
         let app = map_error_app()?;
-        match plan_flash(
+        match plan_flash_default(
             &app,
             "1.1.1",
             0x07B0,

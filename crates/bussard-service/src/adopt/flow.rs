@@ -531,9 +531,12 @@ pub async fn read_secured(
         .with_l4(target, &options, async |l4| {
             // The APDU budget sizes the PID 61 chunks as ETS does.
             let _ = l4.negotiate_max_apdu().await;
-            let tables = match bussard_download::read_live_tables(l4)
-                .await
-                .map_err(read_err)?
+            let tables = match bussard_download::read_live_tables(
+                l4,
+                bussard_download::Sys7TableBases::default(),
+            )
+            .await
+            .map_err(read_err)?
             {
                 bussard_download::LiveRead::Tables(live) => Some(live),
                 bussard_download::LiveRead::UnsupportedMask { mask, .. } => {

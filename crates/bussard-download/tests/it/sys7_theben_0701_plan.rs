@@ -18,7 +18,8 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use bussard_download::{FlashStep, plan_flash_sys7_with_hawk, select_application};
+use bussard_download::flash::plan_flash_sys7_with_hawk;
+use bussard_download::{FlashStep, select_application};
 
 const THEBEN_APP: &str = "M-0048_A-4947-10-4918";
 const MASK_0701: u16 = 0x0701;

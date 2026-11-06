@@ -561,7 +561,7 @@ pub fn state_hash(live: &LiveTables, params: Option<&ParamRegions>) -> String {
 
 /// [`state_hash`] that also covers the System B group-object table as read
 /// (issue #540): `object_table` is the octets read
-/// ([`crate::LiveObjectTable::image`]). `None` hashes as [`state_hash`].
+/// ([`crate::object_table::LiveObjectTable::image`]). `None` hashes as [`state_hash`].
 pub fn state_hash_with(
     live: &LiveTables,
     params: Option<&ParamRegions>,

@@ -204,52 +204,25 @@ pub async fn discover_table_objects<Ch: L4Channel>(
 /// tables back and compares them byte-for-byte to `desired`. Returns the
 /// [`VerifyOutcome`]; the caller treats `!ok()` as a hard failure.
 ///
+/// With [`SystemBLoad::security`] (a KNX Data Secure device, issue #156), the
+/// security object is reprogrammed for the new address table (group key table
+/// indices follow it) after both table images are written and before either
+/// table is completed, so the device never activates tables whose keys point
+/// at the wrong entries. See
+/// [`program_security_object`](crate::security::program_security_object).
+///
+/// When `load` carries the group-object table image (issue #540), that table
+/// goes first, in its own `StartLoading` / `LoadCompleted` bracket
+/// ([`crate::object_table::write_object_table`], the standard's partial
+/// download of the table, 03_05_03 §3.5.3), and is read back before the link
+/// tables are opened. A newly linked object thus has its Communication flag
+/// before its association becomes active. With [`SystemBLoad::keep_tables`]
+/// the link tables are not written, only read back.
+///
 /// This is the only function that mutates the device. It is exercised by the
 /// mock-device tests and, in production, only from `bussard apply` after a plan
 /// has been shown, confirmed, and backed up.
 pub async fn apply_tables<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    objects: TableObjectIndexes,
-    desired: &DesiredTables,
-) -> Result<VerifyOutcome, WriteError> {
-    apply_tables_secured(l4, objects, desired, None).await
-}
-
-/// [`apply_tables`] for a KNX Data Secure device (issue #156): with
-/// `security`, the security object is reprogrammed for the new address table
-/// (group key table indices follow it) after both table images are written and
-/// before either table is completed, so the device never activates tables whose
-/// keys point at the wrong entries. See
-/// [`program_security_object`](crate::security::program_security_object).
-pub async fn apply_tables_secured<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    objects: TableObjectIndexes,
-    desired: &DesiredTables,
-    security: Option<&crate::security::SecurityInputs>,
-) -> Result<VerifyOutcome, WriteError> {
-    apply_tables_with(
-        l4,
-        objects,
-        desired,
-        SystemBLoad {
-            security,
-            ..SystemBLoad::default()
-        },
-    )
-    .await
-}
-
-/// [`apply_tables_secured`] that also reloads the group-object table when
-/// `load` carries its image (issue #540).
-///
-/// The group-object table goes first, in its own `StartLoading` /
-/// `LoadCompleted` bracket ([`crate::object_table::write_object_table`],
-/// the standard's partial download of the table, 03_05_03 §3.5.3), and is
-/// read back before the link tables are opened. A newly linked object thus
-/// has its Communication flag before its association becomes active. With
-/// [`SystemBLoad::keep_tables`] the link tables are not written, only read
-/// back.
-pub async fn apply_tables_with<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     objects: TableObjectIndexes,
     desired: &DesiredTables,
@@ -376,7 +349,7 @@ async fn write_link_tables<Ch: L4Channel>(
 /// (the CLI already negotiates right after authorize) costs no telegram. A device
 /// without the property keeps the conservative chunk sizes; only a dead
 /// connection is an error.
-pub async fn negotiate_session_apdu<Ch: L4Channel>(
+pub(crate) async fn negotiate_session_apdu<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<Option<u16>, WriteError> {
     l4.negotiate_max_apdu().await.map_err(WriteError::Mgmt)
@@ -422,7 +395,7 @@ async fn write_table_image<Ch: L4Channel>(
 
 /// Reads both table objects' current load states — used by callers that want to
 /// confirm a device is healthy before/after a write.
-pub async fn read_states<Ch: L4Channel>(
+pub(crate) async fn read_states<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     objects: TableObjectIndexes,
 ) -> Result<(LoadState, LoadState), WriteError> {

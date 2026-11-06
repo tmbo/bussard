@@ -18,7 +18,7 @@ use std::path::Path;
 use bussard_download::{
     CurrentMemory, DeviceFacts, FlashOutcome, FlashPlan, Freshness, ParamPlan, PlanError,
     ResidentState, SecureSenderEntry, Sys7Identity, probe_resident_state,
-    read_current_parameter_memory_with_objects,
+    read_current_parameter_memory,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{MaskProfile, MgmtError};
@@ -231,7 +231,15 @@ pub async fn probe<P>(
                     // The factory-freshness probe (issue #79), once the mask
                     // is known.
                     let resident = match &r {
-                        Ok(mask) => Some(probe_resident_state(dev.l4_mut(), *mask, None).await),
+                        Ok(mask) => Some(
+                            probe_resident_state(
+                                dev.l4_mut(),
+                                *mask,
+                                None,
+                                bussard_download::ProbeScope::Decisive,
+                            )
+                            .await,
+                        ),
                         Err(_) => None,
                     };
                     if let Some(state) = &resident {
@@ -255,7 +263,7 @@ pub async fn probe<P>(
                                 && !plan.is_sys7() =>
                         {
                             Some(
-                                read_current_parameter_memory_with_objects(
+                                read_current_parameter_memory(
                                     dev.l4_mut(),
                                     plan,
                                     &facts.object_table,

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use bussard_download::{
     FlashStep, PlanError, PropObject, Session, build_table_images, changed_properties, flash,
-    plan_flash, planned_parameter_regions, read_parameter_properties, read_parameter_regions,
+    planned_parameter_regions, read_parameter_properties, read_parameter_regions,
     read_property_value, template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
@@ -23,6 +23,8 @@ use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
 use crate::builtin_template::zip_synthetic;
+
+use crate::support::plan_flash_default;
 
 /// The application-relative id of the property-placed parameter's ref.
 const TERRITORY_REF: &str = "P-3_R-3";
@@ -43,8 +45,14 @@ fn plan_of(
     overrides: &BTreeMap<String, String>,
 ) -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
     let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
-    let tables = build_table_images(None, "1.1.1".parse()?, app, overrides);
-    Ok(plan_flash(
+    let tables = build_table_images(
+        None,
+        "1.1.1".parse()?,
+        app,
+        overrides,
+        &bussard_prod::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
         app,
         "1.1.1",
         0x07B0,
@@ -299,7 +307,7 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
     // The parameter read: memory as the model, the property not.
-    let regions = read_parameter_regions(session.l4(), &plan).await;
+    let regions = read_parameter_regions(session.l4(), &plan, &[]).await;
     let properties = read_parameter_properties(session.l4(), &plan, app).await;
     let partial = plan.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 0);

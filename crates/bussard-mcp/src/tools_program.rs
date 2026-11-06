@@ -94,7 +94,7 @@ use bussard_bus::BusHandle;
 use bussard_download::{
     DesiredTables, LiveRead, LiveTables, PlanReport, SecureSenderEntry, SecurityInputs,
     Sys7TableImages, desired_tables_for_app, plan, render_full_image_plan_text, render_plan_text,
-    sys7_table_images, write_pre_write_backup, write_tables_seeded,
+    sys7_table_images, write_pre_write_backup, write_tables,
 };
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MaskProfile, Timeouts, system_type};
 use bussard_model::history::{History, SnapshotReason};
@@ -2277,7 +2277,7 @@ impl BussardMcp {
                         break 'write;
                     }
                 };
-                let outcome = write_tables_seeded(
+                let outcome = write_tables(
                     LeaseChannel::new(lease),
                     target,
                     source,
@@ -3273,7 +3273,7 @@ async fn read_on<Ch: bussard_mgmt::L4Channel>(
         .and_then(|p| p.app())
         .map(bussard_download::sys7_table_bases)
         .unwrap_or_default();
-    let read = bussard_download::read_live_tables_at(l4, bases)
+    let read = bussard_download::read_live_tables(l4, bases)
         .await
         .map_err(|e| chain(&e))?;
     let params = match (&read, product) {

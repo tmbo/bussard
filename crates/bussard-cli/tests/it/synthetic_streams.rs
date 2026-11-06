@@ -1015,8 +1015,13 @@ fn reshaping_change(
             // The test `knx_plan_device` itself applies (issues #303, #411):
             // a com-object appears or disappears, or a System 7 allocation
             // changes. A changed descriptor alone is an apply.
-            let flashes = !bussard_download::group_object_change(app, &base.values, &values)
-                .is_empty()
+            let flashes = !bussard_download::group_object_change(
+                app,
+                &base.values,
+                &values,
+                &bussard_prod::dynamic::DynamicMemo::new(app),
+            )
+            .is_empty()
                 || bussard_download::allocation_change(app, &base.values, &values, &memo).is_some();
             if !flashes {
                 continue;

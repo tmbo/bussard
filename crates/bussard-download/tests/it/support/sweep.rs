@@ -335,14 +335,14 @@ pub fn classify_application(app: &ApplicationProgram) -> AppSweep {
                 // itself needs them to plan).
                 // One Dynamic evaluation serves both (issue #367).
                 let memo = bussard_prod::dynamic::DynamicMemo::new(app);
-                let tables = bussard_download::build_table_images_with(
+                let tables = bussard_download::build_table_images(
                     None,
                     bussard_model::IndividualAddress::from_raw(0x1101),
                     app,
                     &BTreeMap::new(),
                     &memo,
                 );
-                bussard_download::plan_flash_with_memo(
+                bussard_download::plan_flash(
                     app,
                     "1.1.1",
                     device_mask,

@@ -272,7 +272,13 @@ impl<'a> Expected<'a> {
     ) -> Expected<'a> {
         let loads = |lsm: u32| crate::flash_flow::loads_lsm(flash, lsm);
         let (overrides, _) = parameter_overrides(model, target);
-        let images = build_table_images(model, target, app, &overrides);
+        let images = build_table_images(
+            model,
+            target,
+            app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
+        );
         let links: &[bussard_model::schema::Link] = model
             .and_then(|m| m.links.links.get(&target))
             .map(Vec::as_slice)
@@ -553,7 +559,7 @@ pub async fn read_back<Ch: L4Channel>(
 ) -> WriteReadback {
     let mut out = WriteReadback::default();
     if expected.tables.is_some() || expected.group_objects.is_some() {
-        match bussard_download::read_live_tables_at(l4, expected.table_bases).await {
+        match bussard_download::read_live_tables(l4, expected.table_bases).await {
             Ok(LiveRead::Tables(live)) => {
                 compare_tables(&mut out, live.tables(), expected);
                 if let (Some(s7), Some(desired)) = (live.sys7(), &expected.tables) {
@@ -1149,7 +1155,13 @@ mod tests {
             .ok_or("a built-in 07B0 template")?
             .ops;
         let overrides = std::collections::BTreeMap::new();
-        let tables = bussard_download::build_table_images(None, "1.1.1".parse()?, &app, &overrides);
+        let tables = bussard_download::build_table_images(
+            None,
+            "1.1.1".parse()?,
+            &app,
+            &overrides,
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        );
         Ok(bussard_download::plan_flash(
             &app,
             "1.1.1",
@@ -1158,6 +1170,8 @@ mod tests {
             &std::collections::BTreeMap::new(),
             Some(&template),
             &tables,
+            &std::collections::BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
         )?)
     }
 

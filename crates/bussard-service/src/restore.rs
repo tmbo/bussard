@@ -273,6 +273,7 @@ pub fn build_restore_plan(
             &current,
             &model_images(&partial, changed),
             changed,
+            &bussard_prod::dynamic::DynamicMemo::new(app),
         )
     };
     let written = attribute(&partial.changed_bits());
