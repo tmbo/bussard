@@ -297,7 +297,8 @@ impl OctetRole {
     }
 }
 
-/// A parameter whose encoding covers bits of a written octet range.
+/// A parameter whose encoding covers bits of a written octet range,
+/// serialized as a report row (`key`, `name`, `role`, `device`, `model`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct OctetOwner {
     /// The device-file key of the ref (app-relative `ParameterRef` id, with
@@ -317,13 +318,14 @@ pub struct OctetOwner {
     pub model: Option<String>,
     /// Whether the parameter's type is an enumeration (an internal one is a
     /// selector ETS writes).
+    #[serde(skip)]
     pub enumerated: bool,
     /// `Some(fill)` when a download of the model's image does not place this
     /// parameter (the Dynamic does not reach it under the current
     /// configuration and the application does not download hidden
     /// parameters): the image keeps the segment's fill octet there, and ETS
     /// does not write the octet. `None` when the download writes the field.
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip)]
     pub segment_fill: Option<u8>,
 }
 

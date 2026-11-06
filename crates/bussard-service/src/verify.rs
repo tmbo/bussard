@@ -816,18 +816,12 @@ fn compare_parameters(out: &mut WriteReadback, flashed: &FlashedParameters) {
         return;
     }
     for d in &flashed.differences {
-        let unit = d.unit.as_deref().filter(|u| !u.is_empty());
-        let with_unit = |v: &str| match unit {
-            Some(u) => format!("{v} {u}"),
-            None => v.to_string(),
-        };
         out.push(
             LeftoverKind::Parameter,
             format!("parameter {} ({})", d.key, d.name),
-            d.device
-                .as_deref()
-                .map_or_else(|| "an unreadable value".to_string(), with_unit),
-            with_unit(&d.model),
+            d.old_with_unit()
+                .unwrap_or_else(|| "an unreadable value".to_string()),
+            d.new_with_unit(),
         );
     }
     if !flashed.kept.is_empty() {
