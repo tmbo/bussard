@@ -9,10 +9,14 @@ Pick one. Each installer puts `bussard` on your `PATH` and checks the download a
 === "Homebrew (macOS, Linux)"
 
     ```console
+    $ brew tap tmbo/tap
+    $ brew trust tmbo/tap
     $ brew install tmbo/tap/bussard
     ```
 
-    `brew upgrade bussard` updates it later.
+    Homebrew 7 loads a formula from a third-party tap only after `brew trust`;
+    older versions accept the install without it. `brew upgrade bussard`
+    updates it later.
 
 === "Shell script (macOS, Linux)"
 

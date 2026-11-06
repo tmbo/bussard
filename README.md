@@ -95,7 +95,7 @@ $ claude mcp add knx -- bussard mcp --dir "$PWD"    # let Claude debug your bus
 
 ## Install
 
-On macOS or Linux, `brew install tmbo/tap/bussard`, or the install script, which picks the binary for your machine and checks its SHA-256:
+On macOS or Linux, `brew tap tmbo/tap && brew trust tmbo/tap && brew install tmbo/tap/bussard` (Homebrew 7 asks for the trust step once), or the install script, which picks the binary for your machine and checks its SHA-256:
 
 ```console
 $ curl -fsSL https://raw.githubusercontent.com/tmbo/bussard/main/install.sh | sh
