@@ -14,6 +14,8 @@ bussard-transport = { workspace = true }
 bussard-bus = { workspace = true }
 # KNX Data Secure group telegrams (`secure`): CCM verify/decrypt with group keys.
 bussard-secure = { workspace = true }
+# The key store the group keys of `GroupKeyring` are read from (issue #908).
+bussard-project = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 owo-colors = { workspace = true }

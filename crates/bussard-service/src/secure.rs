@@ -34,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bussard_model::{GroupAddress, IndividualAddress};
+pub use bussard_project::KeyStore;
 use bussard_secure::{DataSecureSession, Key16, SecurityAlgorithm, SequenceHighWater};
 
 /// The environment variable carrying the `.knxkeys` password (spec §2.2).
@@ -50,6 +51,146 @@ pub const KEYRING_PASSWORD_ENV: &str = "BUSSARD_KEYRING_PASSWORD";
 /// It exists for the cross-implementation conformance loop, which exercises both
 /// modes against the simulator (spec §12.2); a real flash never sets it.
 pub const SECURE_ALGORITHM_ENV: &str = "BUSSARD_SECURE_ALGORITHM";
+
+/// Environment variable that names the `.knxkeys` keyring when `--keyring` is
+/// not given; it beats the key store and `connection.keyring` in
+/// `bussard.toml` ([`keyring_file`]).
+pub const KEYRING_ENV: &str = "BUSSARD_KEYRING";
+
+/// Where the keyring of an invocation comes from ([`keyring_file`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyringSource {
+    /// `--keyring` (the CLI's global flag, the MCP server's `--keyring`).
+    Flag,
+    /// [`KEYRING_ENV`].
+    Env,
+    /// The key store `bussard.keys` in the model directory (issue #241).
+    Store,
+    /// `connection.keyring` in `bussard.toml` (issue #189). Deprecated: kept
+    /// for models without a key store.
+    Config,
+}
+
+impl KeyringSource {
+    /// Where the keyring came from, for messages.
+    pub fn describe(self) -> &'static str {
+        match self {
+            KeyringSource::Flag => "--keyring",
+            KeyringSource::Env => KEYRING_ENV,
+            KeyringSource::Store => "the key store bussard.keys",
+            KeyringSource::Config => "connection.keyring in bussard.toml",
+        }
+    }
+}
+
+/// A keyring file and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyringFile {
+    /// The `.knxkeys` file or key store.
+    pub path: PathBuf,
+    /// Where it came from.
+    pub source: KeyringSource,
+}
+
+/// The keyring of the model in `dir`: `flag` (`--keyring`), else `env`
+/// ([`KEYRING_ENV`], an explicit file), else the key store `dir/bussard.keys`
+/// when it exists (issue #241), else the deprecated `connection.keyring` in
+/// `dir/bussard.toml` (relative to `dir`). A `bussard.toml` that does not
+/// parse is left for the command's own model load to report.
+pub fn keyring_file(dir: &Path, flag: Option<&Path>, env: Option<&Path>) -> Option<KeyringFile> {
+    let file = |path: &Path, source| {
+        Some(KeyringFile {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
+    if let Some(path) = flag {
+        return file(path, KeyringSource::Flag);
+    }
+    if let Some(path) = env {
+        return file(path, KeyringSource::Env);
+    }
+    let config = bussard_model::load_config(dir)
+        .ok()
+        .and_then(|config| config.connection.keyring_path(dir));
+    let store = bussard_project::KeyStore::path(dir);
+    if store.is_file() {
+        if let Some(config) = &config {
+            tracing::warn!(
+                "the key store {} is used; connection.keyring ({}) in bussard.toml is ignored \
+                 and deprecated: remove it",
+                store.display(),
+                config.display()
+            );
+        }
+        return file(&store, KeyringSource::Store);
+    }
+    config.and_then(|path| file(&path, KeyringSource::Config))
+}
+
+/// The explicit key flags of a surface besides the keyring file.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct KeyOverrides<'a> {
+    /// `--tool-key`: a raw 16-byte key as 32 hexadecimal characters, for tests
+    /// and benches. Exclusive with a keyring.
+    pub tool_key: Option<&'a str>,
+    /// `--secure-user`: an explicit KNXnet/IP Secure tunnelling user id.
+    pub secure_user: Option<u8>,
+    /// `--secure-password-env`: the environment variable with that user's
+    /// password.
+    pub secure_password_env: Option<&'a str>,
+}
+
+/// The key material of one invocation, resolved once ([`resolve_keys`]).
+#[derive(Debug)]
+pub struct ResolvedKeys {
+    /// The loaded key sources: the keyring (or key store) and a raw tool
+    /// key; asked per target for tool keys, group keys and FDSKs.
+    pub keys: ToolKeys,
+    /// The KNXnet/IP Secure tunnelling credentials, `None` for a plain
+    /// tunnel. The transport picks the user for the gateway it reaches.
+    pub tunnel: Option<bussard_transport::SecureTunnelConfig>,
+    /// The management user (user id 1) of the device, for a device
+    /// management connection to a KNXnet/IP Secure interface (issue #523);
+    /// `None` without a device or without its `ManagementPassword`.
+    pub management: Option<bussard_transport::SecureUser>,
+}
+
+/// Resolves the key material of an invocation: loads the keyring or key
+/// store at `store` (password from [`KEYRING_PASSWORD_ENV`], decrypted once
+/// per process for the same bytes) or the raw `--tool-key`, builds the
+/// KNXnet/IP Secure tunnel credentials, and picks the management user of
+/// `device`. `store` is the file [`keyring_file`] chose.
+///
+/// Tunnel credentials: explicit flags win and always open a secure session;
+/// the device authentication code then comes from a keyring interface with
+/// the same user id. A keyring alone offers every tunnelling user it lists
+/// (`Interface Type="Tunneling"` with a password) and the transport picks the
+/// one for the gateway it reaches (issue #288).
+///
+/// # Errors
+///
+/// A keyring together with a raw tool key, a keyring without its password,
+/// an unreadable or undecryptable keyring, a malformed raw key, half of the
+/// explicit tunnel flags, or an unset tunnel password variable. No error
+/// carries key bytes.
+pub fn resolve_keys(
+    store: Option<&Path>,
+    device: Option<IndividualAddress>,
+    overrides: KeyOverrides<'_>,
+) -> Result<ResolvedKeys, SecureKeyError> {
+    let keys = ToolKeys::load(ToolKeySource {
+        keyring: store,
+        tool_key: overrides.tool_key,
+    })?;
+    let tunnel = keys.tunnel(overrides.secure_user, overrides.secure_password_env)?;
+    let management = device.and_then(|device| keys.management_user(device));
+    Ok(ResolvedKeys {
+        keys,
+        tunnel,
+        management,
+    })
+}
 
 /// The two sources of a tool key, as a surface passes them.
 ///
@@ -158,14 +299,7 @@ pub struct TunnelCredentialSource<'a> {
 }
 
 /// Builds the KNXnet/IP Secure tunnelling configuration, or `None` for the
-/// plain tunnel.
-///
-/// Explicit flags win and always open a secure session; the device
-/// authentication code then comes from a keyring interface with the same user
-/// id, if a keyring is also given. A keyring alone offers every tunnelling
-/// user it lists (`Interface Type="Tunneling"` with a password) and the
-/// transport picks the one for the gateway it reaches. Passwords stay
-/// passwords here: the transport derives only the user it presents.
+/// plain tunnel: [`resolve_keys`] for the tunnel alone.
 ///
 /// # Errors
 ///
@@ -174,64 +308,12 @@ pub struct TunnelCredentialSource<'a> {
 pub fn tunnel_config(
     source: TunnelCredentialSource<'_>,
 ) -> Result<Option<bussard_transport::SecureTunnelConfig>, SecureKeyError> {
-    use bussard_transport::{SecureSource, SecureTunnelConfig, SecureUser};
-    let keyring = match source.keyring {
-        Some(path) => Some(load_keyring(path)?),
-        None => None,
+    let overrides = KeyOverrides {
+        tool_key: None,
+        secure_user: source.user,
+        secure_password_env: source.password_env,
     };
-    let secure_users = |k: &Arc<bussard_project::KeyStore>| -> Vec<SecureUser> {
-        k.interfaces
-            .iter()
-            .filter(|i| i.is_secure_tunnel())
-            .filter_map(|i| {
-                let password = i.password.clone()?;
-                let host_code = i
-                    .host
-                    .and_then(|host| k.devices.get(&host))
-                    .and_then(|d| d.authentication.clone());
-                Some(SecureUser {
-                    user_id: i.user_id,
-                    password,
-                    device_authentication_code: i.authentication.clone().or(host_code),
-                    tunnel_ia: Some(i.ia.raw()),
-                    host_ia: i.host.map(IndividualAddress::raw),
-                })
-            })
-            .collect()
-    };
-    match (source.user, source.password_env) {
-        (Some(user_id), Some(var)) => {
-            let password = bussard_model::dotenv::var(var)
-                .map(bussard_secure::Password::new)
-                .map_err(|_| SecureKeyError::MissingTunnelPassword(var.to_string()))?;
-            let from_keyring = keyring
-                .as_ref()
-                .map(secure_users)
-                .unwrap_or_default()
-                .into_iter()
-                .find(|u| u.user_id == user_id);
-            Ok(Some(SecureTunnelConfig::new(
-                vec![SecureUser {
-                    user_id,
-                    password,
-                    device_authentication_code: from_keyring
-                        .as_ref()
-                        .and_then(|u| u.device_authentication_code.clone()),
-                    tunnel_ia: from_keyring.as_ref().and_then(|u| u.tunnel_ia),
-                    host_ia: from_keyring.as_ref().and_then(|u| u.host_ia),
-                }],
-                SecureSource::Explicit,
-            )))
-        }
-        (None, None) => {
-            let users = keyring.as_ref().map(secure_users).unwrap_or_default();
-            Ok(
-                (!users.is_empty())
-                    .then_some(SecureTunnelConfig::new(users, SecureSource::Keyring)),
-            )
-        }
-        _ => Err(SecureKeyError::SecureFlagsIncomplete),
-    }
+    Ok(resolve_keys(source.keyring, None, overrides)?.tunnel)
 }
 
 /// The management user (user id 1) of the KNXnet/IP Secure interface
@@ -247,16 +329,7 @@ pub fn management_user(
     keyring: &Path,
     device: IndividualAddress,
 ) -> Result<Option<bussard_transport::SecureUser>, SecureKeyError> {
-    let keyring = load_keyring(keyring)?;
-    Ok(keyring.devices.get(&device).and_then(|d| {
-        Some(bussard_transport::SecureUser {
-            user_id: bussard_transport::devmgmt::MANAGEMENT_USER,
-            password: d.management_password.clone()?,
-            device_authentication_code: d.authentication.clone(),
-            tunnel_ia: None,
-            host_ia: Some(device.raw()),
-        })
-    }))
+    Ok(resolve_keys(Some(keyring), Some(device), KeyOverrides::default())?.management)
 }
 
 /// `config` with the management user of `device` from `keyring` as its
@@ -526,6 +599,92 @@ impl ToolKeys {
         })
     }
 
+    /// The decrypted keyring or key store, `None` without one.
+    pub fn store(&self) -> Option<&Arc<bussard_project::KeyStore>> {
+        self.keyring.as_ref().map(|(_, store)| store)
+    }
+
+    /// The KNXnet/IP Secure tunnelling users the keyring lists (`Interface
+    /// Type="Tunneling"` with a password), with the device authentication
+    /// code of the interface or of its host device.
+    fn tunnel_users(&self) -> Vec<bussard_transport::SecureUser> {
+        let Some(store) = self.store() else {
+            return Vec::new();
+        };
+        store
+            .interfaces
+            .iter()
+            .filter(|i| i.is_secure_tunnel())
+            .filter_map(|i| {
+                let host_code = i
+                    .host
+                    .and_then(|host| store.devices.get(&host))
+                    .and_then(|d| d.authentication.clone());
+                Some(bussard_transport::SecureUser {
+                    user_id: i.user_id,
+                    password: i.password.clone()?,
+                    device_authentication_code: i.authentication.clone().or(host_code),
+                    tunnel_ia: Some(i.ia.raw()),
+                    host_ia: i.host.map(IndividualAddress::raw),
+                })
+            })
+            .collect()
+    }
+
+    /// The tunnelling configuration ([`resolve_keys`]): the explicit
+    /// `user`/`password_env` pair, completed from the keyring user with that
+    /// id, else every keyring tunnelling user, else `None`.
+    fn tunnel(
+        &self,
+        user: Option<u8>,
+        password_env: Option<&str>,
+    ) -> Result<Option<bussard_transport::SecureTunnelConfig>, SecureKeyError> {
+        use bussard_transport::{SecureSource, SecureTunnelConfig, SecureUser};
+        match (user, password_env) {
+            (Some(user_id), Some(var)) => {
+                let password = bussard_model::dotenv::var(var)
+                    .map(bussard_secure::Password::new)
+                    .map_err(|_| SecureKeyError::MissingTunnelPassword(var.to_string()))?;
+                let from_keyring = self
+                    .tunnel_users()
+                    .into_iter()
+                    .find(|u| u.user_id == user_id);
+                Ok(Some(SecureTunnelConfig::new(
+                    vec![SecureUser {
+                        user_id,
+                        password,
+                        device_authentication_code: from_keyring
+                            .as_ref()
+                            .and_then(|u| u.device_authentication_code.clone()),
+                        tunnel_ia: from_keyring.as_ref().and_then(|u| u.tunnel_ia),
+                        host_ia: from_keyring.as_ref().and_then(|u| u.host_ia),
+                    }],
+                    SecureSource::Explicit,
+                )))
+            }
+            (None, None) => {
+                let users = self.tunnel_users();
+                Ok((!users.is_empty())
+                    .then(|| SecureTunnelConfig::new(users, SecureSource::Keyring)))
+            }
+            _ => Err(SecureKeyError::SecureFlagsIncomplete),
+        }
+    }
+
+    /// The management user (user id 1) of the KNXnet/IP Secure interface
+    /// `device`, from its `ManagementPassword` (KNX IP Secure 3/8/9
+    /// §2.2.1.4.2; issue #523); `None` without one.
+    fn management_user(&self, device: IndividualAddress) -> Option<bussard_transport::SecureUser> {
+        let d = self.store()?.devices.get(&device)?;
+        Some(bussard_transport::SecureUser {
+            user_id: bussard_transport::devmgmt::MANAGEMENT_USER,
+            password: d.management_password.clone()?,
+            device_authentication_code: d.authentication.clone(),
+            tunnel_ia: None,
+            host_ia: Some(device.raw()),
+        })
+    }
+
     /// The factory default setup key (FDSK) the keyring or key store holds
     /// for `target` (issue #532), also for a device it knows only by that
     /// key; `None` without a keyring.
@@ -547,8 +706,9 @@ pub fn load_group_keys(path: &Path) -> Result<crate::group::GroupKeys, SecureKey
     Ok(group_key_map(&*load_keyring(path)?))
 }
 
-/// The group keys of `keyring` as [`crate::group::GroupKeys`].
-fn group_key_map(keyring: &bussard_project::KeyStore) -> crate::group::GroupKeys {
+/// The group keys of `keyring` as [`crate::group::GroupKeys`], for a
+/// secured group read or write.
+pub fn group_key_map(keyring: &bussard_project::KeyStore) -> crate::group::GroupKeys {
     keyring
         .group_keys
         .iter()
@@ -606,6 +766,17 @@ pub fn keyring_facts(path: &Path, source: &str) -> bussard_model::KeyringFacts {
         source: source.to_string(),
         status,
     }
+}
+
+/// Loads and decrypts the keyring or key store at `path` with the password in
+/// [`KEYRING_PASSWORD_ENV`], once per process for the same file bytes and
+/// password.
+///
+/// # Errors
+///
+/// A missing password, an unreadable file, or a keyring that does not decrypt.
+pub fn load_keys(path: &Path) -> Result<Arc<bussard_project::KeyStore>, SecureKeyError> {
+    load_keyring(path)
 }
 
 /// Loads and decrypts `path` with the env password, once per process for the
@@ -964,5 +1135,111 @@ mod tests {
         ));
         std::fs::remove_dir_all(&dir)?;
         Ok(())
+    }
+
+    /// A scratch model directory whose `bussard.toml` names a keyring.
+    fn keyring_model(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-secure-globals-{tag}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(
+            dir.join("bussard.toml"),
+            "[connection]\ntransport = \"tunnel\"\nkeyring = \"site.knxkeys\"\n",
+        )?;
+        Ok(dir)
+    }
+
+    /// The precedence table (issue #241): an explicit file (`--keyring`,
+    /// then `BUSSARD_KEYRING`) beats the key store, which beats the
+    /// deprecated `connection.keyring`.
+    #[test]
+    fn test_keyring_file_precedence_table() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = keyring_model("precedence")?;
+        let store = bussard_project::KeyStore::path(&dir);
+        let flag = Some(Path::new("f.knxkeys"));
+        let env = Some(Path::new("e.knxkeys"));
+        type Row<'a> = (
+            Option<&'a Path>,
+            Option<&'a Path>,
+            bool,
+            PathBuf,
+            KeyringSource,
+        );
+        let table: Vec<Row<'_>> = vec![
+            (
+                flag,
+                env,
+                true,
+                PathBuf::from("f.knxkeys"),
+                KeyringSource::Flag,
+            ),
+            (
+                flag,
+                None,
+                false,
+                PathBuf::from("f.knxkeys"),
+                KeyringSource::Flag,
+            ),
+            (
+                None,
+                env,
+                true,
+                PathBuf::from("e.knxkeys"),
+                KeyringSource::Env,
+            ),
+            (
+                None,
+                env,
+                false,
+                PathBuf::from("e.knxkeys"),
+                KeyringSource::Env,
+            ),
+            (None, None, true, store.clone(), KeyringSource::Store),
+            (
+                None,
+                None,
+                false,
+                dir.join("site.knxkeys"),
+                KeyringSource::Config,
+            ),
+        ];
+        for (flag, env, with_store, path, source) in table {
+            if with_store {
+                std::fs::write(&store, "placeholder")?;
+            } else if store.exists() {
+                std::fs::remove_file(&store)?;
+            }
+            let resolved = keyring_file(&dir, flag, env).ok_or("expected a keyring")?;
+            assert_eq!(
+                (&resolved.path, resolved.source),
+                (&path, source),
+                "flag {flag:?}, env {env:?}, store {with_store}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyring_file_store_without_config() -> Result<(), Box<dyn std::error::Error>> {
+        let dir =
+            std::env::temp_dir().join(format!("bussard-secure-store-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir)?;
+        let store = bussard_project::KeyStore::path(&dir);
+        std::fs::write(&store, "placeholder")?;
+        let resolved = keyring_file(&dir, None, None).ok_or("expected the store")?;
+        assert_eq!(resolved.source, KeyringSource::Store);
+        assert_eq!(resolved.path, store);
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    #[test]
+    fn test_keyring_file_none_without_any_source() {
+        let missing = std::env::temp_dir().join("bussard-secure-globals-no-such-model");
+        assert_eq!(keyring_file(&missing, None, None), None);
     }
 }

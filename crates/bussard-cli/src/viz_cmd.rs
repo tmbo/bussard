@@ -122,14 +122,14 @@ fn run(options: VizArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let group_keys = g
         .keyring()
         .map(|path| {
-            bussard_service::secure::load_group_keys(path)
+            bussard_service::secure::load_keys(path)
                 .with_context(|| format!("loading group keys from {}", path.display()))
         })
         .transpose()?;
     if let Some(keys) = &group_keys {
         eprintln!(
             "keyring: {} group key(s) for secured group telegrams",
-            keys.len()
+            keys.group_keys.len()
         );
     }
 

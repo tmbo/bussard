@@ -6,11 +6,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, GroupKeyring,
-    StreamOptions, run_stream,
+    CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, StreamOptions, run_stream,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -53,19 +51,7 @@ fn run(to: &Path, filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<Exi
     // KNX Data Secure group telegrams (issue #172): the raw cEMI keeps the
     // secured bytes; the decoded snapshot carries the decrypted value and the
     // `secured` flag.
-    let group_keys = keyring
-        .map(|path| {
-            bussard_service::secure::load_group_keys(path)
-                .with_context(|| format!("loading group keys from {}", path.display()))
-        })
-        .transpose()?
-        .map(|keys| {
-            eprintln!(
-                "keyring: {} group key(s) for secured group telegrams",
-                keys.len()
-            );
-            GroupKeyring::new(keys)
-        });
+    let group_keys = crate::secure_key::group_keyring(keyring)?;
 
     let writer = CaptureWriter::open(to)?;
     eprintln!("capturing to {} (Ctrl-C to stop)", to.display());

@@ -435,6 +435,7 @@ version = "0.10.0"
 dependencies = [
  "bussard-bus",
  "bussard-model",
+ "bussard-project",
  "bussard-secure",
  "bussard-testkit",
  "bussard-transport",

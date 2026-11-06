@@ -297,7 +297,7 @@ fn run_onboarding(
             let mut connection = resolve_config(Some(model), &overrides)?;
             // The key store the import may have written (issue #241), unless
             // the server was started with a keyring.
-            let store = crate::conn_cmd::resolve_keyring(None, None, &model_dir)
+            let store = bussard_service::secure::keyring_file(&model_dir, None, None)
                 .map(|resolved| resolved.path);
             // Its tunnelling users, read now rather than at start, when the
             // directory had none (issue #779). The server opens no bus before
