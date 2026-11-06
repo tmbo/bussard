@@ -49,16 +49,13 @@ pub struct ProductModel {
     /// The application's own Dynamic section (`dynamic:`, format 5, issue
     /// #345), app-relative ids throughout: what [`crate::dynamic::evaluate_dynamic`]
     /// walks through this model's [`crate::dynamic::DynamicSource`] impl.
-    #[serde(with = "crate::dynamic_compact::nodes")]
     pub dynamic: Vec<crate::dynamic::DynamicNode>,
     /// The Dynamic section of every module definition, keyed by app-relative
     /// module definition id (`MD-1`) (`module_dynamics:`, format 5).
-    #[serde(with = "crate::dynamic_compact::module_nodes")]
     pub module_dynamics: BTreeMap<String, Vec<crate::dynamic::DynamicNode>>,
     /// The application's `<Union>`s, in document order, each with its size
     /// and its members' app-relative parameter ids and positions (`unions:`,
     /// format 5).
-    #[serde(with = "crate::dynamic_compact::unions")]
     pub unions: Vec<crate::dynamic::Union>,
     /// Every parameter ref of the application, keyed by app-relative ref id:
     /// its parameter, its `Value` where it matters and whether it is internal
@@ -175,8 +172,9 @@ pub struct ObjectDef {
 /// parameter's `initial_value:`, issue #473; format 11 a colour type,
 /// `color: { space: RGB }`, issue #616; format 12 a virtual parameter's
 /// `virtual: true`, issue #474; format 13 the `<ParameterCalculation>`s,
-/// `calculations:`, issue #712).
-pub const MODEL_FORMAT: u32 = 13;
+/// `calculations:`, issue #712; format 14 the Dynamic nodes in their own
+/// serde form, a default branch without a `test`, issue #906).
+pub const MODEL_FORMAT: u32 = 14;
 
 /// Whether the model file at `path` is of the current [`MODEL_FORMAT`]. Reads
 /// only the head of the file, where the emitter puts the key.
@@ -291,11 +289,11 @@ struct RawModel {
     com_objects: BTreeMap<u16, RawComObject>,
     #[serde(default)]
     com_object_refs: BTreeMap<String, RawComObject>,
-    #[serde(default, with = "crate::dynamic_compact::nodes")]
+    #[serde(default, deserialize_with = "via_json")]
     dynamic: Vec<crate::dynamic::DynamicNode>,
-    #[serde(default, with = "crate::dynamic_compact::module_nodes")]
+    #[serde(default, deserialize_with = "via_json")]
     module_dynamics: BTreeMap<String, Vec<crate::dynamic::DynamicNode>>,
-    #[serde(default, with = "crate::dynamic_compact::unions")]
+    #[serde(default)]
     unions: Vec<crate::dynamic::Union>,
     #[serde(default)]
     data_secure: Option<DataSecureCapacity>,
@@ -307,6 +305,17 @@ struct RawModel {
     identity: Option<RawIdentity>,
     #[serde(default)]
     calculations: Vec<crate::dynamic::ParameterCalculation>,
+}
+
+/// Reads a YAML value through its JSON form: the YAML reader takes an enum
+/// only as a tag, the Dynamic nodes are one-key maps.
+fn via_json<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    serde_json::from_value(value).map_err(serde::de::Error::custom)
 }
 
 #[derive(Debug, Deserialize)]

@@ -424,10 +424,7 @@ struct Model<'a> {
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     com_object_refs: BTreeMap<String, ComObjectModel>,
     /// The `<Union>`s: size and member positions (issue #345).
-    #[serde(
-        skip_serializing_if = "Vec::is_empty",
-        serialize_with = "bussard_model::dynamic_compact::unions::serialize"
-    )]
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     unions: Vec<Union>,
     /// The `<Allocator>`s by app-relative id (issue #449).
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -1150,15 +1147,14 @@ fn opt<T: std::fmt::Display>(v: &Option<T>) -> String {
 /// Serializes a model to YAML, prefixed with the generated-file banner. The
 /// Dynamic trees come last, each node of their top level on a line of its
 /// own in flow style (see
-/// [`bussard_model::dynamic_compact::write_flow_lines`]).
+/// [`write_flow_lines`]).
 fn serialize_model(model: &Model) -> Result<String, ModelError> {
     let body = serde_norway::to_string(model).map_err(|e| ModelError::Serialize(e.to_string()))?;
     let mut out = format!("{MODEL_BANNER}{body}");
     let flow = |e: serde_json::Error| ModelError::Serialize(e.to_string());
     if !model.dynamic.is_empty() {
         out.push_str("dynamic:\n");
-        bussard_model::dynamic_compact::write_flow_lines(model.dynamic, "", &mut out)
-            .map_err(flow)?;
+        write_flow_lines(model.dynamic, "", &mut out).map_err(flow)?;
     }
     if !model.module_dynamics.is_empty() {
         out.push_str("module_dynamics:\n");
@@ -1168,10 +1164,29 @@ fn serialize_model(model: &Model) -> Result<String, ModelError> {
                 continue;
             }
             out.push_str(&format!("  {def}:\n"));
-            bussard_model::dynamic_compact::write_flow_lines(body, "  ", &mut out).map_err(flow)?;
+            write_flow_lines(body, "  ", &mut out).map_err(flow)?;
         }
     }
     Ok(out)
+}
+
+/// Appends `nodes` to `out` as a YAML block sequence of flow maps, one node
+/// (with everything inside it) per line: `indent`, `- ` and the node in JSON,
+/// which YAML reads as a flow map. The block form indents every level, and on
+/// the deep trees of real programs the indentation is three quarters of the
+/// bytes (9.0 MB of block YAML against 2.8 MB this way for the Jung `A-D144`).
+fn write_flow_lines(
+    nodes: &[DynamicNode],
+    indent: &str,
+    out: &mut String,
+) -> Result<(), serde_json::Error> {
+    for node in nodes {
+        out.push_str(indent);
+        out.push_str("- ");
+        out.push_str(&serde_json::to_string(node)?);
+        out.push('\n');
+    }
+    Ok(())
 }
 
 /// The banner prefixed to each generated model file (same voice as the

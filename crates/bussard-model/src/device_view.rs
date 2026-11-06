@@ -648,13 +648,9 @@ fn words_gate(gate: &RefGate) -> Gate {
     let is_default = gate.test == WhenTest::Default;
     Gate {
         reference: gate.param_ref_id.clone(),
-        test: crate::dynamic_compact::test_text(&gate.test)
-            .unwrap_or_else(|| "default".to_string()),
+        test: gate.test.text().unwrap_or_else(|| "default".to_string()),
         others: if is_default {
-            gate.siblings
-                .iter()
-                .filter_map(crate::dynamic_compact::test_text)
-                .collect()
+            gate.siblings.iter().filter_map(WhenTest::text).collect()
         } else {
             Vec::new()
         },
