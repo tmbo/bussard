@@ -78,7 +78,7 @@ pub use dpt::{ApduSize, Dpt, DptParseError};
 pub use ets_export::{to_ets_csv, to_ets_xml};
 pub use files::{
     LOCK_SCHEMA_FINGERPRINT, LOCK_VERSION, LOCK_VERSION_V3, hidden_mem_key, is_hidden_mem_key,
-    label_mem_key, lock_written_by, param_mem_key, slug,
+    label_mem_key, lock_written_by, param_mem_key,
 };
 pub use flags::{Flags, FlagsParseError, Priority};
 pub use history::{History, HistoryError, Snapshot, SnapshotId, SnapshotReason};
@@ -96,5 +96,6 @@ pub use serials::{SERIAL_LEN, SerialRecord, format_serial};
 pub use tests_schema::{
     Expectation, TestCase, TestFileError, TestSuite, WriteStep, load_tests, load_tests_in_dir,
 };
+pub use text::slug;
 pub use toml_io::{ParseError, ParseErrorDetail};
 pub use validate::{Diagnostic, Severity, has_errors, validate, validate_in_dir};

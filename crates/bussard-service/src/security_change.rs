@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_download::{
     ChangeMark, ChangeSubject, DesiredTables, DevicePlan, PlanChange, PlanReport, SecurityInputs,
 };
+use bussard_model::text::{from_hex, hex_upper};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 
 /// One group address whose Data Secure state changes on a device, with the
@@ -347,7 +348,7 @@ pub fn unchanged_cached_flags(
         return None;
     }
     let record = bussard_model::facts::load_facts(dir, target).ok()??;
-    let flags = from_hex(record.go_security_flags.as_deref()?)?;
+    let flags = from_hex(record.go_security_flags.as_deref()?).ok()?;
     (!SecurityObjectChange::compare(target, desired, inputs, &flags).changes()).then_some(flags)
 }
 
@@ -356,7 +357,7 @@ pub fn unchanged_cached_flags(
 /// established facts for the device); a write failure is logged, the cache
 /// being optional.
 pub fn remember_flags(dir: &std::path::Path, target: IndividualAddress, flags: &[u8]) {
-    update_cached_flags(dir, target, Some(to_hex(flags)));
+    update_cached_flags(dir, target, Some(hex_upper(flags)));
 }
 
 /// Drops the cached PID 61 flags of `target` (issue #336): an apply or a
@@ -378,25 +379,6 @@ fn update_cached_flags(dir: &std::path::Path, target: IndividualAddress, value: 
     if let Err(err) = bussard_model::facts::save_facts(dir, &record) {
         tracing::warn!("could not cache the PID 61 flags of {target}: {err}");
     }
-}
-
-/// The flags as hex, two digits per object.
-fn to_hex(flags: &[u8]) -> String {
-    flags.iter().map(|f| format!("{f:02X}")).collect()
-}
-
-/// The flags from [`to_hex`], or `None` for a malformed value.
-fn from_hex(text: &str) -> Option<Vec<u8>> {
-    if !text.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..text.len())
-        .step_by(2)
-        .map(|i| {
-            text.get(i..i + 2)
-                .and_then(|d| u8::from_str_radix(d, 16).ok())
-        })
-        .collect()
 }
 
 /// Why [`record_security_flags`] could not update the lock.
@@ -602,10 +584,8 @@ mod tests {
     #[test]
     fn test_cached_flags_hex_roundtrips() {
         let flags = vec![0x00, 0x03, 0x00, 0xFF];
-        assert_eq!(to_hex(&flags), "000300FF");
-        assert_eq!(from_hex(&to_hex(&flags)), Some(flags));
-        assert_eq!(from_hex("0"), None);
-        assert_eq!(from_hex("0G"), None);
+        assert_eq!(hex_upper(&flags), "000300FF");
+        assert_eq!(from_hex(&hex_upper(&flags)).ok(), Some(flags));
     }
 
     #[test]

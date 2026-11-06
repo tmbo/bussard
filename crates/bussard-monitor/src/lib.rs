@@ -31,7 +31,7 @@ pub mod ring;
 pub mod secure;
 pub mod store;
 pub mod stream;
-pub mod timefmt;
+pub use bussard_model::timefmt;
 
 pub use acceptance::{
     ManualDecision, ManualStep, Report, RunOptions, SkipManual, Status, TestOutcome, run_suite,

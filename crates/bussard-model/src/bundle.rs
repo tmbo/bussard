@@ -48,6 +48,7 @@ use sha2::{Digest, Sha256};
 
 use crate::history::{HISTORY_DIR, MODEL_FILES, rfc3339};
 use crate::loader::{LoadError, Model};
+use crate::text::hex;
 
 /// The file extension of a bundle.
 pub const BUNDLE_EXTENSION: &str = "bussard";
@@ -702,11 +703,6 @@ fn verify(
 /// The lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
-}
-
-/// Lowercase hex of a byte slice.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

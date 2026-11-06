@@ -32,6 +32,7 @@ use bussard_mgmt::{
 use bussard_model::schema::{
     BussardConfig, ComObject, Device, Group, Groups, Link, Links, Product,
 };
+use bussard_model::text::hex;
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
 
 use crate::{Authorize, BusService, L4Options, ServiceError, SourcePolicy};
@@ -213,11 +214,6 @@ fn clean_ascii(bytes: &[u8]) -> String {
         .map(|b| *b as char)
         .collect();
     s.trim().to_string()
-}
-
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Probes one address: descriptor first; System B → read tables; anything else

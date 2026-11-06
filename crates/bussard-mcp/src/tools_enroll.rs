@@ -332,7 +332,7 @@ fn elicitation_message(host: &str, warnings: &[String]) -> String {
 fn new_elicitation_id() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("drawing a random id: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(bussard_model::text::hex(&bytes))
 }
 
 /// Ends `job`'s session and waits for it to close.

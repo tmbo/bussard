@@ -2081,7 +2081,7 @@ pub(super) fn parse_compare_mem(attrs: &[(String, String)]) -> Option<(u32, Vec<
     for (k, v) in attrs {
         match k.as_str() {
             "Address" => address = v.trim().parse().ok(),
-            "InlineData" => inline = decode_hex(v),
+            "InlineData" => inline = bussard_model::text::from_hex(v.trim()).ok(),
             "Size" => size = v.trim().parse().ok(),
             _ => {}
         }
@@ -2093,19 +2093,6 @@ pub(super) fn parse_compare_mem(attrs: &[(String, String)]) -> Option<(u32, Vec<
         expected.truncate(size);
     }
     Some((address?, expected))
-}
-
-/// Decodes an even-length hex string (e.g. an `InlineData` attribute) into bytes;
-/// `None` on odd length or a non-hex digit.
-pub(super) fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
-        .collect()
 }
 
 #[cfg(test)]

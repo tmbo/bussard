@@ -11,6 +11,7 @@
 //! (CLI and MCP) count such a change as one to write.
 
 use bussard_mgmt::{L4Channel, Layer4Connection};
+use bussard_model::text::hex_upper;
 use bussard_prod::application::ApplicationProgram;
 
 use crate::flash::{FlashPlan, FlashStep, PropObject, read_property_value};
@@ -54,8 +55,12 @@ impl ParamProperty {
         let device = self
             .device
             .as_deref()
-            .map_or_else(|| "could not be read".to_string(), hex);
-        format!("{}: {} (device: {device})", self.label(), hex(&self.model))
+            .map_or_else(|| "could not be read".to_string(), hex_upper);
+        format!(
+            "{}: {} (device: {device})",
+            self.label(),
+            hex_upper(&self.model)
+        )
     }
 
     /// Whether `location` places a parameter in this property.
@@ -89,11 +94,6 @@ impl ParamProperty {
             })
             .collect()
     }
-}
-
-/// Upper-case hex, no separator.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 impl FlashPlan {

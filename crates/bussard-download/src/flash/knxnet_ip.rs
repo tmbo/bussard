@@ -303,10 +303,6 @@ mod tests {
         })
     }
 
-    fn hex(b: &[u8]) -> String {
-        b.iter().map(|x| format!("{x:02x}")).collect()
-    }
-
     /// The ALLinBOX 1612 1.3 sweep capture (`M-0071_A-4A11-13-48E1`,
     /// plain-defaults, ops 1928 to 1934): obj 6 PIDs 51, 66, 67, 76 (15 + 15),
     /// 55 and 53, with the values knx-sim logged.
@@ -321,7 +317,14 @@ mod tests {
         let shape: Vec<(u8, u16, u16, String)> = program
             .writes
             .iter()
-            .map(|w| (w.prop_id, w.start, w.count, hex(&w.value)))
+            .map(|w| {
+                (
+                    w.prop_id,
+                    w.start,
+                    w.count,
+                    bussard_model::text::hex(&w.value),
+                )
+            })
             .collect();
         assert_eq!(
             shape,

@@ -22,6 +22,7 @@
 use std::collections::BTreeSet;
 
 use bussard_model::change::{ChangeKind, ChangeSet, Labels, summarize};
+use bussard_model::text::{capitalize, join_and};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use serde_json::{Map, Value, json};
 
@@ -86,15 +87,6 @@ pub fn room_of(model: &Model, ia: IndividualAddress) -> Option<String> {
         (Some(r), None) => Some(r.to_string()),
         (None, Some(f)) => Some(f.to_string()),
         (None, None) => None,
-    }
-}
-
-/// `a`, `a and b`, `a, b and c`.
-pub fn join_and(items: &[String]) -> String {
-    match items.split_last() {
-        None => String::new(),
-        Some((only, [])) => only.clone(),
-        Some((last, rest)) => format!("{} and {last}", rest.join(", ")),
     }
 }
 
@@ -743,15 +735,6 @@ fn automation_apply_summary(value: &Value) -> String {
         out.push_str(" The reload failed, so it takes effect at the next reload or restart.");
     }
     out
-}
-
-/// `text` with its first letter in upper case.
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
 }
 
 /// The keys [`plain_view`] drops: ETS ids and what only an integrator reads.

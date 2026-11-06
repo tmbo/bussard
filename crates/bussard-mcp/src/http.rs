@@ -98,7 +98,7 @@ pub fn generate_token() -> anyhow::Result<String> {
     let mut bytes = [0u8; 32];
     getrandom::getrandom(&mut bytes)
         .map_err(|e| anyhow::anyhow!("no OS randomness for the bearer token: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(bussard_model::text::hex(&bytes))
 }
 
 /// The axum app: the MCP endpoint at [`MCP_PATH`], behind the bearer check

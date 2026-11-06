@@ -26,6 +26,8 @@ use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
 
+use crate::text::edit_distance;
+
 /// A TOML file that could not be parsed or did not match its schema.
 ///
 /// Boxed so a `Result` carrying it stays small; the fields are reachable
@@ -347,21 +349,6 @@ fn unknown_field_hint(rest: &str) -> Hint {
     }
 }
 
-/// Levenshtein distance over characters.
-pub(crate) fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut prev: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut cur = vec![i + 1; b.len() + 1];
-        for (j, cb) in b.iter().enumerate() {
-            let cost = usize::from(ca != *cb);
-            cur[j + 1] = (prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1);
-        }
-        prev = cur;
-    }
-    prev[b.len()]
-}
-
 /// The key of the nearest `key =` before the caret on its line.
 fn key_before_equals(before_on_line: &str) -> Option<String> {
     let eq = before_on_line.rfind('=')?;
@@ -481,13 +468,6 @@ fn duplicate_key_hint(text: &str, span: Range<usize>) -> Hint {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_edit_distance_counts_single_edits() {
-        assert_eq!(edit_distance("projekt", "project"), 1);
-        assert_eq!(edit_distance("", "abc"), 3);
-        assert_eq!(edit_distance("dtp", "dpt"), 2);
-    }
 
     #[test]
     fn test_line_col_counts_characters() {

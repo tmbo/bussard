@@ -1150,57 +1150,10 @@ fn device_name(raw_dev: &RawDevice, hardware_name: Option<&str>) -> String {
     }
 }
 
-/// Produces a filesystem-safe slug from a device name: lowercase, ASCII
-/// alphanumerics and hyphens only, collapsing runs of other characters into a
-/// single hyphen.
+/// Produces a filesystem-safe slug from a device name: the model's
+/// [`bussard_model::text::slug`], with `device` for a name that leaves nothing.
 pub(crate) fn slugify(name: &str) -> String {
-    let mut out = String::new();
-    let mut last_hyphen = false;
-    for ch in name.chars() {
-        let mapped = match ch {
-            'a'..='z' | '0'..='9' => Some(ch),
-            'A'..='Z' => Some(ch.to_ascii_lowercase()),
-            'ä' | 'Ä' => {
-                out.push_str("ae");
-                last_hyphen = false;
-                continue;
-            }
-            'ö' | 'Ö' => {
-                out.push_str("oe");
-                last_hyphen = false;
-                continue;
-            }
-            'ü' | 'Ü' => {
-                out.push_str("ue");
-                last_hyphen = false;
-                continue;
-            }
-            'ß' => {
-                out.push_str("ss");
-                last_hyphen = false;
-                continue;
-            }
-            _ => None,
-        };
-        match mapped {
-            Some(c) => {
-                out.push(c);
-                last_hyphen = false;
-            }
-            None => {
-                if !last_hyphen && !out.is_empty() {
-                    out.push('-');
-                    last_hyphen = true;
-                }
-            }
-        }
-    }
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "device".to_string()
-    } else {
-        trimmed
-    }
+    bussard_model::text::slug_or(name, "device")
 }
 
 /// The `[knxnet]` table of an IP interface from its `<IPConfig>` and

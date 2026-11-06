@@ -26,6 +26,7 @@ use std::time::{Instant, SystemTime};
 
 use bussard_mgmt::system_type;
 use bussard_model::history::{History, SnapshotReason};
+use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::{
     DeviceStatus, LineMode, LineNote, LineOutcome, LineTarget, LineVisit, parse_line,
@@ -83,11 +84,6 @@ fn line_digest(line: (u8, u8), model: &str, outcomes: &[LineOutcome]) -> String 
         put(&mut h, o.fingerprint.as_deref().unwrap_or("-").as_bytes());
     }
     hex(&h.finalize())
-}
-
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// A group address in the model's words: `1/2/2 (Blind position)`.

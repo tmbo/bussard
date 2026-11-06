@@ -200,6 +200,15 @@ mod tests {
     }
 
     #[test]
+    fn test_civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 2018-01-05, the KNX Secure epoch: 17_536 days after 1970-01-01.
+        assert_eq!(civil_from_days(17_536), (2018, 1, 5));
+        assert_eq!(civil_from_days(20_721), (2026, 9, 25));
+        assert_eq!(days_from_civil(2026, 9, 25), 20_721);
+    }
+
+    #[test]
     fn millis_render() {
         let ts = UNIX_EPOCH + Duration::from_millis(1_500);
         assert_eq!(to_rfc3339(ts), "1970-01-01T00:00:01.500Z");
