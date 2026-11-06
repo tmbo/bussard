@@ -203,16 +203,10 @@ impl BusService {
     ///
     /// [`ServiceError::Gate`] when the gate refuses; nothing is connected then.
     pub fn open(config: ConnectionConfig, policy: WritePolicy) -> Result<BusService, ServiceError> {
-        let gate = policy.check(&config)?;
+        // The gate refuses before anything is spawned.
+        policy.check(&config)?;
         let (handle, _task) = Bus::connect(config.clone());
-        Ok(BusService {
-            config,
-            handle,
-            policy,
-            gate,
-            group_high_water: SequenceHighWater::new(),
-            probe_memo: ProbeMemo::new(),
-        })
+        BusService::from_handle(config, handle, policy)
     }
 
     /// Wraps a bus actor the caller already spawned, applying the same gate as

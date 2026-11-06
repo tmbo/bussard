@@ -251,8 +251,7 @@ pub fn import_product_order(
     }
 
     out.say("Downloading…");
-    let verified = bussard_prod::fetch_entry(entry, DownloadConsent::granted())
-        .ctx(|| "downloading product data".to_string())?;
+    let verified = store::fetch(entry, DownloadConsent::granted())?;
     match &verified {
         bussard_prod::Verified::Download(bytes) => {
             out.say(&format!("Downloaded and verified {} bytes.", bytes.len()));

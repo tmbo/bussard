@@ -115,17 +115,34 @@ pub fn record_manufacturers(dir: &Path, archive: &Path) {
 /// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    bussard_model::text::hex(&sha2::Sha256::digest(bytes))
 }
 
 /// Downloads (or, for a `file://` pointer, reads) the `.knxprod` an index
-/// entry names, verifies its size and SHA-256 against the entry, and stores
-/// it under `<dir>/products/`. Returns the stored path.
+/// entry names and verifies its size and SHA-256 against the entry.
 ///
 /// `consent` is the caller's proof that the human agreed to the download.
+///
+/// # Errors
+///
+/// The download or the verification failed.
+pub fn fetch(
+    entry: &bussard_prod::IndexEntry,
+    consent: DownloadConsent,
+) -> Result<bussard_prod::Verified, SetupError> {
+    match entry.url.strip_prefix("file://") {
+        Some(local) => {
+            let bytes = std::fs::read(local).ctx(|| format!("reading {}", entry.url))?;
+            bussard_prod::fetch::verify(entry, bytes).map_err(SetupError::source)
+        }
+        None => {
+            bussard_prod::fetch_entry(entry, consent).ctx(|| format!("downloading {}", entry.url))
+        }
+    }
+}
+
+/// [`fetch`], then [`store_download`]: the verified `.knxprod` under
+/// `<dir>/products/`. Returns the stored path.
 ///
 /// # Errors
 ///
@@ -135,15 +152,7 @@ pub fn fetch_to_store(
     dir: &Path,
     consent: DownloadConsent,
 ) -> Result<PathBuf, SetupError> {
-    let verified = match entry.url.strip_prefix("file://") {
-        Some(local) => {
-            let bytes = std::fs::read(local).ctx(|| format!("reading {}", entry.url))?;
-            bussard_prod::fetch::verify(entry, bytes).map_err(SetupError::source)?
-        }
-        None => bussard_prod::fetch_entry(entry, consent)
-            .ctx(|| format!("downloading {}", entry.url))?,
-    };
-    store_download(entry, dir, verified)
+    store_download(entry, dir, fetch(entry, consent)?)
 }
 
 /// Stores a verified download under `<dir>/products/` and returns the path.
@@ -493,16 +502,7 @@ pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut d
 }
 
 /// `err` and its sources joined by `: `, as anyhow's `{:#}` renders a chain.
-pub fn error_chain(err: &dyn std::error::Error) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
+pub use crate::util::chain as error_chain;
 
 /// The lock's entries that name an archive the model holds.
 fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
