@@ -302,9 +302,12 @@ pub async fn identify(
         ..L4Options::default()
     };
     let _ = service
-        .with_device(current, &options, async |dev| {
-            pressed.mask = dev.device_descriptor().await.ok();
-            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+        .with_l4(current, &options, async |dev| {
+            pressed.mask = bussard_mgmt::read_device_descriptor(dev).await.ok();
+            if let Err(err) = dev
+                .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+                .await
+            {
                 tracing::debug!("{current} authorize (free access) did not grant: {err}");
             }
             pressed.order = dev
@@ -318,8 +321,8 @@ pub async fn identify(
                 .await
                 .ok()
                 .filter(|v| !v.is_empty());
-            if let Ok(obj) = bussard_download::discover_application_object(dev.l4_mut()).await {
-                let id = bussard_mgmt::read_program_version(dev.l4_mut(), obj)
+            if let Ok(obj) = bussard_download::discover_application_object(dev).await {
+                let id = bussard_mgmt::read_program_version(dev, obj)
                     .await
                     .ok()
                     .flatten();

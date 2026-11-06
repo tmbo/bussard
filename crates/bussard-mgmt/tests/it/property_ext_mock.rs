@@ -40,12 +40,14 @@ async fn read(device: MockDevice, pid: u16, element_size: usize) -> Result<Run, 
         .await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target,
         source,
-        Timeouts::discovery(),
-        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::discovery(),
+            secure: SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        },
     )
     .await?;
     l4.set_max_apdu(Some(233));
@@ -129,12 +131,14 @@ async fn load_state(device: MockDevice) -> Result<bussard_mgmt::LoadState, BoxEr
         .await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target,
         source,
-        Timeouts::discovery(),
-        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::discovery(),
+            secure: SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
+        },
     )
     .await?;
     let state = property_ext::security_load_state(&mut l4).await;
@@ -206,13 +210,15 @@ async fn test_sync_under_the_fdsk_reports_a_device_reset_to_default() -> TestRes
         response_timeout: Duration::from_millis(200),
         ..Timeouts::discovery()
     };
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target,
         source,
-        timeouts,
-        SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY)))
-            .with_factory_key_fallback(Key16::new(FDSK)),
+        bussard_mgmt::ConnectOptions {
+            timeouts,
+            secure: SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY)))
+                .with_factory_key_fallback(Key16::new(FDSK)),
+        },
     )
     .await?;
     l4.set_sync_retry(bussard_mgmt::SyncRetry {

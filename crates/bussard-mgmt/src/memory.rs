@@ -2,7 +2,7 @@
 //!
 //! Every memory access bussard makes — the download engine streaming a segment,
 //! the table read-back resolving a `PID_TABLE_REFERENCE`, the System 7 LSM
-//! records, `DeviceConnection`'s dump primitive — funnels through this module.
+//! records, `Layer4Connection::read_memory`, the dump primitive — funnels through this module.
 //! Before it existed the same primitives were re-implemented in `load.rs`,
 //! `device.rs`, `tables.rs` and `sys7.rs`, and only one copy had learned about
 //! extended memory and APDU-scaled chunking (issue #80): a table above `0xFFFF`

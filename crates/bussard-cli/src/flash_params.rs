@@ -341,12 +341,12 @@ async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
         ..L4Options::default()
     };
     ctx.service
-        .with_device(ctx.target, &options, async |dev| {
+        .with_l4(ctx.target, &options, async |dev| {
             // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
             // read-back goes out in APDU-sized chunks without re-reading it
             // (issue #194).
-            dev.l4_mut().set_max_apdu(ctx.facts.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(dev.l4_mut(), ctx.plan, ctx.app).await)
+            dev.set_max_apdu(ctx.facts.max_apdu);
+            Ok::<_, ServiceError>(read_parameters_on(dev, ctx.plan, ctx.app).await)
         })
         .await
         .with_context(|| format!("connecting to {} to read its parameters", ctx.target))

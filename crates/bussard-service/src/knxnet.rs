@@ -1317,7 +1317,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let cache = FactsCache::disabled();
         let mut read = read_interface(&mut l4, &cache, None).await?;
         let facts = read.knxnet.clone().ok_or("the mock serves the object")?;
@@ -1424,7 +1430,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            target,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let read = read_interface(&mut l4, &FactsCache::disabled(), None).await?;
         let facts = read.knxnet.ok_or("object")?;
         let mut config = facts.as_config();

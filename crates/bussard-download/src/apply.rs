@@ -425,7 +425,6 @@ fn address_of(e: &bussard_mgmt::tables::TablesError) -> bussard_model::Individua
     use bussard_mgmt::tables::TablesError;
     match e {
         TablesError::UnsupportedMask { address, .. }
-        | TablesError::TableUnreadable { address, .. }
         | TablesError::UnsupportedAssociationFormat { address } => *address,
         TablesError::Mgmt(_) => "0.0.0".parse().expect("valid zero address"),
     }

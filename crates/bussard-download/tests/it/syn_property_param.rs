@@ -206,7 +206,13 @@ async fn test_flash_writes_and_reads_back_the_property_placed_parameter() -> Tes
         .with_writable_property(4, 201, 1, &[0xFF]);
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(
         &mut session,
@@ -295,7 +301,13 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
     let plan = plan_of(&product, app, &overrides).map_err(|e| e.to_string())?;
     let gw = MockGateway::builder().device(device()?).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     // The device holds the defaults.
     let outcome = flash(

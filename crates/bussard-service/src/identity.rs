@@ -19,7 +19,7 @@ use bussard_mgmt::apci::{FREE_ACCESS_KEY, PID_MANUFACTURER_ID, PID_ORDER_INFO, P
 use bussard_model::IndividualAddress;
 use bussard_secure::Key16;
 
-use crate::bus::{BusService, Device, L4Options};
+use crate::bus::{BusService, L4Options, Management};
 use crate::error::ServiceError;
 use bussard_mgmt::MgmtError;
 
@@ -282,7 +282,7 @@ async fn session(
     plain: bool,
 ) -> Result<Identity, ProbeMiss> {
     let outcome = service
-        .with_device(address, options, async |dev| {
+        .with_l4(address, options, async |dev| {
             Ok::<_, ServiceError>(identify(dev, address, plain).await)
         })
         .await;
@@ -295,11 +295,11 @@ async fn session(
 
 /// The reads of one probe on its open session.
 async fn identify(
-    dev: &mut Device,
+    dev: &mut Management,
     address: IndividualAddress,
     plain: bool,
 ) -> Result<Identity, ProbeMiss> {
-    let mask = match dev.device_descriptor().await {
+    let mask = match bussard_mgmt::read_device_descriptor(dev).await {
         Ok(mask) => mask,
         Err(err) => {
             if err.device_present() {
@@ -320,7 +320,7 @@ async fn identify(
     }
     // Authorize with the free-access key right after the descriptor read, as
     // ETS does (issue #52 finding #1). Best-effort.
-    if let Err(err) = dev.authorize(FREE_ACCESS_KEY).await {
+    if let Err(err) = dev.authorize_or_fail(FREE_ACCESS_KEY).await {
         tracing::debug!("{address} authorize (free access) did not grant: {err}");
     }
     let manufacturer_id = match dev.read_device_property(PID_MANUFACTURER_ID).await {

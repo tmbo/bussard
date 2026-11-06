@@ -91,7 +91,13 @@ async fn test_flash_program_without_group_objects_writes_no_table() -> TestResul
     }
     let gw = MockGateway::builder().device(device).start().await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let l4 = Layer4Connection::connect(&mut bus, ia("1.1.1")?, ia("0.0.255")?).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mut session = Session::from_connection(l4);
     let outcome = flash(&mut session, &plan, FlashOptions::default(), |_| {}).await;
     let _ = session.into_disconnect().await;

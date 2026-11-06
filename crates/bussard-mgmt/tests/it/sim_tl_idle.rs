@@ -86,7 +86,13 @@ async fn test_idle_connection_reconnects_against_the_style3_sim() -> TestResult 
     let gateway = std::net::SocketAddrV4::new(std::net::Ipv4Addr::LOCALHOST, sim.port);
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gateway)).await?;
     let target: IndividualAddress = "1.1.7".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let mask = read_device_descriptor(&mut l4).await?;
 
     // Past the sim's connection timeout: it has closed the connection and

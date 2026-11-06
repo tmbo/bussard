@@ -289,7 +289,7 @@ pub async fn probe_own_address_on<Ch: L4Channel>(
     address: IndividualAddress,
     timeouts: Timeouts,
 ) -> Result<AddressProbe> {
-    let mut l4 = Layer4Connection::connect_with(conn, address, address, timeouts).await?;
+    let mut l4 = Layer4Connection::connect(conn, address, address, timeouts.into()).await?;
     let outcome = classify(&mut l4).await;
     // Leave the slot clean: when a peer actually answered, this puts a
     // `T_Disconnect` on the bus so the device does not hold the session open. A

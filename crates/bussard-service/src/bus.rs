@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::{
-    DeviceConnection, Layer4Connection, LeaseChannel, MgmtError, ProbeMemo, Timeouts,
+    ConnectOptions, Layer4Connection, LeaseChannel, MgmtError, ProbeMemo, Timeouts,
 };
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
@@ -23,10 +23,6 @@ use crate::policy::WritePolicy;
 
 /// A management (layer-4, connection-oriented) session over a leased bus.
 pub type Management = Layer4Connection<LeaseChannel>;
-
-/// A management session over a leased bus, wrapped in the typed
-/// [`DeviceConnection`] client (property, memory and descriptor procedures).
-pub type Device = DeviceConnection<LeaseChannel>;
 
 /// Where a management session's source individual address comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,12 +272,14 @@ impl BusService {
             &options.factory_key,
             &options.high_water,
         );
-        let mut l4 = Layer4Connection::connect_with_secure(
+        let mut l4 = Layer4Connection::connect(
             channel,
             target,
             source,
-            options.timeouts,
-            secure,
+            ConnectOptions {
+                timeouts: options.timeouts,
+                secure,
+            },
         )
         .await?;
         match options.authorize {
@@ -317,7 +315,11 @@ impl BusService {
     /// so it is retried up to [`CONNECT_ATTEMPTS`] times: on a lost-link
     /// transport error, or on a connection death while the bus reported a link
     /// loss. Each retry first waits for the bus to be connected again.
-    async fn connect_l4_retrying(
+    ///
+    /// For a caller that decides only after its reads whether the session ends
+    /// or is handed on (the `bussard flash` pre-flight, issue #213); prefer
+    /// [`with_l4`](Self::with_l4) otherwise.
+    pub(crate) async fn connect_l4_retrying(
         &self,
         target: IndividualAddress,
         options: &L4Options,
@@ -371,52 +373,6 @@ impl BusService {
         let result = body(&mut l4).await;
         let _ = l4.disconnect().await;
         result
-    }
-
-    /// [`with_l4`](Self::with_l4) with the session wrapped in the typed
-    /// [`DeviceConnection`] client, for a body that uses its procedures
-    /// (`read_device_property`, `read_memory`, ...). Same connect, retry,
-    /// authorize and disconnect on every path.
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`connect_l4`](Self::connect_l4) or `body` returns.
-    pub async fn with_device<T, E, F>(
-        &self,
-        target: IndividualAddress,
-        options: &L4Options,
-        body: F,
-    ) -> Result<T, E>
-    where
-        F: AsyncFnOnce(&mut Device) -> Result<T, E>,
-        E: From<ServiceError>,
-    {
-        let mut dev = self.connect_device(target, options).await?;
-        let result = body(&mut dev).await;
-        let _ = dev.disconnect().await;
-        result
-    }
-
-    /// Opens a management session to `target` wrapped in the typed
-    /// [`DeviceConnection`] client, with the same connect, retry and authorize
-    /// as [`with_device`](Self::with_device), and hands it to the caller.
-    ///
-    /// For a caller that decides only after its reads whether the session ends
-    /// or is handed on (the `bussard flash` pre-flight under `--yes`, issue
-    /// #213). The caller owns the session and must `disconnect` it or pass it
-    /// to something that does; prefer [`with_device`](Self::with_device)
-    /// otherwise.
-    ///
-    /// # Errors
-    ///
-    /// Whatever [`connect_l4`](Self::connect_l4) returns.
-    pub async fn connect_device(
-        &self,
-        target: IndividualAddress,
-        options: &L4Options,
-    ) -> Result<Device, ServiceError> {
-        let l4 = self.connect_l4_retrying(target, options).await?;
-        Ok(DeviceConnection::from_l4(l4))
     }
 
     /// Takes the exclusive layer-4 lease as a frame channel, for a procedure

@@ -29,9 +29,7 @@ use std::time::Duration;
 
 use bussard_mgmt::apci;
 use bussard_mgmt::load::{self, LoadControl, LoadState};
-use bussard_mgmt::{
-    DeviceConnection, Layer4Connection, MgmtError, SilenceKind, Timeouts, WriteError,
-};
+use bussard_mgmt::{Layer4Connection, MgmtError, SilenceKind, Timeouts, WriteError};
 use bussard_model::IndividualAddress;
 use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
@@ -340,7 +338,13 @@ async fn compare_rel_mem_chunks_by_the_negotiated_apdu() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     // A 15-octet APDU device: 15 - 3 octets of memory-read overhead = 12.
     l4.set_max_apdu(Some(15));
 
@@ -370,12 +374,18 @@ async fn write_memory_chunks_and_verifies_round_trip() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // 135 bytes forces three chunks at the 63-octet chunk size: 63 + 63 + an odd
     // 9-byte tail.
     let payload: Vec<u8> = (0..135u16).map(|i| (i as u8).wrapping_mul(7)).collect();
-    dev.write_memory(0x4000, &payload).await?;
+    dev.write_memory_read_back(0x4000, &payload).await?;
     dev.disconnect().await?;
 
     // Every byte landed at its address in the device's independent memory map.
@@ -407,11 +417,17 @@ async fn write_memory_exact_single_chunk_boundary() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // Exactly 63 bytes: one full chunk at the 63-octet chunk size, no tail.
     let payload: Vec<u8> = (0..63u8).collect();
-    dev.write_memory(0x5000, &payload).await?;
+    dev.write_memory_read_back(0x5000, &payload).await?;
     dev.disconnect().await?;
 
     {
@@ -437,11 +453,17 @@ async fn write_memory_verify_mismatch_surfaces_address_and_diff() -> TestResult 
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // Write 4 bytes covering the corrupt cell 0x4002.
     let err = dev
-        .write_memory(0x4000, &[0x10, 0x11, 0x12, 0x13])
+        .write_memory_read_back(0x4000, &[0x10, 0x11, 0x12, 0x13])
         .await
         .err()
         .ok_or("expected the call to fail, it succeeded")?;
@@ -477,12 +499,12 @@ async fn write_memory_nak_mid_chunk_fails() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast()).await?;
+    let mut dev = Layer4Connection::connect(&mut bus, target, source, fast().into()).await?;
 
     // 126 bytes = two 63-byte chunks; the second write NAKs.
     let payload: Vec<u8> = (0..126u16).map(|i| i as u8).collect();
     let err = dev
-        .write_memory(0x4000, &payload)
+        .write_memory_read_back(0x4000, &payload)
         .await
         .err()
         .ok_or("expected the call to fail, it succeeded")?;
@@ -503,7 +525,13 @@ async fn allocate_segment_round_trip_returns_device_address() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // Object 1 must be Loading first (StartLoading).
     let state = load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
@@ -536,7 +564,13 @@ async fn allocate_segment_in_wrong_state_is_refused() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // Allocating while Unloaded is refused: the device ignores the record
     // and both its answer and the read-back report Unloaded.
@@ -569,7 +603,13 @@ async fn allocate_segment_refusal_surfaces_load_error() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     load::write_load_control(&mut l4, 1, LoadControl::StartLoading).await?;
 
@@ -601,7 +641,7 @@ async fn mid_session_silence_error_carries_exchange_counter() -> TestResult {
 
     let mut bus = open_bus(addr).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect_with(&mut bus, target, source, fast()).await?;
+    let mut l4 = Layer4Connection::connect(&mut bus, target, source, fast().into()).await?;
 
     // Three property reads succeed (3 acknowledged exchanges); the fourth draws
     // silence and surfaces the mid-session error with the counter.

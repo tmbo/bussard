@@ -48,7 +48,7 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_secure::Key16;
 
 use crate::secure::SecureKeyError;
-use crate::{Authorize, BusService, Device, FactsCache, L4Options, ServiceError, SourcePolicy};
+use crate::{Authorize, BusService, FactsCache, L4Options, Management, ServiceError, SourcePolicy};
 
 /// The largest parameter image a backup will pull off a device.
 ///
@@ -277,10 +277,10 @@ async fn capture_one(
     let device = inputs.model.devices.get(&target).map(|d| &d.device);
     let user_memory = inputs.user_memory_above_64k;
     let session = service
-        .with_device(target, &options, async |dev| {
+        .with_l4(target, &options, async |dev| {
             // The facts seed the connection, so the table reader skips its
             // walk, and give the identity verdict.
-            let check = match crate::identify(dev.l4_mut(), inputs.facts, device).await {
+            let check = match crate::identify(dev, inputs.facts, device).await {
                 Ok(identified) => identified.check,
                 Err(err) => {
                     tracing::debug!("{target} device facts: {err}");
@@ -323,7 +323,7 @@ fn clean_ascii(bytes: &[u8]) -> String {
 /// Reads one device's identity, tables and parameter memory on an open,
 /// authorized session.
 async fn read_one(
-    dev: &mut Device,
+    dev: &mut Management,
     target: IndividualAddress,
     user_memory: impl FnOnce() -> bool,
 ) -> DeviceCapture {
@@ -335,7 +335,7 @@ async fn read_one(
         .filter(|s| !s.is_empty());
 
     let read_at = SystemTime::now();
-    let live = bussard_download::read_live_tables(dev.l4_mut(), Sys7TableBases::default()).await;
+    let live = bussard_download::read_live_tables(dev, Sys7TableBases::default()).await;
     match live {
         Err(err) => DeviceCapture::failed(target, format!("reading the tables: {err}")),
         Ok(LiveRead::UnsupportedMask { mask, .. }) => DeviceCapture {
@@ -362,7 +362,7 @@ async fn read_one(
             let tables = live.tables().clone();
             let sys7 = live.sys7().cloned();
             let (application, parameters, parameter_status) =
-                read_application_state(dev.l4_mut(), tables.mask, user_memory).await;
+                read_application_state(dev, tables.mask, user_memory).await;
             let backup = DeviceBackup::capture(target, &tables, sys7.as_ref(), parameters, read_at);
             DeviceCapture {
                 entry: ManifestEntry {
@@ -408,8 +408,8 @@ async fn probe_mask(
         ..L4Options::default()
     };
     let session = service
-        .with_device(target, &options, async |dev| {
-            Ok::<_, ServiceError>(match dev.device_descriptor().await {
+        .with_l4(target, &options, async |dev| {
+            Ok::<_, ServiceError>(match bussard_mgmt::read_device_descriptor(dev).await {
                 Ok(mask) => Probe::Present(mask),
                 Err(err) if !err.device_present() => Probe::Absent,
                 Err(err) => Probe::Error(format!("reading the device descriptor: {err}")),

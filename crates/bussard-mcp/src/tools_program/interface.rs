@@ -73,12 +73,14 @@ async fn with_session<T>(
         .await
         .map_err(|e| format!("could not lease the bus: {e}"))?;
     let secure = bussard_service::secure::layer(tool_key, high_water);
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         LeaseChannel::new(lease),
         target,
         source,
-        Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;

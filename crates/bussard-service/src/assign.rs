@@ -34,9 +34,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::identity::{HIDDEN_MASK, SecureStatus, clean_ascii};
 use crate::secure::ToolKeys;
-use crate::{
-    Authorize, BusService, Device as ServiceDevice, L4Options, ServiceError, SourcePolicy,
-};
+use crate::{Authorize, BusService, L4Options, Management, ServiceError, SourcePolicy};
 
 /// The line to allocate on when the model has no devices to infer one from.
 pub const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -276,8 +274,8 @@ pub async fn probe_occupant(
         ..L4Options::default()
     };
     service
-        .with_device(target, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
+        .with_l4(target, &options, async |dev| {
+            let mask = match bussard_mgmt::read_device_descriptor(dev).await {
                 Ok(mask) => mask,
                 Err(MgmtError::Disconnected { .. }) => {
                     return Ok::<_, ServiceError>(Some(Occupant::default()));
@@ -361,7 +359,7 @@ pub async fn wait_for_programming_mode(
     loop {
         // Lease a fresh channel for this broadcast read (released each poll).
         let channel = service.lease_channel().await?;
-        let found = broadcast::devices_in_programming_mode_within(channel, source, window).await?;
+        let found = broadcast::devices_in_programming_mode(channel, source, window).await?;
         match found.len() {
             1 => return Ok(ProgrammingWait::One(found[0])),
             n if n > 1 => return Ok(ProgrammingWait::Several(found)),
@@ -393,7 +391,7 @@ pub async fn in_programming_mode(
     source: IndividualAddress,
 ) -> Result<Vec<IndividualAddress>, AssignError> {
     let channel = service.lease_channel().await?;
-    Ok(broadcast::devices_in_programming_mode_within(channel, source, collection_window()).await?)
+    Ok(broadcast::devices_in_programming_mode(channel, source, collection_window()).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -496,15 +494,18 @@ pub async fn identify(
         ..L4Options::default()
     };
     service
-        .with_device(address, &options, async |dev| {
-            let mask = dev.device_descriptor().await?;
+        .with_l4(address, &options, async |dev| {
+            let mask = bussard_mgmt::read_device_descriptor(dev).await?;
             if !secured && mask == HIDDEN_MASK {
                 return Ok(Verified {
                     secure: SecureStatus::ActivatedNoKey,
                     ..Verified::default()
                 });
             }
-            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+            if let Err(err) = dev
+                .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+                .await
+            {
                 tracing::debug!("{address} authorize (free access) did not grant: {err}");
             }
             Ok(Verified {
@@ -604,7 +605,7 @@ async fn verify_session(
         ..L4Options::default()
     };
     let session = service
-        .with_device(target, &options, async |dev| {
+        .with_l4(target, &options, async |dev| {
             Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode, secured).await)
         })
         .await;
@@ -620,34 +621,36 @@ async fn verify_session(
 
 /// The read-back half of [`verify_assignment_with`], on the open session.
 async fn read_back(
-    dev: &mut ServiceDevice,
+    dev: &mut Management,
     target: IndividualAddress,
     clear_programming_mode: bool,
     secured: bool,
 ) -> Result<Verified, VerifyError> {
-    let mask = dev.device_descriptor().await.map_err(|err| {
-        VerifyError::Unverified(if secured {
-            format!(
-                "wrote {target} and connected, but the device did not answer the SECURED \
+    let mask = bussard_mgmt::read_device_descriptor(dev)
+        .await
+        .map_err(|err| {
+            VerifyError::Unverified(if secured {
+                format!(
+                    "wrote {target} and connected, but the device did not answer the SECURED \
                  descriptor read ({err}): either the tool key is not this device's, or the \
                  device is not Data Secure-activated (retry without --keyring/--tool-key); the \
                  assignment is unverified"
-            )
-        } else if matches!(err, MgmtError::Disconnected { .. }) {
-            format!(
-                "wrote {target} and connected, but the device disconnected on the first read: \
+                )
+            } else if matches!(err, MgmtError::Disconnected { .. }) {
+                format!(
+                    "wrote {target} and connected, but the device disconnected on the first read: \
                  typical for devices whose management is gated on a loaded application or a \
                  different medium profile (e.g. KNX Virtual IP-medium `*.ip` devices, which \
                  disconnect on descriptor reads while their `*.tp` siblings answer). The address \
                  was written but could not be verified."
-            )
-        } else {
-            format!(
-                "wrote {target} and connected, but the device did not answer a descriptor read \
+                )
+            } else {
+                format!(
+                    "wrote {target} and connected, but the device did not answer a descriptor read \
                  ({err}); the assignment is unverified"
-            )
-        })
-    })?;
+                )
+            })
+        })?;
 
     if !secured && mask == HIDDEN_MASK {
         return Ok(Verified {
@@ -657,7 +660,10 @@ async fn read_back(
     }
     // Authorize the session (free access), as ETS does after the descriptor read
     // (issue #52 finding #1). Best-effort: the descriptor read verified the write.
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
+    if let Err(err) = dev
+        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
+        .await
+    {
         tracing::debug!("{target} authorize (free access) did not grant: {err}");
     }
     let manufacturer_id = read_manufacturer(dev).await;
@@ -694,7 +700,7 @@ async fn read_back(
 }
 
 /// `PID_MANUFACTURER_ID`, when readable.
-async fn read_manufacturer(dev: &mut ServiceDevice) -> Option<u16> {
+async fn read_manufacturer(dev: &mut Management) -> Option<u16> {
     match dev.read_device_property(PID_MANUFACTURER_ID).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
         _ => None,
@@ -702,7 +708,7 @@ async fn read_manufacturer(dev: &mut ServiceDevice) -> Option<u16> {
 }
 
 /// `PID_SERIAL_NUMBER`, when readable.
-async fn read_serial(dev: &mut ServiceDevice) -> Option<Vec<u8>> {
+async fn read_serial(dev: &mut Management) -> Option<Vec<u8>> {
     dev.read_device_property(PID_SERIAL_NUMBER)
         .await
         .ok()
@@ -710,7 +716,7 @@ async fn read_serial(dev: &mut ServiceDevice) -> Option<Vec<u8>> {
 }
 
 /// `PID_ORDER_INFO` as text, when readable.
-async fn read_order(dev: &mut ServiceDevice) -> Option<String> {
+async fn read_order(dev: &mut Management) -> Option<String> {
     dev.read_device_property(PID_ORDER_INFO)
         .await
         .ok()

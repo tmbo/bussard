@@ -360,6 +360,27 @@ impl Timeouts {
     }
 }
 
+/// How [`Layer4Connection::connect`] opens a session: the timeout budget and
+/// the KNX Data Secure layer.
+#[derive(Debug, Default)]
+pub struct ConnectOptions {
+    /// The layer-4 timeout budget.
+    pub timeouts: Timeouts,
+    /// [`SecureLayer::plain`](crate::secure::SecureLayer::plain) for plain
+    /// management, or an activated layer that wraps every APDU (spec §6.1).
+    pub secure: crate::secure::SecureLayer,
+}
+
+impl From<Timeouts> for ConnectOptions {
+    /// Plain management on `timeouts`.
+    fn from(timeouts: Timeouts) -> Self {
+        ConnectOptions {
+            timeouts,
+            secure: crate::secure::SecureLayer::plain(),
+        }
+    }
+}
+
 /// How often an S-A_Sync_Req that the device T_ACKs but does not answer is
 /// repeated on the same connection before the sync is declared unanswered
 /// (issue #166).
@@ -594,49 +615,18 @@ impl<Ch: L4Channel> Layer4Connection<Ch> {
     /// `conn` is the frame channel — a borrowed
     /// [`BusConnection`](bussard_transport::BusConnection) or a
     /// [`LeaseChannel`]. `source` is the individual address the tool presents as.
-    /// The connection is established optimistically; the first `send_data` that
+    /// `options` carries the timeout budget and the KNX Data Secure layer
+    /// (issue #71, spec §6.1): [`ConnectOptions::default`] is the plain path on
+    /// the default budget; a `Timeouts` converts into plain options. The
+    /// connection is established optimistically; the first `send_data` that
     /// times out without any `T_ACK` surfaces the device as absent.
     pub async fn connect(
-        conn: Ch,
-        target: IndividualAddress,
-        source: IndividualAddress,
-    ) -> Result<Layer4Connection<Ch>> {
-        Self::connect_with(conn, target, source, Timeouts::default()).await
-    }
-
-    /// Like [`connect`](Self::connect) but with an explicit timeout budget.
-    pub async fn connect_with(
-        conn: Ch,
-        target: IndividualAddress,
-        source: IndividualAddress,
-        timeouts: Timeouts,
-    ) -> Result<Layer4Connection<Ch>> {
-        Self::connect_with_secure(
-            conn,
-            target,
-            source,
-            timeouts,
-            crate::secure::SecureLayer::plain(),
-        )
-        .await
-    }
-
-    /// Like [`connect_with`](Self::connect_with) but with an explicit KNX Data
-    /// Secure layer (issue #71, spec §6.1).
-    ///
-    /// Pass [`SecureLayer::plain`](crate::secure::SecureLayer::plain) for the
-    /// unchanged plain path, or
-    /// [`SecureLayer::activated`](crate::secure::SecureLayer::activated) with a
-    /// `DataSecureSession` to wrap every management APDU for a security-activated
-    /// device. This is the single seam that turns a plain management connection
-    /// into a secure one; the state machine above it is unchanged.
-    pub async fn connect_with_secure(
         mut conn: Ch,
         target: IndividualAddress,
         source: IndividualAddress,
-        timeouts: Timeouts,
-        secure: crate::secure::SecureLayer,
+        options: ConnectOptions,
     ) -> Result<Layer4Connection<Ch>> {
+        let ConnectOptions { timeouts, secure } = options;
         let frame = CemiFrame::t_control(target, source, tpci::T_CONNECT);
         conn.send(frame).await?;
         Ok(Layer4Connection {
@@ -2557,7 +2547,8 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
@@ -2581,7 +2572,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_RESTART_RESPONSE, &[0x00, 0x00, 0x08]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let response = crate::load::master_reset(&mut l4, 7, 0).await?;
         assert_eq!(response.error_code, 0);
         assert_eq!(response.process_time_s, 8);
@@ -2607,7 +2599,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_RESTART_RESPONSE, &[0x02, 0x00, 0x00]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let err = crate::load::master_reset(&mut l4, 7, 0)
             .await
             .err()
@@ -2649,7 +2642,7 @@ mod tests {
         // Here we let the first attempt time out (empty inbox) and never ACK, so
         // the send fails; we assert the request was sent max_repetitions+1 times.
         let mut bus = ScriptedBus::new(vec![]);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let err = l4
             .send_data(0x300, &[0x00])
             .await
@@ -2680,7 +2673,8 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let (_apci, data) = l4.request(0x300, &[0x00]).await?;
         // The wrong-seq frame was dropped; the correct one delivered.
         assert_eq!(data, vec![0x07, 0xB0]);
@@ -2702,7 +2696,8 @@ mod tests {
         // lost and recv_response times out.
         let inbox = vec![ndt_from_dev(0, 0x340, &[0x07, 0xB0])];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
@@ -2739,7 +2734,7 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let (apci, data) = l4.request(0x300, &[0x00]).await?;
         // The stale duplicate was not mistaken for the response; the real answer
         // was delivered.
@@ -2770,7 +2765,7 @@ mod tests {
             inbox.push(control_from_dev(tpci::t_nak(0)));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let err = l4
             .send_data(0x300, &[0x00])
             .await
@@ -2803,7 +2798,7 @@ mod tests {
             control_from_dev(tpci::t_ack(0)),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.send_data(0x300, &[]).await?;
         assert_eq!(l4.send_seq, 1);
         assert!(!l4.is_closed());
@@ -2822,7 +2817,7 @@ mod tests {
             control_from_dev(tpci::t_ack(0)),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.send_data(0x300, &[]).await?;
         drop(l4);
         assert_eq!(
@@ -2842,7 +2837,7 @@ mod tests {
             control_from_dev(tpci::t_ack(0)),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.send_data(0x300, &[0x01]).await?;
         drop(l4);
         let ndts: Vec<&CemiFrame> = bus
@@ -2868,7 +2863,7 @@ mod tests {
             ndt_from_dev(1, 0x340, &[0x07, 0xB1]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.request(0x300, &[]).await?;
         let (_, data) = l4.request(0x300, &[]).await?;
         assert_eq!(data, vec![0x07, 0xB1]);
@@ -2891,7 +2886,7 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.request(0x300, &[]).await?;
         let err = l4
             .send_data(0x300, &[])
@@ -2923,7 +2918,7 @@ mod tests {
         // sent back, not even on the user's disconnect.
         let inbox = vec![control_from_dev(tpci::T_DISCONNECT)];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let err = l4.send_data(0x300, &[]).await.err().ok_or("disconnected")?;
         assert!(matches!(err, MgmtError::Disconnected { .. }), "got {err:?}");
         l4.disconnect().await?;
@@ -2939,7 +2934,7 @@ mod tests {
         // disconnect sends the T_Disconnect it is owed.
         let inbox = vec![control_from_dev(tpci::t_ack(0))];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let err = l4.request(0x300, &[]).await.err().ok_or("no response")?;
         assert!(
             matches!(err, MgmtError::MidSessionSilence { .. }),
@@ -2962,7 +2957,7 @@ mod tests {
         ];
         let mut bus = ScriptedBus::new(inbox);
         bus.fail_when_empty = true;
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         l4.request(0x300, &[]).await?;
         let err = l4
             .send_data(0x300, &[])
@@ -2990,7 +2985,7 @@ mod tests {
         // 03_03_04 §5: the device closes a connection idle for 6 s.
         let inbox = vec![control_from_dev(tpci::t_ack(0))];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         assert!(
             !l4.idle_beyond_connection_timeout(),
             "the peer never showed itself"
@@ -3016,7 +3011,8 @@ mod tests {
             inbox.push(control_from_dev(tpci::t_ack(i & 0x0f)));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         for _ in 0..17 {
             l4.send_data(0x300, &[0x00]).await?;
         }
@@ -3039,7 +3035,8 @@ mod tests {
             inbox.push(ndt_from_dev(i & 0x0f, 0x340, &[0x07, 0xB0]));
         }
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         for _ in 0..18 {
             let (apci, _data) = l4.request(0x300, &[0x00]).await?;
             assert_eq!(apci, 0x340);
@@ -3082,7 +3079,8 @@ mod tests {
         inbox.push(ndt_from_dev(14, 0x340, &[0xAA])); // stale duplicate
         inbox.push(ndt_from_dev(15, 0x340, &[0xBB])); // the real answer
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         for _ in 0..15 {
             l4.request(0x300, &[0x00]).await?;
         }
@@ -3110,7 +3108,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x00]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
         assert_eq!(outcome, AuthorizeOutcome::Granted { level: 0 });
         // The tool sent the exact captured wire form [00 FF FF FF FF].
@@ -3138,7 +3137,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let outcome = l4.authorize(0x0011_2233).await?;
         assert_eq!(outcome, AuthorizeOutcome::Denied { level: 3 });
         // authorize_or_fail turns that into an explicit AccessDenied error.
@@ -3147,7 +3147,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x03]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let err = l4
             .authorize_or_fail(0x0011_2233)
             .await
@@ -3174,7 +3175,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_AUTHORIZE_RESPONSE, &[0x0F]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let outcome = l4.authorize(0x0011_2233).await?;
         assert_eq!(outcome, AuthorizeOutcome::Denied { level: 15 });
         assert!(!outcome.grants(15));
@@ -3216,7 +3218,8 @@ mod tests {
             ndt_from_dev(0, crate::apci::A_DEVICE_DESCRIPTOR_RESPONSE, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let outcome = l4.authorize_or_fail(crate::apci::FREE_ACCESS_KEY).await?;
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
@@ -3233,7 +3236,7 @@ mod tests {
         // error — an unkeyed device that does not implement authorize is expected.
         let inbox = vec![control_from_dev(tpci::t_ack(0))];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
@@ -3251,7 +3254,7 @@ mod tests {
         // ever reaching the wire.
         let inbox = vec![control_from_dev(tpci::t_ack(0))];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let outcome = l4.authorize(crate::apci::FREE_ACCESS_KEY).await?;
         assert!(
             matches!(outcome, AuthorizeOutcome::Unsupported { .. }),
@@ -3378,7 +3381,8 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = ScriptedBus::new(inbox);
-        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool()).await?;
+        let mut l4 =
+            Layer4Connection::connect(&mut bus, dev(), tool(), ConnectOptions::default()).await?;
         let (apci, data) = l4.request(0x300, &[0x00]).await?;
         assert_eq!(apci, 0x340);
         assert_eq!(data, vec![0x07, 0xB0]);
@@ -3424,12 +3428,14 @@ mod tests {
             ndt_from_dev(1, resp_apci, &resp_asdu),
         ];
         let mut bus = SyncingBus::new(key, inbox);
-        let mut l4 = Layer4Connection::connect_with_secure(
+        let mut l4 = Layer4Connection::connect(
             &mut bus,
             dev(),
             tool(),
-            Timeouts::default(),
-            secure,
+            ConnectOptions {
+                timeouts: Timeouts::default(),
+                secure,
+            },
         )
         .await?;
 
@@ -3495,8 +3501,16 @@ mod tests {
         );
         let mut bus = SyncingBus::new(key, Vec::new());
         bus.unanswered_syncs = u32::MAX;
-        let mut l4 =
-            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            dev(),
+            tool(),
+            ConnectOptions {
+                timeouts: fast(),
+                secure,
+            },
+        )
+        .await?;
         l4.set_sync_retry(SyncRetry::default().with_backoff_cap(Duration::from_millis(1)));
         let err = l4.request(0x300, &[0x00]).await.err();
         assert!(
@@ -3530,8 +3544,16 @@ mod tests {
         );
         let mut bus = SyncingBus::new(key, Vec::new());
         bus.unanswered_syncs = 2;
-        let mut l4 =
-            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            dev(),
+            tool(),
+            ConnectOptions {
+                timeouts: fast(),
+                secure,
+            },
+        )
+        .await?;
         l4.set_sync_retry(SyncRetry::default().with_backoff_cap(Duration::from_millis(1)));
         l4.ensure_secure_sync().await?;
         assert!(l4.secure.is_synced(), "the third Sync_Req is answered");
@@ -3565,8 +3587,16 @@ mod tests {
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ];
         let mut bus = SyncingBus::new(key, inbox);
-        let mut l4 =
-            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            dev(),
+            tool(),
+            ConnectOptions {
+                timeouts: fast(),
+                secure,
+            },
+        )
+        .await?;
         assert!(l4.is_secure());
         let descriptor = read_device_descriptor_unsecured(&mut l4).await?;
         assert_eq!(descriptor, 0x07B0);
@@ -3604,12 +3634,14 @@ mod tests {
 
         let inbox = vec![control_from_dev(tpci::t_ack(1))];
         let mut bus = SyncingBus::new(key, inbox);
-        let mut l4 = Layer4Connection::connect_with_secure(
+        let mut l4 = Layer4Connection::connect(
             &mut bus,
             dev(),
             tool(),
-            Timeouts::default(),
-            secure,
+            ConnectOptions {
+                timeouts: Timeouts::default(),
+                secure,
+            },
         )
         .await?;
         l4.send_data(0x3D1, &[0x00, 0xFF, 0xFF, 0xFF, 0xFF]).await?;
@@ -3677,12 +3709,14 @@ mod tests {
         bus.device_sequence = device_sequence;
         let tool_session =
             DataSecureSession::new(Key16::new(key)).with_send_sequence(Sequence::new(1000));
-        let mut l4 = Layer4Connection::connect_with_secure(
+        let mut l4 = Layer4Connection::connect(
             &mut bus,
             dev(),
             tool(),
-            fast(),
-            crate::secure::SecureLayer::activated(tool_session),
+            ConnectOptions {
+                timeouts: fast(),
+                secure: crate::secure::SecureLayer::activated(tool_session),
+            },
         )
         .await?;
         let written = crate::ip_secure::write_sequence_number(&mut l4, clock).await?;
@@ -3739,8 +3773,16 @@ mod tests {
             // for a real one (empty inbox), which is fine for this assertion.
         ];
         let mut bus = SyncingBus::new(key, inbox);
-        let mut l4 =
-            Layer4Connection::connect_with_secure(&mut bus, dev(), tool(), fast(), secure).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            dev(),
+            tool(),
+            ConnectOptions {
+                timeouts: fast(),
+                secure,
+            },
+        )
+        .await?;
 
         let err = l4
             .request(0x300, &[0x00])
@@ -3788,7 +3830,7 @@ mod tests {
         // no ACK wait, no repetition.
         let mut bus = ScriptedBus::new(vec![con_for_dev(tpci::T_CONNECT, true)]);
         let mut l4 =
-            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+            Layer4Connection::connect(&mut bus, dev(), tool(), fast_discovery().into()).await?;
         let started = std::time::Instant::now();
         let err = l4
             .request(0x300, &[])
@@ -3818,7 +3860,7 @@ mod tests {
         // the ACK wait, and sends no T_Disconnect (the connection never
         // opened). The readiness probe's caller retries (#212).
         let mut bus = ScriptedBus::new(vec![con_for_dev(tpci::T_CONNECT, true)]);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let started = std::time::Instant::now();
         let err = l4
             .request(0x300, &[])
@@ -3848,7 +3890,7 @@ mod tests {
         // classifies under discovery; every other budget keeps the ACK timeout
         // and the repetitions, and the error is the old NoResponse.
         let mut bus = ScriptedBus::new(vec![con_for_dev(tpci::ndt(0), true)]);
-        let mut l4 = Layer4Connection::connect_with(&mut bus, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut bus, dev(), tool(), fast().into()).await?;
         let err = l4
             .request(0x300, &[])
             .await
@@ -3874,7 +3916,7 @@ mod tests {
         ];
         let mut bus = ScriptedBus::new(inbox);
         let mut l4 =
-            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+            Layer4Connection::connect(&mut bus, dev(), tool(), fast_discovery().into()).await?;
         let (apci, data) = l4.request(0x300, &[]).await?;
         assert_eq!((apci, data), (0x340, vec![0x07, 0xB0]));
         drop(l4);
@@ -3883,7 +3925,7 @@ mod tests {
             control_from_dev(tpci::t_ack(0)),
             ndt_from_dev(0, 0x340, &[0x07, 0xB0]),
         ]);
-        let mut l4 = Layer4Connection::connect_with(&mut plain, dev(), tool(), fast()).await?;
+        let mut l4 = Layer4Connection::connect(&mut plain, dev(), tool(), fast().into()).await?;
         l4.request(0x300, &[]).await?;
         drop(l4);
         assert_eq!(bus.sent, plain.sent, "byte-identical frames");
@@ -3903,7 +3945,7 @@ mod tests {
         ];
         let mut bus = ScriptedBus::new(inbox);
         let mut l4 =
-            Layer4Connection::connect_with(&mut bus, dev(), tool(), fast_discovery()).await?;
+            Layer4Connection::connect(&mut bus, dev(), tool(), fast_discovery().into()).await?;
         l4.request(0x300, &[]).await?;
         let err = l4
             .request(0x300, &[])

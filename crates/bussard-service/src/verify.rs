@@ -1217,8 +1217,13 @@ mod tests {
                 &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
             )
             .await?;
-            let mut l4 =
-                Layer4Connection::connect(&mut bus, "1.1.1".parse()?, "0.0.255".parse()?).await?;
+            let mut l4 = Layer4Connection::connect(
+                &mut bus,
+                "1.1.1".parse()?,
+                "0.0.255".parse()?,
+                bussard_mgmt::ConnectOptions::default(),
+            )
+            .await?;
             let out = read_back(&mut l4, &expected).await;
             let _ = l4.disconnect().await;
             assert_eq!(out.verified, verified, "{:?}", out.leftovers);
@@ -1245,8 +1250,13 @@ mod tests {
             &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
         )
         .await?;
-        let mut l4 =
-            Layer4Connection::connect(&mut bus, "1.1.200".parse()?, "0.0.255".parse()?).await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            "1.1.200".parse()?,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
         let ip = PropObject::Type {
             object_type: 11,
             occurrence: 0,

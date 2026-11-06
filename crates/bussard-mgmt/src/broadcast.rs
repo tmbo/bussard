@@ -20,8 +20,9 @@ use crate::error::Result;
 /// generous enough to catch a single expected responder.
 pub const PROGRAMMING_MODE_WINDOW: Duration = Duration::from_millis(1500);
 
-/// Broadcasts `A_IndividualAddress_Read` and collects the individual addresses
-/// of every device currently in programming mode.
+/// Broadcasts `A_IndividualAddress_Read` and collects, for `window`, the
+/// individual addresses of every device currently in programming mode
+/// ([`PROGRAMMING_MODE_WINDOW`] is the usual budget).
 ///
 /// Each device in programming mode answers with an
 /// `A_IndividualAddress_Response` whose **source** is its own individual
@@ -29,16 +30,6 @@ pub const PROGRAMMING_MODE_WINDOW: Duration = Duration::from_millis(1500);
 /// order first seen). Normally there is exactly zero or one — pressing the
 /// programming button on two devices at once is a user error this surfaces.
 pub async fn devices_in_programming_mode<Ch: L4Channel>(
-    bus: Ch,
-    source: IndividualAddress,
-) -> Result<Vec<IndividualAddress>> {
-    devices_in_programming_mode_within(bus, source, PROGRAMMING_MODE_WINDOW).await
-}
-
-/// Like [`devices_in_programming_mode`] but with an explicit collection
-/// `window`. Used by `bussard assign` so its integration tests can shrink the
-/// window (via `BUSSARD_ASSIGN_WAIT_MS`) without changing the default behaviour.
-pub async fn devices_in_programming_mode_within<Ch: L4Channel>(
     mut bus: Ch,
     source: IndividualAddress,
     window: Duration,
@@ -101,24 +92,14 @@ pub async fn write_individual_address<Ch: L4Channel>(
 
 /// Broadcasts `A_IndividualAddressSerialNumber_Read` for `serial` and returns
 /// the individual address the matching device reports, or `None` if no device
-/// with that serial answers within [`PROGRAMMING_MODE_WINDOW`].
+/// with that serial answers within `window` ([`PROGRAMMING_MODE_WINDOW`] is the
+/// usual budget).
 ///
 /// Unlike the programming-mode read, this targets one specific device by its
 /// 6-byte KNX serial number, so **no button press is required**. The answering
 /// device's address is the frame source of its
 /// `A_IndividualAddressSerialNumber_Response`.
 pub async fn read_individual_address_by_serial<Ch: L4Channel>(
-    bus: Ch,
-    source: IndividualAddress,
-    serial: [u8; 6],
-) -> Result<Option<IndividualAddress>> {
-    read_individual_address_by_serial_within(bus, source, serial, PROGRAMMING_MODE_WINDOW).await
-}
-
-/// Like [`read_individual_address_by_serial`] but with an explicit collection
-/// `window`. Lets integration tests rule out an unknown serial quickly instead
-/// of waiting the full default window.
-pub async fn read_individual_address_by_serial_within<Ch: L4Channel>(
     mut bus: Ch,
     source: IndividualAddress,
     serial: [u8; 6],

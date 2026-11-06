@@ -207,7 +207,13 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
         .start()
         .await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     // The plan names the change: object 2's flag goes on.
     let check = check_object_table(&mut l4, &wanted)
@@ -308,7 +314,13 @@ async fn test_apply_tables_with_keep_tables_loads_only_the_object_table() -> Tes
         .start()
         .await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target()?, "0.0.255".parse()?).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let objects = discover_table_objects(&mut l4).await?;
     let outcome = apply_tables(
         &mut l4,

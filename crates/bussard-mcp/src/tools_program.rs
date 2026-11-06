@@ -3155,12 +3155,14 @@ async fn read_device(
         .map_err(|e| format!("could not lease the bus: {e}"))?;
     // A device reset to default is named, not read under its FDSK (#532).
     let secure = bussard_service::secure::layer_with_factory_key(tool_key, factory_key, high_water);
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         LeaseChannel::new(lease),
         target,
         source,
-        Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;
@@ -3254,12 +3256,14 @@ async fn read_property_rows(
         .await
         .map_err(|e| format!("could not lease the bus: {e}"))?;
     let secure = bussard_service::secure::layer(tool_key, &SequenceHighWater::new());
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         LeaseChannel::new(lease),
         target,
         source,
-        Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| format!("connecting to {target}: {e}"))?;

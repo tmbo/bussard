@@ -26,9 +26,7 @@ use std::time::Duration;
 
 use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::tables::{DeviceTables, read_tables};
-use bussard_mgmt::{
-    DeviceConnection, L4Channel, MaskProfile, Timeouts, manufacturers, system_type,
-};
+use bussard_mgmt::{L4Channel, MaskProfile, Timeouts, manufacturers, system_type};
 use bussard_model::schema::{
     BussardConfig, ComObject, Device, Group, Groups, Link, Links, Product,
 };
@@ -198,7 +196,10 @@ pub async fn sweep_line(
 }
 
 /// Reads a two-byte device property, `None` when absent or short.
-async fn read_u16<Ch: L4Channel>(dev: &mut DeviceConnection<Ch>, pid: u8) -> Option<u16> {
+async fn read_u16<Ch: L4Channel>(
+    dev: &mut bussard_mgmt::Layer4Connection<Ch>,
+    pid: u8,
+) -> Option<u16> {
     match dev.read_device_property(pid).await {
         Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
         _ => None,
@@ -232,8 +233,8 @@ async fn probe_line(
         ..L4Options::default()
     };
     let (mask, manufacturer_id, serial, order) = service
-        .with_device(addr, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
+        .with_l4(addr, &options, async |dev| {
+            let mask = match bussard_mgmt::read_device_descriptor(dev).await {
                 Ok(mask) => mask,
                 Err(err) => {
                     if err.device_present() {
