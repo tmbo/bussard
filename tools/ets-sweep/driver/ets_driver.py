@@ -439,6 +439,17 @@ def flow_state(req: dict) -> dict:
     return {"project": window_project(), "tabs": [l["text"] for l in ocr(LAYOUT["tab_strip"])], "popups": len(ets_popups())}
 
 
+def click_button(label: str, bbox: tuple[int, int, int, int]) -> None:
+    """Clicks the OCR line that is exactly `label` (a leading check mark or
+    cross allowed). A wide search strip also holds other text: the fuzzy
+    match took 'Secure, Schalter/Jalousie 8-fach' for 'Ja' (2026-11-06)."""
+    hits = [l for l in ocr(bbox) if re.fullmatch(rf"\W{{0,3}}\s*{re.escape(label)}", l["text"].strip())]
+    if not hits:
+        raise RuntimeError(f"button {label!r} not on screen in {bbox}")
+    hit = hits[0]
+    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+
+
 def project_tab_hit(name: str) -> dict | None:
     """The tab of project `name` in the tab strip. OCR splits a hyphenated
     name into fragments ('ets', '-sweep', '-secure', 2026-11-04): when no
@@ -1348,7 +1359,9 @@ def flow_delete_device(req: dict) -> dict:
     # room actuator): wait for it, confirm, and check the device is gone.
     t0 = time.time()
     confirmed = False
-    while time.time() - t0 < float(req.get("confirm_wait", 10)):
+    # A large product shows the confirmation late: once after 10 s, so the
+    # dialog stayed open and blocked the next imports (2026-11-06).
+    while time.time() - t0 < float(req.get("confirm_wait", 30)):
         time.sleep(1)
         if time.time() - t0 > 3 and not find_text("Möchten Sie", LAYOUT["delete_dialog"]):
             # ETS deletes without asking once its confirmation is switched off
@@ -1363,10 +1376,10 @@ def flow_delete_device(req: dict) -> dict:
             # (2026-10-28).
             named = " ".join(l["text"] for l in ocr(LAYOUT["delete_dialog"]))
             if req["ia"] in named.replace(" ", "") and "Linie" not in named:
-                click_text("Ja", LAYOUT["delete_yes"])
+                click_button("Ja", LAYOUT["delete_yes"])
                 confirmed = True
             else:
-                click_text("Nein", (1300, 1380, 2800, 1580))
+                click_button("Nein", (1300, 1380, 2800, 1580))
                 raise RuntimeError(f"delete dialog does not name {req['ia']}: {named[:200]}")
             break
     time.sleep(2)
