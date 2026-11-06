@@ -630,29 +630,58 @@ impl ExportCheck {
     }
 }
 
-/// A `.knxkeys` export produced by [`KeyStore::export_knxkeys`].
-pub struct KnxkeysExport {
+/// A keyring export (`bussard keys export`, `knx_export`, issue #744): the
+/// signed `.knxkeys` [`KeyStore::export_knxkeys`] built, and what reading the
+/// written file back found ([`KeyringExport::read_back`], issue #349).
+/// Serializes to counts and addresses only; the document is never part of it.
+#[derive(Clone, serde::Serialize)]
+pub struct KeyringExport {
     /// The signed XML document.
+    #[serde(skip)]
     pub xml: String,
-    /// Devices left out because the store has no tool key for them (ETS
-    /// requires one per `<Device>`).
-    pub skipped_devices: Vec<IndividualAddress>,
     /// Devices written.
     pub devices: usize,
     /// Group keys written.
     pub group_keys: usize,
     /// Interfaces written.
     pub interfaces: usize,
+    /// Devices left out because the store has no tool key for them (ETS
+    /// requires one per `<Device>`).
+    pub skipped_devices: Vec<IndividualAddress>,
+    /// Whether the file as written was read back, its signature checked,
+    /// decrypted and its key set found equal to the store's.
+    pub verified: bool,
+    /// The group addresses the written file carries a key for.
+    pub group_addresses: Vec<GroupAddress>,
+    /// Group addresses secure in the model or the store without a key in the
+    /// export (filled by the caller that knows the model).
+    pub omitted_group_addresses: Vec<GroupAddress>,
+    /// What the read-back found missing or different, as sentences.
+    pub leftovers: Vec<String>,
 }
 
-impl std::fmt::Debug for KnxkeysExport {
+impl KeyringExport {
+    /// Records what reading the written file back found
+    /// ([`KeyStore::check_export`]).
+    pub fn read_back(&mut self, check: &ExportCheck) {
+        self.verified = check.verified();
+        self.group_addresses = check.group_addresses.clone();
+        self.leftovers = check.leftovers();
+    }
+}
+
+impl std::fmt::Debug for KeyringExport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("KnxkeysExport")
+        f.debug_struct("KeyringExport")
             .field("xml", &format_args!("<{} bytes>", self.xml.len()))
-            .field("skipped_devices", &self.skipped_devices)
             .field("devices", &self.devices)
             .field("group_keys", &self.group_keys)
             .field("interfaces", &self.interfaces)
+            .field("skipped_devices", &self.skipped_devices)
+            .field("verified", &self.verified)
+            .field("group_addresses", &self.group_addresses)
+            .field("omitted_group_addresses", &self.omitted_group_addresses)
+            .field("leftovers", &self.leftovers)
             .finish()
     }
 }
@@ -1115,12 +1144,12 @@ impl KeyStore {
     /// included, as ETS writes them), raw group addresses, a fresh `Created`
     /// and random password prefixes, signed with the keyring key of
     /// `password`. Devices without a tool key are left out (listed in
-    /// [`KnxkeysExport::skipped_devices`]).
+    /// [`KeyringExport::skipped_devices`]).
     ///
     /// # Errors
     ///
     /// A string too long for the signature framing, or a crypto failure.
-    pub fn export_knxkeys(&self, password: &str) -> Result<KnxkeysExport, KeyStoreError> {
+    pub fn export_knxkeys(&self, password: &str) -> Result<KeyringExport, KeyStoreError> {
         let keyring_key = pbkdf2_key(&Zeroizing::new(latin1_bytes(password)), salt::KEYRING);
         let created = now_timestamp();
         let iv = created_iv(&created);
@@ -1138,21 +1167,21 @@ impl KeyStore {
         self.write_body(&mut w, GaStyle::Raw, false)?;
         w.close("Keyring");
         let xml = sign(&w.finish(), &keyring_key, None)?;
-        Ok(KnxkeysExport {
+        Ok(KeyringExport {
             xml,
+            devices: self.tool_key_devices().count(),
+            group_keys: self.group_keys.len(),
+            interfaces: self.interfaces.len(),
             skipped_devices: self
                 .devices
                 .iter()
                 .filter(|(_, d)| d.tool_key.is_none())
                 .map(|(ia, _)| *ia)
                 .collect(),
-            devices: self
-                .devices
-                .values()
-                .filter(|d| d.tool_key.is_some())
-                .count(),
-            group_keys: self.group_keys.len(),
-            interfaces: self.interfaces.len(),
+            verified: false,
+            group_addresses: Vec::new(),
+            omitted_group_addresses: Vec::new(),
+            leftovers: Vec::new(),
         })
     }
 

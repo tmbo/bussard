@@ -774,22 +774,18 @@ fn export_keyring(dir: &Path, out: &Path, args: &ExportArgs) -> Result<Value, Va
             out.display()
         )
     };
-    Ok(json!({
-        "ok": export.verified,
-        "what": "keyring",
-        "path": out.display().to_string(),
-        "summary": summary,
-        "devices": export.devices,
-        "group_keys": export.group_keys,
-        "interfaces": export.interfaces,
-        "skipped_devices": export.skipped_devices,
-        "verified": export.verified,
-        "group_addresses": export.group_addresses,
-        "omitted_group_addresses": export.omitted_group_addresses,
-        "leftovers": export.leftovers,
-        "warnings": log.lines,
-        "note": "key material is never returned",
-    }))
+    let mut value = serde_json::to_value(&export).map_err(|err| refused(err.to_string(), &none))?;
+    for (key, extra) in [
+        ("ok", json!(export.verified)),
+        ("what", json!("keyring")),
+        ("path", json!(out.display().to_string())),
+        ("summary", json!(summary)),
+        ("warnings", json!(log.lines)),
+        ("note", json!("key material is never returned")),
+    ] {
+        value[key] = extra;
+    }
+    Ok(value)
 }
 
 /// The file name of `path`, or the path when it has none.
