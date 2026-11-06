@@ -42,8 +42,7 @@ fn restart_digest(target: IndividualAddress, form: RestartForm) -> String {
     put(&mut h, b"bussard-restart-v1");
     put(&mut h, &target.raw().to_be_bytes());
     put(&mut h, form.name().as_bytes());
-    let bytes: [u8; 32] = h.finalize().into();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bussard_model::text::hex(&h.finalize())
 }
 
 impl BussardMcp {

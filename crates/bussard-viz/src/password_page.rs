@@ -27,6 +27,7 @@ use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use bussard_model::text::escape_html;
 use bussard_secure::Password;
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
@@ -138,7 +139,7 @@ impl PasswordPage {
     ) -> std::io::Result<Self> {
         let mut bytes = [0u8; 16];
         getrandom::getrandom(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let token = bussard_model::text::hex(&bytes);
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
@@ -368,22 +369,6 @@ fn render_closed(message: &str, good: bool) -> String {
             ),
         )
         .replace("{{form}}", "<p>You can close this page.</p>")
-}
-
-/// `text` safe inside an HTML element or a double-quoted attribute.
-fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

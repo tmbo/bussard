@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bussard_download::build_table_images;
+use bussard_model::text::hex;
 use bussard_prod::ProductData;
 use zip::write::SimpleFileOptions;
 
@@ -47,11 +48,6 @@ fn product(dir: &Path) -> Result<ProductData, Box<dyn std::error::Error>> {
     }
     zip.finish()?;
     Ok(bussard_prod::read_knxprod(&out)?)
-}
-
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[test]

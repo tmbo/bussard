@@ -7,6 +7,8 @@
 
 use std::time::SystemTime;
 
+use bussard_model::text::hex;
+
 use owo_colors::{OwoColorize, Style};
 use serde_json::json;
 
@@ -143,16 +145,6 @@ fn secure_tag(t: &DecodedTelegram) -> Option<String> {
         tag.push_str(&format!("; warning: {warning}"));
     }
     Some(tag)
-}
-
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        use std::fmt::Write;
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 /// The padding width for a coloured segment: the field width, but never less

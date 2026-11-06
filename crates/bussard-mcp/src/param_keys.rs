@@ -18,6 +18,7 @@ use bussard_model::device_view::{
 };
 use bussard_model::param_model::ProductModels;
 use bussard_model::schema::{Device, LockedParameter};
+use bussard_model::text::edit_distance;
 use bussard_model::{IndividualAddress, Model, param_mem_key, slug};
 
 /// The key grammar, stated once for the tool descriptions, `how_to_change`
@@ -792,24 +793,6 @@ fn closest<'a>(
     scored.into_iter().take(n).map(|s| s.4).collect()
 }
 
-/// The Levenshtein distance between `a` and `b`, by characters.
-fn edit_distance(a: &str, b: &str) -> usize {
-    let b: Vec<char> = b.chars().collect();
-    let mut row: Vec<usize> = (0..=b.len()).collect();
-    for (i, ca) in a.chars().enumerate() {
-        let mut diagonal = i;
-        row[0] = i + 1;
-        for (j, cb) in b.iter().enumerate() {
-            let above = row[j + 1];
-            row[j + 1] = (diagonal + usize::from(ca != *cb))
-                .min(row[j] + 1)
-                .min(above + 1);
-            diagonal = above;
-        }
-    }
-    row[b.len()]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1208,12 +1191,5 @@ brightness.send = "4/1/5"
             .ok_or("a prefix resolved")?;
         assert!(err.contains("Closest: `a.dusk-threshold-in-lx`"), "{err}");
         Ok(())
-    }
-
-    #[test]
-    fn test_edit_distance_counts_edits() {
-        assert_eq!(edit_distance("kitten", "sitting"), 3);
-        assert_eq!(edit_distance("", "abc"), 3);
-        assert_eq!(edit_distance("same", "same"), 0);
     }
 }

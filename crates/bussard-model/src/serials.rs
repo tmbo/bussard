@@ -17,7 +17,7 @@ pub const SERIAL_LEN: usize = 6;
 
 /// A serial number as the lock spells it: twelve upper-case hex digits.
 pub fn format_serial(serial: &[u8; SERIAL_LEN]) -> String {
-    serial.iter().map(|b| format!("{b:02X}")).collect()
+    crate::text::hex_upper(serial)
 }
 
 /// What [`Model::record_serial`] changed.

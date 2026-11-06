@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::Key16;
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
@@ -412,11 +413,6 @@ fn summary(
         ));
     }
     out
-}
-
-/// Lower-case hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 #[cfg(test)]

@@ -1,10 +1,13 @@
 //! Minimal, dependency-free RFC3339 UTC time formatting and parsing.
 //!
-//! The store needs a stable, lexicographically-sortable text timestamp and the
-//! ability to read it back; the pretty formatter needs a `HH:MM:SS.mmm` clock.
-//! Rather than pull a date-time crate (whose recent versions require a newer
-//! toolchain), this module converts a [`SystemTime`] to/from a civil UTC time
-//! using the standard proleptic-Gregorian day-count algorithms.
+//! The monitor store needs a stable, lexicographically-sortable text timestamp
+//! and the ability to read it back; the pretty formatter needs a `HH:MM:SS.mmm`
+//! clock; history snapshots and backups need second-precision stamps and a
+//! compact form for directory names. Rather than pull a date-time crate (whose
+//! recent versions require a newer toolchain), this module converts a
+//! [`SystemTime`] to/from a civil UTC time using the standard
+//! proleptic-Gregorian day-count algorithms. Every bussard crate uses this one
+//! copy (`bussard_monitor::timefmt` re-exports it).
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -89,6 +92,26 @@ pub fn to_rfc3339(ts: SystemTime) -> String {
     )
 }
 
+/// Formats a `SystemTime` as an RFC3339 UTC string with second precision,
+/// e.g. `2026-09-22T10:15:00Z`.
+pub fn rfc3339_utc(ts: SystemTime) -> String {
+    let c = to_civil(ts);
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        c.year, c.month, c.day, c.hour, c.minute, c.second
+    )
+}
+
+/// A compact, sortable UTC stamp for a directory or snapshot name, e.g.
+/// `20260922T101500Z`.
+pub fn compact_utc(ts: SystemTime) -> String {
+    let c = to_civil(ts);
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}Z",
+        c.year, c.month, c.day, c.hour, c.minute, c.second
+    )
+}
+
 /// Formats the `HH:MM:SS.mmm` UTC wall-clock portion of a `SystemTime`.
 pub fn to_clock(ts: SystemTime) -> String {
     let c = to_civil(ts);
@@ -165,6 +188,24 @@ mod tests {
         let ts = UNIX_EPOCH + Duration::new(secs as u64, 789_000_000);
         assert_eq!(to_rfc3339(ts), "2026-09-15T12:34:56.789Z");
         assert_eq!(to_clock(ts), "12:34:56.789");
+    }
+
+    #[test]
+    fn test_rfc3339_utc_and_compact_utc_drop_millis() {
+        // 2026-09-21T14:13:20.500Z.
+        let ts = UNIX_EPOCH + Duration::from_millis(1_790_000_000_500);
+        assert_eq!(rfc3339_utc(ts), "2026-09-21T14:13:20Z");
+        assert_eq!(compact_utc(ts), "20260921T141320Z");
+        assert_eq!(rfc3339_utc(UNIX_EPOCH), "1970-01-01T00:00:00Z");
+    }
+
+    #[test]
+    fn test_civil_from_days_known_dates() {
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        // 2018-01-05, the KNX Secure epoch: 17_536 days after 1970-01-01.
+        assert_eq!(civil_from_days(17_536), (2018, 1, 5));
+        assert_eq!(civil_from_days(20_721), (2026, 9, 25));
+        assert_eq!(days_from_civil(2026, 9, 25), 20_721);
     }
 
     #[test]

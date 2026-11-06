@@ -25,6 +25,7 @@ use std::time::{Duration, SystemTime};
 use bussard_bus::BusHandle;
 use bussard_bus::ops::{self, WriteOptions};
 use bussard_model::tests_schema::{Expectation, TestCase, TestSuite};
+use bussard_model::text::{from_hex, hex};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model, encode, parse_value};
 use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
@@ -434,13 +435,10 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
+    if cleaned.is_empty() {
         return None;
     }
-    (0..cleaned.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
-        .collect()
+    from_hex(&cleaned).ok()
 }
 
 /// Renders what an expectation is waiting for, for the report.
@@ -461,11 +459,6 @@ fn describe(telegram: &DecodedTelegram) -> String {
         "{} = {value} (from {})",
         telegram.destination, telegram.source
     )
-}
-
-/// Renders payload bytes as lowercase hex.
-fn hex(payload: &[u8]) -> String {
-    payload.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Renders a duration the way `tests.toml` writes it.

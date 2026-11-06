@@ -39,7 +39,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
@@ -716,63 +716,14 @@ fn copy(from: &Path, to: &Path) -> Result<(), HistoryError> {
         })
 }
 
-// ---------------------------------------------------------------------------
-// Time formatting.
-//
-// The same std-only civil-time conversion the monitor uses for its timestamps
-// (`bussard_monitor::timefmt`), repeated here because the model crate sits below
-// the monitor in the dependency order and no date-time crate is warranted.
-// ---------------------------------------------------------------------------
-
-/// `20260922T101112Z` — the sortable stamp a snapshot id starts with.
-fn compact_stamp(ts: SystemTime) -> String {
-    let (year, month, day, hour, minute, second) = civil(ts);
-    format!("{year:04}{month:02}{day:02}T{hour:02}{minute:02}{second:02}Z")
-}
-
-/// `2026-09-22T10:11:12Z` — the manifest's `created_at`.
-pub(crate) fn rfc3339(ts: SystemTime) -> String {
-    let (year, month, day, hour, minute, second) = civil(ts);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
-}
-
-/// Breaks a `SystemTime` into UTC civil fields. Times before the Unix epoch
-/// clamp to the epoch.
-fn civil(ts: SystemTime) -> (i64, u32, u32, u32, u32, u32) {
-    let secs = ts
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO)
-        .as_secs() as i64;
-    let days = secs.div_euclid(86_400);
-    let rest = secs.rem_euclid(86_400);
-    let (year, month, day) = civil_from_days(days);
-    (
-        year,
-        month,
-        day,
-        (rest / 3600) as u32,
-        ((rest % 3600) / 60) as u32,
-        (rest % 60) as u32,
-    )
-}
-
-/// Days since the Unix epoch → (year, month, day). Howard Hinnant's algorithm.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
+/// `20260922T101112Z` (a snapshot id's sortable stamp) and
+/// `2026-09-22T10:11:12Z` (the manifest's `created_at`).
+pub(crate) use crate::timefmt::{compact_utc as compact_stamp, rfc3339_utc as rfc3339};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, UNIX_EPOCH};
 
     /// A fresh temp model directory with one group and one device.
     fn model_dir(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {

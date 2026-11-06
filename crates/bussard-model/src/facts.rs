@@ -187,7 +187,7 @@ pub fn format_mask(mask: u16) -> String {
 
 /// Formats an application id for [`DeviceFactsRecord::application_id`].
 pub fn format_application_id(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
+    crate::text::hex_upper(bytes)
 }
 
 /// The current time as [`DeviceFactsRecord::read_at`] spells it.

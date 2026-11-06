@@ -34,6 +34,7 @@ use bussard_download::{
     sys7_flag_writes, sys7_table_images,
 };
 use bussard_mgmt::{MaskProfile, system_type};
+use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 use sha2::{Digest, Sha256};
@@ -666,11 +667,6 @@ fn put_desired(h: &mut Sha256, desired: &DesiredTables) {
 fn put(h: &mut Sha256, bytes: &[u8]) {
     h.update((bytes.len() as u64).to_be_bytes());
     h.update(bytes);
-}
-
-/// Lowercase hex of `bytes`.
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The note for newly linked System 7 objects whose communication flag could

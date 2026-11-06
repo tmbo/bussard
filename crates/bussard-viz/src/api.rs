@@ -254,7 +254,7 @@ pub async fn post_group_write(
         "address": ga.to_string(),
         "name": sent.write.name,
         "value": sent.write.value,
-        "payload": hex_encode(&sent.write.payload),
+        "payload": bussard_model::text::hex(&sent.write.payload),
         "dpt": sent.write.dpt.map(|d| d.to_string()),
         "confirmed": sent.confirmed,
     })))
@@ -323,15 +323,6 @@ fn api_refusal(ga: GroupAddress, refusal: WriteRefusal) -> ApiError {
         // Invalid dpt / value / encode / hex / empty / size: the request is bad.
         other => ApiError::BadRequest(other.to_string()),
     }
-}
-
-/// Encodes bytes as a lowercase hex string.
-fn hex_encode(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 #[cfg(test)]
@@ -426,10 +417,5 @@ mod tests {
             assert!(matches!(err, ApiError::BadRequest(_)), "{value:?}: {err:?}");
         }
         Ok(())
-    }
-
-    #[test]
-    fn test_hex_encode_lowercase() {
-        assert_eq!(hex_encode(&[0x0a, 0xff]), "0aff");
     }
 }

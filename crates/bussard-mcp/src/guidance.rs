@@ -482,7 +482,7 @@ fn list(devices: &BTreeSet<String>, model: Option<&Model>) -> String {
             _ => format!("device {ia}"),
         })
         .collect();
-    crate::everyday::join_and(&items)
+    bussard_model::text::join_and(&items)
 }
 
 /// The MCP push call per device: `` knx_plan_device `{"address": "1.1.4"}` ``.

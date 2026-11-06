@@ -25,6 +25,7 @@ use crate::schema::{
     Channel, ComObject, Device, DeviceLock, DeviceSecurity, Link, Location, LockedParameter,
     Product, ProductEntry, SecureSender, Spelling,
 };
+use crate::text::slug;
 use crate::toml_io::{self, ParseError};
 
 /// The only `bussard.lock` format version this build reads and writes.
@@ -780,38 +781,6 @@ const HIDDEN_PREFIX: &str = "hidden@";
 /// Whether an in-memory parameter key is a [`hidden_mem_key`].
 pub fn is_hidden_mem_key(key: &str) -> bool {
     key.starts_with(HIDDEN_PREFIX)
-}
-
-/// The contract's slug: lowercase, `ä ö ü ß` to `ae oe ue ss`, every run of
-/// characters outside `[a-z0-9]` collapsed to `-`, trimmed; empty becomes `x`.
-pub fn slug(text: &str) -> String {
-    let mut out = String::new();
-    let mut dash = false;
-    for c in text.chars().flat_map(char::to_lowercase) {
-        let mapped: &str = match c {
-            'ä' => "ae",
-            'ö' => "oe",
-            'ü' => "ue",
-            'ß' => "ss",
-            _ => "",
-        };
-        if !mapped.is_empty() {
-            out.push_str(mapped);
-            dash = false;
-        } else if c.is_ascii_lowercase() || c.is_ascii_digit() {
-            out.push(c);
-            dash = false;
-        } else if !dash && !out.is_empty() {
-            out.push('-');
-            dash = true;
-        }
-    }
-    let trimmed = out.trim_matches('-');
-    if trimmed.is_empty() {
-        "x".to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 /// The module-instance selector (`MD-1_M-3_MI-1`) of a channel id
@@ -1804,14 +1773,6 @@ mod tests {
             "{:#?}",
             lock_schema()
         );
-    }
-
-    #[test]
-    fn test_slug_folds_umlauts_and_collapses() {
-        assert_eq!(slug("Zuordnung Regen"), "zuordnung-regen");
-        assert_eq!(slug("Größe / Maß"), "groesse-mass");
-        assert_eq!(slug("  --  "), "x");
-        assert_eq!(slug("Übersicht (1)"), "uebersicht-1");
     }
 
     #[test]

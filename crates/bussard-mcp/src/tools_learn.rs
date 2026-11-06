@@ -21,6 +21,7 @@
 
 use crate::args::Parameters;
 use bussard_model::tests_schema;
+use bussard_model::text::{from_hex, hex};
 use bussard_model::{Dpt, GroupAddress};
 use bussard_monitor::Filter;
 use bussard_monitor::acceptance::{self, RunOptions, SkipManual};
@@ -334,18 +335,10 @@ fn parse_hex(text: &str) -> Option<Vec<u8>> {
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect();
-    if cleaned.is_empty() || !cleaned.len().is_multiple_of(2) {
+    if cleaned.is_empty() {
         return None;
     }
-    (0..cleaned.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&cleaned[i..i + 2], 16).ok())
-        .collect()
-}
-
-/// Renders payload bytes as lowercase hex.
-fn hex(payload: &[u8]) -> String {
-    payload.iter().map(|b| format!("{b:02x}")).collect()
+    from_hex(&cleaned).ok()
 }
 
 #[cfg(test)]

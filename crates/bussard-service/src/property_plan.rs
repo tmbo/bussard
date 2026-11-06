@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 
 use bussard_download::{FlashPlan, FlashStep, PropObject, parameter_overrides, plan_flash};
 use bussard_mgmt::{L4Channel, Layer4Connection};
+use bussard_model::text::hex_upper;
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::ApplicationProgram;
 
@@ -60,10 +61,6 @@ impl PropertyRow {
     }
 }
 
-fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
-}
-
 /// Reads every property `plan` writes from the device on `l4`.
 pub async fn read_property_rows<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
@@ -104,12 +101,12 @@ fn row(
     read: Result<Vec<u8>, bussard_mgmt::load::WriteError>,
 ) -> PropertyRow {
     let (device, error) = match read {
-        Ok(held) => (Some(hex(&held)), None),
+        Ok(held) => (Some(hex_upper(&held)), None),
         Err(err) => (None, Some(err.to_string())),
     };
     PropertyRow {
         property: format!("{object} PID {prop_id}"),
-        planned: hex(planned),
+        planned: hex_upper(planned),
         device,
         error,
     }

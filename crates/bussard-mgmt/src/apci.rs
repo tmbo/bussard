@@ -193,14 +193,6 @@ pub fn encode_user_memory_write(addr: u32, data: &[u8]) -> (u16, Vec<u8>) {
     (A_USER_MEMORY_WRITE, payload)
 }
 
-/// Encodes an `A_UserMemory_Response` (device side: mocks and tests).
-pub fn encode_user_memory_response(addr: u32, data: &[u8]) -> (u16, Vec<u8>) {
-    let count = data.len().min(usize::from(MAX_USER_MEMORY_LEN)) as u8;
-    let mut payload = user_memory_header(addr, count).to_vec();
-    payload.extend_from_slice(&data[..usize::from(count)]);
-    (A_USER_MEMORY_RESPONSE, payload)
-}
-
 /// A parsed user-memory APDU: the count, the 20-bit address and the data
 /// octets (empty for a read request or a refusal).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -873,6 +865,7 @@ pub fn encode_memory_write(addr: u16, data: &[u8]) -> (u16, Vec<u8>) {
 ///
 /// The mock device and tests use this to interpret a write; the client side
 /// builds writes with [`encode_memory_write`].
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemoryWrite {
     /// Number of octets written.
@@ -889,6 +882,7 @@ pub struct MemoryWrite {
 /// `[addr_hi] [addr_lo] data…`. Returns `None` if the APCI selector is not
 /// `A_Memory_Write`, the payload is shorter than the 2-byte address header, or
 /// the payload holds fewer data octets than the count advertises.
+#[cfg(test)]
 pub fn decode_memory_write(req_apci: u16, payload: &[u8]) -> Option<MemoryWrite> {
     if req_apci & APCI_SELECTOR_MASK != A_MEMORY_WRITE {
         return None;
@@ -1013,6 +1007,7 @@ pub struct ExtendedMemoryResponse {
 /// Encodes an `A_MemoryExtended_Write_Response`: APCI
 /// [`A_MEMORY_EXTENDED_WRITE_RESPONSE`] with payload
 /// `[return_code][addr_hi, addr_mid, addr_lo]`. Used by device-side mocks/tests.
+#[cfg(test)]
 pub fn encode_memory_extended_write_response(return_code: u8, addr: u32) -> (u16, Vec<u8>) {
     let mut payload = Vec::with_capacity(4);
     payload.push(return_code);

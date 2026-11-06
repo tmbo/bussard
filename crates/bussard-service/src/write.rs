@@ -28,6 +28,7 @@
 
 use bussard_bus::BusError;
 use bussard_bus::ops::{self, WriteOptions};
+use bussard_model::text::from_hex;
 use bussard_model::{ApduSize, Dpt, GroupAddress, Model, encode, parse_value};
 
 use bussard_secure::{AsduError, Key16};
@@ -328,9 +329,9 @@ pub fn prepare_group_write(
             })
         }
         WriteValue::Hex(input) => {
-            let payload = decode_hex(input).map_err(|reason| WriteRefusal::InvalidHex {
+            let payload = from_hex(input).map_err(|e| WriteRefusal::InvalidHex {
                 input: input.to_string(),
-                reason,
+                reason: e.to_string(),
             })?;
             if payload.is_empty() {
                 return Err(WriteRefusal::EmptyPayload);
@@ -471,35 +472,6 @@ fn validate_payload_size(dpt: Dpt, payload: &[u8], ga: GroupAddress) -> Result<(
         // No fixed width (24.x, 28.x, ...): allow any length (mirrors
         // is_packable's None case).
         None => Ok(()),
-    }
-}
-
-/// Decodes an even-length hex string (upper- or lowercase) into bytes.
-///
-/// Returns a human-readable error message for an odd length or a non-hex digit.
-fn decode_hex(s: &str) -> Result<Vec<u8>, String> {
-    if !s.len().is_multiple_of(2) {
-        return Err(format!(
-            "odd length ({} chars); hex must be byte-aligned",
-            s.len()
-        ));
-    }
-    s.as_bytes()
-        .chunks(2)
-        .map(|pair| match pair {
-            [hi, lo] => Ok((hex_nibble(*hi)? << 4) | hex_nibble(*lo)?),
-            _ => Err("odd length; hex must be byte-aligned".to_string()),
-        })
-        .collect()
-}
-
-/// Decodes a single ASCII hex digit into its 0..=15 value.
-fn hex_nibble(c: u8) -> Result<u8, String> {
-    match c {
-        b'0'..=b'9' => Ok(c - b'0'),
-        b'a'..=b'f' => Ok(c - b'a' + 10),
-        b'A'..=b'F' => Ok(c - b'A' + 10),
-        other => Err(format!("non-hex character {:?}", other as char)),
     }
 }
 
@@ -772,12 +744,6 @@ mod tests {
             matches!(empty, Err(WriteRefusal::EmptyPayload)),
             "{empty:?}"
         );
-        Ok(())
-    }
-
-    #[test]
-    fn test_decode_hex_roundtrip_and_case() -> TestResult {
-        assert_eq!(decode_hex("0aFf")?, vec![0x0a, 0xff]);
         Ok(())
     }
 

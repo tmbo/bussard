@@ -35,6 +35,7 @@ use crate::address::{GroupAddress, IndividualAddress};
 use crate::loader::{LoadedDevice, Model};
 use crate::param_model::{ParamDef, ProductModels, enum_code, enum_label, key_to_param_id};
 use crate::schema::{Device, Group, Location, Product};
+use crate::text::{capitalize, join_list};
 
 /// The kind of a single model change.
 ///
@@ -597,7 +598,7 @@ pub fn summarize(set: &ChangeSet, models: [&Model; 2]) -> String {
     if total > SUMMARY_ITEMS {
         shown.push(format!("{} more change(s)", total - SUMMARY_ITEMS));
     }
-    let mut out = capitalize(&join_and(&shown, "; ", "; and "));
+    let mut out = capitalize(&join_list(&shown, "; ", "; and "));
     out.push('.');
     if set.touches_protected() {
         out.push_str(
@@ -694,7 +695,7 @@ fn device_items(labels: &Labels<'_>, ia: IndividualAddress, changes: &[&Change])
                 .iter()
                 .map(|c| first_sentence(&c.sentence))
                 .collect();
-            join_and(&plain, "; ", "; and ")
+            join_list(&plain, "; ", "; and ")
         } else {
             format!(
                 "{} settings of {device} change ({} and more)",
@@ -754,24 +755,6 @@ fn setting_label(change: &Change, device: &str) -> String {
 fn first_sentence(text: &str) -> String {
     let first = text.split(". ").next().unwrap_or(text);
     first.trim_end_matches('.').to_string()
-}
-
-/// `a`, `a and b`, `a, b and c` with `sep` and `last` as the separators.
-fn join_and(items: &[String], sep: &str, last: &str) -> String {
-    match items.split_last() {
-        None => String::new(),
-        Some((only, [])) => only.clone(),
-        Some((tail, rest)) => format!("{}{last}{tail}", rest.join(sep)),
-    }
-}
-
-/// `text` with its first letter in upper case.
-fn capitalize(text: &str) -> String {
-    let mut chars = text.chars();
-    match chars.next() {
-        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-        None => String::new(),
-    }
 }
 
 // ---------------------------------------------------------------------------

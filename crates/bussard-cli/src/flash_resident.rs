@@ -76,18 +76,9 @@ pub(crate) struct Recorded {
     mcbs: BTreeMap<u8, (u32, u16)>,
 }
 
-/// Decodes a hex string, ignoring nothing: an odd length or a non-hex digit
-/// is an error.
+/// Decodes a hex string: an odd length or a non-hex digit is an error.
 fn hex(text: &str) -> anyhow::Result<Vec<u8>> {
-    let text = text.trim();
-    anyhow::ensure!(text.len().is_multiple_of(2), "odd-length hex {text:?}");
-    (0..text.len())
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(text.get(i..i + 2).unwrap_or_default(), 16)
-                .with_context(|| format!("hex {text:?}"))
-        })
-        .collect()
+    bussard_model::text::from_hex(text.trim()).with_context(|| format!("hex {text:?}"))
 }
 
 impl Recorded {

@@ -61,6 +61,7 @@ use bussard_mgmt::property_ext::{
     OT_SECURITY, PID_SECURITY_MODE, PID_SEQUENCE_NUMBER_SENDING, PID_TOOL_KEY,
 };
 use bussard_model::IndividualAddress;
+use bussard_model::text::hex;
 use bussard_project::KeyStore;
 use bussard_project::keystore::{StoreInterface, StoreRevision};
 use bussard_secure::{Key16, Password, Sequence, salt};
@@ -546,15 +547,6 @@ fn pairs(users: &[(u8, u8)]) -> String {
         .map(|(u, i)| format!("{u}->{i}"))
         .collect::<Vec<_>>()
         .join(" ")
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
 }
 
 /// One step of a dumped plan (`plan.json`).

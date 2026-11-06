@@ -618,8 +618,7 @@ pub fn state_hash_with(
         put(&mut h, b"object-table");
         put(&mut h, image);
     }
-    let bytes: [u8; 32] = h.finalize().into();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bussard_model::text::hex(&h.finalize())
 }
 
 #[cfg(test)]

@@ -851,9 +851,7 @@ pub fn empty_model() -> Model {
 }
 
 /// Formats a byte slice as lowercase hex.
-pub fn hex(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
-}
+pub use bussard_model::text::hex;
 
 #[cfg(test)]
 mod tests {

@@ -33,6 +33,7 @@ use crate::address::GroupAddress;
 use crate::loader::Model;
 use crate::param_model::ProductModels;
 use crate::schema::Transport;
+use crate::text::escape_html;
 
 /// How many commits the change log carries. Enough to see the recent history of
 /// an installation without turning the folder into a repository mirror.
@@ -1218,7 +1219,7 @@ fn inline(text: &str) -> String {
             i = paren + 1;
             continue;
         }
-        out.push_str(&escape_char(ch));
+        out.push_str(&escape_html(ch.encode_utf8(&mut [0; 4])));
         i += 1;
     }
     out
@@ -1230,20 +1231,6 @@ fn find_char(chars: &[char], from: usize, needle: char) -> Option<usize> {
 
 fn find_pair(chars: &[char], from: usize) -> Option<usize> {
     (from..chars.len().saturating_sub(1)).find(|&i| chars[i] == '*' && chars[i + 1] == '*')
-}
-
-fn escape_char(ch: char) -> String {
-    match ch {
-        '&' => "&amp;".to_string(),
-        '<' => "&lt;".to_string(),
-        '>' => "&gt;".to_string(),
-        '"' => "&quot;".to_string(),
-        other => other.to_string(),
-    }
-}
-
-fn escape_html(text: &str) -> String {
-    text.chars().map(escape_char).collect()
 }
 
 #[cfg(test)]

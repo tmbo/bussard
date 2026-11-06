@@ -147,7 +147,7 @@ pub struct ParameterMemory {
 impl ParameterMemory {
     /// The decoded image octets.
     pub fn octets(&self) -> Option<Vec<u8>> {
-        decode_hex(&self.bytes)
+        bussard_model::text::from_hex(&self.bytes).ok()
     }
 }
 
@@ -613,83 +613,18 @@ pub fn has_installation_backup(model_dir: &Path) -> bool {
         .any(|e| e.path().join(MANIFEST_FILE).is_file())
 }
 
-/// Uppercase hex with no separators — the encoding every byte string in a backup
+/// Uppercase hex with no separators: the encoding every byte string in a backup
 /// uses.
-pub fn encode_hex(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        out.push_str(&format!("{b:02X}"));
-    }
-    out
-}
-
-/// The inverse of [`encode_hex`]; `None` for an odd length or a non-hex digit.
-pub fn decode_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
-        return None;
-    }
-    let bytes = s.as_bytes();
-    let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in bytes.as_chunks::<2>().0 {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out.push((hi * 16 + lo) as u8);
-    }
-    Some(out)
-}
+pub use bussard_model::text::hex_upper as encode_hex;
+/// RFC3339 UTC with second precision (`2026-09-22T10:15:00Z`) and the compact
+/// stamp a backup directory is named by (`20260922T101500Z`).
+pub use bussard_model::timefmt::{compact_utc as timestamp_dir_name, rfc3339_utc};
 
 /// Seconds since the Unix epoch, clamped at the epoch for a clock before it.
 pub fn unix_seconds(ts: SystemTime) -> u64 {
     ts.duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs()
-}
-
-/// Formats a `SystemTime` as an RFC3339 UTC timestamp, e.g.
-/// `2026-09-22T10:15:00Z`.
-///
-/// Kept here rather than pulled from a date-time crate: this is the whole of what
-/// the format needs, and `bussard-download` must not grow a dependency for it.
-/// The civil-from-days conversion is Howard Hinnant's, the same one
-/// `bussard-monitor` uses for its capture timestamps.
-pub fn rfc3339_utc(ts: SystemTime) -> String {
-    let secs = unix_seconds(ts) as i64;
-    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
-    let sod = secs.rem_euclid(86_400);
-    format!(
-        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
-        sod / 3600,
-        (sod % 3600) / 60,
-        sod % 60
-    )
-}
-
-/// A compact, sortable UTC stamp for a backup directory name, e.g.
-/// `20260922T101500Z`.
-pub fn timestamp_dir_name(ts: SystemTime) -> String {
-    let secs = unix_seconds(ts) as i64;
-    let (year, month, day) = civil_from_days(secs.div_euclid(86_400));
-    let sod = secs.rem_euclid(86_400);
-    format!(
-        "{year:04}{month:02}{day:02}T{:02}{:02}{:02}Z",
-        sod / 3600,
-        (sod % 3600) / 60,
-        sod % 60
-    )
-}
-
-/// Days since the Unix epoch to `(year, month, day)` (Howard Hinnant).
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
 #[cfg(test)]
@@ -774,9 +709,16 @@ mod tests {
     fn test_hex_round_trip() {
         let bytes = vec![0x00, 0x0F, 0xA5, 0xFF];
         assert_eq!(encode_hex(&bytes), "000FA5FF");
-        assert_eq!(decode_hex("000FA5FF"), Some(bytes));
-        assert_eq!(decode_hex("0"), None);
-        assert_eq!(decode_hex("0G"), None);
+        assert_eq!(
+            ParameterMemory {
+                base: 0,
+                length: 4,
+                bytes: "000FA5FF".to_string(),
+                source: String::new(),
+            }
+            .octets(),
+            Some(bytes)
+        );
     }
 
     #[test]

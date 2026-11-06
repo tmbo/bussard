@@ -2868,17 +2868,10 @@ fn decode_segment_base64(
 /// leaving the field unset rather than mis-decoding.
 fn decode_hex_bytes(s: &str) -> Option<Vec<u8>> {
     let s = s.trim();
-    if s.is_empty() || !s.len().is_multiple_of(2) {
+    if s.is_empty() {
         return None;
     }
-    let mut out = Vec::with_capacity(s.len() / 2);
-    let bytes = s.as_bytes();
-    for pair in bytes.as_chunks::<2>().0 {
-        let hi = (pair[0] as char).to_digit(16)?;
-        let lo = (pair[1] as char).to_digit(16)?;
-        out.push((hi * 16 + lo) as u8);
-    }
-    Some(out)
+    bussard_model::text::from_hex(s).ok()
 }
 
 /// Decodes a `LdCtrlRelSegment`'s fill attributes into the record's `Mode` and

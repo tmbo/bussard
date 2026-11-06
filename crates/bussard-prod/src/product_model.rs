@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_model::lock_products::{LockPins, lock_pins};
 use bussard_model::schema::ProductEntry;
+use bussard_model::text::hex;
 use serde::Serialize;
 
 use crate::dynamic::{DynamicNode, DynamicSource, Union, UnionMember};
@@ -1138,15 +1139,6 @@ fn load_op_summary(op: &LoadOp) -> String {
             format!("raw {name} [{}]", joined.join(" "))
         }
     }
-}
-
-/// Renders bytes as a lower-case hex string for a load-procedure trace line.
-fn hex(bytes: &[u8]) -> String {
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        s.push_str(&format!("{b:02x}"));
-    }
-    s
 }
 
 fn opt<T: std::fmt::Display>(v: &Option<T>) -> String {

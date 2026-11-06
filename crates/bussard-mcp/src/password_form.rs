@@ -433,5 +433,5 @@ fn store_password(model_dir: &Path, password: &Password) -> Result<PathBuf, Stri
 fn new_id() -> Result<String, String> {
     let mut bytes = [0u8; 16];
     getrandom::getrandom(&mut bytes).map_err(|e| format!("drawing a random id: {e}"))?;
-    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+    Ok(bussard_model::text::hex(&bytes))
 }

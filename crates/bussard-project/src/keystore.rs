@@ -1584,33 +1584,9 @@ fn display_type(t: &str) -> String {
 /// The current UTC time as `YYYY-MM-DDTHH:MM:SS`, the form of an ETS
 /// `Created` attribute.
 fn now_timestamp() -> String {
-    let secs = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let secs = i64::try_from(secs).unwrap_or(0);
-    let (y, m, d) = civil_from_days(secs.div_euclid(86_400));
-    let rest = secs.rem_euclid(86_400);
-    format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}",
-        rest / 3600,
-        rest % 3600 / 60,
-        rest % 60
-    )
-}
-
-/// Days since the Unix epoch to (year, month, day), Howard Hinnant's algorithm.
-fn civil_from_days(z: i64) -> (i64, i64, i64) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    (y, m, d)
+    let mut stamp = bussard_model::timefmt::rfc3339_utc(std::time::SystemTime::now());
+    stamp.pop(); // the `Z`
+    stamp
 }
 
 /// Writes `xml` to `<dir>/bussard.keys` atomically, keeping the previous file
@@ -2428,14 +2404,6 @@ mod tests {
         assert!("00FA".parse::<SerialNumber>().is_err());
         assert!("00FA1234ABCZ".parse::<SerialNumber>().is_err());
         Ok(())
-    }
-
-    #[test]
-    fn test_civil_from_days_known_dates() {
-        assert_eq!(civil_from_days(0), (1970, 1, 1));
-        // 2018-01-05, the KNX Secure epoch: 17_536 days after 1970-01-01.
-        assert_eq!(civil_from_days(17_536), (2018, 1, 5));
-        assert_eq!(civil_from_days(20_721), (2026, 9, 25));
     }
 
     #[test]

@@ -167,8 +167,7 @@ fn tables_digest(
         Some(inputs) => put(&mut h, inputs.describe(&desired.addresses).as_bytes()),
         None => put(&mut h, b"plain"),
     }
-    let bytes: [u8; 32] = h.finalize().into();
-    bytes.iter().map(|b| format!("{b:02x}")).collect()
+    bussard_model::text::hex(&h.finalize())
 }
 
 /// The device plan of a restore: the tables only, no parameter, flag or

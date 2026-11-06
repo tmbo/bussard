@@ -27,6 +27,7 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::middleware;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use bussard_model::text::escape_html;
 use bussard_service::enroll_session::{CertificateOutcome, EnrollStatus, NextStep};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, watch};
@@ -210,7 +211,7 @@ impl PairingPage {
     ) -> std::io::Result<Self> {
         let mut bytes = [0u8; 16];
         getrandom::getrandom(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let token: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+        let token = bussard_model::text::hex(&bytes);
         let html = render(content).map_err(std::io::Error::other)?;
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
         listener.set_nonblocking(true)?;
@@ -388,22 +389,6 @@ fn warnings_html(warnings: &[String]) -> String {
     )
 }
 
-/// `text` safe inside an HTML element or a double-quoted attribute.
-fn escape_html(text: &str) -> String {
-    let mut out = String::with_capacity(text.len());
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
 /// `data` as a QR code in an inline SVG: dark modules on white with a
 /// four-module quiet zone, whatever the page's colour scheme, so a phone
 /// camera reads it in dark mode too.
@@ -510,14 +495,6 @@ mod tests {
         assert!(TEMPLATE.contains("id=\"end-summary\""));
         assert!(SCRIPT.contains("window.close()"));
         assert!(SCRIPT.contains("go back to your chat"));
-    }
-
-    #[test]
-    fn test_escape_html_escapes_markup() {
-        assert_eq!(
-            escape_html("<a href=\"x\">&'"),
-            "&lt;a href=&quot;x&quot;&gt;&amp;&#39;"
-        );
     }
 
     #[test]
