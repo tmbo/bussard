@@ -26,17 +26,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_mgmt::apci::{PID_MANUFACTURER_ID, PID_ORDER_INFO, PID_SERIAL_NUMBER};
 use bussard_mgmt::{MgmtError, broadcast, manufacturers, system_type};
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 
-use crate::identity::{HIDDEN_MASK, SecureStatus, clean_ascii};
+use crate::identity::{Identity, SecureStatus, read_identity, read_manufacturer, read_order};
 use crate::secure::ToolKeys;
-use crate::{
-    Authorize, BusService, Device as ServiceDevice, L4Options, ServiceError, SourcePolicy,
-};
+use crate::{Authorize, BusService, L4Options, Management, ServiceError};
 
 /// The line to allocate on when the model has no devices to infer one from.
 pub const FALLBACK_LINE: (u8, u8) = (1, 1);
@@ -80,19 +77,11 @@ pub enum AssignError {
     },
 }
 
-/// Reads [`WAIT_MS_ENV`] as a millisecond budget, if set and parseable.
-fn wait_ms_override() -> Option<Duration> {
-    bussard_model::dotenv::var(WAIT_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(Duration::from_millis)
-}
-
 /// The (reminder, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
 /// With the override set, the reminder budget scales to half the total so
 /// [`INITIAL_POLL_TOTAL`] is gated under the same variable as the total.
 pub fn wait_budgets() -> (Duration, Duration) {
-    match wait_ms_override() {
+    match bussard_model::dotenv::duration_ms(WAIT_MS_ENV) {
         Some(total) => (total / 2, total),
         None => (INITIAL_POLL_TOTAL, PROGRAMMING_WAIT_TOTAL),
     }
@@ -102,7 +91,7 @@ pub fn wait_budgets() -> (Duration, Duration) {
 /// Without the override the mgmt default
 /// ([`broadcast::PROGRAMMING_MODE_WINDOW`]) applies.
 pub fn collection_window() -> Duration {
-    wait_ms_override().unwrap_or(broadcast::PROGRAMMING_MODE_WINDOW)
+    bussard_model::dotenv::duration_ms(WAIT_MS_ENV).unwrap_or(broadcast::PROGRAMMING_MODE_WINDOW)
 }
 
 // ---------------------------------------------------------------------------
@@ -269,15 +258,10 @@ pub async fn probe_occupant(
     source: IndividualAddress,
     target: IndividualAddress,
 ) -> Option<Occupant> {
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        timeouts: crate::scan::discovery_timeouts(),
-        authorize: Authorize::Skip,
-        ..L4Options::default()
-    };
+    let options = L4Options::discovery(source);
     service
-        .with_device(target, &options, async |dev| {
-            let mask = match dev.device_descriptor().await {
+        .with_l4(target, &options, async |dev| {
+            let mask = match bussard_mgmt::read_device_descriptor(dev).await {
                 Ok(mask) => mask,
                 Err(MgmtError::Disconnected { .. }) => {
                     return Ok::<_, ServiceError>(Some(Occupant::default()));
@@ -361,7 +345,7 @@ pub async fn wait_for_programming_mode(
     loop {
         // Lease a fresh channel for this broadcast read (released each poll).
         let channel = service.lease_channel().await?;
-        let found = broadcast::devices_in_programming_mode_within(channel, source, window).await?;
+        let found = broadcast::devices_in_programming_mode(channel, source, window).await?;
         match found.len() {
             1 => return Ok(ProgrammingWait::One(found[0])),
             n if n > 1 => return Ok(ProgrammingWait::Several(found)),
@@ -393,7 +377,7 @@ pub async fn in_programming_mode(
     source: IndividualAddress,
 ) -> Result<Vec<IndividualAddress>, AssignError> {
     let channel = service.lease_channel().await?;
-    Ok(broadcast::devices_in_programming_mode_within(channel, source, collection_window()).await?)
+    Ok(broadcast::devices_in_programming_mode(channel, source, collection_window()).await?)
 }
 
 // ---------------------------------------------------------------------------
@@ -488,38 +472,12 @@ pub async fn identify(
     tool_key: Option<Key16>,
 ) -> Result<Verified, ServiceError> {
     let secured = tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        tool_key,
-        high_water: SequenceHighWater::new(),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, tool_key, SequenceHighWater::new())
+        .with_authorize(Authorize::Skip);
     service
-        .with_device(address, &options, async |dev| {
-            let mask = dev.device_descriptor().await?;
-            if !secured && mask == HIDDEN_MASK {
-                return Ok(Verified {
-                    secure: SecureStatus::ActivatedNoKey,
-                    ..Verified::default()
-                });
-            }
-            if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-                tracing::debug!("{address} authorize (free access) did not grant: {err}");
-            }
-            Ok(Verified {
-                mask: Some(mask),
-                manufacturer_id: read_manufacturer(dev).await,
-                serial: read_serial(dev).await,
-                order: read_order(dev).await,
-                programming_mode_cleared: false,
-                secure: if secured {
-                    SecureStatus::Activated
-                } else {
-                    SecureStatus::Plain
-                },
-                warnings: Vec::new(),
-            })
+        .with_l4(address, &options, async |l4| {
+            let identity = read_identity(l4, !secured).await?;
+            Ok(Verified::read(identity, secured, false))
         })
         .await
 }
@@ -596,15 +554,10 @@ async fn verify_session(
     key: &VerifyKey,
 ) -> Result<Verified, VerifyError> {
     let secured = key.tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Known(source),
-        authorize: Authorize::Skip,
-        tool_key: key.tool_key.clone(),
-        high_water: SequenceHighWater::new(),
-        ..L4Options::default()
-    };
+    let options = L4Options::secured(source, key.tool_key.clone(), SequenceHighWater::new())
+        .with_authorize(Authorize::Skip);
     let session = service
-        .with_device(target, &options, async |dev| {
+        .with_l4(target, &options, async |dev| {
             Ok::<_, ServiceError>(read_back(dev, target, clear_programming_mode, secured).await)
         })
         .await;
@@ -620,12 +573,12 @@ async fn verify_session(
 
 /// The read-back half of [`verify_assignment_with`], on the open session.
 async fn read_back(
-    dev: &mut ServiceDevice,
+    dev: &mut Management,
     target: IndividualAddress,
     clear_programming_mode: bool,
     secured: bool,
 ) -> Result<Verified, VerifyError> {
-    let mask = dev.device_descriptor().await.map_err(|err| {
+    let identity = read_identity(dev, !secured).await.map_err(|err| {
         VerifyError::Unverified(if secured {
             format!(
                 "wrote {target} and connected, but the device did not answer the SECURED \
@@ -649,21 +602,9 @@ async fn read_back(
         })
     })?;
 
-    if !secured && mask == HIDDEN_MASK {
-        return Ok(Verified {
-            secure: SecureStatus::ActivatedNoKey,
-            ..Verified::default()
-        });
+    if !secured && identity.mask_hidden() {
+        return Ok(Verified::read(identity, secured, false));
     }
-    // Authorize the session (free access), as ETS does after the descriptor read
-    // (issue #52 finding #1). Best-effort: the descriptor read verified the write.
-    if let Err(err) = dev.authorize(bussard_mgmt::apci::FREE_ACCESS_KEY).await {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
-    }
-    let manufacturer_id = read_manufacturer(dev).await;
-    let serial = read_serial(dev).await;
-    let order = read_order(dev).await;
-
     // Explicitly clear programming mode, exactly as ETS does after assigning an
     // address. Best-effort: the broadcast check remains the fallback.
     let programming_mode_cleared = if !clear_programming_mode {
@@ -677,45 +618,34 @@ async fn read_back(
             }
         }
     };
-
-    Ok(Verified {
-        mask: Some(mask),
-        manufacturer_id,
-        serial,
-        order,
-        programming_mode_cleared,
-        secure: if secured {
-            SecureStatus::Activated
-        } else {
-            SecureStatus::Plain
-        },
-        warnings: Vec::new(),
-    })
+    Ok(Verified::read(identity, secured, programming_mode_cleared))
 }
 
-/// `PID_MANUFACTURER_ID`, when readable.
-async fn read_manufacturer(dev: &mut ServiceDevice) -> Option<u16> {
-    match dev.read_device_property(PID_MANUFACTURER_ID).await {
-        Ok(bytes) if bytes.len() >= 2 => Some(u16::from_be_bytes([bytes[0], bytes[1]])),
-        _ => None,
+impl Verified {
+    /// The verdict of a [`read_identity`]: a plain read of a hidden mask is
+    /// [`SecureStatus::ActivatedNoKey`] with no mask; otherwise the read
+    /// fields, secured or plain.
+    fn read(identity: Identity, secured: bool, programming_mode_cleared: bool) -> Verified {
+        if !secured && identity.mask_hidden() {
+            return Verified {
+                secure: SecureStatus::ActivatedNoKey,
+                ..Verified::default()
+            };
+        }
+        Verified {
+            mask: Some(identity.mask),
+            manufacturer_id: identity.manufacturer_id,
+            serial: identity.serial,
+            order: identity.order,
+            programming_mode_cleared,
+            secure: if secured {
+                SecureStatus::Activated
+            } else {
+                SecureStatus::Plain
+            },
+            warnings: Vec::new(),
+        }
     }
-}
-
-/// `PID_SERIAL_NUMBER`, when readable.
-async fn read_serial(dev: &mut ServiceDevice) -> Option<Vec<u8>> {
-    dev.read_device_property(PID_SERIAL_NUMBER)
-        .await
-        .ok()
-        .filter(|v| !v.is_empty())
-}
-
-/// `PID_ORDER_INFO` as text, when readable.
-async fn read_order(dev: &mut ServiceDevice) -> Option<String> {
-    dev.read_device_property(PID_ORDER_INFO)
-        .await
-        .ok()
-        .map(|v| clean_ascii(&v))
-        .filter(|s| !s.is_empty())
 }
 
 // ---------------------------------------------------------------------------

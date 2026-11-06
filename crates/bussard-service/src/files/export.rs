@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 
 use bussard_model::bundle::{self, BundleManifest, ExportOptions};
-use bussard_model::doc::{DocFormat, InstallationDoc, write_files};
+use bussard_model::doc::{InstallationDoc, write_files};
 use bussard_model::{Model, ProductModels, to_ets_csv, to_ets_xml};
 
 use crate::setup::{Context as _, SetupError};
@@ -80,15 +80,15 @@ pub fn doc_model(dir: &Path) -> Result<InstallationDoc, SetupError> {
     Ok(InstallationDoc::build(&model, &products, dir))
 }
 
-/// Renders the installation documentation of the model in `dir` in `format`
+/// Renders the installation documentation of the model in `dir` as Markdown
 /// and writes the files under `out`. Returns the written paths, relative to
 /// `out`.
 ///
 /// # Errors
 ///
 /// The model does not load, or a file cannot be written.
-pub fn doc(dir: &Path, out: &Path, format: DocFormat) -> Result<Vec<String>, SetupError> {
-    let files = doc_model(dir)?.render(format);
+pub fn doc(dir: &Path, out: &Path) -> Result<Vec<String>, SetupError> {
+    let files = doc_model(dir)?.render();
     write_files(&files, out).ctx(|| format!("writing the documentation to {}", out.display()))?;
     Ok(files.into_iter().map(|f| f.path).collect())
 }

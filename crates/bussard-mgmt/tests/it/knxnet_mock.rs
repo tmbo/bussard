@@ -44,7 +44,7 @@ async fn read_all(
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
     let mut l4 =
-        Layer4Connection::connect_with(&mut bus, target, source, Timeouts::discovery()).await?;
+        Layer4Connection::connect(&mut bus, target, source, Timeouts::discovery().into()).await?;
     l4.set_max_apdu(max_apdu);
     let values = read_knxnet_parameters(&mut l4, access).await?;
     let refused = read_knxnet_property(&mut l4, access, FIRST_SECURE_PID + 1, 1, false).await;
@@ -101,7 +101,13 @@ async fn with_device<T>(
         .await?;
     let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut l4 = Layer4Connection::connect(&mut bus, target, source).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
     let out = f(&mut l4).await;
     let _ = l4.disconnect().await;
     out

@@ -108,11 +108,7 @@ const REBOOT_WAIT_MS_ENV: &str = "BUSSARD_FLASH_REBOOT_WAIT_MS";
 
 /// The upper bound on the post-restart wait, honouring [`REBOOT_WAIT_MS_ENV`].
 fn reboot_wait_bound() -> std::time::Duration {
-    bussard_model::dotenv::var(REBOOT_WAIT_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(std::time::Duration::from_millis)
-        .unwrap_or(MASTER_RESET_REBOOT_WAIT)
+    bussard_model::dotenv::duration_ms(REBOOT_WAIT_MS_ENV).unwrap_or(MASTER_RESET_REBOOT_WAIT)
 }
 
 /// The upper bound on the post-restart readiness poll for a **Data Secure**
@@ -129,11 +125,7 @@ const SECURE_REBOOT_WAIT: std::time::Duration = std::time::Duration::from_secs(3
 /// The upper bound on the post-restart poll of a Data Secure device, honouring
 /// [`REBOOT_WAIT_MS_ENV`].
 fn secure_reboot_wait_bound() -> std::time::Duration {
-    bussard_model::dotenv::var(REBOOT_WAIT_MS_ENV)
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .map(std::time::Duration::from_millis)
-        .unwrap_or(SECURE_REBOOT_WAIT)
+    bussard_model::dotenv::duration_ms(REBOOT_WAIT_MS_ENV).unwrap_or(SECURE_REBOOT_WAIT)
 }
 
 /// The S-A_Sync retry policy for the first connection after a restart bussard

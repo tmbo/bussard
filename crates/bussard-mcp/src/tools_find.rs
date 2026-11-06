@@ -15,7 +15,8 @@ use std::sync::Arc;
 use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::Key16;
-use bussard_service::scan::{self, LineRange, ScanReport, Sweep, SweepEvent};
+use bussard_service::line::WalkEvent;
+use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::status::{read_live_status, read_only_authorize, status_report};
 use bussard_service::{BusService, FactsCache, L4Options, SourcePolicy, identity_line};
@@ -37,7 +38,7 @@ impl ScanRequest {
     /// Parses `line` (`"1.1"`) and the optional device range (default the
     /// whole line, 0 to 255).
     pub(crate) fn parse(line: &str, from: Option<u8>, to: Option<u8>) -> Result<Self, String> {
-        let (area, line_no) = scan::parse_line(line.trim()).map_err(|e| e.to_string())?;
+        let (area, line_no) = bussard_service::line::parse_line(line).map_err(|e| e.to_string())?;
         let (from, to) = (from.unwrap_or(0), to.unwrap_or(255));
         if from > to {
             return Err(format!(
@@ -156,14 +157,13 @@ impl BussardMcp {
         let secured = tool_key.is_some();
         let mut facts = FactsCache::new(&state.dir, false);
         let authorize = read_only_authorize(&mut facts, target);
-        let options = L4Options {
-            source: SourcePolicy::Check { skip: false },
+        let options = L4Options::secured(
+            SourcePolicy::Check { skip: false },
             tool_key,
-            factory_key,
-            high_water: bussard_secure::SequenceHighWater::new(),
-            authorize,
-            ..L4Options::default()
-        };
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_factory_key(factory_key)
+        .with_authorize(authorize);
         let _permit = state.read_limiter.acquire().await;
         let mut warm = self.warm().lock().await;
         warm.release().await;
@@ -276,10 +276,10 @@ async fn run_scan(
         source,
         &key_for,
         &mut |event| match event {
-            SweepEvent::Probing { address, found } => {
+            WalkEvent::Probing { address, found, .. } => {
                 jobs.step(id, format!("probing {address} ({found} found so far)"));
             }
-            SweepEvent::Probed { found, .. } => {
+            WalkEvent::Probed { found, .. } => {
                 probed += 1;
                 jobs.progress(id, "probed", json!(probed));
                 jobs.progress(id, "found", json!(found));

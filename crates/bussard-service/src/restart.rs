@@ -217,12 +217,12 @@ pub async fn restart_device(
     wait: RestartWait,
 ) -> Result<RestartOutcome, RestartError> {
     let (before, answer) = service
-        .with_device(target, options, async |dev| {
-            let mask = dev.device_descriptor().await?;
+        .with_l4(target, options, async |dev| {
+            let mask = bussard_mgmt::read_device_descriptor(dev).await?;
             let answer = match form {
-                RestartForm::Confirmed => Some(
-                    bussard_mgmt::master_reset(dev.l4_mut(), ERASE_CODE_CONFIRMED_RESTART, 0).await,
-                ),
+                RestartForm::Confirmed => {
+                    Some(bussard_mgmt::master_reset(dev, ERASE_CODE_CONFIRMED_RESTART, 0).await)
+                }
                 RestartForm::Basic => {
                     dev.restart().await?;
                     None
@@ -278,8 +278,8 @@ pub async fn wait_until_back(
     let started = Instant::now();
     let after = wait_for_answer(target, wait, move || async move {
         service
-            .with_device(target, options, async |dev| {
-                Ok::<u16, ServiceError>(dev.device_descriptor().await?)
+            .with_l4(target, options, async |dev| {
+                Ok::<u16, ServiceError>(bussard_mgmt::read_device_descriptor(dev).await?)
             })
             .await
             .map_err(|err| err.to_string())
@@ -405,16 +405,16 @@ mod tests {
             WritePolicy::transmit(false),
         )?;
         service.wait_connected(Duration::from_secs(5)).await;
-        let options = L4Options {
-            source: SourcePolicy::Check { skip: true },
-            tool_key: tool_key.map(bussard_secure::Key16::new),
-            timeouts: bussard_mgmt::Timeouts {
-                ack_timeout: Duration::from_millis(300),
-                response_timeout: Duration::from_millis(300),
-                ..bussard_mgmt::Timeouts::default()
-            },
-            ..L4Options::default()
-        };
+        let options = L4Options::secured(
+            SourcePolicy::Check { skip: true },
+            tool_key.map(bussard_secure::Key16::new),
+            bussard_secure::SequenceHighWater::new(),
+        )
+        .with_timeouts(bussard_mgmt::Timeouts {
+            ack_timeout: Duration::from_millis(300),
+            response_timeout: Duration::from_millis(300),
+            ..bussard_mgmt::Timeouts::default()
+        });
         let result = restart_device(&service, "1.1.39".parse()?, &options, form, quick()).await;
         service.close().await;
         let (basic, secured) = gw

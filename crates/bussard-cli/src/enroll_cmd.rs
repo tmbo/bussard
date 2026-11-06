@@ -20,8 +20,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
 use bussard_service::enroll_session::{
-    DOCS_URL, EnrollEvent, EnrollSession, EnrollTally, HttpRelay, RunOptions, data_path,
-    endpoint_warnings, hosted_endpoints,
+    DOCS_URL, Endpoints, EnrollEvent, EnrollSession, EnrollTally, RunOptions, data_path,
 };
 
 use crate::certificate_view;
@@ -54,39 +53,34 @@ pub(crate) struct EnrollArgs {
 
 /// Runs `bussard keys enroll`.
 pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Result<ExitCode> {
-    let config = bussard_model::loader::load_config(dir)
-        .with_context(|| format!("reading {}", dir.join("bussard.toml").display()))?
-        .enroll
-        .unwrap_or_default();
     // Local mode serves its own page and relay.
-    let hosted = (!options.local).then(|| hosted_endpoints(options.relay, options.page, &config));
+    let local = if options.local {
+        Some(
+            bussard_viz::enroll_local::LocalEnrollServer::start()
+                .context("starting the local enrolment page")?,
+        )
+    } else {
+        None
+    };
+    let endpoints = match &local {
+        Some(server) => Endpoints {
+            relay: server.relay_url(),
+            page: server.page_url(),
+            local: true,
+        },
+        None => Endpoints::hosted(dir, options.relay, options.page)
+            .with_context(|| format!("reading {}", dir.join("bussard.toml").display()))?,
+    };
 
     // Password, store and write access are checked before the link is shown.
     let password = bussard_secure::Password::new(crate::keys_cmd::password()?);
     let mut store = bussard_service::CertificateEnrolment::open(dir, password.expose())?;
     drop(password);
 
-    let mut session = EnrollSession::new().context("starting the enrolment session")?;
+    let (mut session, relay, link) =
+        EnrollSession::connect(&endpoints).context("starting the enrolment session")?;
     // F13: say so when the page or relay is not the project's.
-    let warnings = match &hosted {
-        Some((relay_url, page)) => endpoint_warnings(relay_url, page),
-        None => Vec::new(),
-    };
-    let (local, relay, link) = match hosted {
-        Some((relay_url, page)) => {
-            let relay = HttpRelay::new(&relay_url, &session)?;
-            let link = session.link(&page, Some(relay.base()));
-            (None, relay, link)
-        }
-        None => {
-            let server = bussard_viz::enroll_local::LocalEnrollServer::start()
-                .context("starting the local enrolment page")?;
-            let relay = HttpRelay::new(&server.relay_url(), &session)?;
-            // Same origin: the link names no relay.
-            let link = session.link(&server.page_url(), None);
-            (Some(server), relay, link)
-        }
-    };
+    let warnings = endpoints.warnings();
     let fingerprint = session.fingerprint();
 
     if json_out {
@@ -128,23 +122,18 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
 
     let mut print_error = None;
     let mut tally = EnrollTally::default();
-    let summary = session.run(
-        &relay,
-        &mut store,
-        RunOptions {
-            wait_secs: WAIT_SECS,
-            ..RunOptions::default()
-        },
-        &stop,
-        &mut |event| {
-            if let EnrollEvent::Certificate(outcome) = &event {
-                tally.add(outcome.status);
-            }
-            if let Err(err) = show(&event, json_out) {
-                print_error.get_or_insert(err);
-            }
-        },
-    )?;
+    let run_options = RunOptions {
+        wait_secs: WAIT_SECS,
+        ..RunOptions::default()
+    };
+    let summary = session.run(&relay, &mut store, run_options, &stop, &mut |event| {
+        if let EnrollEvent::Certificate(outcome) = &event {
+            tally.add(outcome.status);
+        }
+        if let Err(err) = show(&event, json_out) {
+            print_error.get_or_insert(err);
+        }
+    })?;
     if let Some(server) = local {
         server.finish();
     }
@@ -152,7 +141,7 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
         return Err(err);
     }
 
-    let why = summary.end.describe();
+    let why = summary.end.describe(&run_options.timeouts, "this terminal");
     if json_out {
         crate::output::print(
             crate::output::schema::KEYS_ENROLL,
@@ -168,7 +157,7 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
             }),
         )?;
     } else {
-        print!("{}", ending_text(why, &tally, Style::stdout()));
+        print!("{}", ending_text(&why, &tally, Style::stdout()));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -215,7 +204,7 @@ fn intro_text(
 /// The text after the session: why it ended, the summary of the labels and
 /// the next steps that apply.
 fn ending_text(why: &str, tally: &EnrollTally, style: Style) -> String {
-    let mut out = format!("\n{}\n", style.dim(&format!("Session closed ({why}).")));
+    let mut out = format!("\n{}\n", style.dim(why));
     out.push_str(&certificate_view::summary(tally, style));
     out.push('\n');
     let steps: Vec<(&str, &str)> = tally
@@ -405,14 +394,11 @@ mod tests {
     #[test]
     fn test_ending_text_lists_only_applying_steps() {
         let text = ending_text(
-            "the phone finished",
+            "Finished on the phone.",
             &tally(&[EnrollStatus::Stored, EnrollStatus::Unassigned]),
             Style::plain(),
         );
-        assert!(
-            text.contains("Session closed (the phone finished)."),
-            "{text}"
-        );
+        assert!(text.starts_with("\nFinished on the phone.\n"), "{text}");
         assert!(
             text.contains("\n2 sent, 1 added, 1 no device yet\n"),
             "{text}"

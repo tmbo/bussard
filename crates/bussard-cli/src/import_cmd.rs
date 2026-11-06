@@ -1,6 +1,6 @@
 //! The `bussard import` subcommand.
 //!
-//! Imports a `.knxproj` (or an `xknxproject` JSON dump) into the TOML model,
+//! Imports a `.knxproj` into the TOML model,
 //! writing it to an output directory via the model's deterministic saver.
 //!
 //! A **re-import** into a directory that already holds a model does not clobber:
@@ -29,12 +29,9 @@ use crate::import_bundle::ConflictChoice;
 /// `bussard import`.
 #[derive(Debug, clap::Args)]
 pub(crate) struct ImportArgs {
-    /// The `.knxproj` or `.bussard` file to import (omit with `--from-json`).
-    #[arg(value_name = "PROJECT", required_unless_present = "from_json")]
-    project: Option<PathBuf>,
-    /// Import from an xknxproject JSON dump instead of a `.knxproj`.
-    #[arg(long, value_name = "FILE", conflicts_with = "project")]
-    from_json: Option<PathBuf>,
+    /// The `.knxproj` or `.bussard` file to import.
+    #[arg(value_name = "PROJECT")]
+    project: PathBuf,
     /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
     #[arg(long)]
     password: Option<String>,
@@ -78,16 +75,10 @@ impl Run for ImportArgs {
             yes_download: self.yes_download,
             no_download: self.no_download,
         };
-        if let Some(json) = self.from_json {
-            run_json(&json, dir, choice, consent)
-        } else if let Some(project) = self.project {
-            if bussard_model::bundle::is_bundle_path(&project) {
-                crate::import_bundle::run_bundle(&project, dir, choice)
-            } else {
-                run_knxproj(&project, dir, self.password, choice, consent)
-            }
+        if bussard_model::bundle::is_bundle_path(&self.project) {
+            crate::import_bundle::run_bundle(&self.project, dir, choice)
         } else {
-            anyhow::bail!("provide a .knxproj path or --from-json <file>")
+            run_knxproj(&self.project, dir, self.password, choice, consent)
         }
     }
 }
@@ -143,19 +134,6 @@ pub(crate) fn ask_password() -> Result<Option<String>, SetupError> {
         return Ok(None);
     }
     prompt_password().map(Some).map_err(SetupError::source)
-}
-
-/// Runs `bussard import --from-json`.
-fn run_json(
-    path: &Path,
-    dir: &Path,
-    choice: ConflictChoice,
-    consent: DownloadConsent,
-) -> anyhow::Result<ExitCode> {
-    let model = bussard_project::import_from_json(path)?;
-    let code = write_model(model, dir, choice, "project", Some(consent), None)?;
-    crate::keys_cmd::import_neighbour(path, dir);
-    Ok(code)
 }
 
 /// Writes the freshly-imported `model` to `dir`

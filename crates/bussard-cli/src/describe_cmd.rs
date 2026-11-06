@@ -25,7 +25,7 @@ use bussard_mgmt::{Layer4Connection, PropertyDesc, system_type};
 use bussard_model::IndividualAddress;
 use bussard_service::describe::{object_type_name, pid_name};
 use bussard_service::facts::property_desc;
-use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, SourcePolicy, WritePolicy};
+use bussard_service::{FactsCache, FactsSource, FactsWant, L4Options, WritePolicy};
 
 use crate::cli::{Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{load_model_required, resolve_config};
@@ -252,14 +252,9 @@ fn run(args: &DescribeArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let service = session.bus.service();
     let (result, on_factory_key) = runtime
         .block_on(async move {
-            let options = L4Options {
-                source: SourcePolicy::Known(source),
-                tool_key,
-                factory_key,
-                high_water: secure_seq,
-                authorize,
-                ..L4Options::default()
-            };
+            let options = L4Options::secured(source, tool_key, secure_seq)
+                .with_factory_key(factory_key)
+                .with_authorize(authorize);
             let outcome = service
                 .with_l4(target, &options, async |l4| {
                     introspect(l4, &facts, full).await

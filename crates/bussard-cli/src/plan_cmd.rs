@@ -251,20 +251,20 @@ pub(crate) fn read_device(
         bussard_service::secure::resolve_session_keys(target, tool_key_source, activated)
     })?;
     let presented_tool_key = tool_key.is_some();
-    let options = L4Options {
-        source: SourcePolicy::Check {
+    // Authorize (free access) before reading, as ETS does (issue #52 finding
+    // #1) and as System 7 requires before any memory access. Best-effort on a
+    // read; skipped for a device whose facts say it never answers (issue #209).
+    let options = L4Options::secured(
+        SourcePolicy::Check {
             skip: overrides.skip_address_check,
         },
         tool_key,
-        factory_key,
-        high_water: bussard_secure::SequenceHighWater::new(),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1) and as System 7 requires before any memory access.
-        // Best-effort on a read; skipped for a device whose facts say it never
-        // answers (issue #209).
-        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
-        ..L4Options::default()
-    };
+        bussard_secure::SequenceHighWater::new(),
+    )
+    .with_factory_key(factory_key)
+    .with_authorize(bussard_service::status::read_only_authorize(
+        &mut facts, target,
+    ));
     let runtime = tokio::runtime::Runtime::new()?;
     runtime
         .block_on(async move {

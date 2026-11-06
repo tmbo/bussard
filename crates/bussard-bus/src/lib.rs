@@ -78,11 +78,7 @@ pub const BACKOFF_START_MS_ENV: &str = "BUSSARD_BUS_BACKOFF_MS";
 
 /// The initial reconnect backoff, honouring [`BACKOFF_START_MS_ENV`].
 fn backoff_start() -> Duration {
-    bussard_model::dotenv::var(BACKOFF_START_MS_ENV)
-        .ok()
-        .and_then(|s| s.trim().parse::<u64>().ok())
-        .map(Duration::from_millis)
-        .unwrap_or(BACKOFF_START)
+    bussard_model::dotenv::duration_ms(BACKOFF_START_MS_ENV).unwrap_or(BACKOFF_START)
 }
 /// Depth of the inbound broadcast channel. Subscribers that fall behind this far
 /// lag (older frames dropped) rather than blocking the actor.

@@ -38,7 +38,13 @@ async fn test_layer4_reads_and_writes_properties_over_device_management() -> Tes
         .start()
         .await?;
     let mut dm = Transport::connect(&ConnectionConfig::device_management(gw.addr())).await?;
-    let mut l4 = Layer4Connection::connect(&mut dm, target, IndividualAddress::from_raw(0)).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut dm,
+        target,
+        IndividualAddress::from_raw(0),
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
 
     assert_eq!(read_device_descriptor(&mut l4).await?, 0x0021);
     let name = property_ext::read_property_ext(&mut l4, FRIENDLY_NAME, 9, 1).await?;

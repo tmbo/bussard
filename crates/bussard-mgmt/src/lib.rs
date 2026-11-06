@@ -26,7 +26,7 @@
 //! # Example
 //!
 //! ```no_run
-//! use bussard_mgmt::DeviceConnection;
+//! use bussard_mgmt::{ConnectOptions, Layer4Connection, read_device_descriptor};
 //! use bussard_transport::{ConnectionConfig, Transport};
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,8 +38,9 @@
 //! // Connect to device 1.1.4 and read its mask version.
 //! let target = "1.1.4".parse()?;
 //! let source = "0.0.255".parse()?;
-//! let mut device = DeviceConnection::connect(&mut bus, target, source).await?;
-//! let mask = device.device_descriptor().await?;
+//! let mut device =
+//!     Layer4Connection::connect(&mut bus, target, source, ConnectOptions::default()).await?;
+//! let mask = read_device_descriptor(&mut device).await?;
 //! println!("mask version: {mask:#06x} ({})", bussard_mgmt::system_type(mask));
 //! device.disconnect().await?;
 //! # Ok(())
@@ -67,18 +68,16 @@ pub mod sys7;
 pub mod tables;
 
 pub use broadcast::{
-    devices_in_programming_mode, devices_in_programming_mode_within,
-    read_individual_address_by_serial, read_individual_address_by_serial_within,
+    PROGRAMMING_MODE_WINDOW, devices_in_programming_mode, read_individual_address_by_serial,
     write_individual_address, write_individual_address_by_serial,
 };
 pub use connection::{
-    AuthorizeOutcome, CONNECTION_TIMEOUT, ConnectionSeed, L4Channel, Layer4Connection,
-    LeaseChannel, MAX_OBJECT_INDEX, MAX_SYNC_BACKOFF, MGMT_TIMEOUT_MS_ENV, MaxApduAbsence,
-    PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD, STANDARD_FRAME_APDU,
-    SyncRetry, Timeouts, describe_object_properties, probe_object_type, probe_object_types,
-    read_device_descriptor, read_device_descriptor_unsecured,
+    AuthorizeOutcome, CONNECTION_TIMEOUT, ConnectOptions, ConnectionSeed, L4Channel,
+    Layer4Connection, LeaseChannel, MAX_OBJECT_INDEX, MAX_SYNC_BACKOFF, MGMT_TIMEOUT_MS_ENV,
+    MaxApduAbsence, PID_OBJECT_TYPE, PROBE_TIMEOUT, PropertyDesc, SECURE_APDU_OVERHEAD,
+    STANDARD_FRAME_APDU, SyncRetry, Timeouts, describe_object_properties, probe_object_type,
+    probe_object_types, read_device_descriptor, read_device_descriptor_unsecured,
 };
-pub use device::DeviceConnection;
 pub use error::{MgmtError, Result, SilenceKind, return_code_name};
 pub use io_list::{ObjectTableSource, PID_IO_LIST, discover_object_table, read_io_list};
 pub use load::{

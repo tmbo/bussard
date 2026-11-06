@@ -25,8 +25,7 @@ pub fn resolve_password(given: Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Loads the project at `path` (a `.knxproj`, or an xknxproject `.json`
-/// dump) as a model for `dir`. A password-protected `.knxproj` uses
+/// Loads the `.knxproj` at `path` as a model for `dir`. A password-protected `.knxproj` uses
 /// `password` (see [`resolve_password`]); without one, `ask` is asked once.
 ///
 /// # Errors
@@ -39,9 +38,6 @@ pub fn load_project(
     password: Option<String>,
     mut ask: impl FnMut() -> Result<Option<String>, SetupError>,
 ) -> Result<Model, SetupError> {
-    if super::is_json(path) {
-        return bussard_project::import_from_json(path).map_err(SetupError::source);
-    }
     let password = resolve_password(password);
     let options = bussard_project::ImportOptions::for_dir(dir);
     match bussard_project::import_with(path, password.as_deref(), &options) {

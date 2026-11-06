@@ -286,12 +286,14 @@ pub async fn write_system_b<Ch: L4Channel>(
     load: crate::apply::SystemBLoad<'_>,
     seed: Option<bussard_mgmt::ConnectionSeed>,
 ) -> Result<VerifyOutcome, WriteError> {
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         channel,
         target,
         source,
-        bussard_mgmt::Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: bussard_mgmt::Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(WriteError::Mgmt)?;
@@ -337,12 +339,14 @@ pub async fn write_sys7<Ch: L4Channel>(
     // Refuse before the connection opens: every TaskSegment record carries the
     // application's identity, which only the product gives.
     let task_identity = images.task_identity.ok_or(Sys7ApplyError::NoTaskIdentity)?;
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         channel,
         target,
         source,
-        bussard_mgmt::Timeouts::default(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: bussard_mgmt::Timeouts::default(),
+            secure,
+        },
     )
     .await
     .map_err(|e| Sys7ApplyError::Write(WriteError::Mgmt(e)))?;

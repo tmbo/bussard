@@ -43,9 +43,9 @@ use bussard_download::backup::BackupManifest;
 use bussard_model::IndividualAddress;
 use bussard_service::WritePolicy;
 use bussard_service::backup::{
-    BackupInputs, BackupProgress, capture_devices, default_out_dir, select_targets,
-    write_backup_run,
+    BackupInputs, DeviceCapture, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
+use bussard_service::line::WalkEvent;
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{gateway_display, load_model_required, open_checked, resolve_config};
@@ -140,13 +140,16 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             .and_then(|app| crate::product_store::pinned_application(dir, app));
         bussard_download::uses_user_memory(app.as_ref())
     };
-    let mut progress = |event: BackupProgress<'_>| match event {
-        BackupProgress::Reading {
+    let mut progress = |event: WalkEvent<'_, DeviceCapture>| match event {
+        WalkEvent::Probing {
+            address,
             index,
             total,
-            target,
-        } => eprintln!("[{index}/{total}] reading {target}…"),
-        BackupProgress::Captured(capture) => {
+            ..
+        } => eprintln!("[{index}/{total}] reading {address}…"),
+        WalkEvent::Probed {
+            outcome: capture, ..
+        } => {
             if let (Some(check), Ok(target)) = (
                 &capture.entry.identity,
                 capture.entry.address.parse::<IndividualAddress>(),
@@ -162,7 +165,6 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             model: &model,
             source,
             facts: &facts,
-            probe_timeouts: crate::scan_cmd::discovery_timeouts(),
             tool_key: &tool_key,
             user_memory_above_64k: &user_memory,
         };

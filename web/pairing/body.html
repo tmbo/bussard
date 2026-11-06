@@ -1,24 +1,5 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <!-- The pairing page (#809, #820): served by bussard's MCP server on
-       127.0.0.1 under a random token path. bussard fills the double-brace
-       placeholders (escaped) and sends the same policy as a header, with
-       frame-ancestors. No inline script or style, no third-party requests.
-       One column read top to bottom: three numbered steps; once the phone
+  <!-- One column read top to bottom: three numbered steps; once the phone
        joined, steps 1 and 2 fold into one line and the certificates lead. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
-  <meta name="referrer" content="no-referrer">
-  <meta name="robots" content="noindex, nofollow">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light dark">
-  <title>bussard: add certificates</title>
-  <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="pairing.css">
-  <script type="module" src="pairing.js"></script>
-</head>
-<body class="{{mode}}">
   <header class="top">
     <span class="brand">bussard</span>
     <span class="title">Add KNX Secure certificates</span>
@@ -89,5 +70,3 @@
       into your encrypted key store, never into the chat.
     </p>
   </main>
-</body>
-</html>

@@ -16,21 +16,23 @@
 //! [`watch`] counter on every change and [`PairingPage`] answers a waiting
 //! request with a fresh [`PairingStatus`].
 
-use std::net::{Ipv4Addr, SocketAddr, TcpListener};
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use axum::Router;
 use axum::extract::{Query, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::middleware;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use bussard_model::text::escape_html;
-use bussard_service::enroll_session::{CertificateOutcome, EnrollStatus, NextStep};
+use bussard_service::enroll_session::{
+    CertificateOutcome, EnrollEnd, EnrollStatus, NextStep, SessionProgress,
+};
 use serde::{Deserialize, Serialize};
-use tokio::sync::{oneshot, watch};
+use tokio::sync::watch;
+
+use crate::local_server::{self, CSS, JS, JSON, LocalServer, Policy};
 
 /// How long a status request waits for a change before it answers with the
 /// unchanged status.
@@ -40,18 +42,16 @@ pub const STATUS_WAIT: Duration = Duration::from_secs(20);
 /// so a waiting status request delivers the final state.
 pub const FINISH_GRACE: Duration = Duration::from_secs(2);
 
-/// The response headers of the page itself: its own files only, the network
-/// only to this origin, no framing.
-const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self'; \
-    img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; \
-    frame-ancestors 'none'; object-src 'none'";
+/// The headers of the page: its own files only, the network only to this
+/// origin, no framing, no referrer.
+const POLICY: Policy = Policy {
+    csp: "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; \
+        connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; \
+        object-src 'none'",
+    referrer: "no-referrer",
+};
 
-const HTML: &str = "text/html; charset=utf-8";
-const JS: &str = "text/javascript; charset=utf-8";
-const CSS: &str = "text/css; charset=utf-8";
-const JSON: &str = "application/json";
-
-const TEMPLATE: &str = include_str!("../../../web/pairing/index.html");
+const BODY: &str = include_str!("../../../web/pairing/body.html");
 const SCRIPT: &str = include_str!("../../../web/pairing/pairing.js");
 const STYLE: &str = include_str!("../../../web/pairing/pairing.css");
 
@@ -100,35 +100,16 @@ impl PairingCertificate {
     /// The row of `outcome`.
     #[must_use]
     pub fn of(outcome: &CertificateOutcome) -> Self {
-        let (badge, tone) = match outcome.status {
-            EnrollStatus::Stored => ("added", "good"),
-            EnrollStatus::Unassigned => ("no device yet", "wait"),
-            EnrollStatus::AlreadyStored => ("already known", "good"),
-            EnrollStatus::Conflict => ("conflict", "bad"),
-            EnrollStatus::Invalid => ("invalid", "bad"),
-            EnrollStatus::Error => ("failed", "bad"),
-        };
-        let detail = match outcome.status {
-            EnrollStatus::Stored => match (&outcome.ia, &outcome.name) {
-                (Some(ia), Some(name)) if !name.is_empty() => format!("for {ia} {name}"),
-                (Some(ia), _) => format!("for {ia}"),
-                (None, _) => String::new(),
-            },
-            EnrollStatus::Unassigned => "no device in your project has this serial number; \
-                bussard matches it once it finds the device (bussard scan)"
-                .to_string(),
-            EnrollStatus::AlreadyStored => String::new(),
-            EnrollStatus::Conflict => {
-                "your key store holds a different key for this device".to_string()
-            }
-            EnrollStatus::Invalid => "check the code".to_string(),
-            EnrollStatus::Error => outcome.message.clone().unwrap_or_default(),
+        let tone = match outcome.status {
+            EnrollStatus::Stored | EnrollStatus::AlreadyStored => "good",
+            EnrollStatus::Unassigned => "wait",
+            EnrollStatus::Conflict | EnrollStatus::Invalid | EnrollStatus::Error => "bad",
         };
         PairingCertificate {
             serial: outcome.serial.clone().unwrap_or_else(|| "-".to_string()),
             state: outcome.status.as_str(),
-            badge,
-            detail,
+            badge: outcome.status.badge(),
+            detail: outcome.detail().unwrap_or_default(),
             tone,
         }
     }
@@ -155,21 +136,55 @@ pub struct PairingStatus {
     pub next_steps: Vec<NextStep>,
 }
 
+/// The line the pairing page ends with: the human goes back to the chat,
+/// which continues by itself (#831).
+const BACK_TO_CHAT: &str = "You can close this tab and go back to your chat.";
+
+impl PairingStatus {
+    /// The live part of the page for a session at `progress`.
+    #[must_use]
+    pub fn of(progress: &SessionProgress) -> Self {
+        let tally = progress.tally();
+        let ended = progress.end_reason().map(|reason| {
+            if progress.end == Some(EnrollEnd::PhoneDone) {
+                format!("Done. {BACK_TO_CHAT}")
+            } else {
+                format!("{reason} {BACK_TO_CHAT}")
+            }
+        });
+        PairingStatus {
+            running: ended.is_none(),
+            phones: progress.phones,
+            refused_phones: progress.refused_phones,
+            certificates: progress
+                .results
+                .iter()
+                .map(PairingCertificate::of)
+                .collect(),
+            summary: tally.summary(),
+            next_steps: if ended.is_some() {
+                tally.next_steps()
+            } else {
+                Vec::new()
+            },
+            ended,
+        }
+    }
+}
+
 /// The current [`PairingStatus`], asked for on every status request.
 pub type StatusFn = Arc<dyn Fn() -> PairingStatus + Send + Sync>;
 
 /// The pairing page served on `127.0.0.1` at a free port, until dropped.
 pub struct PairingPage {
-    addr: SocketAddr,
+    server: LocalServer,
     token: String,
-    shutdown: Option<oneshot::Sender<()>>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for PairingPage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PairingPage")
-            .field("addr", &self.addr)
+            .field("addr", &self.addr())
             .finish_non_exhaustive()
     }
 }
@@ -209,104 +224,58 @@ impl PairingPage {
         status: StatusFn,
         changes: watch::Receiver<u64>,
     ) -> std::io::Result<Self> {
-        let mut bytes = [0u8; 16];
-        getrandom::getrandom(&mut bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
-        let token = bussard_model::text::hex(&bytes);
-        let html = render(content).map_err(std::io::Error::other)?;
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let app = router(
-            &token,
-            Shared {
-                html,
-                status,
-                changes,
-            },
-            vec![format!("127.0.0.1:{}", addr.port())],
-        );
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()?;
-        let (shutdown, stopped) = oneshot::channel::<()>();
-        let thread = std::thread::Builder::new()
-            .name("pairing-page".to_owned())
-            .spawn(move || {
-                runtime.block_on(async move {
-                    let Ok(listener) = tokio::net::TcpListener::from_std(listener) else {
-                        return;
-                    };
-                    // Not graceful: a waiting status request would hold the
-                    // shutdown for up to STATUS_WAIT.
-                    tokio::select! {
-                        _ = axum::serve(listener, app) => {}
-                        _ = stopped => {}
-                    }
-                });
-            })?;
-        Ok(PairingPage {
-            addr,
-            token,
-            shutdown: Some(shutdown),
-            thread: Some(thread),
-        })
+        let token = local_server::token()?;
+        let shared = Shared {
+            html: render(content).map_err(std::io::Error::other)?,
+            status,
+            changes,
+        };
+        let server = LocalServer::start("pairing-page", FINISH_GRACE, |addr| {
+            router(&token, shared, addr)
+        })?;
+        Ok(PairingPage { server, token })
     }
 
     /// The page URL, `http://127.0.0.1:<port>/<token>/`. Never put it in a
     /// tool result: whoever has it sees the phone link.
     #[must_use]
     pub fn url(&self) -> String {
-        format!("http://{}/{}/", self.addr, self.token)
+        self.server.url(&format!("/{}/", self.token))
     }
 
     /// The loopback address the page listens on.
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
-        self.addr
+        self.server.addr()
     }
 
     /// Keeps serving for [`FINISH_GRACE`] so the page shows the end, then
     /// stops.
     pub fn finish(self) {
-        std::thread::sleep(FINISH_GRACE);
-        drop(self);
-    }
-}
-
-impl Drop for PairingPage {
-    fn drop(&mut self) {
-        if let Some(shutdown) = self.shutdown.take() {
-            let _ = shutdown.send(());
-        }
-        if let Some(thread) = self.thread.take() {
-            let _ = thread.join();
-        }
+        self.server.finish();
     }
 }
 
 /// The page's routes under `/<token>/`, behind the exact-`Host` check.
 /// Every other path is a 404.
-fn router(token: &str, shared: Shared, allowed_hosts: Vec<String>) -> Router {
-    Router::new()
+fn router(token: &str, shared: Shared, addr: SocketAddr) -> Router {
+    let routes = Router::new()
         .route(&format!("/{token}/"), get(page))
         .route(
             &format!("/{token}/pairing.js"),
-            get(|| async { file(SCRIPT, JS) }),
+            get(|| async { POLICY.file(SCRIPT, JS) }),
         )
         .route(
             &format!("/{token}/pairing.css"),
-            get(|| async { file(STYLE, CSS) }),
+            get(|| async { POLICY.file(STYLE, CSS) }),
         )
         .route(&format!("/{token}/status"), get(status))
-        .with_state(Arc::new(shared))
-        .layer(middleware::from_fn_with_state(
-            Arc::new(allowed_hosts),
-            crate::enroll_local::check_host,
-        ))
+        .with_state(Arc::new(shared));
+    local_server::only_hosts(routes, vec![local_server::host(addr)])
 }
 
 async fn page(State(shared): State<Arc<Shared>>) -> Response {
-    file(shared.html.clone(), HTML)
+    POLICY.html(shared.html.clone())
 }
 
 async fn status(State(shared): State<Arc<Shared>>, Query(query): Query<StatusQuery>) -> Response {
@@ -323,32 +292,9 @@ async fn status(State(shared): State<Arc<Shared>>, Query(query): Query<StatusQue
         status: (shared.status)(),
     };
     match serde_json::to_string(&body) {
-        Ok(json) => file(json, JSON),
+        Ok(json) => POLICY.file(json, JSON),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
-}
-
-/// `body` with its content type and the headers every answer carries.
-fn file(body: impl IntoResponse, content_type: &'static str) -> Response {
-    let mut response = body.into_response();
-    let headers = response.headers_mut();
-    headers.insert(header::CONTENT_TYPE, HeaderValue::from_static(content_type));
-    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    headers.insert(
-        header::X_CONTENT_TYPE_OPTIONS,
-        HeaderValue::from_static("nosniff"),
-    );
-    headers.insert(
-        header::REFERRER_POLICY,
-        HeaderValue::from_static("no-referrer"),
-    );
-    if content_type == HTML {
-        headers.insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(PAGE_CSP),
-        );
-    }
-    response
 }
 
 /// The page of `content`: the template with the code, the link and the QR
@@ -359,19 +305,25 @@ fn render(content: &PairingContent) -> Result<String, qrcode::types::QrError> {
     } else {
         qr_svg(&content.phone_link)?
     };
-    let (hosted_hidden, local_hidden) = if content.local {
-        ("hidden", "")
+    let (mode, hosted_hidden, local_hidden) = if content.local {
+        ("local", "hidden", "")
     } else {
-        ("", "hidden")
+        ("hosted", "", "hidden")
     };
-    Ok(TEMPLATE
+    let body = BODY
         .replace("{{code}}", &escape_html(&content.code))
         .replace("{{link}}", &escape_html(&content.phone_link))
         .replace("{{qr}}", &qr)
         .replace("{{warnings}}", &warnings_html(&content.warnings))
-        .replace("{{mode}}", if content.local { "local" } else { "hosted" })
         .replace("{{hosted_hidden}}", hosted_hidden)
-        .replace("{{local_hidden}}", local_hidden))
+        .replace("{{local_hidden}}", local_hidden);
+    Ok(POLICY.page(
+        "add certificates",
+        "pairing.css",
+        Some("pairing.js"),
+        mode,
+        &body,
+    ))
 }
 
 /// The warning banner of `warnings`, empty without any.
@@ -492,7 +444,7 @@ mod tests {
     fn test_script_ends_by_pointing_back_to_the_chat() {
         // #831: the end banner shows the summary, and the page tries to
         // close a tab it watched end; the message stays when that fails.
-        assert!(TEMPLATE.contains("id=\"end-summary\""));
+        assert!(BODY.contains("id=\"end-summary\""));
         assert!(SCRIPT.contains("window.close()"));
         assert!(SCRIPT.contains("go back to your chat"));
     }
@@ -503,6 +455,26 @@ mod tests {
         // A finder pattern's top row starts at the quiet zone: a 7-module run.
         assert!(svg.contains("M4 4h7v1h-7z"), "{svg}");
         Ok(())
+    }
+
+    #[test]
+    fn test_pairing_status_of_ended_points_back_to_the_chat() {
+        let timeouts = bussard_service::enroll_session::Timeouts::default();
+        let mut progress = SessionProgress::new(false, timeouts, "the chat");
+        assert!(PairingStatus::of(&progress).running);
+        progress.end = Some(EnrollEnd::PhoneDone);
+        assert_eq!(
+            PairingStatus::of(&progress).ended.as_deref(),
+            Some("Done. You can close this tab and go back to your chat.")
+        );
+        progress.end = Some(EnrollEnd::Stopped);
+        assert_eq!(
+            PairingStatus::of(&progress).ended.as_deref(),
+            Some(
+                "The session was ended from the chat. You can close this tab and go back to \
+                 your chat."
+            )
+        );
     }
 
     #[test]

@@ -194,9 +194,11 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
             let source = checked_source_or_close(&service, &conn).await?;
-            let mut on_probe = |addr: IndividualAddress| {
-                eprint!("\rchecking {addr}…   ");
-                let _ = std::io::stderr().flush();
+            let mut on_probe = |event: bussard_service::line::WalkEvent<'_, _>| {
+                if let bussard_service::line::WalkEvent::Probing { address, .. } = event {
+                    eprint!("\rchecking {address}…   ");
+                    let _ = std::io::stderr().flush();
+                }
             };
             let verdicts =
                 bussard_service::commission::probe_line(&service, source, &targets, &mut on_probe)

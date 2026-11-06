@@ -32,7 +32,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use bussard_secure::Key16;
-use bussard_secure::ipsecure::{self, EphemeralKeyPair, IpSecureSession, SessionStatus};
+use bussard_secure::X25519KeyPair;
+use bussard_secure::ipsecure::{self, IpSecureSession, SessionStatus};
 use bussard_transport::cemi::{CemiFrame, MessageCode};
 use bussard_transport::knxnet::{self, ConnectionHeader, ServiceType};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -611,13 +612,13 @@ struct Pending {
 /// Answers a SESSION_REQUEST: the SESSION_RESPONSE and the pending session.
 fn accept_session_request(config: &Config, frame: &[u8]) -> Result<(Vec<u8>, Pending), MockError> {
     let request = ipsecure::parse_session_request(frame).map_err(secure_err)?;
-    let server = EphemeralKeyPair::from_secret_bytes([0x5C; 32]);
+    let server = X25519KeyPair::from_secret([0x5C; 32]);
     let session_id = 0x0001;
     let response = ipsecure::session_response(
         &config.device_auth,
         session_id,
         &request.client_public,
-        server.public(),
+        &server.public(),
     )
     .map_err(secure_err)?;
     let key = server.session_key(&request.client_public);
@@ -626,7 +627,7 @@ fn accept_session_request(config: &Config, frame: &[u8]) -> Result<(Vec<u8>, Pen
         Pending {
             session: IpSecureSession::new(key, session_id, [0x00, 0xA6, 0, 0, 0, 1]),
             client_public: request.client_public,
-            server_public: *server.public(),
+            server_public: server.public(),
         },
     ))
 }

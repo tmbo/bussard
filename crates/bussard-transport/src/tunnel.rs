@@ -147,16 +147,17 @@ use tokio::task::JoinHandle;
 use tokio::time::{self, Instant};
 
 use crate::cemi::CemiFrame;
+use crate::channel::{Channel, ChannelKind, ChannelTask};
 use crate::config::{
-    CONNECT_TIMEOUT, ConnectionConfig, DISCONNECT_TIMEOUT, FEATURE_RESPONSE_TIMEOUT,
-    HEARTBEAT_ATTEMPTS, HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL,
-    SECURE_PROBE_TIMEOUT, SecureSource, SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT,
-    TUNNELING_RETRANSMITS, TunnelReconnect,
+    CONNECT_TIMEOUT, ConnectionConfig, FEATURE_RESPONSE_TIMEOUT, HEARTBEAT_ATTEMPTS,
+    HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT, SECURE_KEEPALIVE_INTERVAL, SECURE_PROBE_TIMEOUT,
+    SecureSource, SecureTransport, SecureUser, TUNNELING_ACK_TIMEOUT, TUNNELING_RETRANSMITS,
+    TunnelReconnect,
 };
 use crate::conn::{BusConnection, TimestampedFrame};
 use crate::error::{Result, TransportError};
 use crate::host_lock::{Holder, HostLock};
-use crate::knxnet::{self, ConnectionHeader, GatewayDescription, Hpai, ServiceType};
+use crate::knxnet::{self, GatewayDescription, Hpai, ServiceType};
 use crate::secure::{SecureLink, UserKeys};
 
 /// Inbound queue depth at which the tunnel starts warning that its consumer is
@@ -171,6 +172,16 @@ const INBOUND_WARN_DEPTH: usize = 512;
 
 /// The context of a [`TransportError::GatewayStatus`] from a TUNNELING_ACK.
 const ACK_CONTEXT: &str = "TUNNELING_ACK";
+
+/// The tunnelling channel: TUNNELING_REQUEST confirmed by TUNNELING_ACK
+/// within [`TUNNELING_ACK_TIMEOUT`], repeated once (Tunnelling 3/8/4 §2.6.1).
+const TUNNELLING: ChannelKind = ChannelKind {
+    ack_service: ServiceType::TunnelingAck,
+    ack: knxnet::tunneling_ack,
+    ack_context: ACK_CONTEXT,
+    ack_timeout: TUNNELING_ACK_TIMEOUT,
+    retransmits: TUNNELING_RETRANSMITS,
+};
 
 /// Interface feature 03, the bus connection status (Tunnelling 3/8/4 §3.6.4).
 pub const FEATURE_BUS_CONNECTION_STATUS: u8 = 0x03;
@@ -577,12 +588,10 @@ impl Tunnel {
         let queued = Arc::new(AtomicUsize::new(0));
 
         let task_state = TaskState {
-            link,
-            channel_id,
-            local_hpai,
-            outgoing_seq: 0,
-            incoming_seq: 0,
-            first_incoming: true,
+            chan: Channel {
+                first_incoming: true,
+                ..Channel::new(link, TUNNELLING, channel_id, local_hpai)
+            },
             commands: cmd_rx,
             frames: frame_tx,
             queued: queued.clone(),
@@ -1274,17 +1283,8 @@ impl Drop for Tunnel {
 
 /// State owned by the background task.
 struct TaskState {
-    /// The UDP socket or secure TCP session to the gateway.
-    link: Link,
-    channel_id: u8,
-    /// Sequence counter for frames we send.
-    outgoing_seq: u8,
-    /// Next expected sequence counter for frames the gateway sends us.
-    incoming_seq: u8,
-    /// Whether we have yet to receive our first inbound request.
-    first_incoming: bool,
-    /// The real local endpoint advertised in every HPAI (see `connect`).
-    local_hpai: Hpai,
+    /// The tunnelling channel: link, channel id, HPAI, sequence counters.
+    chan: Channel,
     commands: mpsc::Receiver<Command>,
     /// Inbound delivery to the handle. Unbounded on purpose: see the module
     /// docs. Always written through `deliver`, never awaited.
@@ -1317,6 +1317,44 @@ struct TaskState {
     /// Marks the secure user as held by this tunnel for other bussard
     /// processes on the host (issue #287); released when the task ends.
     _user_lock: Option<HostLock>,
+}
+
+impl ChannelTask for TaskState {
+    fn channel(&mut self) -> &mut Channel {
+        &mut self.chan
+    }
+
+    /// Processes an inbound datagram that is not an awaited ACK. Returns `false`
+    /// if the connection has been disconnected and the task should exit.
+    async fn handle_inbound(&mut self, datagram: &[u8]) -> bool {
+        let parsed = match knxnet::parse(datagram) {
+            Ok(p) => p,
+            Err(_) => return true, // ignore malformed
+        };
+        match parsed.service {
+            ServiceType::TunnelingRequest
+            | ServiceType::TunnelingFeatureGet
+            | ServiceType::TunnelingFeatureResponse
+            | ServiceType::TunnelingFeatureSet
+            | ServiceType::TunnelingFeatureInfo => {
+                self.handle_tunneling_request(parsed.service, parsed.body)
+                    .await;
+                true
+            }
+            ServiceType::DisconnectRequest => {
+                // Acknowledge and tear down.
+                if let Ok(channel) = knxnet::parse_disconnect_request(parsed.body) {
+                    let resp = knxnet::disconnect_response(channel, 0);
+                    let _ = self.chan.link.send(&resp).await;
+                }
+                self.deliver(Err(TransportError::Disconnected(self.chan.id)));
+                false
+            }
+            ServiceType::ConnectionstateResponse => true, // handled inline elsewhere
+            // A late/duplicate ACK with no waiter, or other services: ignore.
+            _ => true,
+        }
+    }
 }
 
 impl TaskState {
@@ -1396,7 +1434,7 @@ impl TaskState {
                 }
 
                 // Inbound datagram.
-                res = self.link.recv(&mut buf) => {
+                res = self.chan.link.recv(&mut buf) => {
                     match res {
                         Ok(n) => {
                             self.last_rx = Instant::now();
@@ -1415,7 +1453,7 @@ impl TaskState {
 
                 // Secure session keepalive (a no-op on a plain UDP tunnel).
                 _ = keepalive.tick(), if keepalive_on => {
-                    if let Err(e) = self.link.keepalive().await
+                    if let Err(e) = self.chan.link.keepalive().await
                         && let Err(err) = self.recover(e, &mut buf).await
                     {
                         self.deliver(Err(err));
@@ -1451,7 +1489,7 @@ impl TaskState {
     /// Whether the TCP read deadline applies: a link without TUNNELING_ACKs
     /// (KNXnet/IP Secure over TCP) and a non-zero deadline.
     fn link_check_enabled(&self) -> bool {
-        !self.link.acks() && !self.reconnect.tcp_read_deadline.is_zero()
+        !self.chan.link.acks() && !self.reconnect.tcp_read_deadline.is_zero()
     }
 
     /// When the TCP read deadline expires: the last inbound frame plus the
@@ -1525,7 +1563,7 @@ impl TaskState {
                     let started = *lost_at.get_or_insert_with(Instant::now);
                     self.reestablish(err, started, buf).await?;
                     tracing::debug!(
-                        channel = self.channel_id,
+                        channel = self.chan.id,
                         "re-sending the pending frame on the re-established tunnel"
                     );
                 }
@@ -1544,156 +1582,15 @@ impl TaskState {
             .await
     }
 
-    /// Sends one frame of the tunnelling family under the next outgoing
-    /// sequence (`build` makes it from the connection header) and awaits its
-    /// confirmation as [`send_once`](Self::send_once) describes: TUNNELLING
-    /// REQUESTs and feature services share the counter and the rules
-    /// (Tunnelling 3/8/4 §3.1).
-    async fn send_sequenced(
-        &mut self,
-        build: impl Fn(ConnectionHeader) -> Vec<u8>,
-        buf: &mut [u8],
-    ) -> Result<()> {
-        let seq = self.outgoing_seq;
-        let header = ConnectionHeader {
-            channel_id: self.channel_id,
-            seq,
-        };
-        let datagram = build(header);
-
-        if !self.link.acks() {
-            // Over TCP there is no TUNNELING_ACK: the stream is reliable and a
-            // broken one surfaces as a socket error (CONFIRMED, ETS capture).
-            self.link.send_data(&datagram).await?;
-            self.outgoing_seq = self.outgoing_seq.wrapping_add(1);
-            return Ok(());
-        }
-
-        let mut attempt = 0;
-        loop {
-            self.link.send_data(&datagram).await?;
-            match self.await_ack(seq, buf).await {
-                Ok(()) => {
-                    self.outgoing_seq = self.outgoing_seq.wrapping_add(1);
-                    return Ok(());
-                }
-                Err(TransportError::Timeout(_)) if attempt < TUNNELING_RETRANSMITS => {
-                    attempt += 1;
-                    tracing::warn!(seq, attempt, "tunneling ACK timeout; retransmitting");
-                }
-                Err(TransportError::GatewayStatus {
-                    status,
-                    context: ACK_CONTEXT,
-                }) if attempt < TUNNELING_RETRANSMITS => {
-                    attempt += 1;
-                    tracing::warn!(
-                        seq,
-                        attempt,
-                        status,
-                        "tunneling ACK with an error status; repeating the request"
-                    );
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    /// Waits for the TUNNELING_ACK matching `seq`, servicing other inbound
-    /// datagrams (indications, heartbeats-from-us are not expected here, server
-    /// requests) meanwhile so nothing is lost.
-    async fn await_ack(&mut self, seq: u8, buf: &mut [u8]) -> Result<()> {
-        let deadline = Instant::now() + TUNNELING_ACK_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(TransportError::Timeout("TUNNELING_ACK"));
-            }
-            let n = match time::timeout(remaining, self.link.recv(buf)).await {
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) => return Err(e),
-                Err(_) => return Err(TransportError::Timeout("TUNNELING_ACK")),
-            };
-            let datagram = buf[..n].to_vec();
-            let parsed = match knxnet::parse(&datagram) {
-                Ok(p) => p,
-                Err(_) => continue, // ignore garbage while waiting
-            };
-            match parsed.service {
-                ServiceType::TunnelingAck => {
-                    if let Ok((hdr, status)) = knxnet::parse_tunneling_ack(parsed.body)
-                        && hdr.seq == seq
-                    {
-                        if status != 0 {
-                            return Err(TransportError::GatewayStatus {
-                                status,
-                                context: ACK_CONTEXT,
-                            });
-                        }
-                        return Ok(());
-                    }
-                }
-                // Server can interleave requests / disconnects while we await.
-                _ => {
-                    if !self.handle_inbound(&datagram).await {
-                        return Err(TransportError::Disconnected(self.channel_id));
-                    }
-                }
-            }
-        }
-    }
-
-    /// Processes an inbound datagram that is not an awaited ACK. Returns `false`
-    /// if the connection has been disconnected and the task should exit.
-    async fn handle_inbound(&mut self, datagram: &[u8]) -> bool {
-        let parsed = match knxnet::parse(datagram) {
-            Ok(p) => p,
-            Err(_) => return true, // ignore malformed
-        };
-        match parsed.service {
-            ServiceType::TunnelingRequest
-            | ServiceType::TunnelingFeatureGet
-            | ServiceType::TunnelingFeatureResponse
-            | ServiceType::TunnelingFeatureSet
-            | ServiceType::TunnelingFeatureInfo => {
-                self.handle_tunneling_request(parsed.service, parsed.body)
-                    .await;
-                true
-            }
-            ServiceType::DisconnectRequest => {
-                // Acknowledge and tear down.
-                if let Ok(channel) = knxnet::parse_disconnect_request(parsed.body) {
-                    let resp = knxnet::disconnect_response(channel, 0);
-                    let _ = self.link.send(&resp).await;
-                }
-                self.deliver(Err(TransportError::Disconnected(self.channel_id)));
-                false
-            }
-            ServiceType::ConnectionstateResponse => true, // handled inline elsewhere
-            // A late/duplicate ACK with no waiter, or other services: ignore.
-            _ => true,
-        }
-    }
-
     /// Handles an inbound TUNNELING_REQUEST, or a tunnelling feature frame,
     /// per the KNXnet/IP tunnelling ACK rules (issue #60): the feature services
     /// are confirmed and sequence-counted exactly like a TUNNELING_REQUEST
     /// (Tunnelling 3/8/4 §3.1, issue #514).
     ///
-    /// The sequence number decides the ACK, and it is read *before* the cEMI is
-    /// decoded so an un-decodable-but-in-sequence frame is still ACKed:
-    ///
-    /// * **Expected seq** — ACK, advance the window, and deliver the cEMI. If the
-    ///   cEMI carries an unknown message code (fails to decode) the frame is still
-    ///   ACKed and the window still advances (C3): otherwise the gateway would
-    ///   retransmit forever and stall the tunnel. The undecodable payload is
-    ///   simply not delivered.
-    /// * **Exact previous seq (seq-1)** — a retransmitted duplicate: ACK it (so
-    ///   the gateway stops resending) but drop it without advancing.
-    /// * **Any other seq** — SILENTLY DISCARD, no ACK (C2; Tunnelling 3/8/4
-    ///   §2.6.1). ACKing a frame we then drop would wrongly tell the gateway we
-    ///   accepted it. A conforming server repeats a frame once, so a frame two
-    ///   or more behind is never its retransmission (issue #516 retired the
-    ///   wider window of #58).
+    /// The sequence is checked ([`Channel::accept_incoming`]) *before* the cEMI
+    /// is decoded, so an un-decodable but in-sequence frame is still ACKed and
+    /// advances the window (C3): otherwise the gateway would retransmit it
+    /// forever and stall the tunnel. The undecodable payload is not delivered.
     async fn handle_tunneling_request(&mut self, service: ServiceType, body: &[u8]) {
         // Read the connection header (sequence) without committing to a cEMI
         // decode, so an unknown-message-code frame can still be ACKed.
@@ -1702,71 +1599,31 @@ impl TaskState {
             Err(_) => return, // a body too short even for the header: nothing to ACK
         };
         let seq = header.seq;
-
-        if self.first_incoming {
-            // Accept whatever the gateway starts at as the expected sequence.
-            self.incoming_seq = seq;
-            self.first_incoming = false;
+        if !self.chan.accept_incoming(seq).await {
+            return;
+        }
+        if service != ServiceType::TunnelingRequest {
+            self.handle_feature_frame(service, cemi_bytes);
+            return;
         }
 
-        // How far `seq` is *behind* the expected sequence, modulo the 8-bit space
-        // (0 means it is the expected frame, 1 the repeated previous one).
-        let behind = self.incoming_seq.wrapping_sub(seq);
-
-        if seq == self.incoming_seq {
-            // Expected frame: ACK and advance the window regardless of whether the
-            // cEMI decodes (C3 — an unknown message code must not stall the tunnel).
-            if self.link.acks() {
-                let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
-                let _ = self.link.send_data(&ack).await;
+        match CemiFrame::decode(cemi_bytes) {
+            Ok(cemi) => {
+                crate::wire_trace::trace_frame(crate::wire_trace::Direction::Inbound, &cemi);
+                let stamped = TimestampedFrame {
+                    received_at: SystemTime::now(),
+                    frame: cemi,
+                };
+                self.deliver(Ok(stamped));
             }
-            self.incoming_seq = self.incoming_seq.wrapping_add(1);
-            if service != ServiceType::TunnelingRequest {
-                self.handle_feature_frame(service, cemi_bytes);
-                return;
+            Err(err) => {
+                // ACKed above; ignore the payload we cannot parse.
+                tracing::debug!(
+                    seq,
+                    ?err,
+                    "ACKed in-sequence tunneling request with an undecodable cEMI; ignoring payload"
+                );
             }
-
-            match CemiFrame::decode(cemi_bytes) {
-                Ok(cemi) => {
-                    crate::wire_trace::trace_frame(crate::wire_trace::Direction::Inbound, &cemi);
-                    let stamped = TimestampedFrame {
-                        received_at: SystemTime::now(),
-                        frame: cemi,
-                    };
-                    self.deliver(Ok(stamped));
-                }
-                Err(err) => {
-                    // ACKed above; ignore the payload we cannot parse.
-                    tracing::debug!(
-                        seq,
-                        ?err,
-                        "ACKed in-sequence tunneling request with an undecodable cEMI; ignoring payload"
-                    );
-                }
-            }
-        } else if behind == 1 {
-            // The previous sequence: the gateway's repeat of a frame we already
-            // accepted (our ACK was lost). ACK it with its OWN sequence (so the
-            // gateway stops resending) but do NOT advance and do NOT re-deliver
-            // (Tunnelling 3/8/4 §2.6.1).
-            if self.link.acks() {
-                let ack = knxnet::tunneling_ack(self.channel_id, seq, 0);
-                let _ = self.link.send_data(&ack).await;
-            }
-            tracing::debug!(
-                seq,
-                behind,
-                "ACK-and-drop duplicate (behind) tunneling request"
-            );
-        } else {
-            // Any other sequence: silently discard, NO ACK (C2; 3/8/4 §2.6.1).
-            // ACKing a frame we then drop would wrongly tell the gateway we
-            // accepted it.
-            tracing::warn!(
-                seq,
-                expected = self.incoming_seq,
-                "out-of-window tunneling sequence; silently discarding (no ACK)"
-            );
         }
     }
 
@@ -1845,7 +1702,7 @@ impl TaskState {
                 if remaining.is_zero() {
                     break;
                 }
-                let n = match time::timeout(remaining, self.link.recv(buf)).await {
+                let n = match time::timeout(remaining, self.chan.link.recv(buf)).await {
                     Ok(Ok(n)) => n,
                     Ok(Err(e)) => return Err(e),
                     Err(_) => break,
@@ -1853,7 +1710,7 @@ impl TaskState {
                 self.last_rx = Instant::now();
                 let datagram = buf[..n].to_vec();
                 if !self.handle_inbound(&datagram).await {
-                    return Err(TransportError::Disconnected(self.channel_id));
+                    return Err(TransportError::Disconnected(self.chan.id));
                 }
             }
             tracing::debug!(
@@ -1874,58 +1731,6 @@ impl TaskState {
             self.last_rx = Instant::now();
         }
         r
-    }
-
-    /// Sends up to `attempts` CONNECTIONSTATE_REQUESTs, each waiting `timeout`
-    /// for its response, delivering interleaved traffic meanwhile.
-    async fn heartbeat_with(
-        &mut self,
-        attempts: u32,
-        timeout: std::time::Duration,
-        buf: &mut [u8],
-    ) -> Result<()> {
-        // The same real control HPAI the CONNECT used (see `connect` for why
-        // wildcard route-back breaks literal-minded gateways like KNX Virtual).
-        let control = self.local_hpai;
-        let req = knxnet::connectionstate_request(self.channel_id, control);
-
-        for attempt in 0..attempts {
-            self.link.send(&req).await?;
-            let deadline = Instant::now() + timeout;
-            loop {
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    break; // retry
-                }
-                match time::timeout(remaining, self.link.recv(buf)).await {
-                    Ok(Ok(n)) => {
-                        let datagram = buf[..n].to_vec();
-                        if let Ok(parsed) = knxnet::parse(&datagram) {
-                            if parsed.service == ServiceType::ConnectionstateResponse {
-                                if let Ok(cs) = knxnet::parse_channel_status(parsed.body)
-                                    && cs.channel_id == self.channel_id
-                                {
-                                    if cs.status == 0 {
-                                        return Ok(());
-                                    }
-                                    // Non-zero status: retry.
-                                    break;
-                                }
-                            } else {
-                                // Interleaved traffic during heartbeat wait.
-                                if !self.handle_inbound(&datagram).await {
-                                    return Err(TransportError::Disconnected(self.channel_id));
-                                }
-                            }
-                        }
-                    }
-                    Ok(Err(e)) => return Err(e),
-                    Err(_) => break, // timed out; retry
-                }
-            }
-            tracing::warn!(attempt = attempt + 1, "heartbeat attempt failed");
-        }
-        Err(TransportError::HeartbeatLost)
     }
 
     /// Re-establishes the tunnel after a lost link (issue #177).
@@ -1949,7 +1754,7 @@ impl TaskState {
             self.reconnect.budget.as_secs()
         );
         self.link_state.send_replace(LinkState::Reconnecting);
-        let old_channel = self.channel_id;
+        let old_channel = self.chan.id;
         let mut old_open = true;
         let mut backoff = self.reconnect.initial_backoff;
         let mut attempt = 0u32;
@@ -1962,8 +1767,8 @@ impl TaskState {
             if old_open {
                 // Best effort: a gateway that still holds the old channel frees
                 // its slot; an unreachable one simply never sees this.
-                let req = knxnet::disconnect_request(old_channel, self.local_hpai);
-                let _ = self.link.send(&req).await;
+                let req = knxnet::disconnect_request(old_channel, self.chan.hpai);
+                let _ = self.chan.link.send(&req).await;
             }
             let wait = self.reconnect.attempt_timeout.min(remaining);
             match self
@@ -1975,10 +1780,10 @@ impl TaskState {
                     assigned_ia,
                     ..
                 }) => {
-                    self.channel_id = channel;
-                    self.outgoing_seq = 0;
-                    self.incoming_seq = 0;
-                    self.first_incoming = true;
+                    self.chan.id = channel;
+                    self.chan.outgoing_seq = 0;
+                    self.chan.incoming_seq = 0;
+                    self.chan.first_incoming = true;
                     tracing::warn!(
                         "gateway connection re-established ({gateway}, channel {channel}, \
                          attempt {attempt})"
@@ -2030,18 +1835,18 @@ impl TaskState {
             // budget would collide with our own stale session (issue #287).
             // Ending it also releases the old channel on the gateway, so no
             // DISCONNECT is owed.
-            self.link.close().await;
+            self.chan.link.close().await;
             *old_open = false;
             let link = SecureLink::open(self.gateway, self.local_interface, user, wait).await?;
-            self.local_hpai = link.hpai();
-            self.link = Link::Secure(Box::new(link));
+            self.chan.hpai = link.hpai();
+            self.chan.link = Link::Secure(Box::new(link));
         }
-        let req = knxnet::connect_request(self.local_hpai, self.local_hpai);
-        match self.link.send(&req).await {
+        let req = knxnet::connect_request(self.chan.hpai, self.chan.hpai);
+        match self.chan.link.send(&req).await {
             // The refusal belongs to an earlier datagram (the best-effort
             // DISCONNECT, say) and consumed the socket error: this CONNECT was
             // not sent, so send it again. A second refusal is a real failure.
-            Err(e) if self.link.is_deferred_refusal(&e) => self.link.send(&req).await?,
+            Err(e) if self.chan.link.is_deferred_refusal(&e) => self.chan.link.send(&req).await?,
             other => other?,
         }
         loop {
@@ -2049,11 +1854,11 @@ impl TaskState {
             if remaining.is_zero() {
                 return Err(TransportError::Timeout("CONNECT_RESPONSE"));
             }
-            let n = match time::timeout(remaining, self.link.recv(buf)).await {
+            let n = match time::timeout(remaining, self.chan.link.recv(buf)).await {
                 Ok(Ok(n)) => n,
                 // A refusal for a datagram sent earlier: keep waiting out this
                 // attempt, a CONNECT_RESPONSE may already be queued behind it.
-                Ok(Err(e)) if self.link.is_deferred_refusal(&e) => {
+                Ok(Err(e)) if self.chan.link.is_deferred_refusal(&e) => {
                     tracing::debug!(%e, "gateway port refused a datagram while reconnecting");
                     continue;
                 }
@@ -2066,7 +1871,10 @@ impl TaskState {
             match parsed.service {
                 ServiceType::ConnectResponse => {
                     let granted = accept_connect_response(parsed.body)?;
-                    self.link.adopt_data_endpoint(granted.data_endpoint).await?;
+                    self.chan
+                        .link
+                        .adopt_data_endpoint(granted.data_endpoint)
+                        .await?;
                     return Ok(granted);
                 }
                 ServiceType::DisconnectResponse => {
@@ -2077,7 +1885,7 @@ impl TaskState {
                 ServiceType::DisconnectRequest => {
                     if let Ok(channel) = knxnet::parse_disconnect_request(parsed.body) {
                         let resp = knxnet::disconnect_response(channel, 0);
-                        let _ = self.link.send(&resp).await;
+                        let _ = self.chan.link.send(&resp).await;
                         if channel == old_channel {
                             *old_open = false;
                         }
@@ -2094,36 +1902,10 @@ impl TaskState {
     async fn do_close(&mut self, buf: &mut [u8]) -> Result<()> {
         // The same real control HPAI as CONNECT and the heartbeat, for the same
         // interop reason. The DISCONNECT_RESPONSE is best-effort.
-        let result = self.disconnect(buf).await;
+        let result = self.chan.disconnect(buf).await;
         // End a secure session explicitly (a no-op on UDP).
-        self.link.close().await;
+        self.chan.link.close().await;
         result
-    }
-
-    /// The DISCONNECT_REQUEST / DISCONNECT_RESPONSE exchange of [`do_close`].
-    async fn disconnect(&mut self, buf: &mut [u8]) -> Result<()> {
-        let control = self.local_hpai;
-        let req = knxnet::disconnect_request(self.channel_id, control);
-        self.link.send(&req).await?;
-
-        let deadline = Instant::now() + DISCONNECT_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                // Best-effort close: not receiving the response is not fatal.
-                return Ok(());
-            }
-            match time::timeout(remaining, self.link.recv(buf)).await {
-                Ok(Ok(n)) => {
-                    if let Ok(parsed) = knxnet::parse(&buf[..n])
-                        && parsed.service == ServiceType::DisconnectResponse
-                    {
-                        return Ok(());
-                    }
-                }
-                Ok(Err(_)) | Err(_) => return Ok(()),
-            }
-        }
     }
 }
 

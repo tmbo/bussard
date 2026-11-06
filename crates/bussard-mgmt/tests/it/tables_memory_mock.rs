@@ -165,12 +165,14 @@ async fn run(device: MockDevice, link: Link, fault: Option<Fault>) -> Result<Run
         Link::Plain => SecureLayer::plain(),
         Link::Secure => SecureLayer::activated(DataSecureSession::new(Key16::new(TOOL_KEY))),
     };
-    let mut l4 = Layer4Connection::connect_with_secure(
+    let mut l4 = Layer4Connection::connect(
         &mut bus,
         target()?,
         source,
-        Timeouts::discovery(),
-        secure,
+        bussard_mgmt::ConnectOptions {
+            timeouts: Timeouts::discovery(),
+            secure,
+        },
     )
     .await?;
     l4.set_max_apdu(Some(MAX_APDU));

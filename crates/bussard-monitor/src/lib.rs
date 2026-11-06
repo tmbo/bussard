@@ -47,7 +47,4 @@ pub use secure::{GroupKeyring, SecureInfo, SecureStatus};
 pub use store::{
     CaptureRecord, CaptureStore, CaptureWriter, QueryFilter, StoreError, StoredTelegram,
 };
-pub use stream::{
-    CancelToken, CancelWatch, StreamError, TelegramSink, run_stream, run_stream_cancellable,
-    run_stream_secured_cancellable, run_stream_with_outbound, run_stream_with_outbound_cancellable,
-};
+pub use stream::{CancelToken, CancelWatch, StreamError, StreamOptions, TelegramSink, run_stream};

@@ -27,11 +27,11 @@
 //! `Debug`, zeroized on drop). The X25519 private key is an
 //! [`x25519_dalek::StaticSecret`], which zeroizes itself on drop.
 
-use sha2::{Digest, Sha256};
-use x25519_dalek::{PublicKey, StaticSecret};
-
-use crate::crypto::{BLOCK, CryptoError, cbc_mac, constant_time_eq, encrypt_ctr};
+use crate::crypto::{
+    BLOCK, CryptoError, X25519KeyPair, cbc_mac, constant_time_eq, encrypt_ctr, random_bytes,
+};
 use crate::key::Key16;
+use sha2::{Digest, Sha256};
 
 /// KNXnet/IP header length.
 const HEADER_LEN: usize = 6;
@@ -201,9 +201,6 @@ pub enum IpSecureError {
     /// The send sequence ran out of 48-bit values (never in practice).
     #[error("KNXnet/IP Secure send sequence exhausted")]
     SequenceExhausted,
-    /// The operating system's randomness source failed.
-    #[error("no randomness for the X25519 key pair: {0}")]
-    Random(String),
     /// A crypto primitive rejected its input.
     #[error(transparent)]
     Crypto(#[from] CryptoError),
@@ -241,50 +238,11 @@ fn split_frame<'a>(frame: &'a [u8], what: &'static str) -> Result<(u16, &'a [u8]
     Ok((service, &frame[HEADER_LEN..total]))
 }
 
-/// An ephemeral X25519 key pair for one SESSION_REQUEST.
-pub struct EphemeralKeyPair {
-    secret: StaticSecret,
-    public: [u8; PUBLIC_KEY_LEN],
-}
-
-impl std::fmt::Debug for EphemeralKeyPair {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EphemeralKeyPair")
-            .field("secret", &"<redacted>")
-            .finish_non_exhaustive()
-    }
-}
-
-impl EphemeralKeyPair {
-    /// Generates a fresh key pair from the operating system's randomness.
-    ///
-    /// # Errors
-    ///
-    /// [`IpSecureError::Random`] when the OS randomness source fails.
-    pub fn generate() -> Result<Self, IpSecureError> {
-        let mut raw = zeroize::Zeroizing::new([0u8; 32]);
-        getrandom::getrandom(raw.as_mut_slice())
-            .map_err(|e| IpSecureError::Random(e.to_string()))?;
-        Ok(Self::from_secret_bytes(*raw))
-    }
-
-    /// A key pair from fixed secret bytes (tests and the simulator's vectors).
-    pub fn from_secret_bytes(secret: [u8; 32]) -> Self {
-        let secret = StaticSecret::from(secret);
-        let public = PublicKey::from(&secret).to_bytes();
-        EphemeralKeyPair { secret, public }
-    }
-
-    /// The public key sent in SESSION_REQUEST.
-    pub fn public(&self) -> &[u8; PUBLIC_KEY_LEN] {
-        &self.public
-    }
-
+impl X25519KeyPair {
     /// The session key: `SHA-256(X25519(secret, peer_public))[..16]` (spec
     /// §7.2).
     pub fn session_key(&self, peer_public: &[u8; PUBLIC_KEY_LEN]) -> Key16 {
-        let shared = self.secret.diffie_hellman(&PublicKey::from(*peer_public));
-        session_key_from_shared(shared.as_bytes())
+        session_key_from_shared(self.shared_secret(peer_public).as_bytes())
     }
 }
 
@@ -296,22 +254,11 @@ pub fn session_key_from_shared(shared: &[u8; 32]) -> Key16 {
     Key16::new(key)
 }
 
-/// Random octets from the OS (the client serial number).
-///
-/// # Errors
-///
-/// [`IpSecureError::Random`] when the OS randomness source fails.
-pub fn random_bytes<const N: usize>() -> Result<[u8; N], IpSecureError> {
-    let mut out = [0u8; N];
-    getrandom::getrandom(&mut out).map_err(|e| IpSecureError::Random(e.to_string()))?;
-    Ok(out)
-}
-
 /// A client serial number in the ETS form: `00 FA` + 4 random octets.
 ///
 /// # Errors
 ///
-/// [`IpSecureError::Random`] when the OS randomness source fails.
+/// [`CryptoError::Random`] when the OS randomness source fails.
 pub fn client_serial() -> Result<[u8; 6], IpSecureError> {
     let tail: [u8; 4] = random_bytes()?;
     Ok([
@@ -886,21 +833,21 @@ mod tests {
             hex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")?;
         let bob_secret: [u8; 32] =
             hex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")?;
-        let alice = EphemeralKeyPair::from_secret_bytes(alice_secret);
-        let bob = EphemeralKeyPair::from_secret_bytes(bob_secret);
+        let alice = X25519KeyPair::from_secret(alice_secret);
+        let bob = X25519KeyPair::from_secret(bob_secret);
         let alice_pub: [u8; 32] =
             hex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a")?;
-        assert_eq!(alice.public(), &alice_pub);
+        assert_eq!(alice.public(), alice_pub);
         // Both sides derive the same session key.
         assert_eq!(
-            alice.session_key(bob.public()),
-            bob.session_key(alice.public())
+            alice.session_key(&bob.public()),
+            bob.session_key(&alice.public())
         );
         // The session key is sha256(shared)[..16] of the RFC shared secret.
         let shared: [u8; 32] =
             hex("4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")?;
         assert_eq!(
-            alice.session_key(bob.public()),
+            alice.session_key(&bob.public()),
             session_key_from_shared(&shared)
         );
         Ok(())
@@ -939,17 +886,17 @@ mod tests {
 
     #[test]
     fn test_session_response_roundtrip_and_verify() -> TestResult {
-        let client = EphemeralKeyPair::from_secret_bytes([7; 32]);
-        let server = EphemeralKeyPair::from_secret_bytes([9; 32]);
+        let client = X25519KeyPair::from_secret([7; 32]);
+        let server = X25519KeyPair::from_secret([9; 32]);
         let dev = Key16::new([0x44; 16]);
-        let frame = session_response(&dev, 0x0102, client.public(), server.public())?;
+        let frame = session_response(&dev, 0x0102, &client.public(), &server.public())?;
         assert_eq!(frame.len(), 56);
         let parsed = parse_session_response(&frame)?;
         assert_eq!(parsed.session_id, 0x0102);
-        verify_session_response(&parsed, &dev, client.public())?;
+        verify_session_response(&parsed, &dev, &client.public())?;
         let wrong = Key16::new([0x45; 16]);
         assert_eq!(
-            verify_session_response(&parsed, &wrong, client.public()),
+            verify_session_response(&parsed, &wrong, &client.public()),
             Err(IpSecureError::BadMac("SESSION_RESPONSE"))
         );
         Ok(())

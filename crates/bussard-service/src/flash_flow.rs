@@ -27,7 +27,7 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 
-use crate::bus::{Authorize, BusService, Device, L4Options, Management, SourcePolicy};
+use crate::bus::{Authorize, BusService, L4Options, Management};
 use crate::download::{FlashObserver, FlashRun};
 use crate::error::ServiceError;
 use crate::facts::{FactsCache, FactsSource, FactsWant};
@@ -163,33 +163,28 @@ pub async fn probe<P>(
     let mut attempt = 1u32;
     loop {
         let losses_before = handle.link_losses();
-        let probe_options = L4Options {
-            source: SourcePolicy::Known(source),
-            tool_key: tool_key.clone(),
-            // A device reset to default is named, not flashed (issue #532).
-            factory_key: factory_key.clone(),
-            high_water: high_water.clone(),
-            authorize: Authorize::Skip,
-            ..L4Options::default()
-        };
+        // A device reset to default is named, not flashed (issue #532).
+        let probe_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
+            .with_factory_key(factory_key.clone())
+            .with_authorize(Authorize::Skip);
         // What this read-only pass learns about the device, handed to the
         // write phase so it does not rediscover any of it.
         let mut facts = DeviceFacts::default();
-        let session = match service.connect_device(target, &probe_options).await {
+        let session = match service.connect_l4_retrying(target, &probe_options).await {
             Ok(mut dev) => {
-                let mut body = async |dev: &mut Device| {
+                let mut body = async |dev: &mut Management| {
                     // Tolerate a device that does not implement authorize.
                     let key = bcu_key.unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY);
                     let r = if skip_authorize {
-                        dev.device_descriptor().await
+                        bussard_mgmt::read_device_descriptor(dev).await
                     } else {
-                        match dev.authorize(key).await {
+                        match dev.authorize_or_fail(key).await {
                             Ok(outcome) => {
                                 // Remember the verdict: a device that does not
                                 // implement authorize must not be asked again in
                                 // the write phase.
                                 facts.authorize = Some(outcome);
-                                dev.device_descriptor().await
+                                bussard_mgmt::read_device_descriptor(dev).await
                             }
                             Err(err) => Err(err),
                         }
@@ -200,10 +195,7 @@ pub async fn probe<P>(
                     if let Ok(mask) = &r
                         && MaskProfile::from_mask(*mask).tables_supported()
                     {
-                        match device_facts
-                            .establish(dev.l4_mut(), *mask, FactsWant::Table)
-                            .await
-                        {
+                        match device_facts.establish(dev, *mask, FactsWant::Table).await {
                             Ok(established) => {
                                 facts_cached = established.source == FactsSource::Cached;
                             }
@@ -213,10 +205,10 @@ pub async fn probe<P>(
                     // A skipped authorize stands only on facts that matched
                     // this device; otherwise present the key now.
                     if skip_authorize {
-                        if !facts_cached && dev.l4_mut().last_authorize().is_none() {
-                            let _ = dev.authorize(key).await;
+                        if !facts_cached && dev.last_authorize().is_none() {
+                            let _ = dev.authorize_or_fail(key).await;
                         }
-                        facts.authorize = Some(dev.l4_mut().last_authorize().cloned().unwrap_or(
+                        facts.authorize = Some(dev.last_authorize().cloned().unwrap_or(
                             bussard_mgmt::AuthorizeOutcome::Unsupported {
                                 detail:
                                     "the device facts record no answer to A_Authorize".to_string(),
@@ -225,15 +217,15 @@ pub async fn probe<P>(
                     }
                     // PID_MAX_APDU_LENGTH is device-stable: negotiated here, on
                     // the read-only connection, so the write phase seeds it.
-                    facts.max_apdu = dev.l4_mut().negotiate_max_apdu().await.ok().flatten();
-                    facts.max_apdu_absent = dev.l4_mut().max_apdu_absence()
-                        == Some(bussard_mgmt::MaxApduAbsence::Answered);
+                    facts.max_apdu = dev.negotiate_max_apdu().await.ok().flatten();
+                    facts.max_apdu_absent =
+                        dev.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered);
                     // The factory-freshness probe (issue #79), once the mask
                     // is known.
                     let resident = match &r {
                         Ok(mask) => Some(
                             probe_resident_state(
-                                dev.l4_mut(),
+                                dev,
                                 *mask,
                                 None,
                                 bussard_download::ProbeScope::Decisive,
@@ -263,12 +255,7 @@ pub async fn probe<P>(
                                 && !plan.is_sys7() =>
                         {
                             Some(
-                                read_current_parameter_memory(
-                                    dev.l4_mut(),
-                                    plan,
-                                    &facts.object_table,
-                                )
-                                .await,
+                                read_current_parameter_memory(dev, plan, &facts.object_table).await,
                             )
                         }
                         _ => None,
@@ -282,7 +269,7 @@ pub async fn probe<P>(
                                 && bussard_download::identity_gate(plan, resident.as_ref())
                                     .is_ok() =>
                         {
-                            Some(preread(dev.l4_mut(), plan).await)
+                            Some(preread(dev, plan).await)
                         }
                         _ => None,
                     };
@@ -294,7 +281,7 @@ pub async fn probe<P>(
                                 && !parameters_only
                                 && bussard_download::needs_sys7_identity(plan, state) =>
                         {
-                            Some(bussard_download::sys7_identity(dev.l4_mut(), plan, state).await)
+                            Some(bussard_download::sys7_identity(dev, plan, state).await)
                         }
                         _ => None,
                     };
@@ -302,7 +289,7 @@ pub async fn probe<P>(
                     // Informational: a refused read leaves it out.
                     let flags = match planned {
                         Some(plan) if secure_probe && !plan.is_sys7() && !parameters_only => {
-                            bussard_download::read_security_flags(dev.l4_mut())
+                            bussard_download::read_security_flags(dev)
                                 .await
                                 .ok()
                                 .flatten()
@@ -319,7 +306,7 @@ pub async fn probe<P>(
                     Ok((Ok(_), Some(state), _, _)) if !state.interrupted
                 );
                 let kept = if keep_connection && complete {
-                    Some(dev.into_l4())
+                    Some(dev)
                 } else {
                     let _ = dev.disconnect().await;
                     None

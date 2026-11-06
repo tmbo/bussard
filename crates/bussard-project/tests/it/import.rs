@@ -1,14 +1,9 @@
 //! Integration tests for `.knxproj` import.
 //!
-//! Two kinds of tests live here:
-//!
-//! * [`from_json_tiny_fixture`] runs always: it imports a small, hand-written
-//!   `xknxproject` JSON dump (fabricated data — no real project content) and
-//!   checks the resulting model shape.
-//! * The `oracle_*` tests compare a real `.knxproj` import against an
-//!   `xknxproject` JSON dump of the same file (the acceptance oracle). They are
-//!   skipped unless the private fixtures and the project password are present,
-//!   so CI passes without the private data.
+//! The `oracle_*` tests compare a real `.knxproj` import against an
+//! `xknxproject` JSON dump of the same file (the acceptance oracle). They are
+//! skipped unless the private fixtures and the project password are present,
+//! so CI passes without the private data.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -22,67 +17,6 @@ fn repo_root() -> std::io::Result<PathBuf> {
         .join("..")
         .join("..")
         .canonicalize()
-}
-
-#[test]
-fn from_json_tiny_fixture() -> Result<(), Box<dyn std::error::Error>> {
-    let fixture =
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/tiny.xknxproject.json");
-    let model = bussard_project::import_from_json(&fixture)?;
-
-    // Group addresses.
-    assert_eq!(model.groups.groups.len(), 2);
-    let ga1: GroupAddress = "1/0/1".parse()?;
-    let g1 = model.groups.groups.get(&ga1).ok_or("1/0/1")?;
-    assert_eq!(g1.name, "Living room light switch");
-    assert_eq!(g1.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
-
-    // Ranges flattened from the two-level tree.
-    assert_eq!(
-        model.groups.ranges.get("1").map(|r| r.name.as_str()),
-        Some("Ground floor")
-    );
-    assert_eq!(
-        model.groups.ranges.get("1/0").map(|r| r.name.as_str()),
-        Some("Lighting")
-    );
-
-    // Device.
-    let ia: IndividualAddress = "1.1.1".parse()?;
-    let dev = &model.devices.get(&ia).ok_or("device 1.1.1")?.device;
-    assert_eq!(dev.name, "Test Switch Actuator");
-    assert_eq!(
-        dev.product.as_ref().and_then(|p| p.manufacturer.as_deref()),
-        Some("Test Manufacturer")
-    );
-    // Two generated com objects. The DPT is present, so the redundant `size`
-    // is not stored (issue #17); the informational name lives in the device files' links
-    // only, not on the com-object (issue #19).
-    assert_eq!(dev.com_objects.len(), 2);
-    let co0 = dev
-        .com_objects
-        .get(&0)
-        .ok_or("dev.com_objects.get(&0) missing")?;
-    assert_eq!(co0.dpt.map(|d| d.to_string()).as_deref(), Some("1.001"));
-    assert!(co0.size.is_none(), "size derived from dpt, not stored");
-
-    // Links: object 0 has no transmit flag -> listen only; object 1 has
-    // transmit -> send. The name lives here.
-    let links = model.links.links.get(&ia).ok_or("links for 1.1.1")?;
-    let obj0 = links
-        .iter()
-        .find(|l| l.object == 0)
-        .ok_or("links.iter().find(|l| l.object == 0) missing")?;
-    assert_eq!(obj0.name.as_deref(), Some("Switch output A"));
-    assert!(obj0.send.is_none());
-    assert_eq!(obj0.listen, vec!["1/0/1".parse()?]);
-    let obj1 = links
-        .iter()
-        .find(|l| l.object == 1)
-        .ok_or("links.iter().find(|l| l.object == 1) missing")?;
-    assert_eq!(obj1.send, Some("1/0/2".parse()?));
-    assert!(obj1.listen.is_empty());
-    Ok(())
 }
 
 // ---------------------------------------------------------------------------

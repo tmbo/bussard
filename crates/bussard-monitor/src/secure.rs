@@ -113,11 +113,6 @@ impl GroupKeyring {
         self.keys.is_empty()
     }
 
-    /// Whether it holds a key for `ga`.
-    pub fn has_key(&self, ga: GroupAddress) -> bool {
-        self.keys.contains_key(&ga)
-    }
-
     /// Unwraps a secured group telegram.
     ///
     /// Returns `None` for anything that is not secured group data (a plain

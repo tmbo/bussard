@@ -189,6 +189,18 @@ pub fn var(name: &str) -> Result<String, std::env::VarError> {
     }
 }
 
+/// A millisecond knob: [`var`] read as a whole number of milliseconds
+/// (surrounding whitespace ignored). `None` when unset or not a number.
+///
+/// The `BUSSARD_*_MS` test hooks (discovery, management and probe timeouts,
+/// reconnect backoff, flash waits) all read through this.
+pub fn duration_ms(name: &str) -> Option<std::time::Duration> {
+    var(name)
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .map(std::time::Duration::from_millis)
+}
+
 /// `std::env::var_os` with the installed `.env` values as the fallback.
 #[must_use]
 pub fn var_os(name: &str) -> Option<OsString> {

@@ -10,7 +10,8 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bussard_secure::enroll::{Direction, EnrollKeyPair, SessionKey};
+use bussard_secure::X25519KeyPair;
+use bussard_secure::enroll::{Direction, SessionKey};
 use bussard_service::enroll_session::{
     CertificateOutcome, CertificateSink, CloseReason, DownMessage, EnrollEnd, EnrollEvent,
     EnrollSession, EnrollStatus, Envelope, HttpRelay, RunOptions,
@@ -101,7 +102,7 @@ fn percent_decode(text: &str) -> Result<String, BoxError> {
 
 /// The phone page, minus the camera.
 struct FakePhone {
-    keys: EnrollKeyPair,
+    keys: X25519KeyPair,
     key: SessionKey,
     sid: [u8; 16],
     session_url: String,
@@ -110,7 +111,7 @@ struct FakePhone {
 
 impl FakePhone {
     fn join(link: &str) -> Result<Self, BoxError> {
-        Self::join_with(link, bussard_secure::enroll::random::<32>()?)
+        Self::join_with(link, bussard_secure::random_bytes::<32>()?)
     }
 
     /// Join with a fixed phone secret: the same phone after a reload.
@@ -124,7 +125,7 @@ impl FakePhone {
             .decode(params.get("k").ok_or("no key")?)?
             .as_slice()
             .try_into()?;
-        let keys = EnrollKeyPair::from_secret(secret);
+        let keys = X25519KeyPair::from_secret(secret);
         let key = keys.phone_key(&sid, &b_pk)?;
         Ok(FakePhone {
             keys,
@@ -476,7 +477,7 @@ async fn test_enroll_same_phone_reconnects_after_reload() -> TestResult {
 
     let phone = tokio::task::spawn_blocking(move || -> Result<_, BoxError> {
         // The page keeps its phone key (IndexedDB on a real phone).
-        let secret = bussard_secure::enroll::random::<32>()?;
+        let secret = bussard_secure::random_bytes::<32>()?;
         let mut first = FakePhone::join_with(&link, secret)?;
         first.send(&json!({"type": "hello"}))?;
         first.send(&json!({"type": "certificate", "id": 1, "text": CERT_A}))?;

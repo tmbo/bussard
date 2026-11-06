@@ -131,7 +131,7 @@ impl std::fmt::Debug for Keyring {
 }
 
 /// The backbone (routing/multicast) key material (spec §4.5).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Backbone {
     /// The multicast/routing key (decrypted from the AES-CBC `Key` attribute).
     pub key: Key16,

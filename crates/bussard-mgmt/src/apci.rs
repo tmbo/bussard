@@ -97,7 +97,7 @@ pub const A_MEMORY_RESPONSE: u16 = 0x240;
 /// stored octets (the "verify mode" some System B devices support), but that
 /// echo is optional and not cross-stack reliable; bussard verifies every write
 /// by an independent `A_Memory_Read` read-back compare instead. See
-/// [`encode_memory_write`] and [`crate::device::DeviceConnection::write_memory`].
+/// [`encode_memory_write`] and [`crate::connection::Layer4Connection::write_memory_read_back`].
 pub const A_MEMORY_WRITE: u16 = 0x280;
 
 /// `A_MemoryExtended_Write` — write device memory at a **24-bit** address.
@@ -851,7 +851,7 @@ pub fn decode_memory_response(resp_apci: u16, payload: &[u8]) -> Option<MemoryRe
 /// Returns the `(apci, payload)` pair to send. `data` must be at most
 /// [`MAX_MEMORY_WRITE_LEN`] octets; longer slices are truncated to that limit
 /// (callers chunk larger ranges — see
-/// [`crate::device::DeviceConnection::write_memory`]). The framing is the strict,
+/// [`crate::connection::Layer4Connection::write_memory_read_back`]). The framing is the strict,
 /// spec-correct mirror of [`encode_memory_read`]: count in the APCI low bits,
 /// never in a leading payload octet.
 pub fn encode_memory_write(addr: u16, data: &[u8]) -> (u16, Vec<u8>) {

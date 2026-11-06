@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bussard_mgmt::apci;
-use bussard_mgmt::{DeviceConnection, MgmtError, Timeouts, write_individual_address};
+use bussard_mgmt::{Layer4Connection, MgmtError, Timeouts, write_individual_address};
 use bussard_model::IndividualAddress;
 use bussard_testkit::{BoxError, MockDevice, MockError, MockGateway, Reaction, TestResult};
 use bussard_transport::cemi::{CemiFrame, Priority};
@@ -60,8 +60,17 @@ async fn test_connection_frames_go_out_at_system_priority() -> TestResult {
     let target: IndividualAddress = "1.1.7".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
 
-    let mut dev = DeviceConnection::connect(&mut bus, target, source).await?;
-    assert_eq!(dev.device_descriptor().await?, 0x07B0);
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    assert_eq!(
+        bussard_mgmt::read_device_descriptor(&mut dev).await?,
+        0x07B0
+    );
     dev.disconnect().await?;
     write_individual_address(&mut bus, source, "1.1.8".parse()?).await?;
 
@@ -130,9 +139,12 @@ async fn test_ack_timeout_after_an_answer_sends_one_t_disconnect() -> TestResult
     let mut bus = open_bus(gw.addr()).await?;
     let target: IndividualAddress = "1.1.7".parse()?;
     let source: IndividualAddress = "0.0.255".parse()?;
-    let mut dev = DeviceConnection::connect_with(&mut bus, target, source, fast()).await?;
-    assert_eq!(dev.device_descriptor().await?, 0x07B0);
-    let Err(err) = dev.device_descriptor().await else {
+    let mut dev = Layer4Connection::connect(&mut bus, target, source, fast().into()).await?;
+    assert_eq!(
+        bussard_mgmt::read_device_descriptor(&mut dev).await?,
+        0x07B0
+    );
+    let Err(err) = bussard_mgmt::read_device_descriptor(&mut dev).await else {
         return Err("the second read goes unacknowledged".into());
     };
     assert!(
@@ -154,10 +166,14 @@ async fn test_nak_exhaustion_sends_one_t_disconnect() -> TestResult {
     let device = MockDevice::new("1.1.7".parse()?).with_hook(|_, _, _| Some(Reaction::Nak));
     let gw = start_mock(vec![device]).await?;
     let mut bus = open_bus(gw.addr()).await?;
-    let mut dev =
-        DeviceConnection::connect_with(&mut bus, "1.1.7".parse()?, "0.0.255".parse()?, fast())
-            .await?;
-    let Err(err) = dev.device_descriptor().await else {
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        "1.1.7".parse()?,
+        "0.0.255".parse()?,
+        fast().into(),
+    )
+    .await?;
+    let Err(err) = bussard_mgmt::read_device_descriptor(&mut dev).await else {
         return Err("a NAKing device fails the read".into());
     };
     assert!(matches!(err, MgmtError::Nak { .. }), "got {err:?}");
@@ -183,8 +199,14 @@ async fn test_rejected_t_connect_fails_without_waiting() -> TestResult {
         .await?;
     let mut bus = open_bus(gw.addr()).await?;
     let started = std::time::Instant::now();
-    let mut dev = DeviceConnection::connect(&mut bus, "1.1.9".parse()?, "0.0.255".parse()?).await?;
-    let Err(err) = dev.device_descriptor().await else {
+    let mut dev = Layer4Connection::connect(
+        &mut bus,
+        "1.1.9".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let Err(err) = bussard_mgmt::read_device_descriptor(&mut dev).await else {
         return Err("nobody is at 1.1.9".into());
     };
     assert!(matches!(err, MgmtError::NotConfirmed { .. }), "got {err:?}");

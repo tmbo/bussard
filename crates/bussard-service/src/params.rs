@@ -34,6 +34,8 @@ use bussard_model::schema::{Device, ProductEntry};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
 
+use crate::util::chain;
+
 /// The retained product store under a model directory (issue #228).
 pub const PRODUCTS_DIR: &str = "products";
 
@@ -41,18 +43,6 @@ pub const PRODUCTS_DIR: &str = "products";
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ProductError(pub String);
-
-/// An error and its sources, joined with `": "` (the `{:#}` rendering).
-fn chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
-    }
-    out
-}
 
 /// The `--product` / `--application` selection of a command.
 #[derive(Debug, Clone, Copy, Default)]

@@ -46,8 +46,9 @@
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::time::Duration;
 
+use bussard_secure::X25519KeyPair;
 use bussard_secure::ipsecure::{
-    self, EphemeralKeyPair, IpSecureSession, SessionStatus, verify_session_response,
+    self, IpSecureError, IpSecureSession, SessionStatus, verify_session_response,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream};
@@ -290,8 +291,8 @@ impl SecureLink {
         let deadline = Instant::now() + timeout;
         let mut carrier = Carrier::open(gateway, local, timeout).await?;
 
-        let keys = EphemeralKeyPair::generate()?;
-        let request = ipsecure::session_request(&carrier.hpai().to_bytes(), keys.public());
+        let keys = X25519KeyPair::generate().map_err(IpSecureError::from)?;
+        let request = ipsecure::session_request(&carrier.hpai().to_bytes(), &keys.public());
         carrier
             .send(&request, gateway)
             .await
@@ -320,7 +321,7 @@ impl SecureLink {
         };
         match &user.device_auth {
             Some(device_auth) => {
-                if verify_session_response(&response, device_auth, keys.public()).is_err() {
+                if verify_session_response(&response, device_auth, &keys.public()).is_err() {
                     return Err(TransportError::SecureServerUnverified { gateway });
                 }
             }
@@ -330,7 +331,7 @@ impl SecureLink {
             ),
         }
         let session_key = keys.session_key(&response.server_public);
-        let client_public = *keys.public();
+        let client_public = keys.public();
         drop(keys);
         let serial = ipsecure::client_serial()?;
         let mut session = IpSecureSession::new(session_key, response.session_id, serial);

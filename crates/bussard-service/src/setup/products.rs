@@ -115,17 +115,34 @@ pub fn record_manufacturers(dir: &Path, archive: &Path) {
 /// Lowercase hex SHA-256 of `bytes`.
 fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::Digest as _;
-    sha2::Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    bussard_model::text::hex(&sha2::Sha256::digest(bytes))
 }
 
 /// Downloads (or, for a `file://` pointer, reads) the `.knxprod` an index
-/// entry names, verifies its size and SHA-256 against the entry, and stores
-/// it under `<dir>/products/`. Returns the stored path.
+/// entry names and verifies its size and SHA-256 against the entry.
 ///
 /// `consent` is the caller's proof that the human agreed to the download.
+///
+/// # Errors
+///
+/// The download or the verification failed.
+pub fn fetch(
+    entry: &bussard_prod::IndexEntry,
+    consent: DownloadConsent,
+) -> Result<bussard_prod::Verified, SetupError> {
+    match entry.url.strip_prefix("file://") {
+        Some(local) => {
+            let bytes = std::fs::read(local).ctx(|| format!("reading {}", entry.url))?;
+            bussard_prod::fetch::verify(entry, bytes).map_err(SetupError::source)
+        }
+        None => {
+            bussard_prod::fetch_entry(entry, consent).ctx(|| format!("downloading {}", entry.url))
+        }
+    }
+}
+
+/// [`fetch`], then [`store_download`]: the verified `.knxprod` under
+/// `<dir>/products/`. Returns the stored path.
 ///
 /// # Errors
 ///
@@ -135,15 +152,7 @@ pub fn fetch_to_store(
     dir: &Path,
     consent: DownloadConsent,
 ) -> Result<PathBuf, SetupError> {
-    let verified = match entry.url.strip_prefix("file://") {
-        Some(local) => {
-            let bytes = std::fs::read(local).ctx(|| format!("reading {}", entry.url))?;
-            bussard_prod::fetch::verify(entry, bytes).map_err(SetupError::source)?
-        }
-        None => bussard_prod::fetch_entry(entry, consent)
-            .ctx(|| format!("downloading {}", entry.url))?,
-    };
-    store_download(entry, dir, verified)
+    store_download(entry, dir, fetch(entry, consent)?)
 }
 
 /// Stores a verified download under `<dir>/products/` and returns the path.
@@ -493,16 +502,7 @@ pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut d
 }
 
 /// `err` and its sources joined by `: `, as anyhow's `{:#}` renders a chain.
-pub fn error_chain(err: &dyn std::error::Error) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
+pub use crate::util::chain as error_chain;
 
 /// The lock's entries that name an archive the model holds.
 fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
@@ -790,6 +790,184 @@ mod tests {
         };
         assert!(enforce_override(&device, same, false, "flash")?.is_none());
         assert!(enforce_override(&device, Selection::default(), false, "apply to")?.is_none());
+        Ok(())
+    }
+
+    // --- Index downloads into the store (moved from the CLI's import tests
+    // when `import --from-json` went, #914) ---------------------------------
+
+    /// A unique, empty scratch directory.
+    fn scratch(tag: &str) -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!(
+            "bussard-products-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir)?;
+        Ok(dir)
+    }
+
+    /// A ZIP of `entries` (name, bytes).
+    fn zip_of(entries: &[(&str, &[u8])]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        use std::io::Write as _;
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            zip.start_file(*name, zip::write::SimpleFileOptions::default())?;
+            zip.write_all(bytes)?;
+        }
+        Ok(zip.finish()?.into_inner())
+    }
+
+    /// A tiny fabricated `.knxprod` whose catalogue maps `TST-1` to
+    /// `M-9999_A-0001-1-0000` (no vendor data).
+    fn tst_knxprod() -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        const APP: &str = "M-9999_A-0001-1-0000";
+        let hardware = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><Hardware>
+<Products><Product OrderNumber="TST-1" /></Products>
+<Hardware2Programs><Hardware2Program><ApplicationProgramRef RefId="{APP}" /></Hardware2Program></Hardware2Programs>
+</Hardware></Manufacturer></ManufacturerData></KNX>"#
+        );
+        let app = format!(
+            r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23"><ManufacturerData><Manufacturer RefId="M-9999"><ApplicationPrograms>
+<ApplicationProgram Id="{APP}" ApplicationNumber="1" ApplicationVersion="1" MaskVersion="MV-07B0" Name="Test" LoadProcedureStyle="MergedProcedure"><Static /></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#
+        );
+        zip_of(&[
+            ("knx_master.xml", b"<KNX/>"),
+            ("M-9999/Hardware.xml", hardware.as_bytes()),
+            (&format!("M-9999/{APP}.xml"), app.as_bytes()),
+        ])
+    }
+
+    fn sha_hex(bytes: &[u8]) -> String {
+        sha256_hex(bytes)
+    }
+
+    /// The index entry for `TST-1` served from `file`.
+    fn tst_entry(
+        file: &Path,
+        sha256: &str,
+        size: usize,
+        filename: &str,
+        inner: Option<&str>,
+    ) -> Result<bussard_prod::IndexEntry, Box<dyn std::error::Error>> {
+        Ok(serde_json::from_value(serde_json::json!({
+            "manufacturer": "Test Manufacturer",
+            "manufacturer_id": "M-9999",
+            "order_numbers": ["TST-1"],
+            "name": "Test Switch Actuator",
+            "url": format!("file://{}", file.display()),
+            "sha256": sha256,
+            "size": size,
+            "filename": filename,
+            "inner": inner,
+        }))?)
+    }
+
+    #[test]
+    fn test_fetch_to_store_and_pin_records_the_download_in_the_lock() -> TestResult {
+        let tmp = scratch("pin")?;
+        let dir = tmp.join("knx");
+        std::fs::create_dir_all(dir.join("devices"))?;
+        std::fs::write(
+            dir.join("devices/1.1.1.toml"),
+            "address = \"1.1.1\"\nname = \"Test Switch Actuator\"\nproduct = \"TST-1\"\n",
+        )?;
+        std::fs::write(
+            dir.join("bussard.lock"),
+            "version = 3\n\n[[device]]\naddress = \"1.1.1\"\nproduct = \"TST-1\"\n\
+             application = \"M-9999_A-0001-1-0000\"\n",
+        )?;
+        let bytes = tst_knxprod()?;
+        let served = tmp.join("tst.knxprod");
+        std::fs::write(&served, &bytes)?;
+        let sha = sha_hex(&bytes);
+        let entry = tst_entry(&served, &sha, bytes.len(), "tst.knxprod", None)?;
+        let stored = fetch_to_store(&entry, &dir, DownloadConsent::granted())?;
+        let origin = ProductOrigin::Index {
+            order_number: Some("TST-1".to_string()),
+            url: Some(entry.url.clone()),
+        };
+        generate_models_pinned(
+            &stored,
+            &dir,
+            Some(origin),
+            &mut super::super::Collected::default(),
+        )?;
+        let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+        assert!(lock.contains("[[product]]"), "{lock}");
+        assert!(lock.contains(&format!("sha256 = \"{sha}\"")), "{lock}");
+        assert!(lock.contains("file = \"products/tst.knxprod\""), "{lock}");
+        assert!(
+            lock.contains("origin = { kind = \"index\", order_number = \"TST-1\""),
+            "{lock}"
+        );
+        assert!(
+            lock.contains(&format!("product_sha256 = \"{sha}\"")),
+            "{lock}"
+        );
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
+
+    /// An index entry that names an inner `.knxprod` of a ZIP-served download
+    /// (`inner`) stores that file, not the wrapper: the wrapper holds two
+    /// archives, which no later command could choose between.
+    #[test]
+    fn test_fetch_to_store_keeps_the_indexed_inner_knxprod_of_a_wrapper() -> TestResult {
+        let tmp = scratch("inner")?;
+        let dir = tmp.join("knx");
+        let inner = tst_knxprod()?;
+        let wrapper = zip_of(&[("db/tst.knxprod", &inner), ("db/older.knxprod", &inner)])?;
+        let served = tmp.join("bundle.zip");
+        std::fs::write(&served, &wrapper)?;
+        let entry = tst_entry(
+            &served,
+            &sha_hex(&wrapper),
+            wrapper.len(),
+            "bundle.zip",
+            Some("db/tst.knxprod"),
+        )?;
+        let stored = fetch_to_store(&entry, &dir, DownloadConsent::granted())?;
+        assert_eq!(stored, dir.join("products/tst.knxprod"));
+        assert_eq!(std::fs::read(&stored)?, inner);
+        assert!(!dir.join("products/bundle.zip").exists());
+        std::fs::remove_dir_all(&tmp)?;
+        Ok(())
+    }
+
+    /// Issue #711: a vendor serves a ZIP bundling several products while the
+    /// index entry's size and SHA-256 describe one inner `.knxprod` (Ekinex
+    /// EK-E72). The matching inner file is stored; the others are ignored.
+    #[test]
+    fn test_fetch_to_store_keeps_the_inner_knxprod_matching_the_index_of_a_bundle() -> TestResult {
+        let tmp = scratch("bundle")?;
+        let dir = tmp.join("knx");
+        let inner = tst_knxprod()?;
+        let bundle = zip_of(&[
+            ("APTST01.knxprod", b"an older product of the bundle"),
+            ("APTST03.knxprod", &inner),
+            ("readme.txt", b"four products"),
+        ])?;
+        let served = tmp.join("bundle.zip");
+        std::fs::write(&served, &bundle)?;
+        let entry = tst_entry(
+            &served,
+            &sha_hex(&inner),
+            inner.len(),
+            "APTST03.knxprod",
+            None,
+        )?;
+        let stored = fetch_to_store(&entry, &dir, DownloadConsent::granted())?;
+        assert_eq!(stored, dir.join("products/APTST03.knxprod"));
+        assert_eq!(std::fs::read(&stored)?, inner);
+        assert!(!dir.join("products/bundle.zip").exists());
+        assert!(!dir.join("products/APTST01.knxprod").exists());
+        std::fs::remove_dir_all(&tmp)?;
         Ok(())
     }
 }

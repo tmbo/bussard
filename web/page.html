@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- The shell of bussard's own pages (#911): the pairing page (#809,
+       #820, body in pairing/body.html) and the project password form
+       (#818, body in password/body.html). bussard's MCP server serves them
+       on 127.0.0.1 under a random token path, fills the double-brace
+       placeholders (text escaped) and sends the same policy as a header,
+       with frame-ancestors. No inline script or style, no third-party
+       request. -->
+  <meta http-equiv="Content-Security-Policy" content="{{csp}}">
+  <meta name="referrer" content="{{referrer}}">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>bussard: {{title}}</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="{{style}}">{{script}}
+</head>
+<body class="{{class}}">
+{{body}}
+</body>
+</html>

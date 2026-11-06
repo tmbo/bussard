@@ -885,7 +885,7 @@ fn derive_objects(ctx: &Ctx<'_>, channels: &[ChannelFact]) -> Vec<ObjectFact> {
         let size = rc.object_size().map(|s| s.trim().to_ascii_lowercase());
         let dpt = rc.dpt().or_else(|| {
             rc.object_size()
-                .and_then(crate::dpt_map::dpt_from_object_size)
+                .and_then(bussard_ets::dpt::dpt_from_object_size)
         });
         let channel =
             placed_channel_id(ctx, placement).filter(|id| channels.iter().any(|c| c.id == *id));
