@@ -6,7 +6,7 @@
 
 [package]
 name = "knx-sim"
-version = "0.9.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.88"
 description = "An independent, strict KNX device + bus simulator for cross-checking flashing tools on the wire."
