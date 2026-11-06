@@ -67,6 +67,8 @@ use bussard_project::keystore::{StoreInterface, StoreRevision};
 use bussard_secure::{Key16, Password, Sequence, SequenceHighWater, salt};
 use sha2::{Digest, Sha256};
 
+use crate::verify::{Counted, LeftoverKind, WriteReadback};
+
 /// Which way the switch goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -933,20 +935,30 @@ pub async fn run_steps<Ch: L4Channel>(
 }
 
 /// What the read-back after a switch found.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct Verification {
     /// The security mode the device reports, when it answered with one.
     pub security_mode: Option<bool>,
     /// `PID_TUNNELLING_USERS` as read back (`on` only).
     pub tunnel_users: Option<Vec<(u8, u8)>>,
-    /// What does not match the plan; empty when verified.
-    pub mismatches: Vec<String>,
+    /// The comparison with the plan: what was compared, what differs.
+    pub readback: WriteReadback,
 }
 
 impl Verification {
     /// Whether everything read back matches.
     pub fn verified(&self) -> bool {
-        self.mismatches.is_empty()
+        self.readback.verified
+    }
+
+    /// What does not match the plan, one sentence each; empty when
+    /// verified.
+    pub fn mismatches(&self) -> Vec<String> {
+        self.readback
+            .leftovers
+            .iter()
+            .map(crate::verify::Leftover::sentence)
+            .collect()
     }
 }
 
@@ -963,32 +975,47 @@ pub async fn verify<Ch: L4Channel>(
     plan: &SwitchPlan,
 ) -> Result<Verification, IpSecureError> {
     let want_on = plan.switch == Switch::On;
+    let on_off = |on: bool| if on { "on" } else { "off" }.to_string();
+    let mut readback = WriteReadback {
+        verified: true,
+        ..WriteReadback::default()
+    };
     let mode = wire::read_security_mode(l4).await?;
-    let mut mismatches = Vec::new();
     match mode {
-        Some(on) if on != want_on => mismatches.push(format!(
-            "the security mode reads {}, expected {}",
-            if on { "on" } else { "off" },
-            plan.switch
-        )),
-        None => mismatches.push("the security mode read returned no value".to_string()),
+        Some(on) if on != want_on => readback.push(
+            LeftoverKind::Property,
+            "the security mode (type 17 PID 51)".to_string(),
+            on_off(on),
+            on_off(want_on),
+        ),
+        None => readback.push(
+            LeftoverKind::Readback,
+            "the security mode (type 17 PID 51)".to_string(),
+            "no value".to_string(),
+            on_off(want_on),
+        ),
         _ => {}
     }
     let mut users = None;
     if want_on {
         let read = wire::read_tunnelling_users(l4).await?;
         if read != plan.tunnel_users {
-            mismatches.push(format!(
-                "PID 97 reads {:?}, expected {:?} (user id, address index)",
-                read, plan.tunnel_users
-            ));
+            readback.push(
+                LeftoverKind::Property,
+                "the tunnelling users (type 11 PID 97, user id->address index)".to_string(),
+                pairs(&read),
+                pairs(&plan.tunnel_users),
+            );
         }
         users = Some(read);
     }
+    readback
+        .compared
+        .set(Counted::Properties, if want_on { 2 } else { 1 });
     Ok(Verification {
         security_mode: mode,
         tunnel_users: users,
-        mismatches,
+        readback,
     })
 }
 

@@ -880,7 +880,6 @@ pub async fn apply_interface<Ch: L4Channel>(
             "read again after the write".to_string(),
         ),
     }
-    readback.verified = readback.leftovers.is_empty();
     InterfaceApply {
         written,
         write_error,

@@ -130,7 +130,7 @@ impl BussardMcp {
                 "security_mode": outcome.verification.security_mode,
                 "tunnel_users": outcome.verification.tunnel_users,
                 "gateway_secure_only": outcome.gateway_secure_only,
-                "mismatches": outcome.verification.mismatches,
+                "mismatches": outcome.verification.mismatches(),
                 "key_store_updated": outcome.store_saved_before || outcome.store_saved_after,
             })),
             Err(err) => Ok(json!({

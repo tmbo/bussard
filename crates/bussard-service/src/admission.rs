@@ -15,8 +15,8 @@
 //!   sent, from the evidence bussard holds: the table recorded in the lock
 //!   (`secure_senders`, read back by `bussard adopt`) and the keyring's or
 //!   key store's interface entries ([`AdmissionEvidence`]). The verdict is
-//!   [`Admission::Admitted`], [`Admission::Refused`] (refuse before sending,
-//!   [`Admission::refusal`]) or [`Admission::Unknown`] (send, and say so,
+//!   [`AdmissionKind::Admitted`], [`AdmissionKind::Refused`] (refuse before sending,
+//!   [`Admission::refusal`]) or [`AdmissionKind::Unknown`] (send, and say so,
 //!   [`Admission::note`]).
 //! - [`TunnelAdmission`] is the plan side of `[connection]
 //!   admit_tunnel_senders = true`: the tunnelling addresses a Secure device's
@@ -148,15 +148,23 @@ pub enum ReceiverVerdict {
     Unknown,
 }
 
-/// The verdict of [`check_sender_admission`].
+/// The verdict of [`check_sender_admission`]: the sender, the group address
+/// and what the evidence says.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Admission {
+pub struct Admission {
+    /// The sender (the tunnel address).
+    pub sender: IndividualAddress,
+    /// The group address.
+    pub ga: GroupAddress,
+    /// What the evidence says.
+    pub kind: AdmissionKind,
+}
+
+/// What the evidence says about the receivers of a secured telegram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdmissionKind {
     /// At least one device on the group address admits the sender.
     Admitted {
-        /// The sender (the tunnel address).
-        sender: IndividualAddress,
-        /// The group address.
-        ga: GroupAddress,
         /// The devices that admit it.
         receivers: Vec<IndividualAddress>,
         /// Devices whose recorded table does not list the sender.
@@ -165,10 +173,6 @@ pub enum Admission {
     /// Every device on the group address has a recorded table and none lists
     /// the sender: they would discard the telegram. Refuse before sending.
     Refused {
-        /// The sender (the tunnel address).
-        sender: IndividualAddress,
-        /// The group address.
-        ga: GroupAddress,
         /// The device the refusal names (the first, ascending).
         receiver: IndividualAddress,
         /// Every device on the group address.
@@ -179,20 +183,12 @@ pub enum Admission {
     /// of the key store's tunnelling addresses, while `[connection]
     /// admit_tunnel_senders` is off. The devices would drop it: refuse.
     TunnelGap {
-        /// The sender (the tunnel address).
-        sender: IndividualAddress,
-        /// The group address.
-        ga: GroupAddress,
         /// The Secure devices that admit no tunnelling address, ascending.
         receivers: Vec<IndividualAddress>,
     },
     /// No evidence either way (no read-back yet, no ETS assignment): send,
     /// and say that delivery is not confirmed.
     Unknown {
-        /// The sender (the tunnel address).
-        sender: IndividualAddress,
-        /// The group address.
-        ga: GroupAddress,
         /// The devices bussard cannot tell about; empty when the model links
         /// no device to the group address.
         receivers: Vec<IndividualAddress>,
@@ -202,67 +198,55 @@ pub enum Admission {
 impl Admission {
     /// `admitted`, `refused` or `unknown`, for a JSON field.
     pub fn label(&self) -> &'static str {
-        match self {
-            Admission::Admitted { .. } => "admitted",
-            Admission::Refused { .. } => "refused",
-            Admission::TunnelGap { .. } => "refused",
-            Admission::Unknown { .. } => "unknown",
+        match self.kind {
+            AdmissionKind::Admitted { .. } => "admitted",
+            AdmissionKind::Refused { .. } | AdmissionKind::TunnelGap { .. } => "refused",
+            AdmissionKind::Unknown { .. } => "unknown",
         }
     }
 
     /// Whether the telegram must not be sent.
     pub fn is_refused(&self) -> bool {
         matches!(
-            self,
-            Admission::Refused { .. } | Admission::TunnelGap { .. }
+            self.kind,
+            AdmissionKind::Refused { .. } | AdmissionKind::TunnelGap { .. }
         )
     }
 
-    /// The refusal sentence, for [`Admission::Refused`]:
+    /// The refusal sentence, for [`AdmissionKind::Refused`]:
     /// `1.1.5 does not list the tunnel address 1.1.25 as a secure sender of
-    /// 1/0/4; …`.
+    /// 1/0/4; …`, and for [`AdmissionKind::TunnelGap`].
     pub fn refusal(&self) -> Option<String> {
-        if let Admission::TunnelGap {
-            sender,
-            ga,
-            receivers,
-        } = self
-        {
-            let devices: Vec<String> = receivers.iter().map(ToString::to_string).collect();
-            return Some(format!(
-                "E038: secured {ga} has no device sender, so only tunnel clients write it, and \
-                 {} admit none of the tunnelling addresses (W034); with `admit_tunnel_senders` \
-                 off they would discard this telegram from {sender}.",
-                devices.join(", ")
-            ));
+        let (sender, ga) = (self.sender, self.ga);
+        match &self.kind {
+            AdmissionKind::TunnelGap { receivers } => {
+                let devices: Vec<String> = receivers.iter().map(ToString::to_string).collect();
+                Some(format!(
+                    "E038: secured {ga} has no device sender, so only tunnel clients write it, \
+                     and {} admit none of the tunnelling addresses (W034); with \
+                     `admit_tunnel_senders` off they would discard this telegram from {sender}.",
+                    devices.join(", ")
+                ))
+            }
+            AdmissionKind::Refused { receiver, .. } => Some(format!(
+                "{receiver} does not list the tunnel address {sender} as a secure sender of \
+                 {ga}; the actuator would discard the telegram. Admit the tunnel addresses (see \
+                 below) or send plain only if the GA is not secured on the device."
+            )),
+            _ => None,
         }
-        let Admission::Refused {
-            sender,
-            ga,
-            receiver,
-            ..
-        } = self
-        else {
-            return None;
-        };
-        Some(format!(
-            "{receiver} does not list the tunnel address {sender} as a secure sender of {ga}; \
-             the actuator would discard the telegram. Admit the tunnel addresses (see below) \
-             or send plain only if the GA is not secured on the device."
-        ))
     }
 
     /// How to admit the tunnel addresses, the "see below" of
     /// [`refusal`](Self::refusal).
     pub fn admit_hint(&self) -> Option<String> {
-        let (ga, receiver, receivers) = match self {
-            Admission::Refused {
-                ga,
+        let ga = self.ga;
+        let (receiver, receivers) = match &self.kind {
+            AdmissionKind::Refused {
                 receiver,
                 receivers,
-                ..
-            } => (ga, receiver, receivers),
-            Admission::TunnelGap { ga, receivers, .. } => (ga, receivers.first()?, receivers),
+            } => (receiver, receivers),
+            AdmissionKind::TunnelGap { receivers } => (receivers.first()?, receivers),
             _ => return None,
         };
         let devices: Vec<String> = receivers.iter().map(ToString::to_string).collect();
@@ -278,17 +262,13 @@ impl Admission {
     }
 
     /// The note of a telegram sent without evidence, for
-    /// [`Admission::Unknown`]: `sent secured from 1.1.25; delivery to 1.1.5
-    /// is not confirmed by KNX; …`.
+    /// [`AdmissionKind::Unknown`]: `sent secured from 1.1.25; delivery to
+    /// 1.1.5 is not confirmed by KNX; …`.
     pub fn note(&self) -> Option<String> {
-        let Admission::Unknown {
-            sender,
-            ga,
-            receivers,
-        } = self
-        else {
+        let AdmissionKind::Unknown { receivers } = &self.kind else {
             return None;
         };
+        let (sender, ga) = (self.sender, self.ga);
         let (who, verb) = match receivers.as_slice() {
             [] => (format!("the receivers of {ga}"), "do"),
             [one] => (one.to_string(), "does"),
@@ -340,31 +320,20 @@ pub fn linked_devices(
         .collect()
 }
 
-/// What the evidence says about `device` admitting `sender` on `ga`.
-///
-/// The recorded table wins: a lock `secure_senders` list (read back from the
-/// device) admits exactly what it lists. Without one, an ETS assignment of
-/// `ga` to the sender's interface entry admits it. Otherwise it is unknown.
-pub fn receiver_verdict(
-    model: Option<&Model>,
-    device: IndividualAddress,
-    ga: GroupAddress,
-    sender: IndividualAddress,
-    evidence: &AdmissionEvidence,
-) -> ReceiverVerdict {
-    receiver_verdict_with(model, device, ga, sender, evidence, &LiveTables::new())
-}
-
 /// The PID 54 tables read from devices in this session (issue #316), by
 /// device: the individual addresses each lists. A read table is evidence
 /// even when it is empty (then nobody is admitted), unlike the lock's
 /// `secure_senders`, where an empty list means "not recorded".
 pub type LiveTables = BTreeMap<IndividualAddress, Vec<IndividualAddress>>;
 
-/// [`receiver_verdict`] with the tables read in this session. The lock's
-/// recorded table comes first (a later apply or adopt records what the
-/// device now holds), then a table read in this session, then the keyring.
-pub fn receiver_verdict_with(
+/// What the evidence says about `device` admitting `sender` on `ga`.
+///
+/// The recorded table wins: a lock `secure_senders` list (read back from the
+/// device) admits exactly what it lists (a later apply or adopt records what
+/// the device now holds). Without one, a PID 54 table read in this session
+/// (`live`, issue #316), then an ETS assignment of `ga` to the sender's
+/// interface entry admits it. Otherwise it is unknown.
+pub fn receiver_verdict(
     model: Option<&Model>,
     device: IndividualAddress,
     ga: GroupAddress,
@@ -400,27 +369,17 @@ pub fn receiver_verdict_with(
     }
 }
 
-/// Whether the devices on the secured `ga` admit `sender` (issue #297).
+/// Whether the devices on the secured `ga` admit `sender` (issues #297,
+/// #316), with the PID 54 tables read in this session in `live`.
 ///
-/// - [`Admission::Admitted`] when at least one device on `ga` admits it;
-/// - [`Admission::Refused`] when the model links devices to `ga`, each has a
-///   recorded table, and none lists `sender`;
-/// - [`Admission::Unknown`] otherwise.
+/// - [`AdmissionKind::Admitted`] when at least one device on `ga` admits it;
+/// - [`AdmissionKind::Refused`] when the model links devices to `ga`, each has
+///   a recorded table, and none lists `sender`;
+/// - [`AdmissionKind::Unknown`] otherwise.
 ///
 /// Pure: the caller passes the tunnel's individual address once the tunnel
 /// is up, and only calls this for a secured group address.
 pub fn check_sender_admission(
-    model: Option<&Model>,
-    ga: GroupAddress,
-    sender: IndividualAddress,
-    evidence: &AdmissionEvidence,
-) -> Admission {
-    check_sender_admission_with(model, ga, sender, evidence, &LiveTables::new())
-}
-
-/// [`check_sender_admission`] with the PID 54 tables read in this session
-/// (issue #316).
-pub fn check_sender_admission_with(
     model: Option<&Model>,
     ga: GroupAddress,
     sender: IndividualAddress,
@@ -432,41 +391,33 @@ pub fn check_sender_admission_with(
     let mut not_listed = Vec::new();
     let mut unknown = Vec::new();
     for device in &devices {
-        match receiver_verdict_with(model, *device, ga, sender, evidence, live) {
+        match receiver_verdict(model, *device, ga, sender, evidence, live) {
             ReceiverVerdict::Admitted => admitted.push(*device),
             ReceiverVerdict::NotListed => not_listed.push(*device),
             ReceiverVerdict::Unknown => unknown.push(*device),
         }
     }
-    if !admitted.is_empty() {
-        return Admission::Admitted {
-            sender,
-            ga,
+    let kind = if !admitted.is_empty() {
+        AdmissionKind::Admitted {
             receivers: admitted,
             not_listed,
-        };
-    }
-    match (not_listed.first(), unknown.is_empty()) {
-        (Some(first), true) => Admission::Refused {
-            sender,
-            ga,
-            receiver: *first,
-            receivers: devices,
-        },
-        _ => {
-            // Without any linked device the evidence is empty, not negative.
-            Admission::Unknown {
-                sender,
-                ga,
-                receivers: unknown,
-            }
         }
-    }
+    } else {
+        match (not_listed.first(), unknown.is_empty()) {
+            (Some(first), true) => AdmissionKind::Refused {
+                receiver: *first,
+                receivers: devices,
+            },
+            // Without any linked device the evidence is empty, not negative.
+            _ => AdmissionKind::Unknown { receivers: unknown },
+        }
+    };
+    Admission { sender, ga, kind }
 }
 
 /// [`check_sender_admission`] for a secured group **write** (issue #348):
 /// a verdict without evidence on a group address only tunnel clients can
-/// write becomes [`Admission::TunnelGap`] (validation error E038) when the
+/// write becomes [`AdmissionKind::TunnelGap`] (validation error E038) when the
 /// model leaves `[connection] admit_tunnel_senders` off and [`tunnel_gaps`]
 /// reports `ga`. That is the write-time form of warning W034. With the
 /// setting on, the verdict is unchanged: the next apply admits the tunnel
@@ -476,34 +427,24 @@ pub fn check_tunnel_write(
     ga: GroupAddress,
     sender: IndividualAddress,
     evidence: &AdmissionEvidence,
-) -> Admission {
-    check_tunnel_write_with(model, ga, sender, evidence, &LiveTables::new())
-}
-
-/// [`check_tunnel_write`] with the PID 54 tables read in this session
-/// (issue #316).
-pub fn check_tunnel_write_with(
-    model: Option<&Model>,
-    ga: GroupAddress,
-    sender: IndividualAddress,
-    evidence: &AdmissionEvidence,
     live: &LiveTables,
 ) -> Admission {
-    let admission = check_sender_admission_with(model, ga, sender, evidence, live);
+    let admission = check_sender_admission(model, ga, sender, evidence, live);
     let Some(m) = model else {
         return admission;
     };
-    if !matches!(admission, Admission::Unknown { .. }) || admit_tunnel_senders(model) {
+    if !matches!(admission.kind, AdmissionKind::Unknown { .. }) || admit_tunnel_senders(model) {
         return admission;
     }
     match tunnel_gaps(m, |g| g == ga, evidence, None)
         .into_iter()
         .find(|gap| gap.ga == ga)
     {
-        Some(gap) => Admission::TunnelGap {
-            sender,
-            ga,
-            receivers: gap.devices,
+        Some(gap) => Admission {
+            kind: AdmissionKind::TunnelGap {
+                receivers: gap.devices,
+            },
+            ..admission
         },
         None => admission,
     }
@@ -536,13 +477,13 @@ impl Resolved {
     }
 }
 
-/// Resolves an [`Admission::Unknown`] verdict for a secured group write or
+/// Resolves an [`AdmissionKind::Unknown`] verdict for a secured group write or
 /// read by reading the receivers' security individual address tables (PID
 /// 54) over management sessions with their tool keys (issue #316): the read
 /// `knx_plan_device` makes for the admission change.
 ///
-/// `verdict(live)` is the check to run ([`check_tunnel_write_with`] for a
-/// write, [`check_sender_admission_with`] for a read). A receiver already in
+/// `verdict(live)` is the check to run ([`check_tunnel_write`] for a
+/// write, [`check_sender_admission`] for a read). A receiver already in
 /// `live` is not read again, so a caller that keeps `live` across calls (the
 /// MCP server, per lifetime) reads each device once. Every table read is
 /// recorded in the lock as `secure_senders` when `dir` is given, exactly as
@@ -557,17 +498,14 @@ pub async fn resolve_unknown(
     verdict: impl Fn(&LiveTables) -> Admission,
 ) -> Resolved {
     let first = verdict(live);
-    let Admission::Unknown {
-        sender, receivers, ..
-    } = &first
-    else {
+    let sender = first.sender;
+    let AdmissionKind::Unknown { receivers } = &first.kind else {
         return Resolved {
             admission: first,
             read: Vec::new(),
             unread: Vec::new(),
         };
     };
-    let sender = *sender;
     let mut read = Vec::new();
     let mut unread = Vec::new();
     let pending: Vec<IndividualAddress> = receivers
@@ -818,7 +756,7 @@ pub fn tunnel_gaps(
             })
             .filter(|ia| {
                 !tunnel.iter().any(|t| {
-                    receiver_verdict(Some(model), *ia, *ga, *t, evidence)
+                    receiver_verdict(Some(model), *ia, *ga, *t, evidence, &LiveTables::new())
                         == ReceiverVerdict::Admitted
                 })
             })
@@ -1117,6 +1055,7 @@ mod tests {
             ga("1/0/4")?,
             ia("1.1.25")?,
             &AdmissionEvidence::default(),
+            &LiveTables::new(),
         );
         assert!(verdict.is_refused(), "{verdict:?}");
         assert_eq!(
@@ -1141,6 +1080,7 @@ mod tests {
             ga("1/0/4")?,
             ia("1.1.25")?,
             &AdmissionEvidence::default(),
+            &LiveTables::new(),
         );
         assert_eq!(verdict.label(), "admitted", "{verdict:?}");
         assert!(verdict.refusal().is_none() && verdict.note().is_none());
@@ -1155,6 +1095,7 @@ mod tests {
             ga("1/0/4")?,
             ia("1.1.25")?,
             &AdmissionEvidence::default(),
+            &LiveTables::new(),
         );
         assert_eq!(verdict.label(), "unknown", "{verdict:?}");
         let note = verdict.note().unwrap_or_default();
@@ -1172,6 +1113,7 @@ mod tests {
             ga("1/0/5")?,
             ia("1.1.25")?,
             &AdmissionEvidence::default(),
+            &LiveTables::new(),
         );
         assert_eq!(read.label(), "unknown", "{read:?}");
         // No model: no receivers to name.
@@ -1180,6 +1122,7 @@ mod tests {
             ga("1/0/4")?,
             ia("1.1.25")?,
             &AdmissionEvidence::default(),
+            &LiveTables::new(),
         );
         let note = none.note().ok_or("no note")?;
         assert!(note.contains("the receivers of 1/0/4"), "{note}");
@@ -1190,15 +1133,32 @@ mod tests {
     fn test_check_sender_admission_accepts_an_ets_interface_assignment() -> TestResult {
         let model = model(&[])?;
         let assigned = evidence("1.1.25", &["1/0/4"])?;
-        let verdict = check_sender_admission(Some(&model), ga("1/0/4")?, ia("1.1.25")?, &assigned);
+        let verdict = check_sender_admission(
+            Some(&model),
+            ga("1/0/4")?,
+            ia("1.1.25")?,
+            &assigned,
+            &LiveTables::new(),
+        );
         assert_eq!(verdict.label(), "admitted", "{verdict:?}");
         // Another tunnel user is not covered by 1.1.25's assignment.
-        let other = check_sender_admission(Some(&model), ga("1/0/4")?, ia("1.1.26")?, &assigned);
+        let other = check_sender_admission(
+            Some(&model),
+            ga("1/0/4")?,
+            ia("1.1.26")?,
+            &assigned,
+            &LiveTables::new(),
+        );
         assert_eq!(other.label(), "unknown", "{other:?}");
         // A read-back wins over the keyring.
         let recorded = model_with_lock()?;
-        let verdict =
-            check_sender_admission(Some(&recorded), ga("1/0/4")?, ia("1.1.25")?, &assigned);
+        let verdict = check_sender_admission(
+            Some(&recorded),
+            ga("1/0/4")?,
+            ia("1.1.25")?,
+            &assigned,
+            &LiveTables::new(),
+        );
         assert!(verdict.is_refused(), "{verdict:?}");
         Ok(())
     }
@@ -1336,7 +1296,13 @@ mod tests {
     fn test_check_tunnel_write_gap_without_admit_setting_is_e038() -> TestResult {
         let evidence = evidence("1.1.25", &[])?;
         let model = model(&[])?;
-        let admission = check_tunnel_write(Some(&model), ga("1/0/4")?, ia("1.1.25")?, &evidence);
+        let admission = check_tunnel_write(
+            Some(&model),
+            ga("1/0/4")?,
+            ia("1.1.25")?,
+            &evidence,
+            &LiveTables::new(),
+        );
         assert!(admission.is_refused(), "{admission:?}");
         assert_eq!(admission.label(), "refused");
         let refusal = admission.refusal().unwrap_or_default();
@@ -1346,11 +1312,23 @@ mod tests {
 
         let mut admit = model.clone();
         admit.config.connection.admit_tunnel_senders = true;
-        let admission = check_tunnel_write(Some(&admit), ga("1/0/4")?, ia("1.1.25")?, &evidence);
+        let admission = check_tunnel_write(
+            Some(&admit),
+            ga("1/0/4")?,
+            ia("1.1.25")?,
+            &evidence,
+            &LiveTables::new(),
+        );
         assert_eq!(admission.label(), "unknown");
         // An ETS assignment admits the tunnel: no refusal.
         let assigned = super::tests::evidence("1.1.25", &["1/0/4"])?;
-        let admission = check_tunnel_write(Some(&model), ga("1/0/4")?, ia("1.1.25")?, &assigned);
+        let admission = check_tunnel_write(
+            Some(&model),
+            ga("1/0/4")?,
+            ia("1.1.25")?,
+            &assigned,
+            &LiveTables::new(),
+        );
         assert_eq!(admission.label(), "admitted");
         Ok(())
     }
@@ -1519,7 +1497,7 @@ mod tests {
         let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
         let mut live = LiveTables::new();
         let resolved = resolve_unknown(&service, Some(&dir), &bench_keys()?, &mut live, |live| {
-            check_sender_admission_with(
+            check_sender_admission(
                 Some(&model),
                 light,
                 tunnel,
@@ -1559,7 +1537,7 @@ mod tests {
         let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
         let mut live = LiveTables::new();
         let check = |live: &LiveTables| {
-            check_sender_admission_with(
+            check_sender_admission(
                 Some(&model),
                 light,
                 tunnel,
@@ -1595,7 +1573,7 @@ mod tests {
         let (light, tunnel) = (ga("1/0/4")?, ia("1.1.25")?);
         let mut live = LiveTables::new();
         let resolved = resolve_unknown(&service, None, &bench_keys()?, &mut live, |live| {
-            check_sender_admission_with(
+            check_sender_admission(
                 Some(&model),
                 light,
                 tunnel,
