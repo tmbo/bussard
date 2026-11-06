@@ -25,7 +25,7 @@ use crate::secure::GroupKeyring;
 /// A cooperative cancellation signal for a running stream loop.
 ///
 /// Create a [`CancelToken`] with [`CancelToken::new`], pass the paired
-/// [`CancelWatch`] into a `run_stream*` entry point, and call
+/// [`CancelWatch`] into [`run_stream`] ([`StreamOptions::cancel`]), and call
 /// [`CancelToken::cancel`] to ask the loop to stop and **cleanly close** the bus
 /// (the actor sends DISCONNECT_REQUEST) before returning — rather than leaking
 /// the gateway's tunnel slot (issue #31).
@@ -144,81 +144,40 @@ impl Flow {
     }
 }
 
+/// What a [`run_stream`] call resolves, injects and stops on. The default
+/// is a plain stream: numeric addresses, no outbound channel, no group keys,
+/// no cancellation.
+#[derive(Default)]
+pub struct StreamOptions<'a> {
+    /// Resolves each telegram's addresses into names (`None` keeps them
+    /// numeric).
+    pub model: Option<&'a Model>,
+    /// Frames to send onto the same bus that feeds the stream: the injection
+    /// point of the MCP server and one-shot commands.
+    pub outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
+    /// Unwraps KNX Data Secure group telegrams with these keys before
+    /// decoding (issue #172; see [`DecodedTelegram::from_frame_secured`]).
+    pub group_keys: Option<GroupKeyring>,
+    /// Stops the stream; the bus is closed cleanly (DISCONNECT on a tunnel)
+    /// before `Ok(())` is returned.
+    pub cancel: Option<CancelWatch>,
+}
+
 /// Runs the connect-and-consume loop until the sink stops it.
 ///
-/// `model` is resolved into each telegram (pass `None` to keep addresses
-/// numeric). The loop only returns `Ok(())` when a sink returns [`Flow::Stop`]
-/// (or on cancellation); connection drops are handled by the actor reconnecting.
+/// The loop only returns `Ok(())` when a sink returns [`Flow::Stop`] or on
+/// cancellation; connection drops are handled by the actor reconnecting.
 pub async fn run_stream(
     config: &ConnectionConfig,
-    model: Option<&Model>,
     sink: &mut dyn TelegramSink,
+    options: StreamOptions<'_>,
 ) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, None, None, None).await
-}
-
-/// Like [`run_stream`], but cancellable through a [`CancelWatch`].
-///
-/// On cancellation the bus is closed cleanly (DISCONNECT on a tunnel) before
-/// returning `Ok(())`.
-pub async fn run_stream_cancellable(
-    config: &ConnectionConfig,
-    model: Option<&Model>,
-    sink: &mut dyn TelegramSink,
-    cancel: CancelWatch,
-) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, None, Some(cancel), None).await
-}
-
-/// Like [`run_stream`], but also drains an optional outbound channel, sending
-/// each queued [`CemiFrame`] onto the bus.
-///
-/// This is the injection point the MCP server and one-shot commands use to
-/// transmit on the *same* bus that feeds the telegram stream. Passing `None` for
-/// `outbound` is equivalent to [`run_stream`].
-pub async fn run_stream_with_outbound(
-    config: &ConnectionConfig,
-    model: Option<&Model>,
-    sink: &mut dyn TelegramSink,
-    outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
-) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, outbound, None, None).await
-}
-
-/// Like [`run_stream_with_outbound`], but cancellable through a [`CancelWatch`].
-pub async fn run_stream_with_outbound_cancellable(
-    config: &ConnectionConfig,
-    model: Option<&Model>,
-    sink: &mut dyn TelegramSink,
-    outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
-    cancel: CancelWatch,
-) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, outbound, Some(cancel), None).await
-}
-
-/// Like [`run_stream_cancellable`], but unwraps KNX Data Secure group
-/// telegrams with the keyring's group keys before decoding (issue #172; see
-/// [`DecodedTelegram::from_frame_secured`]). `None` is exactly
-/// [`run_stream_cancellable`].
-pub async fn run_stream_secured_cancellable(
-    config: &ConnectionConfig,
-    model: Option<&Model>,
-    sink: &mut dyn TelegramSink,
-    keyring: Option<GroupKeyring>,
-    cancel: CancelWatch,
-) -> Result<(), StreamError> {
-    run_stream_inner(config, model, sink, None, Some(cancel), keyring).await
-}
-
-/// The shared implementation behind every `run_stream*` entry point.
-async fn run_stream_inner(
-    config: &ConnectionConfig,
-    model: Option<&Model>,
-    sink: &mut dyn TelegramSink,
-    mut outbound: Option<mpsc::UnboundedReceiver<CemiFrame>>,
-    mut cancel: Option<CancelWatch>,
-    mut keyring: Option<GroupKeyring>,
-) -> Result<(), StreamError> {
+    let StreamOptions {
+        model,
+        mut outbound,
+        group_keys: mut keyring,
+        mut cancel,
+    } = options;
     // If cancellation was requested before we start, do nothing (never open a
     // tunnel just to close it — issue #31).
     if cancel.as_ref().is_some_and(CancelWatch::is_cancelled) {

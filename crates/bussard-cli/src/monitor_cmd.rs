@@ -7,8 +7,8 @@ use std::time::Duration;
 use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
-    CancelToken, DecodedTelegram, Filter, GroupKeyring, json_line, pretty_line,
-    run_stream_secured_cancellable,
+    CancelToken, DecodedTelegram, Filter, GroupKeyring, StreamOptions, json_line, pretty_line,
+    run_stream,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -76,12 +76,15 @@ fn run(filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<ExitCode> {
                 ctrl_c_cancel.cancel();
             }
         });
-        let res = run_stream_secured_cancellable(
+        let res = run_stream(
             &config,
-            model.as_ref(),
             &mut sink,
-            group_keys,
-            cancel_watch,
+            StreamOptions {
+                model: model.as_ref(),
+                group_keys,
+                cancel: Some(cancel_watch),
+                ..StreamOptions::default()
+            },
         )
         .await;
         // Stop the signal task (its own future is cheap to drop; the stream has

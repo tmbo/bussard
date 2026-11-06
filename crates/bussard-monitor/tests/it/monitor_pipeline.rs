@@ -13,9 +13,7 @@ use std::time::Duration;
 use bussard_model::Model;
 use bussard_model::schema::{BussardConfig, Group, Groups, Links};
 use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{
-    CancelToken, DecodedTelegram, run_stream, run_stream_cancellable, run_stream_with_outbound,
-};
+use bussard_monitor::{CancelToken, DecodedTelegram, StreamOptions, run_stream};
 use bussard_testkit::{MockGateway, TestResult, ga, group_dest, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame};
 use bussard_transport::{ConnectionConfig, TimestampedFrame, TransportError};
@@ -100,7 +98,14 @@ async fn monitor_decodes_three_pushed_frames() -> TestResult {
     // Run the pipeline until the sink stops (after 3 telegrams).
     tokio::time::timeout(
         Duration::from_secs(5),
-        run_stream(&config, Some(&model), &mut sink),
+        run_stream(
+            &config,
+            &mut sink,
+            StreamOptions {
+                model: Some(&model),
+                ..StreamOptions::default()
+            },
+        ),
     )
     .await
     .map_err(|_| "stream should finish once 3 telegrams arrive")??;
@@ -170,7 +175,15 @@ async fn outbound_read_is_sent_and_response_flows_back() -> TestResult {
 
     tokio::time::timeout(
         Duration::from_secs(5),
-        run_stream_with_outbound(&config, Some(&model), &mut sink, Some(out_rx)),
+        run_stream(
+            &config,
+            &mut sink,
+            StreamOptions {
+                model: Some(&model),
+                outbound: Some(out_rx),
+                ..StreamOptions::default()
+            },
+        ),
     )
     .await
     .map_err(|_| "stream should finish once the response arrives")??;
@@ -233,7 +246,15 @@ async fn cancelling_the_stream_sends_disconnect_request() -> TestResult {
     let mut sink = NeverStopSink;
     tokio::time::timeout(
         Duration::from_secs(5),
-        run_stream_cancellable(&config, Some(&model), &mut sink, cancel_watch),
+        run_stream(
+            &config,
+            &mut sink,
+            StreamOptions {
+                model: Some(&model),
+                cancel: Some(cancel_watch),
+                ..StreamOptions::default()
+            },
+        ),
     )
     .await
     .map_err(|_| "cancel should end the stream")??;

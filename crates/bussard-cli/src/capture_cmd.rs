@@ -10,7 +10,7 @@ use anyhow::Context as _;
 use bussard_monitor::stream::{Flow, TelegramSink};
 use bussard_monitor::{
     CancelToken, CaptureRecord, CaptureWriter, DecodedTelegram, Filter, GroupKeyring,
-    run_stream_secured_cancellable,
+    StreamOptions, run_stream,
 };
 use bussard_transport::{TimestampedFrame, TransportError};
 
@@ -105,12 +105,15 @@ fn run(to: &Path, filter_expr: Option<&str>, g: &Resolved) -> anyhow::Result<Exi
                 ctrl_c_cancel.cancel();
             }
         });
-        let res = run_stream_secured_cancellable(
+        let res = run_stream(
             &config,
-            model.as_ref(),
             &mut sink,
-            group_keys,
-            cancel_watch,
+            StreamOptions {
+                model: model.as_ref(),
+                group_keys,
+                cancel: Some(cancel_watch),
+                ..StreamOptions::default()
+            },
         )
         .await;
         signal.abort();
