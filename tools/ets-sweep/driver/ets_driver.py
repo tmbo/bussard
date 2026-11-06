@@ -479,6 +479,10 @@ def line_1_1() -> tuple[int, int]:
     tree when ETS reopened it collapsed (after a restart, 2026-10-28)."""
     tree = LAYOUT["tree"]
     for attempt in range(4):
+        if attempt == 2:
+            # A raised Katalog panel squeezes the tree to a few rows (Import at
+            # y 467, 2026-11-06): put the splitter back first.
+            restore_catalog_splitter()
         # The sweep project holds exactly one TP line; the selection highlight
         # garbles its number at times ('IJ:: TP Linie'), so match on the rest,
         # magnified on a second look.
@@ -1758,7 +1762,34 @@ def ensure_layout() -> dict:
         choose("Katalog", (2800, 140, 4112, 1200))
         time.sleep(3)
         did.append("katalog")
+    moved = restore_catalog_splitter()
+    if moved:
+        did.append(moved)
     return {"did": did, "import_button": bool(catalog_import_button()), "catalog_dy": catalog_dy()}
+
+
+def restore_catalog_splitter() -> str | None:
+    """Drag the splitter between the Topologie and Katalog panels back to the
+    layout LAYOUT was measured in (Import at y 1354). ETS restores other
+    positions after a restart: Import at 971 (2026-11-05) and at 467, where
+    the Topologie tree showed no line 1.1 and eight jobs failed (2026-11-06).
+    The splitter's grip sits 48 px above the Import button."""
+    from pywinauto import mouse
+
+    btn = catalog_import_button()
+    if not btn or abs(btn["y"] - 1354) <= 50:
+        return None
+    s_ = scale()
+    y0, y1 = btn["y"] - 48, 1354 - 48
+    mouse.press(coords=(int(1703 * s_), int(y0 * s_)))
+    time.sleep(0.3)
+    for k in range(1, 11):
+        mouse.move(coords=(int(1703 * s_), int((y0 + (y1 - y0) * k / 10) * s_)))
+        time.sleep(0.05)
+    mouse.release(coords=(int(1703 * s_), int(y1 * s_)))
+    time.sleep(2)
+    after = catalog_import_button()
+    return f"catalog splitter {btn['y']} -> {after['y'] if after else None}"
 
 
 def catalog_import_button() -> dict | None:
