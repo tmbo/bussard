@@ -54,7 +54,9 @@ pub mod secure_invariants;
 pub mod secure_links;
 pub mod serials;
 pub mod tests_schema;
+pub mod text;
 pub mod text_codec;
+pub mod timefmt;
 pub mod toml_io;
 pub mod validate;
 
