@@ -262,7 +262,9 @@ pub(crate) fn read_device(
         bussard_secure::SequenceHighWater::new(),
     )
     .with_factory_key(factory_key)
-    .with_authorize(bussard_service::status::read_only_authorize(&mut facts, target));
+    .with_authorize(bussard_service::status::read_only_authorize(
+        &mut facts, target,
+    ));
     let runtime = tokio::runtime::Runtime::new()?;
     runtime
         .block_on(async move {

@@ -65,7 +65,9 @@ impl bussard_download::Connector for ServiceConnector<'_> {
     async fn connect(&mut self) -> Result<Layer4Connection<LeaseChannel>, WriteError> {
         // The service waits for a tunnel re-established after a gateway link
         // loss (issue #177) before the fresh T_Connect. The download session
-        // authorizes itself, so the service does not.
+        // authorizes itself, so the service does not. The write path: the
+        // pre-flight already found the device under its tool key, so no
+        // factory-key try here (issue #532).
         let options = L4Options::secured(
             self.source,
             self.secure_tool_key.clone(),

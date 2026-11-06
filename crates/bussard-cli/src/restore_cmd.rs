@@ -163,7 +163,7 @@ fn run_parameters(
     tool_key_source: ToolKeySource<'_>,
     g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
-    use bussard_service::{L4Options, SourcePolicy};
+    use bussard_service::L4Options;
     let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
 
     let target: IndividualAddress = address
@@ -219,13 +219,10 @@ fn run_parameters(
     let source = runtime.block_on(bus.service().checked_source(overrides.skip_address_check))?;
     let service = bus.service();
     let mut facts = crate::conn_cmd::facts_cache(dir, true, overrides.refresh_facts);
-    let read_options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        high_water: secure_seq.clone(),
-        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
-        ..L4Options::default()
-    };
+    let read_options = L4Options::secured(source, tool_key.clone(), secure_seq.clone())
+        .with_authorize(bussard_service::status::read_only_authorize(
+            &mut facts, target,
+        ));
     let device = model.devices.get(&target).map(|d| &d.device);
     let read = runtime.block_on(async {
         service

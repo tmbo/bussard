@@ -330,6 +330,7 @@ pub(crate) struct DeviceRead {
 /// Opens a read-only session and reads the parameter regions (plus, on System
 /// 7, the code-segment samples).
 async fn read_device(ctx: &Context<'_>) -> anyhow::Result<DeviceRead> {
+    // Best-effort: a denial or a device without authorize still reads.
     let options = L4Options::secured(
         ops::group_source(ctx.service.handle()),
         ctx.tool_key.clone(),

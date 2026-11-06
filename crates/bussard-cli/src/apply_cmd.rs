@@ -65,8 +65,8 @@ use bussard_download::{
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::IndividualAddress;
+use bussard_service::L4Options;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::{L4Options, SourcePolicy};
 
 use bussard_transport::ConnectionConfig;
 
@@ -413,21 +413,18 @@ pub(crate) fn apply_desired(
     // they spare the table reader its object walk, and the write phase below
     // gets them as a seed so its discovery and read-back do not walk again.
     let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
-    let read_options = L4Options {
-        source: SourcePolicy::Known(source),
-        tool_key: tool_key.clone(),
-        // A device reset to default answers only under its FDSK: the read
-        // phase says so and the apply stops (issue #532).
-        factory_key: material.fdsk.clone(),
-        high_water: secure_seq.clone(),
-        // Authorize (free access) before reading, as ETS does (issue #52
-        // finding #1) and as System 7 requires before any memory access.
-        // Best-effort on this read-only pre-pass, and skipped for a device
-        // whose facts record that it never answers (issue #215; a stale set
-        // presents the key on the same connection).
-        authorize: bussard_service::status::read_only_authorize(&mut facts, target),
-        ..L4Options::default()
-    };
+    // A device reset to default answers only under its FDSK: the read phase
+    // says so and the apply stops (issue #532). Authorize (free access)
+    // before reading, as ETS does (issue #52 finding #1) and as System 7
+    // requires before any memory access; best-effort on this read-only
+    // pre-pass, and skipped for a device whose facts record that it never
+    // answers (issue #215; a stale set presents the key on the same
+    // connection).
+    let read_options = L4Options::secured(source, tool_key.clone(), secure_seq.clone())
+        .with_factory_key(material.fdsk.clone())
+        .with_authorize(bussard_service::status::read_only_authorize(
+            &mut facts, target,
+        ));
     let facts = facts;
     let model_device = model
         .and_then(|m| m.devices.get(&target))

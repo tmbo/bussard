@@ -215,6 +215,8 @@ async fn read_line_tables(
     addr: IndividualAddress,
     source: IndividualAddress,
 ) -> Result<DeviceTables, String> {
+    // Authorize (free access) before reading, as ETS does (issue #52
+    // finding #1).
     let options = L4Options::read_only(source);
     let result = service
         .with_l4(addr, &options, async |l4| {

@@ -163,6 +163,7 @@ pub async fn probe<P>(
     let mut attempt = 1u32;
     loop {
         let losses_before = handle.link_losses();
+        // A device reset to default is named, not flashed (issue #532).
         let probe_options = L4Options::secured(source, tool_key.clone(), high_water.clone())
             .with_factory_key(factory_key.clone())
             .with_authorize(Authorize::Skip);
@@ -254,12 +255,7 @@ pub async fn probe<P>(
                                 && !plan.is_sys7() =>
                         {
                             Some(
-                                read_current_parameter_memory(
-                                    dev,
-                                    plan,
-                                    &facts.object_table,
-                                )
-                                .await,
+                                read_current_parameter_memory(dev, plan, &facts.object_table).await,
                             )
                         }
                         _ => None,
