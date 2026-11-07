@@ -443,20 +443,29 @@ fn test_plan_flash_writes_a_declared_property_in_declared_elements() -> TestResu
 }
 
 #[test]
-fn test_plan_flash_refuses_a_declared_write_past_max_elements() -> TestResult {
+fn test_plan_flash_writes_a_declared_property_past_max_elements() -> TestResult {
+    // Issue #948: `MaxElements` does not bound the write; ETS writes the 25
+    // elements of `Count="25"` to PID 69 declared `MaxElements="1"`
+    // (`M-0008_A-C02A-21-B6D8-O007C`).
     let (product, _tmp) = product()?;
     let app = with_declaration(
         product.applications.first().ok_or("one application")?,
         4,
         Some(5),
     )?;
-    match plan_of(&product, &app, &BTreeMap::new()) {
-        Err(e) => {
-            let text = e.to_string();
-            assert!(text.contains("MaxElements"), "{text}");
-        }
-        Ok(plan) => return Err(format!("expected a refusal, got {:?}", plan.steps).into()),
-    }
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert!(
+        plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::WriteProp {
+                prop_id: 201,
+                count: 5,
+                ..
+            }
+        )),
+        "{:?}",
+        plan.steps
+    );
     Ok(())
 }
 
@@ -581,6 +590,177 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
     assert!(counts.len() >= 2, "a 20-element write is split: {counts:?}");
     assert!(counts.iter().all(|c| *c <= 15), "{counts:?}");
     assert_eq!(counts.iter().map(|c| u32::from(*c)).sum::<u32>(), 20);
+    Ok(())
+}
+
+/// The manufacturer object type the Siemens dimmer `M-0001_A-9839-01-38C4`
+/// writes PID 205 of (issue #948).
+const OT_SIEMENS_VENDOR: u16 = 50215;
+
+/// `app` with its object 4 PID 201 write naming the object by type
+/// [`OT_SIEMENS_VENDOR`] and carrying `InlineData` `5A`: the Siemens
+/// `LdCtrlWriteProp ObjType="50215" PropId="205" InlineData="5A"` shape.
+fn with_typed_write(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
+    use bussard_prod::application::LoadOp;
+    let mut app = app.clone();
+    let mut found = false;
+    for op in app
+        .load_procedures
+        .iter_mut()
+        .flat_map(|lp| lp.ops.iter_mut())
+    {
+        if let LoadOp::WriteProp {
+            obj_idx,
+            obj_type,
+            prop_id: Some(201),
+            inline_data,
+            ..
+        } = op
+        {
+            *obj_idx = None;
+            *obj_type = Some(u32::from(OT_SIEMENS_VENDOR));
+            *inline_data = Some(vec![0x5A]);
+            found = true;
+        }
+    }
+    if !found {
+        return Err("the application writes object 4 PID 201".into());
+    }
+    Ok(app)
+}
+
+#[test]
+fn test_plan_flash_keeps_a_write_prop_by_type_off_object_0() -> TestResult {
+    // Issue #948: the System B plan names the object by type, never object 0,
+    // and a program that is not Data Secure enabled finds it in the device's
+    // object list.
+    let (product, _tmp) = product()?;
+    let app = with_typed_write(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert!(plan.typed_objects_by_list());
+    let writes: Vec<&FlashStep> = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::WriteProp { prop_id: 201, .. }))
+        .collect();
+    assert_eq!(
+        writes,
+        vec![&FlashStep::WriteProp {
+            object: PropObject::Type {
+                object_type: OT_SIEMENS_VENDOR,
+                occurrence: 0,
+            },
+            prop_id: 201,
+            value: vec![0x5A],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        }]
+    );
+    Ok(())
+}
+
+/// Flashes `plan` into `device`, returning the outcome or the error text and
+/// the connected-mode requests the device saw.
+async fn flash_logged(
+    plan: &bussard_download::FlashPlan,
+    device: MockDevice,
+) -> TestResult<(Result<bool, String>, Vec<(u16, Vec<u8>)>)> {
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = device.with_hook(move |_, apci, data| {
+        if let Ok(mut log) = log.lock() {
+            log.push((apci, data.to_vec()));
+        }
+        None
+    });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let result = flash(
+        &mut session,
+        plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .map(|outcome| outcome.ok())
+    .map_err(|e| e.to_string());
+    let _ = session.into_disconnect().await;
+    let seen = seen.lock().map_err(|e| e.to_string())?.clone();
+    Ok((result, seen))
+}
+
+/// The objects of the System B mock, with `extra` after the application
+/// object.
+fn object_types_with(extra: &[u16]) -> Vec<u16> {
+    let mut types = vec![
+        OT_DEVICE,
+        OT_ADDRESS_TABLE,
+        OT_ASSOCIATION_TABLE,
+        OT_GROUP_OBJECT_TABLE,
+        OT_APPLICATION_PROGRAM,
+    ];
+    types.extend_from_slice(extra);
+    types
+}
+
+#[tokio::test]
+async fn test_flash_writes_a_write_prop_by_type_at_the_listed_index() -> TestResult {
+    // Issue #948: ETS read object 6's PID_OBJECT_TYPE and wrote PID 205 to
+    // object 6 with A_PropertyValue_Write; bussard writes the object its
+    // walk of the object list found the type at (5 here), plain, and nothing
+    // to object 0.
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    let (product, _tmp) = product()?;
+    let app = with_typed_write(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&object_types_with(&[OT_SIEMENS_VENDOR]))
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(5, 201, 1, &[0]);
+    let (result, seen) = flash_logged(&plan, device).await?;
+    assert_eq!(result, Ok(true));
+    let writes_201: Vec<u8> = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_WRITE && d.get(1) == Some(&201))
+        .filter_map(|(_, d)| d.first().copied())
+        .collect();
+    assert_eq!(writes_201, vec![5]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> TestResult {
+    // Issue #948: a type the object list does not hold is an error naming
+    // the type, never a write to object 0.
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    let (product, _tmp) = product()?;
+    let app = with_typed_write(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&object_types_with(&[]))
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(0, 201, 1, &[0]);
+    let (result, seen) = flash_logged(&plan, device).await?;
+    match result {
+        Err(text) => assert!(text.contains("type 50215"), "{text}"),
+        Ok(ok) => return Err(format!("expected a refusal, the flash ended ok={ok}").into()),
+    }
+    assert!(
+        !seen
+            .iter()
+            .any(|(a, d)| *a == PROPERTY_VALUE_WRITE && d.get(1) == Some(&201)),
+        "no PID 201 write"
+    );
     Ok(())
 }
 
