@@ -600,7 +600,7 @@ fn attach_serial(
     serial: Option<&[u8]>,
     notes: &mut Vec<String>,
 ) {
-    use bussard_project::keystore::{AttachOutcome, KeyStore, SerialNumber};
+    use bussard_service::keys::keystore::{AttachOutcome, KeyStore, SerialNumber};
     let Some(serial) = serial.and_then(|s| <[u8; 6]>::try_from(s).ok()) else {
         return;
     };
@@ -721,8 +721,8 @@ fn identified_detail(
         "current_address": current.to_string(),
         "serial": v.serial.as_deref().map(hex),
         "mask": v.mask.map(|m| format!("{m:04X}")),
-        "system_type": v.mask.map(bussard_mgmt::system_type),
-        "manufacturer": v.manufacturer_id.map(bussard_mgmt::manufacturers::display),
+        "system_type": v.mask.map(bussard_service::mgmt::system_type),
+        "manufacturer": v.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
         "order_number": v.order,
         "secure": v.secure.as_str(),
         "keeps_address": target == current,

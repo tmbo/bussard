@@ -234,7 +234,7 @@ fn corpus_never_emits_duplicate_consecutive_allocations() {
 
     let mut checked_plans = 0usize;
     for file in &files {
-        let Ok(product) = bussard_prod::read_knxprod(file) else {
+        let Ok(product) = bussard_product::read_knxprod(file) else {
             continue;
         };
         for app in &product.applications {
@@ -306,7 +306,7 @@ fn test_plan_flash_corpus_0701_delay_apps_plan() {
     let files = knxprod_files(&vendor_dir(PathBuf::from(dir)));
     let mut planned = Vec::new();
     for file in &files {
-        let Ok(product) = bussard_prod::read_knxprod(file) else {
+        let Ok(product) = bussard_product::read_knxprod(file) else {
             continue;
         };
         for app in &product.applications {
@@ -317,7 +317,7 @@ fn test_plan_flash_corpus_0701_delay_apps_plan() {
             let has_delay = app.load_procedures.iter().any(|lp| {
                 lp.ops
                     .iter()
-                    .any(|op| matches!(op, bussard_prod::application::LoadOp::Delay { .. }))
+                    .any(|op| matches!(op, bussard_product::application::LoadOp::Delay { .. }))
             });
             if !on_0701 || !has_delay {
                 continue;
@@ -361,14 +361,14 @@ fn test_plan_flash_corpus_0701_delay_apps_plan() {
 /// lowering), one op is a splice or collapse bug, and ops in different blocks
 /// point at the assembly order.
 fn rel_segment_op_origins(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     target: Option<u32>,
     size: u32,
 ) -> String {
     let mut hits: Vec<String> = Vec::new();
     for proc in &app.load_procedures {
         for (n, op) in proc.ops.iter().enumerate() {
-            let bussard_prod::LoadOp::RelSegment {
+            let bussard_product::LoadOp::RelSegment {
                 lsm_idx,
                 size: op_size,
                 applies_to,
@@ -442,7 +442,7 @@ fn corpus_extended_memory_apps_lower_to_executable_plans() {
 
     let mut found = 0usize;
     for file in &files {
-        let Ok(product) = bussard_prod::read_knxprod(file) else {
+        let Ok(product) = bussard_product::read_knxprod(file) else {
             continue;
         };
         for app in &product.applications {
@@ -518,7 +518,7 @@ fn test_plan_flash_type_color_apps() -> Result<(), Box<dyn std::error::Error>> {
     ];
     let mut found = 0usize;
     for file in &knxprod_files(&vendor_dir(PathBuf::from(dir))) {
-        let Ok(product) = bussard_prod::read_knxprod(file) else {
+        let Ok(product) = bussard_product::read_knxprod(file) else {
             continue;
         };
         for app in &product.applications {
@@ -621,13 +621,13 @@ fn test_plan_flash_corpus_map_error_product_procedures() -> Result<(), Box<dyn s
             continue;
         }
         archives += 1;
-        let product = bussard_prod::read_knxprod(&file)?;
+        let product = bussard_product::read_knxprod(&file)?;
         for app in &product.applications {
             let maps = app
                 .load_procedures
                 .iter()
                 .flat_map(|p| p.ops.iter())
-                .any(|op| matches!(op, bussard_prod::LoadOp::MapError { .. }));
+                .any(|op| matches!(op, bussard_product::LoadOp::MapError { .. }));
             if !maps {
                 continue;
             }
@@ -641,7 +641,7 @@ fn test_plan_flash_corpus_map_error_product_procedures() -> Result<(), Box<dyn s
                 "1.1.1".parse()?,
                 app,
                 &BTreeMap::new(),
-                &bussard_prod::dynamic::DynamicMemo::new(app),
+                &bussard_product::dynamic::DynamicMemo::new(app),
             );
             let plan = plan_flash_default(
                 app,

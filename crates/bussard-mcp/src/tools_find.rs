@@ -15,9 +15,9 @@ use std::sync::Arc;
 
 use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
-use bussard_secure::Key16;
 use bussard_service::line::WalkEvent;
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
+use bussard_service::secure::Key16;
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::status::{read_live_status, read_only_authorize, status_report};
 use bussard_service::{BusService, FactsCache, L4Options, SourcePolicy, identity_line};
@@ -157,7 +157,7 @@ impl BussardMcp {
         let options = L4Options::secured(
             SourcePolicy::Check { skip: false },
             tool_key,
-            bussard_secure::SequenceHighWater::new(),
+            bussard_service::secure::SequenceHighWater::new(),
         )
         .with_factory_key(factory_key)
         .with_authorize(authorize);
@@ -350,7 +350,7 @@ fn device_row(f: &scan::Found, name: Option<String>, report: &ScanReport) -> Val
         "known": report.known(f.address),
         "mask": format!("{:04X}", f.mask),
         "system_type": f.system_type(),
-        "manufacturer": f.manufacturer_id.map(bussard_mgmt::manufacturers::display),
+        "manufacturer": f.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
         "manufacturer_id": f.manufacturer_id.map(|id| format!("{id:#06X}")),
         "order_number": f.order,
         "serial": f.serial.as_deref().map(hex),

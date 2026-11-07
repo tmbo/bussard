@@ -45,16 +45,16 @@ const XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
 
 #[tokio::test]
 async fn test_flash_program_without_group_objects_writes_no_table() -> TestResult {
-    let app = bussard_prod::parse_application_program("M-00FA_A-0002-10-ABCD", XML.as_bytes())?;
-    let template =
-        bussard_prod::MasterTemplate::builtin_for_mask("07B0").ok_or("a built-in 07B0 template")?;
+    let app = bussard_product::parse_application_program("M-00FA_A-0002-10-ABCD", XML.as_bytes())?;
+    let template = bussard_product::MasterTemplate::builtin_for_mask("07B0")
+        .ok_or("a built-in 07B0 template")?;
     let overrides = BTreeMap::new();
     let tables = build_table_images(
         None,
         ia("1.1.1")?,
         &app,
         &overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(&app),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
     );
     let plan = plan_flash_default(
         &app,

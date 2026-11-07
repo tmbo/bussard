@@ -52,13 +52,13 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_mgmt::system_type;
 use bussard_model::history::SnapshotReason;
 use bussard_model::{Flags, GroupAddress, IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 use bussard_service::WritePolicy;
 use bussard_service::adopt::flow::{SecureSummary, SelectedProduct, shape_selected};
 use bussard_service::identity::SecureStatus;
+use bussard_service::mgmt::system_type;
 use bussard_service::program::adopt;
 use bussard_service::program::assign::AssignFlow;
 use bussard_service::secure::{ToolKeySource, ToolKeys};

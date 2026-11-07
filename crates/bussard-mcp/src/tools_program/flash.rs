@@ -26,10 +26,10 @@
 use std::path::Path;
 
 use bussard_model::IndividualAddress;
-use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::BusService;
 use bussard_service::flash_flow::ReadbackInputs;
 use bussard_service::program::{self, flash::FlashImage};
+use bussard_service::secure::{Key16, SequenceHighWater};
 use serde_json::{Value, json};
 
 use super::{ProgrammingTier, chain};

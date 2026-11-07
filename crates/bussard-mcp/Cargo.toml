@@ -9,21 +9,15 @@ license.workspace = true
 description = "MCP server for bussard (stdio or streamable HTTP): KNX model and bus tools"
 
 [dependencies]
+# The layering rule (issue #916): a surface depends on bussard-service and
+# bussard-model (and bussard-product for import and product data) only; the
+# domain crates reach it through bussard-service. Tests may name them.
 bussard-model = { workspace = true }
 # The service layer (issue #86): gated bus access, management sessions, the
 # checked group write and the live model handle.
 bussard-service = { workspace = true }
-# `.knxproj` import for `knx_diff_project` (issue #99), in memory only.
-bussard-project = { workspace = true }
-bussard-transport = { workspace = true }
-bussard-monitor = { workspace = true }
-bussard-bus = { workspace = true }
-bussard-mgmt = { workspace = true }
-# The table plan / backup / write flow behind the programming tier (issue #118),
-# shared with `bussard plan` and `bussard apply`.
-bussard-download = { workspace = true }
-# The Data Secure send-sequence high-water mark for a secured plan read (#170).
-bussard-secure = { workspace = true }
+# `.knxproj` import for `knx_diff_project` (issue #99) and the lock keys.
+bussard-product = { workspace = true }
 # The Home Assistant tier (issue #280): the KNX YAML generator, its diff and
 # write, and the REST client.
 bussard-ha = { workspace = true }
@@ -57,12 +51,15 @@ getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+bussard-download = { workspace = true }
+bussard-mgmt = { workspace = true }
+bussard-project = { workspace = true }
+bussard-secure = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
 bussard-model = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-transport = { workspace = true }
-bussard-bus = { workspace = true }
 # The client half of rmcp for the in-process integration test.
 rmcp = { version = "3.3.0", features = ["server", "client", "macros", "transport-io", "schemars", "elicitation"] }
 # A blocking HTTP client for the `--listen` tests (issue #265). Already in the
@@ -73,11 +70,8 @@ ureq = { workspace = true }
 base64 = { workspace = true }
 # The shared mock KNXnet/IP gateway and mock devices (issue #87).
 bussard-testkit = { workspace = true }
-# Writes the test product models from fixture XML through the importer
-# (issue #345). Already a transitive dependency via bussard-download. MIT.
-bussard-prod = { workspace = true }
 # Packs the synthetic `.knxprod` of the flash test (issue #303). Already in
-# the tree (bussard-prod, bussard-model). MIT.
+# the tree (bussard-product, bussard-model). MIT.
 zip = { workspace = true }
 
 # The tests hash product archives as the lock pins them. MIT OR Apache-2.0.

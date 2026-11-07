@@ -23,7 +23,7 @@ use bussard_mgmt::MgmtError;
 use bussard_model::facts::DeviceFactsRecord;
 use bussard_model::identity::{IdentityCheck, ReportedIdentity};
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 use sha2::{Digest, Sha256};
 
@@ -1237,17 +1237,17 @@ pub fn plan_offline(req: &OfflineRequest<'_>) -> Result<Offline, OfflineStop> {
 /// ETS export needs no `--application`), else every program (the
 /// sole-application rule needs them all).
 pub fn app_selection(
-    catalog: &bussard_prod::ProductCatalog,
+    catalog: &bussard_product::ProductCatalog,
     order_number: Option<&str>,
     application: Option<&str>,
     pinned: Option<&str>,
-) -> bussard_prod::AppSelection {
+) -> bussard_product::AppSelection {
     match (order_number, application.or(pinned)) {
         (Some(order), _) => {
-            bussard_prod::AppSelection::Only(crate::params::order_refs(catalog, order))
+            bussard_product::AppSelection::Only(crate::params::order_refs(catalog, order))
         }
         (None, Some(wanted)) => by_application(catalog, wanted),
-        (None, None) => bussard_prod::AppSelection::All,
+        (None, None) => bussard_product::AppSelection::All,
     }
 }
 
@@ -1257,12 +1257,12 @@ pub fn app_selection(
 /// rule would refuse selects every program, so the refusal reads exactly as
 /// before.
 fn by_application(
-    catalog: &bussard_prod::ProductCatalog,
+    catalog: &bussard_product::ProductCatalog,
     wanted: &str,
-) -> bussard_prod::AppSelection {
+) -> bussard_product::AppSelection {
     match crate::params::select_id(catalog, wanted) {
-        Some(id) => bussard_prod::AppSelection::Only(vec![id]),
-        None => bussard_prod::AppSelection::All,
+        Some(id) => bussard_product::AppSelection::Only(vec![id]),
+        None => bussard_product::AppSelection::All,
     }
 }
 
@@ -1314,7 +1314,7 @@ pub fn select_app<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_prod::{AppSelection, parse_application_program};
+    use bussard_product::{AppSelection, parse_application_program};
     use std::collections::BTreeMap;
 
     /// The overrides `bussard flash` plans with (the warnings dropped).
@@ -1325,10 +1325,10 @@ mod tests {
         bussard_download::parameter_overrides(model, target).0
     }
 
-    fn catalog(ids: &[&str]) -> bussard_prod::ProductCatalog {
-        bussard_prod::ProductCatalog {
+    fn catalog(ids: &[&str]) -> bussard_product::ProductCatalog {
+        bussard_product::ProductCatalog {
             application_ids: ids.iter().map(|s| s.to_string()).collect(),
-            ..bussard_prod::ProductCatalog::default()
+            ..bussard_product::ProductCatalog::default()
         }
     }
 

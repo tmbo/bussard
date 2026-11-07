@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::elicit::{self, Shown, lock};
-use bussard_secure::Password;
+use bussard_service::secure::Password;
 use bussard_viz::password_page::{PasswordPage, PasswordPrompt, Submission, Verdict};
 use rmcp::RoleServer;
 use rmcp::model::{CallToolResponse, CallToolResult, ElicitRequestParams, ElicitationAction};

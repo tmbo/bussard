@@ -1,0 +1,44 @@
+[package]
+name = "bussard-product"
+description = "ETS product and project data: streaming ETS-XML parsers, .knxprod reading, parameter images, .knxproj import"
+version.workspace = true
+edition.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+bussard-model = { workspace = true }
+# PBKDF2 for the ETS6 project-archive password (`.knxproj` import).
+bussard-secure = { workspace = true }
+# Code-segment payloads and `TypeRawData` parameter values. MIT OR Apache-2.0.
+base64 = { workspace = true }
+# The streaming ETS-XML parser (bounded memory, no DOM). MIT.
+quick-xml = { workspace = true }
+# Builds the import's per-device application programs in parallel. MIT OR Apache-2.0.
+rayon = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# SHA-256 for verifying downloaded product data against the index checksum.
+# MIT OR Apache-2.0.
+sha2 = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Sync HTTP client for vendor downloads. Chosen over reqwest: `ureq` is
+# blocking (no async runtime pulled into this crate), tiny, and uses rustls for
+# TLS with no OpenSSL system dependency. MIT OR Apache-2.0.
+ureq = { workspace = true }
+# Wipes the derived project-archive password. MIT OR Apache-2.0.
+zeroize = { workspace = true }
+# ZIP containers. `aes-crypto` opens the WinZip-AES inner archive of a
+# password-protected `.knxproj`; bussard never writes or signs these archives.
+# MIT licensed.
+zip = { workspace = true, features = ["aes-crypto"] }
+
+[dev-dependencies]
+anyhow = { workspace = true }
+tempfile = "3"
+
+[lints]
+workspace = true

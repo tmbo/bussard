@@ -4,7 +4,7 @@
 //! This crate implements the phase-0 Model Context Protocol server described in
 //! the design document (§5.5). It loads a KNX-as-code [`Model`] from a directory,
 //! spawns the reconnecting bus monitor pipeline feeding a shared
-//! [`TelegramRing`](bussard_monitor::TelegramRing), and exposes read-only tools
+//! `TelegramRing`, and exposes read-only tools
 //! over MCP so an LLM (e.g. Claude Code) can explore the installation and debug
 //! live traffic.
 //!
@@ -210,8 +210,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use bussard_model::Model;
+use bussard_service::transport::{ConnectionConfig, TransportKind};
 use bussard_service::{BusService, WritePolicy};
-use bussard_transport::{ConnectionConfig, TransportKind};
 
 pub use server::BussardMcp;
 pub use state::{READ_MAX_CONCURRENT, READ_MIN_INTERVAL, SharedState};
@@ -327,7 +327,7 @@ pub fn build_state_from_model(
 
     let bus = state::BusStatus::new(config.connection.transport.clone())
         .with_gateway(config.connection.gateway);
-    let ring = bussard_monitor::TelegramRing::new();
+    let ring = bussard_service::monitor::TelegramRing::new();
     let jobs = Arc::new(jobs::JobTable::new());
 
     let state = Arc::new(SharedState {
@@ -387,7 +387,7 @@ pub async fn run_with_ready(config: &McpConfig, on_ready: impl FnOnce()) -> anyh
     // one for the same model directory. Held until the server exits.
     let _instance = instances::register(&config.dir);
     let service = BusService::open(config.connection.clone(), config.write_policy())?;
-    if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
+    if service.gate() == Some(bussard_service::transport::write_gate::WriteGate::OptedIn) {
         tracing::warn!(
             "{}",
             bussard_service::guidance::opt_in_warning(&service.gateway_display())
@@ -413,7 +413,7 @@ pub async fn run_http_with_ready(
     let state = build_state(config)?;
     let _instance = instances::register(&config.dir);
     let service = BusService::open(config.connection.clone(), config.write_policy())?;
-    if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
+    if service.gate() == Some(bussard_service::transport::write_gate::WriteGate::OptedIn) {
         tracing::warn!(
             "{}",
             bussard_service::guidance::opt_in_warning(&service.gateway_display())

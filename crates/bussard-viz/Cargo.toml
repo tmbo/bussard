@@ -9,17 +9,13 @@ license.workspace = true
 description = "Web visualization server for a bussard KNX installation: topology, group-address tree, and live bus traffic"
 
 [dependencies]
+# The layering rule (issue #916): a surface depends on bussard-service and
+# bussard-model (and bussard-product for import and product data) only; the
+# domain crates reach it through bussard-service. Tests may name them.
 bussard-model = { workspace = true }
 # The service layer (issue #86): gated bus access, management sessions, the
 # checked group write and the live model handle.
 bussard-service = { workspace = true }
-bussard-transport = { workspace = true }
-bussard-monitor = { workspace = true }
-bussard-bus = { workspace = true }
-# The programming-mode watch reuses the assign broadcast-read op
-# (bussard_mgmt::broadcast::devices_in_programming_mode_within) over the shared
-# BusHandle lease, rather than reimplementing the A_IndividualAddress_Read probe.
-bussard-mgmt = { workspace = true }
 tokio = { workspace = true }
 tokio-stream = { workspace = true }
 tracing = { workspace = true }
@@ -30,9 +26,6 @@ axum = { workspace = true }
 # The in-process enrolment relay (issue #729) stores SHA-256 of each session's
 # owner token, never the token. Already in the tree. MIT OR Apache-2.0.
 sha2 = { workspace = true }
-# The password form (#818) holds the posted password as a zeroizing,
-# redacted `Password`. First party.
-bussard-secure = { workspace = true }
 getrandom = { workspace = true }
 qrcode = { workspace = true }
 
@@ -60,6 +53,8 @@ http-body-util = "0.1"
 # futures-util drives the SSE response body stream in the framing test. MIT.
 futures-util = "0.3"
 tempfile = "3"
+# The bus actor and gateway settings of the unit tests.
+bussard-transport = { workspace = true }
 # The enrolment end-to-end test: a fake phone (the protocol crypto and the
 # relay's phone-side endpoints over HTTP) against the in-process relay.
 bussard-secure = { workspace = true }

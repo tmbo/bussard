@@ -59,8 +59,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
-use bussard_prod::ApplicationProgram;
-use bussard_prod::dynamic::{evaluate_dynamic, visible_parameter_refs};
+use bussard_product::ApplicationProgram;
+use bussard_product::dynamic::{evaluate_dynamic, visible_parameter_refs};
 use serde_json::json;
 use sha2::{Digest as _, Sha256};
 
@@ -420,7 +420,7 @@ impl Catalogue {
                 continue;
             }
             let archive = archives.join(format!("{name}.knxprod"));
-            let data = bussard_prod::read_knxprod(&archive)?;
+            let data = bussard_product::read_knxprod(&archive)?;
             let app = data
                 .applications
                 .into_iter()
@@ -987,7 +987,7 @@ fn reshaping_change(
     base: &Configuration,
     rng: &mut SplitMix64,
 ) -> Option<Configuration> {
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     let switches = switches(app);
     let config = evaluate_dynamic(app, &base.values);
     let mut refs: Vec<(String, String)> = visible_parameter_refs(app, &config)
@@ -1019,7 +1019,7 @@ fn reshaping_change(
                 app,
                 &base.values,
                 &values,
-                &bussard_prod::dynamic::DynamicMemo::new(app),
+                &bussard_product::dynamic::DynamicMemo::new(app),
             )
             .is_empty()
                 || bussard_download::allocation_change(app, &base.values, &values, &memo).is_some();

@@ -1,0 +1,464 @@
+//! Integration tests for code-segment data capture and the parameter memory
+//! image builder.
+//!
+//! Two layers:
+//!
+//! * A fabricated `.knxprod` round trip proves the reader carries a segment's
+//!   `<Data>`/`<Mask>` through to [`bussard_product::ProductData`] and that
+//!   `compute_parameter_image` lays a parameter over that base image.
+//! * A read-only smoke test against the developer's local `home_test.knxproj`
+//!   (never committed) exercises every real ETS application program. It is
+//!   skipped automatically when the file is absent, so CI stays green.
+
+use std::collections::BTreeMap;
+use std::io::Write;
+
+use bussard_product::compute_parameter_image;
+use zip::write::SimpleFileOptions;
+
+const HARDWARE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData><Manufacturer RefId="M-00FA">
+    <Hardware>
+      <Products><Product OrderNumber="SEG-1" /></Products>
+      <Hardware2Programs><Hardware2Program>
+        <ApplicationProgramRef RefId="M-00FA_A-0001-11-ABCD-O000A" />
+      </Hardware2Program></Hardware2Programs>
+    </Hardware>
+  </Manufacturer></ManufacturerData>
+</KNX>"#;
+
+// A parameter segment carrying a base <Data> image [0xAA,0xBB,0xCC,0xDD]
+// ("qrvM3Q==") and a full <Mask>, plus one 8-bit parameter at offset 2 with
+// default 5 that must overwrite byte 2 while the other bytes survive.
+const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0001-11-ABCD-O000A" ApplicationNumber="1" ApplicationVersion="17" MaskVersion="MV-07B0" Name="Seg" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-0001-11-ABCD-O000A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>qrvM3Q==</Data><Mask>/////w==</Mask></RelativeSegment>
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-0001-11-ABCD-O000A_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_P-0" Name="thr" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-0" Value="5"><Memory CodeSegment="M-00FA_A-0001-11-ABCD-O000A_RS-1" Offset="2" BitOffset="0" /></Parameter>
+    </Parameters>
+   </Static>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+fn build_knxprod(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let f = std::fs::File::create(path)?;
+    let mut zip = zip::ZipWriter::new(f);
+    let opts = SimpleFileOptions::default();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file("M-00FA/Hardware.xml", opts)?;
+    zip.write_all(HARDWARE_XML.as_bytes())?;
+    zip.start_file("M-00FA/M-00FA_A-0001-11-ABCD-O000A.xml", opts)?;
+    zip.write_all(APP_XML.as_bytes())?;
+    zip.finish()?;
+    Ok(())
+}
+
+#[test]
+fn segment_data_and_mask_round_trip_and_param_overlay() -> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("seg.knxprod");
+    build_knxprod(&path)?;
+
+    let product = bussard_product::read_knxprod(&path)?;
+    let app = &product.applications[0];
+
+    // The <Data>/<Mask> survived into the model as decoded bytes.
+    let seg = app
+        .code_segments
+        .get("M-00FA_A-0001-11-ABCD-O000A_RS-1")
+        .ok_or("app.code_segments.get(\"M-00FA_A-0001-11-ABCD-O000A_RS-1\") missing")?;
+    assert_eq!(
+        seg.data.as_deref(),
+        Some([0xAA, 0xBB, 0xCC, 0xDD].as_slice())
+    );
+    assert_eq!(
+        seg.mask.as_deref(),
+        Some([0xFF, 0xFF, 0xFF, 0xFF].as_slice())
+    );
+
+    // compute_parameter_image lays the parameter over the base image.
+    let images = compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())?;
+    let img = &images["M-00FA_A-0001-11-ABCD-O000A_RS-1"];
+    assert_eq!(img, &vec![0xAA, 0xBB, 0x05, 0xDD]);
+    Ok(())
+}
+
+// A fabricated app mirroring the Zennio FIX2 dimmer's union shape: a 4-byte base
+// image, one plain 8-bit parameter, and two `<Union>` blocks. The first union
+// (base offset 1, 8-bit) has a default member with value 75 (0x4B) that must
+// overwrite the base byte; its two non-default members (values 1 and 9) must NOT
+// win. The second union (base offset 3) demonstrates sub-byte packing: a default
+// member is a 2-bit field of value 3 at bit offset 0, laid MSB-first (0b11 into
+// the top two bits => 0xC0) over a zero base byte.
+const UNION_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+ <ManufacturerData><Manufacturer RefId="M-00FA"><ApplicationPrograms>
+  <ApplicationProgram Id="M-00FA_A-0001-11-ABCD-O000A" ApplicationNumber="1" ApplicationVersion="17" MaskVersion="MV-07B0" Name="Uni" LoadProcedureStyle="MergedProcedure">
+   <Static>
+    <Code>
+     <RelativeSegment Id="M-00FA_A-0001-11-ABCD-O000A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAAAAA==</Data><Mask>/////w==</Mask></RelativeSegment>
+    </Code>
+    <ParameterTypes>
+     <ParameterType Id="M-00FA_A-0001-11-ABCD-O000A_PT-8" Name="n8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+     <ParameterType Id="M-00FA_A-0001-11-ABCD-O000A_PT-2" Name="n2"><TypeNumber SizeInBit="2" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_P-0" Name="thr" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-8" Value="170"><Memory CodeSegment="M-00FA_A-0001-11-ABCD-O000A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+    </Parameters>
+    <Union SizeInBit="8">
+     <Memory CodeSegment="M-00FA_A-0001-11-ABCD-O000A_RS-1" Offset="1" BitOffset="0" />
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_UP-1" Name="u1a" DefaultUnionParameter="1" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-8" Value="75" Offset="0" BitOffset="0" />
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_UP-2" Name="u1b" DefaultUnionParameter="0" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-8" Value="1" Offset="0" BitOffset="0" />
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_UP-3" Name="u1c" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-8" Value="9" Offset="0" BitOffset="0" />
+    </Union>
+    <Union SizeInBit="8">
+     <Memory CodeSegment="M-00FA_A-0001-11-ABCD-O000A_RS-1" Offset="3" BitOffset="0" />
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_UP-4" Name="u2a" DefaultUnionParameter="1" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-2" Value="3" Offset="0" BitOffset="0" />
+     <Parameter Id="M-00FA_A-0001-11-ABCD-O000A_UP-5" Name="u2b" ParameterType="M-00FA_A-0001-11-ABCD-O000A_PT-2" Value="0" Offset="0" BitOffset="0" />
+    </Union>
+   </Static>
+  </ApplicationProgram>
+ </ApplicationPrograms></Manufacturer></ManufacturerData>
+</KNX>"#;
+
+fn build_union_knxprod(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let f = std::fs::File::create(path)?;
+    let mut zip = zip::ZipWriter::new(f);
+    let opts = SimpleFileOptions::default();
+    zip.start_file("knx_master.xml", opts)?;
+    zip.write_all(b"<KNX/>")?;
+    zip.start_file("M-00FA/Hardware.xml", opts)?;
+    zip.write_all(HARDWARE_XML.as_bytes())?;
+    zip.start_file("M-00FA/M-00FA_A-0001-11-ABCD-O000A.xml", opts)?;
+    zip.write_all(UNION_APP_XML.as_bytes())?;
+    zip.finish()?;
+    Ok(())
+}
+
+#[test]
+fn union_default_member_overlays_shared_region_exact_bytes()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tmp = tempfile::tempdir()?;
+    let path = tmp.path().join("union.knxprod");
+    build_union_knxprod(&path)?;
+
+    let product = bussard_product::read_knxprod(&path)?;
+    let app = &product.applications[0];
+
+    // Both unions parsed, each with the expected member counts.
+    assert_eq!(app.unions.len(), 2);
+    assert_eq!(app.unions[0].members.len(), 3);
+    assert!(app.unions[0].members[0].is_default);
+
+    let images = compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())?;
+    let img = &images["M-00FA_A-0001-11-ABCD-O000A_RS-1"];
+
+    // byte0: plain parameter 170 (0xAA).
+    // byte1: union-1 default member value 75 (0x4B) — NOT 1 or 9.
+    // byte2: untouched base 0x00.
+    // byte3: union-2 default 2-bit field value 3 => 0b11 in the top two bits (0xC0).
+    assert_eq!(img, &vec![0xAA, 0x4B, 0x00, 0xC0]);
+    Ok(())
+}
+
+/// Env-gated real-product union regression: the Zennio FIX2 dimmer
+/// (`T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod`) declares a `<Union>` at
+/// segment `AS-48D0` offset 56 whose `DefaultUnionParameter` member is an 8-bit
+/// value 75 (0x4B). The configuration does not show the union at the defaults,
+/// and the program is System 7 (`MV-0701`) without `DownloadInvisibleParameters`,
+/// so ETS keeps the segment template there (issue #448: hidden parameters
+/// carry their defaults on System B only): the byte stays 0x00. The default
+/// member's value lands once the union is shown, which the fabricated union
+/// test covers. Set `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when
+/// unset (CI never ships the copyrighted vendor file).
+#[test]
+fn real_zennio_fix2_union_byte_is_vendor_default() -> Result<(), Box<dyn std::error::Error>> {
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the FIX2 union byte check.");
+        return Ok(());
+    };
+    let path = vendor_dir(dir.into()).join("T4940275_KNX_FIX2_Dimmaktor_V1.0_ETS4.knxprod");
+    if !path.exists() {
+        eprintln!("FIX2 dimmer not in corpus dir; skipping.");
+        return Ok(());
+    }
+
+    let product = bussard_product::read_knxprod(&path)?;
+    // Find the application that carries the AS-48D0 segment (the dimmer app).
+    let app = product
+        .applications
+        .iter()
+        .find(|a| a.code_segments.keys().any(|k| k.ends_with("_AS-48D0")))
+        .ok_or("FIX2 dimmer application with segment AS-48D0")?;
+
+    let images = compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())?;
+    let seg_id = app
+        .code_segments
+        .keys()
+        .find(|k| k.ends_with("_AS-48D0"))
+        .ok_or("AS-48D0 segment id missing")?;
+    let img = &images[seg_id];
+    assert!(
+        img.len() > 56,
+        "segment image too short: {} bytes",
+        img.len()
+    );
+    assert!(!app.downloads_invisible_parameters());
+    assert_eq!(
+        img[56], 0x00,
+        "the hidden union keeps the template at offset 56, got {:#04X}",
+        img[56]
+    );
+    Ok(())
+}
+
+/// Read-only smoke test over the developer's local `home_test.knxproj`.
+///
+/// Not committed data; skipped when absent so CI is unaffected. Reports (as test
+/// output) how many application programs carry segment `<Data>` and the total
+/// decoded byte count, and asserts that the Jung 23024 application's parameter
+/// image builds without error.
+#[test]
+fn real_knxproj_smoke() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../home_test.knxproj");
+    if !path.exists() {
+        eprintln!("home_test.knxproj absent; skipping real-data smoke test");
+        return Ok(());
+    }
+
+    // A `.knxproj` is a plain-zip container of `M-*/` manufacturer folders whose
+    // application-program XML entries parse with the same shared parser; read
+    // them directly (no password: the manufacturer folders are not encrypted).
+    let file = std::fs::File::open(&path)?;
+    let mut zip = zip::ZipArchive::new(file)?;
+
+    let names: Vec<String> = zip
+        .file_names()
+        .map(|name| name.map(std::borrow::Cow::into_owned))
+        .collect::<Result<_, _>>()?;
+    let app_entries: Vec<String> = names
+        .iter()
+        .filter(|n| {
+            n.split_once('/').is_some_and(|(dir, file)| {
+                dir.starts_with("M-") && file.contains("_A-") && n.ends_with(".xml")
+            })
+        })
+        .cloned()
+        .collect();
+
+    let mut apps_with_data = 0usize;
+    let mut total_bytes = 0usize;
+    let mut jung_ok = false;
+
+    for entry in &app_entries {
+        let mut f = zip.by_name(entry)?;
+        let mut xml = String::new();
+        use std::io::Read as _;
+        if f.read_to_string(&mut xml).is_err() {
+            continue; // skip any non-UTF-8 baggage that slipped the filter
+        }
+        drop(f);
+
+        let id = entry
+            .rsplit('/')
+            .next()
+            .ok_or("entry.rsplit('/').next() missing")?
+            .strip_suffix(".xml")
+            .ok_or("entry.rsplit('/').next().strip_suffix(\".xml\") missing")?;
+        let app = bussard_product::parse_application_program(id, xml.as_bytes())?;
+
+        let seg_bytes: usize = app
+            .code_segments
+            .values()
+            .filter_map(|s| s.data.as_ref())
+            .map(|d| d.len())
+            .sum();
+        if app.code_segments.values().any(|s| s.data.is_some()) {
+            apps_with_data += 1;
+        }
+        total_bytes += seg_bytes;
+
+        // The Jung 23024 application (mask 26, id …A-20D7-26-…): its parameter
+        // image must build with no overrides and no error.
+        if id.contains("A-20D7-26-") {
+            let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
+            let total: usize = images.values().map(Vec::len).sum();
+            eprintln!(
+                "Jung 23024 ({id}): {} segment images, {total} total image bytes",
+                images.len()
+            );
+            for (seg, img) in &images {
+                eprintln!("  {seg}: {} bytes", img.len());
+            }
+            jung_ok = true;
+        }
+    }
+
+    eprintln!(
+        "real-data: {} application programs, {apps_with_data} carrying segment <Data>, \
+         {total_bytes} total decoded segment bytes",
+        app_entries.len()
+    );
+
+    assert!(
+        apps_with_data > 0,
+        "expected some apps to carry segment data"
+    );
+    assert!(
+        jung_ok,
+        "Jung 23024 application not found in home_test.knxproj"
+    );
+    Ok(())
+}
+
+/// Env-gated real-product float-width regression: the ABB i-bus product data
+/// (`IBUS_ETS5_ABB_*.knxprod`) declares application `M-0002_A-A0B0-12-5788`
+/// with a run of `<TypeFloat Encoding="IEEE-754 Single">` parameters on its
+/// parameter segment — `P-2050021823` (default 10.0) at offset 676 immediately
+/// followed by `P-1814561109` (default 1.0) at offset 680. The 4-byte spacing is
+/// the vendor's own statement that the field is a 4-byte IEEE-754 single, so the
+/// image must carry `41 20 00 00` then `3F 80 00 00`.
+///
+/// Before the fix every float was written as 2 bytes of DPT 9, which put wrong
+/// bytes at 676-677 and left 678-679 at the base image's value.
+///
+/// Reads the one application entry straight out of the archive rather than
+/// calling `read_knxprod`: this product ships 737 entries (~2.8 GB of XML
+/// uncompressed) and parsing all of them takes minutes in a debug build.
+///
+/// Set `BUSSARD_PRODUCT_CORPUS=<corpus>` to run it; skipped when unset (the
+/// vendor file is copyrighted and never committed — the unit test
+/// `test_encode_value_float_honours_declared_encoding` covers the same rule on a
+/// synthetic fixture).
+#[test]
+fn real_abb_ieee754_single_parameters_are_four_bytes_wide() -> Result<(), Box<dyn std::error::Error>>
+{
+    const APP_ID: &str = "M-0002_A-A0B0-12-5788";
+
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("BUSSARD_PRODUCT_CORPUS unset; skipping the ABB IEEE-754 width check.");
+        return Ok(());
+    };
+    let dir = vendor_dir(dir.into());
+    let found = std::fs::read_dir(&dir)
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("IBUS_ETS5_ABB_") && n.ends_with(".knxprod"))
+        });
+    let Some(path) = found else {
+        eprintln!("ABB i-bus product not in corpus dir; skipping.");
+        return Ok(());
+    };
+
+    let file = std::fs::File::open(&path)?;
+    let mut zip = zip::ZipArchive::new(file)?;
+    let entry = format!("M-0002/{APP_ID}.xml");
+    let Ok(mut f) = zip.by_name(&entry) else {
+        eprintln!("application {APP_ID} absent from this ABB release; skipping.");
+        return Ok(());
+    };
+    let mut xml = Vec::new();
+    use std::io::Read as _;
+    f.read_to_end(&mut xml)?;
+    drop(f);
+
+    let app = bussard_product::parse_application_program(APP_ID, &xml)?;
+
+    // The two parameters, read straight from the parsed product data so the test
+    // fails loudly if a later release moves them.
+    let float_param = |id_suffix: &str| {
+        app.parameters
+            .values()
+            .find(|p| p.id.ends_with(id_suffix))
+            .unwrap_or_else(|| panic!("parameter {id_suffix} in the ABB application"))
+    };
+    let p10 = float_param("_P-2050021823");
+    let p1 = float_param("_P-1814561109");
+    let mem10 = p10.memory.as_ref().ok_or("P-2050021823 <Memory>")?;
+    let mem1 = p1.memory.as_ref().ok_or("P-1814561109 <Memory>")?;
+    let off10 = mem10.offset.ok_or("P-2050021823 <Memory Offset>")?;
+    let off1 = mem1.offset.ok_or("P-1814561109 <Memory Offset>")?;
+    assert_eq!(
+        off1 - off10,
+        4,
+        "the vendor lays these two floats 4 bytes apart"
+    );
+
+    // The width rule itself: each default, written the way the image builder
+    // writes it, is a 4-byte IEEE-754 single.
+    let at = off10 as usize;
+    let mut written = Vec::new();
+    bussard_product::write_parameter_value(&app, p10, p10.default.as_deref(), &mut written, at, 0)?;
+    bussard_product::write_parameter_value(
+        &app,
+        p1,
+        p1.default.as_deref(),
+        &mut written,
+        at + 4,
+        0,
+    )?;
+    assert_eq!(
+        &written[at..at + 4],
+        &10.0f32.to_be_bytes(),
+        "IEEE-754 Single default 10.0 at offset {at}"
+    );
+    assert_eq!(
+        &written[at + 4..at + 8],
+        &1.0f32.to_be_bytes(),
+        "IEEE-754 Single default 1.0 at offset {}",
+        at + 4
+    );
+
+    // The image builder evaluates the Dynamic section (#123) and writes only
+    // the parameters the configuration reaches (#159). Where it reaches these
+    // two, the image carries the same eight octets; where it does not (the
+    // vendor-default configuration of this release), their octets keep the
+    // template, so there is nothing more to check.
+    let config = bussard_product::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+    let slots = bussard_product::dynamic_parameter_slots(&app, &config)?;
+    let reached =
+        |param: &bussard_product::Parameter| slots.iter().any(|s| s.parameter.id == param.id);
+    if !bussard_product::uses_dynamic_image(&app) || (reached(p10) && reached(p1)) {
+        let images = compute_parameter_image(&app, &BTreeMap::new(), &BTreeMap::new())?;
+        let seg = mem10.code_segment.as_deref().ok_or("segment id")?;
+        let img = images.get(seg).ok_or("no image for the segment")?;
+        assert!(
+            img.len() >= at + 8,
+            "segment image too short: {}",
+            img.len()
+        );
+        assert_eq!(&img[at..at + 8], &written[at..at + 8]);
+    } else {
+        eprintln!(
+            "the default configuration does not reach the two floats; the image keeps the \
+             template there (checked the encoding only)"
+        );
+    }
+    Ok(())
+}
+
+/// The corpus's vendor directory: `BUSSARD_PRODUCT_CORPUS` may name the
+/// product-corpus root, its `cache/`, or the vendor directory itself
+/// (`dev/testing.md`).
+fn vendor_dir(dir: std::path::PathBuf) -> std::path::PathBuf {
+    [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir)
+}

@@ -12,7 +12,7 @@
 
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::text::hex_upper;
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 
 use crate::flash::{FlashPlan, FlashStep, PropObject, read_property_value};
 
@@ -64,7 +64,7 @@ impl ParamProperty {
     }
 
     /// Whether `location` places a parameter in this property.
-    pub fn holds(&self, location: &bussard_prod::application::PropertyLocation) -> bool {
+    pub fn holds(&self, location: &bussard_product::application::PropertyLocation) -> bool {
         if location.property_id != self.prop_id {
             return false;
         }

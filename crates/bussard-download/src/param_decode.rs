@@ -1,11 +1,11 @@
 //! Decoding a device's parameter memory back into parameter values (issues
 //! #119, #142).
 //!
-//! The decoder is the exact inverse of the image builder in `bussard_prod`: it
+//! The decoder is the exact inverse of the image builder in `bussard_product`: it
 //! walks the same list of placements the encoder writes
-//! ([`bussard_prod::dynamic_parameter_slots`] for an application with a
+//! ([`bussard_product::dynamic_parameter_slots`] for an application with a
 //! Dynamic section, the vendor-default placement otherwise) and decodes each
-//! value with [`bussard_prod::decode_parameter_value`], the inverse of the
+//! value with [`bussard_product::decode_parameter_value`], the inverse of the
 //! encoder's own value encoding. So a value is read from exactly the byte, bit
 //! offset, union member, module instance and ref the encoder wrote it for, and
 //! a device holding the image the encoder built from a model decodes back to
@@ -19,10 +19,10 @@
 //!   ref of a parameter whose shown ref is another one: none of them holds a
 //!   value of its own in the image, so none is decoded or reported.
 //! - A hidden parameter the application downloads at its default (see
-//!   [`bussard_prod::ApplicationProgram::downloads_invisible_parameters`]) is
+//!   [`bussard_product::ApplicationProgram::downloads_invisible_parameters`]) is
 //!   never reported as non-default: its bytes hold the default by construction.
 //! - A value is compared as the octets it writes: the desired value is encoded
-//!   and decoded back ([`bussard_prod::canonical_parameter_value`]), so DPT 9
+//!   and decoded back ([`bussard_product::canonical_parameter_value`]), so DPT 9
 //!   rounding, leading zeros or text padding never show up as a difference.
 //!
 //! Which refs are shown depends on the values the device holds, so the
@@ -32,8 +32,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use bussard_prod::application::{ApplicationProgram, Parameter, ParameterType};
-use bussard_prod::dynamic::{DynamicMemo, Union, UnionMember, split_selector};
+use bussard_product::application::{ApplicationProgram, Parameter, ParameterType};
+use bussard_product::dynamic::{DynamicMemo, Union, UnionMember, split_selector};
 
 use crate::param_plan::{CurrentMemory, ParamChange, ParamReading, ParamValue};
 
@@ -82,7 +82,7 @@ pub struct DecodedParameters {
 
 /// Decodes `current` (the parameter segments read off a device, keyed by
 /// code-segment id) against the model's `overrides` (keyed like
-/// [`bussard_prod::compute_parameter_image`] takes them) and module-instance
+/// [`bussard_product::compute_parameter_image`] takes them) and module-instance
 /// `base_offsets`.
 ///
 /// The Dynamic section is evaluated through `memo` (issue #367): the
@@ -228,7 +228,7 @@ fn unshown_overrides(
     keys: &KeyForms,
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<String> {
-    if !bussard_prod::uses_dynamic_image(app) {
+    if !bussard_product::uses_dynamic_image(app) {
         return Vec::new();
     }
     let config = memo.evaluate_for(app, overrides);
@@ -252,7 +252,7 @@ fn placements_of<'a>(
     keys: &KeyForms,
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<Placed<'a>> {
-    if bussard_prod::uses_dynamic_image(app) {
+    if bussard_product::uses_dynamic_image(app) {
         dynamic_placements(app, values, keys, memo)
     } else {
         static_placements(app, values, base_offsets)
@@ -409,7 +409,8 @@ pub fn attribute_octets(
         let ptype = parameter_type(app, param);
         let read = |memory: &CurrentMemory| {
             let bytes = memory.get(segment)?;
-            let raw = bussard_prod::decode_parameter_value(app, param, bytes, offset, bit_offset)?;
+            let raw =
+                bussard_product::decode_parameter_value(app, param, bytes, offset, bit_offset)?;
             let shown = render(&raw, ptype);
             Some(match param.suffix_text.as_deref() {
                 Some(unit) if !unit.trim().is_empty() => format!("{shown} {unit}"),
@@ -536,9 +537,9 @@ pub fn device_managed_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
-) -> bussard_prod::PlacedOctets {
+) -> bussard_product::PlacedOctets {
     let keys = KeyForms::new(overrides);
-    let mut out = bussard_prod::PlacedOctets::new();
+    let mut out = bussard_product::PlacedOctets::new();
     for p in placements_of(app, overrides, base_offsets, &keys, &DynamicMemo::new(app)) {
         if !(p.reached && p.device_managed(app)) {
             continue;
@@ -654,7 +655,7 @@ impl Placed<'_> {
     fn decode(&self, app: &ApplicationProgram, current: &CurrentMemory) -> Option<String> {
         let bytes = current.get(self.segment)?;
         if self.shadowed.is_empty() {
-            return bussard_prod::decode_parameter_value(
+            return bussard_product::decode_parameter_value(
                 app,
                 self.param,
                 bytes,
@@ -664,7 +665,7 @@ impl Placed<'_> {
         }
         // Read the overwritten bits as the desired value's own.
         let mut desired = bytes.clone();
-        bussard_prod::write_parameter_value(
+        bussard_product::write_parameter_value(
             app,
             self.param,
             self.desired.as_deref(),
@@ -683,7 +684,13 @@ impl Placed<'_> {
                 *h = (*h & !mask) | (d & mask);
             }
         }
-        bussard_prod::decode_parameter_value(app, self.param, &held, self.offset, self.bit_offset)
+        bussard_product::decode_parameter_value(
+            app,
+            self.param,
+            &held,
+            self.offset,
+            self.bit_offset,
+        )
     }
 
     /// The bit range the value occupies, when its width is fixed by its type.
@@ -741,14 +748,14 @@ fn dynamic_placements<'a>(
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<Placed<'a>> {
     let config = memo.evaluate_for(app, values);
-    let Ok(slots) = bussard_prod::dynamic_parameter_slots(app, &config) else {
+    let Ok(slots) = bussard_product::dynamic_parameter_slots(app, &config) else {
         return Vec::new();
     };
     let placed = slots
         .into_iter()
         .map(|slot| {
             let canonical = |v: Option<String>| {
-                bussard_prod::canonical_parameter_value(app, slot.parameter, v.as_deref())
+                bussard_product::canonical_parameter_value(app, slot.parameter, v.as_deref())
             };
             let reached = slot.param_ref_id.is_some();
             let (key, user_value, desired, default) = match slot.param_ref_id.as_deref() {
@@ -759,7 +766,7 @@ fn dynamic_placements<'a>(
                     canonical(config.vendor_default(app, slot.module, ref_id)),
                 ),
                 None => {
-                    let d = canonical(bussard_prod::hidden_slot_value(app, &config, &slot));
+                    let d = canonical(bussard_product::hidden_slot_value(app, &config, &slot));
                     let rel = relative_id(app, &slot.parameter.id);
                     // A module parameter is hidden per instance (issue #835).
                     let key = match slot.module {
@@ -836,7 +843,7 @@ fn drop_shadowed<'a>(app: &ApplicationProgram, placed: Vec<Placed<'a>>) -> Vec<P
 }
 
 /// The placements of an application without a Dynamic section: the
-/// encoder's own slot list ([`bussard_prod::static_parameter_slots`]),
+/// encoder's own slot list ([`bussard_product::static_parameter_slots`]),
 /// without the slots it refuses and the per-instance defaults of module
 /// parameters, which carry no key.
 fn static_placements<'a>(
@@ -844,9 +851,10 @@ fn static_placements<'a>(
     values: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
 ) -> Vec<Placed<'a>> {
-    let canonical =
-        |param: &Parameter, v: Option<&str>| bussard_prod::canonical_parameter_value(app, param, v);
-    let placed = bussard_prod::static_parameter_slots(app, values, base_offsets)
+    let canonical = |param: &Parameter, v: Option<&str>| {
+        bussard_product::canonical_parameter_value(app, param, v)
+    };
+    let placed = bussard_product::static_parameter_slots(app, values, base_offsets)
         .into_iter()
         .filter_map(Result::ok)
         .filter_map(|s| {
@@ -996,7 +1004,7 @@ pub(crate) fn render(raw: &str, ptype: Option<&ParameterType>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_prod::application::parse_application_program;
+    use bussard_product::application::parse_application_program;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1018,7 +1026,7 @@ mod tests {
         app: &ApplicationProgram,
         values: &BTreeMap<String, String>,
     ) -> Result<CurrentMemory, Box<dyn std::error::Error>> {
-        Ok(bussard_prod::compute_parameter_image(
+        Ok(bussard_product::compute_parameter_image(
             app,
             values,
             &BTreeMap::new(),
@@ -1057,7 +1065,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         // Every value but the display-only concept, which has no memory.
@@ -1129,7 +1137,7 @@ mod tests {
                 &current,
                 &image,
                 &changed,
-                &bussard_prod::dynamic::DynamicMemo::new(&app),
+                &bussard_product::dynamic::DynamicMemo::new(&app),
             );
             assert_eq!(ranges.len(), 1, "octet {offset}: {ranges:?}");
             let got: Vec<(&str, OctetRole)> = ranges[0]
@@ -1157,7 +1165,7 @@ mod tests {
             &current,
             &hidden_image,
             &changed,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         let got: Vec<(&str, OctetRole)> = ranges
             .iter()
@@ -1174,7 +1182,7 @@ mod tests {
             &image,
             &image,
             &changed,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert_eq!(ranges.len(), 1, "{ranges:?}");
         assert_eq!((ranges[0].offset, ranges[0].length), (14, 2));
@@ -1240,7 +1248,7 @@ mod tests {
                 &current,
                 &image,
                 &changed,
-                &bussard_prod::dynamic::DynamicMemo::new(&app),
+                &bussard_product::dynamic::DynamicMemo::new(&app),
             );
             assert_eq!(ranges.len(), 2, "{ranges:?}");
 
@@ -1297,7 +1305,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["UP-3_R-3"]);
@@ -1310,7 +1318,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &defaults,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.non_default.is_empty(), "{:?}", decoded.non_default);
         assert!(decoded.differences.is_empty());
@@ -1331,7 +1339,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.unshown, ["P-2_R-2"]);
@@ -1355,7 +1363,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.unshown.is_empty(), "{:?}", decoded.unshown);
         Ok(())
@@ -1375,7 +1383,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         let lines: Vec<String> = decoded.differences.iter().map(ParamChange::line).collect();
         assert_eq!(
@@ -1411,7 +1419,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(keys(&decoded.non_default), ["P-10_R-10"]);
@@ -1435,7 +1443,7 @@ mod tests {
             &model,
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
         assert_eq!(decoded.non_default[0].value, "999.68");
@@ -1485,7 +1493,7 @@ mod tests {
         // group-object change and the attribution, all on one memo.
         let memo = DynamicMemo::new(&app);
         let (shared_image, _) =
-            bussard_prod::compute_parameter_image_placed_with(&app, &model, &bases, &memo)?;
+            bussard_product::compute_parameter_image_placed_with(&app, &model, &bases, &memo)?;
         assert_eq!(memo.evaluations(), 1);
         let shared = decode_parameters(&app, &model, &bases, &current, &memo);
         let change = crate::param_plan::group_object_change(&app, &shared.values, &model, &memo);
@@ -1496,7 +1504,7 @@ mod tests {
             &model,
             &bases,
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(!fresh.differences.is_empty());
         assert_eq!(shared_image, image);
@@ -1507,7 +1515,7 @@ mod tests {
                 &app,
                 &fresh.values,
                 &model,
-                &bussard_prod::dynamic::DynamicMemo::new(&app)
+                &bussard_product::dynamic::DynamicMemo::new(&app)
             )
         );
         assert_eq!(
@@ -1519,7 +1527,7 @@ mod tests {
                 &current,
                 &image,
                 &changed,
-                &bussard_prod::dynamic::DynamicMemo::new(&app)
+                &bussard_product::dynamic::DynamicMemo::new(&app)
             )
         );
         // The model's values were evaluated once for all four steps; the
@@ -1543,7 +1551,7 @@ mod tests {
             &image,
             &image,
             &changed,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert!(octets.is_empty());
         Ok(())

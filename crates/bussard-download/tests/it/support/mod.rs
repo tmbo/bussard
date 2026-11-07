@@ -8,8 +8,8 @@ pub mod sweep;
 use std::collections::BTreeMap;
 
 use bussard_download::{FlashPlan, PlanError};
-use bussard_prod::ApplicationProgram;
-use bussard_prod::application::LoadOp;
+use bussard_product::ApplicationProgram;
+use bussard_product::application::LoadOp;
 
 /// [`bussard_download::plan_flash`] with no object flags and a fresh Dynamic
 /// memo, the inputs most planner tests share.
@@ -31,6 +31,6 @@ pub fn plan_flash_default(
         template_ops,
         table_images,
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
 }

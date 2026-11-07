@@ -48,9 +48,9 @@ use std::time::{Duration, Instant};
 use bussard_download::{GroupObjectDescriptor, dynamic_group_object_descriptors, plan_flash};
 use bussard_model::Flags;
 use bussard_model::text_codec::TextCodec;
-use bussard_prod::application::LoadOp;
-use bussard_prod::dynamic::{DynamicConfig, evaluate_dynamic, visible_parameter_refs};
-use bussard_prod::{AppSelection, ApplicationProgram, ParameterType};
+use bussard_product::application::LoadOp;
+use bussard_product::dynamic::{DynamicConfig, evaluate_dynamic, visible_parameter_refs};
+use bussard_product::{AppSelection, ApplicationProgram, ParameterType};
 use sha2::{Digest as _, Sha256};
 
 use crate::corpus::knxprod_files;
@@ -461,8 +461,11 @@ fn run_files(
             .unwrap_or_default()
             .to_string();
         let mut mine: Vec<String> = Vec::new();
-        let product =
-            bussard_prod::read_knxprod_selected(file, None, settings.cache.as_deref(), |catalog| {
+        let product = bussard_product::read_knxprod_selected(
+            file,
+            None,
+            settings.cache.as_deref(),
+            |catalog| {
                 mine = catalog
                     .application_ids
                     .iter()
@@ -477,7 +480,8 @@ fn run_files(
                     .cloned()
                     .collect();
                 AppSelection::Exact(mine.clone())
-            });
+            },
+        );
         let product = match product {
             Ok(p) => p,
             // The corpus sweep reports parse failures; say so only when this
@@ -497,7 +501,7 @@ fn run_files(
         let apps = std::mem::take(&mut product.applications);
         let mut seed = |app: &ApplicationProgram, dir: &Path| -> Result<(), String> {
             product.applications = vec![app.clone()];
-            let written = bussard_prod::product_model::write_product_models(&product, dir);
+            let written = bussard_product::product_model::write_product_models(&product, dir);
             product.applications.clear();
             written.map(|_| ()).map_err(|e| e.to_string())
         };
@@ -736,7 +740,7 @@ fn run_loop(
         None,
         &empty_tables,
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     ) {
         return Err(Stop::Skip(format!("bussard does not flash it: {e}")));
     }
@@ -858,7 +862,7 @@ fn run_property_loop(
         None,
         &BTreeMap::new(),
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
     .map_err(|e| Stop::Skip(format!("bussard does not flash it: {e}")))?;
     if !plan.is_property_only() {
@@ -1312,7 +1316,7 @@ impl Configuration {
         let mut out = self.clone();
         out.label = format!("{} + partial change", self.label);
         let shape = object_shape(app, &self.values);
-        let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+        let memo = bussard_product::dynamic::DynamicMemo::new(app);
         let config = evaluate_dynamic(app, &self.values);
         let mut refs: Vec<(String, String)> = visible_parameter_refs(app, &config)
             .into_iter()
@@ -1952,7 +1956,7 @@ mod tests {
     /// guards a property write, `P-3` guards nothing.
     fn identity_app() -> ApplicationProgram {
         use bussard_model::dynamic::WhenTest;
-        use bussard_prod::application::{
+        use bussard_product::application::{
             LoadChoose, LoadGuard, LoadProcedure, Parameter, ParameterRef, ParameterTypeDecl,
         };
         let id = "M-0083_A-0054-14-0D63".to_string();
@@ -2079,7 +2083,7 @@ mod tests {
         if let Some(script) = script {
             xml = xml.replace("twice = delay * 2 + 1;", script);
         }
-        Ok(bussard_prod::application::parse_application_program(
+        Ok(bussard_product::application::parse_application_program(
             "M-00FA_A-270B-10-0000",
             xml.as_bytes(),
         )?)

@@ -39,7 +39,7 @@ fn theben_knxprod_path() -> PathBuf {
 #[test]
 fn test_bussard_theben_0701_plan_is_memory_mapped() {
     let path = theben_knxprod_path();
-    let Ok(product) = bussard_prod::read_knxprod(&path) else {
+    let Ok(product) = bussard_product::read_knxprod(&path) else {
         eprintln!(
             "SKIP: Theben FIX2 .knxprod not in the product-corpus cache at {}; \
              run tests-support/product-corpus/fetch.sh to enable this test",

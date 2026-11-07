@@ -70,7 +70,7 @@ struct Report<'a> {
     /// Whether the log was cleared (and read back clear) by this run.
     cleared: bool,
     /// What the device holds.
-    diagnostics: &'a bussard_download::SecurityDiagnostics,
+    diagnostics: &'a bussard_service::download::SecurityDiagnostics,
 }
 
 /// Runs `bussard secure diag`.
@@ -123,7 +123,7 @@ fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                bussard_secure::SequenceHighWater::new(),
+                bussard_service::secure::SequenceHighWater::new(),
             )
             .with_factory_key(factory_key);
             let outcome = if clear {

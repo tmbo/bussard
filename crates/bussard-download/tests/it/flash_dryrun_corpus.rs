@@ -62,7 +62,7 @@ fn dry_run_trace_of_real_vendor_procedures() -> Result<(), Box<dyn std::error::E
             .next()
             .and_then(|file| file.strip_suffix(".xml"))
             .ok_or("an application entry ends in .xml")?;
-        let app = bussard_prod::parse_application_program(id, xml.as_bytes())?;
+        let app = bussard_product::parse_application_program(id, xml.as_bytes())?;
 
         // Build the plan in dry-run against the app's OWN declared mask, so the
         // System B gate and the mask compare pass and we exercise the op lowering

@@ -17,11 +17,11 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
-use bussard_project::KeyStore;
 use bussard_service::ip_secure::{
     PlanRecordStep, Switch, SwitchContext, SwitchPlan, plan_off, plan_on, probe_gateway,
     run_switch, secured_through,
 };
+use bussard_service::keys::KeyStore;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 
 use crate::cli::{Resolved, Run, Spec};
@@ -183,7 +183,8 @@ fn run(inputs: &SecureArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     // A device management connection (issue #523): asked for, or the
     // interface is the gateway and has no free tunnelling slot.
     let store_path = KeyStore::path(dir);
-    let config = if config.transport == bussard_transport::TransportKind::DeviceManagement {
+    let config = if config.transport == bussard_service::transport::TransportKind::DeviceManagement
+    {
         crate::interface_session::device_management_config(
             &runtime,
             config,

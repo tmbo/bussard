@@ -1,7 +1,7 @@
 //! Wiring the server to a live bus and to the stdio or HTTP transport.
 //!
 //! [`serve_stdio`] wires an opened [`BusService`] into the shared state (so tools can read status and call
-//! [`ops`](bussard_bus::ops)), feeds the shared ring from a frame subscription,
+//! the group flows in [`bussard_service::group`]), feeds the shared ring from a frame subscription,
 //! and serves the MCP protocol over stdin/stdout until the client disconnects.
 //!
 //! Secured group telegrams (KNX Data Secure) are unwrapped with the server's
@@ -13,9 +13,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bussard_bus::BusHandle;
-use bussard_monitor::{DecodedTelegram, GroupKeyring};
 use bussard_service::BusService;
+use bussard_service::monitor::{DecodedTelegram, GroupKeyring};
+use bussard_service::transport::bus::BusHandle;
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
 

@@ -4,9 +4,9 @@
 //! Connects to a single device, reads its group-address and association tables,
 //! resolves them to com-object → GA assignments, and diffs the result against the
 //! links in the model's device file for that device. **System B** (mask `x7B0`) serves
-//! those tables as interface-object properties (see [`bussard_mgmt::tables`]);
+//! those tables as interface-object properties (see `bussard_mgmt::tables`);
 //! **System 7** (mask `0705` / `0701`) keeps them in absolute memory at `0x4000`
-//! / `0x4201` and is read by [`bussard_download::tables_sys7`] (issue #91). The
+//! / `0x4201` and is read by `bussard_download::tables_sys7` (issue #91). The
 //! report and the diff below are the same for both.
 //!
 //! The report and its diff are [`bussard_service::reconstruct::build_report`],
@@ -46,7 +46,7 @@ use bussard_service::reconstruct_line::{
     inject_reconstruct_banners, sweep_line, synthesize_model,
 };
 use bussard_service::scan::LineRange;
-use bussard_transport::TransportKind;
+use bussard_service::transport::TransportKind;
 
 use crate::cli::{ProductSelection, Resolved, Run, Spec};
 use crate::conn_cmd::{

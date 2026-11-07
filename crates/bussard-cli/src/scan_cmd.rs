@@ -20,14 +20,14 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_mgmt::{Timeouts, manufacturers, system_type};
 use bussard_model::IndividualAddress;
-use bussard_secure::Key16;
 use bussard_service::BusService;
 use bussard_service::WritePolicy;
 use bussard_service::identity::SecureStatus;
 use bussard_service::line::WalkEvent;
+use bussard_service::mgmt::{Timeouts, manufacturers, system_type};
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
+use bussard_service::secure::Key16;
 use bussard_service::secure::ToolKeys;
 
 pub(crate) use bussard_service::scan::Found;

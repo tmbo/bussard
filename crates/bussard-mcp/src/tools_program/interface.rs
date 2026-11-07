@@ -15,12 +15,12 @@ use std::time::SystemTime;
 use bussard_model::IndividualAddress;
 use bussard_model::history::SnapshotReason;
 use bussard_model::knxnet::KnxnetConfig;
-use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::knxnet::{
     self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, SessionLink,
     apply_interface, interface_config, write_interface_backup,
 };
 use bussard_service::program::plan::Fingerprint;
+use bussard_service::secure::{Key16, SequenceHighWater};
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use serde_json::{Value, json};
 
@@ -86,7 +86,7 @@ impl BussardMcp {
         config: &KnxnetConfig,
         tool_key: &Option<Key16>,
         high_water: &SequenceHighWater,
-        procedure: Option<&bussard_download::FlashPlan>,
+        procedure: Option<&bussard_service::download::FlashPlan>,
     ) -> Result<Planned, String> {
         let model = self.state().model.reload();
         let facts = FactsCache::new(&self.state().dir, false);
@@ -163,7 +163,7 @@ impl BussardMcp {
             .get(&target)
             .map(|d| d.device.name.clone())
             .unwrap_or_default();
-        let backup_dir = bussard_download::backup::backups_root(&self.state().dir)
+        let backup_dir = bussard_service::download::backup::backups_root(&self.state().dir)
             .display()
             .to_string();
         let mut device_plan = plan.device_plan(target, &name, &gateway, backup_dir);
@@ -222,7 +222,7 @@ impl BussardMcp {
             "pending_model_changes": self.session_edits().for_device(target),
             "backup_dir": device_plan.backup_dir,
             "plan_digest": digest,
-            "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
+            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
             "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
             "next_step": if noop {
                 if procedure_differs {

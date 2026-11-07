@@ -32,7 +32,7 @@ use bussard_download::{
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::schema::{Device, ProductEntry};
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
+use bussard_product::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
 
 use crate::ServiceError;
 use crate::util::chain;
@@ -96,7 +96,7 @@ pub type ParseHook = fn(Duration, String);
 ///
 /// # Errors
 ///
-/// As [`bussard_prod::read_knxprod`].
+/// As [`bussard_product::read_knxprod`].
 pub fn read_product(
     path: &Path,
     inner: Option<&str>,
@@ -104,11 +104,11 @@ pub fn read_product(
     language: Option<&str>,
     select: impl FnOnce(&ProductCatalog) -> AppSelection,
     on_parse: Option<ParseHook>,
-) -> bussard_prod::Result<ProductData> {
+) -> bussard_product::Result<ProductData> {
     let started = std::time::Instant::now();
-    let cache = bussard_prod::product_model::cache_dir(dir);
+    let cache = bussard_product::product_model::cache_dir(dir);
     let product =
-        bussard_prod::read_knxprod_selected_in(path, inner, cache.as_deref(), language, select);
+        bussard_product::read_knxprod_selected_in(path, inner, cache.as_deref(), language, select);
     if let Some(hook) = on_parse {
         let detail = match &product {
             Ok(p) => format!(
@@ -156,10 +156,10 @@ pub fn select_id(catalog: &ProductCatalog, wanted: &str) -> Option<String> {
 /// Every program the hardware catalogue maps an order number to that
 /// normalizes to `order` (what `resolve_by_order_number` considers).
 pub fn order_refs(catalog: &ProductCatalog, order: &str) -> Vec<String> {
-    let want = bussard_prod::normalize_order_number(order);
+    let want = bussard_product::normalize_order_number(order);
     let mut refs: Vec<String> = Vec::new();
     for (o, apps) in &catalog.hardware.order_to_apps {
-        if bussard_prod::normalize_order_number(o) == want {
+        if bussard_product::normalize_order_number(o) == want {
             for r in apps {
                 if !refs.contains(r) {
                     refs.push(r.clone());
@@ -182,7 +182,7 @@ pub fn verified_path(
     what: &str,
     entry: &ProductEntry,
 ) -> Result<PathBuf, ServiceError> {
-    bussard_prod::product_model::verified_archive(dir, what, entry)
+    bussard_product::product_model::verified_archive(dir, what, entry)
         .map_err(|e| ServiceError::Refused(chain(&e)))
 }
 
@@ -207,13 +207,13 @@ pub fn device_archive(dir: &Path, device: &Device) -> Result<Option<PathBuf>, Se
 ///
 /// A matching entry's archive is missing or changed.
 pub fn archive_for_order(dir: &Path, order: &str) -> Result<Option<PathBuf>, ServiceError> {
-    let want = bussard_prod::normalize_order_number(order);
+    let want = bussard_product::normalize_order_number(order);
     let entries = bussard_model::lock_products::lock_entries(dir);
     let mut matching = entries.iter().filter(|e| {
         e.file.is_some()
             && e.order_numbers
                 .iter()
-                .any(|o| bussard_prod::normalize_order_number(o) == want)
+                .any(|o| bussard_product::normalize_order_number(o) == want)
     });
     match matching.next() {
         Some(entry) => verified_path(dir, order, entry).map(Some),
@@ -279,7 +279,7 @@ pub fn resolve_product(
     // picks that very program from it; otherwise the full read decides, so
     // every choice and every refusal reads as before.
     let app_ref = device_product.and_then(|p| p.application_ref.as_deref());
-    let read_error = |e: bussard_prod::ProdError| {
+    let read_error = |e: bussard_product::ProductError| {
         ServiceError::Refused(format!("reading product data from {}: {e}", path.display()))
     };
     let app_error = |e: ServiceError| ServiceError::Refused(format!("{}: {e}", path.display()));
@@ -529,7 +529,7 @@ pub async fn read_state<Ch: L4Channel>(
     // One evaluation of the Dynamic section per distinct value map, shared by
     // the read-back plan, the decode, the group-object change and the octet
     // attribution below (issue #367).
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     let plan = match readback_plan(&source.product, app, model, target, device_mask, &memo) {
         Ok(plan) => plan,
         Err(note) => return ParamState::noted(&app.id, note),
@@ -727,7 +727,7 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
     };
     // The plan and the decode share one evaluation of the model's values
     // (issue #367).
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     let plan = match readback_plan(product, app, model, target, device_mask, &memo) {
         Ok(plan) => plan,
         Err(note) => return noted(note),
@@ -757,7 +757,7 @@ fn readback_plan(
     model: Option<&Model>,
     target: IndividualAddress,
     device_mask: u16,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<FlashPlan, String> {
     bussard_download::plan_for_readback(product, app, model, target, device_mask, memo)
         .map_err(|err| format!("the parameter memory cannot be located: {err}"))
@@ -782,7 +782,7 @@ fn decode_regions(
     model: Option<&Model>,
     target: IndividualAddress,
     regions: &ParamRegions,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Decoded {
     let current = regions_memory(regions);
     let (overrides, bases) = bussard_download::model_parameters(model, target);

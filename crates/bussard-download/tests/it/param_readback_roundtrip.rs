@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 use bussard_download::{
     decode_parameters, group_object_change, plan_flash, planned_parameter_regions, regions_memory,
 };
-use bussard_prod::application::ParameterType;
-use bussard_prod::dynamic::evaluate_dynamic;
-use bussard_prod::{
+use bussard_product::application::ParameterType;
+use bussard_product::dynamic::evaluate_dynamic;
+use bussard_product::{
     ApplicationProgram, MasterTemplate, parse_application_program, parse_master_template,
 };
 
@@ -215,7 +215,7 @@ fn round_trip(
         template.as_deref(),
         &tables,
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )?;
     let regions = planned_parameter_regions(&plan);
     if regions.is_empty() {
@@ -226,7 +226,7 @@ fn round_trip(
         values,
         bases,
         &regions_memory(&regions),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     let listed: BTreeSet<String> = decoded.non_default.iter().map(|r| r.key.clone()).collect();
     // The parameter-only download's refusal compares the group-object table
@@ -236,7 +236,7 @@ fn round_trip(
         app,
         &decoded.values,
         values,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     if !objects.is_empty() {
         differences.push(format!("group-object table would change: {objects:?}"));
@@ -267,7 +267,7 @@ fn memory_keys(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> B
     values
         .keys()
         .filter(|key| {
-            let (instance, param_ref) = bussard_prod::dynamic::split_selector(key);
+            let (instance, param_ref) = bussard_product::dynamic::split_selector(key);
             let Some(param) = app
                 .parameter_refs
                 .get(&format!("{}_{param_ref}", app.id))
@@ -285,7 +285,7 @@ fn memory_keys(app: &ApplicationProgram, values: &BTreeMap<String, String>) -> B
                 .iter()
                 .position(|m| Some(m.id.as_str()) == instance.as_deref());
             let canonical =
-                |v: Option<&str>| bussard_prod::canonical_parameter_value(app, param, v);
+                |v: Option<&str>| bussard_product::canonical_parameter_value(app, param, v);
             let default = match app.dynamic.is_empty() {
                 true => app
                     .parameter_refs

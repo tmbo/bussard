@@ -34,7 +34,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_model::GroupAddress;
 use bussard_model::schema::Link;
-use bussard_prod::ResolvedComObject;
+use bussard_product::ResolvedComObject;
 
 /// The two loadable tables computed for one device, ready to write.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -363,7 +363,7 @@ pub(crate) fn size_code_from_object_size(object_size: Option<&str>) -> u8 {
 /// sorted by id. A System B flash plan refuses the application when this is
 /// not empty.
 pub(crate) fn unknown_object_sizes(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
 ) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = app
         .com_objects
@@ -408,11 +408,11 @@ pub(crate) fn descriptors_for_linked_objects(
 /// com-objects into device group-object-table descriptors.
 ///
 /// A module application instantiates its com-objects once per channel (one
-/// [`ModuleInstance`](bussard_prod::ModuleInstance)); which conditional
+/// [`ModuleInstance`](bussard_product::ModuleInstance)); which conditional
 /// com-objects a channel carries, and whether the channel's objects are linked
 /// (Communication enabled), is project data — not present in the product XML.
 /// A caller supplies one `ChannelConfig` per module instance, in the same order
-/// as [`ApplicationProgram::module_instances`](bussard_prod::ApplicationProgram),
+/// as [`ApplicationProgram::module_instances`](bussard_product::ApplicationProgram),
 /// to drive [`expand_group_object_descriptors`].
 #[derive(Debug, Clone, Default)]
 pub struct ChannelConfig {
@@ -428,10 +428,10 @@ pub struct ChannelConfig {
 }
 
 /// Expands a module-based application's com-objects into group-object-table
-/// descriptors, one channel per [`ModuleInstance`](bussard_prod::ModuleInstance).
+/// descriptors, one channel per [`ModuleInstance`](bussard_product::ModuleInstance).
 ///
 /// For each module instance (channel), this instantiates the com-object refs the
-/// channel's [`ChannelMembership`](bussard_prod::ChannelMembership) includes —
+/// channel's [`ChannelMembership`](bussard_product::ChannelMembership) includes —
 /// the unconditional refs plus the `<choose>` branches whose gating parameter
 /// takes the configured (or defaulted) value — and emits one descriptor per
 /// instance at ASAP `base.number + instance[argObj]`, where `argObj` is the
@@ -449,7 +449,7 @@ pub struct ChannelConfig {
 /// channel membership (a non-module application), so a caller can fall back to
 /// its non-expanded path.
 pub(crate) fn expand_group_object_descriptors(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     channel_configs: &[ChannelConfig],
 ) -> Vec<GroupObjectDescriptor> {
     use bussard_model::Flags;
@@ -560,15 +560,15 @@ pub struct LinkedObject {
 ///
 /// Returns one descriptor per ASAP, sorted by ASAP.
 pub fn dynamic_group_object_descriptors(
-    app: &bussard_prod::ApplicationProgram,
-    config: &bussard_prod::dynamic::DynamicConfig,
+    app: &bussard_product::ApplicationProgram,
+    config: &bussard_product::dynamic::DynamicConfig,
     linked: &BTreeMap<u16, LinkedObject>,
 ) -> Vec<GroupObjectDescriptor> {
     use bussard_model::Flags;
 
     let descriptor = |asap: u16,
-                      base: &bussard_prod::ComObject,
-                      cref: &bussard_prod::ComObjectRef|
+                      base: &bussard_product::ComObject,
+                      cref: &bussard_product::ComObjectRef|
      -> GroupObjectDescriptor {
         let mut flags = base.flags.merge(cref.flags).to_flags();
         match linked.get(&asap) {
@@ -598,7 +598,7 @@ pub fn dynamic_group_object_descriptors(
         // A `BaseNumber` its instance has no value for (issue #449) gets no
         // descriptor here; the parameter image refuses the configuration.
         let offset = match base.base_number_ref.as_deref() {
-            Some(arg) => match bussard_prod::module_argument(app, config, active.module, arg) {
+            Some(arg) => match bussard_product::module_argument(app, config, active.module, arg) {
                 Some(v) => v,
                 None => continue,
             },
@@ -626,7 +626,7 @@ pub fn dynamic_group_object_descriptors(
         let Some(model_ref) = link.com_object_ref.as_deref() else {
             continue;
         };
-        let (_, cref_id) = bussard_prod::dynamic::split_selector(model_ref);
+        let (_, cref_id) = bussard_product::dynamic::split_selector(model_ref);
         if let Some((base, cref)) = app.resolve(&cref_id) {
             by_asap.insert(asap, descriptor(asap, base, cref));
         }
@@ -644,7 +644,7 @@ pub fn dynamic_group_object_descriptors(
 /// entries, an ABB BE/S16: 232). An application with no own com-objects (the
 /// DA.tp shape) is counted up to its highest descriptor, as before.
 pub(crate) fn group_object_table_count(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     descriptors: &[GroupObjectDescriptor],
 ) -> usize {
     let declared = app
@@ -691,16 +691,16 @@ pub(crate) fn compute_group_object_table_with_count(
 /// The group-object table (obj3) image of an application, from the device's
 /// parameter overrides and its linked com-objects: the
 /// Dynamic section is evaluated with `overrides`
-/// ([`bussard_prod::dynamic::evaluate_dynamic`]), each shown com-object gets its
+/// ([`bussard_product::dynamic::evaluate_dynamic`]), each shown com-object gets its
 /// descriptor ([`dynamic_group_object_descriptors`]) and the table is counted
 /// by [`group_object_table_count`]. `None` when the table would be empty.
 ///
 /// The Dynamic section is evaluated through `memo` (issue #367).
 pub fn dynamic_group_object_table(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     linked: &BTreeMap<u16, LinkedObject>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, bussard_prod::ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, bussard_product::ApplicationProgram>,
 ) -> Option<Vec<u8>> {
     let config = memo.evaluate_for(app, overrides);
     let mut descriptors = dynamic_group_object_descriptors(app, &config, linked);
@@ -723,7 +723,7 @@ pub fn dynamic_group_object_table(
 /// `4f` where the plain rule writes `13`, `5b`, `4b`. The likely writer is the
 /// plugin; what it does in a non-default configuration is not captured.
 fn ets_download_plugin_descriptors(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     descriptors: &mut Vec<GroupObjectDescriptor>,
 ) {
     use bussard_model::Flags;
@@ -751,7 +751,7 @@ fn ets_download_plugin_descriptors(
 /// `ParameterRef` id, as an `i64` — the fallback when a caller supplies no
 /// explicit channel value for that selector.
 fn default_param_ref_value(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     param_ref_id: &str,
 ) -> Option<i64> {
     let full = format!("{}_{param_ref_id}", app.id);
@@ -991,7 +991,7 @@ mod tests {
            <ComObjectRefRef RefId="A_O-3_R-1" />
           </ParameterBlock></ChannelIndependentBlock></Dynamic>
          </ApplicationProgram></KNX>"#;
-        let app = bussard_prod::parse_application_program("A", xml.as_bytes())?;
+        let app = bussard_product::parse_application_program("A", xml.as_bytes())?;
 
         // The flat builder, every object linked: C (bit 10) plus the priority.
         let linked = std::collections::BTreeSet::from([1u16, 2, 3]);
@@ -1004,7 +1004,7 @@ mod tests {
             &app,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )
         .ok_or("empty table")?;
         assert_eq!(table, vec![0x00, 0x03, 0x01, 0x00, 0x02, 0x00, 0x03, 0x00]);
@@ -1093,7 +1093,7 @@ mod tests {
     /// (three unconditional control objects plus feedback/alarm `<choose>`
     /// groups). It is deliberately minimal — only what the obj3 expansion reads —
     /// so the golden test needs no committed `.knxprod` fixture.
-    fn da_tp_module_app() -> bussard_prod::ApplicationProgram {
+    fn da_tp_module_app() -> bussard_product::ApplicationProgram {
         // 8 module instances with argCH/argObj/argPar, matching the capture.
         let bases = [
             (1, 1, 0),
@@ -1181,7 +1181,7 @@ mod tests {
               </Dynamic>
              </ApplicationProgram></KNX>"#
         );
-        bussard_prod::parse_application_program("APP", xml.as_bytes())
+        bussard_product::parse_application_program("APP", xml.as_bytes())
             .expect("the fabricated DA.tp module app parses")
     }
 
@@ -1297,12 +1297,12 @@ mod tests {
             )
         };
         let table = |extension: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-            let app = bussard_prod::parse_application_program("A", xml(extension).as_bytes())?;
+            let app = bussard_product::parse_application_program("A", xml(extension).as_bytes())?;
             Ok(dynamic_group_object_table(
                 &app,
                 &BTreeMap::new(),
                 &BTreeMap::new(),
-                &bussard_prod::dynamic::DynamicMemo::new(&app),
+                &bussard_product::dynamic::DynamicMemo::new(&app),
             )
             .ok_or("empty table")?)
         };
@@ -1364,7 +1364,7 @@ mod tests {
            </choose>
           </Dynamic>
          </ApplicationProgram></KNX>"#;
-        let app = bussard_prod::parse_application_program("A", xml.as_bytes())?;
+        let app = bussard_product::parse_application_program("A", xml.as_bytes())?;
         let mut linked = BTreeMap::new();
         linked.insert(4u16, LinkedObject::default());
         let mut overrides = BTreeMap::new();
@@ -1373,7 +1373,7 @@ mod tests {
             &app,
             &overrides,
             &linked,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )
         .ok_or("empty table")?;
         // Count 6 (the declared objects), object 1 shown unlinked (W, low

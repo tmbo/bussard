@@ -125,7 +125,7 @@ within 10 s, per-channel sequence counters from 0, heartbeat every 60 s answered
 Tunnelling §2.6 (1 s ACK timeout, one repeat, ACK on the expected sequence and on seq-1
 only, no ACKs over TCP) and 3/8/5 Routing §2.3.5 (ROUTING_BUSY wait plus random back-off).
 Where the code deviates, the spec-review issues say how (#512, #514, #516, #519). The
-`.knxprod` reader (`bussard-prod`) is likewise written
+`.knxprod` reader (`bussard-product`) is likewise written
 from scratch: parsing XML from a ZIP; signing is never needed since bussard only reads
 vendor files.
 
@@ -136,11 +136,10 @@ vendor files.
 ```
 crates/
   bussard-model/      # GA/IA/DPT/flags types, DPT codecs, TOML files, loader, validation
-  bussard-ets/        # shared ETS-XML primitives: streaming parsers, DPT/flag helpers, zip guard
-  bussard-project/    # .knxproj import: AES zip + PBKDF2, streaming XML → model
-  bussard-prod/       # .knxprod reading (import-product)
-  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec
-  bussard-bus/        # bus-service actor: one Transport owner, frame subscriptions, L4 leases
+  bussard-product/    # ETS-XML parsers, .knxprod reading, parameter images, .knxproj import
+  bussard-project/    # the key store: KNX Secure keys, .knxkeys import and export
+  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec; the bus actor
+                      #   (`bus`: one Transport owner, frame subscriptions, L4 leases)
   bussard-monitor/    # decode pipeline, SQLite capture, formatters
   bussard-mgmt/       # layer-4 connection-oriented transport, management procedures, table read
   bussard-download/   # LoadProcedure interpreter, table/memory image builder, plan/apply/flash
@@ -155,10 +154,10 @@ crates/
 
 The separation that matters most: `bussard-mgmt` is fiddly and protocol-correct, heavily
 tested against real devices; `bussard-download` is pure-ish computation (model + product
-data → byte image), unit-testable without a bus. `bussard-bus` owns the single transport
+data → byte image), unit-testable without a bus. The bus actor (`bussard_transport::bus`) owns the single transport
 connection and hands out exclusive layer-4 leases so a management session and live group
-traffic share one gateway tunnel slot. `bussard-ets` factors the streaming-XML primitives
-shared by the `.knxproj` and `.knxprod` importers.
+traffic share one gateway tunnel slot. `bussard-product` holds the streaming-XML parsers
+the `.knxproj` and `.knxprod` readers share.
 
 #### Surfaces and the service layer
 
@@ -172,9 +171,14 @@ copy of each safety rule:
         \             |             /
          +------ bussard-service ---+               policy: gate, protected GAs, sessions
         /        |          |        \
-  bussard-bus  bussard-mgmt  bussard-model  bussard-secure    domain
+  bussard-transport  bussard-mgmt  bussard-model  bussard-secure    domain
 ```
 
+- Cargo enforces the picture above (issue #916): the surfaces' `[dependencies]` list
+  `bussard-service`, `bussard-model` and `bussard-product` (plus `bussard-ha`), never
+  `bussard-transport`, `bussard-mgmt`, `bussard-download`, `bussard-monitor`,
+  `bussard-secure` or `bussard-project`. The types they render come through named
+  re-exports in `bussard_service::{transport, mgmt, monitor, keys, download, secure}`.
 - `BusService::open(config, WritePolicy)` applies the non-loopback write gate (§8,
   issue #74) before the bus actor is spawned. A transmitting surface cannot obtain a bus
   without it, so a new surface inherits the gate by construction.
@@ -526,8 +530,8 @@ encoded only as a byte-multiple fallback: `TypeColor`, `TypeTime`, `TypeIPAddres
 `TypePicture`, `TypeRawData`, and stray `TypeRestriction`. None is silently dropped.
 
 Each new construct has a fabricated regression fixture (fake data reproducing the
-structural shape, never vendor content) under `crates/bussard-ets/tests/fixtures/` and
-`crates/bussard-prod/tests/fixtures/`; see those directories' `README.md` for the
+structural shape, never vendor content) under `crates/bussard-product/tests/fixtures/` and
+`crates/bussard-product/tests/fixtures/`; see those directories' `README.md` for the
 intended test per fixture. The sweep is a point-in-time study, not a CI job; the
 committed corpus (`corpus.txt` + `flash_corpus.rs`) is the ongoing check.
 

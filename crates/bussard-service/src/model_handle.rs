@@ -209,15 +209,15 @@ impl ModelHandle {
 
 /// Regenerates the product models under `<dir>/.bussard/model-cache/` of the
 /// applications the lock's devices pin that the directory lacks (see
-/// [`bussard_prod::product_model::complete_models`]). Cheap when nothing is
+/// [`bussard_product::product_model::complete_models`]). Cheap when nothing is
 /// missing: one `stat` per pinned application, no archive read. A pinned
 /// archive that is missing or changed is logged as a warning; the tools that
 /// need its product data say so themselves.
 pub fn complete_product_models(dir: &Path) {
-    if !bussard_prod::product_model::models_incomplete(dir) {
+    if !bussard_product::product_model::models_incomplete(dir) {
         return;
     }
-    for warning in bussard_prod::product_model::complete_models(dir, None) {
+    for warning in bussard_product::product_model::complete_models(dir, None) {
         tracing::warn!("regenerating the product models: {warning}");
     }
 }

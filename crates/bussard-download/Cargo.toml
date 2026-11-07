@@ -9,9 +9,8 @@ license.workspace = true
 
 [dependencies]
 bussard-model = { workspace = true }
-bussard-prod = { path = "../bussard-prod" }
+bussard-product = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
-bussard-bus = { workspace = true }
 bussard-transport = { workspace = true }
 # Group keys for the KNX Data Secure security-object program (issue #156),
 # held as the redacting, zeroizing `Key16`. First-party crate.
@@ -31,7 +30,7 @@ serde_json = { workspace = true }
 # `home_test.knxproj` (a plain-zip container) and for the committed-fixture sweep
 # test, which assembles fabricated `.app.xml` fixtures into `.knxprod` ZIPs in a
 # temp dir. Not committed data; the trace test skips when absent, so CI is
-# unaffected. Matches bussard-prod's dev-dependency.
+# unaffected. Matches bussard-product's dev-dependency.
 zip = { workspace = true }
 # The fixture sweep test builds throwaway `.knxprod` containers in a temp dir.
 tempfile = "3"

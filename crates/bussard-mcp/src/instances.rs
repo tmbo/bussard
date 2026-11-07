@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use bussard_transport::host_lock::{self, HostLock};
+use bussard_service::transport::host_lock::{self, HostLock};
 
 /// The prefix of an instance lock file.
 const PREFIX: &str = "mcp-";

@@ -11,14 +11,14 @@
 //! An ETS project export (`.knxproj`) also carries the product data of every
 //! device in the project. Each application program is extracted from it once
 //! into its own archive under `products/` (`<application-id>.knxprod`,
-//! see [`bussard_prod::extract_from_project`]); the export itself is never
+//! see [`bussard_product::extract_from_project`]); the export itself is never
 //! copied.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::bail;
-use bussard_prod::ProductIndex;
+use bussard_product::ProductIndex;
 use bussard_service::files::products as files;
 use bussard_service::setup::products;
 

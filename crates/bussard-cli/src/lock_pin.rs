@@ -7,7 +7,7 @@ use std::path::Path;
 use anyhow::Context as _;
 use bussard_model::IndividualAddress;
 use bussard_model::schema::{ProductEntry, ProductOrigin};
-use bussard_prod::ProductData;
+use bussard_product::ProductData;
 use bussard_service::params::Selection;
 use bussard_service::setup::products;
 
@@ -30,7 +30,7 @@ pub(crate) fn pin_explicit(
     target: IndividualAddress,
     file: &Path,
 ) -> anyhow::Result<()> {
-    let product = bussard_prod::read_knxprod(file)
+    let product = bussard_product::read_knxprod(file)
         .with_context(|| format!("reading product data from {}", file.display()))?;
     if crate::import_product_cmd::is_project_export(file, &product) {
         anyhow::bail!(

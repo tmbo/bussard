@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use bussard_download::{FlashStep, PlanError, PropObject, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
-use bussard_prod::application::{ApplicationProgram, parse_application_program};
+use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 

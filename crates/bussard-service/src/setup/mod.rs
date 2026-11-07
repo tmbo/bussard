@@ -64,7 +64,7 @@ impl SetupError {
     }
 
     /// Whether the project password given does not open the project
-    /// ([`bussard_project::ImportError::WrongPassword`]).
+    /// ([`bussard_product::ProductError::WrongPassword`]).
     pub fn is_wrong_password(&self) -> bool {
         let source: &(dyn std::error::Error + 'static) = match self {
             SetupError::Source(source) | SetupError::Failed { source, .. } => source.as_ref(),
@@ -73,8 +73,8 @@ impl SetupError {
         let mut next = Some(source);
         while let Some(err) = next {
             if matches!(
-                err.downcast_ref::<bussard_project::ImportError>(),
-                Some(bussard_project::ImportError::WrongPassword)
+                err.downcast_ref::<bussard_product::ProductError>(),
+                Some(bussard_product::ProductError::WrongPassword)
             ) {
                 return true;
             }
@@ -480,11 +480,11 @@ mod tests {
 
     #[test]
     fn test_is_wrong_password_finds_the_import_error() {
-        let wrong = SetupError::source(bussard_project::ImportError::WrongPassword);
+        let wrong = SetupError::source(bussard_product::ProductError::WrongPassword);
         assert!(wrong.is_wrong_password());
         let wrapped = SetupError::Failed {
             context: "loading".to_string(),
-            source: Box::new(bussard_project::ImportError::WrongPassword),
+            source: Box::new(bussard_product::ProductError::WrongPassword),
         };
         assert!(wrapped.is_wrong_password());
         assert!(!SetupError::PasswordRequired.is_wrong_password());

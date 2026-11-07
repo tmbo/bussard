@@ -26,7 +26,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::Response;
 use axum::routing::get;
 use bussard_model::text::escape_html;
-use bussard_secure::Password;
+use bussard_service::secure::Password;
 use serde::Deserialize;
 use tokio::sync::{mpsc, oneshot};
 

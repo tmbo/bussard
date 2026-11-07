@@ -146,7 +146,7 @@ impl VerifyOutcome {
 /// services (issue #472; Configuration Procedures 03_05_03 §3.5.1.4). The one
 /// rule the flash, `apply`, `backup` and the MCP tools share; no application
 /// (no product data) keeps the extended service, as before.
-pub fn uses_user_memory(app: Option<&bussard_prod::ApplicationProgram>) -> bool {
+pub fn uses_user_memory(app: Option<&bussard_product::ApplicationProgram>) -> bool {
     app.is_some_and(|app| !app.supports_extended_memory_services)
 }
 

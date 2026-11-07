@@ -13,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use bussard_download::{FlashStep, build_table_images, template_ops_for};
-use bussard_prod::MasterTemplate;
+use bussard_product::MasterTemplate;
 use zip::write::SimpleFileOptions;
 
 use crate::support::plan_flash_default;
@@ -60,7 +60,7 @@ fn test_template_ops_for_stub_master_uses_builtin() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("syn-minimal.knxprod");
     zip_syn_minimal(&path)?;
-    let product = bussard_prod::read_knxprod(&path)?;
+    let product = bussard_product::read_knxprod(&path)?;
     let app = product.applications.first().ok_or("one application")?;
     assert_eq!(app.mask_version.as_deref(), Some("07B0"));
 
@@ -75,7 +75,7 @@ fn test_template_ops_for_stub_master_uses_builtin() -> TestResult {
         target,
         app,
         &overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     let plan = plan_flash_default(
         app,

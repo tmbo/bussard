@@ -4,7 +4,7 @@
 //! XML of each synthetic product. This test zips it with the stub
 //! `knx_master.xml` (`<KNX/>`) the catalogue ships and reads it with knx-sim's
 //! own reader, so the simulator checks the same files bussard's
-//! `bussard-prod` test reads, with no shared code: knx-sim depends on no
+//! `bussard-product` test reads, with no shared code: knx-sim depends on no
 //! bussard crate.
 
 use std::io::{Cursor, Write};

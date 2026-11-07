@@ -6,11 +6,11 @@ use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
 use bussard_model::Model;
-use bussard_monitor::{DestinationRef, Filter};
 use bussard_service::audit::{
     AuditReport, DEFAULT_WINDOW, GatewayReport, LiveReport, SampledTelegram, SecureLiveReport,
     SecureProbe, TrafficReport,
 };
+use bussard_service::monitor::{DestinationRef, Filter};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};

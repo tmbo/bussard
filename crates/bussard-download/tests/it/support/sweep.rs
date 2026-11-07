@@ -35,7 +35,7 @@ use std::collections::BTreeMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::Path;
 
-use bussard_prod::ApplicationProgram;
+use bussard_product::ApplicationProgram;
 use serde::{Deserialize, Serialize};
 
 use bussard_download::PlanError;
@@ -307,7 +307,7 @@ pub fn classify_application(app: &ApplicationProgram) -> AppSweep {
     // Stage 2: image synthesis (no overrides, no per-instance base offsets — the
     // pure product-default image, exactly what the sweep measures).
     let image = match catch_unwind(AssertUnwindSafe(|| {
-        bussard_prod::compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())
+        bussard_product::compute_parameter_image(app, &BTreeMap::new(), &BTreeMap::new())
     })) {
         Ok(Ok(images)) => ImageClass::Ok {
             segments: images.len(),
@@ -334,7 +334,7 @@ pub fn classify_application(app: &ApplicationProgram) -> AppSweep {
                 // (issue #614: a product procedure that writes the tables
                 // itself needs them to plan).
                 // One Dynamic evaluation serves both (issue #367).
-                let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+                let memo = bussard_product::dynamic::DynamicMemo::new(app);
                 let tables = bussard_download::build_table_images(
                     None,
                     bussard_model::IndividualAddress::from_raw(0x1101),
@@ -384,7 +384,7 @@ pub fn sweep_file(path: &Path) -> ProductSweep {
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
 
-    let read = catch_unwind(AssertUnwindSafe(|| bussard_prod::read_knxprod(path)));
+    let read = catch_unwind(AssertUnwindSafe(|| bussard_product::read_knxprod(path)));
     match read {
         Ok(Ok(product)) => {
             let apps: Vec<AppSweep> = product
@@ -555,7 +555,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
 
 /// Normalizes an image-synthesis error message to a short, stable label.
 pub fn normalize_image_error(msg: &str) -> String {
-    // ProdError::ParameterImage renders as "... : <reason>"; keep the first
+    // ProductError::ParameterImage renders as "... : <reason>"; keep the first
     // clause of the reason so distinct data traps rank apart but free-form ids
     // (parameter names) do not explode the ranking.
     format!("ParameterImage: {}", first_clause(msg))

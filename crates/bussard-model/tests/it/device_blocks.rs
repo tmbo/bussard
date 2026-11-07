@@ -4,7 +4,7 @@
 //!
 //! The product model is `fixtures/blocks_app.json`, written by the importer
 //! from the fabricated System 7 application in
-//! `crates/bussard-prod/tests/fixtures/blocks_app.xml`: universal channels A,
+//! `crates/bussard-product/tests/fixtures/blocks_app.xml`: universal channels A,
 //! B and C are ETS pages behind "enable" parameters (C behind B), each with a
 //! "Channel function" whose first choice is a brightness threshold. The
 //! device enables A with the temperature function; B and C are spare.

@@ -98,7 +98,7 @@ async fn connect_client_over(
     // actor, wire it into the status, feed the ring from a subscription, serve.
     let (server_io, client_io) = tokio::io::duplex(16 * 1024);
 
-    let (handle, _task) = bussard_bus::Bus::connect(config.clone());
+    let (handle, _task) = bussard_transport::bus::Bus::connect(config.clone());
     // The mock gateway is loopback, so the transmitting policy's write gate
     // passes, exactly as `bussard mcp --allow-writes` against the simulator.
     let service = bussard_service::BusService::from_handle(
@@ -584,7 +584,7 @@ async fn test_bus_status_explains_the_outage_and_reconnect_recovers() -> TestRes
     // SAFETY: nextest runs each test in its own process; the variable only
     // shortens the actor's first reconnect backoff and is read when it starts.
     unsafe {
-        std::env::set_var(bussard_bus::BACKOFF_START_MS_ENV, "100");
+        std::env::set_var(bussard_transport::bus::BACKOFF_START_MS_ENV, "100");
     }
     let gw = bussard_testkit::MockSecureGateway::builder()
         .device_auth(Password::new("device-auth-code").derive(salt::DEVICE_AUTHENTICATION_CODE))

@@ -380,7 +380,7 @@ pub struct Device {
     /// The key is the same module-instance selector the parameter key preserves:
     /// stripping `_P-<p>_R-<r>` from a `parameters:` key's ref-id body yields the
     /// selector that indexes this map. It matches the
-    /// [`base_offsets`](../../../bussard_prod/image/fn.compute_parameter_image.html)
+    /// [`base_offsets`](../../../bussard_product/image/fn.compute_parameter_image.html)
     /// contract the parameter-image builder expects, verbatim. Non-module devices
     /// have an empty map.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

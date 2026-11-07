@@ -4,7 +4,7 @@
 A product model describes one application program: its parameters, com-objects and
 Dynamic section, reduced to what the views, the validator and the Dynamic evaluator
 read. It is `bussard_model::param_model::ProductModel`, built in one step from the
-parsed application program (`bussard_prod::product_model::product_model`) and stored
+parsed application program (`bussard_product::product_model::product_model`) and stored
 as JSON at `<dir>/.bussard/model-cache/<application id>.json` (issue #906). The
 directory holds only data bussard regenerates: when a file is missing or of another
 format, the next command rebuilds it from the archive in `products/` through the

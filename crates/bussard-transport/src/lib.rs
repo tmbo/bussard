@@ -48,6 +48,7 @@
 
 #![warn(missing_docs)]
 
+pub mod bus;
 pub mod cemi;
 mod channel;
 pub mod config;

@@ -110,7 +110,7 @@
 //! * The task delivers inbound frames from inside its `await_ack` and
 //!   `do_heartbeat` loops, i.e. while it still owes the caller the reply to an
 //!   in-flight `send`.
-//! * The only consumer, `bussard-bus`'s actor, awaits that `send` reply *inline*
+//! * The only consumer, the [bus actor](crate::bus), awaits that `send` reply *inline*
 //!   (spawning it reorders L4 request/response under a flash lease — see the
 //!   `Actor::consume` docs and issue #57), so it is not calling
 //!   [`recv`](BusConnection::recv) meanwhile.

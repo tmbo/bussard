@@ -70,11 +70,11 @@ use std::time::Duration;
 
 use crate::args::Parameters;
 use crate::elicit::{self, Shown, lock};
-use bussard_secure::Password;
 use bussard_service::enroll_session::{
     CertificateOutcome, CertificateSink, DOCS_URL, Endpoints, EnrollSession, HttpRelay, RunOptions,
     SessionProgress, SessionStatus, Timeouts, data_path,
 };
+use bussard_service::secure::Password;
 use bussard_viz::enroll_local::LocalEnrollServer;
 use bussard_viz::pairing_page::{PairingContent, PairingPage, PairingStatus, StatusFn};
 use rmcp::handler::server::tool::{InputResponses, RequestState};
@@ -659,7 +659,7 @@ impl BussardMcp {
     fn keyring_note(&self) -> Option<String> {
         let state = self.state();
         let keyring = state.keyring.as_ref()?;
-        let store = bussard_project::KeyStore::path(&state.dir);
+        let store = bussard_service::keys::KeyStore::path(&state.dir);
         (!same_file(keyring, &store)).then(|| {
             format!(
                 "this server reads its keys from {}, not from the key store {} the certificates \

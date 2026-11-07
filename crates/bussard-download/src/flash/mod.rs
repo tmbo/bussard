@@ -86,9 +86,9 @@
 //!   verification.
 //! - `labels`: step labels and the dry-run [`trace`].
 //!
-//! [`ApplicationProgram`]: bussard_prod::application::ApplicationProgram
-//! [`LoadProcedure`]: bussard_prod::application::LoadProcedure
-//! [`LoadOp`]: bussard_prod::application::LoadOp
+//! [`ApplicationProgram`]: bussard_product::application::ApplicationProgram
+//! [`LoadProcedure`]: bussard_product::application::LoadProcedure
+//! [`LoadOp`]: bussard_product::application::LoadOp
 //! [`write_load_control`]: bussard_mgmt::load::write_load_control
 //! [`allocate_segment`]: bussard_mgmt::load::allocate_segment
 //! [`write_property`]: bussard_mgmt::load::write_property
@@ -97,7 +97,7 @@
 //! [`read_mcb_table`]: bussard_mgmt::load::read_mcb_table
 
 use bussard_mgmt::load::LoadState;
-pub use bussard_prod::SegmentFill;
+pub use bussard_product::SegmentFill;
 use std::collections::BTreeMap;
 
 mod declare;
@@ -231,7 +231,7 @@ pub fn is_knx_virtual_application(id: &str) -> bool {
 }
 
 /// A step of a validated flash, ready to render for the pre-flight display and
-/// to execute in order. Each corresponds to one supported [`LoadOp`](bussard_prod::application::LoadOp).
+/// to execute in order. Each corresponds to one supported [`LoadOp`](bussard_product::application::LoadOp).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlashStep {
     /// Drop a loadable object to `Unloaded` (`LdCtrlUnload`).
@@ -266,7 +266,7 @@ pub enum FlashStep {
         /// the per-object base) from — this object.
         target: Option<u32>,
         /// The source `LdCtrlRelSegment`'s `Mode` and `Fill` octets (see
-        /// [`bussard_ets::LoadOp::RelSegment::fill`]), sent verbatim by
+        /// [`bussard_product::LoadOp::RelSegment::fill`]), sent verbatim by
         /// [`bussard_mgmt::encode_rel_segment`] as ETS does. Its
         /// [`SegmentFill::prefill`] is the byte the device pre-fills the
         /// segment with; [`SegmentFill::NONE`] (the DA.tp default and every
@@ -1078,7 +1078,7 @@ pub struct FlashPlan {
     /// the configuration the plan was built for (issue #290): the octets a
     /// parameter-only download compares and writes. Every other octet keeps
     /// what the device holds, as in ETS's download.
-    placed: bussard_prod::PlacedOctets,
+    placed: bussard_product::PlacedOctets,
     /// The octets a parameter-only download leaves as the device holds them
     /// although the model's image differs there (issue #290): per segment,
     /// each octet's offset and the model's byte. Empty for a full flash.

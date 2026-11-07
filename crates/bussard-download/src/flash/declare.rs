@@ -45,8 +45,8 @@
 
 use super::plan_props::{may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
-use bussard_prod::application::{ApplicationProgram, LoadOp};
-use bussard_prod::{PropertyObjectRef, PropertyParameters};
+use bussard_product::application::{ApplicationProgram, LoadOp};
+use bussard_product::{PropertyObjectRef, PropertyParameters};
 
 /// The highest element index the plain property services address (a 12-bit
 /// start index).
@@ -281,7 +281,7 @@ fn inline_template(
 /// occurrence, or the device object by type (`ObjectType="0"`) for object 0,
 /// always interface object 0 (KNX 3/5/1). An index against any other type is
 /// a name that may or may not be `object`, which bussard does not resolve.
-fn same_object(loc: &bussard_prod::application::PropertyLocation, object: PropObject) -> bool {
+fn same_object(loc: &bussard_product::application::PropertyLocation, object: PropObject) -> bool {
     match (PropertyObjectRef::of(loc), object) {
         (Some(PropertyObjectRef::Index(at)), PropObject::Index(index)) => at == index,
         (
@@ -500,7 +500,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#
         );
-        Ok(bussard_prod::application::parse_application_program(
+        Ok(bussard_product::application::parse_application_program(
             "M-1_A-1",
             xml.as_bytes(),
         )?)
@@ -533,7 +533,7 @@ mod tests {
         decl: &PropDecl,
         app: &ApplicationProgram,
     ) -> Result<Option<FlashStep>, PlanError> {
-        let config = bussard_prod::dynamic::DynamicMemo::new(app)
+        let config = bussard_product::dynamic::DynamicMemo::new(app)
             .evaluate_for(app, &std::collections::BTreeMap::new());
         let params = PropertyParameters::resolve(app, &config);
         let inline = match op {

@@ -14,14 +14,16 @@
 use std::path::{Path, PathBuf};
 
 use crate::jobs::{JobSink, PARAMETER_DOWNLOAD};
-use bussard_download::backup::{ParameterBackup, parameter_backups_dir, read_parameter_backup};
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
-use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
+use bussard_service::download::backup::{
+    ParameterBackup, parameter_backups_dir, read_parameter_backup,
+};
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
 use bussard_service::restore::{RestorePlan, build_restore_plan};
+use bussard_service::secure::SequenceHighWater;
 use serde_json::{Value, json};
 
 use super::{
@@ -40,7 +42,7 @@ struct Planned {
     /// The plan digest.
     digest: String,
     /// The Data Secure tool key, `None` on the plain path.
-    tool_key: Option<bussard_secure::Key16>,
+    tool_key: Option<bussard_service::secure::Key16>,
     /// The send-sequence high-water mark of the read and the write.
     high_water: SequenceHighWater,
 }
@@ -289,7 +291,7 @@ impl BussardMcp {
             .with_gateway(Some(gateway.clone()))
             .with_result("before restoring the parameter memory");
         let snapshot = super::audit_snapshot(&dir, reason, target)?;
-        let backup = bussard_download::write_parameter_memory_backup(
+        let backup = bussard_service::download::write_parameter_memory_backup(
             &dir,
             target,
             &detail.plan,

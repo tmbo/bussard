@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use bussard_mgmt::manufacturers;
 use bussard_model::schema::{ComObject, Device, Group, Product, SecureSender};
 use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, Model};
-use bussard_prod::{ApplicationProgram, IndexEntry, ProductData, ResolvedComObject};
+use bussard_product::{ApplicationProgram, IndexEntry, ProductData, ResolvedComObject};
 use bussard_secure::SequenceHighWater;
 
 use super::SecureAdoption;
@@ -88,7 +88,7 @@ pub fn shape_selected(app: &ApplicationProgram, data: &ProductData) -> SelectedP
         manufacturer_ref: app.id.split('_').next().map(str::to_string),
         application_ref: app.id.clone(),
         mask_version: app.mask_version.clone(),
-        order_numbers: bussard_prod::product_model::order_numbers_for(app, data),
+        order_numbers: bussard_product::product_model::order_numbers_for(app, data),
         com_objects: shape_com_objects(app),
         app: Some(app.clone()),
     }
@@ -271,13 +271,13 @@ pub fn build_device(
     // The lock facts under the vendor defaults: the objects the program
     // shows, with channel handles and keys from day one.
     if let Some(app) = selected.and_then(|s| s.app.as_ref()) {
-        let facts = bussard_project::lock_keys::derive_lock_keys(
+        let facts = bussard_product::lock_keys::derive_lock_keys(
             app,
             &BTreeMap::new(),
             &Default::default(),
         );
         device.com_objects.clear();
-        bussard_project::lock_keys::apply_lock_keys(&mut device, app, &facts, &BTreeMap::new());
+        bussard_product::lock_keys::apply_lock_keys(&mut device, app, &facts, &BTreeMap::new());
     }
     device
 }
@@ -619,13 +619,13 @@ pub fn record_secured(
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 parameters = stored.len();
-                let facts = bussard_project::lock_keys::derive_lock_keys(
+                let facts = bussard_product::lock_keys::derive_lock_keys(
                     app,
                     &detail.decoded.values,
                     &Default::default(),
                 );
                 device.com_objects.clear();
-                bussard_project::lock_keys::apply_lock_keys(&mut device, app, &facts, &stored);
+                bussard_product::lock_keys::apply_lock_keys(&mut device, app, &facts, &stored);
             }
             None => {
                 if let Some(note) = &state.readback.note {

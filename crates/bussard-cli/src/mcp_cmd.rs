@@ -273,10 +273,12 @@ fn run_onboarding(
     let config = McpConfig {
         dir: dir.to_path_buf(),
         // A placeholder: no bus is opened before `knx_setup` wrote the model.
-        connection: bussard_transport::ConnectionConfig::tunnel(std::net::SocketAddrV4::new(
-            std::net::Ipv4Addr::UNSPECIFIED,
-            bussard_transport::config::DEFAULT_PORT,
-        )),
+        connection: bussard_service::transport::ConnectionConfig::tunnel(
+            std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::UNSPECIFIED,
+                bussard_service::transport::config::DEFAULT_PORT,
+            ),
+        ),
         passive: modes.passive,
         allow_writes: modes.allow_writes,
         no_model_edits: modes.no_model_edits,

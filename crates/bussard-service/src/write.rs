@@ -23,13 +23,13 @@
 //! 4. **encode**: the human value is parsed and encoded against the DPT, or a
 //!    raw hex payload is decoded and its length checked against a known DPT.
 //! 5. **send**: once, completion-tracked against the gateway ACK
-//!    ([`bussard_bus::ops::write_group`]), and only on a service opened with a
+//!    ([`group::write_group`](crate::group::write_group)), and only on a service opened with a
 //!    transmitting [`WritePolicy`](crate::WritePolicy).
 
-use bussard_bus::BusError;
-use bussard_bus::ops::{self, WriteOptions};
+use crate::group::{self, WriteOptions};
 use bussard_model::text::from_hex;
 use bussard_model::{ApduSize, Dpt, GroupAddress, Model, encode, parse_value};
+use bussard_transport::TransportError;
 
 use bussard_secure::{AsduError, Key16};
 use bussard_transport::cemi::{CemiFrame, Destination};
@@ -217,7 +217,7 @@ pub enum WriteRefusal {
     SecureSeal(AsduError),
     /// The send itself failed (ACK exhaustion, staleness, a gone actor).
     #[error(transparent)]
-    Bus(BusError),
+    Bus(TransportError),
 }
 
 impl From<SecureGroupError> for WriteRefusal {
@@ -374,7 +374,7 @@ impl BusService {
             let confirmed = self.send_secured_write(&write, key).await?;
             return Ok(WriteOutcome { write, confirmed });
         }
-        let sent = ops::write_group(
+        let sent = group::write_group(
             self.handle(),
             write.ga,
             &write.payload,
@@ -390,14 +390,14 @@ impl BusService {
     }
 
     /// Sends `write` as a KNX Data Secure group telegram sealed under `key`
-    /// and watches for a bus confirmation, as [`ops::write_group`] does for the
+    /// and watches for a bus confirmation, as [`group::write_group`] does for the
     /// plain path.
     async fn send_secured_write(
         &self,
         write: &PreparedWrite,
         key: &Key16,
     ) -> Result<bool, WriteRefusal> {
-        let source = ops::group_source(self.handle());
+        let source = self.handle().group_source();
         let apdu = CemiFrame::group_write(write.ga, source, &write.payload, write.packed).apdu;
         let mut sub = self.handle().subscribe();
         self.send_group_secured(write.ga, &apdu, key)

@@ -17,10 +17,10 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
-use bussard_mgmt::system_type;
 use bussard_model::Model;
 use bussard_service::assign::{VerifyKey, build_stub_device, write_device_file};
 use bussard_service::identity::SecureStatus;
+use bussard_service::mgmt::system_type;
 use bussard_service::program::assign::{Assign, AssignFlow};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::{BusService, WritePolicy};
