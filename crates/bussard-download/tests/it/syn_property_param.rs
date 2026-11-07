@@ -601,7 +601,7 @@ const OT_SIEMENS_VENDOR: u16 = 50215;
 /// [`OT_SIEMENS_VENDOR`] and carrying `InlineData` `5A`: the Siemens
 /// `LdCtrlWriteProp ObjType="50215" PropId="205" InlineData="5A"` shape.
 fn with_typed_write(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let mut app = app.clone();
     let mut found = false;
     for op in app
