@@ -2241,6 +2241,11 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
             # Not os.execv: on Windows it joins argv without quoting, so the space
             # in "C:\Program Files\Python312" killed the first attempt (2026-10-26).
             log("source changed, restarting")
+            # Stop serving before the socket closes: server_close() under a
+            # running serve_forever made the main thread raise WinError 10038,
+            # the interpreter shut down and killed this thread before the
+            # replacement was spawned, and no driver was left (2026-11-07).
+            srv.shutdown()
             srv.server_close()
             import subprocess
 
@@ -2249,6 +2254,7 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
             )
+            log("replacement spawned")
             time.sleep(1)
             os._exit(0)
 
@@ -2257,7 +2263,17 @@ def main() -> None:
     log(f"driver starting pid={os.getpid()} session={os.environ.get('SESSIONNAME')} user={os.environ.get('USERNAME')}")
     if not TOKEN_FILE.exists():
         TOKEN_FILE.write_text(base64.b16encode(os.urandom(16)).decode())
-    srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    # The predecessor may still hold the port for a moment after its
+    # shutdown: retry the bind.
+    for attempt in range(30):
+        try:
+            srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+            break
+        except OSError as exc:
+            if attempt == 29:
+                log(f"cannot bind 127.0.0.1:{PORT}: {exc!r}")
+                raise
+            time.sleep(1)
     srv.daemon_threads = True
 
     threading.Thread(target=_reload_watch, args=(srv,), daemon=True).start()
