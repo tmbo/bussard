@@ -15,9 +15,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::Context;
+use bussard_model::Model;
 use bussard_model::change::{ChangeSet, describe, render_text};
 use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotReason};
-use bussard_model::{Model, schema};
+
+use bussard_service::history::{HistoryFlowError, UndoOutcome};
 
 use crate::cli::{Resolved, Run, Spec};
 
@@ -191,24 +193,8 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
 
 /// Runs `bussard history`: the snapshot list, oldest first.
 fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
-    let history = History::open(dir);
-    let snapshots = history.list().context("reading .bussard/history")?;
-    let summaries = history.summaries(&snapshots, 0..snapshots.len());
-
+    let rows = bussard_service::history::list(dir, None).map_err(history_error)?;
     if json {
-        let mut rows = Vec::new();
-        for (index, (snapshot, summary)) in snapshots.iter().zip(&summaries).enumerate() {
-            rows.push(serde_json::json!({
-                "index": index + 1,
-                "id": snapshot.id,
-                "created_at": snapshot.manifest.created_at,
-                "command": snapshot.manifest.reason.command,
-                "args": snapshot.manifest.reason.args,
-                "gateway": snapshot.manifest.gateway,
-                "result": snapshot.manifest.result,
-                "summary": summary,
-            }));
-        }
         crate::output::print(
             crate::output::schema::HISTORY,
             &serde_json::json!({ "snapshots": rows }),
@@ -216,7 +202,7 @@ fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    if snapshots.is_empty() {
+    if rows.is_empty() {
         println!(
             "No history yet for {}. bussard records a snapshot the first time it writes the model.",
             dir.display()
@@ -224,27 +210,38 @@ fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    for (index, (snapshot, summary)) in snapshots.iter().zip(&summaries).enumerate() {
+    for row in &rows {
         println!(
             "{:>3}  {}  {}",
-            index + 1,
-            snapshot.id,
-            reason_line(snapshot)
+            row.index,
+            row.id,
+            reason_text(&row.command, &row.args, row.gateway.as_deref(), &row.result)
         );
-        if !summary.is_empty() {
-            println!("     {summary}");
+        if !row.summary.is_empty() {
+            println!("     {}", row.summary);
         }
     }
     println!("\nShow one with `bussard show <n>`; put the model back with `bussard undo <n>`.");
     Ok(ExitCode::SUCCESS)
 }
 
+/// A history error in the words the CLI always printed: the list read with
+/// its context, everything else as the history reported it.
+fn history_error(err: HistoryFlowError) -> anyhow::Error {
+    match err {
+        HistoryFlowError::List(err) => anyhow::Error::from(err).context("reading .bussard/history"),
+        HistoryFlowError::Target(err)
+        | HistoryFlowError::Resolve(err)
+        | HistoryFlowError::Restore(err)
+        | HistoryFlowError::Load { source: err, .. } => err.into(),
+    }
+}
+
 /// Runs `bussard show <id|N> [<id|N>]`: the change one snapshot introduced, or
 /// the change between two snapshots.
 fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
-    let history = History::open(dir);
-    let snapshots = history.list().context("reading .bussard/history")?;
-    if snapshots.is_empty() {
+    let Some(shown) = bussard_service::history::show(dir, first, second).map_err(history_error)?
+    else {
         if json {
             crate::output::print(
                 crate::output::schema::SHOW,
@@ -254,50 +251,29 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
             println!("No history yet for {}.", dir.display());
         }
         return Ok(ExitCode::SUCCESS);
-    }
-
-    let (from, to) = match second {
-        Some(second) => {
-            let a = history.resolve(first)?;
-            let b = history.resolve(second)?;
-            (Some(a), b)
-        }
-        None => {
-            let b = history.resolve(first)?;
-            let index = snapshots.iter().position(|s| s.id == b.id).unwrap_or(0);
-            let a = index.checked_sub(1).map(|i| snapshots[i].clone());
-            (a, b)
-        }
     };
-
-    let old = match &from {
-        Some(snapshot) => history.load(&snapshot.id)?,
-        None => empty_model(),
-    };
-    let new = history.load(&to.id)?;
-    let changes = describe(&old, &new);
-
+    let (from, to, changes) = (&shown.from, &shown.to, &shown.changes);
     if json {
         crate::output::print(
             crate::output::schema::SHOW,
             &serde_json::json!({
                 "from": from.as_ref().map(|s| s.id.to_string()),
                 "to": to.id.to_string(),
-                "reason": reason_line(&to),
+                "reason": reason_line(to),
                 "changes": changes.changes,
             }),
         )?;
         return Ok(ExitCode::SUCCESS);
     }
-    match &from {
+    match from {
         Some(snapshot) => println!("Change from snapshot {} to {}:\n", snapshot.id, to.id),
         None => println!("Snapshot {} (the first one):\n", to.id),
     }
-    println!("  {}\n", reason_line(&to));
+    println!("  {}\n", reason_line(to));
     if changes.is_empty() {
         println!("The model files are identical.");
     } else {
-        print!("{}", render_text(&changes));
+        print!("{}", render_text(changes));
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -308,8 +284,6 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
 ///
 /// Files only. Devices keep their tables until a human runs `plan` and `apply`.
 fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
-    let history = History::open(dir);
-    let snapshots = history.list().context("reading .bussard/history")?;
     // What `undo --json` prints when nothing was restored.
     let nothing = |reason: &str| {
         crate::output::print(
@@ -322,112 +296,74 @@ fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<Exit
             }),
         )
     };
-    if snapshots.is_empty() {
-        if json {
+    let undone = match bussard_service::history::undo(dir, target).map_err(history_error)? {
+        UndoOutcome::Restored(undone) => undone,
+        UndoOutcome::NoHistory if json => {
             nothing("no history")?;
             return Ok(ExitCode::SUCCESS);
         }
-        println!(
-            "No history yet for {}, so there is nothing to undo.",
-            dir.display()
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    let target = match target {
-        Some(spec) => history.resolve(spec)?,
-        None => match history.undo_target()? {
-            Some(snapshot) => snapshot,
-            None if json => {
-                nothing("the model files already match every snapshot")?;
-                return Ok(ExitCode::SUCCESS);
-            }
-            None => {
-                println!(
-                    "The model files already match every snapshot, so there is nothing to undo."
-                );
-                println!(
-                    "`bussard undo <n>` restores a specific one; `bussard history` lists them."
-                );
-                return Ok(ExitCode::SUCCESS);
-            }
-        },
-    };
-
-    // What the restore reverts, in the owner's words: the working model as it is
-    // now, against the snapshot we are about to put back.
-    let working = Model::load(dir).ok();
-    let restored = history.load(&target.id)?;
-    let changes = working
-        .as_ref()
-        .map(|w| describe(w, &restored))
-        .unwrap_or_default();
-
-    let undo_snapshot = history.restore(&target.id)?;
-    // A group address whose Data Secure state the undo flips gets its key
-    // back from the snapshot's key store copy, or loses it (issue #331).
-    let key_notes: Result<Vec<String>, String> = match &working {
-        Some(before)
-            if !bussard_service::group_security::security_changes(before, &restored).is_empty() =>
-        {
-            let password =
-                bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV).ok();
-            bussard_service::group_security::restore_group_keys(
-                dir,
-                &history.snapshot_dir(&target.id),
-                Some(&history.snapshot_dir(&undo_snapshot)),
-                before,
-                &restored,
-                password.as_deref(),
-            )
-            .map_err(|err| {
-                format!(
-                    "the model files are restored, but the key store did not follow: {err}. Fix \
-                     that and run `bussard groups secure <GA> on|off` for the group addresses \
-                     whose security the undo changed."
-                )
-            })
+        UndoOutcome::NoHistory => {
+            println!(
+                "No history yet for {}, so there is nothing to undo.",
+                dir.display()
+            );
+            return Ok(ExitCode::SUCCESS);
         }
-        _ => Ok(Vec::new()),
+        UndoOutcome::NothingToUndo if json => {
+            nothing("the model files already match every snapshot")?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        UndoOutcome::NothingToUndo => {
+            println!("The model files already match every snapshot, so there is nothing to undo.");
+            println!("`bussard undo <n>` restores a specific one; `bussard history` lists them.");
+            return Ok(ExitCode::SUCCESS);
+        }
     };
+    let (target, changes) = (&undone.target, &undone.changes);
     if json {
-        let key_store = match &key_notes {
-            Ok(notes) if notes.is_empty() => serde_json::Value::Null,
-            Ok(notes) => serde_json::json!({"ok": true, "sentences": notes}),
-            Err(reason) => serde_json::json!({"ok": false, "reason": reason}),
+        let key_store = match &undone.key_store {
+            Some(follow)
+                if !follow.ok || follow.sentences.as_ref().is_some_and(|s| !s.is_empty()) =>
+            {
+                serde_json::json!(follow)
+            }
+            _ => serde_json::Value::Null,
         };
         crate::output::print(
             crate::output::schema::UNDO,
             &serde_json::json!({
                 "restored": target.id.to_string(),
                 "created_at": target.manifest.created_at,
-                "undo_snapshot": undo_snapshot.to_string(),
+                "undo_snapshot": undone.undo_snapshot.to_string(),
                 "changes": changes.changes,
                 "key_store": key_store,
             }),
         )?;
         return Ok(ExitCode::SUCCESS);
     }
-    match &key_notes {
-        Ok(notes) => {
-            for note in notes {
-                println!("{note}");
-            }
+    if let Some(follow) = &undone.key_store {
+        for note in follow.sentences.iter().flatten() {
+            println!("{note}");
         }
-        Err(reason) => eprintln!("warning: {reason}"),
+        if let Some(reason) = &follow.reason {
+            eprintln!("warning: {reason}");
+        }
     }
     println!(
         "Restored the model files to snapshot {} ({}).",
         target.id, target.manifest.created_at
     );
-    println!("The state before this undo is kept as snapshot {undo_snapshot}.\n");
+    println!(
+        "The state before this undo is kept as snapshot {}.\n",
+        undone.undo_snapshot
+    );
     if changes.is_empty() {
         println!("The files were already identical to that snapshot.");
     } else {
-        print!("{}", render_text(&changes));
+        print!("{}", render_text(changes));
     }
     println!();
-    print_apply_hint(&changes);
+    print_apply_hint(changes);
     Ok(ExitCode::SUCCESS)
 }
 
@@ -466,28 +402,28 @@ fn change_json(base: Option<&SnapshotId>, changes: &ChangeSet) -> serde_json::Va
 /// `apply 1.1.4 → 127.0.0.1:3671 (before writing the device tables)`.
 fn reason_line(snapshot: &Snapshot) -> String {
     let manifest = &snapshot.manifest;
-    let mut line = manifest.reason.command.clone();
-    if !manifest.reason.args.is_empty() {
-        line.push(' ');
-        line.push_str(&manifest.reason.args.join(" "));
-    }
-    if let Some(gateway) = &manifest.gateway {
-        line.push_str(&format!(" → {gateway}"));
-    }
-    if !manifest.result.is_empty() {
-        line.push_str(&format!(" ({})", manifest.result));
-    }
-    line
+    reason_text(
+        &manifest.reason.command,
+        &manifest.reason.args,
+        manifest.gateway.as_deref(),
+        &manifest.result,
+    )
 }
 
-/// An empty model, used as the "before" of the very first snapshot.
-fn empty_model() -> Model {
-    Model {
-        config: schema::BussardConfig::default(),
-        groups: schema::Groups::default(),
-        links: schema::Links::default(),
-        devices: std::collections::BTreeMap::new(),
+/// The reason line of a snapshot from its parts.
+fn reason_text(command: &str, args: &[String], gateway: Option<&str>, result: &str) -> String {
+    let mut line = command.to_string();
+    if !args.is_empty() {
+        line.push(' ');
+        line.push_str(&args.join(" "));
     }
+    if let Some(gateway) = gateway {
+        line.push_str(&format!(" → {gateway}"));
+    }
+    if !result.is_empty() {
+        line.push_str(&format!(" ({result})"));
+    }
+    line
 }
 
 // ---------------------------------------------------------------------------

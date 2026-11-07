@@ -27,17 +27,14 @@
 //! failure) is reported and skipped, never guessed at. Decrypting is local; it
 //! sends nothing.
 
-use std::collections::BTreeMap;
 use std::io::{BufRead, IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
 use anyhow::{Context, anyhow};
-use bussard_model::schema::{BussardConfig, Groups, Link, Links};
-use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, Model};
-use bussard_monitor::infer::{self, DptCandidate};
+use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_monitor::{ApciKind, DecodedTelegram, Filter, TelegramRing};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::{BusService, WritePolicy, learn};
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{gateway_display, load_model_required, resolve_config};
@@ -206,7 +203,7 @@ fn resolve_targets(model: &Model, options: &LearnArgs) -> anyhow::Result<Vec<Tar
     if options.unnamed || options.untyped {
         let mut targets: Vec<Target> = Vec::new();
         for (ga, group) in &model.groups.groups {
-            let wanted = (options.unnamed && is_placeholder_name(*ga, &group.name))
+            let wanted = (options.unnamed && learn::is_placeholder_name(*ga, &group.name))
                 || (options.untyped && group.dpt.is_none());
             if wanted {
                 targets.push(Target::Ga(*ga));
@@ -219,16 +216,6 @@ fn resolve_targets(model: &Model, options: &LearnArgs) -> anyhow::Result<Vec<Tar
     }
     // Open-ended: learn whatever shows up until the operator quits.
     Ok(vec![Target::Any])
-}
-
-/// Whether a group's name is a placeholder rather than something a human chose.
-fn is_placeholder_name(ga: GroupAddress, name: &str) -> bool {
-    let trimmed = name.trim();
-    trimmed.is_empty()
-        || trimmed == ga.to_string()
-        || trimmed.eq_ignore_ascii_case(&format!("GA {ga}"))
-        || trimmed.eq_ignore_ascii_case("unnamed")
-        || trimmed.to_lowercase().starts_with("unknown")
 }
 
 /// The interactive loop over the resolved targets.
@@ -372,33 +359,14 @@ fn consider(
     interactive: bool,
 ) -> anyhow::Result<Decision> {
     let sender = telegram.source;
-    let object = infer::sending_object(model, sender, ga);
-    let declared = object.as_ref().and_then(|o| o.declared_dpt);
-    let candidates = infer::refine(infer::infer_dpt(&telegram.payload, declared), earlier);
+    let payloads: Vec<Vec<u8>> = std::iter::once(telegram.payload.clone())
+        .chain(earlier.iter().cloned())
+        .collect();
+    let observation = learn::observe(model, ga, Some(sender), &payloads);
+    print_observation(model, ga, telegram, &observation);
 
-    // With no link in the model there is no com-object index; `u16::MAX` is an
-    // index no com object uses, so the proposal falls back to the device's own
-    // name and location.
-    let proposed = infer::propose_name(
-        model,
-        sender,
-        object.as_ref().map(|o| o.index).unwrap_or(u16::MAX),
-    );
-
-    print_observation(model, ga, telegram, object.as_ref(), &candidates, &proposed);
-
-    let mut name = proposed
-        .clone()
-        .or_else(|| {
-            model
-                .groups
-                .groups
-                .get(&ga)
-                .map(|g| g.name.clone())
-                .filter(|n| !is_placeholder_name(ga, n))
-        })
-        .unwrap_or_else(|| format!("GA {ga}"));
-    let mut dpt = match candidates.first() {
+    let mut name = observation.name(model, ga);
+    let mut dpt = match observation.candidates.first() {
         Some(c) => c.dpt,
         None => {
             eprintln!(
@@ -440,64 +408,46 @@ fn consider(
     }
 
     let secured = telegram.secure.as_ref().is_some_and(|s| s.verified());
-    let entry = model.groups.groups.entry(ga).or_default();
-    entry.name = name.clone();
-    entry.dpt = Some(dpt);
+    let mut decision = learn::Decision {
+        name,
+        dpt,
+        secured,
+        link: None,
+    };
+    learn::accept(model, ga, &decision);
     if secured {
-        // The GA carries KNX Data Secure traffic; record it so `write`/`read`
-        // seal their telegrams and `flash`/`apply` program the group key.
-        entry.secure = true;
-        println!("{ga} {name} ({dpt}, secured)");
+        println!("{ga} {} ({dpt}, secured)", decision.name);
     } else {
-        println!("{ga} {name} ({dpt})");
+        println!("{ga} {} ({dpt})", decision.name);
     }
 
-    let made_link = maybe_link(model, sender, ga, object.is_some(), options, interactive)?;
-    Ok(Decision::Accepted { made_link })
+    let chosen = match observation.object {
+        Some(_) => None,
+        None => choose_link(model, sender, ga, options, interactive)?,
+    };
+    let Some(index) = chosen else {
+        return Ok(Decision::Accepted { made_link: false });
+    };
+    decision.link = Some((sender, index));
+    learn::accept(model, ga, &decision);
+    println!("  linked {sender} com object {index} → {ga}");
+    Ok(Decision::Accepted { made_link: true })
 }
 
-/// Adds a link (in the device file) for the sending com object when it can be pinned
-/// down, so the learned GA is attached to the device that sends it.
-///
-/// The wire carries no com-object number, so this only acts when the model
-/// leaves exactly one candidate (a transmit-capable object on the sending device
-/// with no sending GA yet), or when the operator names one at the prompt.
-fn maybe_link(
-    model: &mut Model,
+/// The sending com object to link a learned GA to, when it can be pinned
+/// down: the one candidate the model leaves, or the one the operator names.
+fn choose_link(
+    model: &Model,
     sender: IndividualAddress,
     ga: GroupAddress,
-    already_linked: bool,
     options: &LearnArgs,
     interactive: bool,
-) -> anyhow::Result<bool> {
-    if already_linked {
-        return Ok(false);
-    }
-    let Some(loaded) = model.devices.get(&sender) else {
+) -> anyhow::Result<Option<u16>> {
+    let Some(candidates) = learn::link_candidates(model, sender) else {
         eprintln!("  sender {sender} is not in the model, so no link was written.");
-        return Ok(false);
+        return Ok(None);
     };
-    let taken: Vec<u16> = model
-        .links
-        .links
-        .get(&sender)
-        .map(|links| {
-            links
-                .iter()
-                .filter(|l| l.send.is_some())
-                .map(|l| l.object)
-                .collect()
-        })
-        .unwrap_or_default();
-    let candidates: Vec<u16> = loaded
-        .device
-        .com_objects
-        .iter()
-        .filter(|(index, com)| com.flags.contains(Flags::TRANSMIT) && !taken.contains(index))
-        .map(|(index, _)| *index)
-        .collect();
-
-    let chosen = match candidates.as_slice() {
+    Ok(match candidates.as_slice() {
         [only] => Some(*only),
         [] => None,
         many if options.yes || !interactive => {
@@ -523,23 +473,7 @@ fn maybe_link(
                 },
             }
         }
-    };
-
-    let Some(index) = chosen else {
-        return Ok(false);
-    };
-    let links = model.links.links.entry(sender).or_default();
-    match links.iter_mut().find(|l| l.object == index) {
-        Some(link) => link.send = Some(ga),
-        None => links.push(Link {
-            object: index,
-            name: None,
-            send: Some(ga),
-            listen: Vec::new(),
-        }),
-    }
-    println!("  linked {sender} com object {index} → {ga}");
-    Ok(true)
+    })
 }
 
 /// Prints the evidence for one observation on stderr, so stdout stays a clean
@@ -548,10 +482,9 @@ fn print_observation(
     model: &Model,
     ga: GroupAddress,
     telegram: &DecodedTelegram,
-    object: Option<&infer::SendingObject>,
-    candidates: &[DptCandidate],
-    proposed: &Option<String>,
+    observation: &learn::Observation,
 ) {
+    let (object, candidates) = (observation.object.as_ref(), &observation.candidates);
     let device = model.devices.get(&telegram.source).map(|d| &d.device);
     let where_ = device
         .and_then(|d| d.location.as_ref())
@@ -609,7 +542,7 @@ fn print_observation(
             candidate.reason
         );
     }
-    if let Some(name) = proposed {
+    if let Some(name) = &observation.proposed_name {
         eprintln!("  proposed name: {name}");
     }
 }
@@ -626,12 +559,7 @@ fn read_line() -> anyhow::Result<String> {
 
 /// An empty model, used when learning into a directory that does not exist yet.
 fn empty_model() -> Model {
-    Model {
-        config: BussardConfig::default(),
-        groups: Groups::default(),
-        links: Links::default(),
-        devices: BTreeMap::new(),
-    }
+    bussard_service::history::empty_model()
 }
 
 #[cfg(test)]
@@ -641,19 +569,6 @@ mod tests {
     use std::error::Error;
 
     type R = Result<(), Box<dyn Error>>;
-
-    #[test]
-    fn test_is_placeholder_name_recognises_generated_names() -> R {
-        let ga: GroupAddress = "1/0/1".parse()?;
-        assert!(is_placeholder_name(ga, ""));
-        assert!(is_placeholder_name(ga, "   "));
-        assert!(is_placeholder_name(ga, "1/0/1"));
-        assert!(is_placeholder_name(ga, "GA 1/0/1"));
-        assert!(is_placeholder_name(ga, "Unnamed"));
-        assert!(is_placeholder_name(ga, "Unknown object"));
-        assert!(!is_placeholder_name(ga, "Kitchen ceiling light"));
-        Ok(())
-    }
 
     #[test]
     fn test_resolve_targets_from_explicit_gas() -> R {

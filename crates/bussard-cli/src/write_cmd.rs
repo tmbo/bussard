@@ -19,10 +19,10 @@
 
 use std::process::ExitCode;
 
-use anyhow::{Context, anyhow};
+use anyhow::anyhow;
 use bussard_bus::BusError;
 use bussard_model::{GroupAddress, Model};
-use bussard_service::admission::{self, Admission, AdmissionEvidence};
+use bussard_service::admission::{self, Admission};
 use bussard_service::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WritePolicy, WriteRefusal, WriteValue,
     prepare_group_write,
@@ -83,12 +83,8 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let model = load_model_required(dir)?;
     // KNX Data Secure group keys (issue #172): a secured GA is sealed under its
     // group key; a secured GA without one is refused below.
-    let group_keys = keyring
-        .map(|path| {
-            bussard_service::secure::load_group_keys(path)
-                .with_context(|| format!("loading group keys from {}", path.display()))
-        })
-        .transpose()?;
+    let group_keys =
+        bussard_service::group::load_keys(keyring).map_err(crate::read_cmd::group_error)?;
 
     // Every check short of sending: protected (unless --force), the DPT
     // (--dpt wins, else groups.toml), parse and encode.
@@ -126,87 +122,59 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::FAILURE);
     }
 
-    let secured = write.is_secured();
     // Sender admission (issue #297): the evidence besides the lock is the
-    // keyring's interface entries. Loaded from the same memoized decrypt as
-    // the group keys.
-    let evidence = match (secured, keyring) {
-        (true, Some(path)) => bussard_service::secure::load_admission_evidence(path)
-            .with_context(|| format!("loading the interfaces of {}", path.display()))?,
-        _ => AdmissionEvidence::default(),
-    };
-    // Issue #316: the receivers' tool keys, to read an unknown admission
-    // from their PID 54 before sending.
-    let keys = match (secured, keyring) {
-        (true, Some(path)) => {
-            bussard_service::secure::ToolKeys::load(bussard_service::secure::ToolKeySource {
-                keyring: Some(path),
-                tool_key: None,
-            })?
-        }
-        _ => bussard_service::secure::ToolKeys::default(),
-    };
+    // keyring's interface entries; an unknown verdict reads the receivers'
+    // PID 54 first (issue #316).
     let runtime = tokio::runtime::Runtime::new()?;
-    let model_ref = model.as_ref();
-    let lock_dir = model_ref.map(|_| dir);
-    let (outcome, resolved) = runtime.block_on(async move {
+    let live = tokio::sync::Mutex::default();
+    let ctx = bussard_service::group::GroupContext {
+        model: model.as_ref(),
+        keyring,
+        lock_dir: model.as_ref().map(|_| dir),
+        live: &live,
+        warm: None,
+        limiter: None,
+    };
+    let outcome = runtime.block_on(async {
         let service = open_service(config, WritePolicy::transmit(allow_remote_gateway)).await?;
-        // The tunnel's address is known once the tunnel is up: check that the
-        // devices on a secured GA admit it before anything is sent; an
-        // unknown verdict reads the receivers' PID 54 first (issue #316).
-        let source = bussard_bus::ops::group_source(service.handle());
-        let resolved = if secured {
-            let mut live = admission::LiveTables::new();
-            Some(
-                admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
-                    admission::check_tunnel_write(model_ref, ga, source, &evidence, live)
-                })
-                .await,
-            )
-        } else {
-            None
-        };
-        let result = if resolved.as_ref().is_some_and(|r| r.admission.is_refused()) {
-            None
-        } else {
-            Some(service.send_prepared(write).await)
-        };
+        let outcome = bussard_service::group::write(&service, &ctx, write).await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         service.close().await;
-        anyhow::Ok((result, resolved))
+        anyhow::Ok(outcome.map_err(crate::read_cmd::group_error)?)
     })?;
-    for device in resolved.iter().flat_map(|r| &r.read) {
+    for device in &outcome.tables_read {
         eprintln!(
             "read {device}'s security individual address table (PID 54) and recorded it in \
              bussard.lock"
         );
     }
-    let admission = resolved.as_ref().map(|r| r.admission.clone());
-    let Some(outcome) = outcome else {
+    let admission = outcome.admission;
+    let outcome_result = match outcome.result {
+        Ok(result) => result,
         // Refused before sending: the devices would discard the telegram.
-        let admission = admission.as_ref();
-        let refusal = admission.and_then(Admission::refusal).unwrap_or_default();
-        let hint = admission
-            .and_then(Admission::admit_hint)
-            .unwrap_or_default();
-        if json {
-            crate::output::print(
-                crate::output::schema::WRITE,
-                &serde_json::json!({
-                    "ga": ga.to_string(),
-                    "secured": true,
-                    "gateway": gateway,
-                    "sent": false,
-                    "admission": "refused",
-                    "reason": refusal,
-                    "hint": hint,
-                }),
-            )?;
+        Err(refused) => {
+            let refusal = refused.refusal().unwrap_or_default();
+            let hint = refused.admit_hint().unwrap_or_default();
+            if json {
+                crate::output::print(
+                    crate::output::schema::WRITE,
+                    &serde_json::json!({
+                        "ga": ga.to_string(),
+                        "secured": true,
+                        "gateway": gateway,
+                        "sent": false,
+                        "admission": "refused",
+                        "reason": refusal,
+                        "hint": hint,
+                    }),
+                )?;
+            }
+            eprintln!("error: {refusal}\n{hint}");
+            return Ok(ExitCode::FAILURE);
         }
-        eprintln!("error: {refusal}\n{hint}");
-        return Ok(ExitCode::FAILURE);
     };
-    let note = resolved.as_ref().and_then(admission::Resolved::note);
+    let note = outcome.note;
+    let outcome = outcome_result;
 
     match outcome {
         Ok(sent) => {

@@ -95,9 +95,12 @@ pub mod group_security;
 /// The one wording per condition every surface reports (issue #228), from
 /// the transport crate so the libraries below this one share it.
 pub use bussard_transport::guidance;
+pub mod history;
 pub mod identity;
 pub mod ip_secure;
 pub mod knxnet;
+pub mod learn;
+pub mod limit;
 pub mod line;
 pub mod model_handle;
 pub mod params;
@@ -117,6 +120,7 @@ pub mod setup;
 pub mod status;
 pub mod util;
 pub mod verify;
+pub mod warm;
 pub mod write;
 
 pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};

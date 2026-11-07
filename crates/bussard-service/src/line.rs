@@ -5,8 +5,9 @@
 //! `knx_plan_device` / `knx_apply_device` all visit a device through
 //! [`visit_device`], so the CLI and the MCP server read, refuse, back up,
 //! write and read back each device the same way (the #314 rule). The
-//! surfaces keep their own loop around it: the CLI its resume state file and
-//! summary table, the MCP server its job and plan digest.
+//! surfaces keep their own loop around it: the CLI its resume record
+//! ([`resume::LineState`]) and summary table, the MCP server its job and
+//! plan digest.
 //!
 //! What a visit reuses, so the line path never drifts from the single-device
 //! one:
@@ -43,6 +44,8 @@ use crate::params::{MissingProduct, ParseHook, ProductSource, Selection, resolve
 use crate::secure::SecureMaterial;
 use crate::util::{chain, one_line, session_error_detail};
 use crate::{BusService, L4Options, ServiceError};
+
+pub mod resume;
 
 /// Why a line argument could not be parsed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

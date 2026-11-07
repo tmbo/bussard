@@ -21,12 +21,11 @@ use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::admission::Admission;
-use bussard_service::describe::walk_objects;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
-    DptOverridePolicy, L4Options, ServiceError, WriteCheck, WriteRefusal, WriteValue,
-    group_key_for, prepare_group_write,
+    DptOverridePolicy, ServiceError, WriteCheck, WriteRefusal, WriteValue, prepare_group_write,
 };
+use bussard_service::{describe, group};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
@@ -166,35 +165,6 @@ impl BussardMcp {
     ) -> Self {
         self.enroll = crate::tools_enroll::EnrollJobs::with_timeouts(timeouts);
         self
-    }
-
-    /// Resolves an unknown sender admission by reading the receivers' PID 54
-    /// once per server lifetime (issue #316, see
-    /// [`bussard_service::admission::resolve_unknown`]). The tables read are
-    /// recorded in the lock.
-    async fn resolve_admission(
-        &self,
-        service: &bussard_service::BusService,
-        verdict: impl Fn(&bussard_service::admission::LiveTables) -> Admission,
-    ) -> bussard_service::admission::Resolved {
-        let keys = bussard_service::secure::ToolKeys::load(ToolKeySource {
-            keyring: self.state.keyring.as_deref(),
-            tool_key: None,
-        })
-        .unwrap_or_default();
-        // Recorded as adopt and a verified apply record it: evidence about the
-        // device, not a model edit.
-        let dir = Some(self.state.dir.as_path());
-        // Management calls are sequential (issue #215): the read opens its
-        // own lease, so the warm connection is released first.
-        let mut warm = self.warm.lock().await;
-        warm.release().await;
-        let mut live = self.admission_tables.lock().await;
-        let resolved =
-            bussard_service::admission::resolve_unknown(service, dir, &keys, &mut live, verdict)
-                .await;
-        drop(warm);
-        resolved
     }
 
     /// The shared state (for tests and the runner).
@@ -842,22 +812,9 @@ impl BussardMcp {
         // server's `--keyring`, or `secure: true` in the model) is read with a
         // secured GroupValueRead; a secured GA without a key is refused.
         let model = self.state.model.current();
-        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
-            Ok(keys) => keys,
-            Err(reason) => {
-                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-            }
-        };
-        let key = match group_key_for(Some(&model), ga, keys.as_deref()) {
+        let key = match group::read_key(Some(&model), ga, self.state.keyring.as_deref()) {
             Ok(key) => key,
-            Err(err) => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "refused": true,
-                    "reason": crate::secure_group::no_key_reason(&err),
-                }));
-            }
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
 
         let Some(service) = self.state.bus.service() else {
@@ -879,54 +836,30 @@ impl BussardMcp {
         }
 
         // Sender admission (issue #297): a responder that does not admit the
-        // tunnel address never answers a secured read.
-        let sender = bussard_bus::ops::group_source(service.handle());
-        let admission = match &key {
-            Some(_) => {
-                let evidence =
-                    match crate::secure_group::admission_evidence(self.state.keyring.as_deref()) {
-                        Ok(evidence) => evidence,
-                        Err(reason) => {
-                            return ok(
-                                json!({ "ga": ga.to_string(), "ok": false, "reason": reason }),
-                            );
-                        }
-                    };
-                // An unknown verdict reads the responders' PID 54 first (#316).
-                Some(
-                    self.resolve_admission(service, |live| {
-                        bussard_service::admission::check_sender_admission(
-                            Some(&model),
-                            ga,
-                            sender,
-                            &evidence,
-                            live,
-                        )
-                    })
-                    .await,
-                )
-            }
-            None => None,
-        };
-        let note = resolved_note(admission.as_ref());
-        let admission = admission.map(|r| r.admission);
-        if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
-            return ok(admission_refusal_json(ga, refused));
-        }
-
-        // Rate limit + concurrency cap. Hold the permit across the whole read.
-        let _permit = self.state.read_limiter.acquire().await;
-
-        // The shared read implementation: subscribe, send (completion-tracked),
-        // skip the L_Data.con echo, decode against the GA's DPT (#32, #30).
-        let dpt = model.groups.groups.get(&ga).and_then(|g| g.dpt);
-        match service
-            .read_group(ga, dpt, key.as_ref(), READ_RESPONSE_TIMEOUT)
-            .await
+        // tunnel address never answers a secured read; an unknown verdict
+        // reads the responders' PID 54 first (#316). Rate limit + concurrency
+        // cap across the whole read. The shared read implementation:
+        // subscribe, send (completion-tracked), skip the L_Data.con echo,
+        // decode against the GA's DPT (#32, #30).
+        let secured = key.is_some();
+        let outcome = match group::read(
+            service,
+            &self.group_context(&model),
+            ga,
+            key,
+            READ_RESPONSE_TIMEOUT,
+        )
+        .await
         {
-            Ok(Some(read)) => {
-                let outcome = read.outcome;
-                let (display, typed) = match &outcome.value {
+            Ok(outcome) => outcome,
+            Err(err) => return ok(group_error_json(ga, &err)),
+        };
+        let admission = outcome.admission.as_ref();
+        match outcome.result {
+            Err(refused) => ok(admission_refusal_json(ga, &refused)),
+            Ok(Ok(Some(read))) => {
+                let read_outcome = read.outcome;
+                let (display, typed) = match &read_outcome.value {
                     Some(v) => (Some(v.to_string()), tools::typed_value_json(v)),
                     None => (None, Value::Null),
                 };
@@ -935,26 +868,26 @@ impl BussardMcp {
                     "ok": true,
                     "value": display,
                     "typed": typed,
-                    "dpt": outcome.dpt.map(|d| d.to_string()),
-                    "source": outcome.source.to_string(),
+                    "dpt": read_outcome.dpt.map(|d| d.to_string()),
+                    "source": read_outcome.source.to_string(),
                     "secured": read.secured,
-                    "admission": admission.as_ref().map(Admission::label),
+                    "admission": admission.map(Admission::label),
                 }))
             }
-            Ok(None) => ok(json!({
+            Ok(Ok(None)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "timed_out": true,
-                "secured": key.is_some(),
-                "reason": if key.is_some() {
-                    bussard_service::admission::secured_read_timeout(ga, sender)
+                "secured": secured,
+                "reason": if secured {
+                    bussard_service::admission::secured_read_timeout(ga, outcome.sender)
                 } else {
                     "no response within timeout".to_string()
                 },
-                "admission": admission.as_ref().map(Admission::label),
-                "note": note,
+                "admission": admission.map(Admission::label),
+                "note": outcome.note,
             })),
-            Err(err) => ok(json!({
+            Ok(Err(err)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "reason": format!("bus send failed: {err}"),
@@ -1017,27 +950,24 @@ impl BussardMcp {
         // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
         // wraps every management APDU, exactly as `bussard describe --keyring`.
         // A device the keyring does not list is read in the clear, unless the
-        // model records it as security-activated (issue #189).
-        let activated = bussard_service::secure::model_activated(
-            Some(self.state.model.current().as_ref()),
-            target,
-        );
-        // The device's FDSK rides along: a device reset to default is named,
-        // not read under the factory key (issue #532).
-        let (tool_key, factory_key) = match bussard_service::secure::resolve_session_keys(
+        // model records it as security-activated (issue #189). The device's
+        // FDSK rides along: a device reset to default is named, not read under
+        // the factory key (issue #532).
+        let model = self.state.model.current();
+        let keys = match describe::session_keys(
+            Some(model.as_ref()),
             target,
             ToolKeySource {
                 keyring: self.state.keyring.as_deref(),
                 tool_key: None,
             },
-            activated,
         ) {
-            Ok(key) => key,
+            Ok(keys) => keys,
             Err(err) => {
                 return ok(json!({
                     "address": target.to_string(),
                     "ok": false,
-                    "reason": error_chain(&err),
+                    "reason": bussard_service::program::chain(&err),
                 }));
             }
         };
@@ -1047,84 +977,23 @@ impl BussardMcp {
         // permit across the whole session.
         let _permit = self.state.read_limiter.acquire().await;
 
-        // Authorize (free access) as ETS does before configuration access; a
-        // best-effort read tolerates a device without authorize.
-        let options = L4Options::secured(
-            ops::group_source(service.handle()),
-            tool_key,
-            bussard_secure::SequenceHighWater::new(),
-        )
-        .with_factory_key(factory_key);
         // The warm connection (issue #215): a call to the device the previous
         // call talked to, within the idle window and on the same tunnel, reuses
-        // its connection; anything else kept is disconnected first. The lock is
-        // held for the whole session, so management calls stay sequential.
-        let secure = options.tool_key.is_some();
+        // its connection. The lock is held for the whole session, so
+        // management calls stay sequential.
+        let request = describe::DescribeRequest {
+            target,
+            model: Some(model.as_ref()),
+            dir: None,
+            keys,
+            source: ops::group_source(service.handle()).into(),
+            authorize: bussard_service::Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+            walk: describe::Walk::Objects,
+        };
         let mut warm = self.warm.lock().await;
-        let reused = warm
-            .take(target, secure, service.handle().link_losses())
-            .await;
-        let mut result = Err(String::new());
-        let mut kept = None;
-        if let Some(mut l4) = reused {
-            result = describe_over_l4(&mut l4).await;
-            match &result {
-                Ok(_) => kept = Some(l4),
-                // A failure on a reused connection is repeated once on a fresh
-                // one: the device may have dropped it in the meantime.
-                Err(reason) => {
-                    tracing::debug!(
-                        "{target}: the warm connection failed ({reason}); reconnecting"
-                    );
-                    let _ = l4.disconnect().await;
-                }
-            }
-        }
-        if kept.is_none() {
-            let mut l4 = match service.connect_l4(target, &options).await {
-                Ok(l4) => l4,
-                Err(ServiceError::Lease(err)) => {
-                    return ok(json!({
-                        "address": target.to_string(),
-                        "ok": false,
-                        "reason": format!("could not lease the bus: {err}"),
-                    }));
-                }
-                Err(err) => {
-                    return ok(json!({
-                        "address": target.to_string(),
-                        "ok": false,
-                        "reason": format!("could not connect: {err}"),
-                    }));
-                }
-            };
-            result = describe_over_l4(&mut l4).await;
-            if result.is_ok() {
-                kept = Some(l4);
-            } else {
-                let _ = l4.disconnect().await;
-            }
-        }
-        // A walk that found no interface object, or failed, on a plain
-        // session: the device may refuse plain access (issue #155). The FDSK
-        // probe of `bussard describe` runs next (issues #532, #571), on a
-        // connection of its own, so the plain one is not kept.
-        let refused = result
-            .as_ref()
-            .map_or(true, |(objects, _)| objects.is_empty());
-        match kept {
-            Some(l4) if refused && options.factory_key.is_some() && !secure => {
-                let _ = l4.disconnect().await;
-            }
-            Some(l4) => warm.keep(l4, target, secure, service.handle().link_losses()),
-            None => {}
-        }
-        let on_factory_key = bussard_service::identity::refused_walk_answers_under_factory_key(
-            service, target, &options, refused,
-        )
-        .await;
+        let outcome = describe::run(service, &request, Some(&mut warm)).await;
         drop(warm);
-        if on_factory_key {
+        if outcome.on_factory_key {
             return ok(json!({
                 "address": target.to_string(),
                 "ok": false,
@@ -1132,25 +1001,31 @@ impl BussardMcp {
                 "reason": bussard_service::identity::factory_key_message(target),
             }));
         }
-
-        match result {
-            Ok((objects, security)) => {
+        let reason = match outcome.walk {
+            Ok(walked) => {
                 let mut out = json!({
                     "address": target.to_string(),
                     "ok": true,
-                    "objects": objects,
+                    "objects": walked.objects,
                 });
-                if let Some(security) = security {
-                    out["security_diagnostics"] = security;
+                match walked.security {
+                    Some(Ok(diag)) => out["security_diagnostics"] = json!(diag),
+                    Some(Err(note)) => out["security_diagnostics"] = json!({ "notes": [note] }),
+                    None => {}
                 }
-                ok(out)
+                return ok(out);
             }
-            Err(reason) => ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": reason,
-            })),
-        }
+            Err(describe::RunError::Session(ServiceError::Lease(err))) => {
+                format!("could not lease the bus: {err}")
+            }
+            Err(describe::RunError::Session(err)) => format!("could not connect: {err}"),
+            Err(err) => bussard_service::program::chain(&err),
+        };
+        ok(json!({
+            "address": target.to_string(),
+            "ok": false,
+            "reason": reason,
+        }))
     }
 
     /// `knx_write_group` (registered only with `--allow-writes`, never in passive
@@ -1202,11 +1077,9 @@ impl BussardMcp {
         // force on the very next write rather than after a restart.
         let model = self.state.model.current();
         // KNX Data Secure group keys from the server's `--keyring` (issue #172).
-        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
+        let keys = match group::load_keys(self.state.keyring.as_deref()) {
             Ok(keys) => keys,
-            Err(reason) => {
-                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-            }
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
 
         // The shared write policy (bussard_service::write). Protected GAs are
@@ -1223,7 +1096,7 @@ impl BussardMcp {
             dpt: args.dpt.as_deref(),
             dpt_policy: DptOverridePolicy::MustMatchModel,
             force: false,
-            group_keys: keys.as_deref(),
+            group_keys: keys.as_ref(),
         };
         let write =
             match prepare_group_write(Some(&model), ga, WriteValue::Human(&args.value), &check) {
@@ -1252,48 +1125,18 @@ impl BussardMcp {
         }
 
         // Sender admission (issue #297): refuse a secured write the devices on
-        // the GA would discard, before anything is sent.
-        let admission = if write.is_secured() {
-            let evidence =
-                match crate::secure_group::admission_evidence(self.state.keyring.as_deref()) {
-                    Ok(evidence) => evidence,
-                    Err(reason) => {
-                        return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-                    }
-                };
-            let sender = bussard_bus::ops::group_source(service.handle());
-            // E038 (issue #348): a tunnel-only secured GA whose devices admit
-            // no tunnelling address is refused while admit_tunnel_senders is
-            // off. An unknown verdict reads the receivers' PID 54 first, and
-            // a "not listed" there refuses too (issue #316).
-            Some(
-                self.resolve_admission(service, |live| {
-                    bussard_service::admission::check_tunnel_write(
-                        Some(&model),
-                        ga,
-                        sender,
-                        &evidence,
-                        live,
-                    )
-                })
-                .await,
-            )
-        } else {
-            None
+        // the GA would discard, before anything is sent. The rate limiter's
+        // spacing and concurrency cap are shared with reads. Sent once,
+        // completion-tracked against the gateway ACK; a transport failure
+        // surfaces as ok:false, an honest failure, not a silent success.
+        let outcome = match group::write(service, &self.group_context(&model), write).await {
+            Ok(outcome) => outcome,
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
-        let note = resolved_note(admission.as_ref());
-        let admission = admission.map(|r| r.admission);
-        if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
-            return ok(admission_refusal_json(ga, refused));
-        }
-
-        // Share the read rate limiter (spacing + concurrency cap) with writes.
-        let _permit = self.state.read_limiter.acquire().await;
-
-        // Send once (completion-tracked against the gateway ACK). A transport
-        // failure surfaces as ok:false — an honest failure, not a silent success.
-        match service.send_prepared(write).await {
-            Ok(sent) => ok(json!({
+        let admission = outcome.admission.as_ref();
+        match outcome.result {
+            Err(refused) => ok(admission_refusal_json(ga, &refused)),
+            Ok(Ok(sent)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": true,
                 "confirmed": sent.confirmed,
@@ -1305,8 +1148,8 @@ impl BussardMcp {
                     bussard_service::admission::WRITE_RESULT_UNCONFIRMED
                 },
                 "secured": sent.write.is_secured(),
-                "admission": admission.as_ref().map(Admission::label),
-                "note": note,
+                "admission": admission.map(Admission::label),
+                "note": outcome.note,
                 "written": {
                     "address": ga.to_string(),
                     "name": sent.write.name,
@@ -1314,15 +1157,46 @@ impl BussardMcp {
                     "dpt": sent.write.dpt.map(|d| d.to_string()),
                 },
             })),
-            Err(refusal) => ok(write_refusal_json(ga, &refusal)),
+            Ok(Err(refusal)) => ok(write_refusal_json(ga, &refusal)),
         }
     }
 }
 
-/// The note of a secured write or read sent without admission evidence, with
-/// the reasons a PID 54 read failed (issues #297, #316).
-fn resolved_note(resolved: Option<&bussard_service::admission::Resolved>) -> Option<String> {
-    resolved.and_then(bussard_service::admission::Resolved::note)
+/// What a group read or write shares with this server: the model, the
+/// keyring, the lock, the PID 54 tables read in its lifetime, the warm
+/// connection and the rate limiter.
+impl BussardMcp {
+    fn group_context<'a>(&'a self, model: &'a bussard_model::Model) -> group::GroupContext<'a> {
+        group::GroupContext {
+            model: Some(model),
+            keyring: self.state.keyring.as_deref(),
+            lock_dir: Some(self.state.dir.as_path()),
+            live: &self.admission_tables,
+            warm: Some(&self.warm),
+            limiter: Some(&self.state.read_limiter),
+        }
+    }
+}
+
+/// The result of a group read or write that could not start: `ok: false`,
+/// the reason, and `refused: true` for a secured GA without a group key.
+fn group_error_json(ga: GroupAddress, err: &group::GroupError) -> Value {
+    match err {
+        group::GroupError::NoKey(err) => json!({
+            "ga": ga.to_string(),
+            "ok": false,
+            "refused": true,
+            "reason": crate::secure_group::no_key_reason(err),
+        }),
+        group::GroupError::Keys { source, .. } | group::GroupError::Evidence { source, .. } => {
+            json!({ "ga": ga.to_string(), "ok": false, "reason": bussard_service::program::chain(source) })
+        }
+        group::GroupError::ToolKeys(err) => json!({
+            "ga": ga.to_string(),
+            "ok": false,
+            "reason": bussard_service::program::chain(err),
+        }),
+    }
 }
 
 /// The result of a secured write or read refused for sender admission (issue
@@ -1390,54 +1264,6 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         body["refused"] = json!(true);
     }
     body
-}
-
-/// Discovers a device's interface objects and enumerates each one's property
-/// descriptions over the L4 session, returning the JSON array the
-/// `knx_describe_device` tool reports. Read-only on the bus.
-///
-/// A failure to read the descriptor or discover objects is returned as a human
-/// reason string (the tool surfaces it as `ok:false`), never a panic.
-async fn describe_over_l4<Ch: bussard_mgmt::L4Channel>(
-    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
-) -> Result<(Vec<Value>, Option<Value>), String> {
-    // Scale property reads to the device's max APDU when it exposes it.
-    let _ = l4.negotiate_max_apdu().await;
-    let objects = walk_objects(l4).await.map_err(|e| error_chain(&e))?;
-    // A Data Secure device read with its tool key: the security failures log,
-    // report and report control too (issue #533).
-    let security = if l4.is_secure() {
-        Some(
-            match bussard_download::read_security_diagnostics(l4).await {
-                Ok(diag) => json!(diag),
-                Err(err) => {
-                    json!({ "notes": [format!("Data Secure diagnostics not read: {err}")] })
-                }
-            },
-        )
-    } else {
-        None
-    };
-    Ok((
-        objects
-            .iter()
-            .map(|o| tools::describe_object_json(o.index, o.object_type, &o.properties))
-            .collect(),
-        security,
-    ))
-}
-
-/// Renders an error with its source chain on one line (`outer: inner: ...`),
-/// the shape an MCP `reason` string wants.
-fn error_chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut source = err.source();
-    while let Some(inner) = source {
-        out.push_str(": ");
-        out.push_str(&inner.to_string());
-        source = inner.source();
-    }
-    out
 }
 
 /// A dedup key for a telegram: the fields that uniquely identify one bus event.

@@ -27,6 +27,7 @@
 //! the device drops the telegram silently. Nothing here prints key material.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bussard_bus::ops::{self, ReadOutcome};
@@ -35,7 +36,11 @@ use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_secure::{AsduError, Key16, SecurityAlgorithm, Sequence, decode_group, encode_group};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination, MessageCode};
 
+use crate::admission::{Admission, AdmissionEvidence, LiveTables, Resolved};
 use crate::bus::BusService;
+use crate::limit::ReadLimiter;
+use crate::secure::{SecureKeyError, ToolKeySource, ToolKeys};
+use crate::warm::WarmConnection;
 
 /// The keyring's group keys, by group address (the `.knxkeys`
 /// `GroupAddresses/Group@Key` entries).
@@ -234,6 +239,250 @@ fn unwrap_answer(frame: &CemiFrame, ga: GroupAddress, key: &Key16) -> Option<(Ve
             Some((d.bytes(), plain.sequence.value()))
         }
         _ => None,
+    }
+}
+
+/// Why a group read or write could not start; nothing was sent.
+#[derive(Debug, thiserror::Error)]
+pub enum GroupError {
+    /// The keyring's group keys did not load.
+    #[error("loading group keys from {}", path.display())]
+    Keys {
+        /// The keyring.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: SecureKeyError,
+    },
+    /// The GA is secured but has no group key.
+    #[error(transparent)]
+    NoKey(#[from] SecureGroupError),
+    /// The keyring's interface entries (the admission evidence) did not load.
+    #[error("loading the interfaces of {}", path.display())]
+    Evidence {
+        /// The keyring.
+        path: PathBuf,
+        /// Why.
+        #[source]
+        source: SecureKeyError,
+    },
+    /// The receivers' tool keys (for their PID 54 read) did not load.
+    #[error(transparent)]
+    ToolKeys(SecureKeyError),
+}
+
+/// The keyring's group keys, `None` without a keyring.
+///
+/// # Errors
+///
+/// [`GroupError::Keys`] when the keyring does not load.
+pub fn load_keys(keyring: Option<&Path>) -> Result<Option<GroupKeys>, GroupError> {
+    keyring
+        .map(|path| {
+            crate::secure::load_group_keys(path).map_err(|source| GroupError::Keys {
+                path: path.to_path_buf(),
+                source,
+            })
+        })
+        .transpose()
+}
+
+/// The group key to read `ga` with ([`group_key_for`] over the keyring's
+/// keys), `None` for the plain path.
+///
+/// # Errors
+///
+/// The keyring does not load, or the GA is secured without a key.
+pub fn read_key(
+    model: Option<&Model>,
+    ga: GroupAddress,
+    keyring: Option<&Path>,
+) -> Result<Option<Key16>, GroupError> {
+    let keys = load_keys(keyring)?;
+    Ok(group_key_for(model, ga, keys.as_ref())?)
+}
+
+/// What a group read or write shares with the surface that runs it.
+pub struct GroupContext<'a> {
+    /// The model: the GA's DPT, its receivers and the admission evidence of
+    /// the lock.
+    pub model: Option<&'a Model>,
+    /// The keyring: the admission evidence and the receivers' tool keys.
+    pub keyring: Option<&'a Path>,
+    /// The model directory whose lock records a PID 54 read, `None` to
+    /// record nothing.
+    pub lock_dir: Option<&'a Path>,
+    /// The PID 54 tables read so far; a surface that keeps them (the MCP
+    /// server, for its lifetime) reads each device once (issue #316).
+    pub live: &'a tokio::sync::Mutex<LiveTables>,
+    /// The warm management connection, released before a PID 54 read opens
+    /// its own session (issue #215).
+    pub warm: Option<&'a WarmConnection>,
+    /// The rate limiter, held across the read or the send.
+    pub limiter: Option<&'a ReadLimiter>,
+}
+
+/// What a group read or write did.
+#[derive(Debug)]
+pub struct GroupOutcome<R> {
+    /// The tunnel's individual address, the telegram's source.
+    pub sender: IndividualAddress,
+    /// The sender admission verdict of a secured GA (issue #297).
+    pub admission: Option<Admission>,
+    /// The note of a secured telegram sent without admission evidence.
+    pub note: Option<String>,
+    /// The receivers whose PID 54 was read and recorded in the lock.
+    pub tables_read: Vec<IndividualAddress>,
+    /// The read or the send, or the refused admission when nothing was sent.
+    pub result: Result<R, Admission>,
+}
+
+/// What [`read`] returns: the response, `None` on a timeout.
+pub type ReadResult = Result<Option<GroupRead>, GroupSendError>;
+
+/// What [`write`] returns: the send.
+pub type WriteResult = Result<crate::write::WriteOutcome, crate::write::WriteRefusal>;
+
+/// Resolves the sender admission of a secured GA (issue #297): the evidence of
+/// the keyring and the lock, and on an unknown verdict the receivers' PID 54
+/// read (issue #316).
+async fn admission(
+    service: &BusService,
+    ctx: &GroupContext<'_>,
+    verdict: impl Fn(&AdmissionEvidence, &LiveTables) -> Admission,
+) -> Result<Resolved, GroupError> {
+    let evidence = match ctx.keyring {
+        Some(path) => {
+            crate::secure::load_admission_evidence(path).map_err(|source| GroupError::Evidence {
+                path: path.to_path_buf(),
+                source,
+            })?
+        }
+        None => AdmissionEvidence::default(),
+    };
+    let keys = match ctx.keyring {
+        Some(_) => ToolKeys::load(ToolKeySource {
+            keyring: ctx.keyring,
+            tool_key: None,
+        })
+        .map_err(GroupError::ToolKeys)?,
+        None => ToolKeys::default(),
+    };
+    // Management calls are sequential (issue #215): the read opens its own
+    // lease, so the warm connection is released first.
+    let mut warm = match ctx.warm {
+        Some(warm) => Some(warm.lock().await),
+        None => None,
+    };
+    if let Some(warm) = warm.as_mut() {
+        warm.release().await;
+    }
+    let mut live = ctx.live.lock().await;
+    let resolved =
+        crate::admission::resolve_unknown(service, ctx.lock_dir, &keys, &mut live, |live| {
+            verdict(&evidence, live)
+        })
+        .await;
+    drop(warm);
+    Ok(resolved)
+}
+
+/// Reads `ga` (issue #172): the secured `GroupValueRead` under `key`, after
+/// the sender admission of a secured GA (issue #297), held under the rate
+/// limiter. A responder known not to admit the tunnel address is not asked.
+///
+/// # Errors
+///
+/// The admission evidence or the tool keys did not load; nothing was sent.
+pub async fn read(
+    service: &BusService,
+    ctx: &GroupContext<'_>,
+    ga: GroupAddress,
+    key: Option<Key16>,
+    timeout: Duration,
+) -> Result<GroupOutcome<ReadResult>, GroupError> {
+    let sender = ops::group_source(service.handle());
+    let model = ctx.model;
+    let resolved = match key {
+        Some(_) => Some(
+            admission(service, ctx, |evidence, live| {
+                crate::admission::check_sender_admission(model, ga, sender, evidence, live)
+            })
+            .await?,
+        ),
+        None => None,
+    };
+    let dpt = model
+        .and_then(|m| m.groups.groups.get(&ga))
+        .and_then(|g| g.dpt);
+    Ok(outcome(sender, resolved, ctx.limiter, async || {
+        service.read_group(ga, dpt, key.as_ref(), timeout).await
+    })
+    .await)
+}
+
+/// Sends the checked `write` ([`crate::write::prepare_group_write`]) once,
+/// after the sender admission of a secured GA (issue #297), held under the
+/// rate limiter. A write the receivers would discard is not sent.
+///
+/// # Errors
+///
+/// The admission evidence or the tool keys did not load; nothing was sent.
+pub async fn write(
+    service: &BusService,
+    ctx: &GroupContext<'_>,
+    write: crate::write::PreparedWrite,
+) -> Result<GroupOutcome<WriteResult>, GroupError> {
+    let sender = ops::group_source(service.handle());
+    let (model, ga) = (ctx.model, write.ga);
+    // E038 (issue #348): a tunnel-only secured GA whose devices admit no
+    // tunnelling address is refused while admit_tunnel_senders is off; an
+    // unknown verdict reads the receivers' PID 54 first, and a "not listed"
+    // there refuses too (issue #316).
+    let resolved = if write.is_secured() {
+        Some(
+            admission(service, ctx, |evidence, live| {
+                crate::admission::check_tunnel_write(model, ga, sender, evidence, live)
+            })
+            .await?,
+        )
+    } else {
+        None
+    };
+    Ok(outcome(sender, resolved, ctx.limiter, async || {
+        service.send_prepared(write).await
+    })
+    .await)
+}
+
+/// Runs `send` under the rate limiter unless the admission refused it.
+async fn outcome<R>(
+    sender: IndividualAddress,
+    resolved: Option<Resolved>,
+    limiter: Option<&ReadLimiter>,
+    send: impl AsyncFnOnce() -> R,
+) -> GroupOutcome<R> {
+    let note = resolved.as_ref().and_then(Resolved::note);
+    let (admission, tables_read) = match resolved {
+        Some(r) => (Some(r.admission), r.read),
+        None => (None, Vec::new()),
+    };
+    let result = match admission.as_ref().filter(|a| a.is_refused()) {
+        Some(refused) => Err(refused.clone()),
+        None => {
+            let _permit = match limiter {
+                Some(limiter) => limiter.acquire().await,
+                None => None,
+            };
+            Ok(send().await)
+        }
+    };
+    GroupOutcome {
+        sender,
+        admission,
+        note,
+        tables_read,
+        result,
     }
 }
 

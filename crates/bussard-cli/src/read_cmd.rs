@@ -18,10 +18,10 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use anyhow::Context;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_service::admission::{self, Admission, AdmissionEvidence};
-use bussard_service::{SecureGroupError, WritePolicy, group_key_for};
+use bussard_service::admission;
+use bussard_service::group::GroupError;
+use bussard_service::{SecureGroupError, WritePolicy};
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{load_model_optional, open_service, resolve_config};
@@ -80,105 +80,59 @@ fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
 
     let model = load_model_optional(dir);
     let config = resolve_config(model.as_ref(), &overrides)?;
-    // The DPT to decode against: the GA's DPT from the model, if known.
-    let dpt = model
-        .as_ref()
-        .and_then(|m| m.groups.groups.get(&ga))
-        .and_then(|g| g.dpt);
     let ga_name = model
         .as_ref()
         .and_then(|m| m.groups.groups.get(&ga))
         .map(|g| g.name.clone());
     // KNX Data Secure (issue #172): decide plain vs secured before connecting.
-    let group_keys = keyring
-        .map(|path| {
-            bussard_service::secure::load_group_keys(path)
-                .with_context(|| format!("loading group keys from {}", path.display()))
-        })
-        .transpose()?;
-    let key = group_key_for(model.as_ref(), ga, group_keys.as_ref()).map_err(
-        |SecureGroupError::NoKey { ga, keyring_given }| {
-            anyhow::anyhow!(crate::secure_key::no_group_key_hint(ga, keyring_given))
-        },
-    )?;
+    let key = bussard_service::group::read_key(model.as_ref(), ga, keyring).map_err(group_error)?;
     let secured = key.is_some();
-    // Sender admission (issue #297): a secured read the responder does not
-    // admit is never answered.
-    let evidence = match (secured, keyring) {
-        (true, Some(path)) => bussard_service::secure::load_admission_evidence(path)
-            .with_context(|| format!("loading the interfaces of {}", path.display()))?,
-        _ => AdmissionEvidence::default(),
-    };
-    // Issue #316: the responders' tool keys, to read an unknown admission
-    // from their PID 54 before asking.
-    let keys = match (secured, keyring) {
-        (true, Some(path)) => {
-            bussard_service::secure::ToolKeys::load(bussard_service::secure::ToolKeySource {
-                keyring: Some(path),
-                tool_key: None,
-            })?
-        }
-        _ => bussard_service::secure::ToolKeys::default(),
-    };
 
     let runtime = tokio::runtime::Runtime::new()?;
-    let model_ref = model.as_ref();
-    let lock_dir = model_ref.map(|_| dir);
-    let (outcome, resolved, source) = runtime.block_on(async move {
+    let live = tokio::sync::Mutex::default();
+    let ctx = bussard_service::group::GroupContext {
+        model: model.as_ref(),
+        keyring,
+        lock_dir: model.as_ref().map(|_| dir),
+        live: &live,
+        warm: None,
+        limiter: None,
+    };
+    let outcome = runtime.block_on(async {
         // A read never writes, so the service is read-only and ungated.
         let service = open_service(config, WritePolicy::ReadOnly).await?;
-        let source = bussard_bus::ops::group_source(service.handle());
-        let resolved = if secured {
-            let mut live = admission::LiveTables::new();
-            Some(
-                admission::resolve_unknown(&service, lock_dir, &keys, &mut live, |live| {
-                    admission::check_sender_admission(model_ref, ga, source, &evidence, live)
-                })
-                .await,
-            )
-        } else {
-            None
-        };
-        let admission = resolved.as_ref().map(|r| r.admission.clone());
-        let result = if admission.as_ref().is_some_and(Admission::is_refused) {
-            None
-        } else {
-            Some(
-                service
-                    .read_group(ga, dpt, key.as_ref(), read_timeout())
-                    .await,
-            )
-        };
+        let outcome = bussard_service::group::read(&service, &ctx, ga, key, read_timeout()).await;
         // Close the bus cleanly (release the gateway tunnel slot) — issue #31.
         service.close().await;
-        anyhow::Ok((result, resolved, source))
+        anyhow::Ok(outcome.map_err(group_error)?)
     })?;
-    let admission = resolved.as_ref().map(|r| r.admission.clone());
-    let Some(outcome) = outcome else {
-        let admission = admission.as_ref();
-        let refusal = admission.and_then(Admission::refusal).unwrap_or_default();
-        let hint = admission
-            .and_then(Admission::admit_hint)
-            .unwrap_or_default();
-        if json {
-            crate::output::print(
-                crate::output::schema::READ,
-                &serde_json::json!({
-                    "ga": ga.to_string(),
-                    "name": ga_name,
-                    "answered": false,
-                    "secured": true,
-                    "sent": false,
-                    "admission": "refused",
-                    "error": refusal,
-                    "hint": hint,
-                }),
-            )?;
+    let source = outcome.sender;
+    let outcome_result = match outcome.result {
+        Ok(result) => result,
+        Err(refused) => {
+            let refusal = refused.refusal().unwrap_or_default();
+            let hint = refused.admit_hint().unwrap_or_default();
+            if json {
+                crate::output::print(
+                    crate::output::schema::READ,
+                    &serde_json::json!({
+                        "ga": ga.to_string(),
+                        "name": ga_name,
+                        "answered": false,
+                        "secured": true,
+                        "sent": false,
+                        "admission": "refused",
+                        "error": refusal,
+                        "hint": hint,
+                    }),
+                )?;
+            }
+            eprintln!("error: {refusal}\n{hint}");
+            return Ok(ExitCode::FAILURE);
         }
-        eprintln!("error: {refusal}\n{hint}");
-        return Ok(ExitCode::FAILURE);
     };
-    let note = resolved.as_ref().and_then(admission::Resolved::note);
+    let note = outcome.note;
+    let outcome = outcome_result;
 
     if json {
         return print_json(ga, ga_name.as_deref(), secured, source, &outcome);
@@ -229,6 +183,17 @@ fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
             eprintln!("error: could not read {ga}: {err}");
             Ok(ExitCode::FAILURE)
         }
+    }
+}
+
+/// A group read or write that could not start, in the CLI's words.
+pub(crate) fn group_error(err: GroupError) -> anyhow::Error {
+    match err {
+        GroupError::NoKey(SecureGroupError::NoKey { ga, keyring_given }) => {
+            anyhow::anyhow!(crate::secure_key::no_group_key_hint(ga, keyring_given))
+        }
+        GroupError::ToolKeys(err) => err.into(),
+        other => other.into(),
     }
 }
 
