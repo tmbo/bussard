@@ -839,6 +839,29 @@ pub fn enum_code(labels: &[(i64, String)], text: &str) -> Option<i64> {
     hits.next().is_none().then_some(*code)
 }
 
+/// Renders a stored or default code as the file writes it: the enum label
+/// when there is a usable one, else the value as is.
+pub fn display_value(def: Option<&ParamDef>, value: &str) -> String {
+    match def {
+        Some(d) if !d.labels.is_empty() => enum_label(&d.labels, value)
+            .map(str::to_string)
+            .unwrap_or_else(|| value.to_string()),
+        _ => value.to_string(),
+    }
+}
+
+/// Whether two renderings of a value mean the same (a label and its code).
+pub fn same_value(def: Option<&ParamDef>, a: &str, b: &str) -> bool {
+    let a = a.trim();
+    let b = b.trim();
+    if a == b {
+        return true;
+    }
+    let Some(d) = def else { return false };
+    let code = |v: &str| v.parse::<i64>().ok().or_else(|| enum_code(&d.labels, v));
+    matches!((code(a), code(b)), (Some(x), Some(y)) if x == y)
+}
+
 /// Reduces a device parameter **key** to the application-relative parameter id
 /// it names, so it can be looked up in a [`ProductModel`].
 ///

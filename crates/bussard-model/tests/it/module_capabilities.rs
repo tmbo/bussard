@@ -592,7 +592,8 @@ fn test_device_view_for_blocks_details_only_the_wanted_rows() -> TestResult {
     let ia: IndividualAddress = "1.1.47".parse()?;
     let products = products()?;
     let wanted = ["CH-8".to_string()].into_iter().collect();
-    let view = bussard_model::device_view::device_view_for_blocks(&model, &products, ia, wanted)?;
+    let view = bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia)?
+        .view_for_blocks(&wanted)?;
     let detail: Vec<(&str, bool)> = view
         .inactive_channels
         .iter()

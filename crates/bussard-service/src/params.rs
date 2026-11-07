@@ -1247,7 +1247,8 @@ pub fn ignored_override_notes(model: &Model, target: IndividualAddress, dir: &Pa
         return Vec::new();
     };
     let products = bussard_model::ProductModels::load_apps(dir, [app]);
-    bussard_model::device_view::ignored_overrides(model, &products, target)
+    bussard_model::device_view::DeviceAnalysis::new(model, &products, target)
+        .map(|a| a.ignored_overrides())
         .unwrap_or_default()
         .iter()
         .map(bussard_model::device_view::IgnoredOverride::sentence)
