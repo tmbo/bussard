@@ -21,11 +21,11 @@ use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::admission::Admission;
-use bussard_service::describe::walk_objects;
+use bussard_service::describe;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
-    DptOverridePolicy, L4Options, ServiceError, WriteCheck, WriteRefusal, WriteValue,
-    group_key_for, prepare_group_write,
+    DptOverridePolicy, ServiceError, WriteCheck, WriteRefusal, WriteValue, group_key_for,
+    prepare_group_write,
 };
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -1017,27 +1017,24 @@ impl BussardMcp {
         // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
         // wraps every management APDU, exactly as `bussard describe --keyring`.
         // A device the keyring does not list is read in the clear, unless the
-        // model records it as security-activated (issue #189).
-        let activated = bussard_service::secure::model_activated(
-            Some(self.state.model.current().as_ref()),
-            target,
-        );
-        // The device's FDSK rides along: a device reset to default is named,
-        // not read under the factory key (issue #532).
-        let (tool_key, factory_key) = match bussard_service::secure::resolve_session_keys(
+        // model records it as security-activated (issue #189). The device's
+        // FDSK rides along: a device reset to default is named, not read under
+        // the factory key (issue #532).
+        let model = self.state.model.current();
+        let keys = match describe::session_keys(
+            Some(model.as_ref()),
             target,
             ToolKeySource {
                 keyring: self.state.keyring.as_deref(),
                 tool_key: None,
             },
-            activated,
         ) {
-            Ok(key) => key,
+            Ok(keys) => keys,
             Err(err) => {
                 return ok(json!({
                     "address": target.to_string(),
                     "ok": false,
-                    "reason": error_chain(&err),
+                    "reason": bussard_service::program::chain(&err),
                 }));
             }
         };
@@ -1047,84 +1044,23 @@ impl BussardMcp {
         // permit across the whole session.
         let _permit = self.state.read_limiter.acquire().await;
 
-        // Authorize (free access) as ETS does before configuration access; a
-        // best-effort read tolerates a device without authorize.
-        let options = L4Options::secured(
-            ops::group_source(service.handle()),
-            tool_key,
-            bussard_secure::SequenceHighWater::new(),
-        )
-        .with_factory_key(factory_key);
         // The warm connection (issue #215): a call to the device the previous
         // call talked to, within the idle window and on the same tunnel, reuses
-        // its connection; anything else kept is disconnected first. The lock is
-        // held for the whole session, so management calls stay sequential.
-        let secure = options.tool_key.is_some();
+        // its connection. The lock is held for the whole session, so
+        // management calls stay sequential.
+        let request = describe::DescribeRequest {
+            target,
+            model: Some(model.as_ref()),
+            dir: None,
+            keys,
+            source: ops::group_source(service.handle()).into(),
+            authorize: bussard_service::Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+            walk: describe::Walk::Objects,
+        };
         let mut warm = self.warm.lock().await;
-        let reused = warm
-            .take(target, secure, service.handle().link_losses())
-            .await;
-        let mut result = Err(String::new());
-        let mut kept = None;
-        if let Some(mut l4) = reused {
-            result = describe_over_l4(&mut l4).await;
-            match &result {
-                Ok(_) => kept = Some(l4),
-                // A failure on a reused connection is repeated once on a fresh
-                // one: the device may have dropped it in the meantime.
-                Err(reason) => {
-                    tracing::debug!(
-                        "{target}: the warm connection failed ({reason}); reconnecting"
-                    );
-                    let _ = l4.disconnect().await;
-                }
-            }
-        }
-        if kept.is_none() {
-            let mut l4 = match service.connect_l4(target, &options).await {
-                Ok(l4) => l4,
-                Err(ServiceError::Lease(err)) => {
-                    return ok(json!({
-                        "address": target.to_string(),
-                        "ok": false,
-                        "reason": format!("could not lease the bus: {err}"),
-                    }));
-                }
-                Err(err) => {
-                    return ok(json!({
-                        "address": target.to_string(),
-                        "ok": false,
-                        "reason": format!("could not connect: {err}"),
-                    }));
-                }
-            };
-            result = describe_over_l4(&mut l4).await;
-            if result.is_ok() {
-                kept = Some(l4);
-            } else {
-                let _ = l4.disconnect().await;
-            }
-        }
-        // A walk that found no interface object, or failed, on a plain
-        // session: the device may refuse plain access (issue #155). The FDSK
-        // probe of `bussard describe` runs next (issues #532, #571), on a
-        // connection of its own, so the plain one is not kept.
-        let refused = result
-            .as_ref()
-            .map_or(true, |(objects, _)| objects.is_empty());
-        match kept {
-            Some(l4) if refused && options.factory_key.is_some() && !secure => {
-                let _ = l4.disconnect().await;
-            }
-            Some(l4) => warm.keep(l4, target, secure, service.handle().link_losses()),
-            None => {}
-        }
-        let on_factory_key = bussard_service::identity::refused_walk_answers_under_factory_key(
-            service, target, &options, refused,
-        )
-        .await;
+        let outcome = describe::run(service, &request, Some(&mut warm)).await;
         drop(warm);
-        if on_factory_key {
+        if outcome.on_factory_key {
             return ok(json!({
                 "address": target.to_string(),
                 "ok": false,
@@ -1132,25 +1068,31 @@ impl BussardMcp {
                 "reason": bussard_service::identity::factory_key_message(target),
             }));
         }
-
-        match result {
-            Ok((objects, security)) => {
+        let reason = match outcome.walk {
+            Ok(walked) => {
                 let mut out = json!({
                     "address": target.to_string(),
                     "ok": true,
-                    "objects": objects,
+                    "objects": walked.objects,
                 });
-                if let Some(security) = security {
-                    out["security_diagnostics"] = security;
+                match walked.security {
+                    Some(Ok(diag)) => out["security_diagnostics"] = json!(diag),
+                    Some(Err(note)) => out["security_diagnostics"] = json!({ "notes": [note] }),
+                    None => {}
                 }
-                ok(out)
+                return ok(out);
             }
-            Err(reason) => ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": reason,
-            })),
-        }
+            Err(describe::RunError::Session(ServiceError::Lease(err))) => {
+                format!("could not lease the bus: {err}")
+            }
+            Err(describe::RunError::Session(err)) => format!("could not connect: {err}"),
+            Err(err) => bussard_service::program::chain(&err),
+        };
+        ok(json!({
+            "address": target.to_string(),
+            "ok": false,
+            "reason": reason,
+        }))
     }
 
     /// `knx_write_group` (registered only with `--allow-writes`, never in passive
@@ -1390,54 +1332,6 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         body["refused"] = json!(true);
     }
     body
-}
-
-/// Discovers a device's interface objects and enumerates each one's property
-/// descriptions over the L4 session, returning the JSON array the
-/// `knx_describe_device` tool reports. Read-only on the bus.
-///
-/// A failure to read the descriptor or discover objects is returned as a human
-/// reason string (the tool surfaces it as `ok:false`), never a panic.
-async fn describe_over_l4<Ch: bussard_mgmt::L4Channel>(
-    l4: &mut bussard_mgmt::Layer4Connection<Ch>,
-) -> Result<(Vec<Value>, Option<Value>), String> {
-    // Scale property reads to the device's max APDU when it exposes it.
-    let _ = l4.negotiate_max_apdu().await;
-    let objects = walk_objects(l4).await.map_err(|e| error_chain(&e))?;
-    // A Data Secure device read with its tool key: the security failures log,
-    // report and report control too (issue #533).
-    let security = if l4.is_secure() {
-        Some(
-            match bussard_download::read_security_diagnostics(l4).await {
-                Ok(diag) => json!(diag),
-                Err(err) => {
-                    json!({ "notes": [format!("Data Secure diagnostics not read: {err}")] })
-                }
-            },
-        )
-    } else {
-        None
-    };
-    Ok((
-        objects
-            .iter()
-            .map(|o| tools::describe_object_json(o.index, o.object_type, &o.properties))
-            .collect(),
-        security,
-    ))
-}
-
-/// Renders an error with its source chain on one line (`outer: inner: ...`),
-/// the shape an MCP `reason` string wants.
-fn error_chain(err: &dyn std::error::Error) -> String {
-    let mut out = err.to_string();
-    let mut source = err.source();
-    while let Some(inner) = source {
-        out.push_str(": ");
-        out.push_str(&inner.to_string());
-        source = inner.source();
-    }
-    out
 }
 
 /// A dedup key for a telegram: the fields that uniquely identify one bus event.

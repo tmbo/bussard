@@ -1,4 +1,5 @@
-//! The warm management connection of the MCP server (issue #215).
+//! The warm management connection of a long-lived surface (issue #215): the
+//! MCP server keeps one; [`crate::describe::run`] reuses it.
 //!
 //! An assistant often asks about one device several times in a row
 //! (`knx_describe_device`, then again after a model edit). Each call used to
@@ -22,13 +23,13 @@
 //!   #177/#192 is unchanged); after a loss the tunnel is new and the call
 //!   reconnects as before.
 //! - **Fallback.** A call that fails on a reused connection is repeated once on
-//!   a fresh one (see `knx_describe_device`).
+//!   a fresh one (see [`crate::describe::run`]).
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use crate::bus::Management;
 use bussard_model::IndividualAddress;
-use bussard_service::Management;
 use tokio::sync::{Mutex, MutexGuard};
 
 /// How long a kept connection may sit idle before it is closed.

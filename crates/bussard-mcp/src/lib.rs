@@ -201,7 +201,8 @@ pub mod tools_learn;
 pub mod tools_model;
 pub mod tools_program;
 pub mod tools_viz;
-pub mod warm;
+/// The warm management connection (issue #215), kept by the service layer.
+pub use bussard_service::warm;
 
 use std::path::PathBuf;
 use std::sync::Arc;

@@ -117,6 +117,7 @@ pub mod setup;
 pub mod status;
 pub mod util;
 pub mod verify;
+pub mod warm;
 pub mod write;
 
 pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
