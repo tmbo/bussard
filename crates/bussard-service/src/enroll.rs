@@ -35,6 +35,8 @@ use bussard_project::keystore::{
 use bussard_secure::{Certificate, Key16, Password};
 use serde::{Deserialize, Serialize};
 
+use crate::ServiceError;
+
 /// The status of one entered certificate: the `status` of the enrolment
 /// protocol's `result` message, one type for both (#911).
 pub use crate::enroll_session::EnrollStatus as EnrolStatus;
@@ -78,34 +80,14 @@ impl EnrolOutcome {
     }
 }
 
-/// Why an enrolment could not start. No variant carries a key.
-#[derive(Debug, thiserror::Error)]
-pub enum EnrolError {
-    /// The key store did not load (a wrong password surfaces here).
-    #[error("loading the key store {}: {source}", path.display())]
-    Load {
-        /// The store file.
-        path: PathBuf,
-        /// The underlying error.
-        source: KeyStoreError,
-    },
-    /// The model directory cannot be written, so the store could not be
-    /// saved.
-    #[error("the key store {} cannot be written: {source}", path.display())]
-    NotWritable {
-        /// The store file.
-        path: PathBuf,
-        /// The underlying error.
-        source: std::io::Error,
-    },
-    /// The key store could not be saved or read back.
-    #[error("writing the key store {}: {source}", path.display())]
-    Save {
-        /// The store file.
-        path: PathBuf,
-        /// The underlying error.
-        source: KeyStoreError,
-    },
+/// The key store at `path` did not load (a wrong password surfaces here).
+fn load_error(path: &Path, source: KeyStoreError) -> ServiceError {
+    ServiceError::because(format!("loading the key store {}", path.display()), source)
+}
+
+/// The key store at `path` could not be saved or read back.
+fn save_error(path: &Path, source: KeyStoreError) -> ServiceError {
+    ServiceError::because(format!("writing the key store {}", path.display()), source)
 }
 
 /// An open enrolment: a model directory whose key store loads with the
@@ -144,21 +126,23 @@ impl CertificateEnrolment {
     ///
     /// The store does not load (wrong password, tampered or malformed), or
     /// the directory cannot be written.
-    pub fn open(dir: &Path, password: &str) -> Result<Self, EnrolError> {
+    pub fn open(dir: &Path, password: &str) -> Result<Self, ServiceError> {
         let path = KeyStore::path(dir);
         let model = bussard_model::Model::load(dir).ok();
         // Loaded here only to check the password; each certificate loads it
         // again (#793).
         if let Err(source) = KeyStore::load(dir, password) {
-            return Err(EnrolError::Load { path, source });
+            return Err(load_error(&path, source));
         }
         let project = model
             .as_ref()
             .and_then(|m| m.groups.project.clone())
             .unwrap_or_default();
-        probe_writable(dir).map_err(|source| EnrolError::NotWritable {
-            path: path.clone(),
-            source,
+        probe_writable(dir).map_err(|source| {
+            ServiceError::because(
+                format!("the key store {} cannot be written", path.display()),
+                source,
+            )
         })?;
         let lock_serials = model
             .as_ref()
@@ -294,12 +278,9 @@ impl CertificateEnrolment {
 
     /// Loads the key store afresh (a new one when there is none) and the
     /// revision of the file it read.
-    fn load_store(&self) -> Result<(KeyStore, StoreRevision), EnrolError> {
+    fn load_store(&self) -> Result<(KeyStore, StoreRevision), ServiceError> {
         let (store, revision) = KeyStore::load_with_revision(&self.dir, self.password.expose())
-            .map_err(|source| EnrolError::Load {
-                path: KeyStore::path(&self.dir),
-                source,
-            })?;
+            .map_err(|source| load_error(&KeyStore::path(&self.dir), source))?;
         Ok((
             store.unwrap_or_else(|| KeyStore::new(&self.project)),
             revision,
@@ -314,13 +295,10 @@ impl CertificateEnrolment {
         revision: &mut StoreRevision,
         serial: SerialNumber,
         fdsk: &Key16,
-    ) -> Result<(), EnrolError> {
+    ) -> Result<(), ServiceError> {
         store
             .save_unchanged_since(&self.dir, self.password.expose(), revision)
-            .map_err(|source| EnrolError::Save {
-                path: KeyStore::path(&self.dir),
-                source,
-            })?;
+            .map_err(|source| save_error(&KeyStore::path(&self.dir), source))?;
         read_back(&self.dir, self.password.expose(), serial, fdsk)
     }
 }
@@ -331,25 +309,22 @@ fn read_back(
     password: &str,
     serial: SerialNumber,
     fdsk: &Key16,
-) -> Result<(), EnrolError> {
+) -> Result<(), ServiceError> {
     let path = KeyStore::path(dir);
-    let back = KeyStore::load(dir, password).map_err(|source| EnrolError::Save {
-        path: path.clone(),
-        source,
-    })?;
+    let back = KeyStore::load(dir, password).map_err(|source| save_error(&path, source))?;
     if back.as_ref().and_then(|s| s.fdsk_for_serial(serial)) == Some(fdsk) {
         return Ok(());
     }
-    Err(EnrolError::Save {
-        path,
-        source: KeyStoreError::Io {
+    Err(save_error(
+        &path,
+        KeyStoreError::Io {
             action: "reading back",
             path: KeyStore::path(dir),
             source: std::io::Error::other(format!(
                 "the store does not hold the factory key of {serial} after the write"
             )),
         },
-    })
+    ))
 }
 
 /// Checks that a file can be created in `dir`, where the store is written.
@@ -375,7 +350,7 @@ pub fn enroll_certificate(
     dir: &Path,
     password: &str,
     text: &str,
-) -> Result<EnrolOutcome, EnrolError> {
+) -> Result<EnrolOutcome, ServiceError> {
     Ok(CertificateEnrolment::open(dir, password)?.enroll_certificate(text))
 }
 
@@ -392,12 +367,10 @@ pub fn attach_serial(
     password: &str,
     ia: IndividualAddress,
     serial: SerialNumber,
-) -> Result<AttachOutcome, EnrolError> {
+) -> Result<AttachOutcome, ServiceError> {
     let path = KeyStore::path(dir);
-    let Some(mut store) = KeyStore::load(dir, password).map_err(|source| EnrolError::Load {
-        path: path.clone(),
-        source,
-    })?
+    let Some(mut store) =
+        KeyStore::load(dir, password).map_err(|source| load_error(&path, source))?
     else {
         return Ok(AttachOutcome::NothingPending);
     };
@@ -408,7 +381,7 @@ pub fn attach_serial(
     if outcome == AttachOutcome::Attached {
         store
             .save(dir, password)
-            .map_err(|source| EnrolError::Save { path, source })?;
+            .map_err(|source| save_error(&path, source))?;
         read_back(dir, password, serial, &fdsk)?;
     }
     Ok(outcome)
@@ -426,12 +399,10 @@ pub fn attach_serials(
     dir: &Path,
     password: &str,
     serials: &[(IndividualAddress, SerialNumber)],
-) -> Result<Vec<(IndividualAddress, SerialNumber, AttachOutcome)>, EnrolError> {
+) -> Result<Vec<(IndividualAddress, SerialNumber, AttachOutcome)>, ServiceError> {
     let path = KeyStore::path(dir);
-    let Some(mut store) = KeyStore::load(dir, password).map_err(|source| EnrolError::Load {
-        path: path.clone(),
-        source,
-    })?
+    let Some(mut store) =
+        KeyStore::load(dir, password).map_err(|source| load_error(&path, source))?
     else {
         return Ok(Vec::new());
     };
@@ -450,23 +421,12 @@ pub fn attach_serials(
     if !attached.is_empty() {
         store
             .save(dir, password)
-            .map_err(|source| EnrolError::Save { path, source })?;
+            .map_err(|source| save_error(&path, source))?;
         for (serial, fdsk) in &attached {
             read_back(dir, password, *serial, fdsk)?;
         }
     }
     Ok(outcomes)
-}
-
-/// Why [`record_serials`] could not update the lock.
-#[derive(Debug, thiserror::Error)]
-pub enum RecordSerialsError {
-    /// The model did not load.
-    #[error("loading the model to record serial numbers: {0}")]
-    Load(#[from] bussard_model::LoadError),
-    /// The model did not save.
-    #[error("saving serial numbers to bussard.lock: {0}")]
-    Save(#[from] bussard_model::SaveError),
 }
 
 /// Records the serial number each device reported in its `bussard.lock`
@@ -480,14 +440,18 @@ pub enum RecordSerialsError {
 pub fn record_serials(
     dir: &Path,
     serials: &[(IndividualAddress, SerialNumber)],
-) -> Result<Vec<(IndividualAddress, SerialRecord)>, RecordSerialsError> {
-    let mut model = bussard_model::Model::load(dir)?;
+) -> Result<Vec<(IndividualAddress, SerialRecord)>, crate::ServiceError> {
+    let mut model = bussard_model::Model::load(dir).map_err(|e| {
+        crate::ServiceError::because("loading the model to record serial numbers", e)
+    })?;
     let records: Vec<(IndividualAddress, SerialRecord)> = serials
         .iter()
         .map(|(ia, serial)| (*ia, model.record_serial(*ia, &serial.0)))
         .collect();
     if records.iter().any(|(_, r)| r.changed()) {
-        model.save(dir)?;
+        model.save(dir).map_err(|e| {
+            crate::ServiceError::because("saving serial numbers to bussard.lock", e)
+        })?;
     }
     Ok(records)
 }
@@ -787,7 +751,7 @@ mod tests {
         let err = CertificateEnrolment::open(&dir, "another-synthetic-pw")
             .err()
             .ok_or("opened with the wrong password")?;
-        assert!(matches!(err, EnrolError::Load { .. }));
+        assert!(err.to_string().starts_with("loading the key store"));
         std::fs::remove_dir_all(&dir)?;
         Ok(())
     }

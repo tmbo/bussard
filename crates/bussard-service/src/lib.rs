@@ -126,8 +126,8 @@ pub mod write;
 
 pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
 pub use enroll::{
-    CertificateEnrolment, EnrolError, EnrolOutcome, EnrolStatus, RecordSerialsError, attach_serial,
-    attach_serials, enroll_certificate, record_serials,
+    CertificateEnrolment, EnrolOutcome, EnrolStatus, attach_serial, attach_serials,
+    enroll_certificate, record_serials,
 };
 pub use error::ServiceError;
 pub use facts::{

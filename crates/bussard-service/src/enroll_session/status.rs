@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 use serde::Serialize;
 
 use super::{
-    CertificateOutcome, EnrollEnd, EnrollEvent, EnrollSessionError, EnrollStatus, EnrollSummary,
-    EnrollTally, NextStep, Timeouts,
+    CertificateOutcome, EnrollEnd, EnrollEvent, EnrollStatus, EnrollSummary, EnrollTally, NextStep,
+    Timeouts,
 };
 
 /// What a session reported so far, and how it ended.
@@ -72,7 +72,7 @@ impl SessionProgress {
     }
 
     /// Records how [`super::EnrollSession::run`] ended.
-    pub fn finish(&mut self, result: Result<EnrollSummary, EnrollSessionError>) {
+    pub fn finish(&mut self, result: Result<EnrollSummary, crate::ServiceError>) {
         match result {
             Ok(summary) => self.end = Some(summary.end),
             Err(err) => self.error = Some(err.to_string()),

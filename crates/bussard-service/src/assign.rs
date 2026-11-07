@@ -53,31 +53,6 @@ pub const INITIAL_POLL_TOTAL: Duration = Duration::from_secs(3);
 /// apply. Behaviour is unchanged without the variable.
 pub const WAIT_MS_ENV: &str = "BUSSARD_ASSIGN_WAIT_MS";
 
-/// Why an assign step failed.
-#[derive(Debug, thiserror::Error)]
-pub enum AssignError {
-    /// The address or the model refuses the assignment; the sentence says why.
-    #[error("{0}")]
-    Refused(String),
-    /// A bus session or lease failed.
-    #[error(transparent)]
-    Service(#[from] ServiceError),
-    /// A broadcast failed.
-    #[error(transparent)]
-    Mgmt(#[from] MgmtError),
-    /// The device file or the lock could not be saved.
-    #[error("saving the {what} to {dir}")]
-    Save {
-        /// What was saved ("stub device file", "device file").
-        what: String,
-        /// The model directory.
-        dir: String,
-        /// The cause.
-        #[source]
-        source: bussard_model::SaveError,
-    },
-}
-
 /// The (reminder, total) wait budgets, honouring [`WAIT_MS_ENV`] for tests.
 /// With the override set, the reminder budget scales to half the total so
 /// [`INITIAL_POLL_TOTAL`] is gated under the same variable as the total.
@@ -111,11 +86,11 @@ pub fn target_address(
     explicit: Option<&str>,
     model: Option<&Model>,
     hint: &str,
-) -> Result<IndividualAddress, AssignError> {
+) -> Result<IndividualAddress, ServiceError> {
     match explicit {
         Some(s) => validate_explicit_address(s, model),
         None => allocate_address(model).ok_or_else(|| {
-            AssignError::Refused(format!(
+            ServiceError::Refused(format!(
                 "could not allocate a free address automatically; {hint}"
             ))
         }),
@@ -134,16 +109,16 @@ pub fn target_address(
 pub fn validate_explicit_address(
     s: &str,
     model: Option<&Model>,
-) -> Result<IndividualAddress, AssignError> {
+) -> Result<IndividualAddress, ServiceError> {
     let addr: IndividualAddress = s.parse().map_err(|err| {
-        AssignError::Refused(format!(
+        ServiceError::Refused(format!(
             "invalid address {s:?}; expected area.line.device like \"1.1.47\": {err}"
         ))
     })?;
 
     if let Some(model) = model {
         if let Some(existing) = model.devices.get(&addr) {
-            return Err(AssignError::Refused(format!(
+            return Err(ServiceError::Refused(format!(
                 "address {addr} is already used in your project (\"{}\"); pick a free one",
                 existing.device.name
             )));
@@ -151,7 +126,7 @@ pub fn validate_explicit_address(
         let lines = model_lines(model);
         if !lines.is_empty() && !lines.contains(&(addr.area(), addr.line())) {
             let known: Vec<String> = lines.iter().map(|(a, l)| format!("{a}.{l}")).collect();
-            return Err(AssignError::Refused(format!(
+            return Err(ServiceError::Refused(format!(
                 "address {addr} is on line {}.{}, which the model does not use (known lines: {}); \
                  double-check the address",
                 addr.area(),
@@ -324,7 +299,7 @@ pub async fn wait_for_programming_mode(
     service: &BusService,
     source: IndividualAddress,
     sink: &mut (dyn ProgressSink + Send),
-) -> Result<ProgrammingWait, AssignError> {
+) -> Result<ProgrammingWait, ServiceError> {
     let (initial, total) = wait_budgets();
     let start = tokio::time::Instant::now();
     let mut reminded = false;
@@ -360,7 +335,7 @@ pub async fn wait_for_programming_mode(
 pub async fn in_programming_mode(
     service: &BusService,
     source: IndividualAddress,
-) -> Result<Vec<IndividualAddress>, AssignError> {
+) -> Result<Vec<IndividualAddress>, ServiceError> {
     let channel = service.lease_channel().await?;
     Ok(broadcast::devices_in_programming_mode(channel, source, collection_window()).await?)
 }
@@ -430,18 +405,6 @@ impl VerifyKey {
     }
 }
 
-/// Why the read-back after a write failed.
-#[derive(Debug, thiserror::Error)]
-pub enum VerifyError {
-    /// The bus could not be leased: nothing was read.
-    #[error(transparent)]
-    Lease(ServiceError),
-    /// The device did not answer at the new address as it should; the
-    /// sentence says what was seen and that the assignment is unverified.
-    #[error("{0}")]
-    Unverified(String),
-}
-
 /// Reads what the device in programming mode is, at its current address,
 /// before anything is written: the descriptor, then (authorized with free
 /// access, best effort) the manufacturer, serial number and order number.
@@ -477,7 +440,7 @@ pub async fn write_address(
     service: &BusService,
     source: IndividualAddress,
     target: IndividualAddress,
-) -> Result<(), AssignError> {
+) -> Result<(), ServiceError> {
     let channel = service.lease_channel().await?;
     bussard_mgmt::write_individual_address(channel, source, target).await?;
     Ok(())
@@ -502,12 +465,12 @@ pub async fn verify_assignment_with(
     target: IndividualAddress,
     clear_programming_mode: bool,
     key: &VerifyKey,
-) -> Result<Verified, VerifyError> {
+) -> Result<Verified, ServiceError> {
     let result = verify_session(service, source, target, clear_programming_mode, key).await;
     let Err(secured_err) = result else {
         return result;
     };
-    if key.tool_key.is_none() || matches!(secured_err, VerifyError::Lease(_)) {
+    if key.tool_key.is_none() || matches!(secured_err, ServiceError::Lease(_)) {
         return Err(secured_err);
     }
     match verify_session(
@@ -537,7 +500,7 @@ async fn verify_session(
     target: IndividualAddress,
     clear_programming_mode: bool,
     key: &VerifyKey,
-) -> Result<Verified, VerifyError> {
+) -> Result<Verified, ServiceError> {
     let secured = key.tool_key.is_some();
     let options = L4Options::secured(source, key.tool_key.clone(), SequenceHighWater::new())
         .with_authorize(Authorize::Skip);
@@ -548,8 +511,8 @@ async fn verify_session(
         .await;
     match session {
         Ok(verified) => verified,
-        Err(err @ ServiceError::Lease(_)) => Err(VerifyError::Lease(err)),
-        Err(err) => Err(VerifyError::Unverified(format!(
+        Err(err @ ServiceError::Lease(_)) => Err(err),
+        Err(err) => Err(ServiceError::Refused(format!(
             "wrote {target} but could not connect to it afterwards ({err}); the address may \
              not have been applied — check the device and re-run"
         ))),
@@ -562,9 +525,9 @@ async fn read_back(
     target: IndividualAddress,
     clear_programming_mode: bool,
     secured: bool,
-) -> Result<Verified, VerifyError> {
+) -> Result<Verified, ServiceError> {
     let identity = read_identity(dev, !secured).await.map_err(|err| {
-        VerifyError::Unverified(if secured {
+        ServiceError::Refused(if secured {
             format!(
                 "wrote {target} and connected, but the device did not answer the SECURED \
                  descriptor read ({err}): either the tool key is not this device's, or the \
@@ -724,7 +687,7 @@ pub fn write_device_file(
     device: Device,
     serial: Option<&[u8]>,
     what: &str,
-) -> Result<PathBuf, AssignError> {
+) -> Result<PathBuf, ServiceError> {
     let address = device.address;
     let file_stem = device_file_stem(&device);
 
@@ -739,10 +702,8 @@ pub fn write_device_file(
     if let Some(serial) = serial.and_then(|s| <[u8; 6]>::try_from(s).ok()) {
         model.record_serial(address, &serial);
     }
-    model.save(dir).map_err(|source| AssignError::Save {
-        what: what.to_string(),
-        dir: dir.display().to_string(),
-        source,
+    model.save(dir).map_err(|source| {
+        ServiceError::context(format!("saving the {what} to {}", dir.display()), source)
     })?;
 
     Ok(dir.join("devices").join(format!("{file_stem}.toml")))

@@ -1108,7 +1108,7 @@ pub enum OfflineStop {
     Refused(String),
     /// The recorded device state could not be read.
     #[error(transparent)]
-    Recorded(#[from] super::FileError),
+    Recorded(#[from] crate::ServiceError),
 }
 
 /// What an offline plan is made from.

@@ -21,7 +21,7 @@
 //! directory. The sweep never prints: progress goes to a [`WalkEvent`] callback.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bussard_mgmt::tables::{DeviceTables, read_tables};
 use bussard_mgmt::{MaskProfile, manufacturers, system_type};
@@ -57,29 +57,6 @@ pub const RECONSTRUCT_BANNER: &str = "\
 #
 ";
 
-/// A file the line reconstruction could not read or write.
-#[derive(Debug, thiserror::Error)]
-pub enum ReconstructLineError {
-    /// A file or directory could not be read.
-    #[error("reading {}", path.display())]
-    Read {
-        /// The path.
-        path: PathBuf,
-        /// The cause.
-        #[source]
-        source: std::io::Error,
-    },
-    /// A file could not be written.
-    #[error("writing {}", path.display())]
-    Write {
-        /// The path.
-        path: PathBuf,
-        /// The cause.
-        #[source]
-        source: std::io::Error,
-    },
-}
-
 /// What the output directory of a reconstruction holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutDir {
@@ -96,7 +73,7 @@ pub enum OutDir {
 /// # Errors
 ///
 /// The directory exists but cannot be listed.
-pub fn check_out_dir(out: &Path) -> Result<OutDir, ReconstructLineError> {
+pub fn check_out_dir(out: &Path) -> Result<OutDir, ServiceError> {
     if !out.exists() {
         return Ok(OutDir::Fresh);
     }
@@ -104,10 +81,7 @@ pub fn check_out_dir(out: &Path) -> Result<OutDir, ReconstructLineError> {
         return Ok(OutDir::File);
     }
     let mut entries = std::fs::read_dir(out)
-        .map_err(|source| ReconstructLineError::Read {
-            path: out.to_path_buf(),
-            source,
-        })?
+        .map_err(|e| ServiceError::context(format!("reading {}", out.display()), e))?
         .filter_map(Result::ok);
     Ok(if entries.next().is_some() {
         OutDir::NotEmpty
@@ -402,7 +376,7 @@ fn build_product(dev: &LineDevice) -> Option<Product> {
 /// # Errors
 ///
 /// A synthesized file that cannot be read or rewritten.
-pub fn inject_reconstruct_banners(out: &Path) -> Result<(), ReconstructLineError> {
+pub fn inject_reconstruct_banners(out: &Path) -> Result<(), ServiceError> {
     let mut files = vec![out.join("bussard.toml"), out.join("groups.toml")];
     let devices_dir = out.join("devices");
     if let Ok(rd) = std::fs::read_dir(&devices_dir) {
@@ -417,12 +391,10 @@ pub fn inject_reconstruct_banners(out: &Path) -> Result<(), ReconstructLineError
         if !path.exists() {
             continue;
         }
-        let body = std::fs::read_to_string(&path).map_err(|source| ReconstructLineError::Read {
-            path: path.clone(),
-            source,
-        })?;
+        let body = std::fs::read_to_string(&path)
+            .map_err(|e| ServiceError::context(format!("reading {}", path.display()), e))?;
         std::fs::write(&path, format!("{RECONSTRUCT_BANNER}{body}"))
-            .map_err(|source| ReconstructLineError::Write { path, source })?;
+            .map_err(|e| ServiceError::context(format!("writing {}", path.display()), e))?;
     }
     Ok(())
 }

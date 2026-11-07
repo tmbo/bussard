@@ -38,28 +38,6 @@ use crate::program::assign::{Assign, AssignFlow, Assigned, Stop};
 use crate::program::{Event, Observer, Question, Step};
 use crate::{Authorize, BusService, L4Options, ServiceError};
 
-/// Why a replace step failed.
-#[derive(Debug, thiserror::Error)]
-pub enum ReplaceError {
-    /// The model refuses the replacement; the sentence says why.
-    #[error("{0}")]
-    Refused(String),
-    /// The device file could not be read or written.
-    #[error("{what} {path}")]
-    Io {
-        /// What was done ("reading", "writing").
-        what: &'static str,
-        /// The file.
-        path: String,
-        /// The cause.
-        #[source]
-        source: std::io::Error,
-    },
-    /// The serial number could not be recorded in the lock.
-    #[error(transparent)]
-    Serial(#[from] crate::RecordSerialsError),
-}
-
 /// What the model says belongs at the address being replaced.
 #[derive(Debug, Clone, Default)]
 pub struct Expected {
@@ -164,9 +142,9 @@ impl Replacement {
         dir: &Path,
         target: IndividualAddress,
         hold_application: bool,
-    ) -> Result<Replacement, ReplaceError> {
+    ) -> Result<Replacement, ServiceError> {
         let Some(loaded) = model.devices.get(&target) else {
-            return Err(ReplaceError::Refused(format!(
+            return Err(ServiceError::Refused(format!(
                 "the model in {} has no device file for {target}; `replace` puts the *same* \
                  product back at a known address. Use `bussard adopt` for a device the model \
                  does not know.",
@@ -420,7 +398,7 @@ pub fn record(
     replacement: &Replacement,
     serial: Option<&[u8]>,
     when: &str,
-) -> Result<Recorded, ReplaceError> {
+) -> Result<Recorded, ServiceError> {
     let device_file = record_replacement(&replacement.device_file, when)?;
     let serial = match serial.and_then(|s| <[u8; 6]>::try_from(s).ok()) {
         Some(serial) => crate::record_serials(
@@ -452,12 +430,9 @@ pub fn record(
 /// # Errors
 ///
 /// The file could not be read or written.
-pub fn record_replacement(path: &Path, when: &str) -> Result<PathBuf, ReplaceError> {
-    let body = std::fs::read_to_string(path).map_err(|source| ReplaceError::Io {
-        what: "reading",
-        path: path.display().to_string(),
-        source,
-    })?;
+pub fn record_replacement(path: &Path, when: &str) -> Result<PathBuf, ServiceError> {
+    let body = std::fs::read_to_string(path)
+        .map_err(|e| ServiceError::context(format!("reading {}", path.display()), e))?;
     let line = format!("replaced = \"{when}\"");
     // Only the top-level keys (before the first `[table]`) are the device's own.
     let is_key = |text: &str, key: &str| {
@@ -481,11 +456,8 @@ pub fn record_replacement(path: &Path, when: &str) -> Result<PathBuf, ReplaceErr
     }
     let mut text = out.join("\n");
     text.push('\n');
-    std::fs::write(path, text).map_err(|source| ReplaceError::Io {
-        what: "writing",
-        path: path.display().to_string(),
-        source,
-    })?;
+    std::fs::write(path, text)
+        .map_err(|e| ServiceError::context(format!("writing {}", path.display()), e))?;
     Ok(path.to_path_buf())
 }
 

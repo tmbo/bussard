@@ -880,17 +880,6 @@ pub fn knxnet_tunnel_keyring_diagnostics(
     }
 }
 
-/// Why [`record_secure_senders`] could not update the lock.
-#[derive(Debug, thiserror::Error)]
-pub enum RecordSendersError {
-    /// The model did not load.
-    #[error("loading the model to record the secure senders: {0}")]
-    Load(#[from] bussard_model::LoadError),
-    /// The model did not save.
-    #[error("saving the secure senders to bussard.lock: {0}")]
-    Save(#[from] bussard_model::SaveError),
-}
-
 /// Records the security individual address table a verified secured write
 /// put on `device` (PID 54) as its lock `secure_senders`, the shape `bussard
 /// adopt` writes (issue #297). The next secured write to a GA of the device
@@ -908,8 +897,10 @@ pub fn record_secure_senders(
     dir: &std::path::Path,
     device: IndividualAddress,
     entries: &[SecureSenderEntry],
-) -> Result<bool, RecordSendersError> {
-    let mut model = Model::load(dir)?;
+) -> Result<bool, crate::ServiceError> {
+    let mut model = Model::load(dir).map_err(|e| {
+        crate::ServiceError::because("loading the model to record the secure senders", e)
+    })?;
     let Some(loaded) = model.devices.get_mut(&device) else {
         return Ok(false);
     };
@@ -925,7 +916,9 @@ pub fn record_secure_senders(
         return Ok(false);
     }
     security.secure_senders = senders;
-    model.save(dir)?;
+    model.save(dir).map_err(|e| {
+        crate::ServiceError::because("saving the secure senders to bussard.lock", e)
+    })?;
     Ok(true)
 }
 

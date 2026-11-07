@@ -40,6 +40,8 @@ use bussard_secure::enroll::{
     Direction, EnrollError, NONCE_LEN, PUBLIC_KEY_LEN, SESSION_ID_LEN, SessionKey, VERSION,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::ServiceError;
 use zeroize::{Zeroize, Zeroizing};
 
 pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
@@ -497,15 +499,19 @@ pub struct EnrollSummary {
     pub refused_phones: usize,
 }
 
-/// Errors of an enrolment session. None carries a key or certificate text.
-#[derive(Debug, thiserror::Error)]
-pub enum EnrollSessionError {
-    /// The session crypto failed (the random source, a seal).
-    #[error(transparent)]
-    Crypto(#[from] EnrollError),
-    /// The relay failed.
-    #[error(transparent)]
-    Relay(#[from] RelayError),
+/// The session crypto failed (the random source, a seal). None of these
+/// errors carries a key or certificate text.
+impl From<EnrollError> for ServiceError {
+    fn from(err: EnrollError) -> Self {
+        Self::other(err)
+    }
+}
+
+/// The relay failed.
+impl From<RelayError> for ServiceError {
+    fn from(err: RelayError) -> Self {
+        Self::other(err)
+    }
 }
 
 /// What [`EnrollSession::handle`] made of one `up` envelope.
@@ -601,8 +607,8 @@ impl EnrollSession {
     ///
     /// # Errors
     ///
-    /// [`EnrollSessionError::Crypto`] when the OS random source fails.
-    pub fn new() -> Result<Self, EnrollSessionError> {
+    /// [`ServiceError::Crypto`] when the OS random source fails.
+    pub fn new() -> Result<Self, ServiceError> {
         Ok(Self::from_parts(
             bussard_secure::random_bytes().map_err(EnrollError::from)?,
             X25519KeyPair::generate().map_err(EnrollError::from)?,
@@ -617,7 +623,7 @@ impl EnrollSession {
     /// # Errors
     ///
     /// The random source fails, or the relay URL is refused.
-    pub fn connect(endpoints: &Endpoints) -> Result<(Self, HttpRelay, String), EnrollSessionError> {
+    pub fn connect(endpoints: &Endpoints) -> Result<(Self, HttpRelay, String), ServiceError> {
         let session = Self::new()?;
         let relay = HttpRelay::new(&endpoints.relay, &session)?;
         let link = session.link(&endpoints.page, (!endpoints.local).then(|| relay.base()));
@@ -690,14 +696,14 @@ impl EnrollSession {
     ///
     /// # Errors
     ///
-    /// [`EnrollSessionError::Crypto`] only when sealing a reply fails (the
+    /// [`ServiceError::Crypto`] only when sealing a reply fails (the
     /// random source). A message that does not open is
     /// [`Handled::Ignored`], not an error: anyone with the link can post.
     pub fn handle(
         &mut self,
         envelope: &Envelope,
         sink: &mut dyn CertificateSink,
-    ) -> Result<Handled, EnrollSessionError> {
+    ) -> Result<Handled, ServiceError> {
         let plaintext = match self.open(envelope) {
             Ok(Opened::Owner(plaintext)) => plaintext,
             Ok(Opened::Other { phone, key }) => return self.refuse(phone, &key),
@@ -735,7 +741,7 @@ impl EnrollSession {
         &mut self,
         phone: [u8; PUBLIC_KEY_LEN],
         key: &SessionKey,
-    ) -> Result<Handled, EnrollSessionError> {
+    ) -> Result<Handled, ServiceError> {
         if self.refused.contains(&phone) {
             return Ok(Handled::Refused {
                 reply: None,
@@ -758,8 +764,8 @@ impl EnrollSession {
     ///
     /// # Errors
     ///
-    /// [`EnrollSessionError::Crypto`] when sealing fails.
-    pub fn closing(&self, reason: CloseReason) -> Result<Option<Envelope>, EnrollSessionError> {
+    /// [`ServiceError::Crypto`] when sealing fails.
+    pub fn closing(&self, reason: CloseReason) -> Result<Option<Envelope>, ServiceError> {
         if self.owner.is_none() {
             return Ok(None);
         }
@@ -777,9 +783,9 @@ impl EnrollSession {
     ///
     /// # Errors
     ///
-    /// [`EnrollSessionError::Relay`] when the relay refuses or cannot be
+    /// [`ServiceError::Relay`] when the relay refuses or cannot be
     /// reached (the session is still deleted on a best-effort basis), or
-    /// [`EnrollSessionError::Crypto`] when sealing fails.
+    /// [`ServiceError::Crypto`] when sealing fails.
     pub fn run(
         &mut self,
         relay: &dyn Relay,
@@ -787,7 +793,7 @@ impl EnrollSession {
         options: RunOptions,
         stop: &AtomicBool,
         on_event: &mut dyn FnMut(EnrollEvent),
-    ) -> Result<EnrollSummary, EnrollSessionError> {
+    ) -> Result<EnrollSummary, ServiceError> {
         relay.create()?;
         let outcome = self.poll_loop(relay, sink, options, stop, on_event);
         let end = match outcome {
@@ -826,7 +832,7 @@ impl EnrollSession {
         options: RunOptions,
         stop: &AtomicBool,
         on_event: &mut dyn FnMut(EnrollEvent),
-    ) -> Result<EnrollEnd, EnrollSessionError> {
+    ) -> Result<EnrollEnd, ServiceError> {
         let wait = options.wait_secs.min(MAX_WAIT_SECS);
         let started = Instant::now();
         // When the owning phone last sent a message; `None` until one joins.
@@ -932,7 +938,7 @@ impl EnrollSession {
     }
 
     /// Seal a down message for the owning phone.
-    fn seal_owner(&self, message: &DownMessage) -> Result<Envelope, EnrollSessionError> {
+    fn seal_owner(&self, message: &DownMessage) -> Result<Envelope, ServiceError> {
         match &self.owner {
             Some(owner) => self.seal(&owner.key, &owner.phone, message),
             None => Err(EnrollError::Seal.into()),
@@ -945,7 +951,7 @@ impl EnrollSession {
         key: &SessionKey,
         phone: &[u8; PUBLIC_KEY_LEN],
         message: &DownMessage,
-    ) -> Result<Envelope, EnrollSessionError> {
+    ) -> Result<Envelope, ServiceError> {
         let plaintext = encode_down(message);
         let (nonce, sealed) = key.seal_random(Direction::Down, &self.sid, plaintext.as_bytes())?;
         Ok(Envelope {
@@ -1543,7 +1549,7 @@ mod tests {
         session: &mut EnrollSession,
         relay: &FakeRelay,
         options: RunOptions,
-    ) -> Result<(EnrollSummary, Vec<EnrollEvent>), EnrollSessionError> {
+    ) -> Result<(EnrollSummary, Vec<EnrollEvent>), ServiceError> {
         let mut events = Vec::new();
         let summary = session.run(
             relay,

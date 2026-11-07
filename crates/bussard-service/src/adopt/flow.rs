@@ -22,23 +22,9 @@ use crate::params::ProductSource;
 use crate::secure::{SecureKeyError, SecureMaterial, ToolKeys};
 use crate::{BusService, L4Options, ServiceError};
 
-/// Why an adopt step failed.
-#[derive(Debug, thiserror::Error)]
-pub enum AdoptError {
-    /// A bus session failed.
-    #[error(transparent)]
-    Service(#[from] ServiceError),
-    /// A read on the open session failed.
-    #[error(transparent)]
-    Read(Box<dyn std::error::Error + Send + Sync>),
-    /// The flow cannot go on; the sentence says why.
-    #[error("{0}")]
-    Message(String),
-}
-
 /// Wraps a read error.
-fn read_err<E: std::error::Error + Send + Sync + 'static>(err: E) -> AdoptError {
-    AdoptError::Read(Box::new(err))
+fn read_err<E: std::error::Error + Send + Sync + 'static>(err: E) -> ServiceError {
+    ServiceError::other(err)
 }
 
 // ---------------------------------------------------------------------------
@@ -460,8 +446,8 @@ pub fn adopt_target(
     current: IndividualAddress,
     secured: bool,
     model: Option<&Model>,
-) -> Result<IndividualAddress, crate::assign::AssignError> {
-    use crate::assign::{AssignError, target_address, validate_explicit_address};
+) -> Result<IndividualAddress, ServiceError> {
+    use crate::assign::{target_address, validate_explicit_address};
     let target = match explicit {
         Some(s) => validate_explicit_address(s, model)?,
         None if secured => validate_explicit_address(&current.to_string(), model)?,
@@ -472,7 +458,7 @@ pub fn adopt_target(
         )?,
     };
     if secured && target != current {
-        return Err(AssignError::Refused(secured_move_refusal(current, target)));
+        return Err(ServiceError::Refused(secured_move_refusal(current, target)));
     }
     Ok(target)
 }
@@ -522,7 +508,7 @@ pub async fn read_secured(
     product: Option<&ProductSource>,
     material: &SecureMaterial,
     mut notes: Vec<String>,
-) -> Result<SecuredRead, AdoptError> {
+) -> Result<SecuredRead, ServiceError> {
     let options = L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
     let (tables, security, params) = service
         .with_l4(target, &options, async |l4| {
@@ -557,7 +543,7 @@ pub async fn read_secured(
                 ),
                 _ => None,
             };
-            Ok::<_, AdoptError>((tables.map(|t| t.tables().clone()), security, params))
+            Ok::<_, ServiceError>((tables.map(|t| t.tables().clone()), security, params))
         })
         .await?;
     if tables.is_none() {
@@ -609,7 +595,7 @@ pub fn record_secured(
     read: &SecuredRead,
     material: &SecureMaterial,
     current: IndividualAddress,
-) -> Result<(Device, Model, SecureSummary), AdoptError> {
+) -> Result<(Device, Model, SecureSummary), ServiceError> {
     let mut notes = read.notes.clone();
     notes.extend(read.security.notes.iter().cloned());
     let mut parameters = 0;
@@ -712,7 +698,7 @@ pub fn record_secured(
         .remove(&target)
         .map(|loaded| loaded.device)
         .ok_or_else(|| {
-            AdoptError::Message("the adopted device vanished from your project".into())
+            ServiceError::Refused("the adopted device vanished from your project".into())
         })?;
     let summary = SecureSummary {
         links: link_count,
@@ -741,7 +727,7 @@ pub async fn read_knxnet_settings(
     target: IndividualAddress,
     dir: &Path,
     material: &SecureMaterial,
-) -> Result<Option<bussard_model::knxnet::KnxnetFacts>, AdoptError> {
+) -> Result<Option<bussard_model::knxnet::KnxnetFacts>, ServiceError> {
     let options = L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
     let facts = crate::FactsCache::new(dir, false);
     service

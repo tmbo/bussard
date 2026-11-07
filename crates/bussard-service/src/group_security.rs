@@ -26,12 +26,14 @@
 //! Nothing here prints a key: messages name addresses and object numbers.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 use bussard_project::KeyStore;
 use bussard_project::keystore::KeyStoreError;
 use bussard_secure::Key16;
+
+use crate::ServiceError;
 
 /// The file name of the key store copy a history snapshot keeps.
 pub const SNAPSHOT_KEYSTORE: &str = bussard_project::keystore::KEYSTORE_FILE;
@@ -294,47 +296,17 @@ pub fn export_note(ga: GroupAddress, secure: bool) -> String {
     }
 }
 
-/// Why the key store could not follow a security change.
-#[derive(Debug, thiserror::Error)]
-pub enum GroupKeyError {
-    /// The key store password is not set.
-    #[error(
+/// The key store password is not set.
+fn missing_password() -> ServiceError {
+    ServiceError::Refused(format!(
         "the key store password must be set in {} to change a group key",
         crate::secure::KEYRING_PASSWORD_ENV
-    )]
-    MissingPassword,
-    /// There is no key store in the model directory.
-    #[error(
-        "there is no key store {}: import the ETS keyring with `bussard keys import <file>` first",
-        path.display()
-    )]
-    NoStore {
-        /// The store path.
-        path: PathBuf,
-    },
-    /// The store did not load or save.
-    #[error("the key store {}: {source}", path.display())]
-    Store {
-        /// The store path.
-        path: PathBuf,
-        /// The store error.
-        #[source]
-        source: KeyStoreError,
-    },
-    /// The random source failed.
-    #[error("generating a group key: {0}")]
-    Random(#[from] bussard_secure::CryptoError),
-    /// The store copy could not be read or written.
-    #[error("{action} {}: {source}", path.display())]
-    Io {
-        /// What was being done.
-        action: &'static str,
-        /// The file.
-        path: PathBuf,
-        /// The I/O error.
-        #[source]
-        source: std::io::Error,
-    },
+    ))
+}
+
+/// The store at `path` did not load or save.
+fn store_error(path: &Path, source: KeyStoreError) -> ServiceError {
+    ServiceError::because(format!("the key store {}", path.display()), source)
 }
 
 /// Loads the key store of `dir` with `password`.
@@ -342,13 +314,16 @@ pub enum GroupKeyError {
 /// # Errors
 ///
 /// No password, no store, or a store that does not load.
-pub fn load_store(dir: &Path, password: Option<&str>) -> Result<KeyStore, GroupKeyError> {
-    let password = password.ok_or(GroupKeyError::MissingPassword)?;
+pub fn load_store(dir: &Path, password: Option<&str>) -> Result<KeyStore, ServiceError> {
+    let password = password.ok_or_else(missing_password)?;
     let path = KeyStore::path(dir);
     match KeyStore::load(dir, password) {
         Ok(Some(store)) => Ok(store),
-        Ok(None) => Err(GroupKeyError::NoStore { path }),
-        Err(source) => Err(GroupKeyError::Store { path, source }),
+        Ok(None) => Err(ServiceError::Refused(format!(
+            "there is no key store {}: import the ETS keyring with `bussard keys import <file>` first",
+            path.display()
+        ))),
+        Err(source) => Err(store_error(&path, source)),
     }
 }
 
@@ -357,14 +332,11 @@ pub fn load_store(dir: &Path, password: Option<&str>) -> Result<KeyStore, GroupK
 /// # Errors
 ///
 /// The store does not save.
-pub fn save_store(dir: &Path, store: &KeyStore, password: &str) -> Result<(), GroupKeyError> {
+pub fn save_store(dir: &Path, store: &KeyStore, password: &str) -> Result<(), ServiceError> {
     store
         .save(dir, password)
         .map(|_| ())
-        .map_err(|source| GroupKeyError::Store {
-            path: KeyStore::path(dir),
-            source,
-        })
+        .map_err(|source| store_error(&KeyStore::path(dir), source))
 }
 
 /// Copies the key store of `dir` (encrypted, as it is git-tracked) into the
@@ -374,16 +346,14 @@ pub fn save_store(dir: &Path, store: &KeyStore, password: &str) -> Result<(), Gr
 /// # Errors
 ///
 /// The copy failed.
-pub fn keep_keystore(dir: &Path, snapshot_dir: &Path) -> Result<bool, GroupKeyError> {
+pub fn keep_keystore(dir: &Path, snapshot_dir: &Path) -> Result<bool, ServiceError> {
     let from = KeyStore::path(dir);
     if !from.is_file() {
         return Ok(false);
     }
     let to = snapshot_dir.join(SNAPSHOT_KEYSTORE);
-    std::fs::copy(&from, &to).map_err(|source| GroupKeyError::Io {
-        action: "copying the key store to",
-        path: to,
-        source,
+    std::fs::copy(&from, &to).map_err(|source| {
+        ServiceError::because(format!("copying the key store to {}", to.display()), source)
     })?;
     Ok(true)
 }
@@ -421,36 +391,30 @@ pub fn restore_group_keys(
     before: &Model,
     after: &Model,
     password: Option<&str>,
-) -> Result<Vec<String>, GroupKeyError> {
+) -> Result<Vec<String>, ServiceError> {
     let changes = security_changes(before, after);
     if changes.is_empty() {
         return Ok(Vec::new());
     }
     let mut store = load_store(dir, password)?;
-    let password = password.ok_or(GroupKeyError::MissingPassword)?;
+    let password = password.ok_or_else(missing_password)?;
     if let Some(undo_dir) = undo_snapshot_dir {
         keep_keystore(dir, undo_dir)?;
     }
     let copy_path = snapshot_dir.join(SNAPSHOT_KEYSTORE);
     let copy = if copy_path.is_file() {
-        let xml = std::fs::read_to_string(&copy_path).map_err(|source| GroupKeyError::Io {
-            action: "reading",
-            path: copy_path.clone(),
-            source,
+        let xml = std::fs::read_to_string(&copy_path).map_err(|source| {
+            ServiceError::because(format!("reading {}", copy_path.display()), source)
         })?;
-        Some(
-            KeyStore::parse(&xml, password).map_err(|source| GroupKeyError::Store {
-                path: copy_path.clone(),
-                source,
-            })?,
-        )
+        Some(KeyStore::parse(&xml, password).map_err(|source| store_error(&copy_path, source))?)
     } else {
         None
     };
     let mut notes = Vec::new();
     for (ga, secure) in changes {
         if !secure {
-            let action = apply_group_key(&mut store, ga, false)?;
+            let action = apply_group_key(&mut store, ga, false)
+                .map_err(|e| ServiceError::because("generating a group key", e))?;
             notes.push(action.sentence(ga));
             continue;
         }

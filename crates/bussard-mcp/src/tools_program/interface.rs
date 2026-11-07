@@ -17,8 +17,8 @@ use bussard_model::history::SnapshotReason;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::knxnet::{
-    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, ReadAndPlanError,
-    SessionLink, apply_interface, interface_config, write_interface_backup,
+    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, SessionLink,
+    apply_interface, interface_config, write_interface_backup,
 };
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
@@ -107,8 +107,8 @@ impl BussardMcp {
         let InterfaceReadPlan { read, plan, rows } = knxnet::read_and_plan(service, &options, req)
             .await
             .map_err(|err| match err {
-                ReadAndPlanError::Service(err) => session_error(target, &err),
-                err => err.to_string(),
+                ServiceError::Refused(reason) => reason,
+                err => session_error(target, &err),
             })?;
         Ok(Planned {
             source,
