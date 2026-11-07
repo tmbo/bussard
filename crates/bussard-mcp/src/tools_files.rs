@@ -21,13 +21,13 @@ use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
 use bussard_project::keystore::SaveOutcome;
+use bussard_service::chain;
 use bussard_service::files::export::GroupFormat;
 use bussard_service::files::import::{ConflictChoice, ImportOutcome};
 use bussard_service::files::products::OrderImport;
 use bussard_service::files::{FileKind, export, import, keyring, products};
 use bussard_service::observer::{Answer, Collected, Prompt, Question};
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
-use bussard_service::setup::products::error_chain;
 use bussard_service::setup::{self, SetupError};
 use std::sync::Arc;
 
@@ -263,7 +263,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
                 Ok(OrderImport::Declined) => {
                     Err(refused(format!("{order} was not downloaded"), &out))
                 }
-                Err(err) => Err(refused(error_chain(&err), &out)),
+                Err(err) => Err(refused(chain(&err), &out)),
             }
         }
         (Some(raw), None) => {
@@ -278,7 +278,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
                 Some(FileKind::Bundle) => {
                     match import::import_bundle(&path, dir, choice(args), &mut (), &mut out) {
                         Ok(outcome) => Ok(model_result("bundle", &path, dir, &outcome, &out)),
-                        Err(err) => Err(refused(error_chain(&err), &out)),
+                        Err(err) => Err(refused(chain(&err), &out)),
                     }
                 }
                 Some(FileKind::Product) => {
@@ -290,7 +290,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
                             &product.models,
                             &out,
                         )),
-                        Err(err) => Err(refused(error_chain(&err), &out)),
+                        Err(err) => Err(refused(chain(&err), &out)),
                     }
                 }
                 Some(FileKind::Keyring) => import_keyring(dir, &path, args, &out),
@@ -461,7 +461,7 @@ fn import_project(
                 format!(
                     "{} could not be read: {}{hint}",
                     path.display(),
-                    error_chain(&err)
+                    chain(&err)
                 ),
                 out,
             );
@@ -488,7 +488,7 @@ fn import_project(
             setup::import::import_neighbour(path, dir, out);
             ProjectRun::Done(model_result("project", path, dir, &outcome, out))
         }
-        Err(err) => ProjectRun::Failed(refused(error_chain(&err), out)),
+        Err(err) => ProjectRun::Failed(refused(chain(&err), out)),
     }
 }
 
@@ -572,7 +572,7 @@ fn import_keyring(
         ));
     };
     let (report, outcome) = setup::import::import_keyring_with(dir, path, &password)
-        .map_err(|err| refused(error_chain(&err), out))?;
+        .map_err(|err| refused(chain(&err), out))?;
     let warnings: Vec<Value> = setup::import::rekeyed_warnings(dir, &report)
         .iter()
         .map(|d| json!({"code": d.code, "location": d.location, "message": d.message}))
@@ -629,8 +629,8 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
                     ));
                 }
             };
-            let count = export::groups(dir, format, &out)
-                .map_err(|err| refused(error_chain(&err), &none))?;
+            let count =
+                export::groups(dir, format, &out).map_err(|err| refused(chain(&err), &none))?;
             Ok(json!({
                 "ok": true,
                 "what": "groups",
@@ -657,7 +657,7 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
                     &none,
                 ));
             }
-            let files = export::doc(dir, &out).map_err(|err| refused(error_chain(&err), &none))?;
+            let files = export::doc(dir, &out).map_err(|err| refused(chain(&err), &none))?;
             Ok(json!({
                 "ok": true,
                 "what": "doc",
@@ -694,7 +694,7 @@ pub(crate) fn export_bundle(
     include_history: bool,
 ) -> Result<Value, String> {
     let (path, manifest) = export::bundle(dir, out, include_history)
-        .map_err(|err| format!("the export failed: {}", error_chain(&err)))?;
+        .map_err(|err| format!("the export failed: {}", chain(&err)))?;
     let summary = format!(
         "Wrote the bundle {}: {} device(s), {} group address(es), {} history snapshot(s); it \
          never contains vendor product data, keyrings or passwords.",
@@ -727,7 +727,7 @@ fn export_keyring(dir: &Path, out: &Path, args: &ExportArgs) -> Result<Value, Va
         keyring::export_keyring(dir, out, &password, args.force.unwrap_or(false), &mut log)
             .map_err(|err| {
                 refused(
-                    error_chain(&err).replace("pass --force", "pass force: true"),
+                    chain(&err).replace("pass --force", "pass force: true"),
                     &none,
                 )
             })?;

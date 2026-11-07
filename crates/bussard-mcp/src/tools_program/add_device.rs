@@ -29,10 +29,11 @@ use std::time::Instant;
 use crate::jobs::{JobKind, JobSink, Subject};
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::ServiceError;
 use bussard_service::adopt::flow::{
     ProductPlan, SelectedProduct, product_plan, selected_from_archive, useful_objects,
 };
-use bussard_service::assign::{AssignError, hex};
+use bussard_service::assign::hex;
 use bussard_service::observer::Collected;
 use bussard_service::program::Question;
 use bussard_service::program::adopt::{self, Adopted, Keys, PlanRequest, Planned, RunRequest};
@@ -143,10 +144,10 @@ fn refusal(stop: Stop, planning: bool) -> String {
             "{target} is already in use: a device answers there ({}). Nothing was written.",
             occupant.describe()
         ),
-        Stop::Assign(AssignError::Refused(reason)) if reason.ends_with("Nothing was written.") => {
+        Stop::Assign(ServiceError::Refused(reason)) if reason.ends_with("Nothing was written.") => {
             reason
         }
-        Stop::Assign(AssignError::Refused(reason)) => format!("{reason}. Nothing was written."),
+        Stop::Assign(ServiceError::Refused(reason)) => format!("{reason}. Nothing was written."),
         Stop::Refused(reason) => reason,
         other => chain(&other),
     }
@@ -172,8 +173,7 @@ impl BussardMcp {
                     bussard_service::assign::validate_explicit_address(
                         address,
                         Some(&self.state().model.reload()),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
                 }
                 let job = tier.jobs.claim(JobKind::Add, Subject::Bus)?.id;
                 // `product`: the import `bussard adopt --product` runs, before
@@ -832,7 +832,7 @@ fn import_product(
         &mut out,
     );
     let imported = bussard_service::files::products::import_product_file(file, dir, None, &mut out)
-        .map_err(|err| bussard_service::setup::products::error_chain(&err))?;
+        .map_err(|err| bussard_service::chain(&err))?;
     let mut sentences = vec![imported.stored];
     if !imported.models.is_empty() {
         sentences.push(format!(

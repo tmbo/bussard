@@ -72,7 +72,7 @@ pub fn prepare(dir: &Path, out: &mut dyn ProgressSink) {
     if let Err(err) = migrate_vendor(dir, out) {
         out.warn(&format!(
             "warning: moving vendor/ into products/: {}",
-            store::error_chain(&err)
+            crate::util::chain(&err)
         ));
     }
     if bussard_prod::product_model::models_incomplete(dir) {

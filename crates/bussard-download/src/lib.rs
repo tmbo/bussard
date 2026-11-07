@@ -67,8 +67,9 @@ pub use flash::{
     Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
     LoadControlForm, PartialPlanError, PlanError, Progress, PropObject, RebootReadiness,
     RestartForm, RestartKind, Session, Sys7TableBases, allocation_change,
-    discover_application_object, flash, knxnet_ip_program, plan_flash, read_property_value,
-    restart_form, select_application, sys7_table_bases, trace, write_property_value,
+    discover_application_object, flash, knxnet_ip_program, plan_flash, property_write_requests,
+    read_property_value, restart_form, select_application, sys7_table_bases, trace,
+    write_property_value,
 };
 pub use model_params::{
     Sys7Identity, build_table_images, describe_group_object_change, flash_gate, identity_gate,

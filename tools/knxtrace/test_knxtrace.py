@@ -1214,6 +1214,16 @@ class TestPropertyWrites(unittest.TestCase):
                 {"index": 4, "label": label % (4, 5, 13, 5)},
                 {"index": 5, "label": "5.", "property": {
                     "object": 4, "pid": 13, "start_element": 1, "length": 5, "data": "00fa000113"}},
+                # A load procedure's own PID_LOAD_STATE_CONTROL write the plan
+                # lists as a load control (#947) is judged with the load
+                # controls, not as a property write.
+                {"index": 6, "label": label % (6, 8, 5, 10), "load_controls": [
+                    {"form": "property", "object": 8, "event": "unload",
+                     "data": "04000000000000000000"}]},
+                # One the plan does not list as a load control (an additional
+                # load control, or a 1-octet value) stays a property write.
+                {"index": 7, "label": label % (7, 8, 5, 10)},
+                {"index": 8, "label": label % (8, 8, 5, 1)},
             ],
         }
         with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
@@ -1229,7 +1239,10 @@ class TestPropertyWrites(unittest.TestCase):
                 (["obj4", 13, 5], "differs"),
             ],
         )
-        self.assertEqual([b["key"] for b in props["bussard_only"]], [["obj5", 13, 5]])
+        self.assertEqual(
+            [b["key"] for b in props["bussard_only"]],
+            [["obj5", 13, 5], ["obj8", 5, 10], ["obj8", 5, 1]],
+        )
         self.assertEqual(
             [e["key"] for e in props["ets_only"]],
             [["type17.1", 5, 10], ["type17.1", 54, 2], ["type17.1", 61, 20]],

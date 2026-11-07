@@ -67,6 +67,7 @@ use bussard_project::keystore::{StoreInterface, StoreRevision};
 use bussard_secure::{Key16, Password, Sequence, SequenceHighWater, salt};
 use sha2::{Digest, Sha256};
 
+use crate::ServiceError;
 use crate::observer::{Event, ProgressSink};
 use crate::verify::{Counted, LeftoverKind, WriteReadback};
 
@@ -1091,36 +1092,9 @@ impl SwitchOutcome {
     }
 }
 
-/// Why a switch stopped.
-#[derive(Debug, thiserror::Error)]
-pub enum SwitchError {
-    /// A stage failed: the bus or a session could not be opened, a
-    /// management step or read failed, or the key store could not be
-    /// written. `stage` says where.
-    #[error("{stage}: {source}")]
-    At {
-        /// Which part of the switch.
-        stage: &'static str,
-        /// The failure.
-        #[source]
-        source: Box<dyn std::error::Error + Send + Sync>,
-    },
-    /// The verification connection could not be configured.
-    #[error("configuring the verification tunnel: {0}")]
-    SecureConfig(#[from] crate::secure::SecureKeyError),
-}
-
-impl SwitchError {
-    /// `source` as the failure of `stage`.
-    fn at(
-        stage: &'static str,
-        source: impl Into<Box<dyn std::error::Error + Send + Sync>>,
-    ) -> Self {
-        SwitchError::At {
-            stage,
-            source: source.into(),
-        }
-    }
+/// The verification connection could not be configured.
+fn secure_config(source: crate::secure::SecureKeyError) -> ServiceError {
+    ServiceError::because("configuring the verification tunnel", source)
 }
 
 /// The gateway's description, when the configuration names one and it
@@ -1167,8 +1141,9 @@ async fn on_target<T>(
     stage: &'static str,
     session: impl AsyncFnOnce(&mut crate::Management) -> Result<T, IpSecureError>,
     keep_open_after: impl FnOnce(&Result<T, BoxError>) -> bool,
-) -> Result<T, SwitchError> {
-    let bus = crate::BusService::open(config, ctx.policy).map_err(|e| SwitchError::at(stage, e))?;
+) -> Result<T, ServiceError> {
+    let bus =
+        crate::BusService::open(config, ctx.policy).map_err(|e| ServiceError::because(stage, e))?;
     let _ = bus.wait_connected(ctx.connect_wait).await;
     let source = crate::SourcePolicy::Check {
         skip: ctx.skip_address_check,
@@ -1184,7 +1159,7 @@ async fn on_target<T>(
         )
         .await;
     bus.close().await;
-    result.map_err(|source| SwitchError::At { stage, source })
+    result.map_err(|source| ServiceError::because(stage, source))
 }
 
 /// A stage's failure before it is named.
@@ -1202,7 +1177,7 @@ async fn connection(
     key: Key16,
     stage: &'static str,
     progress: &mut (dyn ProgressSink + Send),
-) -> Result<ConnectionReport, SwitchError> {
+) -> Result<ConnectionReport, ServiceError> {
     // The connection ends with the device's restart: a tunnel that tried to
     // re-establish itself through the rebooting interface would only delay
     // the next stage.
@@ -1252,14 +1227,14 @@ pub async fn run_switch(
     plan: &mut SwitchPlan,
     store: &KeyStore,
     progress: &mut (dyn ProgressSink + Send),
-) -> Result<SwitchOutcome, SwitchError> {
+) -> Result<SwitchOutcome, ServiceError> {
     let gateway = probe_gateway(&ctx.config).await;
     let target_is_gateway = gateway.and_then(|(ia, _)| ia) == Some(plan.target);
     let mut loaded = ctx.keystore_loaded.clone();
     let store_saved_before = plan
         .save_store(ctx.dir, ctx.keystore_password, &mut loaded)
         .map_err(|e| {
-            SwitchError::at(
+            ServiceError::because(
                 "saving the generated credentials to the key store before the first write",
                 e,
             )
@@ -1283,7 +1258,7 @@ pub async fn run_switch(
     // `off` and secure after `on`.
     let switch = plan.switch;
     let target = plan.target;
-    let after_config = || -> Result<bussard_transport::ConnectionConfig, SwitchError> {
+    let after_config = || -> Result<bussard_transport::ConnectionConfig, ServiceError> {
         let mut config = ctx.config.clone();
         if config.transport == bussard_transport::TransportKind::DeviceManagement {
             // A device management connection reaches the target itself
@@ -1295,17 +1270,17 @@ pub async fn run_switch(
                     config,
                     Some(&KeyStore::path(ctx.dir)),
                     target,
-                )?;
+                )
+                .map_err(secure_config)?;
             }
         } else if target_is_gateway {
             config.secure = match switch {
-                Switch::On => {
-                    crate::secure::tunnel_config(crate::secure::TunnelCredentialSource {
-                        keyring: Some(&KeyStore::path(ctx.dir)),
-                        user: None,
-                        password_env: None,
-                    })?
-                }
+                Switch::On => crate::secure::tunnel_config(crate::secure::TunnelCredentialSource {
+                    keyring: Some(&KeyStore::path(ctx.dir)),
+                    user: None,
+                    password_env: None,
+                })
+                .map_err(secure_config)?,
                 Switch::Off => None,
             };
         }
@@ -1364,7 +1339,7 @@ pub async fn run_switch(
         store_after_off(store, plan.target)
             .save_unchanged_since(ctx.dir, ctx.keystore_password, &mut loaded)
             .map_err(|e| {
-                SwitchError::at(
+                ServiceError::because(
                     "dropping the tool key from the key store after the verified switch",
                     e,
                 )

@@ -16,9 +16,8 @@ use bussard_model::IndividualAddress;
 
 use super::{Declined, Event, Observer, Question, Step, ask};
 use crate::assign::{
-    AssignError, Occupant, ProgrammingWait, Verified, VerifyError, VerifyKey, in_programming_mode,
-    probe_occupant, still_in_programming_mode, verify_assignment_with, wait_for_programming_mode,
-    write_address,
+    Occupant, ProgrammingWait, Verified, VerifyKey, in_programming_mode, probe_occupant,
+    still_in_programming_mode, verify_assignment_with, wait_for_programming_mode, write_address,
 };
 use crate::identity::SecureStatus;
 use crate::{BusService, ServiceError};
@@ -84,13 +83,13 @@ pub enum Stop {
     },
     /// The address broadcast failed.
     #[error("broadcasting the new individual address")]
-    Write(#[source] AssignError),
+    Write(#[source] ServiceError),
     /// The read-back at the new address failed.
     #[error(transparent)]
-    Verify(#[from] VerifyError),
+    Verify(ServiceError),
     /// The address, the model, the bus lease or a broadcast failed.
     #[error(transparent)]
-    Assign(#[from] AssignError),
+    Assign(#[from] ServiceError),
     /// Another step failed; the error says which.
     #[error(transparent)]
     Other(Box<dyn std::error::Error + Send + Sync>),
@@ -259,7 +258,8 @@ impl AssignFlow<'_> {
             req.clear_programming_mode,
             req.key,
         )
-        .await?;
+        .await
+        .map_err(Stop::Verify)?;
         if req.refuse_hidden && verified.secure == SecureStatus::ActivatedNoKey {
             return Err(Stop::Hidden(Box::new(verified)));
         }

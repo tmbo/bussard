@@ -7,23 +7,13 @@
 //! so both front ends leave the same `groups.toml` behind (issue #779).
 //! `validate` alone only warns (E001).
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use bussard_model::history::SnapshotReason;
 use bussard_model::{DeclaredGroup, Model};
 
+use crate::ServiceError;
 use crate::observer::ProgressSink;
-
-/// Why [`declare_used`] could not write `groups.toml`.
-#[derive(Debug, thiserror::Error)]
-#[error("writing {}", path.display())]
-pub struct DeclareError {
-    /// The `groups.toml` that could not be written.
-    pub path: PathBuf,
-    /// The underlying save error.
-    #[source]
-    pub source: bussard_model::loader::SaveError,
-}
 
 /// Adds the group addresses the device files link but `groups.toml` does not
 /// define, saves `groups.toml` behind a history snapshot named `verb`, and
@@ -42,7 +32,7 @@ pub fn declare_used(
     model: &mut Model,
     verb: &str,
     out: &mut dyn ProgressSink,
-) -> Result<Vec<DeclaredGroup>, DeclareError> {
+) -> Result<Vec<DeclaredGroup>, ServiceError> {
     let mut edited = model.clone();
     let added = bussard_model::declare_used_groups(&mut edited);
     if added.is_empty() {
@@ -56,7 +46,7 @@ pub fn declare_used(
     );
     let path = dir.join("groups.toml");
     bussard_model::loader::save_groups(&path, &edited.groups)
-        .map_err(|source| DeclareError { path, source })?;
+        .map_err(|e| ServiceError::context(format!("writing {}", path.display()), e))?;
     *model = edited;
     Ok(added)
 }

@@ -40,23 +40,6 @@ pub struct ObjectDescription {
     pub properties: Vec<PropertyDesc>,
 }
 
-/// Why the walk failed.
-#[derive(Debug, thiserror::Error)]
-pub enum DescribeError {
-    /// Discovering the interface objects failed.
-    #[error("discovering interface objects")]
-    Discover(#[source] bussard_mgmt::tables::TablesError),
-    /// Enumerating one object's properties failed.
-    #[error("enumerating properties of object {index}")]
-    Enumerate {
-        /// The object index.
-        index: u8,
-        /// The management error.
-        #[source]
-        source: MgmtError,
-    },
-}
-
 /// Discovers a device's interface objects and enumerates each one's property
 /// descriptions over an open management session.
 ///
@@ -70,15 +53,17 @@ pub enum DescribeError {
 /// The first discovery or enumeration failure.
 pub async fn walk_objects<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
-) -> Result<Vec<ObjectDescription>, DescribeError> {
+) -> Result<Vec<ObjectDescription>, ServiceError> {
     let objects = discover_interface_objects(l4)
         .await
-        .map_err(DescribeError::Discover)?;
+        .map_err(|e| ServiceError::context("discovering interface objects", e))?;
     let mut out = Vec::with_capacity(objects.len());
     for (index, object_type) in objects {
         let properties = bussard_mgmt::describe_object_properties(l4, index)
             .await
-            .map_err(|source| DescribeError::Enumerate { index, source })?;
+            .map_err(|e| {
+                ServiceError::context(format!("enumerating properties of object {index}"), e)
+            })?;
         out.push(ObjectDescription {
             index,
             object_type,
@@ -433,7 +418,7 @@ pub enum RunError {
     },
     /// The object walk failed.
     #[error(transparent)]
-    Walk(DescribeError),
+    Walk(ServiceError),
 }
 
 /// What one describe found.

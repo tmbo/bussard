@@ -153,7 +153,7 @@ impl BussardMcp {
             ));
         }
         let material = self.plan_material(target, &model)?;
-        let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
+        let source = service.checked_source(false).await?;
         let options =
             L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
         let result = json!({

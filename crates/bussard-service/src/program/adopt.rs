@@ -372,10 +372,10 @@ async fn read_secured(
     )
     .await
     .map_err(|source| {
-        Stop::other(SecuredReadError {
-            target,
-            source: Box::new(source),
-        })
+        Stop::other(crate::ServiceError::context(
+            format!("reading {target} over A_SecureData with its tool key"),
+            source,
+        ))
     })?;
     adopt::record_secured(
         req.model,
@@ -387,15 +387,4 @@ async fn read_secured(
         plan.current,
     )
     .map_err(Stop::other)
-}
-
-/// The secured read of an adopted device failed.
-#[derive(Debug, thiserror::Error)]
-#[error("reading {target} over A_SecureData with its tool key")]
-pub struct SecuredReadError {
-    /// The device.
-    pub target: IndividualAddress,
-    /// The cause.
-    #[source]
-    pub source: Box<dyn std::error::Error + Send + Sync>,
 }

@@ -36,7 +36,7 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_prod::normalize_order_number;
 
 use crate::BusService;
-use crate::assign::{Occupant, Verified, VerifyError, VerifyKey, identify, probe_occupant};
+use crate::assign::{Occupant, Verified, VerifyKey, identify, probe_occupant};
 use crate::line::{WalkEvent, model_devices_on_line, walk};
 use crate::program::assign::{Assign, AssignFlow, Assigned, Stop, completed};
 use crate::program::{Event, Observer, Step};
@@ -474,7 +474,7 @@ pub async fn assign_pressed<O: Observer>(
         .assign(&request, observer)
         .await
         .map_err(|stop| match stop {
-            Stop::OtherDevice { .. } => Stop::Verify(VerifyError::Unverified(format!(
+            Stop::OtherDevice { .. } => Stop::Verify(crate::ServiceError::Refused(format!(
                 "wrote {} but the device answering there is not the one identified at {} (the \
                  read-back reports another serial number or mask); the assignment is unverified",
                 target.address, identified.current

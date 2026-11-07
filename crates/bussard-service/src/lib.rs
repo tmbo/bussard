@@ -124,8 +124,8 @@ pub mod write;
 
 pub use bus::{Authorize, BusService, L4Options, Management, SourcePolicy};
 pub use enroll::{
-    CertificateEnrolment, EnrolError, EnrolOutcome, EnrolStatus, RecordSerialsError, attach_serial,
-    attach_serials, enroll_certificate, record_serials,
+    CertificateEnrolment, EnrolOutcome, EnrolStatus, attach_serial, attach_serials,
+    enroll_certificate, record_serials,
 };
 pub use error::ServiceError;
 pub use facts::{
@@ -137,6 +137,7 @@ pub use group::{
 };
 pub use model_handle::{ModelHandle, complete_product_models};
 pub use policy::WritePolicy;
+pub use util::chain;
 pub use write::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WriteOutcome, WriteRefusal, WriteValue,
     prepare_group_write, protected_group,

@@ -20,8 +20,8 @@ use anyhow::Context;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::knxnet::{
-    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, ReadAndPlanError,
-    SessionLink, apply_interface, write_interface_backup,
+    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, SessionLink,
+    apply_interface, write_interface_backup,
 };
 use bussard_service::property_plan::PropertyRow;
 use bussard_service::{L4Options, WritePolicy};
@@ -150,12 +150,12 @@ fn read_and_plan(
     };
     match runtime.block_on(knxnet::read_and_plan(bus.service(), options, req)) {
         Ok(InterfaceReadPlan { read, plan, rows }) => Ok((read, plan, rows)),
-        Err(ReadAndPlanError::Service(err)) => Err(crate::secure_key::secure_hint(
+        Err(err @ bussard_service::ServiceError::Refused(_)) => Err(err.into()),
+        Err(err) => Err(crate::secure_key::secure_hint(
             target,
             options.tool_key.is_some(),
             err.into(),
         )),
-        Err(err) => Err(err.into()),
     }
 }
 

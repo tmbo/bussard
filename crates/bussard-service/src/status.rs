@@ -16,12 +16,13 @@
 //! read with its tool key, the security failures log, report and report
 //! control (PID 55, 57, 58) are read too (issue #533).
 
-use bussard_mgmt::{L4Channel, Layer4Connection, MgmtError};
+use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::IndividualAddress;
 use bussard_model::identity::{IdentityCheck, ReportedIdentity};
 use bussard_model::knxnet::{KnxnetConfig, KnxnetFacts};
 use bussard_model::schema::Device;
 
+use crate::ServiceError;
 use crate::bus::Authorize;
 use crate::facts::{FactsCache, FactsWant};
 
@@ -38,35 +39,6 @@ pub struct LiveStatus {
     pub knxnet_error: Option<String>,
     /// The Data Secure diagnostics, on a secured session.
     pub security: Option<bussard_download::SecurityDiagnostics>,
-}
-
-/// Why the live status could not be read.
-#[derive(Debug, thiserror::Error)]
-pub enum StatusError {
-    /// The device descriptor read failed.
-    #[error("reading the device descriptor of {target}")]
-    Descriptor {
-        /// The device.
-        target: IndividualAddress,
-        /// The management failure.
-        #[source]
-        source: MgmtError,
-    },
-    /// The device answered the hidden mask of a Data Secure device.
-    #[error("{target} hides its mask (FFFF): it is secured and refuses plain management")]
-    HiddenMask {
-        /// The device.
-        target: IndividualAddress,
-    },
-    /// The interface objects (the device facts) could not be read.
-    #[error("reading the interface objects of {target}")]
-    Facts {
-        /// The device.
-        target: IndividualAddress,
-        /// The management failure.
-        #[source]
-        source: MgmtError,
-    },
 }
 
 /// The authorize of a read-only session: skipped (with the key deferred)
@@ -89,24 +61,30 @@ pub fn read_only_authorize(facts: &mut FactsCache, target: IndividualAddress) ->
 ///
 /// # Errors
 ///
-/// A [`StatusError`] when the descriptor or the interface objects cannot be
+/// A [`ServiceError`] when the descriptor or the interface objects cannot be
 /// read, or the device hides its mask. A KNXnet/IP object that cannot be
 /// read is reported in [`LiveStatus::knxnet_error`] instead.
 pub async fn read_live_status<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     facts: &FactsCache,
-) -> Result<LiveStatus, StatusError> {
+) -> Result<LiveStatus, ServiceError> {
     let target = l4.target();
     let mask = bussard_mgmt::read_device_descriptor(l4)
         .await
-        .map_err(|source| StatusError::Descriptor { target, source })?;
+        .map_err(|e| {
+            ServiceError::context(format!("reading the device descriptor of {target}"), e)
+        })?;
     if mask == crate::identity::HIDDEN_MASK {
-        return Err(StatusError::HiddenMask { target });
+        return Err(ServiceError::Refused(format!(
+            "{target} hides its mask (FFFF): it is secured and refuses plain management"
+        )));
     }
     let mut established = facts
         .establish(l4, mask, FactsWant::Table)
         .await
-        .map_err(|source| StatusError::Facts { target, source })?;
+        .map_err(|e| {
+            ServiceError::context(format!("reading the interface objects of {target}"), e)
+        })?;
     let application_id = established
         .record
         .as_ref()
