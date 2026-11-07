@@ -159,6 +159,10 @@ struct ObjectState {
     /// with the CRC it computes (Resources 03.05.01 §4.2.27, bussard issue
     /// #840). Cleared by an Unload.
     mcb_written: Option<[u8; MCB_ENTRY_LEN]>,
+    /// The end of the furthest `LdCtrlWriteRelMem` the product's load
+    /// procedures write into this object (offset plus size), 0 when none. A
+    /// relative allocation covers at least this much.
+    write_extent: u32,
 }
 
 /// Construction-time overrides that select and tune a device's mask profile.
@@ -865,7 +869,16 @@ impl Device {
         // which may be shorter than the allocated segment — a tool that writes a
         // compact table into a larger allocation must still verify against just
         // those bytes. Use the written span, not the full allocation.
-        let bytes = self.memory.written_span(object)?;
+        // A loadable object the tool streamed nothing into (a 07B0 program
+        // without a code segment: the Schneider STYAS608D, `M-0009_A-E807`,
+        // loads object 4 empty and then reads its PID 27) has an empty image:
+        // size 0 and the CRC of no octets. The zero-count refusal made ETS
+        // report a read of a protected or absent memory area (ETS sweep,
+        // 2026-11-06).
+        let bytes = self
+            .memory
+            .written_span(object)
+            .or_else(|| self.loadables.contains_key(&object).then(Vec::new))?;
         Some(mcb::mcb_entry(&bytes).to_vec())
     }
 

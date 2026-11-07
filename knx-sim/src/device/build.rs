@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use crate::bus::event::EventSink;
-use crate::prod::{LoadableObject, ProductData};
+use crate::prod::{LdCtrl, LoadableObject, ProductData};
 use crate::wire::IndividualAddress;
 
 use super::{
@@ -45,6 +45,26 @@ fn default_base_for(lsm_index: u8) -> u32 {
         4 => 0x6000, // application segment
         other => 0x6000u32.wrapping_add((other as u32) << 12),
     }
+}
+
+/// The end (offset plus size) of the furthest `LdCtrlWriteRelMem` the
+/// product's load procedures write into `object`, 0 when none does.
+fn rel_mem_extent(product: &ProductData, object: u8) -> u32 {
+    product
+        .load_procedures
+        .iter()
+        .flat_map(|p| &p.steps)
+        .filter_map(|step| match step {
+            LdCtrl::WriteRelMem {
+                obj_index,
+                offset,
+                size,
+                ..
+            } if *obj_index == object => Some(offset.saturating_add(*size)),
+            _ => None,
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// The absolute base address a System 7 LSM index anchors at (spec §2.3): LSM 1
@@ -398,6 +418,7 @@ impl Device {
                     base,
                     descriptor: obj.clone(),
                     mcb_written: None,
+                    write_extent: rel_mem_extent(product, obj.lsm_index),
                 },
             );
         }
@@ -451,6 +472,7 @@ impl Device {
                             image: Vec::new(),
                         },
                         mcb_written: None,
+                        write_extent: rel_mem_extent(product, index),
                     },
                 );
             }
@@ -612,6 +634,7 @@ impl Device {
                     base: u32::from(sys7_region_base(&s7, lsm_index)),
                     descriptor,
                     mcb_written: None,
+                    write_extent: 0,
                 },
             );
         }
@@ -1158,6 +1181,71 @@ mod tests {
         // The procedure's write to object 4 is taken.
         let r = dev.handle_cemi(&data(&dev, 0x3D7, &[4, 16, 0x10, 0x01, 0x01]))?;
         assert_eq!(prop_response_value(&r), vec![0x01]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_empty_object_has_an_empty_mcb() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Bussard issue #422: the Schneider STYAS608D (`M-0009_A-E807-10`) has
+        // no code segment; ETS loads object 4 empty and reads its PID 27
+        // `[d5 04 1b 10 01]`. The zero-count answer made ETS report a read of
+        // a protected memory area (ETS sweep, 2026-11-06).
+        let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        pd.mask_version = "MV-07B0".into();
+        pd.objects.retain(|o| o.lsm_index != 4);
+        let mut dev = connected_device(&pd)?;
+        for event in [0x04u8, 0x01, 0x02] {
+            let mut write = vec![4, 5, 0x10, 0x01, event];
+            write.extend_from_slice(&[0; 9]);
+            dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        }
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 27, 0x10, 0x01]))?;
+        // Size 0, the CRC of no octets (CRC-16/AUG-CCITT initial value 1D0F).
+        assert_eq!(
+            prop_response_value(&r),
+            vec![0, 0, 0, 0, 0x00, 0xFF, 0x1D, 0x0F]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system_b_allocation_covers_the_procedure_writes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #422: the Hager TYMS616D (`M-0009_A-E804-10`)
+        // allocates 258 octets on object 4 (`LdCtrlRelSegment Size="258"`)
+        // and writes 642 (`LdCtrlWriteRelMem Offset="0" Size="642"`). The
+        // sim refused ETS's write at 0x60f9+61 and ETS reported "device does
+        // not respond" (ETS sweep, 2026-11-07). The frames are ETS's.
+        let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        pd.mask_version = "MV-07B0".into();
+        pd.load_procedures.push(crate::prod::LoadProcedure {
+            merge_id: Some(4),
+            steps: vec![crate::prod::LdCtrl::WriteRelMem {
+                obj_index: 4,
+                offset: 0,
+                size: 642,
+                verify: true,
+            }],
+        });
+        let mut dev = connected_device(&pd)?;
+        for record in [
+            [0x04u8, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+            [0x03, 0x0b, 0x00, 0x00, 0x01, 0x02, 0x01, 0x00, 0x00, 0x00],
+        ] {
+            let mut write = vec![4, 5, 0x10, 0x01];
+            write.extend_from_slice(&record);
+            dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        }
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 7, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0x00, 0x00, 0x60, 0x00]);
+        let mut write = vec![0x3d, 0x00, 0x60, 0xf9];
+        write.extend_from_slice(&[0x22; 61]);
+        let r = dev.handle_cemi(&data(&dev, 0x1FB, &write))?;
+        // A_MemoryExtended_WriteResponse, return code 00 (success).
+        let resp = r.responses.first().ok_or("no write response")?;
+        assert_eq!(&resp.tpdu[1..3], &[0xFC, 0x00]);
         Ok(())
     }
 
