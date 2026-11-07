@@ -2456,7 +2456,7 @@ pub fn compute_property_values(
     app: &ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
 ) -> Result<PropertyValues> {
-    compose_property_values(app, config, PropertyValues::new(), |_| true)
+    PropertyParameters::resolve(app, config).values()
 }
 
 /// Composes the value of the one property `object`/`prop_id` over `base`,
@@ -2468,7 +2468,8 @@ pub fn compute_property_values(
 /// writes object 16 PID 208 elements 141 to 158 as its `InlineData`; the
 /// Hager placeholders are zeros the parameters replace).
 ///
-/// `None` when no parameter is placed in the property.
+/// `None` when no parameter is placed in the property. A planner composing
+/// several properties resolves a [`PropertyParameters`] once instead.
 ///
 /// # Errors
 ///
@@ -2480,110 +2481,172 @@ pub fn compose_property_value(
     prop_id: u32,
     base: Vec<u8>,
 ) -> Result<Option<Vec<u8>>> {
-    let key = (object, prop_id);
-    let placed = app.parameters.values().any(|p| {
-        p.property
-            .as_ref()
-            .and_then(|loc| PropertyObjectRef::of(loc).map(|o| (o, loc.property_id)))
-            == Some(key)
-    });
-    if !placed {
-        return Ok(None);
-    }
-    let mut out = compose_property_values(app, config, PropertyValues::from([(key, base)]), |k| {
-        *k == key
-    })?;
-    Ok(out.remove(&key))
+    PropertyParameters::resolve(app, config).compose(object, prop_id, base)
 }
 
-/// The property values the parameters compose over `bases`, for the
-/// properties `wanted` accepts.
-fn compose_property_values(
-    app: &ApplicationProgram,
-    config: &bussard_ets::dynamic::DynamicConfig,
-    bases: PropertyValues,
-    wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
-) -> Result<PropertyValues> {
-    let prefix = format!("{}_", app.id);
-    // The reached application-level ref of each parameter, first in walk order.
-    let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
-    for active in config.parameters.iter().filter(|a| a.module.is_none()) {
-        if let Some(pref) = app
-            .parameter_refs
-            .get(&format!("{prefix}{}", active.param_ref_id))
-        {
-            reached
-                .entry(pref.ref_id.as_str())
-                .or_insert(active.param_ref_id.as_str());
-        }
-    }
-    // The first ref of each parameter, by id, for an unreached parameter's
-    // vendor default (a ref may override the parameter's own `Value`).
-    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
-    for pref in app.parameter_refs.values() {
-        if let Some(rel) = pref.id.strip_prefix(&prefix) {
-            let entry = first_ref.entry(pref.ref_id.as_str()).or_insert(rel);
-            if rel < *entry {
-                *entry = rel;
+/// The property-located parameters of a program (`<Parameter><Property
+/// …/></Parameter>`) with the value one evaluated configuration gives each,
+/// resolved once so a plan composes every property from the same walk
+/// (issue #945).
+///
+/// A parameter the configuration reaches takes its effective value (an
+/// override, an `<Assign>` result, else the vendor default); one it does not
+/// reach takes its vendor default, since a property has no template to keep.
+/// Module parameters are not modelled here.
+#[derive(Debug, Clone)]
+pub struct PropertyParameters<'a> {
+    /// The program the parameters belong to.
+    app: &'a ApplicationProgram,
+    /// The parameters, in id order (the order they are placed in).
+    params: Vec<ResolvedPropertyParameter<'a>>,
+}
+
+/// One property-located parameter and its resolved value.
+#[derive(Debug, Clone)]
+struct ResolvedPropertyParameter<'a> {
+    /// The parameter.
+    param: &'a bussard_ets::application::Parameter,
+    /// The property it lives in.
+    key: (PropertyObjectRef, u32),
+    /// Its byte offset in the property value.
+    offset: usize,
+    /// Its bit offset in that byte, MSB first.
+    bit_offset: u8,
+    /// The value it takes under the configuration.
+    value: Option<String>,
+    /// Where that value comes from.
+    source: ValueSource,
+}
+
+impl<'a> PropertyParameters<'a> {
+    /// Resolves the value of every property-located parameter of `app` under
+    /// `config`.
+    pub fn resolve(
+        app: &'a ApplicationProgram,
+        config: &bussard_ets::dynamic::DynamicConfig,
+    ) -> PropertyParameters<'a> {
+        let prefix = format!("{}_", app.id);
+        // The reached application-level ref of each parameter, first in walk order.
+        let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
+        for active in config.parameters.iter().filter(|a| a.module.is_none()) {
+            if let Some(pref) = app
+                .parameter_refs
+                .get(&format!("{prefix}{}", active.param_ref_id))
+            {
+                reached
+                    .entry(pref.ref_id.as_str())
+                    .or_insert(active.param_ref_id.as_str());
             }
         }
-    }
-    let mut params: Vec<&bussard_ets::application::Parameter> = app
-        .parameters
-        .values()
-        .filter(|p| p.property.is_some())
-        .collect();
-    params.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut out = bases;
-    for param in params {
-        let Some(loc) = param.property.as_ref() else {
-            continue;
-        };
-        let Some(object) = PropertyObjectRef::of(loc) else {
-            continue;
-        };
-        if !wanted(&(object, loc.property_id)) {
-            continue;
+        // The first ref of each parameter, by id, for an unreached parameter's
+        // vendor default (a ref may override the parameter's own `Value`).
+        let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+        for pref in app.parameter_refs.values() {
+            if let Some(rel) = pref.id.strip_prefix(&prefix) {
+                let entry = first_ref.entry(pref.ref_id.as_str()).or_insert(rel);
+                if rel < *entry {
+                    *entry = rel;
+                }
+            }
         }
-        let pname = param.name.as_deref().unwrap_or(&param.id);
-        let (value, source) = match reached.get(param.id.as_str()) {
-            Some(ref_id) => (
-                config.value(app, None, ref_id),
-                if config.is_override(app, None, ref_id) {
-                    ValueSource::UserOverride
-                } else if config.computed_by(app, None, ref_id).is_some() {
-                    ValueSource::Computed
-                } else {
-                    ValueSource::VendorDefault
-                },
-            ),
-            None => (
-                first_ref
-                    .get(param.id.as_str())
-                    .and_then(|ref_id| config.vendor_default(app, None, ref_id))
-                    .or_else(|| param.default.clone()),
-                ValueSource::VendorDefault,
-            ),
-        };
-        let placement = encode_value(
-            app,
-            pname,
-            parameter_type_of(app, param),
-            value.as_deref(),
-            source,
-        )?;
-        let image = out.entry((object, loc.property_id)).or_default();
-        place_checked(
-            app,
-            pname,
-            image,
-            loc.offset as usize,
-            loc.bit_offset,
-            &placement,
-            None,
-        )?;
+        let mut params: Vec<ResolvedPropertyParameter<'a>> = app
+            .parameters
+            .values()
+            .filter_map(|param| {
+                let loc = param.property.as_ref()?;
+                let object = PropertyObjectRef::of(loc)?;
+                let (value, source) = match reached.get(param.id.as_str()) {
+                    Some(ref_id) => (
+                        config.value(app, None, ref_id),
+                        if config.is_override(app, None, ref_id) {
+                            ValueSource::UserOverride
+                        } else if config.computed_by(app, None, ref_id).is_some() {
+                            ValueSource::Computed
+                        } else {
+                            ValueSource::VendorDefault
+                        },
+                    ),
+                    None => (
+                        first_ref
+                            .get(param.id.as_str())
+                            .and_then(|ref_id| config.vendor_default(app, None, ref_id))
+                            .or_else(|| param.default.clone()),
+                        ValueSource::VendorDefault,
+                    ),
+                };
+                Some(ResolvedPropertyParameter {
+                    param,
+                    key: (object, loc.property_id),
+                    offset: loc.offset as usize,
+                    bit_offset: loc.bit_offset,
+                    value,
+                    source,
+                })
+            })
+            .collect();
+        params.sort_by(|a, b| a.param.id.cmp(&b.param.id));
+        PropertyParameters { app, params }
     }
-    Ok(out)
+
+    /// Whether a parameter is placed in `object`/`prop_id`, the object named
+    /// exactly as the parameter names it (an index is not a type).
+    pub fn places(&self, object: PropertyObjectRef, prop_id: u32) -> bool {
+        self.params.iter().any(|p| p.key == (object, prop_id))
+    }
+
+    /// The value of every property the parameters live in, composed over
+    /// nothing (see [`compute_property_values`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ProdError::ParameterImage`] when a value cannot be encoded for its type.
+    pub fn values(&self) -> Result<PropertyValues> {
+        self.compose_over(PropertyValues::new(), |_| true)
+    }
+
+    /// The value of `object`/`prop_id` composed over `base` (see
+    /// [`compose_property_value`]); `None` when no parameter is placed in it.
+    ///
+    /// # Errors
+    ///
+    /// [`ProdError::ParameterImage`] when a value cannot be encoded for its type.
+    pub fn compose(
+        &self,
+        object: PropertyObjectRef,
+        prop_id: u32,
+        base: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = (object, prop_id);
+        if !self.places(object, prop_id) {
+            return Ok(None);
+        }
+        let mut out = self.compose_over(PropertyValues::from([(key, base)]), |k| *k == key)?;
+        Ok(out.remove(&key))
+    }
+
+    /// The property values the parameters compose over `bases`, for the
+    /// properties `wanted` accepts.
+    fn compose_over(
+        &self,
+        bases: PropertyValues,
+        wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
+    ) -> Result<PropertyValues> {
+        let app = self.app;
+        let mut out = bases;
+        for p in self.params.iter().filter(|p| wanted(&p.key)) {
+            let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
+            let placement = encode_value(
+                app,
+                pname,
+                parameter_type_of(app, p.param),
+                p.value.as_deref(),
+                p.source,
+            )?;
+            let image = out.entry(p.key).or_default();
+            place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+        }
+        Ok(out)
+    }
 }
 
 /// Encodes a `<TypeIPAddress>` property value: an IPv4 address as its four

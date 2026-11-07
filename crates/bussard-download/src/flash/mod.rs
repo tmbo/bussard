@@ -1341,8 +1341,16 @@ impl FlashPlan {
             .iter()
             .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
             .unwrap_or(self.steps.len());
+        // Step back over the property writes, and the declarations that
+        // size them (issue #945), so the block never splits a declaration
+        // from its write.
         let mut block_at = first_load_completed;
-        while block_at > 0 && matches!(self.steps[block_at - 1], FlashStep::WriteProp { .. }) {
+        while block_at > 0
+            && matches!(
+                self.steps[block_at - 1],
+                FlashStep::WriteProp { .. } | FlashStep::DeclareProp { .. }
+            )
+        {
             block_at -= 1;
         }
         let mut block = vec![
@@ -1972,6 +1980,76 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("PID 53") && l.contains("keys not shown"))
         );
+        Ok(())
+    }
+
+    /// The security block lands before a declaration that precedes the
+    /// PID 13 writes, never between the declaration and its write (issue
+    /// #945).
+    #[test]
+    fn test_add_security_program_keeps_a_declaration_with_its_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        use super::PropObject;
+        use bussard_mgmt::LoadControl;
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let first_complete = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .ok_or("complete")?;
+        let declare = FlashStep::DeclareProp {
+            object: PropObject::Index(4),
+            prop_id: 13,
+            prop_type: "PDT_GENERIC_05".to_string(),
+            max_elements: 1,
+        };
+        let write = FlashStep::WriteProp {
+            object: PropObject::Index(4),
+            prop_id: 13,
+            value: vec![0, 0xFA, 0, 1, 0x10],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        plan.steps.splice(
+            first_complete..first_complete,
+            [declare.clone(), write.clone()],
+        );
+        plan.add_security_program(crate::security::SecurityProgram {
+            senders: Vec::new(),
+            group_keys: Vec::new(),
+            go_flags: vec![3],
+        });
+        let declared = plan
+            .steps
+            .iter()
+            .position(|s| *s == declare)
+            .ok_or("the declaration")?;
+        assert_eq!(plan.steps.get(declared + 1), Some(&write));
+        let sec_complete = plan
+            .steps
+            .iter()
+            .position(|s| {
+                matches!(
+                    s,
+                    FlashStep::SecurityLoadControl {
+                        control: LoadControl::LoadCompleted
+                    }
+                )
+            })
+            .ok_or("no security completion")?;
+        assert!(sec_complete < declared, "{:?}", plan.steps);
         Ok(())
     }
 

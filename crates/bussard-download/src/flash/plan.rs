@@ -27,25 +27,23 @@ pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanEr
 }
 
 /// The values the program's property-located parameters compose, computed
-/// on first use and kept in `cache` (issue #669).
+/// on first use and kept in `cache` (issue #669), from the parameter values
+/// the plan resolved once (issue #945).
 fn composed_property_values<'a>(
     cache: &'a mut Option<bussard_prod::PropertyValues>,
-    app: &ApplicationProgram,
-    config: &bussard_prod::dynamic::DynamicConfig,
+    params: &bussard_prod::PropertyParameters<'_>,
     step: usize,
 ) -> Result<&'a bussard_prod::PropertyValues, PlanError> {
     match cache {
         Some(values) => Ok(values),
-        None => {
-            Ok(cache.insert(
-                bussard_prod::compute_property_values(app, config).map_err(|e| {
-                    PlanError::UnsupportedWriteProp {
-                        step,
-                        reason: format!("composing the property values from the parameters: {e}"),
-                    }
+        None => Ok(cache.insert(
+            params
+                .values()
+                .map_err(|e| PlanError::UnsupportedWriteProp {
+                    step,
+                    reason: format!("composing the property values from the parameters: {e}"),
                 })?,
-            ))
-        }
+        )),
     }
 }
 
@@ -471,6 +469,9 @@ pub fn plan_flash(
     // The values of the properties the program's parameters live in, composed
     // on the first `LdCtrlWriteProp` without `InlineData` (issue #669).
     let mut property_values: Option<bussard_prod::PropertyValues> = None;
+    // The property-located parameters' values, resolved once for every
+    // property write of the plan, declared or not (issue #945).
+    let property_params = bussard_prod::PropertyParameters::resolve(app, &config);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
 
@@ -511,6 +512,9 @@ pub fn plan_flash(
                 ),
             });
         }
+        // The declaration a write to a declared property follows, looked up
+        // once (issue #945).
+        let declared_write = super::declare::declaration_for(&declared, step_no, op).cloned();
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
@@ -921,40 +925,39 @@ pub fn plan_flash(
             } if *prop_id == PID_PROGRAM_VERSION && skipped_objects.contains(idx) => {}
 
             // A write to a declared property: `Count` elements of the declared
-            // type, the value the parameters compose (issue #938).
-            LoadOp::WriteProp { .. }
-                if super::declare::declaration_for(&declared, step_no, op).is_some() =>
-            {
-                let decl = super::declare::declaration_for(&declared, step_no, op)
-                    .cloned()
-                    .ok_or_else(|| PlanError::UnsupportedWriteProp {
-                        step: step_no,
-                        reason: "the declaration of the property was lost".to_string(),
-                    })?;
-                let compose = |base: Vec<u8>| {
-                    let object = match decl.object {
-                        super::PropObject::Index(index) => {
-                            bussard_prod::PropertyObjectRef::Index(index)
+            // type, the value the parameters compose (issue #938), the
+            // template's application-id placeholder substituted as on any
+            // other PID 13 write (issue #945).
+            LoadOp::WriteProp {
+                obj_idx,
+                prop_id,
+                inline_data,
+                ..
+            } if declared_write.is_some() => {
+                let Some(decl) = declared_write else { continue };
+                let substituted = maybe_substitute_app_id(
+                    prop_id.unwrap_or(decl.prop_id),
+                    inline_data.as_deref(),
+                    companion_ids
+                        .get(&obj_idx.unwrap_or(0))
+                        .or(app_id_value.as_ref()),
+                );
+                let op = match op {
+                    LoadOp::WriteProp { .. } if substituted != *inline_data => {
+                        let mut op = op.clone();
+                        if let LoadOp::WriteProp { inline_data, .. } = &mut op {
+                            *inline_data = substituted;
                         }
-                        super::PropObject::Type {
-                            object_type,
-                            occurrence,
-                        } => bussard_prod::PropertyObjectRef::Type {
-                            object_type: u32::from(object_type),
-                            occurrence: u32::from(occurrence),
-                        },
-                    };
-                    bussard_prod::compose_property_value(app, &config, object, decl.prop_id, base)
-                        .map_err(|e| PlanError::UnsupportedWriteProp {
-                            step: step_no,
-                            reason: format!(
-                                "composing the value of {} PID {} from the parameters: {e}",
-                                decl.object, decl.prop_id
-                            ),
-                        })
+                        std::borrow::Cow::Owned(op)
+                    }
+                    _ => std::borrow::Cow::Borrowed(op),
                 };
                 steps.push(super::declare::lower_declared_write_prop(
-                    step_no, op, &decl, &compose, app,
+                    step_no,
+                    &op,
+                    &decl,
+                    &property_params,
+                    app,
                 )?);
             }
 
@@ -1037,8 +1040,11 @@ pub fn plan_flash(
                         // property no parameter is stored in it is a description
                         // read and no write, as ETS (issue #841); a stored
                         // property without a composed value is refused.
-                        let values =
-                            composed_property_values(&mut property_values, app, &config, step_no)?;
+                        let values = composed_property_values(
+                            &mut property_values,
+                            &property_params,
+                            step_no,
+                        )?;
                         steps.push(super::plan_props::lower_write_prop(
                             step_no, op, values, app,
                         )?);
@@ -3595,6 +3601,54 @@ mod tests {
             app_program_version_value(&app),
             Some([0x00, 0xFA, 0x25, 0x00, 0x10])
         );
+    }
+
+    #[test]
+    fn test_plan_flash_substitutes_the_app_id_in_a_declared_pid_13_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #945: a procedure that declares object 4 PID 13 before the
+        // placeholder write still writes the synthesized application id, not
+        // the zeros.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-00FA_A-2500-10-51CB" ApplicationNumber="9472"
+            ApplicationVersion="16" MaskVersion="MV-07B0" Name="Declared">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlDeclarePropDesc ObjIdx="4" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
+             <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00FA_A-2500-10-51CB", xml.as_bytes())?;
+        let plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let writes: Vec<&FlashStep> = plan
+            .steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::WriteProp { prop_id: 13, .. }))
+            .collect();
+        assert_eq!(
+            writes,
+            vec![&FlashStep::WriteProp {
+                object: crate::flash::PropObject::Index(4),
+                prop_id: 13,
+                value: vec![0x00, 0xFA, 0x25, 0x00, 0x10],
+                start_element: 1,
+                count: 1,
+                verify: false,
+                from_parameters: false,
+            }]
+        );
+        Ok(())
     }
 
     #[test]

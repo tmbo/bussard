@@ -18,11 +18,19 @@
 //! - the value is the one the program's property-located parameters compose,
 //!   not the op's `InlineData`: the Hager writes carry a 10-octet all-zero
 //!   `InlineData` placeholder, and ETS writes 1 to 328 octets of parameter
-//!   values instead.
+//!   values instead;
+//! - a write without `Count` to a property declared with `MaxElements="1"`
+//!   writes that one element (`count=1 index=1 len=1` for obj10 PID 52 of
+//!   `M-0009_A-E804-10-98AD`, and for obj6 PID 52 of
+//!   `M-0006_A-E01C-01-DC47-O0009` over a 10-octet `InlineData`). Neither the
+//!   KNX Standard nor a schema in the repository gives `Count` a default, so
+//!   a count-less write that could mean more than one element is refused
+//!   (issue #945).
 
 use super::plan_props::{may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
 use bussard_prod::application::{ApplicationProgram, LoadOp};
+use bussard_prod::{PropertyObjectRef, PropertyParameters};
 
 /// The highest element index the plain property services address (a 12-bit
 /// start index).
@@ -30,9 +38,16 @@ const MAX_ELEMENT_INDEX: u32 = 0x0FFF;
 
 /// The octets one element of the property datatype `name` takes, `None` for
 /// a datatype without a fixed element size. KNX 3/7/3 §4.1, Table 6.
+/// `PDT_BINARY_INFORMATION` (32h) is one bit held in the least significant
+/// position of an octet, its alternative type `PDT_UNSIGNED_CHAR` (§4.2).
 pub(super) fn pdt_element_size(name: &str) -> Option<usize> {
     let size = match name {
-        "PDT_CHAR" | "PDT_UNSIGNED_CHAR" | "PDT_BITSET8" | "PDT_ENUM8" | "PDT_SCALING" => 1,
+        "PDT_CHAR"
+        | "PDT_UNSIGNED_CHAR"
+        | "PDT_BITSET8"
+        | "PDT_ENUM8"
+        | "PDT_SCALING"
+        | "PDT_BINARY_INFORMATION" => 1,
         "PDT_INT" | "PDT_UNSIGNED_INT" | "PDT_KNX_FLOAT" | "PDT_BITSET16" | "PDT_VERSION" => 2,
         "PDT_DATE" | "PDT_TIME" | "PDT_POLL_GROUP_SETTINGS" => 3,
         "PDT_LONG" | "PDT_UNSIGNED_LONG" | "PDT_FLOAT" => 4,
@@ -148,32 +163,79 @@ pub(super) fn declaration_for<'a>(
         .find(|d| d.object == object && d.prop_id == *prop_id)
 }
 
-/// Composes a declared property's value over a base: the octets of the
-/// whole property from element 1, the op's `InlineData` placed at its
-/// `StartElement`. Returns `None` when no parameter is placed in the property.
-/// The System B planner passes [`bussard_prod::compose_property_value`] under
-/// the evaluated configuration.
-pub(super) type ComposeOver<'a> = dyn Fn(Vec<u8>) -> Result<Option<Vec<u8>>, PlanError> + 'a;
+/// The values of the properties a program's parameters are placed in, as
+/// the System B planner composes a declared property: resolved once per plan
+/// ([`PropertyParameters`]); a test supplies its own.
+pub(super) trait DeclaredValues {
+    /// Whether a parameter is placed in `object`/`prop_id`, the object named
+    /// exactly as the parameter names it. The one test of "the parameters
+    /// decide this property" a declared write uses (issue #945).
+    fn places(&self, object: PropObject, prop_id: u32) -> bool;
+
+    /// The value of `object`/`prop_id` composed over `base`: the octets of
+    /// the whole property from element 1, the parameters placed in it
+    /// replacing the bits they cover. `None` when no parameter is placed in
+    /// it.
+    fn compose(
+        &self,
+        object: PropObject,
+        prop_id: u32,
+        base: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, String>;
+}
+
+/// The object `object` names, as a property-located parameter names it.
+fn object_ref(object: PropObject) -> PropertyObjectRef {
+    match object {
+        PropObject::Index(index) => PropertyObjectRef::Index(index),
+        PropObject::Type {
+            object_type,
+            occurrence,
+        } => PropertyObjectRef::Type {
+            object_type: u32::from(object_type),
+            occurrence: u32::from(occurrence),
+        },
+    }
+}
+
+impl DeclaredValues for PropertyParameters<'_> {
+    fn places(&self, object: PropObject, prop_id: u32) -> bool {
+        PropertyParameters::places(self, object_ref(object), prop_id)
+    }
+
+    fn compose(
+        &self,
+        object: PropObject,
+        prop_id: u32,
+        base: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>, String> {
+        PropertyParameters::compose(self, object_ref(object), prop_id, base)
+            .map_err(|e| e.to_string())
+    }
+}
 
 /// Lowers an `LdCtrlWriteProp` to a property `decl` declared: `Count` elements
-/// of the declared size from `StartElement`. The op's `InlineData` is the
-/// template; the parameters placed in the property replace the bits they
-/// cover (`compose`), and the elements the op names are written. A property
-/// no parameter is placed in writes its `InlineData` as it is, which must then
-/// be whole elements and match `Count`.
+/// of the declared size from `StartElement`, whether or not a parameter is
+/// placed in the property. The op's `InlineData` is the template, cut or
+/// zero-padded to `Count` elements; the parameters placed in the property
+/// replace the bits they cover (`values`). A write without `Count` is taken as
+/// one element only where the declaration leaves room for no more
+/// (`MaxElements` equal to `StartElement`, as captured); otherwise it is
+/// refused.
 ///
 /// # Errors
 ///
 /// [`PlanError::UnsupportedWriteProp`] when the property is declared not
-/// writable, the value is not a whole number of declared elements, the write
-/// reaches past `MaxElements` or the 12-bit element index, a parameter may be
-/// stored in the property but its value cannot be composed, or there is no
+/// writable, the write has no `Count` and could mean more than one element,
+/// the write reaches past `MaxElements` or the 12-bit element index, a
+/// parameter may be stored in the property under another name of its object
+/// (an index against a type), its value cannot be composed, or there is no
 /// value at all.
 pub(super) fn lower_declared_write_prop(
     step: usize,
     op: &LoadOp,
     decl: &PropDecl,
-    compose: &ComposeOver<'_>,
+    values: &dyn DeclaredValues,
     app: &ApplicationProgram,
 ) -> Result<FlashStep, PlanError> {
     let refuse = |reason: String| PlanError::UnsupportedWriteProp { step, reason };
@@ -208,82 +270,80 @@ pub(super) fn lower_declared_write_prop(
     let elem = decl.element_size;
     let inline = inline_data.as_deref().filter(|d| !d.is_empty());
     let start = start_element.unwrap_or(1).max(1);
-    let check_extent = |elements: u32| -> Result<(), PlanError> {
-        let last = start.saturating_add(elements).saturating_sub(1);
-        if last > decl.max_elements {
+    let count = match count {
+        Some(count) => (*count).max(1),
+        // ETS writes the one element (see the module docs).
+        None if decl.max_elements == start => 1,
+        None => {
             return Err(refuse(format!(
-                "the write to {name} reaches element {last}, past the declared MaxElements of {}",
+                "the LdCtrlWriteProp to the declared {name} has no Count, and the declaration \
+                 (MaxElements {}, StartElement {start}) leaves room for more than one element; \
+                 neither the KNX Standard nor the schema says how many it writes, so bussard \
+                 does not guess",
                 decl.max_elements
             )));
         }
-        if last > MAX_ELEMENT_INDEX {
-            return Err(refuse(format!(
-                "the write to {name} reaches element {last}, past the 12-bit element index"
-            )));
-        }
-        Ok(())
     };
-    let placed = app.parameters.values().any(|p| {
-        p.property
-            .as_ref()
-            .is_some_and(|loc| may_hold(loc, decl.object, prop_id))
-    });
-    let (value, from_parameters) = if placed {
-        let count = count.unwrap_or(1).max(1);
-        // Bounded by the extent check: at most 4095 elements of 20 octets.
-        check_extent(count)?;
-        let from = ((start - 1) as usize).saturating_mul(elem);
-        let len = (count as usize).saturating_mul(elem);
-        let mut template = inline.map(<[u8]>::to_vec).unwrap_or_default();
-        template.resize(len, 0);
+    let last = start.saturating_add(count).saturating_sub(1);
+    if last > decl.max_elements {
+        return Err(refuse(format!(
+            "the write to {name} reaches element {last}, past the declared MaxElements of {}",
+            decl.max_elements
+        )));
+    }
+    if last > MAX_ELEMENT_INDEX {
+        return Err(refuse(format!(
+            "the write to {name} reaches element {last}, past the 12-bit element index"
+        )));
+    }
+    // Bounded by the extent check: at most 4095 elements of 20 octets.
+    let from = ((start - 1) as usize).saturating_mul(elem);
+    let len = (count as usize).saturating_mul(elem);
+    let mut template = inline.map(<[u8]>::to_vec).unwrap_or_default();
+    template.resize(len, 0);
+    let (value, from_parameters) = if values.places(decl.object, prop_id) {
         let mut base = vec![0u8; from];
         base.extend_from_slice(&template);
-        let composed = compose(base)?.ok_or_else(|| {
-            refuse(format!(
-                "a parameter may be stored in {name} but the value the parameters compose \
-                 could not be found, so bussard has no value to write"
-            ))
-        })?;
+        let composed = values
+            .compose(decl.object, prop_id, base)
+            .map_err(|e| {
+                refuse(format!(
+                    "composing the value of {name} from the parameters: {e}"
+                ))
+            })?
+            .ok_or_else(|| {
+                refuse(format!(
+                    "a parameter is placed in {name} but composed no value for it"
+                ))
+            })?;
         let mut value: Vec<u8> = composed.iter().skip(from).take(len).copied().collect();
         value.resize(len, 0);
         (value, true)
+    } else if app.parameters.values().any(|p| {
+        p.property
+            .as_ref()
+            .is_some_and(|loc| may_hold(loc, decl.object, prop_id))
+    }) {
+        return Err(refuse(format!(
+            "a parameter is placed in a property that may be {name}, but it names the object \
+             by type where the load procedure names it by index (or names no object); bussard \
+             does not resolve one to the other, so it has no value to write"
+        )));
+    } else if inline.is_some() {
+        (template, false)
     } else {
-        let data = inline.ok_or_else(|| {
-            refuse(format!(
-                "the write to the declared {name} carries no InlineData and no parameter is \
-                 stored in it"
-            ))
-        })?;
-        if !data.len().is_multiple_of(elem) {
-            return Err(refuse(format!(
-                "the {}-octet InlineData for {name} is not a whole number of {} elements \
-                 ({elem} octets each)",
-                data.len(),
-                decl.prop_type
-            )));
-        }
-        let elements = u32::try_from(data.len() / elem).unwrap_or(u32::MAX);
-        if let Some(count) = count
-            && *count != elements
-        {
-            return Err(refuse(format!(
-                "the {}-octet InlineData for {name} holds {elements} {} elements, not its \
-                 Count of {count}",
-                data.len(),
-                decl.prop_type
-            )));
-        }
-        check_extent(elements)?;
-        (data.to_vec(), false)
+        return Err(refuse(format!(
+            "the write to the declared {name} carries no InlineData and no parameter is \
+             stored in it"
+        )));
     };
-    // Both fit the 12-bit element index checked above.
-    let elements = (value.len() / elem) as u16;
     Ok(FlashStep::WriteProp {
         object: decl.object,
         prop_id,
         value,
+        // Both fit the 12-bit element index checked above.
         start_element: start as u16,
-        count: elements,
+        count: count as u16,
         verify: verify.unwrap_or(false),
         from_parameters,
     })
@@ -335,6 +395,7 @@ mod tests {
     #[test]
     fn test_pdt_element_size_follows_table_6() {
         assert_eq!(pdt_element_size("PDT_UNSIGNED_CHAR"), Some(1));
+        assert_eq!(pdt_element_size("PDT_BINARY_INFORMATION"), Some(1));
         assert_eq!(pdt_element_size("PDT_UNSIGNED_INT"), Some(2));
         assert_eq!(pdt_element_size("PDT_GENERIC_04"), Some(4));
         assert_eq!(pdt_element_size("PDT_GENERIC_20"), Some(20));
@@ -369,18 +430,48 @@ mod tests {
         ));
     }
 
-    /// A composer that places `placed` (offset, octet) over the base, as the
-    /// parameters of a program would.
-    fn placing(placed: &[(usize, u8)]) -> impl Fn(Vec<u8>) -> Result<Option<Vec<u8>>, PlanError> {
-        let placed = placed.to_vec();
-        move |mut base: Vec<u8>| {
-            for (at, octet) in &placed {
+    /// Values with parameters placed in object 10 PID 55 at `(offset, octet)`,
+    /// as the parameters of a program would compose them.
+    struct Placing(Vec<(usize, u8)>);
+
+    impl DeclaredValues for Placing {
+        fn places(&self, object: PropObject, prop_id: u32) -> bool {
+            object == PropObject::Index(10) && prop_id == 55
+        }
+
+        fn compose(
+            &self,
+            object: PropObject,
+            prop_id: u32,
+            mut base: Vec<u8>,
+        ) -> Result<Option<Vec<u8>>, String> {
+            if !self.places(object, prop_id) {
+                return Ok(None);
+            }
+            for (at, octet) in &self.0 {
                 if base.len() <= *at {
                     base.resize(at + 1, 0);
                 }
                 base[*at] = *octet;
             }
             Ok(Some(base))
+        }
+    }
+
+    fn placing(placed: &[(usize, u8)]) -> Placing {
+        Placing(placed.to_vec())
+    }
+
+    /// Values with no parameter placed in any property.
+    struct NotPlaced;
+
+    impl DeclaredValues for NotPlaced {
+        fn places(&self, _: PropObject, _: u32) -> bool {
+            false
+        }
+
+        fn compose(&self, _: PropObject, _: u32, _: Vec<u8>) -> Result<Option<Vec<u8>>, String> {
+            Ok(None)
         }
     }
 
@@ -404,10 +495,6 @@ mod tests {
             "M-1_A-1",
             xml.as_bytes(),
         )?)
-    }
-
-    fn none(_: Vec<u8>) -> Result<Option<Vec<u8>>, PlanError> {
-        Ok(None)
     }
 
     #[test]
@@ -442,8 +529,8 @@ mod tests {
 
     #[test]
     fn test_lower_declared_write_prop_cuts_the_placeholder_to_count() -> TestResult {
-        // Count absent (1 element): ETS writes one octet, not the 10-octet
-        // placeholder.
+        // Count absent on a one-element declaration: ETS writes one octet,
+        // not the 10-octet placeholder (obj10 PID 52 of E804).
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
         let step = lower_declared_write_prop(
             2,
@@ -488,7 +575,7 @@ mod tests {
             2,
             &write(Some(vec![1, 2, 3, 4, 5, 6]), Some(3)),
             &decl,
-            &none,
+            &NotPlaced,
             &app()?,
         )?;
         assert!(matches!(
@@ -503,13 +590,21 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_declared_write_prop_refuses_partial_elements() -> TestResult {
+    fn test_lower_declared_write_prop_pads_the_inline_data_to_count() -> TestResult {
+        // Sized by Count, not by the InlineData length: 3 octets for two
+        // 2-octet elements are zero-padded.
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_INT", 4))?;
-        let result =
-            lower_declared_write_prop(2, &write(Some(vec![1, 2, 3]), None), &decl, &none, &app()?);
+        let step = lower_declared_write_prop(
+            2,
+            &write(Some(vec![1, 2, 3]), Some(2)),
+            &decl,
+            &NotPlaced,
+            &app()?,
+        )?;
         assert!(matches!(
-            result,
-            Err(PlanError::UnsupportedWriteProp { step: 2, .. })
+            step,
+            FlashStep::WriteProp { ref value, count: 2, from_parameters: false, .. }
+                if value == &[1, 2, 3, 0]
         ));
         Ok(())
     }
@@ -517,8 +612,13 @@ mod tests {
     #[test]
     fn test_lower_declared_write_prop_refuses_past_max_elements() -> TestResult {
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 2))?;
-        let result =
-            lower_declared_write_prop(2, &write(Some(vec![1, 2, 3]), None), &decl, &none, &app()?);
+        let result = lower_declared_write_prop(
+            2,
+            &write(Some(vec![1, 2, 3]), Some(3)),
+            &decl,
+            &NotPlaced,
+            &app()?,
+        );
         assert!(matches!(
             result,
             Err(PlanError::UnsupportedWriteProp { .. })
@@ -534,6 +634,129 @@ mod tests {
             result,
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declare_prop_accepts_binary_information() -> TestResult {
+        // Issue #945: one octet per element, as PDT_UNSIGNED_CHAR.
+        let decl = lower_declare_prop(1, &declare("PDT_BINARY_INFORMATION", 1))?;
+        assert_eq!(decl.element_size, 1);
+        let step = lower_declared_write_prop(
+            2,
+            &write(Some(vec![1]), Some(1)),
+            &decl,
+            &NotPlaced,
+            &app()?,
+        )?;
+        assert!(matches!(step, FlashStep::WriteProp { ref value, count: 1, .. } if value == &[1]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_sizes_an_unplaced_placeholder_by_count() -> TestResult {
+        // Issue #945: the Hager 10-octet zero placeholder with Count 1 on a
+        // one-element declaration writes one zero element (`count=1 index=1
+        // len=1`), where sizing by the InlineData refused it.
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
+        for count in [Some(1), None] {
+            let step = lower_declared_write_prop(
+                2,
+                &write(Some(vec![0; 10]), count),
+                &decl,
+                &NotPlaced,
+                &app()?,
+            )?;
+            assert_eq!(
+                step,
+                FlashStep::WriteProp {
+                    object: PropObject::Index(10),
+                    prop_id: 55,
+                    value: vec![0],
+                    start_element: 1,
+                    count: 1,
+                    verify: false,
+                    from_parameters: false,
+                }
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_refuses_a_count_less_write_of_several_elements() -> TestResult
+    {
+        // Issue #945: without Count and with room for more than one element,
+        // neither branch guesses.
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 10))?;
+        let cases: [(&dyn DeclaredValues, ApplicationProgram); 2] = [
+            (&NotPlaced, app()?),
+            (&Placing(vec![(0, 7)]), app_with_parameter()?),
+        ];
+        for (values, app) in cases {
+            match lower_declared_write_prop(2, &write(Some(vec![0; 10]), None), &decl, values, &app)
+            {
+                Err(PlanError::UnsupportedWriteProp { step: 2, reason }) => {
+                    assert!(reason.contains("no Count"), "{reason}");
+                    assert!(reason.contains("object 10 PID 55") || reason.contains("PID 55"));
+                }
+                other => return Err(format!("expected a refusal, got {other:?}").into()),
+            }
+        }
+        Ok(())
+    }
+
+    /// The evaluated configuration of `app` with no overrides.
+    fn config_of(app: &ApplicationProgram) -> std::sync::Arc<bussard_prod::dynamic::DynamicConfig> {
+        bussard_prod::dynamic::DynamicMemo::new(app)
+            .evaluate_for(app, &std::collections::BTreeMap::new())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_composes_from_the_resolved_parameters() -> TestResult {
+        // The planner's own values: the parameter's 7 over the placeholder.
+        let app = app_with_parameter()?;
+        let config = config_of(&app);
+        let values = PropertyParameters::resolve(&app, &config);
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 4))?;
+        let step =
+            lower_declared_write_prop(2, &write(Some(vec![0; 10]), Some(4)), &decl, &values, &app)?;
+        assert!(matches!(
+            step,
+            FlashStep::WriteProp { ref value, from_parameters: true, .. } if value == &[7, 0, 0, 0]
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_names_an_index_type_mismatch() -> TestResult {
+        // Issue #945: a parameter placed by object type where the procedure
+        // names an index is refused for that reason, not as a value that
+        // "could not be found".
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-1_A-1" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="D">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-1_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-1_A-1_P-1" Name="p" ParameterType="M-1_A-1_PT-u8" Value="7">
+             <Property ObjectType="11" PropertyId="55" Offset="0" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = bussard_prod::application::parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let config = config_of(&app);
+        let values = PropertyParameters::resolve(&app, &config);
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
+        match lower_declared_write_prop(2, &write(Some(vec![0]), Some(1)), &decl, &values, &app) {
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
+                assert!(reason.contains("by type"), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
         Ok(())
     }
 }

@@ -150,10 +150,11 @@ pub struct ExpectedProperty {
 impl ExpectedProperty {
     /// The property writes of `flash` a read-back compares: every write of a
     /// System 7 or property-only plan, the writes of a System B plan whose
-    /// value the property-located parameters compose (issue #669), and the
+    /// value the property-located parameters compose (issue #669) or whose
+    /// property the load procedure declared (issue #945), and the
     /// KNXnet/IP parameters of any plan. A System B plan's program-version
-    /// and other `InlineData` writes keep the read-back they had before issue
-    /// #390 (none).
+    /// and other undeclared `InlineData` writes keep the read-back they had
+    /// before issue #390 (none).
     pub fn from_flash_plan(flash: &FlashPlan) -> Vec<ExpectedProperty> {
         // The KNXnet/IP parameters of a device with a KNX IP interface built
         // in (issue #455), on every plan: read back by object type 11, which
@@ -171,15 +172,25 @@ impl ExpectedProperty {
             })
         });
         // A System B plan reads back the writes whose value the model's
-        // property-located parameters compose (issue #669); its program-version
-        // and other `InlineData` writes keep the read-back they had before
+        // property-located parameters compose (issue #669), and every write to
+        // a property an `LdCtrlDeclarePropDesc` declared whatever its value's
+        // source (issue #945): a multi-request write whose later request the
+        // device drops must not report ok. Its program-version and other
+        // undeclared `InlineData` writes keep the read-back they had before
         // issue #390 (none).
         let every_write = flash.is_sys7() || flash.is_property_only();
         let knxnet: Vec<ExpectedProperty> = knxnet.collect();
+        let mut declared: Vec<(PropObject, u32)> = Vec::new();
         flash
             .steps
             .iter()
             .filter_map(|step| match step {
+                FlashStep::DeclareProp {
+                    object, prop_id, ..
+                } => {
+                    declared.push((*object, *prop_id));
+                    None
+                }
                 FlashStep::WriteProp {
                     object,
                     prop_id,
@@ -188,13 +199,15 @@ impl ExpectedProperty {
                     count,
                     from_parameters,
                     ..
-                } if every_write || *from_parameters => Some(ExpectedProperty {
-                    object: *object,
-                    prop_id: *prop_id,
-                    start: *start_element,
-                    count: (*count).max(1),
-                    value: value.clone(),
-                }),
+                } if every_write || *from_parameters || declared.contains(&(*object, *prop_id)) => {
+                    Some(ExpectedProperty {
+                        object: *object,
+                        prop_id: *prop_id,
+                        start: *start_element,
+                        count: (*count).max(1),
+                        value: value.clone(),
+                    })
+                }
                 _ => None,
             })
             .chain(knxnet)
@@ -1175,6 +1188,40 @@ mod tests {
                 value: vec![0x5A],
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_from_flash_plan_reads_back_a_declared_inline_data_write() -> TestResult {
+        // Issue #945: a write to a declared property carrying InlineData (no
+        // parameter placed in it) is read back; an undeclared one is not.
+        let mut plan = property_param_plan()?;
+        let write = |prop_id: u32| FlashStep::WriteProp {
+            object: PropObject::Index(10),
+            prop_id,
+            value: vec![1, 2, 3],
+            start_element: 1,
+            count: 3,
+            verify: false,
+            from_parameters: false,
+        };
+        plan.steps.push(FlashStep::DeclareProp {
+            object: PropObject::Index(10),
+            prop_id: 55,
+            prop_type: "PDT_UNSIGNED_CHAR".to_string(),
+            max_elements: 3,
+        });
+        plan.steps.push(write(55));
+        plan.steps.push(write(56));
+        let expected = ExpectedProperty::from_flash_plan(&plan);
+        assert!(expected.contains(&ExpectedProperty {
+            object: PropObject::Index(10),
+            prop_id: 55,
+            start: 1,
+            count: 3,
+            value: vec![1, 2, 3],
+        }));
+        assert!(!expected.iter().any(|e| e.prop_id == 56), "{expected:?}");
         Ok(())
     }
 
