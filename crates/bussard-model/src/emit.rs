@@ -18,7 +18,7 @@ use crate::files::{
 };
 use crate::loader::SaveError;
 use crate::param_model::ProductModels;
-use crate::schema::{BussardConfig, Device, Group, Groups, Link, ProductEntry, ProductOrigin};
+use crate::schema::{BussardConfig, Device, Group, Groups, Link, ProductEntry};
 use crate::toml_io;
 
 // ---------------------------------------------------------------------------
@@ -473,236 +473,95 @@ pub(crate) fn render_groups(
 // bussard.lock
 // ---------------------------------------------------------------------------
 
-/// A TOML inline array of strings.
-fn string_array(items: &[String]) -> String {
-    let inner: Vec<String> = items.iter().map(|s| basic_string(s)).collect();
-    format!("[{}]", inner.join(", "))
-}
-
-/// Appends one `[[product]]` entry of `bussard.lock`.
-fn render_product(out: &mut String, p: &ProductEntry) {
-    out.push_str("\n[[product]]\n");
-    out.push_str(&format!("sha256 = {}\n", basic_string(&p.sha256)));
-    if let Some(file) = &p.file {
-        out.push_str(&format!("file = {}\n", basic_string(file)));
-    }
-    if let Some(name) = &p.filename {
-        out.push_str(&format!("filename = {}\n", basic_string(name)));
-    }
-    if let Some(size) = p.size {
-        out.push_str(&format!("size = {size}\n"));
-    }
-    let mut origin = vec![format!("kind = {}", basic_string(p.origin.kind()))];
-    match &p.origin {
-        ProductOrigin::Index { order_number, url } => {
-            if let Some(o) = order_number {
-                origin.push(format!("order_number = {}", basic_string(o)));
-            }
-            if let Some(u) = url {
-                origin.push(format!("url = {}", basic_string(u)));
-            }
-        }
-        ProductOrigin::File { path } => origin.push(format!("path = {}", basic_string(path))),
-        ProductOrigin::Knxproj { path, project_hash } => {
-            origin.push(format!("path = {}", basic_string(path)));
-            if let Some(h) = project_hash {
-                origin.push(format!("project_hash = {}", basic_string(h)));
-            }
-        }
-        ProductOrigin::Device => {}
-    }
-    out.push_str(&format!("origin = {{ {} }}\n", origin.join(", ")));
-    if !p.applications.is_empty() {
-        out.push_str(&format!(
-            "applications = {}\n",
-            string_array(&p.applications)
-        ));
-    }
-    if !p.order_numbers.is_empty() {
-        out.push_str(&format!(
-            "order_numbers = {}\n",
-            string_array(&p.order_numbers)
-        ));
-    }
-}
-
-/// Renders `bussard.lock`, always fresh (it is fully generated).
+/// Renders `bussard.lock`, always fresh (it is fully generated): the lock
+/// structs serialised, laid out with one `[[product]]`/`[[device]]` table
+/// each and one inline table per line in their arrays, so a re-import
+/// diffs line by line.
 pub(crate) fn render_lock(
     source: Option<&str>,
     language: Option<&str>,
     products: &[ProductEntry],
     devices: &[LockDevice],
 ) -> String {
-    let mut out = format!(
-        "{LOCK_HEADER}\nversion = {}\nwritten_by = {}\n",
-        crate::files::lock_version_for(devices),
-        basic_string(&crate::files::lock_written_by())
-    );
-    if let Some(s) = source {
-        out.push_str(&format!("source = {}\n", basic_string(s)));
-    }
-    if let Some(l) = language {
-        out.push_str(&format!("language = {}\n", basic_string(l)));
-    }
-    for p in products {
-        render_product(&mut out, p);
-    }
-    for d in devices {
-        out.push_str("\n[[device]]\n");
-        out.push_str(&format!(
-            "address = {}\n",
-            basic_string(&d.address.to_string())
-        ));
-        let strings = [
-            ("product", &d.product),
-            ("application", &d.application),
-            ("product_sha256", &d.product_sha256),
-            ("application_id", &d.application_id),
-            ("manufacturer", &d.manufacturer),
-            ("manufacturer_ref", &d.manufacturer_ref),
-            ("hardware_ref", &d.hardware_ref),
-            ("mask", &d.mask),
-            ("serial_number", &d.serial_number),
-        ];
-        for (k, v) in strings {
-            if let Some(v) = v {
-                out.push_str(&format!("{k} = {}\n", basic_string(v)));
+    let lock = crate::files::LockFile {
+        version: crate::files::lock_version_for(devices),
+        written_by: Some(crate::files::lock_written_by()),
+        source: source.map(str::to_string),
+        language: language.map(str::to_string),
+        products: products.to_vec(),
+        devices: devices.to_vec(),
+    };
+    let mut out = format!("{LOCK_HEADER}\n");
+    // Every lock field is a string, an integer, a bool, an array or a table,
+    // all of which TOML holds, so neither step fails.
+    let Some(doc) = toml::to_string(&lock)
+        .ok()
+        .and_then(|text| text.parse::<DocumentMut>().ok())
+    else {
+        return out;
+    };
+    for (key, item) in doc.iter() {
+        let Item::ArrayOfTables(entries) = item else {
+            out.push_str(&format!("{} = {}\n", toml_key(key), lock_item(item)));
+            continue;
+        };
+        for entry in entries.iter() {
+            out.push_str(&format!("\n[[{key}]]\n"));
+            // The lock's layout of an entry, whatever the serializer's:
+            // strings, other scalars, tables, then plain arrays (a device's
+            // `application_version` after its strings, a product's
+            // `origin` before its `applications`). Stable within each.
+            let mut fields: Vec<(&str, &Item)> = entry.iter().collect();
+            fields.sort_by_key(|(_, item)| match item {
+                Item::Value(Value::String(_)) => 0,
+                Item::Value(Value::Array(_)) => 3,
+                Item::Value(Value::InlineTable(_)) | Item::Table(_) | Item::ArrayOfTables(_) => 2,
+                _ => 1,
+            });
+            for (k, v) in fields {
+                out.push_str(&format!("{} = {}\n", toml_key(k), lock_item(v)));
             }
         }
-        if let Some(v) = d.application_version {
-            out.push_str(&format!("application_version = {v}\n"));
-        }
-        if d.secure_capable {
-            out.push_str("secure_capable = true\n");
-        }
-        if d.has_fdsk_certificate {
-            out.push_str("has_fdsk_certificate = true\n");
-        }
-        if let Some(n) = d.sequence_number {
-            out.push_str(&format!("sequence_number = {n}\n"));
-        }
-        let senders: Vec<String> = d
-            .secure_senders
-            .iter()
-            .map(|s| {
-                format!(
-                    "address = {}, sequence = {}",
-                    basic_string(&s.address.to_string()),
-                    s.sequence
-                )
-            })
-            .collect();
-        push_array(&mut out, "secure_senders", &senders);
-        let channels: Vec<String> = d
-            .channels
-            .iter()
-            .map(|c| {
-                let mut f = Vec::new();
-                if let Some(k) = &c.key {
-                    f.push(format!("key = {}", basic_string(k)));
-                }
-                f.push(format!("id = {}", basic_string(&c.id)));
-                if let Some(n) = c.number {
-                    f.push(format!("number = {n}"));
-                }
-                if let Some(t) = &c.text {
-                    f.push(format!("text = {}", basic_string(t)));
-                }
-                if let Some(l) = &c.label_ref {
-                    f.push(format!("label_ref = {}", basic_string(l)));
-                }
-                if let Some(b) = c.base {
-                    f.push(format!("base = {b}"));
-                }
-                f.join(", ")
-            })
-            .collect();
-        push_array(&mut out, "channels", &channels);
-        if !d.module_bases.is_empty() {
-            let cells: Vec<String> = d
-                .module_bases
-                .iter()
-                .map(|(k, v)| format!("{} = {v}", toml_key(k)))
-                .collect();
-            out.push_str(&format!("module_bases = {{ {} }}\n", cells.join(", ")));
-        }
-        let objects: Vec<String> = d
-            .objects
-            .iter()
-            .map(|o| {
-                let mut f = vec![format!("number = {}", o.number)];
-                for (k, v) in [
-                    ("key", &o.key),
-                    ("channel", &o.channel),
-                    ("text", &o.text),
-                    ("function", &o.function),
-                ] {
-                    if let Some(v) = v {
-                        f.push(format!("{k} = {}", basic_string(v)));
-                    }
-                }
-                if let Some(dpt) = &o.dpt {
-                    f.push(format!("dpt = {}", basic_string(&dpt.to_string())));
-                }
-                if let Some(s) = &o.size {
-                    f.push(format!("size = {}", basic_string(s)));
-                }
-                f.push(format!("flags = {}", basic_string(&o.flags.to_string())));
-                if let Some(r) = &o.reference {
-                    f.push(format!("ref = {}", basic_string(r)));
-                }
-                if o.secure {
-                    f.push("secure = true".to_string());
-                }
-                f.join(", ")
-            })
-            .collect();
-        push_array(&mut out, "objects", &objects);
-        let params: Vec<String> = d
-            .parameters
-            .iter()
-            .map(|p| {
-                let mut f = vec![format!("key = {}", basic_string(&p.key))];
-                if let Some(c) = &p.channel {
-                    f.push(format!("channel = {}", basic_string(c)));
-                }
-                f.push(format!("ref = {}", basic_string(&p.reference)));
-                if let Some(param) = &p.param {
-                    f.push(format!("param = {}", basic_string(param)));
-                }
-                if let Some(default) = &p.default {
-                    f.push(format!("default = {}", basic_string(default)));
-                }
-                f.join(", ")
-            })
-            .collect();
-        push_array(&mut out, "parameters", &params);
-        let hidden: Vec<String> = d
-            .hidden
-            .iter()
-            .map(|h| {
-                format!(
-                    "ref = {}, value = {}",
-                    basic_string(&h.reference),
-                    basic_string(&h.value)
-                )
-            })
-            .collect();
-        push_array(&mut out, "hidden", &hidden);
     }
     out
 }
 
-/// Appends `name = [ { … }, … ]`, one inline table per line.
-fn push_array(out: &mut String, name: &str, rows: &[String]) {
-    if rows.is_empty() {
-        return;
+/// One lock value: an array of tables one inline table per line, any other
+/// array or table inline, a string as a basic string.
+fn lock_item(item: &Item) -> String {
+    let fields = |t: &dyn TableLike| -> String {
+        let cells: Vec<String> = t
+            .iter()
+            .map(|(k, v)| format!("{} = {}", toml_key(k), lock_item(v)))
+            .collect();
+        format!("{{ {} }}", cells.join(", "))
+    };
+    match item {
+        Item::ArrayOfTables(rows) => {
+            let rows: String = rows.iter().map(|t| format!("  {},\n", fields(t))).collect();
+            format!("[\n{rows}]")
+        }
+        Item::Table(t) => fields(t),
+        Item::Value(Value::InlineTable(t)) => fields(t),
+        Item::Value(Value::String(s)) => basic_string(s.value()),
+        Item::Value(Value::Array(a)) if !a.is_empty() && a.iter().all(Value::is_inline_table) => {
+            let rows: String = a
+                .iter()
+                .filter_map(Value::as_inline_table)
+                .map(|t| format!("  {},\n", fields(t)))
+                .collect();
+            format!("[\n{rows}]")
+        }
+        Item::Value(Value::Array(a)) => {
+            let cells: Vec<String> = a
+                .iter()
+                .map(|v| lock_item(&Item::Value(v.clone())))
+                .collect();
+            format!("[{}]", cells.join(", "))
+        }
+        Item::Value(v) => v.clone().decorated("", "").to_string(),
+        Item::None => String::new(),
     }
-    out.push_str(&format!("{name} = [\n"));
-    for row in rows {
-        out.push_str(&format!("  {{ {row} }},\n"));
-    }
-    out.push_str("]\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -1344,5 +1203,88 @@ mod tests {
             row,
             "{ address = \"0/0/1\",  name = \"Short\",       dpt = \"1.001\" }"
         );
+    }
+
+    /// Every lock field, strings that need escapes, and each origin kind.
+    const LOCK_BODY: &str = r##"source = "a \"quoted\" \\ path\twith tab"
+language = "de-DE"
+
+[[product]]
+sha256 = "abc"
+file = "vendor/x.knxprod"
+filename = "x.knxprod"
+size = 12345
+origin = { kind = "index", order_number = "2173 REG", url = "https://x" }
+applications = ["M-0001_A-1", "M-0001_A-2"]
+order_numbers = ["2173"]
+
+[[product]]
+sha256 = "def"
+origin = { kind = "knxproj", path = "p.knxproj", project_hash = "ff" }
+
+[[product]]
+sha256 = "ghi"
+origin = { kind = "device" }
+
+[[product]]
+sha256 = "jkl"
+origin = { kind = "file", path = "C:\\x.knxprod" }
+
+[[device]]
+address = "1.1.1"
+product = "P"
+application = "A"
+product_sha256 = "abc"
+application_id = "M-0001_A-1"
+manufacturer = "Ä Ö \u0001 €"
+manufacturer_ref = "M-0001"
+hardware_ref = "H"
+mask = "07B0"
+serial_number = "0001:00000001"
+application_version = 17
+secure_capable = true
+has_fdsk_certificate = true
+sequence_number = 281474976710655
+secure_senders = [
+  { address = "1.1.2", sequence = 5 },
+]
+channels = [
+  { key = "a-1", id = "CH-1", number = 1, text = "Kanal \"A\"", label_ref = "P-1_R-1", base = 4 },
+  { id = "CH-2" },
+]
+module_bases = { "MD 2" = 5, MD-1 = 4 }
+objects = [
+  { number = 0, key = "sw", channel = "CH-1", text = "t", function = "f", dpt = "1.001", size = "1 Bit", flags = "CWT", ref = "O-0_R-1", secure = true },
+  { number = 1, flags = "" },
+]
+parameters = [
+  { key = "k@P-1_R-1", channel = "CH-1", ref = "P-1_R-1", param = "P-1", default = "0" },
+  { key = "k2", ref = "P-2_R-2" },
+]
+hidden = [
+  { ref = "P-3_R-3", value = "line\nbreak" },
+]
+
+[[device]]
+address = "1.1.3"
+"##;
+
+    #[test]
+    fn test_render_lock_writes_one_inline_table_per_line() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let text = format!("version = 4\nwritten_by = \"x\"\n{LOCK_BODY}");
+        let lock: crate::files::LockFile = toml::from_str(&text)?;
+        let out = render_lock(
+            lock.source.as_deref(),
+            lock.language.as_deref(),
+            &lock.products,
+            &lock.devices,
+        );
+        let expected = format!(
+            "{LOCK_HEADER}\nversion = 4\nwritten_by = {}\n{LOCK_BODY}",
+            basic_string(&crate::files::lock_written_by())
+        );
+        assert_eq!(out, expected);
+        Ok(())
     }
 }
