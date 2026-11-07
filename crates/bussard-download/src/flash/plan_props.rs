@@ -288,11 +288,12 @@ pub(super) fn guarded_ops(
     }
 }
 
-/// The last element the 12-bit start index of `A_PropertyValue_Write`
-/// addresses (KNX 3/3/7). An object named by type is written on the extended
-/// service (a 16-bit start index) but falls back to the plain one, so the same
-/// bound holds for it.
-const MAX_START_ELEMENT: u64 = 0x0FFF;
+/// The largest value of the 12-bit fields of the property services (KNX
+/// 3/3/7): the start index of `A_PropertyValue_Write`/`_Read` (element 4095),
+/// and the property id and object instance of the extended services. An object
+/// named by type is written on the extended service (a 16-bit start index) but
+/// falls back to the plain one, so the start-index bound holds for it too.
+const MAX_12_BIT: u16 = 0x0FFF;
 
 /// How an op names its object: by index when it carries `ObjIdx`, else by
 /// `ObjType` and `Occurrence`, the device object by index 0.
@@ -313,7 +314,7 @@ pub(super) fn prop_object(
                 })?;
             let occurrence = u16::try_from(occurrence.unwrap_or(0))
                 .ok()
-                .filter(|o| *o < 0x0FFF)
+                .filter(|o| *o < MAX_12_BIT)
                 .ok_or_else(|| PlanError::UnsupportedWriteProp {
                     step,
                     reason: format!(
@@ -465,31 +466,23 @@ pub(super) fn lower_write_prop(
     let start_element = start_element.unwrap_or(1).max(1);
     // `Count` is a 16-bit element count in the procedure; only the per-request
     // count is a nibble, and the executor splits the write into requests of at
-    // most 15 elements (ETS writes `Count="500"` to object 8 PID 64 of the Jung
-    // Sonos-Gateway as 34 requests from element 1 to 496, issue #947). What
-    // bounds the write is the 12-bit start element of its last request.
+    // most 15 elements on the plain service (ETS writes `Count="500"` to object
+    // 8 PID 64 of the Jung Sonos-Gateway as 34 requests from element 1 to 496,
+    // issue #947). What bounds the write is the 12-bit start index of its last
+    // request: element 4095.
     let count = count.unwrap_or(1).max(1);
     let last_element = u64::from(start_element) + u64::from(count) - 1;
-    if last_element > MAX_START_ELEMENT {
+    if last_element > u64::from(MAX_12_BIT) {
         return Err(PlanError::UnsupportedWriteProp {
             step,
             reason: format!(
                 "the write to {name} has Count {count} from element {start_element}, past \
-                 element {MAX_START_ELEMENT}, the last the 12-bit start index addresses"
+                 element {MAX_12_BIT}, the last the 12-bit start index addresses"
             ),
         });
     }
-    let count = u16::try_from(count).map_err(|_| PlanError::UnsupportedWriteProp {
-        step,
-        reason: format!("the write to {name} has Count {count}, more than 16 bits"),
-    })?;
-    let start_element =
-        u16::try_from(start_element).map_err(|_| PlanError::UnsupportedWriteProp {
-            step,
-            reason: format!(
-                "the write to {name} starts at element {start_element}, more than 16 bits"
-            ),
-        })?;
+    // Both fit 12 bits: the last element, their sum, does.
+    let (start_element, count) = (start_element as u16, count as u16);
     if !value.len().is_multiple_of(usize::from(count)) {
         return Err(PlanError::UnsupportedWriteProp {
             step,
@@ -509,7 +502,7 @@ pub(super) fn lower_write_prop(
     }
     let pid_limit = match object {
         PropObject::Index(_) => u32::from(u8::MAX),
-        PropObject::Type { .. } => 0x0FFF,
+        PropObject::Type { .. } => u32::from(MAX_12_BIT),
     };
     if prop_id > pid_limit {
         return Err(PlanError::UnsupportedWriteProp {
@@ -542,7 +535,7 @@ pub(super) fn compare_start_element(
     let start = start_element.unwrap_or(1).max(1);
     u16::try_from(start)
         .ok()
-        .filter(|s| *s <= 0x0FFF)
+        .filter(|s| *s <= MAX_12_BIT)
         .ok_or_else(|| PlanError::UnsupportedWriteProp {
             step,
             reason: format!("compare start element {start} exceeds the 12-bit start index"),

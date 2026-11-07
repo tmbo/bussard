@@ -75,43 +75,55 @@ fn simple(control: LoadControl) -> &'static str {
     }
 }
 
-/// A load procedure's own `LdCtrlWriteProp` of the 10-octet
-/// `PID_LOAD_STATE_CONTROL` value on an index-addressed object (the ise smart
-/// connect programs drive object 8's load-state machine this way, issue
-/// #947): on the wire it is the load-control record its value spells, the
-/// same `A_PropertyValue_Write` ETS sends, so the oracle judges it with the
-/// load controls.
-fn load_state_write(step: &FlashStep) -> Option<LoadControlRecord> {
-    let FlashStep::WriteProp {
-        object: PropObject::Index(index),
-        prop_id,
-        value,
-        start_element: 1,
-        count: 1,
-        ..
-    } = step
-    else {
-        return None;
-    };
-    if *prop_id != u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL)
-        || value.len() != LoadControl::Unload.encode_full().len()
-    {
-        return None;
+impl FlashStep {
+    /// The load-state transition a load procedure's own `LdCtrlWriteProp`
+    /// spells, with the object it names: a write of exactly the 10-octet
+    /// `PID_LOAD_STATE_CONTROL` value of an unload, a start-loading or a
+    /// load-completed (the control octet, nine zero octets, element 1, count 1)
+    /// on an index-addressed object. The ise smart connect programs drive
+    /// object 8's load-state machine this way (issue #947). On the wire it is
+    /// the record a [`FlashStep::Unload`], [`FlashStep::StartLoading`] or
+    /// [`FlashStep::LoadCompleted`] sends, and the device answers it the same
+    /// way, with the resulting load state: the executor confirms it with
+    /// [`bussard_mgmt::load::write_load_control`] and the dump lists it as a
+    /// load control. Any other `PID_LOAD_STATE_CONTROL` write (an additional
+    /// load control, a no-operation, a non-zero reserved octet) stays a
+    /// property write. `None` for every other step.
+    pub fn load_state_control(&self) -> Option<(u32, LoadControl)> {
+        let FlashStep::WriteProp {
+            object: PropObject::Index(index),
+            prop_id,
+            value,
+            start_element: 1,
+            count: 1,
+            ..
+        } = self
+        else {
+            return None;
+        };
+        if *prop_id != u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL) {
+            return None;
+        }
+        [
+            LoadControl::Unload,
+            LoadControl::StartLoading,
+            LoadControl::LoadCompleted,
+        ]
+        .into_iter()
+        .find(|control| value.as_slice() == control.encode_full().as_slice())
+        .map(|control| (*index, control))
     }
-    let event = match value.first() {
-        Some(0) => simple(LoadControl::NoOperation),
-        Some(1) => simple(LoadControl::StartLoading),
-        Some(2) => simple(LoadControl::LoadCompleted),
-        Some(3) => simple(LoadControl::AdditionalLoadControls),
-        Some(4) => simple(LoadControl::Unload),
-        _ => return None,
-    };
+}
+
+/// The load-control record of a [`FlashStep::load_state_control`] write.
+fn load_state_write(step: &FlashStep) -> Option<LoadControlRecord> {
+    let (index, control) = step.load_state_control()?;
     Some(LoadControlRecord {
         form: LoadControlForm::Property {
-            object: Some(*index),
+            object: Some(index),
         },
-        event,
-        bytes: value.clone(),
+        event: simple(control),
+        bytes: control.encode_full().to_vec(),
     })
 }
 
@@ -304,12 +316,9 @@ mod tests {
     use super::*;
     use crate::flash::SegmentFill;
 
-    #[test]
-    fn test_load_state_write_is_a_load_control_record() {
-        // `M-007C_A-0006-20-C776` (issue #947): `LdCtrlWriteProp ObjIdx="8"
-        // PropId="5" InlineData="04000000000000000000"` is the unload ETS
-        // sends to object 8 (ops.txt op 43).
-        let write = |value: Vec<u8>| FlashStep::WriteProp {
+    /// A procedure's `PID_LOAD_STATE_CONTROL` write of `value` to object 8.
+    fn load_state_step(value: Vec<u8>) -> FlashStep {
+        FlashStep::WriteProp {
             object: PropObject::Index(8),
             prop_id: 5,
             value,
@@ -317,19 +326,60 @@ mod tests {
             count: 1,
             verify: false,
             from_parameters: false,
-        };
-        let mut unload = vec![0; 10];
-        unload[0] = 4;
+        }
+    }
+
+    #[test]
+    fn test_load_state_write_is_a_load_control_record() {
+        // `M-007C_A-0006-20-C776` (issue #947): `LdCtrlWriteProp ObjIdx="8"
+        // PropId="5" InlineData="04000000000000000000"` is the unload ETS
+        // sends to object 8 (ops.txt op 43).
+        let unload = LoadControl::Unload.encode_full().to_vec();
         assert_eq!(
-            load_state_write(&write(unload.clone())),
+            load_state_write(&load_state_step(unload.clone())),
             Some(LoadControlRecord {
                 form: LoadControlForm::Property { object: Some(8) },
                 event: "unload",
                 bytes: unload,
             })
         );
-        // Not a 10-octet record: an ordinary property write.
-        assert_eq!(load_state_write(&write(vec![4])), None);
+        for (control, event) in [
+            (LoadControl::StartLoading, "start-loading"),
+            (LoadControl::LoadCompleted, "load-completed"),
+        ] {
+            let step = load_state_step(control.encode_full().to_vec());
+            assert_eq!(step.load_state_control(), Some((8, control)));
+            assert_eq!(load_state_write(&step).map(|r| r.event), Some(event));
+        }
+    }
+
+    #[test]
+    fn test_load_state_control_leaves_other_writes_as_property_writes() {
+        // An additional load control (opcode 3, here a relative segment) keeps
+        // its segment octets only as a property write: never promoted, so it
+        // carries no `additional`/`rel-segment` label of its own.
+        let rel_segment = bussard_mgmt::encode_rel_segment(0x0100, 1, 0xFF).to_vec();
+        let mut nonzero_reserved = LoadControl::Unload.encode_full().to_vec();
+        nonzero_reserved[9] = 1;
+        let mut no_op = vec![0; 10];
+        no_op[0] = 0;
+        for value in [rel_segment, nonzero_reserved, no_op, vec![4], vec![5; 10]] {
+            let step = load_state_step(value.clone());
+            assert_eq!(step.load_state_control(), None, "{value:02x?}");
+            assert_eq!(load_state_write(&step), None);
+        }
+        // Element 2, or a count of 2, is not the load-state record either.
+        let unload = LoadControl::Unload.encode_full().to_vec();
+        let at_two = FlashStep::WriteProp {
+            object: PropObject::Index(8),
+            prop_id: 5,
+            value: unload,
+            start_element: 2,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        assert_eq!(at_two.load_state_control(), None);
     }
 
     #[test]

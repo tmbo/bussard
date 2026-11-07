@@ -432,10 +432,15 @@ pub fn decode_function_property_ext_state_response(
 /// minus the Data Secure overhead (see
 /// [`Layer4Connection::effective_max_apdu`]). At least 1, at most 255.
 pub fn max_write_elements<Ch: L4Channel>(l4: &Layer4Connection<Ch>, element_size: usize) -> usize {
-    let budget = usize::from(
-        l4.effective_max_apdu()
-            .saturating_sub(PROPERTY_EXT_WRITE_OVERHEAD),
-    );
+    write_elements_for_apdu(l4.effective_max_apdu(), element_size)
+}
+
+/// The largest element count one `A_PropertyExtValue_WriteCon` carries for
+/// elements of `element_size` octets under an APDU limit of `max_apdu`: what
+/// fits the budget, at least 1, at most the 255 its count octet holds. The rule
+/// of [`max_write_elements`], for a dry run that has no connection.
+pub fn write_elements_for_apdu(max_apdu: u16, element_size: usize) -> usize {
+    let budget = usize::from(max_apdu.saturating_sub(PROPERTY_EXT_WRITE_OVERHEAD));
     (budget / element_size.max(1)).clamp(1, usize::from(u8::MAX))
 }
 

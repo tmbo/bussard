@@ -182,6 +182,27 @@ pub(super) async fn run_shared_step<C: Connector>(
             }
             None => Ok(()),
         },
+        // A procedure's own load-state transition (issue #947): the device
+        // answers it with the resulting load state, not an echo of the
+        // value, so it is confirmed as a load control.
+        FlashStep::WriteProp {
+            object: super::PropObject::Index(index),
+            ..
+        } if step.load_state_control().is_some() => {
+            match (step.load_state_control(), u8::try_from(*index)) {
+                (Some((_, control)), Ok(obj)) => {
+                    bussard_mgmt::load::write_load_control(session.l4(), obj, control)
+                        .await
+                        .map(|_| ())
+                }
+                _ => Err(WriteError::Mgmt(
+                    bussard_mgmt::MgmtError::MalformedResponse {
+                        address: session.l4().target(),
+                        reason: format!("object index {index} exceeds the 8-bit index space"),
+                    },
+                )),
+            }
+        }
         // A property write of the procedure (issue #390), with its Count and
         // Verify.
         FlashStep::WriteProp {
