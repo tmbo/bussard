@@ -83,6 +83,18 @@ pub(super) async fn index_of_type<Ch: L4Channel>(
     })
 }
 
+/// The index of the `occurrence`-th object of `object_type` in the
+/// interface-object list `table` (`index`, `PID_OBJECT_TYPE`), as the System B
+/// executor walked it before the first step: where ETS writes an object a
+/// program that is not Data Secure enabled names by type (issue #948).
+pub(super) fn listed_index(table: &[(u8, u16)], object_type: u16, occurrence: u16) -> Option<u8> {
+    table
+        .iter()
+        .filter(|(_, ot)| *ot == object_type)
+        .nth(usize::from(occurrence))
+        .map(|(index, _)| *index)
+}
+
 /// The octets per element of `value` written as `count` elements.
 fn element_size(value: &[u8], count: u16) -> usize {
     (value.len() / usize::from(count.max(1))).max(1)
@@ -362,6 +374,16 @@ pub async fn compare_property_value<Ch: L4Channel>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_listed_index_takes_the_nth_object_of_the_type() {
+        // Issue #948: the Siemens dimmer's type 50215 sits at object 6.
+        let table = [(0, 0), (1, 1), (4, 3), (6, 50215), (7, 50215)];
+        assert_eq!(listed_index(&table, 50215, 0), Some(6));
+        assert_eq!(listed_index(&table, 50215, 1), Some(7));
+        assert_eq!(listed_index(&table, 50215, 2), None);
+        assert_eq!(listed_index(&table, 11, 0), None);
+    }
 
     #[test]
     fn test_masked_equal_ignores_masked_octets() {

@@ -26,6 +26,22 @@
 //!   KNX Standard nor a schema in the repository gives `Count` a default, so
 //!   a count-less write that could mean more than one element is refused
 //!   (issue #945).
+//!
+//! From the sweep captures of three Gira 07B0 programs (issue #948):
+//!
+//! - a declaration and its writes may name the object by type: ETS writes
+//!   `type60001.1/PID51` to `PID56` and `type11.1/PID201` with
+//!   `A_PropertyExtValue_WriteCon` (`M-0008_A-0004-75-0A9A-O007C`, ops 46 to
+//!   53), `type40960.1/PID69` and on (`M-0008_A-C02A-21-B6D8-O007C`, ops 65
+//!   and on);
+//! - `MaxElements` does not bound the write: `M-0008_A-C02A-21-B6D8-O007C`
+//!   declares PID 69 with `MaxElements="1"` and ETS writes the 25 elements of
+//!   `Count="25"` (`count=14 index=1`, `count=11 index=15`, ops 65 to 66);
+//! - nor does `Writable="false"`: ETS writes the 4-octet `type11.1/PID201`
+//!   and `PID202` of `M-0008_A-0004-75-0A9A-O007C` declared so (ops 52, 53);
+//! - a write with neither `InlineData` nor a parameter placed in the
+//!   property sends nothing, not even a description read
+//!   (`M-0008_A-F060-10-5848`, the declared object 4 PID 201: no frame for it).
 
 use super::plan_props::{may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
@@ -75,10 +91,10 @@ pub(super) struct PropDecl {
     pub(super) prop_type: String,
     /// Octets per element of `prop_type`.
     pub(super) element_size: usize,
-    /// `MaxElements`.
+    /// `MaxElements`: the size the declaration describes, which does not
+    /// bound the write (see the module docs). `Writable` is not kept: ETS
+    /// writes a property declared not writable all the same.
     pub(super) max_elements: u32,
-    /// `Writable`; absent counts as writable.
-    pub(super) writable: bool,
 }
 
 impl PropDecl {
@@ -111,7 +127,6 @@ pub(super) fn lower_declare_prop(step: usize, op: &LoadOp) -> Result<PropDecl, P
         prop_id,
         prop_type,
         max_elements,
-        writable,
         ..
     } = op
     else {
@@ -136,7 +151,6 @@ pub(super) fn lower_declare_prop(step: usize, op: &LoadOp) -> Result<PropDecl, P
         prop_type,
         element_size,
         max_elements,
-        writable: writable.unwrap_or(true),
     })
 }
 
@@ -323,16 +337,19 @@ fn placements(
 /// `InlineData` after the planner's application-id substitution (the one rule
 /// for a PID 13 placeholder, issue #945); it is the template
 /// ([`inline_template`]) the parameters placed in the property (`params`)
-/// replace the bits of.
+/// replace the bits of. The object may be named by index or by type, and
+/// neither `MaxElements` nor `Writable` bounds the write (issue #948, see the
+/// module docs). `None` for a write with neither `InlineData` nor a parameter
+/// placed in the property: ETS sends nothing for it.
 ///
 /// # Errors
 ///
-/// [`PlanError::UnsupportedWriteProp`] when the property is declared not
-/// writable, the write has no `Count` and could mean more than one element,
-/// the write reaches past `MaxElements` or the 12-bit element index, the
-/// `InlineData` does not fit `Count` elements, a parameter may be stored in
-/// the property under another name of its object (an index against a type),
-/// its value cannot be composed, or there is no value at all.
+/// [`PlanError::UnsupportedWriteProp`] when the write has no `Count` and
+/// could mean more than one element, reaches past the 12-bit element index,
+/// names an object or PID the property services cannot address, carries an
+/// `InlineData` that does not fit `Count` elements, a parameter may be stored
+/// in the property under another name of its object (an index against a
+/// type), or its value cannot be composed.
 pub(super) fn lower_declared_write_prop(
     step: usize,
     op: &LoadOp,
@@ -340,7 +357,7 @@ pub(super) fn lower_declared_write_prop(
     inline: Option<&[u8]>,
     params: &PropertyParameters<'_>,
     app: &ApplicationProgram,
-) -> Result<FlashStep, PlanError> {
+) -> Result<Option<FlashStep>, PlanError> {
     let refuse = |reason: String| PlanError::UnsupportedWriteProp { step, reason };
     let LoadOp::WriteProp {
         prop_id,
@@ -354,19 +371,17 @@ pub(super) fn lower_declared_write_prop(
     };
     let prop_id = prop_id.unwrap_or(decl.prop_id);
     let name = format!("{} PID {prop_id}", decl.object);
-    if !decl.writable {
-        return Err(refuse(format!(
-            "the load procedure declares {name} not writable and then writes it"
-        )));
-    }
-    let PropObject::Index(index) = decl.object else {
-        return Err(refuse(format!(
-            "{name} is named by type; bussard writes a declared property by index only"
-        )));
+    // An index and its PID go out on the plain services (8 bits each); an
+    // object named by type on the extended ones (a 12-bit PID), or at the
+    // index the device's object list gives it (the executor refuses a PID
+    // past 8 bits there).
+    let addressable = match decl.object {
+        PropObject::Index(index) => index <= u32::from(u8::MAX) && prop_id <= u32::from(u8::MAX),
+        PropObject::Type { .. } => prop_id <= 0x0FFF,
     };
-    if index > u32::from(u8::MAX) || prop_id > u32::from(u8::MAX) {
+    if !addressable {
         return Err(refuse(format!(
-            "{name} exceeds the 8-bit object index or PID the property services address"
+            "{name} exceeds the object index or PID the property services address"
         )));
     }
     let elem = decl.element_size;
@@ -374,12 +389,6 @@ pub(super) fn lower_declared_write_prop(
     let start = start_element.unwrap_or(1).max(1);
     let count = element_count(&name, *count, start, Some(decl.max_elements)).map_err(refuse)?;
     let last = start.saturating_add(count).saturating_sub(1);
-    if last > decl.max_elements {
-        return Err(refuse(format!(
-            "the write to {name} reaches element {last}, past the declared MaxElements of {}",
-            decl.max_elements
-        )));
-    }
     if last > MAX_ELEMENT_INDEX {
         return Err(refuse(format!(
             "the write to {name} reaches element {last}, past the 12-bit element index"
@@ -417,12 +426,10 @@ pub(super) fn lower_declared_write_prop(
     } else if inline.is_some() {
         (template, false)
     } else {
-        return Err(refuse(format!(
-            "the write to the declared {name} carries no InlineData and no parameter is \
-             stored in it"
-        )));
+        // Nothing decides the value: ETS sends nothing (issue #948).
+        return Ok(None);
     };
-    Ok(FlashStep::WriteProp {
+    Ok(Some(FlashStep::WriteProp {
         object: decl.object,
         prop_id,
         value,
@@ -431,7 +438,7 @@ pub(super) fn lower_declared_write_prop(
         count: count as u16,
         verify: verify.unwrap_or(false),
         from_parameters,
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -521,11 +528,11 @@ mod tests {
     }
 
     /// Lowers `op` against `decl` with the planner's own values for `app`.
-    fn lower(
+    fn lower_opt(
         op: &LoadOp,
         decl: &PropDecl,
         app: &ApplicationProgram,
-    ) -> Result<FlashStep, PlanError> {
+    ) -> Result<Option<FlashStep>, PlanError> {
         let config = bussard_prod::dynamic::DynamicMemo::new(app)
             .evaluate_for(app, &std::collections::BTreeMap::new());
         let params = PropertyParameters::resolve(app, &config);
@@ -534,6 +541,17 @@ mod tests {
             _ => None,
         };
         lower_declared_write_prop(2, op, decl, inline.as_deref(), &params, app)
+    }
+
+    /// [`lower_opt`] for a write that sends something.
+    fn lower(
+        op: &LoadOp,
+        decl: &PropDecl,
+        app: &ApplicationProgram,
+    ) -> Result<FlashStep, PlanError> {
+        lower_opt(op, decl, app)?.ok_or_else(|| PlanError::UnsupportedOp {
+            op: "the write lowered to nothing".to_string(),
+        })
     }
 
     fn refusal(result: Result<FlashStep, PlanError>) -> Result<String, Box<dyn std::error::Error>> {
@@ -703,10 +721,89 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_declared_write_prop_refuses_past_max_elements() -> TestResult {
+    fn test_lower_declared_write_prop_writes_past_max_elements() -> TestResult {
+        // Issue #948: ETS writes the 25 elements of `Count="25"` to PID 69
+        // declared `MaxElements="1"` (`M-0008_A-C02A-21-B6D8-O007C`); only the
+        // 12-bit element index bounds the write.
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 2))?;
-        refusal(lower(&write(Some(vec![1, 2, 3]), Some(3)), &decl, &app()?))?;
-        refusal(lower(&write(None, Some(3)), &decl, &app_with(&[(0, 1)])?))?;
+        let step = lower(&write(Some(vec![1, 2, 3]), Some(3)), &decl, &app()?)?;
+        assert!(
+            matches!(step, FlashStep::WriteProp { count: 3, ref value, .. } if value == &[1, 2, 3])
+        );
+        let mut op = write(None, Some(3));
+        if let LoadOp::WriteProp { start_element, .. } = &mut op {
+            *start_element = Some(4094);
+        }
+        let reason = refusal(lower(&op, &decl, &app_with(&[(0, 1)])?))?;
+        assert!(reason.contains("12-bit element index"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_writes_an_object_named_by_type() -> TestResult {
+        // Issue #948: the Gira declarations name the object by type, and ETS
+        // writes `type60001.1/PID51` (`M-0008_A-0004-75-0A9A-O007C`).
+        let mut decl_op = declare("PDT_UNSIGNED_CHAR", 1);
+        if let LoadOp::DeclarePropDesc {
+            obj_idx, obj_type, ..
+        } = &mut decl_op
+        {
+            *obj_idx = None;
+            *obj_type = Some(60001);
+        }
+        let decl = lower_declare_prop(1, &decl_op)?;
+        let app = app_placing(&[(
+            r#"<Property ObjectType="60001" PropertyId="55" Offset="0" BitOffset="0" />"#,
+            3,
+        )])?;
+        let mut op = write(None, None);
+        if let LoadOp::WriteProp {
+            obj_idx, obj_type, ..
+        } = &mut op
+        {
+            *obj_idx = None;
+            *obj_type = Some(60001);
+        }
+        let step = lower(&op, &decl, &app)?;
+        assert_eq!(
+            step,
+            FlashStep::WriteProp {
+                object: PropObject::Type {
+                    object_type: 60001,
+                    occurrence: 0,
+                },
+                prop_id: 55,
+                value: vec![3],
+                start_element: 1,
+                count: 1,
+                verify: false,
+                from_parameters: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_writes_a_property_declared_not_writable() -> TestResult {
+        // Issue #948: ETS writes `type11.1/PID201` and `PID202`, declared
+        // `Writable="false"` (`M-0008_A-0004-75-0A9A-O007C`, ops 52 and 53).
+        let mut decl_op = declare("PDT_UNSIGNED_CHAR", 1);
+        if let LoadOp::DeclarePropDesc { writable, .. } = &mut decl_op {
+            *writable = Some(false);
+        }
+        let decl = lower_declare_prop(1, &decl_op)?;
+        let step = lower(&write(None, Some(1)), &decl, &app_with(&[(0, 7)])?)?;
+        assert!(matches!(step, FlashStep::WriteProp { ref value, .. } if value == &[7]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_sends_nothing_without_a_value() -> TestResult {
+        // Issue #948: no InlineData and no parameter placed in the declared
+        // property: ETS sends nothing for it (`M-0008_A-F060-10-5848`,
+        // object 4 PID 201).
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
+        assert_eq!(lower_opt(&write(None, None), &decl, &app()?)?, None);
         Ok(())
     }
 

@@ -959,7 +959,7 @@ pub fn plan_flash(
                         ),
                     });
                 }
-                steps.push(super::declare::lower_declared_write_prop(
+                steps.extend(super::declare::lower_declared_write_prop(
                     step_no,
                     op,
                     &decl,
@@ -971,6 +971,8 @@ pub fn plan_flash(
 
             LoadOp::WriteProp {
                 obj_idx,
+                obj_type,
+                occurrence,
                 prop_id,
                 inline_data,
                 start_element,
@@ -981,12 +983,14 @@ pub fn plan_flash(
                     .unwrap_or(1)
                     .max(1);
                 let prop_id = prop_id.unwrap_or(0);
-                // The property write targets an object index. When the op names
-                // one directly (`ObjIdx`) use it; otherwise it is object 0 (the
-                // device object, as the observed vendor procedures write). The
-                // A_PropertyValue_Write primitive addresses by a u8 object index
-                // and u8 PID.
-                let obj_idx = obj_idx.unwrap_or(0);
+                // The object the write names: `ObjIdx`, else `ObjType` (the
+                // device object for type 0), else the device object, as the
+                // observed vendor procedures write. An object named by type is
+                // found on the device, never taken for object 0 (issue #948:
+                // the Siemens dimmer `M-0001_A-9839-01-38C4` writes PID 205 of
+                // type 50215, which ETS found at object 6).
+                let object =
+                    super::plan_props::prop_object(step_no, *obj_idx, *obj_type, *occurrence)?;
                 // The master template carries a placeholder
                 // `LdCtrlWriteProp ObjIdx=4 PropId=13 InlineData="0000000000"`
                 // for the application object's PID_PROGRAM_VERSION (the app-id /
@@ -1000,7 +1004,9 @@ pub fn plan_flash(
                 let inline_data = maybe_substitute_app_id(
                     prop_id,
                     inline_data.as_deref(),
-                    companion_ids.get(&obj_idx).or(app_id_value.as_ref()),
+                    companion_ids
+                        .get(&object.index().unwrap_or(0))
+                        .or(app_id_value.as_ref()),
                 );
 
                 match &inline_data {
@@ -1009,7 +1015,9 @@ pub fn plan_flash(
                         // "only a fully-executable FlashPlan reaches flash" invariant.
                         // Refuse a shape the write primitive cannot address rather
                         // than dropping the value at execute time.
-                        if obj_idx > u32::from(u8::MAX) {
+                        if let Some(obj_idx) = object.index()
+                            && obj_idx > u32::from(u8::MAX)
+                        {
                             return Err(PlanError::UnsupportedWriteProp {
                                 step: step_no,
                                 reason: format!(
@@ -1031,7 +1039,7 @@ pub fn plan_flash(
                         // it as the offline oracle confirms it): the value is one
                         // element, the write echo-validated, no extra read-back.
                         steps.push(FlashStep::WriteProp {
-                            object: super::PropObject::Index(obj_idx),
+                            object,
                             prop_id,
                             value: value.clone(),
                             start_element,
@@ -1268,6 +1276,7 @@ pub fn plan_flash(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
+        typed_objects_by_list: !app.is_secure_enabled,
         par_allocations,
         par_procedure: false,
         kept,
