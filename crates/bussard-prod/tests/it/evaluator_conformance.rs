@@ -71,7 +71,8 @@ fn model_reached(
     address: IndividualAddress,
 ) -> Result<BTreeSet<String>, Box<dyn std::error::Error>> {
     Ok(
-        bussard_model::device_view::parameter_visibility(model, products, address)?
+        bussard_model::device_view::DeviceAnalysis::new(model, products, address)?
+            .visibility()
             .into_iter()
             .filter(|(_, v)| v.shown)
             .map(|(r, _)| r)
@@ -280,7 +281,8 @@ fn test_meteodata_snapshot_evaluators_agree_and_ignore_only_unwritten_values() -
     // logic inputs' XOR refs (`@P-6823_R-6823`, `@P-6824_R-6824`), while the
     // channel runs UND and shows the inputs through other refs of the same
     // parameters, which the image writes at their defaults.
-    let ignored = bussard_model::device_view::ignored_overrides(&model, &products, address)?;
+    let ignored = bussard_model::device_view::DeviceAnalysis::new(&model, &products, address)?
+        .ignored_overrides();
     let refs: BTreeSet<&str> = ignored.iter().map(|o| o.reference.as_str()).collect();
     for r in &refs {
         assert!(

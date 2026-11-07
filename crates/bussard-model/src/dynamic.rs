@@ -190,63 +190,6 @@ pub trait DynamicSource {
     }
 }
 
-impl<T: DynamicSource + ?Sized> DynamicSource for &T {
-    fn program_id(&self) -> &str {
-        (**self).program_id()
-    }
-    fn dynamic(&self) -> &[DynamicNode] {
-        (**self).dynamic()
-    }
-    fn module_dynamic(&self, module_def: &str) -> Option<&[DynamicNode]> {
-        (**self).module_dynamic(module_def)
-    }
-    fn module_dynamics(&self) -> Box<dyn Iterator<Item = (&str, &[DynamicNode])> + '_> {
-        (**self).module_dynamics()
-    }
-    fn parameter_ref(&self, ref_id: &str) -> Option<(&str, Option<&str>)> {
-        (**self).parameter_ref(ref_id)
-    }
-    fn parameter_refs(&self) -> Box<dyn Iterator<Item = (&str, &str)> + '_> {
-        (**self).parameter_refs()
-    }
-    fn parameter(&self, param_id: &str) -> Option<(Option<&str>, Option<&str>)> {
-        (**self).parameter(param_id)
-    }
-    fn integer_width(&self, param_id: &str) -> Option<(u32, bool)> {
-        (**self).integer_width(param_id)
-    }
-    fn enum_members(&self, param_id: &str) -> Option<&[EnumValue]> {
-        (**self).enum_members(param_id)
-    }
-    fn unions(&self) -> &[Union] {
-        (**self).unions()
-    }
-    fn calculations(&self) -> &[ParameterCalculation] {
-        (**self).calculations()
-    }
-    fn parameter_name(&self, param_id: &str) -> Option<&str> {
-        (**self).parameter_name(param_id)
-    }
-    fn parameter_is_text(&self, param_id: &str) -> Option<bool> {
-        (**self).parameter_is_text(param_id)
-    }
-    fn allocator(&self, allocator_id: &str) -> Option<Allocator> {
-        (**self).allocator(allocator_id)
-    }
-    fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
-        (**self).argument_allocates(arg_id)
-    }
-    fn initial_value(&self, param_id: &str) -> Option<&str> {
-        (**self).initial_value(param_id)
-    }
-    fn is_virtual(&self, param_id: &str) -> bool {
-        (**self).is_virtual(param_id)
-    }
-    fn is_system_b(&self) -> bool {
-        (**self).is_system_b()
-    }
-}
-
 /// An `<Allocator>`: a counter module instances draw argument values from
 /// (issue #449). Each `<NumericArg AllocatorRefId>` of a reached instance
 /// takes the allocator's current value, which then advances by the
@@ -475,8 +418,7 @@ impl WhenTest {
 /// where each item sits; they carry no condition of their own, so evaluation
 /// treats them transparently. A container left with no children is dropped.
 /// The other unconditional containers (`<ChannelIndependentBlock>`,
-/// `<Rows>`/`<Columns>`, …) are flattened into their parent.
-/// [`flatten_containers`] gives the fully flattened view. All ids are
+/// `<Rows>`/`<Columns>`, …) are flattened into their parent. All ids are
 /// app-relative (the program-id prefix stripped).
 ///
 /// The serde form is compact, one key per node, since the product model and
@@ -613,6 +555,14 @@ pub enum DynamicNode {
 }
 
 impl DynamicNode {
+    /// The id of a [`DynamicNode::Channel`] or [`DynamicNode::ParameterBlock`].
+    pub fn container_id(&self) -> Option<&str> {
+        match self {
+            DynamicNode::Channel { id, .. } | DynamicNode::ParameterBlock { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+
     /// The channel this node describes, if it is a [`DynamicNode::Channel`].
     pub fn channel_ref(&self) -> Option<ChannelRef> {
         match self {
@@ -655,48 +605,6 @@ impl DynamicNode {
             _ => None,
         }
     }
-}
-
-/// The Dynamic tree with every [`DynamicNode::Channel`] and
-/// [`DynamicNode::ParameterBlock`] replaced by its children, recursively
-/// (inside `<when>` branches too): the shape the parser produced before it
-/// kept those containers.
-pub fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
-    let mut out = Vec::with_capacity(nodes.len());
-    for node in nodes {
-        match node {
-            DynamicNode::Channel { children, .. }
-            | DynamicNode::ParameterBlock { children, .. } => {
-                out.extend(flatten_containers(children));
-            }
-            DynamicNode::Repeat {
-                id,
-                param_ref_id,
-                count,
-                children,
-            } => out.push(DynamicNode::Repeat {
-                id: id.clone(),
-                param_ref_id: param_ref_id.clone(),
-                count: *count,
-                children: flatten_containers(children),
-            }),
-            DynamicNode::Choose {
-                param_ref_id,
-                whens,
-            } => out.push(DynamicNode::Choose {
-                param_ref_id: param_ref_id.clone(),
-                whens: whens
-                    .iter()
-                    .map(|w| DynamicWhen {
-                        test: w.test.clone(),
-                        children: flatten_containers(&w.children),
-                    })
-                    .collect(),
-            }),
-            other => out.push(other.clone()),
-        }
-    }
-    out
 }
 
 /// One `<when>` branch of a [`DynamicNode::Choose`].
@@ -1579,26 +1487,10 @@ pub fn refs_derived_from<S: DynamicSource + ?Sized>(
 /// Calls `f` on every node of the application's Dynamic section and of every
 /// module body, depth first.
 fn for_each_node<S: DynamicSource + ?Sized>(app: &S, f: &mut dyn FnMut(&DynamicNode)) {
-    fn walk(nodes: &[DynamicNode], f: &mut dyn FnMut(&DynamicNode)) {
-        for node in nodes {
-            f(node);
-            match node {
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => walk(children, f),
-                DynamicNode::Choose { whens, .. } => {
-                    for when in whens {
-                        walk(&when.children, f);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    walk(app.dynamic(), f);
-    for (_, body) in app.module_dynamics() {
-        walk(body, f);
-    }
+    walk_all(app, &mut |node, _| {
+        f(node);
+        true
+    });
 }
 
 /// The state of the `<ParameterCalculation>`s across the passes of one
@@ -2133,66 +2025,28 @@ fn instance_module_def(instance: &str) -> String {
 /// or in any `<ModuleDef>`'s, in any branch. A `<choose>` on a parameter
 /// outside this set is never gated by activity (see the module docs).
 fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
-    fn visit<S: DynamicSource + ?Sized>(app: &S, nodes: &[DynamicNode], out: &mut HashSet<String>) {
-        for node in nodes {
-            match node {
-                DynamicNode::ParameterRefRef(r) => {
-                    if let Some(id) = parameter_id(app, r) {
-                        out.insert(id.to_string());
-                    }
-                }
-                DynamicNode::Choose { whens, .. } => {
-                    for w in whens {
-                        visit(app, &w.children, out);
-                    }
-                }
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => visit(app, children, out),
-                DynamicNode::ComObjectRefRef(_)
-                | DynamicNode::Module { .. }
-                | DynamicNode::Assign { .. } => {}
-            }
-        }
-    }
     let mut out = HashSet::new();
-    visit(app, app.dynamic(), &mut out);
-    for (_, body) in app.module_dynamics() {
-        visit(app, body, &mut out);
-    }
+    for_each_node(app, &mut |node| {
+        if let DynamicNode::ParameterRefRef(r) = node
+            && let Some(id) = parameter_id(app, r)
+        {
+            out.insert(id.to_string());
+        }
+    });
     out
 }
 
 /// The `Parameter` ids (full) an `<Assign>` of the application's or any
 /// `<ModuleDef>`'s Dynamic section targets, in any branch (issue #839).
 fn assigned_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
-    fn visit<S: DynamicSource + ?Sized>(app: &S, nodes: &[DynamicNode], out: &mut HashSet<String>) {
-        for node in nodes {
-            match node {
-                DynamicNode::Assign { target, .. } => {
-                    if let Some(id) = parameter_id(app, target) {
-                        out.insert(id.to_string());
-                    }
-                }
-                DynamicNode::Choose { whens, .. } => {
-                    for w in whens {
-                        visit(app, &w.children, out);
-                    }
-                }
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => visit(app, children, out),
-                DynamicNode::ComObjectRefRef(_)
-                | DynamicNode::Module { .. }
-                | DynamicNode::ParameterRefRef(_) => {}
-            }
-        }
-    }
     let mut out = HashSet::new();
-    visit(app, app.dynamic(), &mut out);
-    for (_, body) in app.module_dynamics() {
-        visit(app, body, &mut out);
-    }
+    for_each_node(app, &mut |node| {
+        if let DynamicNode::Assign { target, .. } = node
+            && let Some(id) = parameter_id(app, target)
+        {
+            out.insert(id.to_string());
+        }
+    });
     out
 }
 
@@ -2343,31 +2197,15 @@ pub fn visible_parameter_refs<S: DynamicSource + ?Sized>(
 /// `<Module>` in the application's and the module definitions' Dynamic
 /// sections, in any branch.
 fn module_ordinals<S: DynamicSource + ?Sized>(app: &S) -> HashMap<String, u32> {
-    fn visit(nodes: &[DynamicNode], out: &mut BTreeMap<String, Vec<String>>) {
-        for node in nodes {
-            match node {
-                DynamicNode::Module { id, module_def, .. } => {
-                    out.entry(module_def.clone()).or_default().push(id.clone());
-                }
-                DynamicNode::Choose { whens, .. } => {
-                    for w in whens {
-                        visit(&w.children, out);
-                    }
-                }
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => visit(children, out),
-                DynamicNode::ParameterRefRef(_)
-                | DynamicNode::ComObjectRefRef(_)
-                | DynamicNode::Assign { .. } => {}
-            }
+    let mut by_def: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for_each_node(app, &mut |node| {
+        if let DynamicNode::Module { id, module_def, .. } = node {
+            by_def
+                .entry(module_def.clone())
+                .or_default()
+                .push(id.clone());
         }
-    }
-    let mut by_def = BTreeMap::new();
-    visit(app.dynamic(), &mut by_def);
-    for (_, body) in app.module_dynamics() {
-        visit(body, &mut by_def);
-    }
+    });
     let m_number = |id: &str| -> Option<u64> { id.rsplit_once("_M-")?.1.parse().ok() };
     let mut out = HashMap::new();
     for mut ids in by_def.into_values() {
@@ -3087,6 +2925,26 @@ pub struct RefGate {
 }
 
 impl RefGate {
+    /// The branch's test as a page condition prints it: as ETS writes it
+    /// (`1 2`, `!=0`), `default` for the default branch, an unknown test
+    /// after a `?`.
+    pub fn test_text(&self) -> String {
+        when_text(&self.test)
+    }
+
+    /// For a default branch, the tests of the sibling branches it is taken
+    /// without, as [`Self::test_text`] prints them; empty for another branch.
+    pub fn others_text(&self) -> Vec<String> {
+        if self.test != WhenTest::Default {
+            return Vec::new();
+        }
+        self.siblings
+            .iter()
+            .filter(|t| **t != WhenTest::Default)
+            .map(when_text)
+            .collect()
+    }
+
     /// Whether the walk takes this branch when the controlling parameter has
     /// `value` (a number, or `None` when it has none): the test matches, or,
     /// for a [`WhenTest::Default`] branch, no sibling matches. Whether the
@@ -3096,6 +2954,32 @@ impl RefGate {
             return !self.siblings.iter().any(|t| when_matches(t, value));
         }
         when_matches(&self.test, value)
+    }
+}
+
+/// A `<when>` test as [`RefGate::test_text`] prints it.
+fn when_text(test: &WhenTest) -> String {
+    match test {
+        WhenTest::Default => "default".to_string(),
+        // Kept recognisable and matching nothing.
+        WhenTest::Unknown(raw) => format!("?{raw}"),
+        other => other.text().unwrap_or_default(),
+    }
+}
+
+/// Written as the page condition text: `{"ref", "test", "others"}` (see
+/// [`RefGate::test_text`]; `others` only for a default branch).
+impl serde::Serialize for RefGate {
+    fn serialize<Ser: serde::Serializer>(&self, ser: Ser) -> Result<Ser::Ok, Ser::Error> {
+        use serde::ser::SerializeMap;
+        let others = self.others_text();
+        let mut map = ser.serialize_map(None)?;
+        map.serialize_entry("ref", &self.param_ref_id)?;
+        map.serialize_entry("test", &self.test_text())?;
+        if !others.is_empty() {
+            map.serialize_entry("others", &others)?;
+        }
+        map.end()
     }
 }
 
@@ -3133,21 +3017,25 @@ impl RefIndex {
     /// Indexes `src`'s Dynamic sections.
     pub fn new<S: DynamicSource + ?Sized>(src: &S) -> Self {
         let mut index = RefIndex::default();
-        let mut walker = IndexWalk {
-            module_def: None,
-            channel: None,
-            blocks: Vec::new(),
-            gates: Vec::new(),
-            container_gates: 0,
-            index: &mut index,
-        };
-        walker.visit(src.dynamic());
-        let mut defs: Vec<(&str, &[DynamicNode])> = src.module_dynamics().collect();
-        defs.sort_by(|a, b| a.0.cmp(b.0));
-        for (def, body) in defs {
-            walker.module_def = Some(def.to_string());
-            walker.visit(body);
-        }
+        walk_all(src, &mut |node, path| {
+            let (refs, r) = match node {
+                DynamicNode::ParameterRefRef(r) => (&mut index.parameters, r),
+                DynamicNode::ComObjectRefRef(r) => (&mut index.com_objects, r),
+                _ => return true,
+            };
+            refs.entry(r.clone()).or_default().push(RefOccurrence {
+                module_def: path.module_def.map(str::to_string),
+                channel: path.channel().and_then(DynamicNode::channel_ref),
+                blocks: path
+                    .containers
+                    .iter()
+                    .filter_map(|c| c.block_ref())
+                    .collect(),
+                gates: path.gates(),
+                container_gates: path.container_gates,
+            });
+            true
+        });
         index
     }
 
@@ -3176,86 +3064,119 @@ impl RefIndex {
     }
 }
 
-/// The state of the [`RefIndex`] pass.
-struct IndexWalk<'a> {
-    module_def: Option<String>,
-    channel: Option<ChannelRef>,
-    blocks: Vec<BlockRef>,
-    gates: Vec<RefGate>,
-    /// `gates.len()` when the innermost container began.
-    container_gates: usize,
-    index: &'a mut RefIndex,
+/// Where [`walk`] is in a Dynamic tree.
+#[derive(Debug, Clone, Default)]
+pub struct WalkPath<'a> {
+    /// The module definition whose body is walked (`MD-1`), `None` in the
+    /// application's own Dynamic section.
+    pub module_def: Option<&'a str>,
+    /// The enclosing `<Channel>`s and `<ParameterBlock>`s, outermost first.
+    pub containers: Vec<&'a DynamicNode>,
+    /// The `<when>` branches in front, outermost first: the `<choose>`'s
+    /// ref, its branches and the index of the taken one.
+    branches: Vec<(&'a str, &'a [DynamicWhen], usize)>,
+    /// How many of the branches stand in front of the innermost container.
+    pub container_gates: usize,
 }
 
-impl IndexWalk<'_> {
-    fn occurrence(&self) -> RefOccurrence {
-        RefOccurrence {
-            module_def: self.module_def.clone(),
-            channel: self.channel.clone(),
-            blocks: self.blocks.clone(),
-            gates: self.gates.clone(),
-            container_gates: self.container_gates,
+impl<'a> WalkPath<'a> {
+    /// A path at the top of the body of `module_def` (`None`: the
+    /// application's own section).
+    pub fn new(module_def: Option<&'a str>) -> Self {
+        WalkPath {
+            module_def,
+            ..WalkPath::default()
         }
     }
 
-    fn visit(&mut self, nodes: &[DynamicNode]) {
-        for node in nodes {
-            match node {
-                DynamicNode::ParameterRefRef(r) => {
-                    let occ = self.occurrence();
-                    self.index
-                        .parameters
-                        .entry(r.clone())
-                        .or_default()
-                        .push(occ);
-                }
-                DynamicNode::ComObjectRefRef(r) => {
-                    let occ = self.occurrence();
-                    self.index
-                        .com_objects
-                        .entry(r.clone())
-                        .or_default()
-                        .push(occ);
-                }
-                DynamicNode::Channel { children, .. } => {
-                    let outer = std::mem::replace(&mut self.channel, node.channel_ref());
-                    let gates = std::mem::replace(&mut self.container_gates, self.gates.len());
-                    self.visit(children);
-                    self.channel = outer;
-                    self.container_gates = gates;
-                }
-                DynamicNode::ParameterBlock { children, .. } => {
-                    let depth = self.blocks.len();
-                    self.blocks.extend(node.block_ref());
-                    let gates = std::mem::replace(&mut self.container_gates, self.gates.len());
-                    self.visit(children);
-                    self.blocks.truncate(depth);
-                    self.container_gates = gates;
-                }
-                DynamicNode::Choose {
-                    param_ref_id,
-                    whens,
-                } => {
-                    for (i, w) in whens.iter().enumerate() {
-                        let siblings = whens
-                            .iter()
-                            .enumerate()
-                            .filter(|&(j, _)| j != i)
-                            .map(|(_, o)| o.test.clone())
-                            .collect();
-                        self.gates.push(RefGate {
-                            param_ref_id: param_ref_id.clone(),
-                            test: w.test.clone(),
-                            siblings,
-                        });
-                        self.visit(&w.children);
-                        self.gates.pop();
-                    }
-                }
-                DynamicNode::Repeat { children, .. } => self.visit(children),
-                DynamicNode::Module { .. } | DynamicNode::Assign { .. } => {}
-            }
+    /// The innermost enclosing `<Channel>`.
+    pub fn channel(&self) -> Option<&'a DynamicNode> {
+        self.containers
+            .iter()
+            .rev()
+            .find(|c| matches!(c, DynamicNode::Channel { .. }))
+            .copied()
+    }
+
+    /// The `<when>` branches in front, outermost first.
+    pub fn gates(&self) -> Vec<RefGate> {
+        self.gates_from(0)
+    }
+
+    /// The `<when>` branches between the innermost container and here.
+    pub fn container_gates(&self) -> Vec<RefGate> {
+        self.gates_from(self.container_gates)
+    }
+
+    fn gates_from(&self, from: usize) -> Vec<RefGate> {
+        self.branches
+            .iter()
+            .skip(from)
+            .map(|&(param_ref_id, whens, taken)| RefGate {
+                param_ref_id: param_ref_id.to_string(),
+                test: whens[taken].test.clone(),
+                siblings: whens
+                    .iter()
+                    .enumerate()
+                    .filter(|&(j, _)| j != taken)
+                    .map(|(_, w)| w.test.clone())
+                    .collect(),
+            })
+            .collect()
+    }
+}
+
+/// Walks `nodes` depth first, every branch taken, calling `visit` on each
+/// node with the path in front of it (not including the node) before its
+/// children; `false` skips the children. `<Channel>` and `<ParameterBlock>`
+/// enter a container, each `<when>` of a `<choose>` adds a gate, a
+/// `<Repeat>` is walked once; a `<Module>` is not entered (its body is a
+/// separate section, see [`walk_all`]).
+pub fn walk<'a>(
+    nodes: &'a [DynamicNode],
+    path: &mut WalkPath<'a>,
+    visit: &mut dyn FnMut(&'a DynamicNode, &WalkPath<'a>) -> bool,
+) {
+    for node in nodes {
+        if !visit(node, path) {
+            continue;
         }
+        match node {
+            DynamicNode::Channel { children, .. }
+            | DynamicNode::ParameterBlock { children, .. } => {
+                let outer = std::mem::replace(&mut path.container_gates, path.branches.len());
+                path.containers.push(node);
+                walk(children, path, visit);
+                path.containers.pop();
+                path.container_gates = outer;
+            }
+            DynamicNode::Choose {
+                param_ref_id,
+                whens,
+            } => {
+                for (i, when) in whens.iter().enumerate() {
+                    path.branches.push((param_ref_id, whens, i));
+                    walk(&when.children, path, visit);
+                    path.branches.pop();
+                }
+            }
+            DynamicNode::Repeat { children, .. } => walk(children, path, visit),
+            _ => {}
+        }
+    }
+}
+
+/// [`walk`] over the application's Dynamic section, then the body of every
+/// module definition by id.
+pub fn walk_all<'a, S: DynamicSource + ?Sized>(
+    src: &'a S,
+    visit: &mut dyn FnMut(&'a DynamicNode, &WalkPath<'a>) -> bool,
+) {
+    walk(src.dynamic(), &mut WalkPath::new(None), visit);
+    let mut defs: Vec<(&str, &[DynamicNode])> = src.module_dynamics().collect();
+    defs.sort_by(|a, b| a.0.cmp(b.0));
+    for (def, body) in defs {
+        walk(body, &mut WalkPath::new(Some(def)), visit);
     }
 }
 
@@ -3545,13 +3466,10 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_dynamic_through_a_reference_matches_the_source() {
+    fn test_evaluate_dynamic_value_reads_the_override_else_the_default() {
         let src = source();
         let overrides = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
         let direct = evaluate_dynamic(&src, &overrides);
-        let by_ref = evaluate_dynamic(&&src, &overrides);
-        assert_eq!(direct.parameters, by_ref.parameters);
-        assert_eq!(direct.containers, by_ref.containers);
         assert_eq!(direct.value(&src, None, "P-1_R-1").as_deref(), Some("1"));
         assert_eq!(direct.value(&src, None, "P-3_R-3").as_deref(), Some("0"));
     }

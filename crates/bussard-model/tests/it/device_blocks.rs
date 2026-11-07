@@ -13,9 +13,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bussard_model::capabilities::capability_lookup;
-use bussard_model::device_view::{
-    device_view, ignored_overrides, parameter_pages, parameter_visibility, unindexed_parameters,
-};
+use bussard_model::device_view::device_view;
 use bussard_model::param_model::{model_cache_path, write_product_model};
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 
@@ -388,7 +386,8 @@ fn test_collapse_enable_chains_keeps_the_own_switch() -> TestResult {
 fn test_parameter_visibility_evaluates_the_conditions_inside_a_page() -> TestResult {
     let mut model = model()?;
     let products = products()?;
-    let seen = parameter_visibility(&model, &products, ia()?)?;
+    let seen =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?.visibility();
     let shown = |r: &str| seen.get(r).map(|v| v.shown);
     // Channel A shows its function; the dusk threshold only under the
     // brightness function, and the device runs the temperature function.
@@ -416,9 +415,14 @@ fn test_parameter_visibility_evaluates_the_conditions_inside_a_page() -> TestRes
     device
         .parameters
         .insert(key, "Brightness sensor 1 .. 100 000 lx".to_string());
-    let seen = parameter_visibility(&model, &products, ia()?)?;
+    let seen =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?.visibility();
     assert_eq!(seen.get("P-12_R-12").map(|v| v.shown), Some(true));
-    assert!(parameter_visibility(&model, &ProductModels::default(), ia()?)?.is_empty());
+    assert!(
+        bussard_model::device_view::DeviceAnalysis::new(&model, &ProductModels::default(), ia()?)?
+            .visibility()
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -428,7 +432,8 @@ fn test_parameter_visibility_evaluates_the_conditions_inside_a_page() -> TestRes
 fn test_ignored_overrides_lists_stored_values_on_unshown_refs() -> TestResult {
     let mut model = model()?;
     let products = products()?;
-    let seen = parameter_visibility(&model, &products, ia()?)?;
+    let seen =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?.visibility();
     let dusk = seen.get("P-12_R-12").ok_or("no P-12_R-12")?;
     assert_eq!(
         dusk.needs.as_deref(),
@@ -441,7 +446,11 @@ fn test_ignored_overrides_lists_stored_values_on_unshown_refs() -> TestResult {
     let b = seen.get("P-21_R-21").ok_or("no P-21_R-21")?;
     assert_eq!(b.needs.as_deref(), Some("Universal channel B enable = yes"));
     assert_eq!(seen.get("P-11_R-11").and_then(|v| v.needs.as_deref()), None);
-    assert!(ignored_overrides(&model, &products, ia()?)?.is_empty());
+    assert!(
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?
+            .ignored_overrides()
+            .is_empty()
+    );
 
     // A value at the default is no override; another one is ignored.
     let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
@@ -449,13 +458,18 @@ fn test_ignored_overrides_lists_stored_values_on_unshown_refs() -> TestResult {
         "dusk-threshold-in-lx@P-12_R-12".to_string(),
         "10".to_string(),
     );
-    assert!(ignored_overrides(&model, &products, ia()?)?.is_empty());
+    assert!(
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?
+            .ignored_overrides()
+            .is_empty()
+    );
     let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
     device.parameters.insert(
         "dusk-threshold-in-lx@P-12_R-12".to_string(),
         "42".to_string(),
     );
-    let ignored = ignored_overrides(&model, &products, ia()?)?;
+    let ignored = bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?
+        .ignored_overrides();
     assert_eq!(ignored.len(), 1, "{ignored:?}");
     assert_eq!(ignored[0].reference, "P-12_R-12");
     assert_eq!(ignored[0].value, "42");
@@ -472,14 +486,21 @@ fn test_ignored_overrides_lists_stored_values_on_unshown_refs() -> TestResult {
 
 #[test]
 fn test_parameter_pages_maps_refs_to_page_handles() -> TestResult {
-    let pages = parameter_pages(&model()?, &products()?, ia()?)?;
+    let pages =
+        bussard_model::device_view::DeviceAnalysis::new(&model()?, &products()?, ia()?)?.pages();
     assert_eq!(
         pages.get("P-11_R-11").map(String::as_str),
         Some("universal-channel-a-function")
     );
     assert_eq!(pages.get("P-1_R-1").map(String::as_str), Some("general"));
     assert_eq!(
-        parameter_pages(&model()?, &ProductModels::default(), ia()?)?.len(),
+        bussard_model::device_view::DeviceAnalysis::new(
+            &model()?,
+            &ProductModels::default(),
+            ia()?
+        )?
+        .pages()
+        .len(),
         0
     );
     Ok(())
@@ -489,7 +510,8 @@ fn test_parameter_pages_maps_refs_to_page_handles() -> TestResult {
 /// `Access="None"`) are reached but never listed (issue #345).
 #[test]
 fn test_unindexed_parameters_lists_what_the_pages_hold_beyond_the_lock() -> TestResult {
-    let more = unindexed_parameters(&model()?, &products()?, ia()?)?;
+    let more = bussard_model::device_view::DeviceAnalysis::new(&model()?, &products()?, ia()?)?
+        .unindexed();
     let rows: Vec<(&str, &str, Option<&str>)> = more
         .iter()
         .map(|(r, u)| (r.as_str(), u.key.as_str(), u.page.as_deref()))
@@ -525,7 +547,15 @@ fn test_unindexed_parameters_lists_what_the_pages_hold_beyond_the_lock() -> Test
             ("P-3_R-3", "universal-channel-c-enable", Some("general")),
         ]
     );
-    assert!(unindexed_parameters(&model()?, &ProductModels::default(), ia()?)?.is_empty());
+    assert!(
+        bussard_model::device_view::DeviceAnalysis::new(
+            &model()?,
+            &ProductModels::default(),
+            ia()?
+        )?
+        .unindexed()
+        .is_empty()
+    );
     Ok(())
 }
 
@@ -560,7 +590,8 @@ fn test_parameter_visibility_takes_the_ref_value_of_a_condition() -> TestResult 
                    brightness.send = \"4/1/5\"\n";
     let mut model = model_with("", channel)?;
     let products = products()?;
-    let seen = parameter_visibility(&model, &products, ia()?)?;
+    let seen =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?.visibility();
     let wind = seen.get("P-14_R-14").ok_or("no P-14_R-14")?;
     assert!(wind.shown, "{wind:?}");
     assert_eq!(wind.needs, None);
@@ -577,7 +608,11 @@ fn test_parameter_visibility_takes_the_ref_value_of_a_condition() -> TestResult 
     device
         .parameters
         .insert("wind-threshold@P-14_R-14".to_string(), "8".to_string());
-    assert!(ignored_overrides(&model, &products, ia()?)?.is_empty());
+    assert!(
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?
+            .ignored_overrides()
+            .is_empty()
+    );
     Ok(())
 }
 
@@ -593,14 +628,16 @@ fn test_ignored_overrides_follow_a_stored_value_over_the_ref_value() -> TestResu
     for (stored, shown) in [("2", false), ("4", true)] {
         let lock = format!("hidden = [\n  {{ ref = \"P-13_R-13\", value = \"{stored}\" }},\n]\n");
         let mut model = model_with(&lock, channel)?;
-        let seen = parameter_visibility(&model, &products, ia()?)?;
+        let seen =
+            bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?.visibility();
         let wind = seen.get("P-14_R-14").ok_or("no P-14_R-14")?;
         assert_eq!(wind.shown, shown, "{stored}: {wind:?}");
         let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
         device
             .parameters
             .insert("wind-threshold@P-14_R-14".to_string(), "8".to_string());
-        let ignored = ignored_overrides(&model, &products, ia()?)?;
+        let ignored = bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia()?)?
+            .ignored_overrides();
         if shown {
             assert!(ignored.is_empty(), "{ignored:?}");
         } else {

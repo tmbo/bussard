@@ -638,24 +638,108 @@ fn scaling(dpt: &Dpt) -> Option<Scaling> {
     })
 }
 
-/// The raw count range of the integer families that carry a [`Scaling`].
-fn count_range(main: u16) -> Option<(i64, i64)> {
-    match main {
-        7 => Some((0, i64::from(u16::MAX))),
-        8 => Some((i64::from(i16::MIN), i64::from(i16::MAX))),
-        13 => Some((i64::from(i32::MIN), i64::from(i32::MAX))),
-        _ => None,
-    }
+/// An integer DPT family (5.x but 5.001/5.003, 6.x but 6.020, 7.x, 8.x,
+/// 12.x, 13.x): how it travels and how it is read and written. Decode,
+/// parse and encode share it.
+#[derive(Debug, Clone, Copy)]
+struct Numeric {
+    /// Octets on the wire, big-endian.
+    width: usize,
+    /// Two's complement.
+    signed: bool,
+    /// The fixed-point scaling of a sub-type whose resolution is not one.
+    scale: Option<Scaling>,
+    /// The unit of an unscaled sub-type.
+    unit: Option<&'static str>,
+    /// The raw count range.
+    range: (i64, i64),
+    /// What a parse accepts, in words.
+    accepted: &'static str,
+    /// The range, as a parse error names it.
+    range_text: &'static str,
 }
 
-/// The writable count range of a scaled DPT: the family's range minus the
-/// invalid marker when it sits on an end of the range.
-fn writable_range(main: u16, sc: Scaling) -> Option<(i64, i64)> {
-    let (lo, mut hi) = count_range(main)?;
-    if sc.invalid == Some(hi) {
-        hi -= 1;
+/// The [`Numeric`] descriptor of `dpt`, for an integer family.
+fn numeric(dpt: &Dpt) -> Option<Numeric> {
+    let (width, signed, accepted, range_text) = match (dpt.main, dpt.sub) {
+        (5, Some(1 | 3)) | (6, Some(20)) => return None,
+        (5, _) => (1, false, "an integer 0-255 (optionally with unit)", "0-255"),
+        (6, _) => (
+            1,
+            true,
+            "a signed integer -128..127 (optionally with unit)",
+            "-128..127",
+        ),
+        (7, _) => (
+            2,
+            false,
+            "an unsigned integer 0-65535 (optionally with unit)",
+            "0-65535",
+        ),
+        (8, _) => (
+            2,
+            true,
+            "a signed integer -32768..32767 (optionally with unit)",
+            "-32768..32767",
+        ),
+        (12, _) => (
+            4,
+            false,
+            "an unsigned integer 0-4294967295 (optionally with unit)",
+            "0-4294967295",
+        ),
+        (13, _) => (
+            4,
+            true,
+            "a signed 32-bit integer (optionally with unit)",
+            "-2147483648..2147483647",
+        ),
+        _ => return None,
+    };
+    let bits = 8 * width as u32;
+    let range = if signed {
+        (-(1i64 << (bits - 1)), (1i64 << (bits - 1)) - 1)
+    } else {
+        (0, (1i64 << bits) - 1)
+    };
+    Some(Numeric {
+        width,
+        signed,
+        scale: scaling(dpt),
+        unit: int_unit(dpt.main, dpt.sub),
+        range,
+        accepted,
+        range_text,
+    })
+}
+
+impl Numeric {
+    /// The raw count of `payload`, `None` when it is too short.
+    fn read(&self, payload: &[u8]) -> Option<i64> {
+        let bytes = payload.get(..self.width)?;
+        let raw = bytes.iter().fold(0i64, |acc, b| (acc << 8) | i64::from(*b));
+        let bits = 8 * self.width as u32;
+        Some(if self.signed && raw >= 1 << (bits - 1) {
+            raw - (1 << bits)
+        } else {
+            raw
+        })
     }
-    Some((lo, hi))
+
+    /// The wire octets of raw count `count`.
+    fn write(&self, count: i64) -> Vec<u8> {
+        count.to_be_bytes()[8 - self.width..].to_vec()
+    }
+
+    /// The writable count range: a scaled sub-type's invalid marker on an
+    /// end of the range is not writable.
+    fn writable(&self) -> (i64, i64) {
+        let (lo, mut hi) = self.range;
+        if self.scale.and_then(|sc| sc.invalid) == Some(hi) {
+            hi -= 1;
+        }
+        (lo, hi)
+    }
 }
 
 /// Why [`parse_fixed`] refused its input.
@@ -1347,21 +1431,18 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 step: b & 0x07,
             })
         }
-        5 => {
+        5 if dpt.sub == Some(1) => {
             let b = *payload.first()?;
-            match dpt.sub {
-                Some(1) => Some(TypedValue::Percent((b as f32) * 100.0 / 255.0)),
-                // 5.003: 0..255 spans 0..360 ° (03_07_02 §3.5.1, about 1.4 °
-                // per step); shown to one decimal rather than truncated.
-                Some(3) => Some(TypedValue::Float {
-                    value: (f32::from(b) * 3600.0 / 255.0).round() / 10.0,
-                    unit: Some("°"),
-                }),
-                _ => Some(TypedValue::Unsigned {
-                    value: b as u32,
-                    unit: int_unit(5, dpt.sub),
-                }),
-            }
+            Some(TypedValue::Percent((b as f32) * 100.0 / 255.0))
+        }
+        // 5.003: 0..255 spans 0..360 ° (03_07_02 §3.5.1, about 1.4 ° per
+        // step); shown to one decimal rather than truncated.
+        5 if dpt.sub == Some(3) => {
+            let b = *payload.first()?;
+            Some(TypedValue::Float {
+                value: (f32::from(b) * 3600.0 / 255.0).round() / 10.0,
+                unit: Some("°"),
+            })
         }
         // 6.020 DPT_Status_Mode3 (03_07_02 §3.7): five status bits a..e
         // (bit 7..3, 0 = set, 1 = clear) and a one-hot mode in bits 2..0.
@@ -1372,45 +1453,27 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 names: status_mode3_names(b),
             })
         }
-        6 => {
-            let b = *payload.first()? as i8;
-            Some(TypedValue::Signed {
-                value: b as i64,
-                unit: int_unit(6, dpt.sub),
-            })
-        }
-        7 => {
-            let v = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
-            if let Some(sc) = scaling(dpt) {
-                return Some(TypedValue::Scaled {
-                    count: i64::from(v),
-                    decimals: sc.decimals,
-                    unit: sc.unit,
-                });
-            }
-            Some(TypedValue::Unsigned {
-                value: v as u32,
-                unit: int_unit(7, dpt.sub),
-            })
-        }
-        8 => {
-            let v = i16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
-            if let Some(sc) = scaling(dpt) {
+        5..=8 | 12 | 13 => {
+            let n = numeric(dpt)?;
+            let count = n.read(payload)?;
+            match n.scale {
                 // 8.010 reserves 7FFFh for invalid data (03_07_02 §3.9.1):
                 // fall back to `Raw` like the DPT 9 sentinel.
-                if sc.invalid == Some(i64::from(v)) {
-                    return None;
-                }
-                return Some(TypedValue::Scaled {
-                    count: i64::from(v),
+                Some(sc) if sc.invalid == Some(count) => None,
+                Some(sc) => Some(TypedValue::Scaled {
+                    count,
                     decimals: sc.decimals,
                     unit: sc.unit,
-                });
+                }),
+                None if n.signed => Some(TypedValue::Signed {
+                    value: count,
+                    unit: n.unit,
+                }),
+                None => Some(TypedValue::Unsigned {
+                    value: u32::try_from(count).ok()?,
+                    unit: n.unit,
+                }),
             }
-            Some(TypedValue::Signed {
-                value: v as i64,
-                unit: int_unit(8, dpt.sub),
-            })
         }
         9 => {
             let hi = *payload.first()?;
@@ -1448,37 +1511,6 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             // DPT 11.001 pivot: 0..=89 -> 2000+, 90..=99 -> 1900+.
             let year = if yy >= 90 { 1900 + yy } else { 2000 + yy };
             Some(TypedValue::Date { day, month, year })
-        }
-        12 => {
-            let v = u32::from_be_bytes([
-                *payload.first()?,
-                *payload.get(1)?,
-                *payload.get(2)?,
-                *payload.get(3)?,
-            ]);
-            Some(TypedValue::Unsigned {
-                value: v,
-                unit: int_unit(12, dpt.sub),
-            })
-        }
-        13 => {
-            let v = i32::from_be_bytes([
-                *payload.first()?,
-                *payload.get(1)?,
-                *payload.get(2)?,
-                *payload.get(3)?,
-            ]);
-            if let Some(sc) = scaling(dpt) {
-                return Some(TypedValue::Scaled {
-                    count: i64::from(v),
-                    decimals: sc.decimals,
-                    unit: sc.unit,
-                });
-            }
-            Some(TypedValue::Signed {
-                value: v as i64,
-                unit: int_unit(13, dpt.sub),
-            })
         }
         14 => {
             let v = f32::from_be_bytes([
@@ -1790,9 +1822,10 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
         range: range.to_string(),
     };
 
-    if let Some(sc) = scaling(dpt)
-        && let Some((lo, hi)) = writable_range(dpt.main, sc)
+    if let Some(n) = numeric(dpt)
+        && let Some(sc) = n.scale
     {
+        let (lo, hi) = n.writable();
         let step = format_fixed(1, sc.decimals);
         let accepted = format!(
             "a number in {} with at most {} decimals",
@@ -1819,6 +1852,27 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
             count,
             decimals: sc.decimals,
             unit: sc.unit,
+        });
+    }
+
+    if let Some(n) = numeric(dpt) {
+        let unit = n.unit;
+        let v = if n.signed {
+            parse_int_with_unit(raw, unit)
+        } else {
+            parse_uint(strip_unit(raw, unit)).map(|v| i64::try_from(v).unwrap_or(i64::MAX))
+        }
+        .ok_or_else(|| invalid(n.accepted))?;
+        if !(n.range.0..=n.range.1).contains(&v) {
+            return Err(out_of_range(n.range_text));
+        }
+        return Ok(if n.signed {
+            TypedValue::Signed { value: v, unit }
+        } else {
+            TypedValue::Unsigned {
+                value: u32::try_from(v).map_err(|_| out_of_range(n.range_text))?,
+                unit,
+            }
         });
     }
 
@@ -1863,69 +1917,25 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 step,
             })
         }
-        5 => match dpt.sub {
-            Some(1) => {
-                let p = parse_percent(raw)
-                    .ok_or_else(|| invalid("a percentage like `75%` or a number 0-100"))?;
-                if !(0.0..=100.0).contains(&p) {
-                    return Err(out_of_range("0-100 %"));
-                }
-                Ok(TypedValue::Percent(p))
+        5 if dpt.sub == Some(1) => {
+            let p = parse_percent(raw)
+                .ok_or_else(|| invalid("a percentage like `75%` or a number 0-100"))?;
+            if !(0.0..=100.0).contains(&p) {
+                return Err(out_of_range("0-100 %"));
             }
-            Some(3) => {
-                let v = parse_float(raw, Some("°"))
-                    .filter(|v| v.is_finite())
-                    .ok_or_else(|| invalid("an angle 0-360 (`90`, `90°`, `22.5`)"))?;
-                if !(0.0..=360.0).contains(&v) {
-                    return Err(out_of_range("0-360 degrees"));
-                }
-                Ok(TypedValue::Float {
-                    value: v,
-                    unit: Some("°"),
-                })
-            }
-            _ => {
-                let unit = int_unit(5, dpt.sub);
-                let v = parse_uint(strip_unit(raw, unit))
-                    .ok_or_else(|| invalid("an integer 0-255 (optionally with unit)"))?;
-                if v > 255 {
-                    return Err(out_of_range("0-255"));
-                }
-                Ok(TypedValue::Unsigned {
-                    value: v as u32,
-                    unit,
-                })
-            }
-        },
-        6 => {
-            let unit = int_unit(6, dpt.sub);
-            let v = parse_int_with_unit(raw, unit)
-                .ok_or_else(|| invalid("a signed integer -128..127 (optionally with unit)"))?;
-            if !(-128..=127).contains(&v) {
-                return Err(out_of_range("-128..127"));
-            }
-            Ok(TypedValue::Signed { value: v, unit })
+            Ok(TypedValue::Percent(p))
         }
-        7 => {
-            let unit = int_unit(7, dpt.sub);
-            let v = parse_uint(strip_unit(raw, unit))
-                .ok_or_else(|| invalid("an unsigned integer 0-65535 (optionally with unit)"))?;
-            if v > 0xffff {
-                return Err(out_of_range("0-65535"));
+        5 if dpt.sub == Some(3) => {
+            let v = parse_float(raw, Some("°"))
+                .filter(|v| v.is_finite())
+                .ok_or_else(|| invalid("an angle 0-360 (`90`, `90°`, `22.5`)"))?;
+            if !(0.0..=360.0).contains(&v) {
+                return Err(out_of_range("0-360 degrees"));
             }
-            Ok(TypedValue::Unsigned {
-                value: v as u32,
-                unit,
+            Ok(TypedValue::Float {
+                value: v,
+                unit: Some("°"),
             })
-        }
-        8 => {
-            let unit = int_unit(8, dpt.sub);
-            let v = parse_int_with_unit(raw, unit)
-                .ok_or_else(|| invalid("a signed integer -32768..32767 (optionally with unit)"))?;
-            if !(-32768..=32767).contains(&v) {
-                return Err(out_of_range("-32768..32767"));
-            }
-            Ok(TypedValue::Signed { value: v, unit })
         }
         9 => {
             let unit = float16_unit(dpt.sub);
@@ -1936,28 +1946,6 @@ pub fn parse_value(dpt: &Dpt, input: &str) -> Result<TypedValue, ParseValueError
                 return Err(out_of_range("roughly -671088.64 .. 670433.28"));
             }
             Ok(TypedValue::Float { value: v, unit })
-        }
-        12 => {
-            let unit = int_unit(12, dpt.sub);
-            let v = parse_uint(strip_unit(raw, unit)).ok_or_else(|| {
-                invalid("an unsigned integer 0-4294967295 (optionally with unit)")
-            })?;
-            if v > u32::MAX as u64 {
-                return Err(out_of_range("0-4294967295"));
-            }
-            Ok(TypedValue::Unsigned {
-                value: v as u32,
-                unit,
-            })
-        }
-        13 => {
-            let unit = int_unit(13, dpt.sub);
-            let v = parse_int_with_unit(raw, unit)
-                .ok_or_else(|| invalid("a signed 32-bit integer (optionally with unit)"))?;
-            if !(i32::MIN as i64..=i32::MAX as i64).contains(&v) {
-                return Err(out_of_range("-2147483648..2147483647"));
-            }
-            Ok(TypedValue::Signed { value: v, unit })
         }
         14 => {
             let unit = float32_unit(dpt.sub);
@@ -2581,9 +2569,11 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
         dpt: dpt.to_string(),
         value: value.to_string(),
     };
-    if let Some(sc) = scaling(dpt)
-        && let Some((lo, hi)) = writable_range(dpt.main, sc)
+    let numeric = numeric(dpt);
+    if let Some(n) = numeric
+        && let Some(sc) = n.scale
     {
+        let (lo, hi) = n.writable();
         // A scaled sub-type takes only its scaled value: a bare `Signed` or
         // `Unsigned` count would be ambiguous (50 meaning 50 % or 0.50 %).
         let TypedValue::Scaled {
@@ -2596,16 +2586,21 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             return Err(mismatch());
         }
         if !(lo..=hi).contains(count) {
-            return Err(EncodeError::OutOfRange {
-                dpt: dpt.to_string(),
-                value: value.to_string(),
-            });
+            return Err(out_of_range());
         }
-        return Ok(match dpt.main {
-            7 => (*count as u16).to_be_bytes().to_vec(),
-            8 => (*count as i16).to_be_bytes().to_vec(),
-            _ => (*count as i32).to_be_bytes().to_vec(),
-        });
+        return Ok(n.write(*count));
+    }
+    if let Some(n) = numeric {
+        // An integer of the family's signedness, in range.
+        let count = match value {
+            TypedValue::Signed { value: v, .. } if n.signed => *v,
+            TypedValue::Unsigned { value: v, .. } if !n.signed => i64::from(*v),
+            _ => return Err(mismatch()),
+        };
+        if !(n.range.0..=n.range.1).contains(&count) {
+            return Err(mismatch());
+        }
+        return Ok(n.write(count));
     }
     match dpt.main {
         1 => match value {
@@ -2629,10 +2624,7 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                     return Err(mismatch());
                 };
                 if *step > 7 {
-                    return Err(EncodeError::OutOfRange {
-                        dpt: dpt.to_string(),
-                        value: value.to_string(),
-                    });
+                    return Err(out_of_range());
                 }
                 Ok(vec![bit | step])
             }
@@ -2641,10 +2633,7 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
         5 => match (dpt.sub, value) {
             (Some(1), TypedValue::Percent(p)) => {
                 if !(0.0..=100.0).contains(p) {
-                    return Err(EncodeError::OutOfRange {
-                        dpt: dpt.to_string(),
-                        value: value.to_string(),
-                    });
+                    return Err(out_of_range());
                 }
                 Ok(vec![(p * 255.0 / 100.0).round() as u8])
             }
@@ -2654,40 +2643,15 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             // one raw step.
             (Some(3), TypedValue::Float { value: v, .. }) => {
                 if !(0.0..=360.0).contains(v) {
-                    return Err(EncodeError::OutOfRange {
-                        dpt: dpt.to_string(),
-                        value: value.to_string(),
-                    });
+                    return Err(out_of_range());
                 }
                 Ok(vec![(v * 255.0 / 360.0).round() as u8])
             }
             (Some(3), TypedValue::Unsigned { value: v, .. }) => {
                 if *v > 360 {
-                    return Err(EncodeError::OutOfRange {
-                        dpt: dpt.to_string(),
-                        value: value.to_string(),
-                    });
+                    return Err(out_of_range());
                 }
                 Ok(vec![(*v as f32 * 255.0 / 360.0).round() as u8])
-            }
-            (_, TypedValue::Unsigned { value: v, .. }) if *v <= 255 => Ok(vec![*v as u8]),
-            _ => Err(mismatch()),
-        },
-        6 => match value {
-            TypedValue::Signed { value: v, .. } if (-128..=127).contains(v) => {
-                Ok(vec![(*v as i8) as u8])
-            }
-            _ => Err(mismatch()),
-        },
-        7 => match value {
-            TypedValue::Unsigned { value: v, .. } if *v <= 0xffff => {
-                Ok((*v as u16).to_be_bytes().to_vec())
-            }
-            _ => Err(mismatch()),
-        },
-        8 => match value {
-            TypedValue::Signed { value: v, .. } if (-32768..=32767).contains(v) => {
-                Ok((*v as i16).to_be_bytes().to_vec())
             }
             _ => Err(mismatch()),
         },
@@ -2702,18 +2666,6 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
                 _ => Err(mismatch()),
             }
         }
-        12 => match value {
-            TypedValue::Unsigned { value: v, .. } => Ok(v.to_be_bytes().to_vec()),
-            _ => Err(mismatch()),
-        },
-        13 => match value {
-            TypedValue::Signed { value: v, .. }
-                if (i32::MIN as i64..=i32::MAX as i64).contains(v) =>
-            {
-                Ok((*v as i32).to_be_bytes().to_vec())
-            }
-            _ => Err(mismatch()),
-        },
         14 => match value {
             // Reject non-finite (NaN/±Inf) on encode: a NaN/Inf write is almost
             // always a typo'd input rather than an intended bus value, and it
@@ -2758,10 +2710,7 @@ pub fn encode(dpt: &Dpt, value: &TypedValue) -> Result<Vec<u8>, EncodeError> {
             // A raw enumeration code, for the 20.x subtypes with no label set.
             TypedValue::Unsigned { value: v, .. } if dpt.sub != Some(102) => {
                 if *v > 255 {
-                    return Err(EncodeError::OutOfRange {
-                        dpt: dpt.to_string(),
-                        value: value.to_string(),
-                    });
+                    return Err(out_of_range());
                 }
                 Ok(vec![*v as u8])
             }

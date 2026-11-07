@@ -24,7 +24,7 @@
 //! through [`ProductModels::load_apps`], which memoizes them and caches them
 //! as JSON under [`crate::param_model::MODEL_CACHE_DIR`] (issue #339). Of each
 //! device only the pages holding a match are evaluated with their enabling
-//! values ([`crate::device_view::device_view_for_blocks`]).
+//! values ([`crate::device_view::DeviceAnalysis::view_for_blocks`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -33,7 +33,7 @@ use serde::Serialize;
 
 use crate::address::IndividualAddress;
 use crate::blocks::{def_ref, ref_param_id};
-use crate::device_view::{BlockRow, EnableStep, device_view_for_blocks};
+use crate::device_view::{BlockRow, DeviceAnalysis, EnableStep};
 use crate::flags::Flags;
 use crate::loader::Model;
 use crate::param_model::{ParamDef, ParamKind, ProductModel, ProductModels};
@@ -478,7 +478,9 @@ fn device_capabilities(
             at = parent_of.get(id).copied().flatten();
         }
     }
-    let Ok(view) = device_view_for_blocks(model, products, ia, wanted) else {
+    let Ok(view) =
+        DeviceAnalysis::new(model, products, ia).and_then(|a| a.view_for_blocks(&wanted))
+    else {
         return Vec::new();
     };
     // The device's shown parameters: ref -> (file key, stored value).
