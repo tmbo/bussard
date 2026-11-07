@@ -190,63 +190,6 @@ pub trait DynamicSource {
     }
 }
 
-impl<T: DynamicSource + ?Sized> DynamicSource for &T {
-    fn program_id(&self) -> &str {
-        (**self).program_id()
-    }
-    fn dynamic(&self) -> &[DynamicNode] {
-        (**self).dynamic()
-    }
-    fn module_dynamic(&self, module_def: &str) -> Option<&[DynamicNode]> {
-        (**self).module_dynamic(module_def)
-    }
-    fn module_dynamics(&self) -> Box<dyn Iterator<Item = (&str, &[DynamicNode])> + '_> {
-        (**self).module_dynamics()
-    }
-    fn parameter_ref(&self, ref_id: &str) -> Option<(&str, Option<&str>)> {
-        (**self).parameter_ref(ref_id)
-    }
-    fn parameter_refs(&self) -> Box<dyn Iterator<Item = (&str, &str)> + '_> {
-        (**self).parameter_refs()
-    }
-    fn parameter(&self, param_id: &str) -> Option<(Option<&str>, Option<&str>)> {
-        (**self).parameter(param_id)
-    }
-    fn integer_width(&self, param_id: &str) -> Option<(u32, bool)> {
-        (**self).integer_width(param_id)
-    }
-    fn enum_members(&self, param_id: &str) -> Option<&[EnumValue]> {
-        (**self).enum_members(param_id)
-    }
-    fn unions(&self) -> &[Union] {
-        (**self).unions()
-    }
-    fn calculations(&self) -> &[ParameterCalculation] {
-        (**self).calculations()
-    }
-    fn parameter_name(&self, param_id: &str) -> Option<&str> {
-        (**self).parameter_name(param_id)
-    }
-    fn parameter_is_text(&self, param_id: &str) -> Option<bool> {
-        (**self).parameter_is_text(param_id)
-    }
-    fn allocator(&self, allocator_id: &str) -> Option<Allocator> {
-        (**self).allocator(allocator_id)
-    }
-    fn argument_allocates(&self, arg_id: &str) -> Option<i64> {
-        (**self).argument_allocates(arg_id)
-    }
-    fn initial_value(&self, param_id: &str) -> Option<&str> {
-        (**self).initial_value(param_id)
-    }
-    fn is_virtual(&self, param_id: &str) -> bool {
-        (**self).is_virtual(param_id)
-    }
-    fn is_system_b(&self) -> bool {
-        (**self).is_system_b()
-    }
-}
-
 /// An `<Allocator>`: a counter module instances draw argument values from
 /// (issue #449). Each `<NumericArg AllocatorRefId>` of a reached instance
 /// takes the allocator's current value, which then advances by the
@@ -3523,13 +3466,10 @@ mod tests {
     }
 
     #[test]
-    fn test_evaluate_dynamic_through_a_reference_matches_the_source() {
+    fn test_evaluate_dynamic_value_reads_the_override_else_the_default() {
         let src = source();
         let overrides = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
         let direct = evaluate_dynamic(&src, &overrides);
-        let by_ref = evaluate_dynamic(&&src, &overrides);
-        assert_eq!(direct.parameters, by_ref.parameters);
-        assert_eq!(direct.containers, by_ref.containers);
         assert_eq!(direct.value(&src, None, "P-1_R-1").as_deref(), Some("1"));
         assert_eq!(direct.value(&src, None, "P-3_R-3").as_deref(), Some("0"));
     }
