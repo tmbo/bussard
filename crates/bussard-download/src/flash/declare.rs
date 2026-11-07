@@ -43,7 +43,7 @@
 //!   property sends nothing, not even a description read
 //!   (`M-0008_A-F060-10-5848`, the declared object 4 PID 201: no frame for it).
 
-use super::plan_props::{may_hold, prop_object};
+use super::plan_props::{check_addressable, may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
 use bussard_product::application::{ApplicationProgram, LoadOp};
 use bussard_product::{PropertyObjectRef, PropertyParameters};
@@ -177,6 +177,13 @@ pub(super) fn declaration_for<'a>(
         .find(|d| d.object == object && d.prop_id == *prop_id)
 }
 
+/// How many elements an `LdCtrlWriteProp` to an undeclared property writes:
+/// its `Count`, else one ([`element_count`] with no declaration, which cannot
+/// refuse).
+pub(super) fn undeclared_element_count(count: Option<u32>) -> u32 {
+    count.map_or(1, |count| count.max(1))
+}
+
 /// How many elements an `LdCtrlWriteProp` writes from `start`: its `Count`,
 /// or, without one, one element where the evidence says so. The one rule both
 /// System B planners use (issue #957).
@@ -204,8 +211,8 @@ pub(super) fn element_count(
     declared_max: Option<u32>,
 ) -> Result<u32, String> {
     match (count, declared_max) {
-        (Some(count), _) => Ok(count.max(1)),
-        (None, None) => Ok(1),
+        (_, None) => Ok(undeclared_element_count(count)),
+        (Some(count), Some(_)) => Ok(count.max(1)),
         (None, Some(max)) if max == start => Ok(1),
         (None, Some(max)) if start > max => Err(format!(
             "the LdCtrlWriteProp to the declared {name} has no Count and starts at element \
@@ -331,6 +338,101 @@ fn placements(
     (names, unresolved)
 }
 
+/// The value the parameters placed in `prop_id` under `names` compose over
+/// `template`, the octets the write sends from octet `from` of the property
+/// (element `StartElement`): the base vector from element 1 (zeros before
+/// `from`, then the template), each name's parameters laid over it, and the
+/// slice of the write's extent, `template.len()` octets. The one composition
+/// of a declared write on System B and System 7 (issue #946), and of a PID 13
+/// placeholder a parameter supplies (issue #964).
+///
+/// # Errors
+///
+/// The reason, naming `name`, when a parameter's value cannot be composed.
+pub(super) fn compose_over(
+    name: &str,
+    names: &[PropertyObjectRef],
+    prop_id: u32,
+    params: &PropertyParameters<'_>,
+    template: &[u8],
+    from: usize,
+) -> Result<Vec<u8>, String> {
+    let len = template.len();
+    let mut composed = vec![0u8; from];
+    composed.extend_from_slice(template);
+    for n in names {
+        if let Some(next) = params
+            .compose(*n, prop_id, composed.clone())
+            .map_err(|e| format!("composing the value of {name} from the parameters: {e}"))?
+        {
+            composed = next;
+        }
+    }
+    let mut value: Vec<u8> = composed.into_iter().skip(from).take(len).collect();
+    value.resize(len, 0);
+    Ok(value)
+}
+
+/// The value the parameters placed in `object`/`prop_id` compose over
+/// `template` from element 1 ([`compose_over`]), `None` when no parameter is
+/// placed in the property under a name of `object`.
+///
+/// # Errors
+///
+/// The reason, naming `name`, when a parameter may be stored in the property
+/// under a name bussard does not resolve to `object` (see
+/// [`lower_declared_write_prop`]), or its value cannot be composed.
+pub(super) fn placed_value(
+    name: &str,
+    object: PropObject,
+    prop_id: u32,
+    params: &PropertyParameters<'_>,
+    app: &ApplicationProgram,
+    template: &[u8],
+) -> Result<Option<Vec<u8>>, String> {
+    let (names, unresolved) = placements(app, object, prop_id);
+    if unresolved {
+        return Err(unresolved_reason(name));
+    }
+    if !names.iter().any(|n| params.places(*n, prop_id)) {
+        return Ok(None);
+    }
+    compose_over(name, &names, prop_id, params, template, 0).map(Some)
+}
+
+/// Whether a parameter is placed in `object`/`prop_id` under a name of
+/// `object`: what the PID 13 placeholder rule asks before it refuses a
+/// placeholder without an application id (issue #964).
+///
+/// # Errors
+///
+/// The reason, naming `name`, when a parameter may be stored in the property
+/// under a name bussard does not resolve to `object`.
+pub(super) fn is_placed(
+    name: &str,
+    object: PropObject,
+    prop_id: u32,
+    params: &PropertyParameters<'_>,
+    app: &ApplicationProgram,
+) -> Result<bool, String> {
+    let (names, unresolved) = placements(app, object, prop_id);
+    if unresolved {
+        return Err(unresolved_reason(name));
+    }
+    Ok(names.iter().any(|n| params.places(*n, prop_id)))
+}
+
+/// Why a write is refused when a parameter may be stored in its property
+/// under another name of the object.
+fn unresolved_reason(name: &str) -> String {
+    format!(
+        "a parameter is placed in a property that may be {name}, but it names the object by \
+         type where the load procedure names it by index (or the other way round, or names \
+         no object); bussard does not resolve one to the other, so it does not know the \
+         value to write"
+    )
+}
+
 /// Lowers an `LdCtrlWriteProp` to a property `decl` declared: `Count` elements
 /// of the declared size from `StartElement` ([`element_count`]), whether or
 /// not a parameter is placed in the property. `inline` is the op's
@@ -339,8 +441,11 @@ fn placements(
 /// ([`inline_template`]) the parameters placed in the property (`params`)
 /// replace the bits of. The object may be named by index or by type, and
 /// neither `MaxElements` nor `Writable` bounds the write (issue #948, see the
-/// module docs). `None` for a write with neither `InlineData` nor a parameter
-/// placed in the property: ETS sends nothing for it.
+/// module docs). `typed_by_list` is the plan's
+/// [`super::FlashPlan::typed_objects_by_list`], which holds the PID of an
+/// object named by type to 8 bits ([`check_addressable`]). `None` for a
+/// write with neither `InlineData` nor a parameter placed in the property:
+/// ETS sends nothing for it.
 ///
 /// # Errors
 ///
@@ -349,7 +454,9 @@ fn placements(
 /// names an object or PID the property services cannot address, carries an
 /// `InlineData` that does not fit `Count` elements, a parameter may be stored
 /// in the property under another name of its object (an index against a
-/// type), or its value cannot be composed.
+/// type, refused even when another parameter is placed under the write's own
+/// name: leaving it out would be a partial write, issue #964), or its value
+/// cannot be composed.
 pub(super) fn lower_declared_write_prop(
     step: usize,
     op: &LoadOp,
@@ -357,6 +464,7 @@ pub(super) fn lower_declared_write_prop(
     inline: Option<&[u8]>,
     params: &PropertyParameters<'_>,
     app: &ApplicationProgram,
+    typed_by_list: bool,
 ) -> Result<Option<FlashStep>, PlanError> {
     let refuse = |reason: String| PlanError::UnsupportedWriteProp { step, reason };
     let LoadOp::WriteProp {
@@ -371,19 +479,7 @@ pub(super) fn lower_declared_write_prop(
     };
     let prop_id = prop_id.unwrap_or(decl.prop_id);
     let name = format!("{} PID {prop_id}", decl.object);
-    // An index and its PID go out on the plain services (8 bits each); an
-    // object named by type on the extended ones (a 12-bit PID), or at the
-    // index the device's object list gives it (the executor refuses a PID
-    // past 8 bits there).
-    let addressable = match decl.object {
-        PropObject::Index(index) => index <= u32::from(u8::MAX) && prop_id <= u32::from(u8::MAX),
-        PropObject::Type { .. } => prop_id <= 0x0FFF,
-    };
-    if !addressable {
-        return Err(refuse(format!(
-            "{name} exceeds the object index or PID the property services address"
-        )));
-    }
+    check_addressable(step, decl.object, prop_id, typed_by_list)?;
     let elem = decl.element_size;
     let inline = inline.filter(|d| !d.is_empty());
     let start = start_element.unwrap_or(1).max(1);
@@ -398,30 +494,18 @@ pub(super) fn lower_declared_write_prop(
     let from = ((start - 1) as usize).saturating_mul(elem);
     let len = (count as usize).saturating_mul(elem);
     let (names, unresolved) = placements(app, decl.object, prop_id);
-    let placed = names.iter().any(|n| params.places(*n, prop_id));
-    if unresolved && !placed {
-        return Err(refuse(format!(
-            "a parameter is placed in a property that may be {name}, but it names the object \
-             by type where the load procedure names it by index (or names no object); bussard \
-             does not resolve one to the other, so it has no value to write"
-        )));
+    // Any placement under a name bussard does not resolve is refused, also
+    // beside one it does: composing only the resolved ones would leave the
+    // other parameter's bits out of the value (issue #964).
+    if unresolved {
+        return Err(refuse(unresolved_reason(&name)));
     }
+    let placed = names.iter().any(|n| params.places(*n, prop_id));
     let template =
         inline_template(&name, inline.unwrap_or_default(), len, elem, placed).map_err(refuse)?;
     let (value, from_parameters) = if placed {
-        let mut composed = vec![0u8; from];
-        composed.extend_from_slice(&template);
-        for n in &names {
-            if let Some(next) = params.compose(*n, prop_id, composed.clone()).map_err(|e| {
-                refuse(format!(
-                    "composing the value of {name} from the parameters: {e}"
-                ))
-            })? {
-                composed = next;
-            }
-        }
-        let mut value: Vec<u8> = composed.iter().skip(from).take(len).copied().collect();
-        value.resize(len, 0);
+        let value =
+            compose_over(&name, &names, prop_id, params, &template, from).map_err(refuse)?;
         (value, true)
     } else if inline.is_some() {
         (template, false)
@@ -540,7 +624,7 @@ mod tests {
             LoadOp::WriteProp { inline_data, .. } => inline_data.clone(),
             _ => None,
         };
-        lower_declared_write_prop(2, op, decl, inline.as_deref(), &params, app)
+        lower_declared_write_prop(2, op, decl, inline.as_deref(), &params, app, false)
     }
 
     /// [`lower_opt`] for a write that sends something.
@@ -900,6 +984,41 @@ mod tests {
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
         let reason = refusal(lower(&write(Some(vec![0]), Some(1)), &decl, &app))?;
         assert!(reason.contains("by type"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_refuses_a_mixed_placement() -> TestResult {
+        // Issue #964: one parameter placed by index, another by type on the
+        // same PID; composing the first alone would leave the second's bits
+        // out of the value (a partial write), so the write is refused.
+        let app = app_placing(&[
+            (
+                r#"<Property ObjectIndex="10" PropertyId="55" Offset="0" BitOffset="0" />"#,
+                7,
+            ),
+            (
+                r#"<Property ObjectType="11" PropertyId="55" Offset="1" BitOffset="0" />"#,
+                9,
+            ),
+        ])?;
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 2))?;
+        let reason = refusal(lower(&write(Some(vec![0, 0]), Some(2)), &decl, &app))?;
+        assert!(reason.contains("by type"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_compose_over_lays_the_parameters_over_the_template_slice() -> TestResult {
+        // Issue #946: the one composition both planners use; the base vector
+        // runs from element 1, the slice is the write's extent.
+        let app = app_with(&[(1, 0x11), (3, 0x22)])?;
+        let config = bussard_product::dynamic::DynamicMemo::new(&app)
+            .evaluate_for(&app, &std::collections::BTreeMap::new());
+        let params = PropertyParameters::resolve(&app, &config);
+        let names = [PropertyObjectRef::Index(10)];
+        let value = compose_over("x", &names, 55, &params, &[0xAA, 0xBB, 0xCC], 2)?;
+        assert_eq!(value, vec![0xAA, 0x22, 0xCC]);
         Ok(())
     }
 

@@ -790,6 +790,138 @@ async fn test_flash_writes_a_write_prop_by_type_at_the_listed_index() -> TestRes
 }
 
 #[tokio::test]
+async fn test_flash_resolves_a_write_prop_by_type_past_a_walk_that_stops_short() -> TestResult {
+    // Issue #964: the device's PID_OBJECT_TYPE walk stops at object 5 (the
+    // IPS 300 SREG shape of #393), so the type sits past it at object 6. The
+    // write and the read-back take the index from the one resolver
+    // (PID_IO_LIST here), both object 6; the walk alone refused the write.
+    const PROPERTY_VALUE_READ: u16 = 0x3D5;
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    const PID_OBJECT_TYPE: u8 = 1;
+    let (product, _tmp) = product()?;
+    let app = with_typed_write(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&object_types_with(&[0xFFFE, OT_SIEMENS_VENDOR]))
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(6, 201, 1, &[0])
+        .with_hook(move |_, apci, data| {
+            if let Ok(mut log) = log.lock() {
+                log.push((apci, data.to_vec()));
+            }
+            // Object 5 answers no PID_OBJECT_TYPE: the walk ends there.
+            (apci == PROPERTY_VALUE_READ
+                && data.first() == Some(&5)
+                && data.get(1) == Some(&PID_OBJECT_TYPE))
+            .then(|| {
+                bussard_testkit::Reaction::Answer(
+                    0x3D6,
+                    bussard_testkit::device::prop_response(5, PID_OBJECT_TYPE, 0, 1, &[]),
+                )
+            })
+        });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await
+    .map(|outcome| outcome.ok())
+    .map_err(|e| e.to_string());
+    assert_eq!(outcome, Ok(true));
+    let held = read_property_value(
+        session.l4(),
+        PropObject::Type {
+            object_type: OT_SIEMENS_VENDOR,
+            occurrence: 0,
+        },
+        201,
+        1,
+        1,
+        1,
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert_eq!(held, vec![0x5A]);
+    let seen = seen.lock().map_err(|e| e.to_string())?.clone();
+    let writes_201: Vec<u8> = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_WRITE && d.get(1) == Some(&201))
+        .filter_map(|(_, d)| d.first().copied())
+        .collect();
+    assert_eq!(writes_201, vec![6]);
+    let reads_201: Vec<u8> = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_READ && d.get(1) == Some(&201))
+        .filter_map(|(_, d)| d.first().copied())
+        .collect();
+    assert_eq!(reads_201, vec![6]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_property_value_refuses_a_pid_past_8_bits_on_the_plain_services() -> TestResult {
+    // Issue #964: a plan that reaches the executor without its plan-time
+    // check never has an over-wide PID clamped to 255: the write is refused
+    // and nothing goes out.
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_writable_property(4, 255, 1, &[0])
+        .with_hook(move |_, apci, data| {
+            if let Ok(mut log) = log.lock() {
+                log.push((apci, data.to_vec()));
+            }
+            None
+        });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let result = bussard_download::write_property_value(
+        &mut l4,
+        PropObject::Index(4),
+        300,
+        1,
+        1,
+        &[7],
+        false,
+    )
+    .await;
+    let _ = l4.disconnect().await;
+    let text = match result {
+        Err(err) => err.to_string(),
+        Ok(()) => return Err("expected a refusal".into()),
+    };
+    assert!(text.contains("PID 300"), "{text}");
+    let seen = seen.lock().map_err(|e| e.to_string())?.clone();
+    assert!(
+        !seen.iter().any(|(a, _)| *a == PROPERTY_VALUE_WRITE),
+        "no write"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> TestResult {
     // Issue #948: a type the object list does not hold is an error naming
     // the type, never a write to object 0.
@@ -806,6 +938,14 @@ async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> T
         Err(text) => assert!(text.contains("type 50215"), "{text}"),
         Ok(ok) => return Err(format!("expected a refusal, the flash ended ok={ok}").into()),
     }
+    // Issue #964: the miss is looked up in PID_IO_LIST, never in a second
+    // PID_OBJECT_TYPE walk: the walk's terminating index (5) is read once.
+    const PROPERTY_VALUE_READ: u16 = 0x3D5;
+    let terminator_reads = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_READ && d.first() == Some(&5) && d.get(1) == Some(&1))
+        .count();
+    assert_eq!(terminator_reads, 1, "one walk");
     assert!(
         !seen
             .iter()

@@ -8190,11 +8190,11 @@ fn merged_filled_app(secure: bool) -> TestResult<ApplicationProgram> {
     };
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/20">
-     <ApplicationProgram Id="M-2_A-7" ApplicationNumber="7" ApplicationVersion="16"
+     <ApplicationProgram Id="M-0002_A-7" ApplicationNumber="7" ApplicationVersion="16"
         MaskVersion="MV-07B0" Name="Merged" LoadProcedureStyle="MergedProcedure"{secure}>
       <Static>
        <Code>
-        <RelativeSegment Id="M-2_A-7_RS-04-00000" Size="4" LoadStateMachine="4" Offset="0"><Data>AAEAAw==</Data></RelativeSegment>
+        <RelativeSegment Id="M-0002_A-7_RS-04-00000" Size="4" LoadStateMachine="4" Offset="0"><Data>AAEAAw==</Data></RelativeSegment>
        </Code>
        <LoadProcedures>
         <LoadProcedure MergeId="2">
@@ -8208,7 +8208,7 @@ fn merged_filled_app(secure: bool) -> TestResult<ApplicationProgram> {
       </Static>
      </ApplicationProgram></KNX>"#
     );
-    Ok(parse_application_program("M-2_A-7", xml.as_bytes())?)
+    Ok(parse_application_program("M-0002_A-7", xml.as_bytes())?)
 }
 
 /// The labels of `plan`'s factory reset and restart steps, in order.

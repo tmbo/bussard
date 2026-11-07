@@ -319,6 +319,9 @@ struct SystemB<'a> {
     app_obj: u8,
     /// The discovered interface objects, `(index, object type)`.
     object_table: Vec<(u8, u16)>,
+    /// The device object's `PID_IO_LIST`, read once on the first object
+    /// named by type `object_table` does not hold (issue #964).
+    io_list: super::props::IoListCache,
     /// The objects whose resident MCB matched the image (see [`flash_steps`]).
     skip_objects: BTreeSet<u8>,
     /// Set between the security object's `Unload` and its `LoadCompleted`.
@@ -729,8 +732,11 @@ impl StepExecutor for SystemB<'_> {
             // An object named by type, on a program that is not Data Secure
             // enabled: written at the index the device's interface-object
             // list gives it, with the plain services, as ETS writes the
-            // Siemens dimmer's type 50215 at object 6 (issue #948). A type
-            // the list does not hold is refused, never written to object 0.
+            // Siemens dimmer's type 50215 at object 6 (issue #948). The index
+            // comes from the one resolver the read-back uses too (issue
+            // #964): the walk, else `PID_IO_LIST`. A type no list holds is
+            // refused, never written to object 0. The plan refuses a PID past
+            // 8 bits for it (issue #964).
             FlashStep::WriteProp {
                 object:
                     PropObject::Type {
@@ -744,31 +750,24 @@ impl StepExecutor for SystemB<'_> {
                 verify,
                 ..
             } if plan.typed_objects_by_list() => {
-                let target = match super::props::listed_index(
+                let target = super::props::resolve_type_index(
+                    session.l4(),
                     object_table,
+                    &mut self.io_list,
                     *object_type,
                     *occurrence,
-                ) {
-                    Some(index) if *prop_id <= u32::from(u8::MAX) => index,
-                    found => {
-                        return Err(WriteError::Mgmt(
-                            bussard_mgmt::MgmtError::MalformedResponse {
-                                address: session.l4().target(),
-                                reason: match found {
-                                    Some(index) => format!(
-                                        "PID {prop_id} of object type {object_type} (object {index}) \
-                                     exceeds the 8-bit PID the plain property services address"
-                                    ),
-                                    None => format!(
-                                        "the device lists no interface object of type {object_type} \
-                                     (occurrence {occurrence}) in its object list {object_table:?}, \
-                                     so PID {prop_id} has nowhere to go"
-                                    ),
-                                },
-                            },
-                        ));
-                    }
-                };
+                )
+                .await?
+                .ok_or_else(|| {
+                    WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                        address: session.l4().target(),
+                        reason: format!(
+                            "the device lists no interface object of type {object_type} \
+                             (occurrence {occurrence}) in its object list {object_table:?} or \
+                             its PID_IO_LIST, so PID {prop_id} has nowhere to go"
+                        ),
+                    })
+                })?;
                 super::props::write_property_value(
                     session.l4(),
                     PropObject::Index(u32::from(target)),
@@ -782,8 +781,9 @@ impl StepExecutor for SystemB<'_> {
             }
             // The description read of a property no value decides (issue
             // #841), on an object named by type of a program that is not Data
-            // Secure enabled: at its listed index, as the write above; a type
-            // the list does not hold reads nothing, the read changes nothing.
+            // Secure enabled: at its index, by the resolver of the write
+            // above; a type no list holds reads nothing, the read changes
+            // nothing.
             FlashStep::DescribeProp {
                 object:
                     PropObject::Type {
@@ -792,8 +792,14 @@ impl StepExecutor for SystemB<'_> {
                     },
                 prop_id,
             } if plan.typed_objects_by_list() => {
-                if let Some(index) =
-                    super::props::listed_index(object_table, *object_type, *occurrence)
+                if let Some(index) = super::props::resolve_type_index(
+                    session.l4(),
+                    object_table,
+                    &mut self.io_list,
+                    *object_type,
+                    *occurrence,
+                )
+                .await?
                 {
                     super::props::describe_property(
                         session.l4(),
@@ -1310,6 +1316,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         plan,
         app_obj,
         object_table,
+        io_list: None,
         skip_objects,
         security_open,
         verify_after_restart: options.verify_after_restart,
