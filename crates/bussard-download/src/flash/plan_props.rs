@@ -456,7 +456,9 @@ pub(super) fn lower_write_prop(
             }
         },
     };
-    let count = count.unwrap_or(1).max(1);
+    // The one Count rule of both System B planners (issue #957).
+    let count = super::declare::element_count(&name, *count, start_element.unwrap_or(1), None)
+        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?;
     let count = u16::try_from(count)
         .ok()
         .filter(|c| *c <= u16::from(u8::MAX))
