@@ -583,3 +583,142 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
     assert_eq!(counts.iter().map(|c| u32::from(*c)).sum::<u32>(), 20);
     Ok(())
 }
+
+/// `app` with the ise smart connect load-state writes after its PID 201
+/// write (`M-007C_A-0006-20-C776`, issue #947): object 8 unloaded, opened and
+/// completed by `LdCtrlWriteProp ObjIdx="8" PropId="5"`, each followed by the
+/// `LdCtrlCompareProp` of the state it leaves.
+fn with_load_state_writes(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
+    use bussard_prod::application::LoadOp;
+    let control = |event: u8| {
+        let mut value = vec![0u8; 10];
+        value[0] = event;
+        LoadOp::WriteProp {
+            obj_idx: Some(8),
+            obj_type: None,
+            prop_id: Some(5),
+            inline_data: Some(value),
+            start_element: None,
+            count: None,
+            verify: Some(false),
+            occurrence: None,
+        }
+    };
+    let state = |state: u8| LoadOp::CompareProp {
+        obj_idx: Some(8),
+        obj_type: None,
+        prop_id: Some(5),
+        inline_data: Some(vec![state]),
+        mask: None,
+        range: None,
+        occurrence: None,
+        start_element: None,
+    };
+    let ops = [
+        control(4),
+        state(0),
+        control(1),
+        state(2),
+        control(2),
+        state(1),
+    ];
+    let mut app = app.clone();
+    let mut found = false;
+    for lp in &mut app.load_procedures {
+        let Some(at) = lp.ops.iter().position(|op| {
+            matches!(
+                op,
+                LoadOp::WriteProp {
+                    prop_id: Some(201),
+                    ..
+                }
+            )
+        }) else {
+            continue;
+        };
+        for (i, op) in ops.iter().enumerate() {
+            lp.ops.insert(at + 1 + i, op.clone());
+            if !lp.applies_to.is_empty() {
+                let scope = lp.applies_to.get(at).cloned().flatten();
+                lp.applies_to.insert(at + 1 + i, scope);
+            }
+            if !lp.guards.is_empty() {
+                let guards = lp.guards.get(at).cloned().unwrap_or_default();
+                lp.guards.insert(at + 1 + i, guards);
+            }
+        }
+        found = true;
+    }
+    if !found {
+        return Err("the application writes object 4 PID 201".into());
+    }
+    Ok(app)
+}
+
+#[tokio::test]
+async fn test_flash_confirms_a_procedure_load_state_write_by_the_answered_state() -> TestResult {
+    // Issue #947: the device answers a PID_LOAD_STATE_CONTROL write with the
+    // resulting state (one octet), not an echo of the 10-octet value. The
+    // flash confirms it as a load control, the dump lists it as one, and
+    // object 8 ends loaded.
+    let (product, _tmp) = product()?;
+    let app = with_load_state_writes(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let controls: Vec<_> = plan
+        .steps
+        .iter()
+        .filter_map(FlashStep::load_state_control)
+        .collect();
+    assert_eq!(
+        controls,
+        vec![
+            (8, bussard_mgmt::LoadControl::Unload),
+            (8, bussard_mgmt::LoadControl::StartLoading),
+            (8, bussard_mgmt::LoadControl::LoadCompleted),
+        ]
+    );
+    for step in plan
+        .steps
+        .iter()
+        .filter(|s| s.load_state_control().is_some())
+    {
+        let records = plan.load_control_records(step);
+        assert_eq!(records.len(), 1, "{step:?}");
+    }
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+            OT_APPLICATION_PROGRAM,
+            OT_APPLICATION_PROGRAM,
+            OT_APPLICATION_PROGRAM,
+            OT_APPLICATION_PROGRAM,
+        ])
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(4, 201, 1, &[0xFF]);
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
+    assert_eq!(dev.load_state(8), 1, "object 8 ends loaded");
+    Ok(())
+}
