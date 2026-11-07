@@ -30,14 +30,18 @@ use bussard_mgmt::load::WriteError;
 use bussard_mgmt::property_ext::{PropertyExtAddress, function_property_ext_command};
 use bussard_prod::application::LoadOp;
 
+/// The largest PID the extended property services carry (12 bits, KNX 3/3/7
+/// §3.4.8).
+const MAX_EXT_PID: u32 = 0x0FFF;
+
 /// Lowers an `LdCtrlInvokeFunctionProp` to [`FlashStep::InvokeFunctionProp`].
 ///
 /// # Errors
 ///
 /// [`PlanError::UnsupportedOp`] for a call without a `PropId`, or one whose
-/// object index or PID does not fit the service that carries it (8 bits on
-/// the plain service; 16-bit type, 12-bit instance and 8-bit PID on the
-/// extended one).
+/// object index or PID does not fit the service that carries it (8-bit index
+/// and PID on the plain service; 16-bit type, 12-bit instance and 12-bit PID
+/// on the extended one).
 pub(super) fn lower_invoke_function_prop(step: usize, op: &LoadOp) -> Result<FlashStep, PlanError> {
     let refuse = |what: String| PlanError::UnsupportedOp {
         op: format!("LdCtrlInvokeFunctionProp {what} (step {step})"),
@@ -55,17 +59,26 @@ pub(super) fn lower_invoke_function_prop(step: usize, op: &LoadOp) -> Result<Fla
     let prop_id = prop_id.ok_or_else(|| refuse("without a PropId".to_string()))?;
     let object = prop_object(step, *obj_idx, *obj_type, *occurrence)
         .map_err(|e| refuse(format!("naming an object bussard cannot address: {e}")))?;
-    if let PropObject::Index(index) = object
-        && index > u32::from(u8::MAX)
-    {
-        return Err(refuse(format!(
-            "on object {index}, past the 8-bit index A_FunctionPropertyCommand carries"
-        )));
-    }
-    if prop_id > u32::from(u8::MAX) {
-        return Err(refuse(format!(
-            "on PID {prop_id}, past the 8-bit PID the function property services carry"
-        )));
+    match object {
+        PropObject::Index(index) => {
+            if index > u32::from(u8::MAX) {
+                return Err(refuse(format!(
+                    "on object {index}, past the 8-bit index A_FunctionPropertyCommand carries"
+                )));
+            }
+            if prop_id > u32::from(u8::MAX) {
+                return Err(refuse(format!(
+                    "on PID {prop_id}, past the 8-bit PID A_FunctionPropertyCommand carries"
+                )));
+            }
+        }
+        PropObject::Type { .. } => {
+            if prop_id > MAX_EXT_PID {
+                return Err(refuse(format!(
+                    "on PID {prop_id}, past the 12-bit PID A_FunctionPropertyExt_Command carries"
+                )));
+            }
+        }
     }
     Ok(FlashStep::InvokeFunctionProp {
         object,
@@ -79,9 +92,10 @@ pub(super) fn lower_invoke_function_prop(step: usize, op: &LoadOp) -> Result<Fla
 ///
 /// # Errors
 ///
-/// A non-zero return code, a response without one (the property is not a
-/// function property), a response for another object or property, no
-/// response, or a transport failure. Each fails the flash; none is retried
+/// [`WriteError::TargetOutOfRange`] for an object index or PID the service
+/// cannot carry (nothing is sent); a non-zero return code, a response without
+/// one (the property is not a function property), a response for another
+/// object or property, no response, or a transport failure. Each fails the flash; none is retried
 /// on another service, since a refused call is the device's answer.
 pub async fn invoke_function_property<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
@@ -89,20 +103,30 @@ pub async fn invoke_function_property<Ch: L4Channel>(
     prop_id: u32,
     data: &[u8],
 ) -> Result<(), WriteError> {
-    let pid = u8::try_from(prop_id).unwrap_or(u8::MAX);
+    let out_of_range = |detail: String| WriteError::TargetOutOfRange {
+        address: l4.target(),
+        detail,
+    };
     match object {
         PropObject::Index(index) => {
-            let index = u8::try_from(index).unwrap_or(u8::MAX);
+            let index = u8::try_from(index)
+                .map_err(|_| out_of_range(format!("object index {index} (8 bits)")))?;
+            let pid = u8::try_from(prop_id)
+                .map_err(|_| out_of_range(format!("PID {prop_id} (8 bits)")))?;
             function_property_command(l4, index, pid, data).await?;
         }
         PropObject::Type {
             object_type,
             occurrence,
         } => {
+            let property_id = u16::try_from(prop_id)
+                .ok()
+                .filter(|pid| u32::from(*pid) <= MAX_EXT_PID)
+                .ok_or_else(|| out_of_range(format!("PID {prop_id} (12 bits)")))?;
             let addr = PropertyExtAddress {
                 object_type,
                 object_instance: occurrence.saturating_add(1),
-                property_id: u16::from(pid),
+                property_id,
             };
             function_property_ext_command(l4, addr, data).await?;
         }
@@ -151,12 +175,25 @@ mod tests {
     }
 
     #[test]
+    fn test_lower_invoke_function_prop_by_type_takes_a_12_bit_pid() -> TestResult {
+        assert!(matches!(
+            lower_invoke_function_prop(3, &op(None, Some(65281), Some(0x0FFF)))?,
+            FlashStep::InvokeFunctionProp {
+                prop_id: 0x0FFF,
+                ..
+            }
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn test_lower_invoke_function_prop_refusals() {
         for bad in [
             op(Some(5), None, None),
             op(Some(256), None, Some(52)),
             op(Some(5), None, Some(256)),
             op(None, Some(70_000), Some(52)),
+            op(None, Some(65281), Some(0x1000)),
         ] {
             assert!(
                 matches!(

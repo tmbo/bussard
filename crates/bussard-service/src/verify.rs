@@ -153,7 +153,7 @@ pub struct ExpectedProperty {
 /// elements is kept as it is.
 fn still_held(write: &ExpectedProperty, later: &[ExpectedProperty]) -> Vec<ExpectedProperty> {
     let count = usize::from(write.count.max(1));
-    if write.value.len() % count != 0 {
+    if !write.value.len().is_multiple_of(count) {
         return vec![write.clone()];
     }
     let elem = write.value.len() / count;
@@ -1300,7 +1300,10 @@ mod tests {
             ..w(1, 1, &[7])
         };
         assert_eq!(still_held(&w(1, 1, &[1]), &[other]), vec![w(1, 1, &[1])]);
-        assert_eq!(still_held(&w(1, 1, &[1]), &[w(2, 1, &[2])]), vec![w(1, 1, &[1])]);
+        assert_eq!(
+            still_held(&w(1, 1, &[1]), &[w(2, 1, &[2])]),
+            vec![w(1, 1, &[1])]
+        );
     }
 
     #[test]

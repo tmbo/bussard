@@ -370,6 +370,8 @@ pub(super) fn plan_flash_sys7(
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #946,
     // as on System B since #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
+    // The parameters placed in properties, resolved once (issue #945).
+    let property_params = bussard_prod::PropertyParameters::resolve(app, &config);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -664,7 +666,13 @@ pub(super) fn plan_flash_sys7(
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
                 if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
-                    steps.extend(sys7_declared_write_prop(step_no, op, decl, app, &config)?);
+                    steps.extend(sys7_declared_write_prop(
+                        step_no,
+                        op,
+                        decl,
+                        app,
+                        &property_params,
+                    )?);
                 } else {
                     // A property write with its Count and Verify (issue #390):
                     // the 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the
@@ -1882,42 +1890,21 @@ fn sys7_declared_write_prop(
     op: &LoadOp,
     decl: &super::declare::PropDecl,
     app: &ApplicationProgram,
-    config: &bussard_prod::dynamic::DynamicConfig,
+    values: &dyn super::declare::DeclaredValues,
 ) -> std::result::Result<Option<FlashStep>, PlanError> {
     let no_inline = matches!(
         op,
         LoadOp::WriteProp { inline_data, .. } if inline_data.as_deref().is_none_or(<[u8]>::is_empty)
     );
-    let placed = app.parameters.values().any(|p| {
+    let possibly_placed = app.parameters.values().any(|p| {
         p.property
             .as_ref()
             .is_some_and(|loc| super::plan_props::may_hold(loc, decl.object, decl.prop_id))
     });
-    if no_inline && !placed {
+    if no_inline && !possibly_placed && !values.places(decl.object, decl.prop_id) {
         return Ok(None);
     }
-    let object = match decl.object {
-        super::PropObject::Index(index) => bussard_prod::PropertyObjectRef::Index(index),
-        super::PropObject::Type {
-            object_type,
-            occurrence,
-        } => bussard_prod::PropertyObjectRef::Type {
-            object_type: u32::from(object_type),
-            occurrence: u32::from(occurrence),
-        },
-    };
-    let compose = |base: Vec<u8>| {
-        bussard_prod::compose_property_value(app, config, object, decl.prop_id, base).map_err(|e| {
-            PlanError::UnsupportedWriteProp {
-                step: step_no,
-                reason: format!(
-                    "composing the value of {} PID {} from the parameters: {e}",
-                    decl.object, decl.prop_id
-                ),
-            }
-        })
-    };
-    super::declare::lower_declared_write_prop(step_no, op, decl, &compose, app).map(Some)
+    super::declare::lower_declared_write_prop(step_no, op, decl, values, app).map(Some)
 }
 
 /// The mem-type for a System 7 absolute-segment allocation at `addr`: RAM (`2`)

@@ -1,6 +1,6 @@
-//! The plain function property services (KNX 3/3/7 §3.4.7): call a function
-//! property of an interface object addressed by its index, and read the
-//! state it answers.
+//! The plain function property command (KNX 3/3/7 §3.4.7.1): call a
+//! function property of an interface object addressed by its index, and
+//! check the state it answers.
 //!
 //! `A_FunctionPropertyCommand` carries the object index, the property id and
 //! the function's input; the device answers `A_FunctionPropertyState_Response`
@@ -25,13 +25,11 @@ use crate::error::{MgmtError, Result};
 
 /// `A_FunctionPropertyCommand` (KNX 3/3/7 §3.4.7.1).
 pub const A_FUNCTION_PROPERTY_COMMAND: u16 = 0x2C7;
-/// `A_FunctionPropertyState_Read` (KNX 3/3/7 §3.4.7.2).
-pub const A_FUNCTION_PROPERTY_STATE_READ: u16 = 0x2C8;
-/// `A_FunctionPropertyState_Response`: the answer to both.
+/// `A_FunctionPropertyState_Response`: the answer to the command.
 pub const A_FUNCTION_PROPERTY_STATE_RESPONSE: u16 = 0x2C9;
 
-/// Encodes an `A_FunctionPropertyCommand` (or `_State_Read`) payload: the
-/// object index, the property id and the function's input.
+/// Encodes an `A_FunctionPropertyCommand` payload: the object index, the
+/// property id and the function's input.
 pub fn encode_function_property(object_index: u8, prop_id: u8, data: &[u8]) -> Vec<u8> {
     let mut out = Vec::with_capacity(2 + data.len());
     out.push(object_index);

@@ -142,7 +142,8 @@ pub use plan_sys7::{
     sys7_task_identity,
 };
 pub use props::{
-    compare_property_value, plain_write_elements, read_property_value, write_property_value,
+    PropertyWriteRequest, compare_property_value, plain_write_elements, property_write_requests,
+    read_property_value, write_property_value,
 };
 pub use restart_form::{RestartForm, restart_form};
 pub use session::{

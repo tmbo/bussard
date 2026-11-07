@@ -177,12 +177,40 @@ fn placed_ranges(set: &BTreeSet<usize>) -> Vec<[usize; 2]> {
 /// dump has no device, and the offline oracle compares against that capture.
 const DUMP_NOMINAL_MAX_APDU: u16 = 233;
 
-/// The `PID_MAX_APDU_LENGTH` the dump assumes for a System 7 multi-element
-/// property write (issue #946): the 15 octets of a System 7 device, which
-/// the Berker/Hager 0701 capture shows (`M-0006_A-E00D-01-28AB-O0009`,
+/// The `PID_MAX_APDU_LENGTH` of a System 7 device (issue #946): 15 octets,
+/// which the Berker/Hager 0701 capture shows (`M-0006_A-E00D-01-28AB-O0009`,
 /// `PID_MAX_APDU_LENGTH` = `000f`, the declared writes sent ten elements per
 /// request).
 const DUMP_SYS7_MAX_APDU: u16 = 15;
+
+/// The APDU limit the dump splits a property write under: the executor
+/// splits at the negotiated `PID_MAX_APDU_LENGTH`
+/// ([`bussard_download::flash::property_write_requests`] with the
+/// connection's value); the dump has no device and assumes the reference
+/// device of its system, 15 octets on System 7, 233 otherwise.
+fn dump_max_apdu(plan: &FlashPlan) -> u16 {
+    if plan.is_sys7() {
+        DUMP_SYS7_MAX_APDU
+    } else {
+        DUMP_NOMINAL_MAX_APDU
+    }
+}
+
+/// The object part of a dump property or function-property record: the
+/// index for the plain services, type and 1-based instance for the extended
+/// ones.
+fn object_record(object: &bussard_download::PropObject) -> Value {
+    match object {
+        bussard_download::PropObject::Index(index) => json!({ "object": index }),
+        bussard_download::PropObject::Type {
+            object_type,
+            occurrence,
+        } => json!({
+            "object_type": object_type,
+            "instance": u32::from(*occurrence) + 1,
+        }),
+    }
+}
 
 /// The wire writes of a Data Secure security-object step as `plan.json`
 /// property records (`knxtrace imgdiff` aligns them with ETS's
@@ -450,9 +478,13 @@ pub fn write_dump(
             }
             // A load procedure's property write (issue #390), as the wire
             // carries it: an index-addressed object with the plain service,
-            // one named by type with the extended service (instance 1-based).
-            // A System B plan keeps the label-only record the oracle rows
-            // were recorded with.
+            // one named by type with the extended service (instance 1-based),
+            // one record per request as the executor splits it
+            // ([`bussard_download::flash::property_write_requests`]: at most
+            // 15 elements per plain request, 255 per extended one, within the
+            // APDU the dump assumes for the system, [`dump_max_apdu`]). A
+            // System B write of one element keeps the label-only record the
+            // oracle rows were recorded with.
             FlashStep::WriteProp {
                 object,
                 prop_id,
@@ -461,96 +493,49 @@ pub fn write_dump(
                 count,
                 verify,
                 ..
-            } if (plan.is_sys7() || plan.is_property_only())
-                && !(plan.is_sys7()
-                    && *count > 1
-                    && matches!(object, bussard_download::PropObject::Index(_))) =>
-            {
-                let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
-                let mut prop = match object {
-                    bussard_download::PropObject::Index(index) => json!({ "object": index }),
-                    bussard_download::PropObject::Type {
-                        object_type,
-                        occurrence,
-                    } => json!({
-                        "object_type": object_type,
-                        "instance": u32::from(*occurrence) + 1,
-                    }),
-                };
-                prop["pid"] = json!(prop_id);
-                prop["start_element"] = json!(start_element);
-                prop["count"] = json!(count);
-                prop["length"] = json!(value.len());
-                prop["data"] = json!(hex);
-                prop["verify"] = json!(verify);
-                prop["source"] = json!("load-procedure");
-                record["property"] = prop;
-            }
-            // A System B or System 7 write of several elements (a declared
-            // property, issues #938 and #946), one record per plain request
-            // as the executor splits it: at most 15 elements each, within the
-            // nominal APDU of the system.
-            FlashStep::WriteProp {
-                object: bussard_download::PropObject::Index(index),
-                prop_id,
-                value,
-                start_element,
-                count,
-                verify,
-                ..
-            } if *count > 1 => {
-                let elem = (value.len() / usize::from(*count)).max(1);
-                let max_apdu = if plan.is_sys7() {
-                    DUMP_SYS7_MAX_APDU
-                } else {
-                    DUMP_NOMINAL_MAX_APDU
-                };
-                let per = bussard_download::flash::plain_write_elements(max_apdu, elem) * elem;
-                let records: Vec<Value> = value
-                    .chunks(per)
-                    .enumerate()
-                    .map(|(i, chunk)| {
-                        json!({
-                            "object": index,
-                            "pid": prop_id,
-                            "start_element": usize::from(*start_element) + i * per / elem,
-                            "count": chunk.len() / elem,
-                            "length": chunk.len(),
-                            "data": chunk.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                            "verify": verify,
-                            "source": "load-procedure",
-                        })
+            } if plan.is_sys7() || plan.is_property_only() || *count > 1 => {
+                let requests = bussard_download::flash::property_write_requests(
+                    *object,
+                    *start_element,
+                    *count,
+                    value.len(),
+                    dump_max_apdu(plan),
+                );
+                let records: Vec<Value> = requests
+                    .into_iter()
+                    .map(|request| {
+                        let chunk = value.get(request.octets).unwrap_or_default();
+                        let mut prop = object_record(object);
+                        prop["pid"] = json!(prop_id);
+                        prop["start_element"] = json!(request.start);
+                        prop["count"] = json!(request.count);
+                        prop["length"] = json!(chunk.len());
+                        prop["data"] =
+                            json!(chunk.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                        prop["verify"] = json!(verify);
+                        prop["source"] = json!("load-procedure");
+                        prop
                     })
                     .collect();
-                record["properties"] = json!(records);
+                match <[Value; 1]>::try_from(records) {
+                    Ok([one]) => record["property"] = one,
+                    Err(records) => record["properties"] = json!(records),
+                }
             }
             // A function property call (issue #946), as the wire carries it:
-            // by index on `A_FunctionPropertyCommand`, by type on the
-            // extended service (instance 1-based). The extended call is also
-            // the step's `property` record, which the oracle compares.
+            // by index on `A_FunctionPropertyCommand`, by type on
+            // `A_FunctionPropertyExt_Command` (instance 1-based). `knxtrace
+            // imgdiff` compares the `function_property` record against the
+            // captured calls of either form.
             FlashStep::InvokeFunctionProp {
                 object,
                 prop_id,
                 data,
             } => {
-                let mut call = match object {
-                    bussard_download::PropObject::Index(index) => json!({ "object": index }),
-                    bussard_download::PropObject::Type {
-                        object_type,
-                        occurrence,
-                    } => json!({
-                        "object_type": object_type,
-                        "instance": u32::from(*occurrence) + 1,
-                    }),
-                };
+                let mut call = object_record(object);
                 call["pid"] = json!(prop_id);
                 call["length"] = json!(data.len());
                 call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
-                // `knxtrace image` lists ETS's extended call among its
-                // property writes; the plain one it does not decode.
-                if matches!(object, bussard_download::PropObject::Type { .. }) {
-                    record["property"] = call.clone();
-                }
                 record["function_property"] = call;
             }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),

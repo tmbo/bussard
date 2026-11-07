@@ -4829,3 +4829,55 @@ async fn test_probe_resident_state_sys7_reads_the_application_id()
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn test_invoke_function_property_refuses_a_target_that_does_not_fit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #946: an object index or PID past what the service carries is a
+    // refusal before anything is sent, never a clamp to another property.
+    let target: bussard_model::IndividualAddress = "1.1.7".parse()?;
+    let gw = MockGateway::builder()
+        .device(MockDevice::new(target))
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let cases = [
+        (bussard_download::PropObject::Index(256), 52),
+        (bussard_download::PropObject::Index(5), 256),
+        (
+            bussard_download::PropObject::Type {
+                object_type: 65281,
+                occurrence: 0,
+            },
+            0x1000,
+        ),
+    ];
+    for (object, pid) in cases {
+        let result =
+            bussard_download::flash::invoke_function_property(&mut l4, object, pid, &[0x04]).await;
+        assert!(
+            matches!(
+                result,
+                Err(bussard_mgmt::load::WriteError::TargetOutOfRange { .. })
+            ),
+            "{object} PID {pid}: {result:?}"
+        );
+    }
+    let _ = l4.disconnect().await;
+    let requests = gw.with_device(target, |d| d.requests.clone())?;
+    assert!(
+        !requests
+            .iter()
+            .any(|(apci, _)| *apci == A_FUNCTION_PROPERTY_COMMAND
+                || *apci == bussard_mgmt::property_ext::A_FUNCTION_PROPERTY_EXT_COMMAND),
+        "nothing sent: {requests:?}"
+    );
+    Ok(())
+}

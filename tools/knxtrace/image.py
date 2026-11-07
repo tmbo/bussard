@@ -68,6 +68,15 @@ first differing object, both hex records, plus every difference), or
 `not-comparable` (ETS sent no load-control record, or the dump predates the
 `load_controls` field).
 
+Function property calls (bussard issue #946): `compose` also writes
+`function_properties.json`, every `LdCtrlInvokeFunctionProp` call ETS sent:
+`A_FunctionPropertyCommand` by object index and `A_FunctionPropertyExt_Command`
+by object type, except the extended calls on the security object (17) and the
+KNXnet/IP parameter object (11), which are the secure load controls the
+property comparison judges. `compare` aligns them with the plan's
+`function_property` records by object and PID, compares the input octets, and
+reports a fourth verdict (`none` when neither side calls one).
+
 A diff is only as strong as what it compared. `compare` also reports the
 coverage (issue #347): of the octets bussard places, how many the capture
 holds a value for. A region's placed octets are the ones a parameter placement
@@ -389,6 +398,61 @@ def property_writes(ops: DeviceOps) -> List[Dict[str, object]]:
     return out
 
 
+# Function property calls of a load procedure (bussard issue #946):
+# `A_FunctionPropertyCommand` by object index (header: obj, pid) and
+# `A_FunctionPropertyExt_Command` by object type (type:2, inst/pid:3). The
+# extended calls on the security object (17) and the KNXnet/IP parameter
+# object (11) are the Data Secure and IP Secure load controls the property
+# comparison judges; every other call is a `LdCtrlInvokeFunctionProp`.
+FUNCTION_PROPERTIES_FILE = "function_properties.json"
+FUNCTION_CALL_SERVICES = {"A_FunctionPropertyCommand": 2, "A_FunctionPropertyExt_Command": 5}
+PROPERTY_OWNED_FUNCTION_TYPES = frozenset({11, 17})
+
+
+def is_load_procedure_call(service: str, obj: Dict[str, int]) -> bool:
+    """Whether a captured function property call is a load procedure's call
+    (`function_properties.json`), not a secure load control (`properties.json`)."""
+    if service == "A_FunctionPropertyCommand":
+        return True
+    return service == "A_FunctionPropertyExt_Command" and \
+        obj.get("type") not in PROPERTY_OWNED_FUNCTION_TYPES
+
+
+def function_property_calls(ops: DeviceOps) -> List[Dict[str, object]]:
+    """Every function property call of a load procedure the tool sent, in
+    order: the object (`{"index": n}` or `{"type": t, "instance": i}`), the
+    PID and the function's input as hex."""
+    out: List[Dict[str, object]] = []
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "req" or apdu is None or apdu.name not in FUNCTION_CALL_SERVICES:
+            continue
+        payload = bytes(apdu.payload)
+        f = apdu.fields
+        if apdu.name == "A_FunctionPropertyCommand":
+            if len(payload) < 2:
+                continue
+            obj: Dict[str, int] = {"index": payload[0]}
+            pid = payload[1]
+        else:
+            if f.get("truncated") or "pid" not in f or "obj_type" not in f:
+                continue
+            obj = {"type": int(f["obj_type"]), "instance": int(f.get("instance", 0))}
+            pid = int(f["pid"])
+        if not is_load_procedure_call(apdu.name, obj):
+            continue
+        data = payload[FUNCTION_CALL_SERVICES[apdu.name]:]
+        out.append({
+            "seq": len(out) + 1,
+            "service": apdu.name,
+            "object": obj,
+            "pid": pid,
+            "length": len(data),
+            "data": data.hex(),
+        })
+    return out
+
+
 CONFIRMED_DIR = "confirmed"
 
 # Load control (issue #419): the file `compose` writes, the System 7
@@ -620,6 +684,10 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
     props = property_writes(ops)
     with open(os.path.join(out_dir, "properties.json"), "w", encoding="utf-8") as fh:
         json.dump(props, fh, indent=2)
+        fh.write("\n")
+
+    with open(os.path.join(out_dir, FUNCTION_PROPERTIES_FILE), "w", encoding="utf-8") as fh:
+        json.dump(function_property_calls(ops), fh, indent=2)
         fh.write("\n")
 
     index = {
@@ -885,6 +953,7 @@ def compare(
     # not hide whether the memory images match.
     props = compare_properties(plan, image_dir, _ets_groups(plan, results, ets), phase=phase)
     load_controls = compare_load_controls(plan, image_dir)
+    function_props = compare_function_properties(plan, image_dir)
     for r in results:
         r["in_scope"] = scope is None or region_short(r["region"]) in scope
     judged = [r for r in results if r["in_scope"]]
@@ -935,6 +1004,7 @@ def compare(
         "ets_only_ranges": _ranges(ets_only)[:20],
         "properties": props,
         "load_controls": load_controls,
+        "function_properties": function_props,
     }
 
 
@@ -1417,6 +1487,9 @@ def compare_properties(
         for e in ets_all
         if not ("index" in e["object"] and e["pid"] == PID_LOAD_STATE_CONTROL
                 and e["service"] == "A_PropertyValue_Write")
+        # A load procedure's function property call is compared by
+        # `compare_function_properties` (bussard issue #946).
+        and not is_load_procedure_call(e["service"], e["object"])
     ]
     if ets_groups:
         for e in ets:
@@ -1525,6 +1598,89 @@ def compare_properties(
     if conditional:
         out["conditional"] = conditional
     return out
+
+
+def plan_function_calls(plan: dict) -> List[Dict[str, object]]:
+    """bussard's function property calls (`function_property` records of
+    `plan.json`, bussard issue #946), in plan order."""
+    out: List[Dict[str, object]] = []
+    for step in plan.get("steps", []):
+        rec = step.get("function_property")
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("object_type") is not None:
+            obj: Dict[str, int] = {"type": int(rec["object_type"]),
+                                   "instance": int(rec.get("instance", 1))}
+        else:
+            obj = {"index": int(rec["object"])}
+        out.append({"step": step.get("index"), "object": obj, "pid": int(rec["pid"]),
+                    "data": str(rec.get("data") or "")})
+    return out
+
+
+def compare_function_properties(plan: dict, image_dir: str) -> Dict[str, object]:
+    """Aligns bussard's function property calls with the ones ETS sent
+    (`function_properties.json`), by object and PID, and compares the input.
+
+    `none` when neither side calls a function property; `not-comparable` when
+    the image predates the file."""
+    path = os.path.join(image_dir, FUNCTION_PROPERTIES_FILE)
+    ours = plan_function_calls(plan)
+    if not os.path.exists(path):
+        if not ours:
+            return {"verdict": "none"}
+        return {"verdict": NOT_COMPARABLE,
+                "reason": "no %s (re-run `knxtrace image`)" % FUNCTION_PROPERTIES_FILE}
+    with open(path, encoding="utf-8") as fh:
+        ets = json.load(fh)
+    if not ours and not ets:
+        return {"verdict": "none"}
+
+    def key(e: Dict[str, object]) -> Tuple[str, int]:
+        return (_obj_label(e["object"]), int(e["pid"]))
+
+    matcher = difflib.SequenceMatcher(None, [key(e) for e in ours], [key(e) for e in ets],
+                                      autojunk=False)
+    matched: List[Dict[str, object]] = []
+    bussard_only: List[Dict[str, object]] = []
+    ets_only: List[Dict[str, object]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            for a, b in zip(ours[i1:i2], ets[j1:j2]):
+                matched.append({"step": a["step"], "ets_seq": b["seq"], "key": list(key(a)),
+                                "value": "equal" if a["data"] == b["data"] else "differs",
+                                "bussard_data": a["data"], "ets_data": b["data"]})
+            continue
+        bussard_only.extend({"step": a["step"], "key": list(key(a)), "data": a["data"]}
+                            for a in ours[i1:i2])
+        ets_only.extend({"ets_seq": b["seq"], "service": b["service"], "key": list(key(b)),
+                         "data": b["data"]} for b in ets[j1:j2])
+    differs = sum(1 for m in matched if m["value"] == "differs")
+    verdict = DIFFERS if bussard_only or ets_only or differs else IDENTICAL
+    return {"verdict": verdict, "bussard_calls": len(ours), "ets_calls": len(ets),
+            "matched": matched, "bussard_only": bussard_only, "ets_only": ets_only,
+            "value_differs": differs}
+
+
+def render_function_properties(fp: Optional[Dict[str, object]]) -> List[str]:
+    """The text lines of the function property comparison."""
+    if not fp or fp.get("verdict") == "none":
+        return []
+    if fp.get("verdict") == NOT_COMPARABLE:
+        return ["  function property calls: not comparable: %s" % fp.get("reason", "")]
+    lines = ["  function property calls: %s (bussard %d, ETS %d)" % (
+        fp["verdict"], fp.get("bussard_calls", 0), fp.get("ets_calls", 0))]
+    for m in fp.get("matched", []):
+        if m["value"] == "differs":
+            lines.append("      step %3s %s PID %s: bussard %s, ETS %s" % (
+                m["step"], m["key"][0], m["key"][1], m["bussard_data"], m["ets_data"]))
+    for a in fp.get("bussard_only", []):
+        lines.append("      bussard only: step %3s %s PID %s (%s)" % (
+            a["step"], a["key"][0], a["key"][1], a["data"]))
+    for b in fp.get("ets_only", []):
+        lines.append("      ETS only:     #%s %s %s PID %s (%s)" % (
+            b["ets_seq"], b["service"], b["key"][0], b["key"][1], b["data"]))
+    return lines
 
 
 LOAD_EVENTS = {1: "start-loading", 2: "load-completed", 4: "unload", 0: "no-operation"}
@@ -1861,6 +2017,7 @@ def render(report: Dict[str, object]) -> List[str]:
             )
         )
     lines.extend(render_properties(report.get("properties")))
+    lines.extend(render_function_properties(report.get("function_properties")))
     lines.extend(render_load_controls(report.get("load_controls")))
     return lines
 
