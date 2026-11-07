@@ -159,6 +159,10 @@ struct ObjectState {
     /// with the CRC it computes (Resources 03.05.01 §4.2.27, bussard issue
     /// #840). Cleared by an Unload.
     mcb_written: Option<[u8; MCB_ENTRY_LEN]>,
+    /// The end of the furthest `LdCtrlWriteRelMem` the product's load
+    /// procedures write into this object (offset plus size), 0 when none. A
+    /// relative allocation covers at least this much.
+    write_extent: u32,
 }
 
 /// Construction-time overrides that select and tune a device's mask profile.

@@ -181,6 +181,24 @@ impl Device {
                         self.max_allocation.unwrap_or(0)
                     )));
                 }
+                // The segment covers at least what the product's own load
+                // procedure writes into it. The Hager TYMS616D
+                // (`M-0009_A-E804-10`) allocates 258 octets on object 4 and
+                // then writes 642 (`LdCtrlWriteRelMem Size="642"`): the
+                // device accepts the writes past the requested size, in its
+                // reserve space after the segment (Configuration Procedures
+                // 03_05_03 §3.5.1.3). The sim refused 0x60f9+61 and ETS gave
+                // up with "device does not respond" (ETS sweep, 2026-11-07).
+                // The tables (objects 1 to 3) keep the requested size: ETS
+                // sizes their allocation from the table it writes ("Size =
+                // current size of" the table, §3.9.3.4), and their
+                // `LdCtrlWriteRelMem` size is only an upper bound
+                // (`captures/synthetic/syn-map-error` writes 2 of 0x82).
+                let size = if (1..=3).contains(&object) {
+                    size
+                } else {
+                    size.max(self.loadables.get(&object).map_or(0, |o| o.write_extent))
+                };
                 let mut base = self.loadables.get(&object).map_or(0, |o| o.base);
                 // A real device places a relative segment where it has room and
                 // reports the place via PID_TABLE_REFERENCE. The fixed bases fit
