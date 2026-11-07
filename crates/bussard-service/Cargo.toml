@@ -27,6 +27,9 @@ sha2 = { workspace = true }
 # resolution, the read-back, the plan and the parameter-only download that
 # `bussard apply` and the MCP programming tier share. First-party.
 bussard-download = { workspace = true }
+# The DPT inference `learn` and `knx_infer_group` share (issue #903).
+# First-party.
+bussard-monitor = { workspace = true }
 # The parameter read-back report is serialized by `plan --json`. Already in
 # the tree. MIT OR Apache-2.0.
 serde = { workspace = true }

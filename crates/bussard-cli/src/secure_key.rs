@@ -47,11 +47,7 @@ pub fn admitted_tunnel(
 /// The guidance for a device without a tool key that may be Data Secure-activated
 /// (issue #71, spec §6.4).
 pub(crate) fn no_key_guidance() -> String {
-    format!(
-        "if this device is KNX Data Secure-activated it refuses unsecured management: {} (a \
-         keyring that does not list the device only opens the tunnel)",
-        bussard_service::guidance::tool_key_hint()
-    )
+    bussard_service::describe::no_key_guidance()
 }
 
 /// A device without a tool key that refused plain access and answered under

@@ -15,7 +15,8 @@
 //! `knx_apply_device`) share three functions: [`read_interface`] reads the
 //! object and the device's description of PID 53 on an open session,
 //! [`plan_interface`] turns the difference between the device file's
-//! `[knxnet]` table and what was read into property writes, and
+//! `[knxnet]` table and what was read into property writes ([`read_and_plan`]
+//! runs both in one session), and
 //! [`apply_interface`] writes them through the property step executor every
 //! load procedure uses ([`bussard_download::write_property_value`]), then
 //! reads every written property back ([`crate::verify::read_back`]) and the
@@ -514,6 +515,82 @@ fn quoted(name: Option<&str>) -> String {
         Some(n) => format!("{n:?}"),
         None => "none".to_string(),
     }
+}
+
+/// What [`read_and_plan`] reads and plans for one IP interface.
+#[derive(Debug, Clone, Copy)]
+pub struct InterfaceRequest<'a> {
+    /// The interface.
+    pub target: IndividualAddress,
+    /// The device file's `[knxnet]` table.
+    pub config: &'a KnxnetConfig,
+    /// The device's entry in the model, for the identity verdict.
+    pub device: Option<&'a bussard_model::schema::Device>,
+    /// The device facts cache.
+    pub facts: &'a FactsCache,
+    /// How the session reaches the bus.
+    pub link: &'a SessionLink,
+    /// The application's property-only load procedure (issue #390), whose
+    /// properties are read on the same session.
+    pub procedure: Option<&'a bussard_download::FlashPlan>,
+}
+
+/// One interface read and its plan.
+#[derive(Debug)]
+pub struct InterfaceReadPlan {
+    /// The read.
+    pub read: InterfaceRead,
+    /// The plan of the `[knxnet]` table against it.
+    pub plan: InterfacePlan,
+    /// The properties of the procedure, when one was given.
+    pub rows: Option<Vec<crate::property_plan::PropertyRow>>,
+}
+
+/// Why [`read_and_plan`] has no plan.
+#[derive(Debug, thiserror::Error)]
+pub enum ReadAndPlanError {
+    /// The session or the read failed.
+    #[error(transparent)]
+    Service(#[from] crate::ServiceError),
+    /// The device has no KNXnet/IP parameter object.
+    #[error(
+        "devices/{0}.toml has a [knxnet] table, but {0} has no KNXnet/IP parameter object \
+         (interface object type 11): it is not an IP interface, or not this one"
+    )]
+    NotAnInterface(IndividualAddress),
+}
+
+/// Reads the interface in one management session on `service` (with
+/// `options`) and plans `req.config` against it: `bussard plan`/`apply` of
+/// an interface and the MCP `knx_plan_device`/`knx_apply_device` pre-flight.
+/// Read-only.
+///
+/// # Errors
+///
+/// The session or the read failed, or the device has no KNXnet/IP parameter
+/// object.
+pub async fn read_and_plan(
+    service: &crate::BusService,
+    options: &crate::L4Options,
+    req: InterfaceRequest<'_>,
+) -> Result<InterfaceReadPlan, ReadAndPlanError> {
+    let (read, rows) = service
+        .with_l4(req.target, options, async |l4| {
+            let read = read_interface(l4, req.facts, req.device)
+                .await
+                .map_err(crate::ServiceError::from)?;
+            let rows = match req.procedure {
+                Some(plan) => Some(crate::property_plan::read_property_rows(l4, plan).await),
+                None => None,
+            };
+            Ok::<_, crate::ServiceError>((read, rows))
+        })
+        .await?;
+    let Some(knxnet) = &read.knxnet else {
+        return Err(ReadAndPlanError::NotAnInterface(req.target));
+    };
+    let plan = plan_interface(req.target, req.config, knxnet, read.tunnel_slots, req.link);
+    Ok(InterfaceReadPlan { read, plan, rows })
 }
 
 /// The plan of writing `config` (the device file's `[knxnet]` table) to the

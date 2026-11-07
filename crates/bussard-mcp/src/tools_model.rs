@@ -27,6 +27,7 @@ use bussard_model::history::{History, SnapshotReason};
 use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model, Severity};
+use bussard_service::history::{UndoOutcome, Undone};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
@@ -322,30 +323,11 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<HistoryArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let history = History::open(&self.state().dir);
-        let snapshots = match history.list() {
-            Ok(snapshots) => snapshots,
-            Err(err) => return refusal(format!("the history could not be read: {err}")),
-        };
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        let start = snapshots.len().saturating_sub(limit);
-
-        let summaries = history.summaries(&snapshots, start..snapshots.len());
-
-        let mut rows = Vec::new();
-        for ((index, snapshot), summary) in snapshots.iter().enumerate().skip(start).zip(summaries)
-        {
-            rows.push(json!({
-                "index": index + 1,
-                "id": snapshot.id,
-                "created_at": snapshot.manifest.created_at,
-                "command": snapshot.manifest.reason.command,
-                "args": snapshot.manifest.reason.args,
-                "gateway": snapshot.manifest.gateway,
-                "result": snapshot.manifest.result,
-                "summary": summary,
-            }));
-        }
+        let rows = match bussard_service::history::list(&self.state().dir, Some(limit)) {
+            Ok(rows) => rows,
+            Err(err) => return refusal(err.to_string()),
+        };
         ok(json!({ "ok": true, "count": rows.len(), "snapshots": rows }))
     }
 
@@ -829,78 +811,29 @@ impl BussardMcp {
             return refusal("this server was started with --no-model-edits");
         }
         let dir = self.state().dir.clone();
-        let history = History::open(&dir);
-        let snapshots = match history.list() {
-            Ok(snapshots) => snapshots,
-            Err(err) => return refusal(format!("the history could not be read: {err}")),
+        let undone = match bussard_service::history::undo(&dir, args.snapshot_id.as_deref()) {
+            Ok(UndoOutcome::Restored(undone)) => undone,
+            Ok(UndoOutcome::NoHistory) => {
+                return refusal("there are no history snapshots yet, so there is nothing to undo");
+            }
+            Ok(UndoOutcome::NothingToUndo) => {
+                return refusal(
+                    "the model files already match every snapshot, so there is nothing to undo",
+                );
+            }
+            Err(err) => return refusal(err.to_string()),
         };
-        if snapshots.is_empty() {
-            return refusal("there are no history snapshots yet, so there is nothing to undo");
-        }
-        let target = match &args.snapshot_id {
-            Some(spec) => match history.resolve(spec) {
-                Ok(snapshot) => snapshot,
-                Err(err) => return refusal(err.to_string()),
-            },
-            None => match history.undo_target() {
-                Ok(Some(snapshot)) => snapshot,
-                Ok(None) => {
-                    return refusal(
-                        "the model files already match every snapshot, so there is nothing to undo",
-                    );
-                }
-                Err(err) => return refusal(format!("the history could not be read: {err}")),
-            },
-        };
-
-        let before = Model::load(&dir).ok();
-        let restored = match history.load(&target.id) {
-            Ok(model) => model,
-            Err(err) => return refusal(format!("snapshot {} does not load: {err}", target.id)),
-        };
-        let mut changes = before
-            .as_ref()
-            .map(|b| describe(b, &restored))
-            .unwrap_or_default();
+        let Undone {
+            target,
+            undo_snapshot,
+            before,
+            restored,
+            mut changes,
+            key_store,
+        } = *undone;
         if let Some(b) = &before {
             settle_changes(&dir, &mut changes, [&restored, b]);
         }
-
-        let undo_snapshot = match history.restore(&target.id) {
-            Ok(id) => id,
-            Err(err) => return refusal(format!("the restore failed: {err}")),
-        };
-        // A group address whose Data Secure state the undo flips gets its
-        // key back from the snapshot's key store copy, or loses it (#331).
-        let key_store = match &before {
-            Some(b)
-                if !bussard_service::group_security::security_changes(b, &restored).is_empty() =>
-            {
-                let password =
-                    bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV).ok();
-                Some(
-                    match bussard_service::group_security::restore_group_keys(
-                        &dir,
-                        &history.snapshot_dir(&target.id),
-                        Some(&history.snapshot_dir(&undo_snapshot)),
-                        b,
-                        &restored,
-                        password.as_deref(),
-                    ) {
-                        Ok(notes) => json!({"ok": true, "sentences": notes}),
-                        Err(err) => json!({
-                            "ok": false,
-                            "reason": format!(
-                                "the model files are restored, but the key store did not \
-                                 follow: {err}. Fix that and run `bussard groups secure` for \
-                                 the group addresses whose security the undo changed."
-                            ),
-                        }),
-                    },
-                )
-            }
-            _ => None,
-        };
         self.state().model.reload();
         self.session_edits()
             .undone(target.id.as_str(), undo_snapshot.as_str(), &changes);
@@ -925,7 +858,7 @@ impl BussardMcp {
         crate::everyday::put_for_the_human(&mut result);
         put_changes(&mut result, &changes);
         if let (Some(key_store), Some(map)) = (key_store, result.as_object_mut()) {
-            map.insert("key_store".to_string(), key_store);
+            map.insert("key_store".to_string(), json!(key_store));
         }
         ok(result)
     }
@@ -1100,30 +1033,10 @@ impl BussardMcp {
         // key back from the baseline snapshot's key store copy, or loses it,
         // exactly as knx_undo does (#331, #336). The discard's own snapshot
         // keeps the current store, so an undo of the discard restores it.
-        let key_store = (!bussard_service::group_security::security_changes(&before, &edited)
-            .is_empty())
-        .then(|| {
-            let password =
-                bussard_model::dotenv::var(bussard_service::secure::KEYRING_PASSWORD_ENV).ok();
-            match bussard_service::group_security::restore_group_keys(
-                &dir,
-                &history.snapshot_dir(&base_id),
-                Some(&history.snapshot_dir(&snapshot)),
-                &before,
-                &edited,
-                password.as_deref(),
-            ) {
-                Ok(notes) => json!({"ok": true, "sentences": notes}),
-                Err(err) => json!({
-                    "ok": false,
-                    "reason": format!(
-                        "the model files are restored, but the key store did not follow: \
-                         {err}. Fix that and run `bussard groups secure` for the group \
-                         addresses whose security the discard changed."
-                    ),
-                }),
-            }
-        });
+        let key_store = bussard_service::history::follow_keys(
+            &dir, &base_id, &snapshot, &before, &edited, "discard",
+        )
+        .map(|follow| json!(follow));
         self.state().model.reload();
         self.session_edits()
             .discard(subject, Some(snapshot.as_str()));
@@ -1156,7 +1069,7 @@ impl BussardMcp {
             map.insert("note".to_string(), Value::String(notes.join(" ")));
         }
         if let (Some(key_store), Some(map)) = (key_store, result.as_object_mut()) {
-            map.insert("key_store".to_string(), key_store);
+            map.insert("key_store".to_string(), json!(key_store));
         }
         ok(result)
     }

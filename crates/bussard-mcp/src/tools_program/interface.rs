@@ -2,8 +2,7 @@
 //! #391): a device whose file has a `[knxnet]` table and no links is planned
 //! and written as properties of its KNXnet/IP parameter object, through the
 //! same service functions `bussard plan` / `bussard apply` call
-//! ([`bussard_service::knxnet::read_interface`],
-//! [`bussard_service::knxnet::plan_interface`],
+//! ([`bussard_service::knxnet::read_and_plan`],
 //! [`bussard_service::knxnet::apply_interface`]).
 //!
 //! The MCP server has no `--allow-self-reconfigure`: a plan that changes the
@@ -13,16 +12,15 @@
 
 use std::time::{Instant, SystemTime};
 
-use bussard_mgmt::{Layer4Connection, LeaseChannel, Timeouts};
 use bussard_model::IndividualAddress;
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::knxnet::{
-    InterfacePlan, InterfaceRead, SessionLink, apply_interface, interface_config, plan_interface,
-    read_interface, write_interface_backup,
+    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, ReadAndPlanError,
+    SessionLink, apply_interface, interface_config, write_interface_backup,
 };
-use bussard_service::{BusService, FactsCache};
+use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
@@ -57,43 +55,22 @@ fn digests(plan: &InterfacePlan) -> ([u8; 32], [u8; 32]) {
     (live, model.finalize().into())
 }
 
-/// Opens a management session to `target` on `service` (the checked source,
-/// the Data Secure layer with `tool_key`), runs `f` on it and disconnects.
-async fn with_session<T>(
-    service: &BusService,
-    target: IndividualAddress,
+/// The session options of one interface read or write: the checked
+/// `source`, the Data Secure layer with `tool_key`, a free-access authorize.
+fn session_options(
+    source: IndividualAddress,
     tool_key: &Option<Key16>,
     high_water: &SequenceHighWater,
-    f: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> Result<T, String>,
-) -> Result<(IndividualAddress, T), String> {
-    let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
-    let lease = service
-        .handle()
-        .lease()
-        .await
-        .map_err(|e| format!("could not lease the bus: {e}"))?;
-    let secure = bussard_service::secure::layer(tool_key, high_water);
-    let mut l4 = Layer4Connection::connect(
-        LeaseChannel::new(lease),
-        target,
-        source,
-        bussard_mgmt::ConnectOptions {
-            timeouts: Timeouts::default(),
-            secure,
-        },
-    )
-    .await
-    .map_err(|e| format!("connecting to {target}: {e}"))?;
-    // Authorize (free access) first, as ETS does; best-effort.
-    if let Err(err) = l4
-        .authorize_or_fail(bussard_mgmt::apci::FREE_ACCESS_KEY)
-        .await
-    {
-        tracing::debug!("{target} authorize (free access) did not grant: {err}");
+) -> L4Options {
+    L4Options::secured(source, tool_key.clone(), high_water.clone())
+}
+
+/// The refusal sentence of a failed interface session.
+fn session_error(target: IndividualAddress, err: &ServiceError) -> String {
+    match err {
+        ServiceError::Lease(e) => format!("could not lease the bus: {e}"),
+        e => format!("{target}: {}", chain(e)),
     }
-    let out = f(&mut l4).await;
-    let _ = l4.disconnect().await;
-    Ok((source, out?))
 }
 
 impl BussardMcp {
@@ -110,34 +87,27 @@ impl BussardMcp {
         procedure: Option<&bussard_download::FlashPlan>,
     ) -> Result<Planned, String> {
         let model = self.state().model.reload();
-        let dir = self.state().dir.clone();
-        let device = model.devices.get(&target).map(|d| d.device.clone());
-        let (source, (read, rows)) =
-            with_session(service, target, tool_key, high_water, async |l4| {
-                let facts = FactsCache::new(&dir, false);
-                let read = read_interface(l4, &facts, device.as_ref())
-                    .await
-                    .map_err(|e| chain(&e))?;
-                let rows = match procedure {
-                    Some(plan) => {
-                        Some(bussard_service::property_plan::read_property_rows(l4, plan).await)
-                    }
-                    None => None,
-                };
-                Ok((read, rows))
-            })
-            .await?;
-        let Some(knxnet) = &read.knxnet else {
-            return Err(format!(
-                "devices/{target}.toml has a [knxnet] table, but {target} has no KNXnet/IP \
-                 parameter object (interface object type 11)"
-            ));
-        };
+        let facts = FactsCache::new(&self.state().dir, false);
+        let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
         let link = SessionLink {
             source: Some(source),
             gateway: SessionLink::gateway_of(gateway),
         };
-        let plan = plan_interface(target, config, knxnet, read.tunnel_slots, &link);
+        let req = InterfaceRequest {
+            target,
+            config,
+            device: model.devices.get(&target).map(|d| &d.device),
+            facts: &facts,
+            link: &link,
+            procedure,
+        };
+        let options = session_options(source, tool_key, high_water);
+        let InterfaceReadPlan { read, plan, rows } = knxnet::read_and_plan(service, &options, req)
+            .await
+            .map_err(|err| match err {
+                ReadAndPlanError::Service(err) => session_error(target, &err),
+                err => err.to_string(),
+            })?;
         Ok(Planned {
             source,
             read,
@@ -319,13 +289,17 @@ impl BussardMcp {
         let dir = self.state().dir.clone();
         let mut established = planned.read.established.clone();
         let plan = planned.plan;
-        let applied = with_session(&service, target, &tool_key, &high_water, async |l4| {
-            let facts = FactsCache::new(&dir, false);
-            Ok(apply_interface(l4, target, &config, &plan, Some((&facts, &mut established))).await)
-        })
-        .await;
+        let options = session_options(planned.source, &tool_key, &high_water);
+        let applied = service
+            .with_l4(target, &options, async |l4| {
+                let facts = FactsCache::new(&dir, false);
+                let established = Some((&facts, &mut established));
+                Ok(apply_interface(l4, target, &config, &plan, established).await)
+            })
+            .await
+            .map_err(|err| session_error(target, &err));
         match applied {
-            Ok((_, applied)) => {
+            Ok(applied) => {
                 result["written"] = json!(applied.written);
                 result["readback"] = json!(applied.readback);
                 match applied.failure() {

@@ -25,15 +25,14 @@
 //! written; `--resume` reads it back and skips the finished devices without
 //! touching the bus at all. A run that ends with no failures deletes the file.
 
-use std::collections::BTreeMap;
-
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
 use bussard_mgmt::system_type;
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::line::resume::{LineState, Opened};
 use bussard_service::line::{
     DeviceStatus, LineMode as Mode, LineOutcome as Outcome, LineTarget as Target, LineVisit,
     targets_on_line, visit_device,
@@ -47,9 +46,6 @@ use crate::conn_cmd::{
     resolve_config,
 };
 use bussard_service::secure::ToolKeySource;
-
-/// The state-file format version, bumped if the shape ever changes.
-const STATE_VERSION: u32 = 1;
 
 /// The stable JSON shape of one device row.
 #[derive(Debug, serde::Serialize)]
@@ -76,75 +72,6 @@ struct LineJson {
     skipped: usize,
     failed: usize,
     state_file: Option<String>,
-}
-
-/// One device's persisted outcome in the resume state file.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-struct DeviceRecord {
-    /// The status key (`applied`, `unchanged`, `skipped`, `failed`).
-    status: String,
-    /// How many link changes were written.
-    #[serde(default)]
-    changes: usize,
-    /// The skip or failure reason.
-    #[serde(default)]
-    detail: Option<String>,
-    /// When this outcome was recorded (seconds since the Unix epoch).
-    #[serde(default)]
-    unix: u64,
-}
-
-impl DeviceRecord {
-    /// Whether a later `--resume` may skip this device untouched.
-    fn is_finished(&self) -> bool {
-        self.status != "failed"
-    }
-}
-
-/// The resume state file: what a whole-line `apply` has already done.
-///
-/// It is rewritten after every device, so a process killed at any point leaves a
-/// truthful record. A run that ends with no failures deletes it.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
-struct LineState {
-    /// The format version ([`STATE_VERSION`]).
-    version: u32,
-    /// The line this run covers, e.g. `1.1`.
-    line: String,
-    /// The gateway the run wrote through, for the operator's benefit.
-    gateway: String,
-    /// When the run started (seconds since the Unix epoch).
-    started_unix: u64,
-    /// When the file was last written.
-    updated_unix: u64,
-    /// Whether every device reached a finished state.
-    completed: bool,
-    /// Per-device outcomes, keyed by individual address.
-    devices: BTreeMap<String, DeviceRecord>,
-}
-
-impl LineState {
-    /// A fresh state for a run over `line` through `gateway`.
-    fn new(line: &str, gateway: &str) -> Self {
-        let now = unix_now();
-        LineState {
-            version: STATE_VERSION,
-            line: line.to_string(),
-            gateway: gateway.to_string(),
-            started_unix: now,
-            updated_unix: now,
-            completed: false,
-            devices: BTreeMap::new(),
-        }
-    }
-}
-
-/// Seconds since the Unix epoch, or 0 if the clock is before it.
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
 }
 
 /// Parses an `area.line` string (e.g. `1.1`) into its two parts
@@ -264,9 +191,9 @@ fn run_line(
     // Resume bookkeeping. `--resume` reads the previous run's record; a fresh run
     // starts a new one but says so when it finds an unfinished file, so an
     // interrupted run is never silently restarted from the top.
-    let state_path = state_file_path(dir, &line);
+    let state_path = LineState::path(dir, &line);
     let mut state = if mode == Mode::Apply {
-        Some(open_state(&state_path, &line, &gateway, options.resume)?)
+        Some(open_state(&state_path, &line, &gateway, options.resume))
     } else {
         None
     };
@@ -350,14 +277,10 @@ fn run_line(
     let mut kept_state = None;
     if let Some(state) = state.as_mut() {
         let all_done = failed == 0 && !interrupted && outcomes.len() == target_count;
-        state.completed = all_done;
-        state.updated_unix = unix_now();
-        if all_done {
-            let _ = std::fs::remove_file(&state_path);
-        } else {
-            write_state(&state_path, state)?;
-            kept_state = Some(state_path.display().to_string());
-        }
+        let kept = state
+            .finish(all_done, &state_path)
+            .with_context(|| format!("writing the resume state file {}", state_path.display()))?;
+        kept_state = kept.then(|| state_path.display().to_string());
     }
 
     if options.json {
@@ -381,10 +304,7 @@ fn run_line(
 
 /// Whether the state file already records `address` as finished.
 fn is_done(state: Option<&LineState>, address: IndividualAddress) -> bool {
-    state
-        .and_then(|s| s.devices.get(&address.to_string()))
-        .map(|r| r.is_finished())
-        .unwrap_or(false)
+    state.is_some_and(|s| s.is_done(address))
 }
 
 /// Visits every target in address order, recording one outcome each.
@@ -445,34 +365,16 @@ async fn visit_all(
         );
         let outcome = if is_done(state.as_ref(), target.address) {
             eprintln!("  already done in an earlier run; skipping (--resume)");
-            Outcome {
-                address: target.address,
-                name: target.name.clone(),
-                mask: None,
-                status: DeviceStatus::Skipped("done in an earlier run".to_string()),
-                report: None,
-                fingerprint: None,
-                backup: None,
-            }
+            LineState::done_earlier(target)
         } else {
             visit_device(&visit, target, &mut print_note).await
         };
         eprintln!("  {}", outcome.status.label());
 
-        if let Some(state) = state.as_mut() {
-            state.devices.insert(
-                outcome.address.to_string(),
-                DeviceRecord {
-                    status: outcome.status.key().to_string(),
-                    changes: outcome.status.changes(),
-                    detail: outcome.status.detail().map(str::to_string),
-                    unix: unix_now(),
-                },
-            );
-            state.updated_unix = unix_now();
-            if let Err(err) = write_state(state_path, state) {
-                eprintln!("warning: could not update the resume state file: {err:#}");
-            }
+        if let Some(state) = state.as_mut()
+            && let Err(err) = state.record(&outcome, state_path)
+        {
+            eprintln!("warning: could not update the resume state file: {err}");
         }
         match collected.lock() {
             Ok(mut v) => v.push(outcome),
@@ -481,59 +383,28 @@ async fn visit_all(
     }
 }
 
-/// The resume state file for `line` under the model directory.
-fn state_file_path(dir: &Path, line: &str) -> PathBuf {
-    dir.join("captures").join(format!("apply-line-{line}.json"))
-}
-
 /// Loads (with `--resume`) or starts the run's state.
 ///
 /// Without `--resume` a leftover file is reported and replaced, so an
 /// interrupted run is never silently restarted from the top without the operator
 /// hearing that `--resume` exists.
-fn open_state(path: &Path, line: &str, gateway: &str, resume: bool) -> anyhow::Result<LineState> {
-    let existing = match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str::<LineState>(&text).ok(),
-        Err(_) => None,
-    };
-    match (resume, existing) {
-        (true, Some(mut state)) => {
-            let done = state.devices.values().filter(|r| r.is_finished()).count();
-            eprintln!(
-                "resuming the run recorded in {} ({done} device(s) already done)",
-                path.display()
-            );
-            state.gateway = gateway.to_string();
-            state.completed = false;
-            Ok(state)
+fn open_state(path: &Path, line: &str, gateway: &str, resume: bool) -> LineState {
+    let (state, opened) = LineState::open(path, line, gateway, resume);
+    let path = path.display();
+    match opened {
+        Opened::Resumed(done) => {
+            eprintln!("resuming the run recorded in {path} ({done} device(s) already done)")
         }
-        (true, None) => {
-            eprintln!(
-                "no resumable run recorded in {}; starting a fresh one",
-                path.display()
-            );
-            Ok(LineState::new(line, gateway))
+        Opened::NothingToResume => {
+            eprintln!("no resumable run recorded in {path}; starting a fresh one")
         }
-        (false, Some(_)) => {
-            eprintln!(
-                "note: {} records an unfinished run; starting from the top \
-                 (pass --resume to continue it instead)",
-                path.display()
-            );
-            Ok(LineState::new(line, gateway))
-        }
-        (false, None) => Ok(LineState::new(line, gateway)),
+        Opened::Replaced => eprintln!(
+            "note: {path} records an unfinished run; starting from the top \
+             (pass --resume to continue it instead)"
+        ),
+        Opened::Fresh => {}
     }
-}
-
-/// Writes the state file, creating `captures/` if needed.
-fn write_state(path: &Path, state: &LineState) -> anyhow::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
-    }
-    std::fs::write(path, serde_json::to_string_pretty(state)?)
-        .with_context(|| format!("writing the resume state file {}", path.display()))
+    state
 }
 
 /// Asks the one confirmation for the whole run, naming the resolved gateway
@@ -654,42 +525,5 @@ mod tests {
             DeviceStatus::Skipped("unsupported mask 0012 (System 1)".to_string()).label(),
             "skipped: unsupported mask 0012 (System 1)"
         );
-    }
-
-    #[test]
-    fn test_state_file_path_names_the_line() {
-        let path = state_file_path(Path::new("knx"), "1.1");
-        assert!(path.ends_with("captures/apply-line-1.1.json"), "{path:?}");
-    }
-
-    #[test]
-    fn test_is_done_only_for_finished_records() -> anyhow::Result<()> {
-        let mut state = LineState::new("1.1", "127.0.0.1:3671");
-        state.devices.insert(
-            "1.1.4".to_string(),
-            DeviceRecord {
-                status: "applied".to_string(),
-                changes: 2,
-                detail: None,
-                unix: 0,
-            },
-        );
-        state.devices.insert(
-            "1.1.5".to_string(),
-            DeviceRecord {
-                status: "failed".to_string(),
-                changes: 0,
-                detail: Some("nak".to_string()),
-                unix: 0,
-            },
-        );
-        let done: IndividualAddress = "1.1.4".parse()?;
-        let failed: IndividualAddress = "1.1.5".parse()?;
-        let unseen: IndividualAddress = "1.1.6".parse()?;
-        assert!(is_done(Some(&state), done));
-        assert!(!is_done(Some(&state), failed));
-        assert!(!is_done(Some(&state), unseen));
-        assert!(!is_done(None, done));
-        Ok(())
     }
 }
