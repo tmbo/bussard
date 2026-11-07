@@ -5439,7 +5439,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
-        let config = bussard_ets::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
         let params = PropertyParameters::resolve(&app, &config);
         assert!(params.is_empty());
         assert!(params.values()?.is_empty());
