@@ -2524,6 +2524,14 @@ impl<'a> PropertyParameters<'a> {
         app: &'a ApplicationProgram,
         config: &crate::dynamic::DynamicConfig,
     ) -> PropertyParameters<'a> {
+        // Most programs place no parameter in a property: they build neither
+        // map below (issue #957, the laziness issue #669 gave the planner).
+        if !app.parameters.values().any(|p| p.property.is_some()) {
+            return PropertyParameters {
+                app,
+                params: Vec::new(),
+            };
+        }
         let prefix = format!("{}_", app.id);
         // The reached application-level ref of each parameter, first in walk order.
         let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
@@ -2585,6 +2593,11 @@ impl<'a> PropertyParameters<'a> {
             .collect();
         params.sort_by(|a, b| a.param.id.cmp(&b.param.id));
         PropertyParameters { app, params }
+    }
+
+    /// Whether no parameter of the program is placed in any property.
+    pub fn is_empty(&self) -> bool {
+        self.params.is_empty()
     }
 
     /// Whether a parameter is placed in `object`/`prop_id`, the object named
@@ -5398,6 +5411,38 @@ mod tests {
             values.get(&(PropertyObjectRef::Index(3), 204)),
             Some(&vec![9])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_property_parameters_resolve_without_placements_is_empty()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Issue #957: a program that places no parameter in a property (the
+        // common case) returns before the walk maps are built, so a plan
+        // that resolves it on every flash stays as cheap as the lazy
+        // composition of issue #669.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-07B0" Name="Mem">
+          <Static>
+           <Code><RelativeSegment Id="M-4_A-1_RS-1" Size="1" LoadStateMachine="4" Offset="0" /></Code>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-1" Name="a" ParameterType="M-4_A-1_PT-u8" Value="7">
+             <Memory CodeSegment="M-4_A-1_RS-1" Offset="0" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" />
+           </ParameterRefs>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = bussard_ets::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let params = PropertyParameters::resolve(&app, &config);
+        assert!(params.is_empty());
+        assert!(params.values()?.is_empty());
         Ok(())
     }
 

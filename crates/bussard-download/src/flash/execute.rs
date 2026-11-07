@@ -18,7 +18,9 @@ use super::verify::{
     WrittenSample, advisory_mcb_warning, mcb_read_object, mcb_skip_target, resident_match_objects,
     take_sample, verify_after_reboot, verify_outcome,
 };
-use super::{FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress, SegmentFill};
+use super::{
+    FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, Progress, PropObject, SegmentFill,
+};
 use bussard_mgmt::MgmtError;
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::load::{
@@ -724,6 +726,83 @@ impl StepExecutor for SystemB<'_> {
                 && object.index().is_some_and(|obj_idx| {
                     !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                 }) => {}
+            // An object named by type, on a program that is not Data Secure
+            // enabled: written at the index the device's interface-object
+            // list gives it, with the plain services, as ETS writes the
+            // Siemens dimmer's type 50215 at object 6 (issue #948). A type
+            // the list does not hold is refused, never written to object 0.
+            FlashStep::WriteProp {
+                object:
+                    PropObject::Type {
+                        object_type,
+                        occurrence,
+                    },
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+                ..
+            } if plan.typed_objects_by_list() => {
+                let target = match super::props::listed_index(
+                    object_table,
+                    *object_type,
+                    *occurrence,
+                ) {
+                    Some(index) if *prop_id <= u32::from(u8::MAX) => index,
+                    found => {
+                        return Err(WriteError::Mgmt(
+                            bussard_mgmt::MgmtError::MalformedResponse {
+                                address: session.l4().target(),
+                                reason: match found {
+                                    Some(index) => format!(
+                                        "PID {prop_id} of object type {object_type} (object {index}) \
+                                     exceeds the 8-bit PID the plain property services address"
+                                    ),
+                                    None => format!(
+                                        "the device lists no interface object of type {object_type} \
+                                     (occurrence {occurrence}) in its object list {object_table:?}, \
+                                     so PID {prop_id} has nowhere to go"
+                                    ),
+                                },
+                            },
+                        ));
+                    }
+                };
+                super::props::write_property_value(
+                    session.l4(),
+                    PropObject::Index(u32::from(target)),
+                    *prop_id,
+                    *start_element,
+                    *count,
+                    value,
+                    *verify,
+                )
+                .await?;
+            }
+            // The description read of a property no value decides (issue
+            // #841), on an object named by type of a program that is not Data
+            // Secure enabled: at its listed index, as the write above; a type
+            // the list does not hold reads nothing, the read changes nothing.
+            FlashStep::DescribeProp {
+                object:
+                    PropObject::Type {
+                        object_type,
+                        occurrence,
+                    },
+                prop_id,
+            } if plan.typed_objects_by_list() => {
+                if let Some(index) =
+                    super::props::listed_index(object_table, *object_type, *occurrence)
+                {
+                    super::props::describe_property(
+                        session.l4(),
+                        PropObject::Index(u32::from(index)),
+                        *prop_id,
+                    )
+                    .await?;
+                }
+            }
             // A procedure's own load-state transition of an object (issue
             // #947, ise smart connect object 8): confirmed by the load state
             // the device answers, as a `LoadCompleted` step is, and the

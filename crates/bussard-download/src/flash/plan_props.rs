@@ -470,7 +470,9 @@ pub(super) fn lower_write_prop(
     // 8 PID 64 of the Jung Sonos-Gateway as 34 requests from element 1 to 496,
     // issue #947). What bounds the write is the 12-bit start index of its last
     // request: element 4095.
-    let count = count.unwrap_or(1).max(1);
+    // The one Count rule of both System B planners (issue #957).
+    let count = super::declare::element_count(&name, *count, start_element, None)
+        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?;
     let last_element = u64::from(start_element) + u64::from(count) - 1;
     if last_element > u64::from(MAX_12_BIT) {
         return Err(PlanError::UnsupportedWriteProp {
@@ -640,6 +642,7 @@ pub(super) fn plan_flash_properties(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: false,
+        typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
         kept: Vec::new(),
