@@ -105,6 +105,16 @@ pub enum AuthorizeOutcome {
 }
 
 impl AuthorizeOutcome {
+    /// The stored form of this outcome, as the device facts record it.
+    pub fn verdict(&self) -> bussard_model::facts::AuthorizeVerdict {
+        use bussard_model::facts::AuthorizeVerdict;
+        match self {
+            AuthorizeOutcome::Granted { .. } => AuthorizeVerdict::Granted,
+            AuthorizeOutcome::Denied { .. } => AuthorizeVerdict::Denied,
+            AuthorizeOutcome::Unsupported { .. } => AuthorizeVerdict::Unsupported,
+        }
+    }
+
     /// Whether the device implements authorize and granted an access level.
     pub fn granted(&self) -> bool {
         matches!(self, AuthorizeOutcome::Granted { .. })

@@ -1359,7 +1359,7 @@ fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// Re-derives the lock-side facts of `ia` (channels, objects, the parameter
+/// Re-derives the lock keys of `ia` (channels, objects, the parameter
 /// index) with its device file's current values, when the lock pins an
 /// intact product archive for it (issue #276). A parameter that enables a
 /// block or picks a data length then shows its dependent parameters and
@@ -1396,7 +1396,7 @@ fn refresh_device_facts(
         .iter()
         .filter_map(|(k, v)| Some((k.split_once('@')?.1.to_string(), v.clone())))
         .collect();
-    let facts = bussard_project::facts::derive_facts(app, &values, &Default::default());
+    let facts = bussard_project::lock_keys::derive_lock_keys(app, &values, &Default::default());
     let shape =
         |d: &bussard_model::schema::Device| -> std::collections::BTreeMap<u16, Option<String>> {
             d.com_objects
@@ -1405,7 +1405,7 @@ fn refresh_device_facts(
                 .collect()
         };
     let before = shape(device);
-    bussard_project::facts::refresh_facts(device, &facts, &linked);
+    bussard_project::lock_keys::refresh_lock_keys(device, &facts, &linked);
     let after = shape(device);
     let list = |numbers: Vec<&u16>| {
         numbers

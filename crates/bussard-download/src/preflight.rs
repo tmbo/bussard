@@ -133,7 +133,7 @@ pub struct ResidentState {
     /// load state is deliberately not read and which therefore has no entry in
     /// [`objects`](ResidentState::objects). It is device-stable, so the caller
     /// hands it to the write phase as part of
-    /// [`DeviceFacts`](crate::DeviceFacts) instead of walking it again. Empty on
+    /// [`DeviceFactsRecord`](bussard_model::facts::DeviceFactsRecord) instead of walking it again. Empty on
     /// System 7 (whose LSMs are not interface objects) and when the walk failed.
     pub object_table: Vec<(u8, u16)>,
     /// The resident application id (`PID_PROGRAM_VERSION`), when a device object

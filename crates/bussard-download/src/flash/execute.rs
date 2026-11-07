@@ -1158,7 +1158,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // probed. Whole-operation replay alone could not recover a discovery that needs
     // more exchanges than the budget; per-probe forward progress can.
     //
-    // A session opened with [`DeviceFacts`] (the CLI: its read-only pre-flight
+    // A session opened with device facts (the CLI: its read-only pre-flight
     // already walked `PID_OBJECT_TYPE` over every object) skips the walk entirely
     // — the table is device-stable, so re-reading it would only repeat one
     // `A_PropertyValue_Read` per interface object. Without facts (the library

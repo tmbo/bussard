@@ -3,8 +3,8 @@
 //!
 //! For every target this reads the group-address and association tables and,
 //! where bussard can bound the read from the device itself, the writable
-//! parameter memory, and returns one [`DeviceCapture`] per device: the
-//! manifest row and, when the tables were read, the backup to write.
+//! parameter memory, and returns one [`ManifestEntry`] per device: the
+//! manifest row, carrying the backup to write when the tables were read.
 //! [`write_backup_run`] then writes one JSON file per device plus a
 //! `manifest.json` describing the run.
 //!
@@ -113,16 +113,6 @@ pub fn default_out_dir(dir: &Path, started: SystemTime) -> PathBuf {
     backups_root(dir).join(timestamp_dir_name(started))
 }
 
-/// One device's outcome: the manifest row, plus the backup to write when
-/// there is one.
-#[derive(Debug, Clone)]
-pub struct DeviceCapture {
-    /// The manifest row (always present, whatever happened).
-    pub entry: ManifestEntry,
-    /// The device's backup, when its tables were read.
-    pub backup: Option<DeviceBackup>,
-}
-
 /// Resolves the Data Secure tool key of a device: the device and whether the
 /// model records it as security-activated, to the key or the plain path.
 pub type ToolKeyFn<'a> =
@@ -155,11 +145,11 @@ pub async fn capture_devices(
     service: &BusService,
     inputs: BackupInputs<'_>,
     targets: &[IndividualAddress],
-    progress: &mut (dyn FnMut(WalkEvent<'_, DeviceCapture>) + Send),
-) -> Vec<DeviceCapture> {
+    progress: &mut (dyn FnMut(WalkEvent<'_, ManifestEntry>) + Send),
+) -> Vec<ManifestEntry> {
     walk(
         targets,
-        |capture: &DeviceCapture| capture.backup.is_some(),
+        |entry: &ManifestEntry| entry.backup.is_some(),
         |target| capture_one(service, inputs, target),
         progress,
     )
@@ -169,8 +159,8 @@ pub async fn capture_devices(
     .collect()
 }
 
-/// Writes the captures of a run into `out_dir`: one file per backed-up device
-/// and the `manifest.json` naming them. Returns the manifest and its path.
+/// Writes the rows of a run into `out_dir`: one file per backed-up device and
+/// the `manifest.json` naming them. Returns the manifest and its path.
 ///
 /// # Errors
 ///
@@ -180,13 +170,12 @@ pub fn write_backup_run(
     out_dir: &Path,
     gateway: impl Into<String>,
     started: SystemTime,
-    captures: &[DeviceCapture],
+    entries: Vec<ManifestEntry>,
 ) -> Result<(BackupManifest, PathBuf), BackupError> {
     let mut manifest = BackupManifest::new(gateway, started);
-    for capture in captures {
-        let mut entry = capture.entry.clone();
-        if let Some(backup) = &capture.backup {
-            let path = write_device_backup(out_dir, backup)?;
+    for mut entry in entries {
+        if let Some(backup) = entry.backup.take() {
+            let path = write_device_backup(out_dir, &backup)?;
             entry.file = path
                 .file_name()
                 .and_then(|n| n.to_str())
@@ -203,20 +192,20 @@ async fn capture_one(
     service: &BusService,
     inputs: BackupInputs<'_>,
     target: IndividualAddress,
-) -> DeviceCapture {
+) -> ManifestEntry {
     let activated = crate::secure::model_activated(Some(inputs.model), target);
     let tool_key = match (inputs.tool_key)(target, activated) {
         Ok(key) => key,
         Err(err) => {
-            return DeviceCapture::failed(target, format!("resolving the tool key: {err}"));
+            return ManifestEntry::failed(target, format!("resolving the tool key: {err}"));
         }
     };
     // Presence first, on the fast discovery budget: an absent device is ruled
     // out in about three seconds instead of the full management budget.
     let mask = match probe_mask(service, inputs.source, target).await {
         Probe::Present(mask) => mask,
-        Probe::Absent => return DeviceCapture::unreachable(target),
-        Probe::Error(detail) => return DeviceCapture::failed(target, detail),
+        Probe::Absent => return ManifestEntry::unreachable(target),
+        Probe::Error(detail) => return ManifestEntry::failed(target, detail),
     };
 
     // Then a fresh session on the normal budget for the reads themselves.
@@ -241,17 +230,17 @@ async fn capture_one(
                     None
                 }
             };
-            let mut capture = read_one(dev, target, || user_memory(target)).await;
-            capture.entry.identity = check;
-            Ok::<_, ServiceError>(capture)
+            let mut entry = read_one(dev, target, || user_memory(target)).await;
+            entry.identity = check;
+            Ok::<_, ServiceError>(entry)
         })
         .await;
     match session {
-        Ok(capture) => {
+        Ok(entry) => {
             tracing::debug!("{target} answered the presence probe with mask {mask:04X}");
-            capture
+            entry
         }
-        Err(err) => DeviceCapture::failed(target, session_error_detail(&err)),
+        Err(err) => ManifestEntry::failed(target, session_error_detail(&err)),
     }
 }
 
@@ -261,32 +250,27 @@ async fn read_one(
     dev: &mut Management,
     target: IndividualAddress,
     user_memory: impl FnOnce() -> bool,
-) -> DeviceCapture {
+) -> ManifestEntry {
     let order = read_order(dev).await;
 
     let read_at = SystemTime::now();
     let live = bussard_download::read_live_tables(dev, Sys7TableBases::default()).await;
     match live {
-        Err(err) => DeviceCapture::failed(target, format!("reading the tables: {err}")),
-        Ok(LiveRead::UnsupportedMask { mask, .. }) => DeviceCapture {
-            entry: ManifestEntry {
-                address: target.to_string(),
-                status: BackupStatus::Skipped,
-                mask: Some(format!("{mask:04X}")),
-                system_type: Some(system_type(mask).to_string()),
-                application: None,
-                order_number: order.clone(),
-                read_time: Some(rfc3339_utc(read_at)),
-                file: None,
-                parameters: None,
-                detail: Some(format!(
+        Err(err) => ManifestEntry::failed(target, format!("reading the tables: {err}")),
+        Ok(LiveRead::UnsupportedMask { mask, .. }) => ManifestEntry {
+            status: BackupStatus::Skipped,
+            mask: Some(format!("{mask:04X}")),
+            system_type: Some(system_type(mask).to_string()),
+            order_number: order,
+            read_time: Some(rfc3339_utc(read_at)),
+            ..ManifestEntry::failed(
+                target,
+                format!(
                     "unsupported mask {mask:04X} ({}): bussard reads tables for the System B \
                      (x7B0) and System 7 (0705 / 0701) families",
                     system_type(mask)
-                )),
-                identity: None,
-            },
-            backup: None,
+                ),
+            )
         },
         Ok(LiveRead::Tables(live)) => {
             let tables = live.tables().clone();
@@ -294,20 +278,18 @@ async fn read_one(
             let (application, parameters, parameter_status) =
                 read_application_state(dev, tables.mask, user_memory).await;
             let backup = DeviceBackup::capture(target, &tables, sys7.as_ref(), parameters, read_at);
-            DeviceCapture {
-                entry: ManifestEntry {
-                    address: target.to_string(),
-                    status: BackupStatus::BackedUp,
-                    mask: Some(format!("{:04X}", tables.mask)),
-                    system_type: Some(system_type(tables.mask).to_string()),
-                    application,
-                    order_number: order.clone(),
-                    read_time: Some(rfc3339_utc(read_at)),
-                    file: None,
-                    parameters: Some(parameter_status),
-                    detail: None,
-                    identity: None,
-                },
+            ManifestEntry {
+                address: target.to_string(),
+                status: BackupStatus::BackedUp,
+                mask: Some(format!("{:04X}", tables.mask)),
+                system_type: Some(system_type(tables.mask).to_string()),
+                application,
+                order_number: order,
+                read_time: Some(rfc3339_utc(read_at)),
+                file: None,
+                parameters: Some(parameter_status),
+                detail: None,
+                identity: None,
                 backup: Some(backup),
             }
         }
@@ -344,38 +326,6 @@ async fn probe_mask(
         Ok(probe) => probe,
         Err(ServiceError::Mgmt(err)) if !err.device_present() => Probe::Absent,
         Err(err) => Probe::Error(session_error_detail(&err)),
-    }
-}
-
-impl DeviceCapture {
-    /// A device nothing answered for.
-    fn unreachable(target: IndividualAddress) -> DeviceCapture {
-        let mut capture = DeviceCapture::failed(
-            target,
-            "no answer at this address (switched off, disconnected, or removed)".to_string(),
-        );
-        capture.entry.status = BackupStatus::Unreachable;
-        capture
-    }
-
-    /// A device that answered, but whose read failed.
-    fn failed(target: IndividualAddress, detail: String) -> DeviceCapture {
-        DeviceCapture {
-            entry: ManifestEntry {
-                address: target.to_string(),
-                status: BackupStatus::Failed,
-                mask: None,
-                system_type: None,
-                application: None,
-                order_number: None,
-                read_time: Some(rfc3339_utc(SystemTime::now())),
-                file: None,
-                parameters: None,
-                detail: Some(detail),
-                identity: None,
-            },
-            backup: None,
-        }
     }
 }
 

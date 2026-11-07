@@ -7,10 +7,11 @@
 //! through it. [`write_parameters`] is the parameter half of an apply: the
 //! parameter-only plan, then a read-back of every octet it meant to change.
 
-use bussard_download::{DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, Session};
+use bussard_download::{FlashOptions, FlashOutcome, FlashPlan, Session};
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
+use bussard_model::facts::DeviceFactsRecord;
 use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::bus::{Authorize, BusService, L4Options, Management};
@@ -105,7 +106,7 @@ pub struct FlashRun<'a> {
     /// The download options.
     pub options: FlashOptions,
     /// What the read-only pre-flight learned (object table, max APDU).
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// The KNX Data Secure tool key, `None` on the plain path.
     pub tool_key: Option<Key16>,
     /// The send-sequence high-water mark shared across the command.
@@ -141,9 +142,9 @@ pub async fn flash_session<R>(
         Some(mut l4) => {
             // The write phase's timeout budget, as its own connections get.
             l4.set_timeouts(flash_l4_timeouts().unwrap_or_default());
-            Session::adopt_with_facts(connector, l4, bcu_key, run.facts).await
+            Session::adopt_with_facts(connector, l4, bcu_key, Some(run.facts)).await
         }
-        None => Session::open(connector, bcu_key, run.facts).await,
+        None => Session::open(connector, bcu_key, Some(run.facts)).await,
     };
     let mut session = match opened {
         Ok(session) => session,
@@ -248,10 +249,8 @@ pub async fn write_parameters(
         high_water,
         read_options,
     } = write;
-    let facts = DeviceFacts {
-        object_table: detail.resident.object_table.clone(),
-        ..DeviceFacts::default()
-    };
+    let mut facts = DeviceFactsRecord::unread(target);
+    facts.set_object_table(&detail.resident.object_table);
     let options = FlashOptions {
         bcu_key: None,
         verify_after_restart: true,

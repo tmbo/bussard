@@ -16,7 +16,7 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, M
 use bussard_prod::{ApplicationProgram, IndexEntry, ProductData, ResolvedComObject};
 use bussard_secure::SequenceHighWater;
 
-use super::{SecureAdoption, SecureDeviceFacts};
+use super::SecureAdoption;
 use crate::assign::{Verified, empty_model};
 use crate::params::ProductSource;
 use crate::secure::{SecureKeyError, SecureMaterial, ToolKeys};
@@ -285,10 +285,13 @@ pub fn build_device(
     // The lock facts under the vendor defaults: the objects the program
     // shows, with channel handles and keys from day one.
     if let Some(app) = selected.and_then(|s| s.app.as_ref()) {
-        let facts =
-            bussard_project::facts::derive_facts(app, &BTreeMap::new(), &Default::default());
+        let facts = bussard_project::lock_keys::derive_lock_keys(
+            app,
+            &BTreeMap::new(),
+            &Default::default(),
+        );
         device.com_objects.clear();
-        bussard_project::facts::apply_facts(&mut device, app, &facts, &BTreeMap::new());
+        bussard_project::lock_keys::apply_lock_keys(&mut device, app, &facts, &BTreeMap::new());
     }
     device
 }
@@ -630,13 +633,13 @@ pub fn record_secured(
                     .map(|(k, v)| (k.clone(), v.clone()))
                     .collect();
                 parameters = stored.len();
-                let facts = bussard_project::facts::derive_facts(
+                let facts = bussard_project::lock_keys::derive_lock_keys(
                     app,
                     &detail.decoded.values,
                     &Default::default(),
                 );
                 device.com_objects.clear();
-                bussard_project::facts::apply_facts(&mut device, app, &facts, &stored);
+                bussard_project::lock_keys::apply_lock_keys(&mut device, app, &facts, &stored);
             }
             None => {
                 if let Some(note) = &state.readback.note {
@@ -685,10 +688,6 @@ pub fn record_secured(
             })
             .collect()
     });
-    let facts = SecureDeviceFacts {
-        sequence_number: material.device_sequences.get(&current).copied(),
-        senders: senders.clone().unwrap_or_default(),
-    };
     let link_count = links.len();
     if !links.is_empty() {
         out.links.links.insert(target, links);
@@ -700,7 +699,14 @@ pub fn record_secured(
             file_stem: target.to_string(),
         },
     );
-    super::apply_secure_adoption(&mut out, target, &adoption, &facts, placeholder);
+    super::apply_secure_adoption(
+        &mut out,
+        target,
+        &adoption,
+        material.device_sequences.get(&current).copied(),
+        senders.as_deref().unwrap_or_default(),
+        placeholder,
+    );
     let device = out
         .devices
         .remove(&target)

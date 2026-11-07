@@ -20,13 +20,14 @@
 use std::path::PathBuf;
 
 use bussard_download::{
-    DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ParamPlan, ParamProperty,
-    ParamRegions, ResidentState,
+    FlashOptions, FlashOutcome, FlashPlan, FlashStep, ParamPlan, ParamProperty, ParamRegions,
+    ResidentState,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::IndividualAddress;
+use bussard_model::facts::DeviceFactsRecord;
 use bussard_prod::ApplicationProgram;
 use bussard_secure::{Key16, SequenceHighWater};
 
@@ -320,7 +321,7 @@ pub struct ParamsWrite<'a> {
     /// The application.
     pub app: &'a ApplicationProgram,
     /// What the pre-flight learned, seeding the download.
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// The pre-flight's connection, taken over under `--yes` (issue #213).
     pub handover: Option<Management>,
     /// The question.

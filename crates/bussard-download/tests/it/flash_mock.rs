@@ -34,7 +34,6 @@
 //!
 //! **The flash path is only ever exercised here — never against a live bus.**
 
-use bussard_download::DeviceFacts;
 use std::collections::{BTreeMap, HashMap};
 
 use std::sync::{Arc, Mutex};
@@ -44,6 +43,7 @@ use bussard_download::flash::SegmentFill;
 use bussard_download::{FlashStep, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
+use bussard_model::facts::{AuthorizeVerdict, DeviceFactsRecord};
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{Inbound, MockDevice, MockGateway, Step, TestResult, Verdict, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination};
@@ -3722,7 +3722,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
     ));
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -3881,7 +3881,7 @@ async fn test_flash_master_reset_erase_code_4_over_loaded_device_redownloads() -
     )?;
     assert!(plan.erases_resident_objects());
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -3939,7 +3939,7 @@ async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -3987,7 +3987,7 @@ async fn test_flash_master_reset_refused_fails_the_flash() -> TestResult {
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let result = flash(
         &mut session,
         &plan,
@@ -4053,7 +4053,7 @@ async fn test_flash_reboot_probe_treats_negative_con_as_not_up_yet() -> TestResu
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4145,7 +4145,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
         // forced drop would cost seconds of pure waiting (~24 s for the test).
         let connector =
             LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-        let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+        let mut session = Session::open(connector, None, None).await?;
         let outcome = flash(
             &mut session,
             &plan,
@@ -4199,7 +4199,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
         // Fast L4 timeouts, as in the first half.
         let connector =
             LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-        let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+        let mut session = Session::open(connector, None, None).await?;
         let outcome = flash(
             &mut session,
             &plan,
@@ -4290,7 +4290,7 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() ->
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4359,15 +4359,10 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
     };
     assert!(reads_before > 0, "the pre-flight walked the table");
 
-    let facts = bussard_download::DeviceFacts {
-        object_table,
-        authorize: Some(bussard_mgmt::AuthorizeOutcome::Unsupported {
-            detail: "pre-flight: no answer".to_string(),
-        }),
-        max_apdu: None,
-        max_apdu_absent: false,
-        association_pdt: None,
-    };
+    let mut facts = DeviceFactsRecord::unread(target);
+    facts.set_object_table(&object_table);
+    facts.authorize = Some(AuthorizeVerdict::Unsupported);
+    let facts = Some(facts);
     let app = fabricated_app()?;
     let plan = plan_flash_default(
         &app,
@@ -4485,7 +4480,7 @@ async fn flash_resumes_when_connection_drops_inside_a_write() -> TestResult {
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4591,7 +4586,7 @@ async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write() -> TestResult 
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4658,7 +4653,7 @@ async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns() -> TestR
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let started = std::time::Instant::now();
     let result = flash(
         &mut session,
@@ -4732,7 +4727,7 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() -> TestResu
         &BTreeMap::new(),
     )?;
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     // Bound the wall-clock so a regression that loops forever fails the test loudly
     // rather than hanging: the give-up must happen within a handful of reconnects.
     let result = tokio::time::timeout(
@@ -4812,7 +4807,7 @@ async fn flash_final_restart_silence_is_success_not_failure() -> TestResult {
     );
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4869,7 +4864,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() -> TestRe
     )?;
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -4945,7 +4940,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() -> TestResu
     )?;
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -5390,7 +5385,7 @@ async fn flash_da_tp_four_objects(
     let source = bussard_bus::ops::group_source(&handle);
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -5582,13 +5577,12 @@ async fn da_tp_preflight_then_flash(
         )
         .await
     };
-    let facts = bussard_download::DeviceFacts {
-        object_table: resident.object_table.clone(),
-        authorize: Some(authorize),
-        max_apdu,
-        max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
-        association_pdt: resident.association_pdt,
-    };
+    let mut facts = DeviceFactsRecord::unread(l4.target());
+    facts.set_object_table(&resident.object_table);
+    facts.authorize = Some(authorize.verdict());
+    facts.max_apdu = max_apdu;
+    facts.max_apdu_absent = l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered);
+    let facts = Some(facts);
     if phase == WritePhase::AdoptClosed {
         // The device goes silent on this connection; the next request times
         // out and marks it closed.
@@ -6487,7 +6481,7 @@ async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() -> TestResult {
         Some(fast_timeouts()),
         MOCK_TOOL_KEY,
     );
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default())
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None)
         .await
         .map_err(|e| format!("{}: {e:?}", "the secure authorize is granted"))?;
     let outcome = flash(
@@ -6561,7 +6555,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() -> T
     };
     let connector =
         LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default())
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None)
         .await
         .map_err(|e| format!("{}: {e:?}", "the secure authorize is granted"))?;
     let outcome = flash(
@@ -6617,7 +6611,7 @@ async fn flash_plain_against_an_activated_device_is_refused() -> TestResult {
     // indistinguishable from one without the service), so the refusal surfaces on
     // the first real management step of the flash.
     let connector = LeaseConnector::plain(handle.clone(), target, source, Some(fast_timeouts()));
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default())
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None)
         .await
         .map_err(|e| {
             format!(
@@ -6672,7 +6666,7 @@ async fn flash_with_a_wrong_tool_key_is_refused() -> TestResult {
         Some(fast_timeouts()),
         [0xAA; 16], // NOT the device's tool key
     );
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default())
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None)
         .await
         .map_err(|e| {
             format!(
@@ -6883,7 +6877,7 @@ async fn reflash_over_stale_image(
     }
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -7596,7 +7590,7 @@ async fn secure_flash_across_slow_security_layer(
     };
     let connector =
         LeaseConnector::secure(handle.clone(), target, source, Some(budget), MOCK_TOOL_KEY);
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -7765,7 +7759,7 @@ async fn flash_across_restart_outage(
             None,
         )
     };
-    let mut session = Session::open(connector, key, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, key, None).await?;
     let outcome = flash(
         &mut session,
         &plan,
@@ -7989,7 +7983,7 @@ async fn timed_secure_flash(
     )?;
     let connector = LeaseConnector::secure(handle.clone(), target, source, None, MOCK_TOOL_KEY);
     let started = std::time::Instant::now();
-    let mut session = Session::open(connector, Some(0xFFFF_FFFF), DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, Some(0xFFFF_FFFF), None).await?;
     let outcome = flash(
         &mut session,
         &plan,

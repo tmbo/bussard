@@ -23,7 +23,6 @@
 
 use std::path::{Path, PathBuf};
 
-use bussard_mgmt::tables::OT_APPLICATION_PROGRAM;
 use bussard_mgmt::{
     AuthorizeOutcome, ConnectionSeed, L4Channel, Layer4Connection, MaskFamily, MaskProfile,
     MgmtError, ObjectTableSource, PropertyDesc,
@@ -176,7 +175,7 @@ impl FactsCache {
         };
         if let Some(record) = cached {
             match stale_reason(l4, &record, mask).await {
-                None => return self.reuse(l4, record, mask, want).await,
+                None => return self.reuse(l4, record, want).await,
                 Some(reason) => {
                     tracing::info!(
                         "device facts of {target} are stale ({reason}); reading them again"
@@ -203,12 +202,11 @@ impl FactsCache {
         &self,
         l4: &mut Layer4Connection<Ch>,
         mut record: DeviceFactsRecord,
-        mask: u16,
         want: FactsWant,
     ) -> Result<Established, MgmtError> {
-        seed(l4, &record, mask);
+        l4.seed(connection_seed(&record));
         let mut dirty = false;
-        if let Some(verdict) = l4.last_authorize().map(verdict_of)
+        if let Some(verdict) = l4.last_authorize().map(AuthorizeOutcome::verdict)
             && record.authorize != Some(verdict)
         {
             record.authorize = Some(verdict);
@@ -258,43 +256,23 @@ impl FactsCache {
                 invalidated: None,
             });
         }
-        let application_object = table
-            .iter()
-            .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
-            .map(|(index, _)| *index);
-        let application_id = match application_object {
-            Some(index) => application_id(l4, index).await,
-            None => None,
-        };
-        let mut objects: Vec<ObjectFacts> = table
-            .iter()
-            .map(|&(index, object_type)| ObjectFacts {
-                index,
-                object_type,
-                properties: None,
-            })
-            .collect();
-        if matches!(want, FactsWant::Properties { .. }) {
-            walk_properties(l4, &mut objects).await?;
+        let mut record = DeviceFactsRecord::unread(target);
+        record.set_object_table(&table);
+        if let Some(index) = record.application_object {
+            record.application_id = application_id(l4, index).await;
         }
-        let record = DeviceFactsRecord {
-            address: target,
-            read_at: facts::now_stamp(),
-            mask: facts::format_mask(mask),
-            application_object,
-            application_id,
-            max_apdu,
-            authorize: l4.last_authorize().map(verdict_of),
-            object_table_source: match source {
-                ObjectTableSource::IoList => facts::ObjectTableSource::IoList,
-                ObjectTableSource::Walk => facts::ObjectTableSource::Walk,
-            },
-            objects,
-            knxnet: None,
-            no_knxnet: false,
-            go_security_flags: None,
+        if matches!(want, FactsWant::Properties { .. }) {
+            walk_properties(l4, &mut record.objects).await?;
+        }
+        record.read_at = facts::now_stamp();
+        record.mask = facts::format_mask(mask);
+        record.max_apdu = max_apdu;
+        record.authorize = l4.last_authorize().map(AuthorizeOutcome::verdict);
+        record.object_table_source = match source {
+            ObjectTableSource::IoList => facts::ObjectTableSource::IoList,
+            ObjectTableSource::Walk => facts::ObjectTableSource::Walk,
         };
-        seed(l4, &record, mask);
+        l4.seed(connection_seed(&record));
         self.save(&record);
         Ok(Established {
             source: FactsSource::Read,
@@ -393,22 +371,15 @@ async fn walk_properties<Ch: L4Channel>(
     Ok(())
 }
 
-/// Seeds `l4` with `record`.
-fn seed<Ch: L4Channel>(l4: &mut Layer4Connection<Ch>, record: &DeviceFactsRecord, mask: u16) {
-    l4.seed(ConnectionSeed {
-        mask: Some(mask),
+/// The connection seed `record` stands for. Its mask is the one the caller
+/// read on the connection: [`FactsCache::read`] formats it into the record and
+/// [`FactsCache::reuse`] runs only on a record whose mask matched.
+fn connection_seed(record: &DeviceFactsRecord) -> ConnectionSeed {
+    ConnectionSeed {
+        mask: record.mask_value(),
         object_table: record.object_table(),
         max_apdu: record.max_apdu,
         authorize_unanswered: record.authorize == Some(AuthorizeVerdict::Unsupported),
-    });
-}
-
-/// The stored form of an authorize outcome.
-fn verdict_of(outcome: &AuthorizeOutcome) -> AuthorizeVerdict {
-    match outcome {
-        AuthorizeOutcome::Granted { .. } => AuthorizeVerdict::Granted,
-        AuthorizeOutcome::Denied { .. } => AuthorizeVerdict::Denied,
-        AuthorizeOutcome::Unsupported { .. } => AuthorizeVerdict::Unsupported,
     }
 }
 
@@ -475,13 +446,7 @@ pub fn seed_of(established: Option<&Established>) -> Option<ConnectionSeed> {
     if established.source == FactsSource::Unavailable {
         return None;
     }
-    let record = established.record.as_ref()?;
-    Some(ConnectionSeed {
-        mask: record.mask_value(),
-        object_table: record.object_table(),
-        max_apdu: record.max_apdu,
-        authorize_unanswered: record.authorize == Some(AuthorizeVerdict::Unsupported),
-    })
+    established.record.as_ref().map(connection_seed)
 }
 
 /// What [`identify`] found on the connection.

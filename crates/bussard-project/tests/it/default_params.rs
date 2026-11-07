@@ -1,14 +1,14 @@
 //! Parameters at their vendor default (issue #276): the lock indexes every
 //! parameter the configuration shows, a ref `Value` override counts as the
 //! default, an internal `Access="None"` channel is not emitted, and
-//! [`refresh_facts`] brings the lock up to date after an edit reveals
+//! [`refresh_lock_keys`] brings the lock up to date after an edit reveals
 //! parameters and objects. Runs the fabricated `default_params.app.xml`.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_ets::application::parse_application_program;
 use bussard_model::schema::Device;
-use bussard_project::facts::{apply_facts, derive_facts, refresh_facts};
+use bussard_project::lock_keys::{apply_lock_keys, derive_lock_keys, refresh_lock_keys};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -45,11 +45,11 @@ fn listed(device: &Device) -> Vec<(String, String, Option<String>)> {
 }
 
 #[test]
-fn test_apply_facts_indexes_parameters_at_their_default() -> TestResult {
+fn test_apply_lock_keys_indexes_parameters_at_their_default() -> TestResult {
     let app = parse_application_program(APP_ID, APP_XML)?;
-    let facts = derive_facts(&app, &BTreeMap::new(), &Default::default());
+    let facts = derive_lock_keys(&app, &BTreeMap::new(), &Default::default());
     let mut device = fresh_device()?;
-    apply_facts(&mut device, &app, &facts, &BTreeMap::new());
+    apply_lock_keys(&mut device, &app, &facts, &BTreeMap::new());
 
     // Nothing is stored, yet the four parameters channel 1 shows are listed.
     // The enable flag's ref overrides the parameter default 0 with 1, and the
@@ -81,7 +81,7 @@ fn test_apply_facts_indexes_parameters_at_their_default() -> TestResult {
 #[test]
 fn test_derive_channels_skips_an_access_none_channel() -> TestResult {
     let app = parse_application_program(APP_ID, APP_XML)?;
-    let facts = derive_facts(&app, &BTreeMap::new(), &Default::default());
+    let facts = derive_lock_keys(&app, &BTreeMap::new(), &Default::default());
     let channels: Vec<(&str, &str)> = facts
         .channels
         .iter()
@@ -93,11 +93,11 @@ fn test_derive_channels_skips_an_access_none_channel() -> TestResult {
 }
 
 #[test]
-fn test_refresh_facts_adds_what_an_enable_flag_reveals() -> TestResult {
+fn test_refresh_lock_keys_adds_what_an_enable_flag_reveals() -> TestResult {
     let app = parse_application_program(APP_ID, APP_XML)?;
-    let facts = derive_facts(&app, &BTreeMap::new(), &Default::default());
+    let facts = derive_lock_keys(&app, &BTreeMap::new(), &Default::default());
     let mut device = fresh_device()?;
-    apply_facts(&mut device, &app, &facts, &BTreeMap::new());
+    apply_lock_keys(&mut device, &app, &facts, &BTreeMap::new());
     let handles_before: Vec<Option<String>> =
         device.channels.values().map(|c| c.key.clone()).collect();
 
@@ -107,8 +107,8 @@ fn test_refresh_facts_adds_what_an_enable_flag_reveals() -> TestResult {
         .insert("enable-channel-2@P-2_R-2".to_string(), "1".to_string());
     let values: BTreeMap<String, String> =
         BTreeMap::from([("P-2_R-2".to_string(), "1".to_string())]);
-    let facts = derive_facts(&app, &values, &Default::default());
-    refresh_facts(&mut device, &facts, &BTreeSet::new());
+    let facts = derive_lock_keys(&app, &values, &Default::default());
+    refresh_lock_keys(&mut device, &facts, &BTreeSet::new());
 
     let keys: Vec<String> = listed(&device).into_iter().map(|(_, k, _)| k).collect();
     assert_eq!(
@@ -138,8 +138,8 @@ fn test_refresh_facts_adds_what_an_enable_flag_reveals() -> TestResult {
         ("P-2_R-2".to_string(), "1".to_string()),
         ("P-3_R-3".to_string(), "1".to_string()),
     ]);
-    let facts = derive_facts(&app, &values, &Default::default());
-    refresh_facts(&mut device, &facts, &BTreeSet::new());
+    let facts = derive_lock_keys(&app, &values, &Default::default());
+    refresh_lock_keys(&mut device, &facts, &BTreeSet::new());
     let object = device.com_objects.get(&1).ok_or("object 1 is gone")?;
     assert_eq!(object.reference.as_deref(), Some("O-1_R-2"));
     assert_eq!(object.dpt.map(|d| d.to_string()).as_deref(), Some("5.010"));
@@ -150,15 +150,15 @@ fn test_refresh_facts_adds_what_an_enable_flag_reveals() -> TestResult {
         ("P-1_R-1".to_string(), "0".to_string()),
         ("P-2_R-2".to_string(), "1".to_string()),
     ]);
-    let facts = derive_facts(&app, &values, &Default::default());
-    refresh_facts(&mut device, &facts, &BTreeSet::from([1]));
+    let facts = derive_lock_keys(&app, &values, &Default::default());
+    refresh_lock_keys(&mut device, &facts, &BTreeSet::from([1]));
     assert!(device.com_objects.contains_key(&1));
     let keys: Vec<String> = listed(&device).into_iter().map(|(_, k, _)| k).collect();
     assert_eq!(
         keys,
         ["enable-channel-1", "enable-channel-2", "data-length-2"]
     );
-    refresh_facts(&mut device, &facts, &BTreeSet::new());
+    refresh_lock_keys(&mut device, &facts, &BTreeSet::new());
     assert!(!device.com_objects.contains_key(&1));
     Ok(())
 }

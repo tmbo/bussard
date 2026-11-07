@@ -16,10 +16,11 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use bussard_download::{
-    CurrentMemory, DeviceFacts, FlashOptions, FlashPlan, Freshness, LiveTables, ParamPlan,
-    PlanChange, PlanReport, ResidentState, SecureSenderEntry, Sys7Identity,
+    CurrentMemory, FlashOptions, FlashPlan, Freshness, LiveTables, ParamPlan, PlanChange,
+    PlanReport, ResidentState, SecureSenderEntry, Sys7Identity,
 };
 use bussard_mgmt::MgmtError;
+use bussard_model::facts::DeviceFactsRecord;
 use bussard_model::identity::{IdentityCheck, ReportedIdentity};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData};
@@ -120,7 +121,7 @@ pub struct Probed {
     /// What is resident on the device.
     pub resident: Option<ResidentState>,
     /// What the write phase need not rediscover.
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// The current parameter memory, when read.
     pub current: Option<CurrentMemory>,
     /// The parameter read of `--parameters-only`.
@@ -231,7 +232,7 @@ pub struct FlashPlanned {
     /// The download options.
     pub options: FlashOptions,
     /// What the write phase need not rediscover.
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// How long the pre-flight took.
     pub preflight: Duration,
 }
@@ -394,7 +395,7 @@ pub struct FlashExecution<'a> {
     /// Its options.
     pub options: FlashOptions,
     /// What the pre-flight learned.
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// The KNX Data Secure tool key.
     pub tool_key: Option<Key16>,
     /// The send-sequence high-water mark.
@@ -532,13 +533,14 @@ pub struct FlashImage {
 }
 
 impl FlashImage {
-    /// The facts the download is seeded with.
-    pub fn facts(&self) -> DeviceFacts {
-        DeviceFacts {
-            object_table: self.object_table.clone(),
-            max_apdu: self.max_apdu,
-            ..DeviceFacts::default()
-        }
+    /// The facts the download of `target` is seeded with: the object table
+    /// and the max APDU, nothing else (the write phase presents the key
+    /// itself).
+    pub fn facts(&self, target: IndividualAddress) -> DeviceFactsRecord {
+        let mut facts = DeviceFactsRecord::unread(target);
+        facts.set_object_table(&self.object_table);
+        facts.max_apdu = self.max_apdu;
+        facts
     }
 
     /// `model` extended with the image, so a plan digest binds the exact

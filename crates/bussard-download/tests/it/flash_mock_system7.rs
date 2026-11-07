@@ -25,7 +25,6 @@
 //! **The flash and apply paths are only ever exercised here — never against a
 //! live bus.**
 
-use bussard_download::DeviceFacts;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -36,6 +35,7 @@ use bussard_download::{FlashStep, Session, compute_tables, flash, plan, sys7_tab
 use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
+use bussard_model::facts::DeviceFactsRecord;
 use bussard_prod::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{Inbound, MockDevice, MockGateway, Reaction, Verdict};
 use bussard_transport::cemi::Destination;
@@ -1353,7 +1353,7 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         source: "0.0.255".parse()?,
         timeouts: Some(fast_timeouts()),
     };
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash_default(
@@ -1423,7 +1423,7 @@ async fn run_flash_with_reboot(
         source: "0.0.255".parse()?,
         timeouts: None,
     };
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let app = mdt_canonical_app()?;
     set_sys7_lsm_env(LsmMode::MemoryMapped);
     let plan = plan_flash_default(
@@ -1586,13 +1586,12 @@ async fn sys7_preflight_then_flash(
         bussard_download::ProbeScope::Decisive,
     )
     .await;
-    let facts = bussard_download::DeviceFacts {
-        object_table: resident.object_table.clone(),
-        authorize: Some(authorize),
-        max_apdu,
-        max_apdu_absent: l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered),
-        association_pdt: resident.association_pdt,
-    };
+    let mut facts = DeviceFactsRecord::unread(l4.target());
+    facts.set_object_table(&resident.object_table);
+    facts.authorize = Some(authorize.verdict());
+    facts.max_apdu = max_apdu;
+    facts.max_apdu_absent = l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered);
+    let facts = Some(facts);
     let mut session = if adopt {
         Session::adopt_with_facts(connector, l4, None, facts).await?
     } else {
@@ -3896,7 +3895,7 @@ async fn run_parity_flash_with(
         std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
         std::env::remove_var("BUSSARD_FLASH_RECONNECT_EXCHANGES");
     }
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",
@@ -4163,7 +4162,7 @@ async fn run_flash_across_restart_outage(
             absent_on_negative_confirmation: false,
         }),
     };
-    let mut session = Session::open(connector, None, DeviceFacts::default()).await?;
+    let mut session = Session::open(connector, None, None).await?;
     let plan = plan_flash_default(
         &mdt_canonical_app()?,
         "1.1.99",

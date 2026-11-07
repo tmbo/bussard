@@ -16,12 +16,12 @@
 use std::path::Path;
 
 use bussard_download::{
-    CurrentMemory, DeviceFacts, FlashOutcome, FlashPlan, Freshness, ParamPlan, PlanError,
-    ResidentState, SecureSenderEntry, Sys7Identity, probe_resident_state,
-    read_current_parameter_memory,
+    CurrentMemory, FlashOutcome, FlashPlan, Freshness, ParamPlan, PlanError, ResidentState,
+    SecureSenderEntry, Sys7Identity, probe_resident_state, read_current_parameter_memory,
 };
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{MaskProfile, MgmtError};
+use bussard_model::facts::{AuthorizeVerdict, DeviceFactsRecord};
 use bussard_model::identity::IdentityCheck;
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData};
@@ -82,7 +82,7 @@ pub struct Probe<P> {
     pub resident: Option<ResidentState>,
     /// What the write phase need not rediscover: the authorize verdict, the
     /// max APDU, the object table.
-    pub facts: DeviceFacts,
+    pub facts: DeviceFactsRecord,
     /// The current parameter memory (issue #109), when read.
     pub current: Option<CurrentMemory>,
     /// The parameter read of `--parameters-only`, when made.
@@ -170,7 +170,7 @@ pub async fn probe<P>(
             .with_authorize(Authorize::Skip);
         // What this read-only pass learns about the device, handed to the
         // write phase so it does not rediscover any of it.
-        let mut facts = DeviceFacts::default();
+        let mut facts = DeviceFactsRecord::unread(target);
         let session = match service.connect_l4_retrying(target, &probe_options).await {
             Ok(mut dev) => {
                 let mut body = async |dev: &mut Management| {
@@ -184,7 +184,7 @@ pub async fn probe<P>(
                                 // Remember the verdict: a device that does not
                                 // implement authorize must not be asked again in
                                 // the write phase.
-                                facts.authorize = Some(outcome);
+                                facts.authorize = Some(outcome.verdict());
                                 bussard_mgmt::read_device_descriptor(dev).await
                             }
                             Err(err) => Err(err),
@@ -209,12 +209,10 @@ pub async fn probe<P>(
                         if !facts_cached && dev.last_authorize().is_none() {
                             let _ = dev.authorize_or_fail(key).await;
                         }
-                        facts.authorize = Some(dev.last_authorize().cloned().unwrap_or(
-                            bussard_mgmt::AuthorizeOutcome::Unsupported {
-                                detail:
-                                    "the device facts record no answer to A_Authorize".to_string(),
-                            },
-                        ));
+                        facts.authorize = Some(
+                            dev.last_authorize()
+                                .map_or(AuthorizeVerdict::Unsupported, |o| o.verdict()),
+                        );
                     }
                     // PID_MAX_APDU_LENGTH is device-stable: negotiated here, on
                     // the read-only connection, so the write phase seeds it.
@@ -236,8 +234,7 @@ pub async fn probe<P>(
                         Err(_) => None,
                     };
                     if let Some(state) = &resident {
-                        facts.object_table = state.object_table.clone();
-                        facts.association_pdt = state.association_pdt;
+                        facts.set_object_table(&state.object_table);
                     }
                     // The plan needs only the mask; the parameter read-back
                     // (issue #109) rides this same connection.
@@ -256,7 +253,8 @@ pub async fn probe<P>(
                                 && !plan.is_sys7() =>
                         {
                             Some(
-                                read_current_parameter_memory(dev, plan, &facts.object_table).await,
+                                read_current_parameter_memory(dev, plan, &facts.object_table())
+                                    .await,
                             )
                         }
                         _ => None,

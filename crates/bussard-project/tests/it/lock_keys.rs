@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_ets::application::parse_application_program;
 use bussard_model::{IndividualAddress, Model};
-use bussard_project::facts::{apply_facts, derive_facts};
+use bussard_project::lock_keys::{apply_lock_keys, derive_lock_keys};
 use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
@@ -391,9 +391,9 @@ fn test_reimport_replaces_hidden_values() -> TestResult {
 }
 
 #[test]
-fn test_derive_facts_with_vendor_defaults() -> TestResult {
+fn test_derive_lock_keys_with_vendor_defaults() -> TestResult {
     let app = parse_application_program(APP_ID, APP_XML)?;
-    let facts = derive_facts(&app, &BTreeMap::new(), &Default::default());
+    let facts = derive_lock_keys(&app, &BTreeMap::new(), &Default::default());
     let handles: Vec<(&str, &str)> = facts
         .channels
         .iter()
@@ -427,7 +427,7 @@ fn test_derive_facts_with_vendor_defaults() -> TestResult {
         lock: Default::default(),
         security: None,
     };
-    apply_facts(&mut device, &app, &facts, &BTreeMap::new());
+    apply_lock_keys(&mut device, &app, &facts, &BTreeMap::new());
     assert!(device.parameters.is_empty());
     // Nothing stored, yet every shown parameter is listed at its default
     // (issue #276); the `<Assign>`-only one and the labels are not.
@@ -501,7 +501,7 @@ fn test_access_none_parameter_value_goes_to_hidden_not_the_file() -> TestResult 
     let mut values = BTreeMap::new();
     values.insert("P-94_R-94".to_string(), "20".to_string());
     values.insert("P-103_R-160".to_string(), "20".to_string());
-    let facts = derive_facts(&app, &values, &Default::default());
+    let facts = derive_lock_keys(&app, &values, &Default::default());
 
     // The Access="None" ref never competes for a key: the visible sibling
     // with the same text gets the plain key, not an escape hatch.
@@ -528,7 +528,7 @@ fn test_access_none_parameter_value_goes_to_hidden_not_the_file() -> TestResult 
         lock: Default::default(),
         security: None,
     };
-    apply_facts(&mut device, &app, &facts, &values);
+    apply_lock_keys(&mut device, &app, &facts, &values);
 
     // The visible value is a normal file-keyed parameter...
     assert_eq!(

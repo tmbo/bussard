@@ -39,11 +39,11 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, bail};
-use bussard_download::backup::BackupManifest;
+use bussard_download::backup::{BackupManifest, ManifestEntry};
 use bussard_model::IndividualAddress;
 use bussard_service::WritePolicy;
 use bussard_service::backup::{
-    BackupInputs, DeviceCapture, capture_devices, default_out_dir, select_targets, write_backup_run,
+    BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
 use bussard_service::line::WalkEvent;
 
@@ -140,20 +140,17 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             .and_then(|app| crate::product_store::pinned_application(dir, app));
         bussard_download::uses_user_memory(app.as_ref())
     };
-    let mut progress = |event: WalkEvent<'_, DeviceCapture>| match event {
+    let mut progress = |event: WalkEvent<'_, ManifestEntry>| match event {
         WalkEvent::Probing {
             address,
             index,
             total,
             ..
         } => eprintln!("[{index}/{total}] reading {address}…"),
-        WalkEvent::Probed {
-            outcome: capture, ..
-        } => {
-            if let (Some(check), Ok(target)) = (
-                &capture.entry.identity,
-                capture.entry.address.parse::<IndividualAddress>(),
-            ) {
+        WalkEvent::Probed { outcome: entry, .. } => {
+            if let (Some(check), Ok(target)) =
+                (&entry.identity, entry.address.parse::<IndividualAddress>())
+            {
                 eprintln!("  {}", bussard_service::identity_line(target, check));
             }
         }
@@ -179,7 +176,7 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         anyhow::Ok(captured)
     })?;
 
-    let (manifest, manifest_path) = write_backup_run(&out_dir, gateway, started, &captured)
+    let (manifest, manifest_path) = write_backup_run(&out_dir, gateway, started, captured)
         .context("writing the backup (the run is not usable without it)")?;
 
     if json {
