@@ -2619,7 +2619,7 @@ async fn read_device(
     dir: &std::path::Path,
     read: Read<'_>,
 ) -> Result<(IndividualAddress, DeviceRead), String> {
-    let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
+    let source = service.checked_source(false).await?;
     // Authorize (free access) before reading, best-effort, skipped for a
     // device whose facts record that it never answers (issues #215, #761).
     let mut facts = FactsCache::new(dir, false);
@@ -2705,7 +2705,7 @@ async fn read_property_rows(
     tool_key: &Option<Key16>,
     plan: &bussard_download::FlashPlan,
 ) -> Result<Vec<bussard_service::property_plan::PropertyRow>, String> {
-    let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
+    let source = service.checked_source(false).await?;
     let options = L4Options::secured(source, tool_key.clone(), SequenceHighWater::new());
     service
         .with_l4(target, &options, async |l4| {

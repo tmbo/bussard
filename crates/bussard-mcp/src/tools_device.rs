@@ -236,10 +236,7 @@ impl BussardMcp {
         let _permit = self.state().read_limiter.acquire().await;
         let mut warm = self.warm().lock().await;
         warm.release().await;
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| e.to_string())?;
+        let source = service.checked_source(false).await?;
         // The run continues in its own task, so a client that stops waiting
         // does not leave a half-written backup: the files land either way.
         let run_dir = out_dir.clone();
@@ -457,7 +454,7 @@ impl BussardMcp {
         let state = Arc::clone(self.state());
         let dir = state.dir.clone();
         let out = reconstruct_out(&dir, args.out.as_deref(), &line_text)?;
-        match check_out_dir(&out).map_err(|e| e.to_string())? {
+        match check_out_dir(&out)? {
             OutDir::Fresh => {}
             OutDir::File => {
                 return Err(format!(
@@ -534,10 +531,7 @@ impl BussardMcp {
             let _permit = state.read_limiter.acquire().await;
             let mut warm = self.warm().lock().await;
             warm.release().await;
-            let source = service
-                .checked_source(false)
-                .await
-                .map_err(|e| e.to_string())?;
+            let source = service.checked_source(false).await?;
             let jobs = Arc::clone(&state.jobs);
             let range = LineRange {
                 area,

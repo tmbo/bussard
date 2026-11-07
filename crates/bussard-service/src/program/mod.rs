@@ -27,17 +27,7 @@ pub use crate::observer::{
     Answer, Ask, Declined, Event, Note, Observer, ProgressSink, Prompt, Question, Step, ask,
 };
 
-/// An error and its sources, joined with `": "` (anyhow's `{:#}`).
-pub fn chain(err: &dyn std::error::Error) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
+pub use crate::util::chain;
 
 /// Adds a [`ServiceError::Context`] to a failure.
 pub(crate) trait Ctx<T> {

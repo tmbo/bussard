@@ -173,8 +173,7 @@ impl BussardMcp {
                     bussard_service::assign::validate_explicit_address(
                         address,
                         Some(&self.state().model.reload()),
-                    )
-                    .map_err(|e| e.to_string())?;
+                    )?;
                 }
                 let job = tier.jobs.claim(JobKind::Add, Subject::Bus)?.id;
                 // `product`: the import `bussard adopt --product` runs, before
@@ -833,7 +832,7 @@ fn import_product(
         &mut out,
     );
     let imported = bussard_service::files::products::import_product_file(file, dir, None, &mut out)
-        .map_err(|err| bussard_service::setup::products::error_chain(&err))?;
+        .map_err(|err| bussard_service::chain(&err))?;
     let mut sentences = vec![imported.stored];
     if !imported.models.is_empty() {
         sentences.push(format!(

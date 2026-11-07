@@ -91,3 +91,11 @@ impl ServiceError {
         Self::Other(source.into())
     }
 }
+
+/// A service error as the one sentence the surfaces show: the message and its
+/// causes joined with `": "` ([`chain`](crate::util::chain), anyhow's `{:#}`).
+impl From<ServiceError> for String {
+    fn from(err: ServiceError) -> Self {
+        crate::util::chain(&err)
+    }
+}

@@ -90,7 +90,7 @@ impl BussardMcp {
     ) -> Result<Planned, String> {
         let model = self.state().model.reload();
         let facts = FactsCache::new(&self.state().dir, false);
-        let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
+        let source = service.checked_source(false).await?;
         let link = SessionLink {
             source: Some(source),
             gateway: SessionLink::gateway_of(gateway),

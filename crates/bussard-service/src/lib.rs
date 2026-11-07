@@ -139,6 +139,7 @@ pub use group::{
 };
 pub use model_handle::{ModelHandle, complete_product_models};
 pub use policy::WritePolicy;
+pub use util::chain;
 pub use write::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WriteOutcome, WriteRefusal, WriteValue,
     prepare_group_write, protected_group,

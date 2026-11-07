@@ -492,7 +492,7 @@ pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut d
                 Err(err) => out.warn(&format!(
                     "warning: could not extract the product data from {}: {}",
                     project.display(),
-                    error_chain(&err)
+                    crate::util::chain(&err)
                 )),
             }
         }
@@ -501,9 +501,6 @@ pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut d
         pin(dir, &entries, out);
     }
 }
-
-/// `err` and its sources joined by `: `, as anyhow's `{:#}` renders a chain.
-pub use crate::util::chain as error_chain;
 
 /// The lock's entries that name an archive the model holds.
 fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
@@ -703,7 +700,7 @@ pub fn fetch_missing(
                 }
             }
             Err(err) => {
-                let why = error_chain(&err);
+                let why = crate::util::chain(&err);
                 out.warn(&format!("  download of {} failed: {why}", entry.filename));
                 for order in list {
                     outcome

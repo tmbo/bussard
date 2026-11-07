@@ -58,7 +58,7 @@ impl BussardMcp {
         let _guard = tier.bus_lock.lock().await;
         let mut warm = self.warm().lock().await;
         warm.release().await;
-        let source = service.checked_source(false).await.map_err(|e| chain(&e))?;
+        let source = service.checked_source(false).await?;
         let options = L4Options::secured(source, tool_key, SequenceHighWater::new())
             .with_factory_key(factory_key);
         let read = bussard_service::security_diag::read(&service, target, &options)

@@ -175,7 +175,7 @@ pub fn product_plan(dir: &Path, order: &str) -> ProductPlan {
         Err(err) => ProductPlan::Missing {
             sentence: format!(
                 "{order}: the product index did not load ({})",
-                crate::setup::products::error_chain(&err)
+                crate::util::chain(&err)
             ),
         },
     }
@@ -193,7 +193,7 @@ pub fn selected_from_archive(
     order: &str,
 ) -> Result<SelectedProduct, String> {
     let data = crate::setup::products::read_in_model_language(path, dir, None)
-        .map_err(|err| crate::setup::products::error_chain(&err))?;
+        .map_err(|err| crate::util::chain(&err))?;
     let app = application_for_order(&data, order)
         .ok_or_else(|| format!("{} carries no application program", path.display()))?;
     Ok(shape_selected(&app, &data))
