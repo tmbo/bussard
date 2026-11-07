@@ -1,0 +1,1 @@
+It writes group values to the bus (knx_write_group) and runs the acceptance suite (knx_run_tests).

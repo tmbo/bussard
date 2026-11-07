@@ -1,0 +1,1 @@
+knx_write_group writes a group value to the physical bus (actuators move) and knx_run_tests runs the acceptance suite; both refuse protected group addresses. Ask the human when a write's intent or safety is unclear.

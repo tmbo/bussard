@@ -1,0 +1,1 @@
+Group writes are off (no --allow-writes).

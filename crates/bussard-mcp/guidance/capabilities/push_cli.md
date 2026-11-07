@@ -1,0 +1,1 @@
+Nothing it edits reaches a device from here: this server runs without --allow-programming. Restarted with that flag, knx_plan_device and knx_apply_device push a device's links and parameter values; without it, the push is `bussard plan <ia>` and `bussard apply <ia>` at the CLI.

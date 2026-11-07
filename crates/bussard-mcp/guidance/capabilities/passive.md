@@ -1,0 +1,1 @@
+This server observes the bus without transmitting and reads the project files. It reports the bus connection (knx_bus_status).

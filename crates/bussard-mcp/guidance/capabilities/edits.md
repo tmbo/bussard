@@ -1,0 +1,1 @@
+It edits the project files: group addresses (knx_set_group, knx_remove_group), links (knx_add_link, knx_remove_link), names and rooms (knx_set_device) and parameter values (knx_set_parameter, with the keys knx_show_device lists). It takes KNX Secure device certificates from a phone into the key store (knx_enroll_certificates, knx_enroll_status).

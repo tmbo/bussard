@@ -1,0 +1,1 @@
+It pushes a device's links and parameter values: knx_plan_device reads the device and returns the plan, and knx_apply_device writes the group-address and association tables and the parameter values that differ after the human said yes to that plan, over KNX Data Secure when the server holds the device's tool key.
