@@ -670,7 +670,8 @@ impl bussard_service::program::Observer for Terminal<'_> {
             Step::Download { plan } => Some(Display::flash(plan, self.json)),
             Step::WriteParameters { plan } => Some(Display::flash(plan, false)),
             Step::WriteTables => Some(Display::task(self.tables.clone(), false)),
-            Step::WaitRestart | Step::ReadBack => return,
+            // The addressing steps print through `addressing::Bench`.
+            _ => return,
         };
     }
 

@@ -1,8 +1,14 @@
 //! The one observer a programming flow reports to (issue #901): the CLI
 //! implements it with its progress display and `confirm::confirm`, the MCP
-//! tier with its job table and the plan-digest handshake.
+//! tier with its job table and the plan-digest handshake. The addressing
+//! flows ([`super::assign`], issue #902) report through it too.
+
+use std::time::Duration;
 
 use bussard_download::{FlashPlan, Progress};
+use bussard_model::IndividualAddress;
+
+use super::assign::Assigned;
 
 /// What a surface asks the human before a flow writes: the question and the
 /// action a refusal names when no one can be asked (no terminal, no `--yes`).
@@ -45,6 +51,51 @@ pub enum Step<'a> {
     },
     /// The independent read-back after a write.
     ReadBack,
+    /// The flow waits for a device in programming mode: the human presses
+    /// its programming button.
+    PressButton,
+    /// The first polls found nothing: time to remind the human (once).
+    Remind,
+    /// Still waiting after the reminder, with this much budget left.
+    Waiting {
+        /// The budget left.
+        remaining: Duration,
+    },
+    /// One device answered the programming-mode broadcast, at `current`.
+    Found {
+        /// Its current address.
+        current: IndividualAddress,
+    },
+    /// Nothing may answer at `target` before it is given away (or, for a
+    /// replacement, the dead device must be gone).
+    CheckFree {
+        /// The address probed.
+        target: IndividualAddress,
+    },
+    /// What the device at `at` is, read before anything is written.
+    Identify {
+        /// Where it answers.
+        at: IndividualAddress,
+    },
+    /// The individual address `target` is broadcast.
+    WriteAddress {
+        /// The new address.
+        target: IndividualAddress,
+    },
+    /// The independent read-back at the new address.
+    ReadAddress {
+        /// The new address.
+        target: IndividualAddress,
+    },
+    /// The address took (or was kept): what the read-back said.
+    Assigned(&'a Assigned),
+    /// A Data Secure-activated device is read over `A_SecureData`.
+    ReadSecured {
+        /// The device.
+        target: IndividualAddress,
+    },
+    /// The device file is written.
+    DeviceFile,
 }
 
 /// A line a flow says while it runs, before its outcome is known.

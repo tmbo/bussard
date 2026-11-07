@@ -40,15 +40,13 @@ use bussard_model::history::{History, SnapshotReason};
 use bussard_model::identity::LockIdentity;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{ProductPlan, product_plan};
-use bussard_service::assign::{
-    ProgrammingWait, VerifyKey, hex, in_programming_mode, probe_occupant,
-    still_in_programming_mode, verify_assignment_with, wait_for_programming_mode, write_address,
-};
+use bussard_service::assign::hex;
+use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::replace::{self, Pressed, Replacement};
-use bussard_service::setup::{Collected, DownloadAnswer, DownloadPrompt, SetupError};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::addressing::{AddressJob, Wording, Yes, assigned_notes, found_sentence, refused};
 use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for, put};
 
 /// The question of the `press_button` step.
@@ -95,12 +93,23 @@ pub(super) struct PendingReplace {
     created: Instant,
 }
 
-/// Answers the download question with the human's `download: true`.
-struct Consented;
+/// How `knx_replace_device` names the device in its refusals.
+const WORDING: Wording = Wording {
+    work: "a replacement",
+    device: "the replacement",
+    all_but: "the replacement",
+    subject: "the replacement",
+    tool: "knx_replace_device",
+};
 
-impl DownloadPrompt for Consented {
-    fn download(&mut self, _question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(DownloadAnswer::Yes)
+/// The refusal for a stop of the flow on `target`.
+fn refusal(target: IndividualAddress, stop: Stop) -> String {
+    if let Some(reason) = WORDING.wait_refusal(&stop) {
+        return reason;
+    }
+    match stop {
+        Stop::Occupied { occupant, .. } => gone_refusal(target, &occupant.describe()),
+        other => chain(&other),
     }
 }
 
@@ -222,12 +231,9 @@ impl BussardMcp {
         let Some(tier) = state.programming.as_ref() else {
             return;
         };
-        let outcome = {
-            let _guard = tier.bus_lock.lock().await;
-            let mut warm = self.warm().lock().await;
-            warm.release().await;
-            self.replace_identify(job, &replacement).await
-        };
+        let outcome = self
+            .on_bus(tier, self.replace_identify(job, &replacement))
+            .await;
         match outcome {
             Ok(pressed) => {
                 let model = state.model.reload();
@@ -253,67 +259,34 @@ impl BussardMcp {
                 tier.jobs
                     .pause(job, "identified", question, Some(target), detail);
             }
-            Err(reason) => tier.jobs.finish(
-                job,
-                json!({ "ok": false, "refused": true, "written": false, "reason": reason }),
-            ),
+            Err(reason) => tier.jobs.finish(job, refused(reason)),
         }
     }
 
     /// The bus half of the first job; `Err` is the reason it stopped.
     async fn replace_identify(&self, job: &str, r: &Replacement) -> Result<Pressed, String> {
-        let state = self.state();
-        let tier = state
+        let tier = self
+            .state()
             .programming
             .as_ref()
             .ok_or("the programming tier is off")?;
-        let service = state.bus.service().ok_or("the bus is not wired")?.clone();
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| format!("the source address check failed: {e}"))?;
-        let target = r.target;
-        tier.jobs.step(
-            job,
-            format!("check_gone: checking that {target} no longer answers"),
-        );
-        if let Some(occupant) = probe_occupant(&service, source, target).await {
-            return Err(gone_refusal(target, &occupant.describe()));
-        }
-        tier.jobs.step(job, "press_button");
-        tier.jobs.ask(job, Some(PRESS_BUTTON.to_string()));
-        let found = wait_for_programming_mode(&service, source, &mut |_| {})
-            .await
-            .map_err(|e| chain(&e))?;
-        let current = match found {
-            ProgrammingWait::One(current) => current,
-            ProgrammingWait::Several(found) => {
-                let list: Vec<String> = found.iter().map(ToString::to_string).collect();
-                return Err(format!(
-                    "{} devices are in programming mode ({}); a replacement works on one device \
-                     at a time. Ask the human to leave programming mode on all but the \
-                     replacement, then call knx_replace_device again. Nothing was written.",
-                    found.len(),
-                    list.join(", ")
-                ));
-            }
-            ProgrammingWait::Nothing { waited } => {
-                return Err(format!(
-                    "No device entered programming mode within {} s. Ask the human to press the \
-                     programming button on the replacement (its LED usually lights up), then \
-                     call knx_replace_device again. Nothing was written.",
-                    waited.as_secs()
-                ));
-            }
+        let (service, source) = self.address_bus().await?;
+        let flow = AssignFlow {
+            service: &service,
+            source,
         };
-        tier.jobs.ask(job, None);
-        tier.jobs
-            .step(job, format!("identifying the device at {current}"));
-        let pressed = replace::identify(&service, source, current).await;
-        if let Some(problem) = r.mismatch(&pressed) {
-            return Err(mismatch_refusal(target, &problem));
+        let observer = &mut replace_observer(tier, job);
+        let target = r.target;
+        flow.check_free(target, false, observer)
+            .await
+            .map_err(|stop| refusal(target, stop))?;
+        let located = replace::locate(&flow, r, observer)
+            .await
+            .map_err(|stop| refusal(target, stop))?;
+        match located.mismatch {
+            Some(problem) => Err(mismatch_refusal(target, &problem)),
+            None => Ok(located.pressed),
         }
-        Ok(pressed)
     }
 
     /// The write call: checks the answer, takes the job up again and runs
@@ -340,65 +313,27 @@ impl BussardMcp {
                  start again."
             ));
         };
-        let Some(digest) = digest.map(str::trim) else {
-            return Err(format!(
-                "pass the plan_digest of job {job} (knx_job_status shows it) with yes: true"
-            ));
-        };
-        if digest != pending.digest {
-            return Err(format!(
-                "the plan_digest does not match job {job}: pass the one knx_job_status shows for \
-                 it. Nothing was written."
-            ));
+        let needs_download = matches!(pending.source, Source::Download { .. });
+        Yes {
+            job,
+            digest,
+            yes,
+            download,
         }
-        if yes != Some(true) {
-            return Err(
-                "replacing the device writes to the bus: pass yes: true only after the human's \
-                 explicit yes to the question. Nothing was written."
-                    .into(),
-            );
-        }
-        if matches!(pending.source, Source::Download { .. }) && download != Some(true) {
-            return Err(
-                "the product data needs a download from the vendor, a separate consent: ask the \
-                 human whether bussard may download it, and pass download: true only after a \
-                 yes to that too (without it, nothing is written)."
-                    .into(),
-            );
-        }
+        .check(&pending.digest, "replacing the device", needs_download)?;
         tier.jobs.resume(job, "checking the device again")?;
         tier.replaces().remove(job);
         let me = self.clone();
         let id = job.to_string();
-        let worker = tokio::spawn(async move {
-            let result = me.replace_write_job(&id, pending).await;
-            if let Some(tier) = me.state().programming.as_ref() {
-                tier.jobs.finish(&id, result);
-            }
-        });
-        self.watch_job(job.to_string(), "replace-device", worker);
-        let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(job, wait).await {
-            let mut result = tier.jobs.result(job).unwrap_or_else(|| json!({}));
-            super::merge(
-                &mut result,
-                json!({ "started": false, "done": true, "job": job }),
-            );
-            return Ok(result);
-        }
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "job": job,
-            "step": "writing",
-            "next_step": format!(
-                "The device is being replaced in the server as job {job}: the address, the \
-                 application and the model's parameters and links, each read back. Call \
-                 knx_job_status with job {job} every few seconds until `done` is true; its \
-                 `result` is the outcome."
-            ),
-        }))
+        let work = async move { me.replace_write_job(&id, pending).await };
+        let next_step = format!(
+            "The device is being replaced in the server as job {job}: the address, the \
+             application and the model's parameters and links, each read back. Call \
+             knx_job_status with job {job} every few seconds until `done` is true; its `result` \
+             is the outcome."
+        );
+        self.spawn_write(tier, job, began, "replace-device", work, next_step)
+            .await
     }
 
     /// The write job: the assign half, then the flash and the apply, then
@@ -411,15 +346,10 @@ impl BussardMcp {
         let target = p.replacement.target;
         // The address, on the bus lock (released before the plan, which takes
         // it itself).
-        let assigned = {
-            let _guard = tier.bus_lock.lock().await;
-            let mut warm = self.warm().lock().await;
-            warm.release().await;
-            self.replace_assign(job, &p).await
-        };
+        let assigned = self.on_bus(tier, self.replace_assign(job, &p)).await;
         let (pressed, mut notes) = match assigned {
-            Ok(Assigned::Done { pressed, notes }) => (pressed, notes),
-            Ok(Assigned::Failed(result)) => return result,
+            Ok(Swap::Done { pressed, notes }) => (pressed, notes),
+            Ok(Swap::Failed(result)) => return result,
             Err(reason) => {
                 return json!({
                     "ok": false,
@@ -429,7 +359,6 @@ impl BussardMcp {
                 });
             }
         };
-        replace::forget_facts(&state.dir, target);
 
         // The flash and the apply: the plan of knx_plan_device on the
         // replacement at its new address, then knx_apply_device's pre-flight
@@ -569,45 +498,31 @@ impl BussardMcp {
 
     /// The assign half of the write job: the fresh read against the digest,
     /// the download, the address and its read-back.
-    async fn replace_assign(&self, job: &str, p: &PendingReplace) -> Result<Assigned, String> {
+    async fn replace_assign(&self, job: &str, p: &PendingReplace) -> Result<Swap, String> {
         let state = self.state();
         let tier = state
             .programming
             .as_ref()
             .ok_or("the programming tier is off")?;
         let dir = state.dir.clone();
-        let service = state.bus.service().ok_or("the bus is not wired")?.clone();
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| format!("the source address check failed: {e}"))?;
+        let (service, source) = self.address_bus().await?;
+        let flow = AssignFlow {
+            service: &service,
+            source,
+        };
+        let observer = &mut replace_observer(tier, job);
         let r = &p.replacement;
         let target = r.target;
         let current = p.pressed.address;
 
         // The fresh read: the same single device in programming mode, the
         // same identity, model and product, else the digest is stale.
-        let now = in_programming_mode(&service, source)
+        flow.still_the_one(current)
             .await
-            .map_err(|e| chain(&e))?;
-        if now != [current] {
-            return Err(format!(
-                "the replacement is no longer the one device in programming mode at {current} \
-                 (now: {}). Ask the human to press its programming button again, then call \
-                 knx_replace_device again. Nothing was written.",
-                if now.is_empty() {
-                    "none".to_string()
-                } else {
-                    now.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-            ));
-        }
-        if let Some(occupant) = probe_occupant(&service, source, target).await {
-            return Err(gone_refusal(target, &occupant.describe()));
-        }
+            .map_err(|stop| refusal(target, stop))?;
+        flow.check_free(target, false, observer)
+            .await
+            .map_err(|stop| refusal(target, stop))?;
         let fresh = replace::identify(&service, source, current).await;
         let model = state.model.reload();
         if replace_digest(&model, r, &fresh, &p.source) != p.digest {
@@ -625,12 +540,11 @@ impl BussardMcp {
             tier.jobs
                 .step(job, format!("downloading the product data ({name})"));
             let order = r.expected.order_number.clone().unwrap_or_default();
-            let mut said = Collected::default();
             bussard_service::setup::products::fetch_missing(
                 &dir,
                 &[order],
-                &mut Consented,
-                &mut said,
+                &mut super::addressing::Consented,
+                &mut bussard_service::setup::Collected::default(),
             )
             .map_err(|e| {
                 format!(
@@ -649,73 +563,70 @@ impl BussardMcp {
         }
 
         // The address, and the independent read-back at it.
-        tier.jobs.step(job, format!("writing the address {target}"));
-        write_address(&service, source, target)
-            .await
-            .map_err(|e| format!("broadcasting the new individual address: {}", chain(&e)))?;
-        tier.jobs
-            .step(job, format!("reading the device back at {target}"));
-        let mut notes: Vec<String> = Vec::new();
-        let verified =
-            match verify_assignment_with(&service, source, target, true, &VerifyKey::default())
-                .await
-            {
-                Ok(verified) => verified,
-                Err(err) => {
-                    return Ok(Assigned::Failed(json!({
-                        "ok": false,
-                        "verified": false,
-                        "assigned": false,
-                        "address": target.to_string(),
-                        "from": current.to_string(),
-                        "reason": chain(&err),
-                        "recovery": format!(
-                            "The address write to {target} could not be verified. Check the \
-                             device with knx_show_device {{live: true}} and call \
-                             knx_replace_device again."
-                        ),
-                    })));
-                }
-            };
-        notes.extend(verified.warnings.iter().cloned());
-        if !replace::same_hardware(&p.pressed, &verified) {
-            return Ok(Assigned::Failed(json!({
+        let failed = |assigned: bool, extra: Value, reason: String, recovery: String| {
+            let mut result = json!({
                 "ok": false,
                 "verified": false,
-                "assigned": true,
+                "assigned": assigned,
                 "address": target.to_string(),
                 "from": current.to_string(),
-                "readback": {
+            });
+            super::merge(&mut result, extra);
+            super::merge(
+                &mut result,
+                json!({ "reason": reason, "recovery": recovery }),
+            );
+            Ok(Swap::Failed(result))
+        };
+        match replace::assign_replacement(&flow, &dir, r, p.pressed.clone(), None, true, observer)
+            .await
+        {
+            Ok((pressed, assigned)) => Ok(Swap::Done {
+                pressed,
+                notes: assigned_notes(&assigned),
+            }),
+            Err(Stop::Verify(err)) => failed(
+                false,
+                json!({}),
+                chain(&err),
+                format!(
+                    "The address write to {target} could not be verified. Check the device with \
+                     knx_show_device {{live: true}} and call knx_replace_device again."
+                ),
+            ),
+            Err(Stop::OtherDevice { verified, .. }) => failed(
+                true,
+                json!({ "readback": {
                     "mask": verified.mask.map(|m| format!("{m:04X}")),
                     "serial": verified.serial.as_deref().map(hex),
-                },
-                "reason": format!(
+                }}),
+                format!(
                     "{target} now answers, but the read-back there does not match the identified \
-                     serial or mask: another device may have taken the address. Nothing more \
-                     was written."
+                     serial or mask: another device may have taken the address. Nothing more was \
+                     written."
                 ),
-                "recovery": format!(
+                format!(
                     "Check {target} with knx_show_device {{live: true}} before anything else is \
                      written to it."
                 ),
-            })));
+            ),
+            Err(other) => Err(chain(&other)),
         }
-        if still_in_programming_mode(&service, source, target).await {
-            notes.push(format!(
-                "{target} is still in programming mode after the assignment; ask the human to \
-                 press its programming button once to leave it (on KNX Virtual: toggle it off in \
-                 the GUI)."
-            ));
-        }
-        Ok(Assigned::Done {
-            pressed: replace::assigned(p.pressed.clone(), &verified),
-            notes,
-        })
+    }
+}
+
+/// The observer of a replace job.
+fn replace_observer<'a>(tier: &'a ProgrammingTier, job: &'a str) -> AddressJob<'a> {
+    AddressJob {
+        jobs: &tier.jobs,
+        job,
+        press: PRESS_BUTTON.to_string(),
+        check_gone: true,
     }
 }
 
 /// How the assign half of the write job ended.
-enum Assigned {
+enum Swap {
     /// The address took and read back as the identified device.
     Done {
         /// What was identified, merged with the read-back.
@@ -859,14 +770,6 @@ fn mismatch_refusal(target: IndividualAddress, problem: &str) -> String {
     )
 }
 
-/// Who the device is, in words: its order number, else "A device".
-fn who(pressed: &Pressed) -> String {
-    pressed
-        .order
-        .clone()
-        .unwrap_or_else(|| "A device".to_string())
-}
-
 /// The fields the `identified` step reports at the top of the job status.
 fn identified_detail(
     model: &Model,
@@ -880,23 +783,11 @@ fn identified_detail(
     let mask = p.mask.map(|m| format!("{m:04X}"));
     let system = p.mask.map(bussard_mgmt::system_type);
     let check = r.identity_check(p);
-    let mut sentences = vec![format!(
-        "{} is in programming mode at {}{}{}, running {}.",
-        who(p),
-        p.address,
-        p.serial
-            .as_deref()
-            .map(|s| format!(", serial {}", hex(s)))
-            .unwrap_or_default(),
-        match (&mask, system) {
-            (Some(mask), Some(system)) => format!(", mask {mask} ({system})"),
-            _ => String::new(),
-        },
-        p.application
-            .as_deref()
-            .map(|a| format!("application {a}"))
-            .unwrap_or_else(|| "no readable application".to_string())
-    )];
+    let running = p.application.as_deref().map_or_else(
+        || ", running no readable application".to_string(),
+        |a| format!(", running application {a}"),
+    );
+    let mut sentences = vec![found_sentence(&p.as_verified(), p.address, &running)];
     sentences.push(format!(
         "{target} ({}) does not answer on the bus, and the device in programming mode matches \
          what its device file and bussard.lock name{}.",

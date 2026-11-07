@@ -35,33 +35,11 @@ use bussard_mgmt::manufacturers;
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::normalize_order_number;
 
-use crate::assign::{
-    AssignError, Occupant, Verified, VerifyError, VerifyKey, identify, probe_occupant,
-    still_in_programming_mode, verify_assignment_with, write_address,
-};
+use crate::BusService;
+use crate::assign::{Occupant, Verified, VerifyError, VerifyKey, identify, probe_occupant};
 use crate::line::{WalkEvent, model_devices_on_line, walk};
-use crate::{BusService, ServiceError};
-
-/// Why a commission step failed.
-#[derive(Debug, thiserror::Error)]
-pub enum CommissionError {
-    /// The device in programming mode did not answer the identification.
-    #[error("connecting to the device in programming mode at {current}")]
-    Identify {
-        /// Where it answered the programming-mode broadcast.
-        current: IndividualAddress,
-        /// The cause.
-        #[source]
-        source: ServiceError,
-    },
-    /// The address broadcast failed.
-    #[error("broadcasting the new individual address")]
-    Write(#[source] AssignError),
-    /// The read-back at the new address failed or does not match the device
-    /// that was identified.
-    #[error(transparent)]
-    Verify(#[from] VerifyError),
-}
+use crate::program::assign::{Assign, AssignFlow, Assigned, Stop, completed};
+use crate::program::{Observer, Step};
 
 /// One device the model expects on the line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,16 +409,17 @@ pub struct Identified {
 ///
 /// # Errors
 ///
-/// The device did not answer the identification.
-pub async fn identify_pressed(
-    service: &BusService,
-    source: IndividualAddress,
+/// [`Stop::Identify`]: the device did not answer the identification.
+pub async fn identify_pressed<O: Observer>(
+    flow: &AssignFlow<'_>,
     target: &Target,
     current: IndividualAddress,
-) -> Result<Identified, CommissionError> {
-    let verified = identify(service, source, current, None)
+    observer: &mut O,
+) -> Result<Identified, Stop> {
+    observer.step(Step::Identify { at: current });
+    let verified = identify(flow.service, flow.source, current, None)
         .await
-        .map_err(|source| CommissionError::Identify { current, source })?;
+        .map_err(|source| Stop::Identify { current, source })?;
     let check = check_order_number(target, &verified);
     Ok(Identified {
         current,
@@ -451,16 +430,12 @@ pub async fn identify_pressed(
 
 /// The device after its address was written and read back.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Assigned {
+pub struct Labelled {
+    /// The address write and its read-back.
+    pub assigned: Assigned,
     /// What it reported: the read-back, completed by the identification
     /// where the read-back left a field empty.
     pub identity: Verified,
-    /// Whether the explicit `PID_PROGMODE = 0` clear was confirmed.
-    pub programming_mode_cleared: bool,
-    /// Whether it still answers the programming-mode broadcast.
-    pub still_in_programming_mode: bool,
-    /// Warnings the read-back raised.
-    pub warnings: Vec<String>,
     /// The label line ([`label_line`]).
     pub label: String,
 }
@@ -468,65 +443,51 @@ pub struct Assigned {
 /// Writes `target`'s address to the identified device, reads it back at the
 /// new address (clearing programming mode as ETS does) and checks that the
 /// device answering there is the one identified (serial and mask), then
-/// re-checks the programming-mode broadcast. Call it only for an
-/// [`OrderCheck::Matches`] or an accepted [`OrderCheck::NoModelNumber`].
+/// re-checks the programming-mode broadcast ([`AssignFlow::assign`]); the
+/// facts stored for the address in `dir` are dropped. Call
+/// it only for an [`OrderCheck::Matches`] or an accepted
+/// [`OrderCheck::NoModelNumber`].
 ///
 /// # Errors
 ///
 /// The broadcast failed, the device did not answer at the new address, or
 /// the read-back names another device than the one identified.
-pub async fn assign_pressed(
-    service: &BusService,
-    source: IndividualAddress,
+pub async fn assign_pressed<O: Observer>(
+    flow: &AssignFlow<'_>,
+    dir: &Path,
     target: &Target,
     identified: &Identified,
-) -> Result<Assigned, CommissionError> {
-    write_address(service, source, target.address)
+    observer: &mut O,
+) -> Result<Labelled, Stop> {
+    let request = Assign {
+        current: identified.current,
+        target: target.address,
+        question: None,
+        key: &VerifyKey::default(),
+        clear_programming_mode: true,
+        identified: Some(&identified.verified),
+        refuse_hidden: false,
+        require_identified: true,
+        forget_facts: Some(dir),
+    };
+    let assigned = flow
+        .assign(&request, observer)
         .await
-        .map_err(CommissionError::Write)?;
-    let readback =
-        verify_assignment_with(service, source, target.address, true, &VerifyKey::default())
-            .await?;
-    let before = &identified.verified;
-    let serial_matches = match (&readback.serial, &before.serial) {
-        (Some(now), Some(then)) => now == then,
-        _ => true,
-    };
-    let mask_matches = match (readback.mask, before.mask) {
-        (Some(now), Some(then)) => now == then,
-        _ => true,
-    };
-    if !(serial_matches && mask_matches) {
-        return Err(VerifyError::Unverified(format!(
-            "wrote {} but the device answering there is not the one identified at {} (the \
-             read-back reports another serial number or mask); the assignment is unverified",
-            target.address, identified.current
-        ))
-        .into());
-    }
-    let still = still_in_programming_mode(service, source, target.address).await;
-    let identity = Verified {
-        mask: readback.mask.or(before.mask),
-        manufacturer_id: readback.manufacturer_id.or(before.manufacturer_id),
-        serial: readback.serial.clone().or_else(|| before.serial.clone()),
-        order: readback.order.clone().or_else(|| before.order.clone()),
-        ..readback.clone()
-    };
+        .map_err(|stop| match stop {
+            Stop::OtherDevice { .. } => Stop::Verify(VerifyError::Unverified(format!(
+                "wrote {} but the device answering there is not the one identified at {} (the \
+                 read-back reports another serial number or mask); the assignment is unverified",
+                target.address, identified.current
+            ))),
+            other => other,
+        })?;
+    let identity = completed(&assigned.verified, &identified.verified);
     let label = label_line(target, &identity);
-    Ok(Assigned {
-        programming_mode_cleared: readback.programming_mode_cleared,
-        still_in_programming_mode: still,
-        warnings: readback.warnings.clone(),
+    Ok(Labelled {
+        assigned,
         identity,
         label,
     })
-}
-
-/// Drops the device facts stored for `address`: a new box now answers there,
-/// and facts stored for it describe whatever was there before (issue #228,
-/// item 5). Best-effort.
-pub fn forget_facts(dir: &Path, address: IndividualAddress) {
-    let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, address));
 }
 
 /// Builds the label line stuck on the device, e.g.

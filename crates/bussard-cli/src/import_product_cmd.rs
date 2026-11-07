@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::bail;
-use bussard_prod::{ProductData, ProductIndex};
+use bussard_prod::ProductIndex;
 use bussard_service::files::products as files;
 use bussard_service::setup::products;
 use bussard_service::setup::{DownloadAnswer, DownloadPrompt, SetupError};
@@ -165,15 +165,6 @@ impl DownloadPrompt for OrderPrompt {
 /// ([`bussard_service::setup::products::load_index`]).
 pub(crate) fn load_index() -> anyhow::Result<ProductIndex> {
     Ok(products::load_index()?)
-}
-
-/// Writes one model file per application program under
-/// `<dir>/.bussard/model-cache/` (see [`bussard_prod::product_model`]).
-pub(crate) fn write_product_models(
-    product: &ProductData,
-    dir: &Path,
-) -> anyhow::Result<Vec<String>> {
-    Ok(products::write_product_models(product, dir)?)
 }
 
 /// Runs the normal import on a local `.knxprod` file (positional mode,

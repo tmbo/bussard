@@ -1,42 +1,28 @@
-//! The replace flow (issues #98, #751): put the same product back at the
-//! address of a dead device, as `bussard replace` and `knx_replace_device`
-//! do.
+//! The replace flow (issues #98, #751, #902): put the same product back at
+//! the address of a dead device, as `bussard replace` and
+//! `knx_replace_device` do.
 //!
 //! A replacement is the assign, flash and apply steps behind one
 //! confirmation, plus the identity cross-check against the model and the
-//! record of the hardware swap. This module is the step machine: the order of
-//! the steps ([`Replacement::next`]) and the functions each step runs, none
-//! of which prints or asks. The CLI keeps its prompts and lines, the MCP tool
-//! its questions and JSON (#314).
+//! record of the hardware swap. None of the functions here prints or asks:
+//! the CLI keeps its prompts and lines, the MCP tool its questions and JSON
+//! (#314). In the order the surfaces run them:
 //!
-//! The steps, in the order [`Replacement::next`] walks them:
-//!
-//! 1. [`Step::CheckGone`]: nothing may answer at the address
-//!    ([`crate::assign::probe_occupant`]); a device that still answers is not
-//!    a replacement case.
-//! 2. [`Step::PressButton`]: the wait for the programming-mode broadcast
-//!    ([`crate::assign::wait_for_programming_mode`]).
-//! 3. [`Step::Identify`]: what the pressed device is ([`identify`]: mask,
-//!    order number, serial, resident application id) and its identity
-//!    verdict against the lock ([`Replacement::identity_check`]).
-//! 4. [`Step::CrossCheck`]: the refusal when it is another product
-//!    ([`Replacement::mismatch`]).
-//! 5. [`Step::Confirm`]: the one confirmation, the surface's.
-//! 6. [`Step::Assign`]: the address ([`crate::assign::write_address`]) and the
-//!    independent read-back at it ([`crate::assign::verify_assignment_with`]),
-//!    merged into what was identified ([`assigned`]); the stored device facts
-//!    of the old box are dropped ([`forget_facts`]).
-//! 7. [`Step::Flash`]: the application, through the flash path of the surface
-//!    ([`crate::flash_flow`]); skipped when the replacement keeps its
-//!    application (`--no-flash`).
-//! 8. [`Step::Apply`]: the model's tables and parameters, through the apply
-//!    path of the surface, with its read-back.
-//! 9. [`Step::Record`]: `replaced = <RFC3339>` in the device file and the new
-//!    hardware's serial number in its `bussard.lock` entry ([`record`]).
-//!
-//! No step here writes to the bus on its own account: the address write and
-//! its read-back are [`crate::assign`]'s, the flash and the apply are the
-//! surfaces' existing write paths.
+//! 1. The dead device is gone: nothing answers at the address
+//!    ([`AssignFlow::check_free`]).
+//! 2. [`locate`]: the wait for the programming button, what the pressed
+//!    device is ([`identify`]: mask, order number, serial, resident
+//!    application id) and the cross-check against the model
+//!    ([`Replacement::mismatch`], [`Replacement::identity_check`]).
+//! 3. [`assign_replacement`]: the one confirmation, the address and the
+//!    independent read-back at it ([`AssignFlow::assign`]), merged into what
+//!    was identified ([`assigned`]); the stored device facts of the old box
+//!    are dropped ([`crate::program::assign::forget_facts`]).
+//! 4. The application and the model's tables, through the flash and apply
+//!    paths of the surface; the flash is skipped when the replacement keeps
+//!    its application (`--no-flash`).
+//! 5. [`record`]: `replaced = <RFC3339>` in the device file and the new
+//!    hardware's serial number in its `bussard.lock` entry.
 
 use std::path::{Path, PathBuf};
 
@@ -46,8 +32,10 @@ use bussard_model::identity::{IdentityCheck, LockIdentity, ReportedIdentity};
 use bussard_model::schema::Device;
 use bussard_model::{IndividualAddress, Model};
 
-use crate::assign::Verified;
+use crate::assign::{Verified, VerifyKey};
 use crate::identity::read_identity;
+use crate::program::assign::{Assign, AssignFlow, Assigned, Stop};
+use crate::program::{Observer, Question, Step};
 use crate::{Authorize, BusService, L4Options, ServiceError};
 
 /// Why a replace step failed.
@@ -70,49 +58,6 @@ pub enum ReplaceError {
     /// The serial number could not be recorded in the lock.
     #[error(transparent)]
     Serial(#[from] crate::RecordSerialsError),
-}
-
-/// One step of a replacement, in the order [`Replacement::next`] walks them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Step {
-    /// Nothing may answer at the address any more.
-    CheckGone,
-    /// The human presses the programming button on the replacement.
-    PressButton,
-    /// What the pressed device is.
-    Identify,
-    /// The pressed device against the model's device file and lock.
-    CrossCheck,
-    /// The one confirmation for the whole run.
-    Confirm,
-    /// The address, and its read-back.
-    Assign,
-    /// The application program.
-    Flash,
-    /// The model's tables and parameters.
-    Apply,
-    /// The record in the device file and the lock.
-    Record,
-    /// The replacement is complete.
-    Done,
-}
-
-impl Step {
-    /// The step as the surfaces name it.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Step::CheckGone => "check_gone",
-            Step::PressButton => "press_button",
-            Step::Identify => "identify",
-            Step::CrossCheck => "cross_check",
-            Step::Confirm => "confirm",
-            Step::Assign => "assign",
-            Step::Flash => "flash",
-            Step::Apply => "apply",
-            Step::Record => "record",
-            Step::Done => "done",
-        }
-    }
 }
 
 /// What the model says belongs at the address being replaced.
@@ -169,6 +114,16 @@ pub struct Pressed {
 }
 
 impl Pressed {
+    /// What was read, as the read-back after the write is compared with it.
+    pub fn as_verified(&self) -> Verified {
+        Verified {
+            mask: self.mask,
+            serial: self.serial.clone(),
+            order: self.order.clone(),
+            ..Verified::default()
+        }
+    }
+
     /// Nothing read yet, at `address`.
     pub fn unread(address: IndividualAddress) -> Pressed {
         Pressed {
@@ -228,38 +183,6 @@ impl Replacement {
                 .join("devices")
                 .join(format!("{}.toml", loaded.file_stem)),
         })
-    }
-
-    /// Whether the replacement gets the application flashed.
-    pub fn flashes(&self) -> bool {
-        !self.expected.hold_application
-    }
-
-    /// The step after `step`: the steps in order, the flash left out when
-    /// the replacement keeps its application.
-    pub fn next(&self, step: Step) -> Step {
-        match step {
-            Step::CheckGone => Step::PressButton,
-            Step::PressButton => Step::Identify,
-            Step::Identify => Step::CrossCheck,
-            Step::CrossCheck => Step::Confirm,
-            Step::Confirm => Step::Assign,
-            Step::Assign if self.flashes() => Step::Flash,
-            Step::Assign | Step::Flash => Step::Apply,
-            Step::Apply => Step::Record,
-            Step::Record | Step::Done => Step::Done,
-        }
-    }
-
-    /// Every step of this replacement, in order, [`Step::Done`] last.
-    pub fn steps(&self) -> Vec<Step> {
-        let mut steps = vec![Step::CheckGone];
-        while let Some(&last) = steps.last()
-            && last != Step::Done
-        {
-            steps.push(self.next(last));
-        }
-        steps
     }
 
     /// The identity verdict of the pressed device against the lock, when it
@@ -335,24 +258,68 @@ pub fn assigned(pressed: Pressed, verified: &Verified) -> Pressed {
     }
 }
 
-/// Whether the read-back at the new address is the device that was
-/// identified: the same serial and mask wherever both reads have one.
-pub fn same_hardware(pressed: &Pressed, verified: &Verified) -> bool {
-    let serial = match (&verified.serial, &pressed.serial) {
-        (Some(now), Some(then)) => now == then,
-        _ => true,
-    };
-    let mask = match (verified.mask, pressed.mask) {
-        (Some(now), Some(then)) => now == then,
-        _ => true,
-    };
-    serial && mask
+/// Waits for the replacement in programming mode, reads what it is
+/// ([`identify`]) and cross-checks it against the model ([`mismatch`]).
+/// Read-only: a mismatch is [`Located::mismatch`], for the surface to refuse
+/// (or, under `--force`, to warn about).
+///
+/// # Errors
+///
+/// The wait found no single device.
+pub async fn locate<O: Observer + Send>(
+    flow: &AssignFlow<'_>,
+    replacement: &Replacement,
+    observer: &mut O,
+) -> Result<Located, Stop> {
+    let current = flow.wait_for_one(observer).await?;
+    observer.step(Step::Identify { at: current });
+    let pressed = identify(flow.service, flow.source, current).await;
+    let mismatch = replacement.mismatch(&pressed);
+    Ok(Located { pressed, mismatch })
 }
 
-/// Drops the stored device facts of `target` (issue #209): they describe the
-/// old box, so the flash and the apply read the replacement's.
-pub fn forget_facts(dir: &Path, target: IndividualAddress) {
-    let _ = std::fs::remove_file(bussard_model::facts::facts_path(dir, target));
+/// The replacement found in programming mode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Located {
+    /// What it reported.
+    pub pressed: Pressed,
+    /// The first cross-check failure against the model, if any.
+    pub mismatch: Option<String>,
+}
+
+/// Gives the pressed replacement the address of the dead device
+/// ([`AssignFlow::assign`], clearing programming mode as ETS does) after
+/// `question`. With `require_identified` a read-back that names another
+/// device stops the flow ([`Stop::OtherDevice`]); the facts stored for the
+/// old box in `dir` are dropped. Returns what was pressed,
+/// merged with the read-back ([`assigned`]), and the address write.
+///
+/// # Errors
+///
+/// The human declined, or the write or the read-back failed.
+pub async fn assign_replacement<O: Observer>(
+    flow: &AssignFlow<'_>,
+    dir: &Path,
+    replacement: &Replacement,
+    pressed: Pressed,
+    question: Option<&Question>,
+    require_identified: bool,
+    observer: &mut O,
+) -> Result<(Pressed, Assigned), Stop> {
+    let identified = pressed.as_verified();
+    let request = Assign {
+        current: pressed.address,
+        target: replacement.target,
+        question,
+        key: &VerifyKey::default(),
+        clear_programming_mode: true,
+        identified: Some(&identified),
+        refuse_hidden: false,
+        require_identified,
+        forget_facts: Some(dir),
+    };
+    let done = flow.assign(&request, observer).await?;
+    Ok((assigned(pressed, &done.verified), done))
 }
 
 /// The first cross-check failure between the model's device file and what was
@@ -545,41 +512,6 @@ mod tests {
         }
     }
 
-    fn replacement(hold_application: bool) -> Result<Replacement, Box<dyn std::error::Error>> {
-        Ok(Replacement {
-            target: "1.1.4".parse()?,
-            name: "Rollladen".to_string(),
-            expected: Expected {
-                hold_application,
-                ..Expected::default()
-            },
-            device_file: PathBuf::from("devices/1.1.4.toml"),
-        })
-    }
-
-    #[test]
-    fn test_replacement_steps_walk_the_flow_in_order() -> TestResult {
-        assert_eq!(
-            replacement(false)?.steps(),
-            vec![
-                Step::CheckGone,
-                Step::PressButton,
-                Step::Identify,
-                Step::CrossCheck,
-                Step::Confirm,
-                Step::Assign,
-                Step::Flash,
-                Step::Apply,
-                Step::Record,
-                Step::Done,
-            ]
-        );
-        let held = replacement(true)?;
-        assert!(!held.steps().contains(&Step::Flash));
-        assert_eq!(held.next(Step::Assign), Step::Apply);
-        Ok(())
-    }
-
     #[test]
     fn test_mismatch_no_flash_needs_the_pinned_application() {
         let mut want = expected(Some("MDT-JAL0410"), Some("07B0"));
@@ -655,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn test_same_hardware_compares_serial_and_mask_where_both_read() {
+    fn test_as_verified_compares_serial_and_mask_where_both_read() {
         let mut then = pressed(None, Some(0x07B0));
         then.serial = Some(vec![0, 0xFA, 1, 2, 3, 4]);
         let now = Verified {
@@ -663,13 +595,22 @@ mod tests {
             serial: Some(vec![0, 0xFA, 1, 2, 3, 4]),
             ..Verified::default()
         };
-        assert!(same_hardware(&then, &now));
+        assert!(crate::program::assign::same_device(
+            &then.as_verified(),
+            &now
+        ));
         let other = Verified {
             serial: Some(vec![0, 0xFA, 9, 9, 9, 9]),
             ..now.clone()
         };
-        assert!(!same_hardware(&then, &other));
-        assert!(same_hardware(&then, &Verified::default()));
+        assert!(!crate::program::assign::same_device(
+            &then.as_verified(),
+            &other
+        ));
+        assert!(crate::program::assign::same_device(
+            &then.as_verified(),
+            &Verified::default()
+        ));
     }
 
     #[test]

@@ -120,6 +120,7 @@ use crate::server::BussardMcp;
 use crate::state::ConnState;
 
 mod add_device;
+mod addressing;
 mod commission;
 mod flash;
 mod interface;
@@ -2547,7 +2548,8 @@ impl Observer for JobObserver<'_> {
                 "reading {target} back (tables, parameters, security object) to compare it with \
                  {}",
                 self.truth
-            ),
+            ), // The addressing steps report through their own observer.
+            _ => return,
         };
         self.jobs.step(self.job, text);
     }
