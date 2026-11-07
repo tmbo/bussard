@@ -349,7 +349,7 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
 fn with_declaration(
     app: &ApplicationProgram,
     max: u32,
-    count: u32,
+    count: Option<u32>,
 ) -> TestResult<ApplicationProgram> {
     use bussard_prod::application::LoadOp;
     let mut app = app.clone();
@@ -367,7 +367,7 @@ fn with_declaration(
             continue;
         };
         if let Some(LoadOp::WriteProp { count: c, .. }) = lp.ops.get_mut(at) {
-            *c = Some(count);
+            *c = count;
         }
         lp.ops.insert(
             at,
@@ -407,7 +407,7 @@ fn test_plan_flash_writes_a_declared_property_in_declared_elements() -> TestResu
     let app = with_declaration(
         product.applications.first().ok_or("one application")?,
         20,
-        20,
+        Some(20),
     )?;
     let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
     let declared_at = plan
@@ -445,7 +445,11 @@ fn test_plan_flash_writes_a_declared_property_in_declared_elements() -> TestResu
 #[test]
 fn test_plan_flash_refuses_a_declared_write_past_max_elements() -> TestResult {
     let (product, _tmp) = product()?;
-    let app = with_declaration(product.applications.first().ok_or("one application")?, 4, 5)?;
+    let app = with_declaration(
+        product.applications.first().ok_or("one application")?,
+        4,
+        Some(5),
+    )?;
     match plan_of(&product, &app, &BTreeMap::new()) {
         Err(e) => {
             let text = e.to_string();
@@ -453,6 +457,52 @@ fn test_plan_flash_refuses_a_declared_write_past_max_elements() -> TestResult {
         }
         Ok(plan) => return Err(format!("expected a refusal, got {:?}", plan.steps).into()),
     }
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_refuses_a_count_less_declared_write_of_several_elements() -> TestResult {
+    // Issue #945: no Count and a declaration with room for 20 elements: the
+    // planner does not guess how many the write means.
+    let (product, _tmp) = product()?;
+    let app = with_declaration(
+        product.applications.first().ok_or("one application")?,
+        20,
+        None,
+    )?;
+    match plan_of(&product, &app, &BTreeMap::new()) {
+        Err(e) => {
+            let text = e.to_string();
+            assert!(text.contains("no Count"), "{text}");
+        }
+        Ok(plan) => return Err(format!("expected a refusal, got {:?}", plan.steps).into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_writes_a_count_less_declared_write_of_one_element() -> TestResult {
+    // Issue #945: no Count on a one-element declaration writes that element,
+    // as ETS does (obj10 PID 52 of `M-0009_A-E804-10-98AD`).
+    let (product, _tmp) = product()?;
+    let app = with_declaration(
+        product.applications.first().ok_or("one application")?,
+        1,
+        None,
+    )?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert_eq!(
+        territory_writes(&plan),
+        vec![&FlashStep::WriteProp {
+            object: PropObject::Index(4),
+            prop_id: 201,
+            value: vec![0x5A],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: true,
+        }]
+    );
     Ok(())
 }
 
@@ -469,7 +519,7 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
     let app = with_declaration(
         product.applications.first().ok_or("one application")?,
         20,
-        20,
+        Some(20),
     )?;
     let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
     let seen: RequestLog = Default::default();

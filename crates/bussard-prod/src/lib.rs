@@ -55,7 +55,7 @@ pub use extract::{Extracted, extract_from_project};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, Verified, fetch_entry};
 pub use hardware::HardwareCatalog;
 pub use image::{
-    ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyValues, StaticSlot,
+    ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyParameters, PropertyValues, StaticSlot,
     canonical_parameter_value, compose_property_value, compute_dynamic_parameter_image,
     compute_parameter_image, compute_parameter_image_placed, compute_parameter_image_placed_with,
     compute_property_values, decode_parameter_value, dynamic_parameter_slots, hidden_slot_value,
