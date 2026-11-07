@@ -21,6 +21,7 @@
 //! result lists per device what was written and whether its read-back
 //! verified; `ok` is true only when no device failed.
 
+use crate::reply::refused_on;
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
@@ -149,7 +150,7 @@ impl BussardMcp {
             Ok(me
                 .plan_line_body(&job, parsed)
                 .await
-                .unwrap_or_else(|reason| line_refusal(&text, reason)))
+                .unwrap_or_else(|reason| refused_on("line", &text, reason)))
         })
         .await
     }
@@ -478,16 +479,6 @@ impl BussardMcp {
         let snapshot = super::audit_snapshot(&dir, reason, format!("line {line_text}"))?;
         Ok((model, targets, planned, gateway, snapshot, declared))
     }
-}
-
-/// A refusal of a line call, in the shape of the device form's.
-pub(super) fn line_refusal(line: &str, reason: String) -> Value {
-    json!({
-        "line": line,
-        "ok": false,
-        "refused": true,
-        "reason": reason,
-    })
 }
 
 #[cfg(test)]

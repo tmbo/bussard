@@ -26,6 +26,7 @@
 //! process environment or the model's `.env`) and is never part of a result
 //! or a log line.
 
+use crate::reply::answer;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
@@ -122,10 +123,7 @@ impl BussardMcp {
         --allow-home-assistant and a [home_assistant] table in bussard.toml."
     )]
     async fn knx_ha_status(&self) -> Result<CallToolResult, ErrorData> {
-        ok(match self.ha_status().await {
-            Ok(value) => value,
-            Err(reason) => refusal(reason),
-        })
+        answer(self.ha_status().await)
     }
 
     /// `knx_ha_plan` (registered only with the Home Assistant tier).
@@ -145,10 +143,7 @@ impl BussardMcp {
         --allow-home-assistant."
     )]
     async fn knx_ha_plan(&self) -> Result<CallToolResult, ErrorData> {
-        ok(match self.ha_plan().await {
-            Ok(value) => value,
-            Err(reason) => refusal(reason),
-        })
+        answer(self.ha_plan().await)
     }
 
     /// `knx_ha_apply` (registered only with the Home Assistant tier).
@@ -168,10 +163,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<HaApplyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        ok(match self.ha_apply(args.plan_digest.trim()).await {
-            Ok(value) => value,
-            Err(reason) => refusal(reason),
-        })
+        answer(self.ha_apply(args.plan_digest.trim()).await)
     }
 }
 
@@ -563,16 +555,6 @@ fn plan_json(p: &Prepared, dir: &Path) -> Value {
         "plan_digest": p.digest,
         "backup_dir": bussard_ha::apply::backup_dir(dir).display().to_string(),
     })
-}
-
-/// A structured result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(reason: String) -> Value {
-    json!({"ok": false, "refused": true, "reason": reason})
 }
 
 #[cfg(test)]

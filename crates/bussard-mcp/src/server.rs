@@ -34,7 +34,8 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::state::{ConnState, READ_RESPONSE_TIMEOUT, SharedState};
+use crate::reply::{invalid, ok};
+use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
 
 /// How long `knx_bus_reconnect` waits for its connect attempt: the secure
@@ -366,16 +367,6 @@ pub struct WaitArgs {
     pub source: Option<String>,
     /// How long to wait, in seconds (max 300).
     pub timeout_seconds: u32,
-}
-
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A bad-argument error (invalid address, etc.).
-fn invalid(msg: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(msg.into(), None)
 }
 
 /// Builds a combined filter from optional ga + source terms.
@@ -794,15 +785,6 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<GaArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Passive mode: the tool is unregistered, but guard anyway.
-        if self.state.passive {
-            return ok(json!({
-                "ga": args.ga,
-                "ok": false,
-                "reason": "server is in passive mode; bus reads are disabled",
-            }));
-        }
-
         let ga: GroupAddress = args
             .ga
             .parse()
@@ -817,23 +799,11 @@ impl BussardMcp {
             Err(err) => return ok(group_error_json(ga, &err)),
         };
 
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
-            }));
+        // Passive mode: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Read) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
-
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // Sender admission (issue #297): a responder that does not admit the
         // tunnel address never answers a secured read; an unknown verdict
@@ -916,36 +886,15 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<DescribeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Passive mode: the tool is unregistered, but guard anyway.
-        if self.state.passive {
-            return ok(json!({
-                "address": args.address,
-                "ok": false,
-                "reason": "server is in passive mode; bus management traffic is disabled",
-            }));
-        }
-
         let target: IndividualAddress = args
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
-            }));
+        // Passive mode: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Manage) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("address", &target.to_string(), reason)),
         };
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
         // wraps every management APDU, exactly as `bussard describe --keyring`.
@@ -1058,15 +1007,6 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<WriteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Writes disabled: the tool is unregistered, but guard anyway.
-        if self.state.passive || !self.state.allow_writes {
-            return ok(json!({
-                "ga": args.ga,
-                "ok": false,
-                "reason": "bus writes are disabled on this server",
-            }));
-        }
-
         let ga: GroupAddress = args
             .ga
             .parse()
@@ -1107,22 +1047,11 @@ impl BussardMcp {
                 Err(refusal) => return ok(write_refusal_json(ga, &refusal)),
             };
 
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-            }));
+        // Writes disabled: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Write) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
-
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // Sender admission (issue #297): refuse a secured write the devices on
         // the GA would discard, before anything is sent. The rate limiter's
@@ -1166,6 +1095,12 @@ impl BussardMcp {
 /// keyring, the lock, the PID 54 tables read in its lifetime, the warm
 /// connection and the rate limiter.
 impl BussardMcp {
+    /// A bus tool's result when the bus cannot be used: `ok: false`, the
+    /// reason and the bus status, about `key: value`.
+    fn bus_refusal(&self, key: &str, value: &str, reason: String) -> Value {
+        json!({ key: value, "ok": false, "reason": reason, "bus": self.state.bus.to_json() })
+    }
+
     fn group_context<'a>(&'a self, model: &'a bussard_model::Model) -> group::GroupContext<'a> {
         group::GroupContext {
             model: Some(model),

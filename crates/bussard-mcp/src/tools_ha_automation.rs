@@ -19,6 +19,7 @@
 //! automation is updated or removed only when its description carries the
 //! bussard marker line, so automations made by hand are never touched.
 
+use crate::reply::{ok, refused};
 use std::time::SystemTime;
 
 use crate::args::Parameters;
@@ -292,11 +293,11 @@ impl BussardMcp {
     async fn automation_plan(&self, op: Op) -> Value {
         let tier = match self.ha_tier() {
             Ok(t) => t,
-            Err(reason) => return refusal(reason),
+            Err(reason) => return refused(reason),
         };
         let planned = match self.render_op(tier.config(), &op).await {
             Ok(p) => p,
-            Err(reason) => return refusal(reason),
+            Err(reason) => return refused(reason),
         };
         let unchanged = planned.config.is_some() && planned.config == planned.previous;
         let (op_name, sentences, question) = describe(&planned);
@@ -327,7 +328,7 @@ impl BussardMcp {
     async fn automation_apply(&self, digest: &str, remove_id: Option<&str>) -> Value {
         match self.automation_apply_inner(digest, remove_id).await {
             Ok(v) => v,
-            Err(reason) => refusal(reason),
+            Err(reason) => refused(reason),
         }
     }
 
@@ -582,16 +583,6 @@ pub(crate) async fn managed_automations(
         }));
     }
     Value::Array(out)
-}
-
-/// A structured result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(reason: String) -> Value {
-    json!({"ok": false, "refused": true, "reason": reason})
 }
 
 #[cfg(test)]

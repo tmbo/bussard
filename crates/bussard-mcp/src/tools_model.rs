@@ -19,6 +19,7 @@
 //! as `knx_write_group` refuses them: there is no MCP override, and no tool
 //! parameter can set or clear the flag.
 
+use crate::reply::{ok, refusal};
 use std::path::Path;
 
 use crate::args::Parameters;
@@ -1852,21 +1853,6 @@ fn validation_json(
         );
     }
     out
-}
-
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result rather than a protocol
-/// error: the caller has to read the reason out to the human.
-fn refusal(reason: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    ok(json!({
-        "ok": false,
-        "refused": true,
-        "reason": reason.into(),
-    }))
 }
 
 /// Applies `args` to the `[knxnet]` table: the assignment (dhcp drops the

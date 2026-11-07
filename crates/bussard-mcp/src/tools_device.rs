@@ -14,6 +14,7 @@
 //! `bussard restore` read them.
 
 use crate::jobs::{JobKind, Subject};
+use crate::reply::answer_on;
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -39,7 +40,7 @@ use serde_json::{Value, json};
 
 use crate::guidance::Tiers;
 use crate::server::BussardMcp;
-use crate::state::ConnState;
+use crate::state::Need;
 
 /// The tools this module registers: the default tier, omitted in `--passive`.
 pub const DEVICE_TOOLS: [&str; 3] = [
@@ -122,10 +123,7 @@ impl BussardMcp {
         Parameters(args): Parameters<BackupDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let label = args.address.clone().unwrap_or_else(|| "all".to_string());
-        match self.backup_devices(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&label, reason),
-        }
+        answer_on("address", &label, self.backup_devices(args).await)
     }
 
     /// `knx_reconstruct_device` (omitted in passive mode).
@@ -163,23 +161,21 @@ impl BussardMcp {
                 .map(str::to_string)
         };
         match (given(&args.address), given(&args.line)) {
-            (Some(address), None) => match self.reconstruct_device(&address).await {
-                Ok(value) => ok(value),
-                Err(reason) => refusal(&address, reason),
-            },
-            (None, Some(line)) => match self.reconstruct_line(&line, &args).await {
-                Ok(value) => ok(value),
-                Err(reason) => ok(json!({
-                    "line": line,
-                    "ok": false,
-                    "refused": true,
-                    "reason": reason,
-                })),
-            },
-            (Some(_), Some(_)) => refusal("", "pass either `address` or `line`, not both".into()),
-            (None, None) => refusal(
+            (Some(address), None) => {
+                answer_on("address", &address, self.reconstruct_device(&address).await)
+            }
+            (None, Some(line)) => {
+                answer_on("line", &line, self.reconstruct_line(&line, &args).await)
+            }
+            (Some(_), Some(_)) => answer_on(
+                "address",
                 "",
-                "pass a device `address`, or a `line` (e.g. \"1.1\") to sweep".into(),
+                Err("pass either `address` or `line`, not both".into()),
+            ),
+            (None, None) => answer_on(
+                "address",
+                "",
+                Err("pass a device `address`, or a `line` (e.g. \"1.1\") to sweep".into()),
             ),
         }
     }
@@ -210,34 +206,11 @@ impl BussardMcp {
             Ok(request) => self.find_devices(request).await,
             Err(reason) => Err(reason),
         };
-        match result {
-            Ok(value) => ok(value),
-            Err(reason) => ok(json!({
-                "line": args.line,
-                "ok": false,
-                "refused": true,
-                "reason": reason,
-            })),
-        }
+        answer_on("line", &args.line, result)
     }
 }
 
 impl BussardMcp {
-    /// The connected bus of a default-tier device read, or why there is none.
-    pub(crate) fn device_read_bus(&self) -> Result<bussard_service::BusService, String> {
-        let state = self.state();
-        if state.passive {
-            return Err("server is in passive mode; bus management traffic is disabled".into());
-        }
-        let Some(service) = state.bus.service() else {
-            return Err("the bus is not wired".into());
-        };
-        if state.bus.state() != ConnState::Connected {
-            return Err(state.bus.not_connected_reason());
-        }
-        Ok(service.clone())
-    }
-
     /// `knx_backup_device`'s body; `Err` is a refusal reason.
     async fn backup_devices(&self, args: BackupDeviceArgs) -> Result<Value, String> {
         let all = args.all.unwrap_or(false);
@@ -249,7 +222,7 @@ impl BussardMcp {
             }
             _ => return Err("pass a device `address`, or `all: true` for every device".into()),
         };
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         let model = state.model.reload();
         let targets = select_targets(&model, &addresses, None).map_err(|e| e.to_string())?;
@@ -354,7 +327,7 @@ impl BussardMcp {
             .trim()
             .parse()
             .map_err(|_| format!("invalid individual address {address:?}"))?;
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         let model = state.model.reload();
         let dir = state.dir.clone();
@@ -507,7 +480,7 @@ impl BussardMcp {
                 ));
             }
         }
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let at = IndividualAddress::new(area, line_no, 0).map_err(|e| e.to_string())?;
         let job = state.jobs.claim(JobKind::Read, Subject::Device(at))?.id;
         let me = self.clone();
@@ -686,19 +659,4 @@ fn diff_json(
         "matches": diff.matches.len(),
         "note": diff.note,
     })
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(address: &str, reason: String) -> Result<CallToolResult, ErrorData> {
-    ok(json!({
-        "address": address,
-        "ok": false,
-        "refused": true,
-        "reason": reason,
-    }))
 }

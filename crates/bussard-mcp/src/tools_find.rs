@@ -25,7 +25,7 @@ use serde_json::{Value, json};
 
 use crate::jobs::JobTable;
 use crate::server::BussardMcp;
-use crate::state::SharedState;
+use crate::state::{Need, SharedState};
 use crate::warm::WarmConnection;
 
 /// What `knx_find_devices` scans: the parsed line and range.
@@ -65,7 +65,7 @@ impl ScanRequest {
 impl BussardMcp {
     /// `knx_find_devices`'s body; `Err` is a refusal reason.
     pub(crate) async fn find_devices(&self, request: ScanRequest) -> Result<Value, String> {
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         // The keyring's tool keys (issue #203): a listed device is identified
         // over A_SecureData, as `bussard scan --keyring`.
@@ -135,7 +135,7 @@ impl BussardMcp {
     /// `knx_show_device {live: true}`'s live part: what `bussard status
     /// <ia>` reads, as JSON; `Err` is a refusal reason.
     pub(crate) async fn live_status(&self, target: IndividualAddress) -> Result<Value, String> {
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         let model = state.model.current();
         // KNX Data Secure (issue #533): the target's tool key wraps every

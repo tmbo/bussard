@@ -16,6 +16,7 @@
 //! `.knxproj` without a password gets bussard's password form when the
 //! client shows URLs ([`crate::password_form`], #818).
 
+use crate::reply::{ok, refusal};
 use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
@@ -815,14 +816,4 @@ fn refused(reason: impl Into<String>, out: &Collected) -> Value {
         "reason": reason.into(),
         "sentences": sentences(out),
     })
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(reason: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    ok(refused(reason, &Collected::default()))
 }

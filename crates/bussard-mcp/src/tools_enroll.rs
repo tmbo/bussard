@@ -62,6 +62,7 @@
 //! withheld with `--no-model-edits` like the model edits and registered in
 //! every bus tier, `--passive` included.
 
+use crate::reply::ok;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -224,11 +225,6 @@ impl CertificateSink for FreshKeyStore {
             Err(err) => CertificateOutcome::error(err.to_string()),
         }
     }
-}
-
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
 }
 
 /// A refusal: `ok: false` and the reason, as a normal result.

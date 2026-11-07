@@ -87,7 +87,8 @@
 //! flag that moves between plan and apply retires the plan. The gates above
 //! are unchanged.
 
-use std::error::Error as StdError;
+use crate::reply::{answer_on, merge, ok, refused_on};
+use bussard_service::program::chain;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::args::Parameters;
@@ -117,7 +118,7 @@ use serde_json::{Value, json};
 use crate::confirm::Store;
 use crate::jobs::{Gate, JobKind, JobSink, PARAMETER_DOWNLOAD, Subject as On};
 use crate::server::BussardMcp;
-use crate::state::ConnState;
+use crate::state::Need;
 
 mod add_device;
 mod addressing;
@@ -504,15 +505,11 @@ impl BussardMcp {
         Parameters(args): Parameters<PlanDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => refusal("", reason),
-            Ok(Target::Line(line)) => match self.plan_line(line).await {
-                Ok(value) => ok(value),
-                Err(reason) => ok(line::line_refusal(line, reason)),
-            },
-            Ok(Target::Device(address)) => match self.plan_device(address).await {
-                Ok(value) => ok(value),
-                Err(reason) => refusal(address, reason),
-            },
+            Err(reason) => ok(refused_on("address", "", reason)),
+            Ok(Target::Line(line)) => answer_on("line", line, self.plan_line(line).await),
+            Ok(Target::Device(address)) => {
+                answer_on("address", address, self.plan_device(address).await)
+            }
         }
     }
 
@@ -561,22 +558,22 @@ impl BussardMcp {
         Parameters(args): Parameters<ApplyDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => refusal("", reason),
-            Ok(Target::Line(line)) => match self.apply_line(line, args.plan_digest.trim()).await {
-                Ok(value) => ok(value),
-                Err(reason) => ok(line::line_refusal(line, reason)),
-            },
-            Ok(Target::Device(address)) => match self
-                .apply_device(
+            Err(reason) => ok(refused_on("address", "", reason)),
+            Ok(Target::Line(line)) => answer_on(
+                "line",
+                line,
+                self.apply_line(line, args.plan_digest.trim()).await,
+            ),
+            Ok(Target::Device(address)) => answer_on(
+                "address",
+                address,
+                self.apply_device(
                     address,
                     args.plan_digest.trim(),
                     args.plan_hash.as_deref().map(str::trim),
                 )
-                .await
-            {
-                Ok(value) => ok(value),
-                Err(reason) => refusal(address, reason),
-            },
+                .await,
+            ),
         }
     }
 
@@ -610,10 +607,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.add_device_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&address, reason),
-        }
+        answer_on("address", &address, self.add_device_tool(args).await)
     }
 
     /// `knx_commission_line` (registered only with `--allow-programming`).
@@ -654,10 +648,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.commission_line_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&subject, reason),
-        }
+        answer_on("address", &subject, self.commission_line_tool(args).await)
     }
 
     /// `knx_replace_device` (registered only with `--allow-programming`).
@@ -698,10 +689,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.replace_device_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&address, reason),
-        }
+        answer_on("address", &address, self.replace_device_tool(args).await)
     }
 
     /// `knx_restore_parameters` (registered only with `--allow-programming`).
@@ -727,17 +715,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreParametersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restore_parameters(
+        answer_on(
+            "address",
+            &args.address,
+            self.restore_parameters(
                 &args.address,
                 &args.backup,
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_restart_device` (registered only with `--allow-programming`).
@@ -759,13 +746,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestartDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on(
+            "address",
+            &args.address,
+            self.restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
+                .await,
+        )
     }
 
     /// `knx_restore_tables` (registered only with `--allow-programming`).
@@ -791,17 +777,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreTablesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restore_tables(
+        answer_on(
+            "address",
+            &args.address,
+            self.restore_tables(
                 &args.address,
                 args.backup.as_deref(),
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_interface_secure` (registered only with `--allow-programming`).
@@ -824,17 +809,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<InterfaceSecureArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .interface_secure(
+        answer_on(
+            "address",
+            &args.address,
+            self.interface_secure(
                 &args.address,
                 &args.state,
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_clear_security_log` (registered only with `--allow-programming`).
@@ -857,13 +841,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ClearSecurityLogArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .clear_security_log(&args.address, args.plan_digest.as_deref().map(str::trim))
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on(
+            "address",
+            &args.address,
+            self.clear_security_log(&args.address, args.plan_digest.as_deref().map(str::trim))
+                .await,
+        )
     }
 
     /// `knx_apply_status` (registered only with `--allow-programming`).
@@ -885,10 +868,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ApplyStatusArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.apply_status(&args.job) {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.job, reason),
-        }
+        answer_on("address", &args.job, self.apply_status(&args.job))
     }
 
     /// `knx_last_apply` (registered only with `--allow-programming`).
@@ -903,10 +883,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<LastApplyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.last_apply(&args.address) {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on("address", &args.address, self.last_apply(&args.address))
     }
 }
 
@@ -961,13 +938,8 @@ impl BussardMcp {
         let gateway = gateway_display(&tier.connection);
         check_write_gate(&tier.connection, tier.allow_remote_gateway)
             .map_err(|refused| refused.to_string())?;
-        let Some(service) = state.bus.service() else {
-            return Err("the bus is not wired".into());
-        };
-        if state.bus.state() != ConnState::Connected {
-            return Err(state.bus.not_connected_reason());
-        }
-        Ok((tier, service.clone(), gateway))
+        let service = state.live_service(Need::Manage)?.clone();
+        Ok((tier, service, gateway))
     }
 
     /// The Data Secure material for `target` from the server's keyring: its
@@ -1020,7 +992,7 @@ impl BussardMcp {
             Ok(me
                 .plan_body(&address)
                 .await
-                .unwrap_or_else(|reason| refusal_json(&address, reason)))
+                .unwrap_or_else(|reason| refused_on("address", &address, reason)))
         })
         .await
     }
@@ -3060,25 +3032,6 @@ fn parameters_json(built: &BuiltPlan) -> Value {
     })
 }
 
-/// Copies every field of `extra` into `into` (both objects).
-fn merge(into: &mut Value, extra: Value) {
-    if let (Some(into), Value::Object(extra)) = (into.as_object_mut(), extra) {
-        into.extend(extra);
-    }
-}
-
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn StdError) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
-    }
-    out
-}
-
 /// The audit line, as `bussard apply` records it: a history snapshot before
 /// the bus write (`None` without model files); `Err` refuses the write of
 /// `what`.
@@ -3112,27 +3065,6 @@ impl ProgrammingTier {
         self.plans.insert(digest.clone(), target, sides);
         digest
     }
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(address: &str, reason: String) -> Result<CallToolResult, ErrorData> {
-    ok(refusal_json(address, reason))
-}
-
-/// The JSON of a refusal: what [`refusal`] returns, and a refused plan
-/// job's result (issue #332).
-fn refusal_json(address: &str, reason: String) -> Value {
-    json!({
-        "ok": false,
-        "refused": true,
-        "address": address,
-        "reason": reason,
-    })
 }
 
 /// `text`, followed by the group addresses the apply declared in

@@ -300,6 +300,38 @@ pub struct SharedState {
     pub viz: crate::tools_viz::VizPage,
 }
 
+/// What a bus tool needs the server to allow ([`SharedState::live_service`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Need {
+    /// Group reads.
+    Read,
+    /// Management traffic (device reads, scans, backups).
+    Manage,
+    /// Group writes (`--allow-writes`).
+    Write,
+}
+
+impl SharedState {
+    /// The connected bus service, or why a tool needing `need` cannot use it:
+    /// the passive mode or a write tier that is off, a bus not wired yet, or
+    /// a bus that is not connected (with the last error, issue #287).
+    pub fn live_service(&self, need: Need) -> Result<&BusService, String> {
+        if self.passive || (need == Need::Write && !self.allow_writes) {
+            return Err(match need {
+                Need::Read => "server is in passive mode; bus reads are disabled",
+                Need::Manage => "server is in passive mode; bus management traffic is disabled",
+                Need::Write => "bus writes are disabled on this server",
+            }
+            .into());
+        }
+        let service = self.bus.service().ok_or("the bus is not wired")?;
+        if self.bus.state() != ConnState::Connected {
+            return Err(self.bus.not_connected_reason());
+        }
+        Ok(service)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
