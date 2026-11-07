@@ -170,6 +170,7 @@ impl FlashPlan {
             baseline_address,
             security_capacity: self.security_capacity,
             user_memory_above_64k: self.user_memory_above_64k,
+            typed_objects_by_list: self.typed_objects_by_list,
             par_allocations: BTreeMap::new(),
             par_procedure: false,
             kept: self.kept.clone(),

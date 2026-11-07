@@ -538,6 +538,59 @@ pub fn write_dump(
                 call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
                 record["function_property"] = call;
             }
+            // A System B write to an object named by type (issue #948), one
+            // record per request as the executor splits it: on the extended
+            // services by type for a Data Secure enabled program, within the
+            // nominal APDU; at the index the device's object list gives it
+            // otherwise, at most 15 elements each. The dump has no device, so
+            // that record names the type the executor looks up.
+            FlashStep::WriteProp {
+                object:
+                    bussard_download::PropObject::Type {
+                        object_type,
+                        occurrence,
+                    },
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+                ..
+            } => {
+                let elem = (value.len() / usize::from((*count).max(1))).max(1);
+                let per_elements = if plan.typed_objects_by_list() {
+                    bussard_download::flash::plain_write_elements(DUMP_NOMINAL_MAX_APDU, elem)
+                } else {
+                    (usize::from(
+                        DUMP_NOMINAL_MAX_APDU
+                            - bussard_mgmt::property_ext::PROPERTY_EXT_WRITE_OVERHEAD,
+                    ) / elem)
+                        .clamp(1, usize::from(u8::MAX))
+                };
+                let per = if *count > 1 {
+                    per_elements * elem
+                } else {
+                    value.len().max(1)
+                };
+                let records: Vec<Value> = value
+                    .chunks(per)
+                    .enumerate()
+                    .map(|(i, chunk)| {
+                        json!({
+                            "object_type": object_type,
+                            "instance": u32::from(*occurrence) + 1,
+                            "pid": prop_id,
+                            "start_element": usize::from(*start_element) + i * per / elem,
+                            "count": if *count > 1 { chunk.len() / elem } else { 1 },
+                            "length": chunk.len(),
+                            "data": chunk.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            "verify": verify,
+                            "source": "load-procedure",
+                        })
+                    })
+                    .collect();
+                record["properties"] = json!(records);
+            }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),
             // one record per write as the executor sends them: plain at the
             // index ETS uses, or by type 11 on the extended services. The

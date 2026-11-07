@@ -1097,6 +1097,18 @@ pub struct FlashPlan {
     /// so memory above `0xFFFF` is written and read with `A_UserMemory_*`
     /// as ETS does (issue #472). `false` on System 7 and property plans.
     user_memory_above_64k: bool,
+    /// Whether an object a property write names by type is written at the
+    /// index the device's interface-object list gives it, with the plain
+    /// services: a System B program that is not Data Secure enabled. ETS
+    /// writes such a program's `ObjType` property that way (the Siemens
+    /// dimmer `M-0001_A-9839-01-38C4`: a `PID_OBJECT_TYPE` read of object 6,
+    /// then `A_PropertyValue_Write` to object 6 PID 205), and every Data
+    /// Secure enabled 07B0 program of the ETS sweep on the extended services
+    /// by type (23 captures, among them the Gira `M-0008_A-0004-75-0A9A-O007C`
+    /// and the Enertex `M-00A6_A-0030-20-530A`), the split the KNXnet/IP
+    /// parameters already follow (issue #948). `false` on System 7 and
+    /// property plans, which keep the extended services.
+    typed_objects_by_list: bool,
     /// The allocations the product's `AppliesTo="par"` load procedure makes
     /// (object index to size and `Mode`/`Fill`), recorded by the planner so a full
     /// download onto a device that already holds this application can run
@@ -1432,6 +1444,13 @@ impl FlashPlan {
     /// step.
     pub fn user_memory_above_64k(&self) -> bool {
         self.user_memory_above_64k
+    }
+
+    /// Whether the executor writes an object named by type at the index the
+    /// device's interface-object list gives it, with the plain services,
+    /// rather than on the extended services by type (issue #948).
+    pub fn typed_objects_by_list(&self) -> bool {
+        self.typed_objects_by_list
     }
 
     /// The entries the plan writes into the group key table (PID 53) and

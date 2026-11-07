@@ -933,7 +933,8 @@ pub fn plan_flash(
             // A write to a declared property: `Count` elements of the declared
             // type, the value the parameters compose (issue #938), the
             // template's application-id placeholder substituted as on any
-            // other PID 13 write (issue #945).
+            // other PID 13 write (issue #945), by the one substitution rule
+            // (issue #957).
             LoadOp::WriteProp {
                 obj_idx,
                 prop_id,
@@ -941,27 +942,34 @@ pub fn plan_flash(
                 ..
             } if declared_write.is_some() => {
                 let Some(decl) = declared_write else { continue };
-                let substituted = maybe_substitute_app_id(
-                    prop_id.unwrap_or(decl.prop_id),
-                    inline_data.as_deref(),
-                    companion_ids
-                        .get(&obj_idx.unwrap_or(0))
-                        .or(app_id_value.as_ref()),
-                );
-                let op = match op {
-                    LoadOp::WriteProp { .. } if substituted != *inline_data => {
-                        let mut op = op.clone();
-                        if let LoadOp::WriteProp { inline_data, .. } = &mut op {
-                            *inline_data = substituted;
-                        }
-                        std::borrow::Cow::Owned(op)
-                    }
-                    _ => std::borrow::Cow::Borrowed(op),
-                };
-                steps.push(super::declare::lower_declared_write_prop(
+                let prop = prop_id.unwrap_or(decl.prop_id);
+                let app_id = companion_ids
+                    .get(&obj_idx.unwrap_or(0))
+                    .or(app_id_value.as_ref());
+                let substituted = maybe_substitute_app_id(prop, inline_data.as_deref(), app_id);
+                // Without an application id the placeholder would go out as
+                // zeros, which name no program, and the read-back would
+                // compare them (issue #957): refused, as nothing else
+                // supplies the value.
+                if prop == PID_PROGRAM_VERSION
+                    && app_id.is_none()
+                    && substituted.as_deref() == Some(&APP_ID_PLACEHOLDER[..])
+                {
+                    return Err(PlanError::UnsupportedWriteProp {
+                        step: step_no,
+                        reason: format!(
+                            "the write to the declared {} PID {prop} is the all-zero \
+                             application-id placeholder, and the program has no application \
+                             number and version to put in its place",
+                            decl.object
+                        ),
+                    });
+                }
+                steps.extend(super::declare::lower_declared_write_prop(
                     step_no,
-                    &op,
+                    op,
                     &decl,
+                    substituted.as_deref(),
                     &property_params,
                     app,
                 )?);
@@ -969,6 +977,8 @@ pub fn plan_flash(
 
             LoadOp::WriteProp {
                 obj_idx,
+                obj_type,
+                occurrence,
                 prop_id,
                 inline_data,
                 start_element,
@@ -979,12 +989,14 @@ pub fn plan_flash(
                     .unwrap_or(1)
                     .max(1);
                 let prop_id = prop_id.unwrap_or(0);
-                // The property write targets an object index. When the op names
-                // one directly (`ObjIdx`) use it; otherwise it is object 0 (the
-                // device object, as the observed vendor procedures write). The
-                // A_PropertyValue_Write primitive addresses by a u8 object index
-                // and u8 PID.
-                let obj_idx = obj_idx.unwrap_or(0);
+                // The object the write names: `ObjIdx`, else `ObjType` (the
+                // device object for type 0), else the device object, as the
+                // observed vendor procedures write. An object named by type is
+                // found on the device, never taken for object 0 (issue #948:
+                // the Siemens dimmer `M-0001_A-9839-01-38C4` writes PID 205 of
+                // type 50215, which ETS found at object 6).
+                let object =
+                    super::plan_props::prop_object(step_no, *obj_idx, *obj_type, *occurrence)?;
                 // The master template carries a placeholder
                 // `LdCtrlWriteProp ObjIdx=4 PropId=13 InlineData="0000000000"`
                 // for the application object's PID_PROGRAM_VERSION (the app-id /
@@ -998,7 +1010,9 @@ pub fn plan_flash(
                 let inline_data = maybe_substitute_app_id(
                     prop_id,
                     inline_data.as_deref(),
-                    companion_ids.get(&obj_idx).or(app_id_value.as_ref()),
+                    companion_ids
+                        .get(&object.index().unwrap_or(0))
+                        .or(app_id_value.as_ref()),
                 );
 
                 match &inline_data {
@@ -1007,7 +1021,9 @@ pub fn plan_flash(
                         // "only a fully-executable FlashPlan reaches flash" invariant.
                         // Refuse a shape the write primitive cannot address rather
                         // than dropping the value at execute time.
-                        if obj_idx > u32::from(u8::MAX) {
+                        if let Some(obj_idx) = object.index()
+                            && obj_idx > u32::from(u8::MAX)
+                        {
                             return Err(PlanError::UnsupportedWriteProp {
                                 step: step_no,
                                 reason: format!(
@@ -1029,7 +1045,7 @@ pub fn plan_flash(
                         // it as the offline oracle confirms it): the value is one
                         // element, the write echo-validated, no extra read-back.
                         steps.push(FlashStep::WriteProp {
-                            object: super::PropObject::Index(obj_idx),
+                            object,
                             prop_id,
                             value: value.clone(),
                             start_element,
@@ -1266,6 +1282,7 @@ pub fn plan_flash(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
+        typed_objects_by_list: !app.is_secure_enabled,
         par_allocations,
         par_procedure: false,
         kept,
@@ -3654,6 +3671,41 @@ mod tests {
                 from_parameters: false,
             }]
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_declared_pid_13_placeholder_without_an_app_id()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #957: without an application number and version there is no
+        // id for the placeholder; zeros would name no program and the
+        // read-back of the declared write would compare them.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-00FA_A-2500-10-51CB" MaskVersion="MV-07B0" Name="Declared">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlDeclarePropDesc ObjIdx="4" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
+             <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-00FA_A-2500-10-51CB", xml.as_bytes())?;
+        match plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ) {
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
+                assert!(reason.contains("application-id placeholder"), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
         Ok(())
     }
 

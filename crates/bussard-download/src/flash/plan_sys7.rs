@@ -666,12 +666,20 @@ pub(super) fn plan_flash_sys7(
                 // A write to a declared property: `Count` elements of the
                 // declared type (issue #946).
                 if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
-                    steps.extend(sys7_declared_write_prop(
+                    let inline = match op {
+                        LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
+                        _ => None,
+                    };
+                    // A write with neither `InlineData` nor a parameter placed
+                    // in the property sends nothing, as ETS on the Hager
+                    // STXE530's object 6 PID 52 (`M-0009_A-20BB-10-0991`).
+                    steps.extend(super::declare::lower_declared_write_prop(
                         step_no,
                         op,
                         decl,
-                        app,
+                        inline,
                         &property_params,
+                        app,
                     )?);
                 } else {
                     // A property write with its Count and Verify (issue #390):
@@ -808,6 +816,7 @@ pub(super) fn plan_flash_sys7(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: false,
+        typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
         kept,
@@ -1870,41 +1879,6 @@ pub fn sys7_profile_from_hawk(
     };
     profile.verify_mode = hawk.verify_mode();
     Some(profile)
-}
-
-/// Lowers an `LdCtrlWriteProp` to a property an earlier
-/// `LdCtrlDeclarePropDesc` declared (issue #946): `Count` elements of the
-/// declared type, the value the parameters compose over the op's
-/// `InlineData`, as the System B planner lowers it (issue #938). ETS writes
-/// the Hager 0701 declared properties without a description read, ten
-/// one-octet elements per request on the 15-octet APDU
-/// (`captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults/ops.txt`,
-/// ops 85 to 129).
-///
-/// A write that carries no `InlineData` to a property no parameter is placed
-/// in sends nothing (`None`): ETS writes nothing to the Hager STXE530's
-/// object 6 PID 52 (`captures/ets-sweep/M-0009_A-20BB-10-0991/plain-defaults`,
-/// `ops.txt`: writes to objects 7 and 8 only), and has no value to write.
-fn sys7_declared_write_prop(
-    step_no: usize,
-    op: &LoadOp,
-    decl: &super::declare::PropDecl,
-    app: &ApplicationProgram,
-    values: &dyn super::declare::DeclaredValues,
-) -> std::result::Result<Option<FlashStep>, PlanError> {
-    let no_inline = matches!(
-        op,
-        LoadOp::WriteProp { inline_data, .. } if inline_data.as_deref().is_none_or(<[u8]>::is_empty)
-    );
-    let possibly_placed = app.parameters.values().any(|p| {
-        p.property
-            .as_ref()
-            .is_some_and(|loc| super::plan_props::may_hold(loc, decl.object, decl.prop_id))
-    });
-    if no_inline && !possibly_placed && !values.places(decl.object, decl.prop_id) {
-        return Ok(None);
-    }
-    super::declare::lower_declared_write_prop(step_no, op, decl, values, app).map(Some)
 }
 
 /// The mem-type for a System 7 absolute-segment allocation at `addr`: RAM (`2`)
