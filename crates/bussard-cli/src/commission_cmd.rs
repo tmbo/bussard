@@ -21,9 +21,9 @@
 //! read-back, and the label. This module keeps the prompts and the printing,
 //! and reuses:
 //!
-//! * [`crate::assign_cmd::wait_for_single_device`] for the programming-mode
-//!   wait (same nagging, same budgets, same refusal to act on two devices at
-//!   once);
+//! * [`bussard_service::program::assign::AssignFlow`] for the
+//!   programming-mode wait (same nagging, same budgets, same refusal to act
+//!   on two devices at once);
 //! * [`crate::flash_cmd::run`] and [`crate::apply_cmd::run`] verbatim for
 //!   `--flash` and `--apply`, so a commissioned device is programmed exactly the
 //!   way the single-device commands program it.
@@ -40,12 +40,13 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
 use bussard_service::commission::{
-    Assigned, CommissionError, LineRun, Next, OrderCheck, Outcome, Status, Target,
+    Labelled, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed, identify_pressed,
 };
+use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::{BusService, WritePolicy};
 
+use crate::addressing::{Bench, stopped};
 use crate::apply_cmd::ApplyArgs;
-use crate::assign_cmd;
 use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
     checked_source_or_close, enforce_write_gate, gateway_display, load_model_required,
@@ -325,20 +326,17 @@ fn commission_one(
                 .wait_connected(crate::conn_cmd::connect_wait())
                 .await;
             let source = checked_source_or_close(&service, overrides).await?;
-            let result = assign_on_bus(&service, source, target).await;
+            let flow = AssignFlow {
+                service: &service,
+                source,
+            };
+            let result = assign_on_bus(flow, dir, target).await;
             service.close().await;
             result
         })
     };
     let assigned = match assigned {
-        Ok(assigned) => {
-            // A new box now answers at the address: facts stored for it
-            // describe whatever was there before (issue #228, item 5). The
-            // flash and apply below read the new device's and report its
-            // identity; apply refuses a device that drifted from the lock.
-            bussard_service::commission::forget_facts(dir, target.address);
-            assigned
-        }
+        Ok(assigned) => assigned,
         Err(err) => return fail(one_line(&format!("{err:#}"))),
     };
 
@@ -403,35 +401,32 @@ fn commission_one(
 /// ([`bussard_service::commission::identify_pressed`] and
 /// [`bussard_service::commission::assign_pressed`]).
 async fn assign_on_bus(
-    service: &BusService,
-    source: IndividualAddress,
+    flow: AssignFlow<'_>,
+    dir: &Path,
     target: &Target,
-) -> anyhow::Result<Assigned> {
-    match &target.order_number {
-        Some(order) => eprintln!(
-            "  press the programming button on {} ({order})",
-            target.name
-        ),
-        None => eprintln!(
-            "  press the programming button on {} (no order number in the model)",
-            target.name
-        ),
-    }
-
-    let current = assign_cmd::wait_for_single_device(service, source)
-        .await?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
+) -> anyhow::Result<Labelled> {
+    let order = target
+        .order_number
+        .clone()
+        .unwrap_or_else(|| "no order number in the model".to_string());
+    let bench = &mut Bench::new(true).indent("  ").press(format!(
+        "  press the programming button on {} ({order})",
+        target.name
+    ));
+    let current = match flow.wait_for_one(bench).await {
+        Ok(current) => current,
+        Err(stop @ (Stop::Several(_) | Stop::Nothing { .. })) => {
+            stopped(stop, "commission")?;
+            bail!(
                 "no single device was in programming mode; nothing was written for {}",
                 target.address
-            )
-        })?;
-    eprintln!("  device in programming mode: {current} (its current address)");
-
-    let identified =
-        bussard_service::commission::identify_pressed(service, source, target, current)
-            .await
-            .map_err(cli_error)?;
+            );
+        }
+        Err(stop) => return Err(stop.into()),
+    };
+    let identified = identify_pressed(&flow, target, current, bench)
+        .await
+        .map_err(cli_error)?;
     match &identified.check {
         OrderCheck::Matches => {}
         OrderCheck::NoModelNumber => eprintln!(
@@ -440,35 +435,18 @@ async fn assign_on_bus(
         ),
         OrderCheck::Refused(sentence) => bail!("{sentence}"),
     }
-
-    let assigned =
-        bussard_service::commission::assign_pressed(service, source, target, &identified)
-            .await
-            .map_err(cli_error)?;
-    for warning in &assigned.warnings {
-        eprintln!("{warning}");
-    }
-    if assigned.programming_mode_cleared {
-        eprintln!(
-            "  cleared programming mode on {} (PID_PROGMODE = 0)",
-            target.address
-        );
-    }
-    if assigned.still_in_programming_mode {
-        eprintln!();
-        for line in bussard_service::assign::still_in_programming_mode_warning(target.address) {
-            eprintln!("{line}");
-        }
-    }
+    let labelled = assign_pressed(&flow, dir, target, &identified, bench)
+        .await
+        .map_err(cli_error)?;
     eprintln!("  assigned {current} → {}", target.address);
-    Ok(assigned)
+    Ok(labelled)
 }
 
 /// A commission step's error as the CLI reports it: an identification that
 /// could not open its session keeps a lease error as it is.
-fn cli_error(err: CommissionError) -> anyhow::Error {
-    match err {
-        CommissionError::Identify { current, source } => session_open_error(source, || {
+fn cli_error(stop: Stop) -> anyhow::Error {
+    match stop {
+        Stop::Identify { current, source } => session_open_error(source, || {
             format!("connecting to the device in programming mode at {current}")
         }),
         other => other.into(),

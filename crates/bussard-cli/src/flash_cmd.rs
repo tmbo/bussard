@@ -684,12 +684,3 @@ fn parse_bcu_key(raw: &str) -> anyhow::Result<u32> {
         format!("parsing --bcu-key {raw:?} as a 32-bit hex access key (e.g. FFFFFFFF)")
     })
 }
-
-/// Resolves an application program from a hardware order number, requiring
-/// exactly one match ([`flow::resolve_by_order_number`]).
-pub(crate) fn resolve_by_order_number<'a>(
-    product: &'a bussard_prod::ProductData,
-    order_number: &str,
-) -> anyhow::Result<&'a bussard_prod::ApplicationProgram> {
-    Ok(flow::resolve_by_order_number(product, order_number)?)
-}

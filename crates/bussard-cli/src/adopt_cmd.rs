@@ -53,24 +53,20 @@ use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
 use bussard_mgmt::system_type;
-use bussard_model::schema::ComObject;
+use bussard_model::history::SnapshotReason;
 use bussard_model::{Flags, GroupAddress, IndividualAddress, Model};
 use bussard_prod::{ApplicationProgram, ProductData};
-pub(crate) use bussard_service::adopt::flow::{
-    SecureSummary, SecuredRead, SelectedProduct, build_device, object_placement, order_matches,
-    shape_selected,
-};
+use bussard_service::WritePolicy;
+use bussard_service::adopt::flow::{SecureSummary, SelectedProduct, shape_selected};
 use bussard_service::identity::SecureStatus;
-use bussard_service::secure::{SecureMaterial, ToolKeySource, ToolKeys};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::program::adopt;
+use bussard_service::program::assign::AssignFlow;
+use bussard_service::secure::{ToolKeySource, ToolKeys};
 
-use crate::assign_cmd::{
-    Verified, VerifyKey, hex, load_model_optional, target_is_free, verify_assignment_with,
-    wait_for_single_device_as, warn_if_still_in_programming_mode, write_device_file,
-};
+use crate::addressing::{Bench, question, stopped, warn_forced};
+use crate::assign_cmd::{hex, load_model_optional};
 use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{enforce_write_gate, gateway_display, open_checked, resolve_config};
-use crate::import_product_cmd::is_project_export;
 use crate::style::Style;
 
 /// `bussard adopt`.
@@ -182,9 +178,15 @@ fn run(args: &AdoptArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     })
     .context("loading the keyring for adopt")?;
 
-    let adopt_keys = AdoptKeys {
+    let keys = adopt::Keys {
         keys: &keys,
         keyring,
+    };
+    let run = AdoptRun {
+        yes,
+        force,
+        gateway: &gateway,
+        fetch: consent,
         product,
     };
     let runtime = tokio::runtime::Runtime::new()?;
@@ -198,18 +200,14 @@ fn run(args: &AdoptArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             &overrides,
         )
         .await?;
+        let flow = AssignFlow {
+            service: &service,
+            source,
+        };
         // Guard with Ctrl-C so an interrupt still closes the tunnel cleanly.
         let result = tokio::select! {
             result = adopt_flow(
-                &service,
-                source,
-                dir,
-                model.as_ref(),
-                selected.as_ref(),
-                scripted_address,
-                AdoptRun { yes, force, gateway: &gateway },
-                consent,
-                &adopt_keys,
+                flow, dir, model.as_ref(), selected.as_ref(), scripted_address, run, keys,
             ) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
@@ -219,16 +217,6 @@ fn run(args: &AdoptArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         service.close().await;
         result
     })
-}
-
-/// The key material and inputs of one adopt run that the bus flow needs.
-struct AdoptKeys<'a> {
-    /// The loaded keyring (or nothing).
-    keys: &'a ToolKeys,
-    /// The keyring's path, for messages.
-    keyring: Option<&'a Path>,
-    /// `--product`, for the parameter read-back of a secured device.
-    product: Option<&'a Path>,
 }
 
 /// Step 1: resolve the product application.
@@ -295,7 +283,7 @@ fn resolve_product(
     Ok(Some(SelectedProduct {
         manufacturer_ref: id.split('_').next().map(str::to_string),
         application_ref: id.clone(),
-        app: vendor_application(dir, &id),
+        app: crate::product_store::pinned_application(dir, &id),
         identity_id: id,
         name: None,
         mask_version: None,
@@ -346,215 +334,111 @@ struct AdoptRun<'a> {
     force: bool,
     /// The resolved gateway, for the prompt.
     gateway: &'a str,
+    /// `--yes-download` / `--no-download`.
+    fetch: crate::confirm::DownloadConsent,
+    /// `--product`, for the parameter read-back of a secured device.
+    product: Option<&'a Path>,
 }
 
-/// The end-to-end adopt flow over the bus actor. Each broadcast and each
-/// connected verify leases the bus for the duration of that step.
-#[allow(clippy::too_many_arguments)]
+/// The end-to-end adopt flow ([`adopt::plan`] and [`adopt::run`]) with the
+/// wizard's lines. Each broadcast and each connected verify leases the bus
+/// for the duration of that step.
 async fn adopt_flow(
-    service: &BusService,
-    source: IndividualAddress,
+    flow: AssignFlow<'_>,
     dir: &Path,
     model: Option<&Model>,
     selected: Option<&SelectedProduct>,
     scripted_address: Option<&str>,
     run: AdoptRun<'_>,
-    fetch: crate::confirm::DownloadConsent,
-    adopt_keys: &AdoptKeys<'_>,
+    keys: adopt::Keys<'_>,
 ) -> anyhow::Result<ExitCode> {
-    let AdoptRun {
-        yes,
-        force,
-        gateway,
-    } = run;
     step(2, "assign an address");
-
-    // Find exactly one device in programming mode.
-    let current = match wait_for_single_device_as(service, source, "adopt").await? {
-        Some(addr) => addr,
-        None => return Ok(ExitCode::FAILURE),
+    let bench = &mut Bench::new(run.yes).wizard();
+    let planned = async {
+        let current = flow.wait_for_one(bench).await?;
+        let request = adopt::PlanRequest {
+            address: scripted_address,
+            model,
+            keys,
+            identify: false,
+            force: run.force,
+        };
+        adopt::plan(&flow, current, request, bench).await
     };
-    eprintln!("device in programming mode: {current} (its current address)");
-
-    // Decide the target address. A device the keyring lists is Data Secure
-    // (issue #201): it stays at the address ETS gave it, since the keyring
-    // looks its tool key up by that address.
-    let keys = adopt_keys.keys;
-    let secured = keys.lists(current);
-    let target =
-        bussard_service::adopt::flow::adopt_target(scripted_address, current, secured, model)?;
-    // The key material for a secured device: its tool key, the keyring's group
-    // keys and sequences (the rule `reconstruct` resolves with).
-    let material = if secured {
-        keys.material(current, true)?
-    } else {
-        SecureMaterial::default()
+    let planned = match planned.await {
+        Ok(planned) => planned,
+        Err(stop) => return stopped(stop, "adopt"),
     };
-
-    // NM_IndividualAddress_Write step 1 (Management Procedures 03_05_02
-    // §2.3, issue #530): a new address must be free on the bus, not only in
-    // the model. A device that keeps its address is the one answering there.
-    if target != current && !target_is_free(service, source, target, force, "adopt").await {
-        return Ok(ExitCode::FAILURE);
+    let (current, target) = (planned.current, planned.target);
+    if let Some(occupant) = &planned.forced {
+        warn_forced(target, occupant);
     }
-
-    // Confirm.
-    if !crate::confirm::confirm(
-        yes,
-        &format!("adopt {current} → {target} via {gateway}?"),
-        &format!("adopt {current} → {target} via {gateway}"),
-    )? {
-        eprintln!("aborted; no address was written.");
-        return Ok(ExitCode::FAILURE);
-    }
-
-    // Write, then verify. A device that already has the target address needs
-    // no write (and a secured device gets none, issue #201).
-    if target == current {
-        eprintln!("{current} already has the address {target}; no address write; verifying…");
-    } else {
-        bussard_service::assign::write_address(service, source, target)
-            .await
-            .context("broadcasting the new individual address")?;
-        eprintln!("wrote {target}; verifying…");
-    }
-    // adopt does not clear programming mode in the read-back; the broadcast
-    // re-check below warns if the device is still in it. A keyring-listed
-    // device is verified over A_SecureData with its tool key.
-    let verify_key = VerifyKey {
-        tool_key: material.tool_key.clone(),
-        from_old_address: false,
-    };
-    let verified = verify_assignment_with(service, source, target, false, &verify_key).await?;
-    if verified.secure == SecureStatus::ActivatedNoKey {
-        return Err(activated_without_key(target, current, adopt_keys));
-    }
-
-    // Programming-mode persistence check: warn if the just-assigned device still
-    // answers the programming-mode broadcast (KNX Virtual does not clear it; a
-    // real device with a stuck button would not either). See the helper docs.
-    // Without an address write the device had no reason to leave it: adopt
-    // writes nothing more (a secured device gets no PID_PROGMODE write
-    // either), so the button is the way out.
-    if target == current {
-        eprintln!(
-            "note: {target} stays in programming mode (adopt wrote nothing to it); press its \
-             programming button to leave it"
-        );
-    } else {
-        warn_if_still_in_programming_mode(service, source, target).await;
-    }
-
     // Product data fetches itself: without a product from step 1, the order
-    // number the device reported is looked up in the vendor cache, then in the
+    // number the device reported is looked up in the store, then in the
     // pointer index (one question), downloaded and imported.
-    let fetched = match (selected, verified.order.as_deref()) {
-        (None, Some(order)) => fetch_product_for(order, dir, fetch),
-        _ => None,
+    let mut fetch = run.fetch;
+    let mut product = |order: Option<&str>| match (selected, order) {
+        (Some(selected), _) => Some(selected.clone()),
+        (None, Some(order)) => fetch_product_for(order, dir, &mut fetch),
+        (None, None) => None,
     };
-    let selected = selected.or(fetched.as_ref());
-
-    // Cross-check the read-back order number against the product's order numbers.
-    let mut mismatch = false;
-    if let (Some(sel), Some(read_order)) = (selected, verified.order.as_deref())
-        && !sel.order_numbers.is_empty()
-        && !order_matches(read_order, &sel.order_numbers)
-    {
-        mismatch = true;
-        eprintln!();
+    let request = adopt::RunRequest {
+        dir,
+        model,
+        keys,
+        question: &question("adopt", current, target, run.gateway),
+        recheck_target: false,
+        product: &mut product,
+        product_file: run.product,
+        on_parse: Some(crate::timing::record_product_parse),
+        snapshot: SnapshotReason::new("adopt")
+            .with_args([target.to_string()])
+            .with_result("before writing the adopted device file"),
+    };
+    let adopted = match adopt::run(&flow, &planned, request, bench).await {
+        Ok(adopted) => adopted,
+        Err(stop) => return stopped(stop, "adopt"),
+    };
+    let verified = &adopted.assigned.verified;
+    if let (Some(read), Some(selected)) = (&adopted.order_mismatch, &adopted.selected) {
         eprintln!(
-            "{}",
+            "\n{}",
             Style::stderr().warning_line(&format!(
-                "the device reported order number {read_order:?}, which is not among the \
-                 product's order numbers ({}). The product data may not match this hardware; \
-                 check it before wiring links (continuing anyway).",
-                sel.order_numbers.join(", ")
+                "the device reported order number {read:?}, which is not among the product's \
+                 order numbers ({}). The product data may not match this hardware; check it \
+                 before wiring links (continuing anyway).",
+                selected.order_numbers.join(", ")
             ))
         );
     }
-
-    // Step 3: write the rich device file.
-    step(3, "write the device file");
-    let device = build_device(target, &verified, selected);
-    // A Data Secure device is commissioned: read what ETS programmed into it
-    // (links, parameters, security object) over A_SecureData (issue #201).
-    let (device, model_out, secure_summary) = if verified.secure == SecureStatus::Activated {
-        let read = read_secured(
-            service,
-            source,
-            target,
-            dir,
-            model,
-            &device,
-            selected,
-            adopt_keys.product,
-            &material,
-        )
-        .await?;
-        let (device, model_out, summary) = bussard_service::adopt::flow::record_secured(
-            model, device, target, selected, &read, &material, current,
-        )?;
-        (device, Some(model_out), Some(summary))
-    } else {
-        (device, None, None)
-    };
-    // A KNX IP interface (issue #391): its KNXnet/IP settings become the
-    // device file's `[knxnet]` table, read from the device (the assignment
-    // method, the static settings, the friendly name, the tunnel addresses).
-    // A table the model already holds is the user's and stays.
-    let mut device = device;
-    let had_knxnet = device.knxnet.is_some()
-        || model
-            .and_then(|m| m.devices.get(&target))
-            .is_some_and(|d| d.device.knxnet.is_some());
-    if !had_knxnet {
-        match bussard_service::adopt::flow::read_knxnet_settings(
-            service, source, target, dir, &material,
-        )
-        .await
-        {
-            Ok(Some(knxnet)) => {
-                let config = knxnet.as_config();
+    match &adopted.knxnet {
+        adopt::Knxnet::Read(knxnet) => {
+            let config = knxnet.as_config();
+            println!(
+                "  KNXnet/IP: assignment {}, {} tunnel address(es){}",
+                config.assignment.label(),
+                config.tunnels.len(),
+                knxnet
+                    .current_address
+                    .map(|a| format!(", address in use {a}"))
+                    .unwrap_or_default()
+            );
+            if knxnet.assignment_mode.is_none() {
                 println!(
-                    "  KNXnet/IP: assignment {}, {} tunnel address(es){}",
-                    config.assignment.label(),
-                    config.tunnels.len(),
-                    knxnet
-                        .current_address
-                        .map(|a| format!(", address in use {a}"))
-                        .unwrap_or_default()
+                    "  note: {target} reports no IP assignment method the model spells; \
+                     recorded as dhcp"
                 );
-                if knxnet.assignment_mode.is_none() {
-                    println!(
-                        "  note: {target} reports no IP assignment method the model spells; \
-                         recorded as dhcp"
-                    );
-                }
-                device.knxnet = Some(config);
             }
-            Ok(None) => {}
-            Err(err) => eprintln!(
-                "note: the KNXnet/IP settings of {target} were not read ({err:#}); the device \
-                 file has no [knxnet] table"
-            ),
         }
+        adopt::Knxnet::Failed(err) => eprintln!(
+            "note: the KNXnet/IP settings of {target} were not read ({err}); the device file \
+             has no [knxnet] table"
+        ),
+        adopt::Knxnet::Kept | adopt::Knxnet::None => {}
     }
-    crate::history_cmd::snapshot(
-        dir,
-        bussard_model::history::SnapshotReason::new("adopt")
-            .with_args([target.to_string()])
-            .with_result("before writing the adopted device file"),
-    );
-    // The lock records the serial the device reported (issue #752), and a
-    // certificate entered for it before moves to it in the key store.
-    let path = write_device_file(
-        model_out.as_ref().or(model),
-        dir,
-        device.clone(),
-        verified.serial.as_deref(),
-        "device file",
-    )?;
+    let path = &adopted.path;
     println!("  wrote {}", path.display());
+    // A certificate entered for the serial before moves to it (issue #728).
     if let Some(serial) = &verified.serial {
         crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())]).print(false);
     }
@@ -562,33 +446,31 @@ async fn adopt_flow(
     // Step 4: links scaffolding (print only — the model stays untouched), or
     // the links a secured device already holds (recorded in the model).
     step(4, "wire the group objects");
-    match &secure_summary {
+    match &adopted.secure {
         Some(summary) if summary.links > 0 => println!(
             "  recorded the {} link(s) the device holds in {}",
             summary.links,
             path.display()
         ),
-        _ => print_links_snippet(target, &device, selected),
+        _ => print_links_snippet(target, &adopted),
     }
 
-    // Step 5: summary.
     step(5, "summary");
-    print_summary(current, target, &verified, &path, selected, mismatch);
-    if let Some(summary) = &secure_summary {
+    print_summary(current, &adopted);
+    if let Some(summary) = &adopted.secure {
         print_secure_summary(target, summary);
     }
-
     Ok(ExitCode::SUCCESS)
 }
 
 /// The product data for the order number a device reported: the cached
-/// archive under `<dir>/vendor/`, else the pointer index's download (asked
-/// once), imported like `--product` would be. `None` (with the reason on the
+/// archive in the store, else the pointer index's download (asked once),
+/// imported like `--product` would be. `None` (with the reason on the
 /// console) continues product-less.
 fn fetch_product_for(
     order: &str,
     dir: &Path,
-    mut fetch: crate::confirm::DownloadConsent,
+    fetch: &mut crate::confirm::DownloadConsent,
 ) -> Option<SelectedProduct> {
     let path = match bussard_service::params::archive_for_order(dir, order) {
         Ok(Some(path)) => path,
@@ -597,7 +479,7 @@ fn fetch_product_for(
             let outcome = match bussard_service::setup::products::fetch_missing(
                 dir,
                 &[order.to_string()],
-                &mut fetch,
+                fetch,
                 &mut crate::console::Console,
             ) {
                 Ok(outcome) => outcome,
@@ -627,10 +509,7 @@ fn fetch_product_for(
             return None;
         }
     };
-    let app = crate::flash_cmd::resolve_by_order_number(&data, order)
-        .ok()
-        .cloned()
-        .or_else(|| choose_application(&data, false).ok())?;
+    let app = bussard_service::adopt::flow::application_for_order(&data, order)?;
     println!(
         "  using application {} ({}) for {order}",
         app.id,
@@ -639,90 +518,62 @@ fn fetch_product_for(
     Some(shape_selected(&app, &data))
 }
 
-/// The application program `app_ref` from an archive `bussard.lock` pins.
-fn vendor_application(dir: &Path, app_ref: &str) -> Option<ApplicationProgram> {
-    crate::product_store::pinned_application(dir, app_ref)
-}
-
 /// Prints a ready-to-paste device-file snippet: the device's most-useful com
 /// objects (transmit-capable first), then an example link block. The snippet
 /// goes to stdout only — the model itself is never modified here.
-///
-/// The object display text (button/sensor label) lives on the product shape
-/// rather than the device row, so `selected` is consulted for names/suggestions.
-fn print_links_snippet(
-    address: IndividualAddress,
-    device: &bussard_model::schema::Device,
-    selected: Option<&SelectedProduct>,
-) {
-    if device.com_objects.is_empty() {
+fn print_links_snippet(address: IndividualAddress, adopted: &adopt::Adopted) {
+    let objects =
+        bussard_service::adopt::flow::useful_objects(&adopted.device, adopted.selected.as_ref());
+    let Some(first) = objects.first() else {
         println!(
             "  no com-object table (no product data); import the product later with \
              `bussard import-product` to generate one."
         );
         return;
-    }
-
-    // Order: transmit-capable first (most likely a sensor/button source), then
-    // by number for stability.
-    let mut objs: Vec<(&u16, &ComObject)> = device.com_objects.iter().collect();
-    objs.sort_by_key(|(num, co)| (!co.flags.contains(Flags::TRANSMIT), **num));
-
-    let text_for = |num: u16| -> Option<&str> {
-        selected
-            .and_then(|s| s.com_objects.get(&num))
-            .and_then(|shape| shape.text.as_deref())
     };
-
     println!("  most-useful com objects (transmit-capable first):");
-    for (num, co) in objs.iter().take(8) {
-        let dpt = co
-            .dpt
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| "?".to_string());
-        let label = text_for(**num).unwrap_or("");
-        println!("    #{num:<3} dpt {dpt:<8} flags {:<6} {label}", co.flags);
+    for o in objects.iter().take(8) {
+        let dpt = o.dpt.map_or_else(|| "?".to_string(), |d| d.to_string());
+        let label = o.text.as_deref().unwrap_or("");
+        println!(
+            "    #{:<3} dpt {dpt:<8} flags {:<6} {label}",
+            o.number, o.flags
+        );
     }
-
-    // A paste-ready example wiring the first useful object.
-    if let Some((num, co)) = objs.first() {
-        let dpt = co
-            .dpt
-            .map(|d| d.to_string())
-            .unwrap_or_else(|| "1.001".to_string());
-        let name = text_for(**num).unwrap_or("New link");
-        println!();
-        println!("  ready-to-paste snippets (edit the group address to a free one):");
-        let (table, key) = object_placement(device, **num);
-        println!("    # ---8<--- groups.toml (inside `groups = [ … ]`)");
-        println!("    {{ address = \"0/0/1\", name = \"{name}\", dpt = \"{dpt}\" }},");
-        println!("    # ---8<--- devices/{address}.toml");
-        println!("    {table}");
-        // The direction follows the flags, as E025 requires: a reporting object
-        // (T) sends, a command object listens.
-        if co.flags.contains(Flags::TRANSMIT) {
-            println!(
-                "    {key}.send = \"0/0/1\"     # or `{key}.listen = [\"0/0/1\"]` for a receiving object"
-            );
-        } else {
-            println!(
-                "    {key}.listen = [\"0/0/1\"]     # or `{key}.send = \"0/0/1\"` for a reporting object"
-            );
-        }
-        println!("    # --->8---");
+    let dpt = first
+        .dpt
+        .map_or_else(|| "1.001".to_string(), |d| d.to_string());
+    let name = first.text.as_deref().unwrap_or("New link");
+    let (table, key) = (&first.table, &first.key);
+    println!();
+    println!("  ready-to-paste snippets (edit the group address to a free one):");
+    println!("    # ---8<--- groups.toml (inside `groups = [ … ]`)");
+    println!("    {{ address = \"0/0/1\", name = \"{name}\", dpt = \"{dpt}\" }},");
+    println!("    # ---8<--- devices/{address}.toml");
+    println!("    {table}");
+    // The direction follows the flags, as E025 requires: a reporting object
+    // (T) sends, a command object listens.
+    if first.flags.contains(Flags::TRANSMIT) {
+        println!(
+            "    {key}.send = \"0/0/1\"     # or `{key}.listen = [\"0/0/1\"]` for a receiving object"
+        );
+    } else {
+        println!(
+            "    {key}.listen = [\"0/0/1\"]     # or `{key}.send = \"0/0/1\"` for a reporting object"
+        );
     }
+    println!("    # --->8---");
 }
 
 /// Prints the closing summary: what was created, what remains manual, and the
 /// flash pointer for factory-fresh (Unloaded) devices.
-fn print_summary(
-    current: IndividualAddress,
-    target: IndividualAddress,
-    v: &Verified,
-    path: &Path,
-    selected: Option<&SelectedProduct>,
-    mismatch: bool,
-) {
+fn print_summary(current: IndividualAddress, adopted: &adopt::Adopted) {
+    let (target, v, path) = (
+        adopted.assigned.target,
+        &adopted.assigned.verified,
+        adopted.path.display(),
+    );
+    let selected = adopted.selected.as_ref();
     let style = Style::stdout();
     println!();
     println!(
@@ -731,63 +582,59 @@ fn print_summary(
     );
     let secured = v.secure == SecureStatus::Activated;
     let label = |text: &str| style.dim(&format!("{text:<14}"));
-    match v.mask {
-        Some(mask) if secured => println!(
-            "  {}mask {mask:#06x} ({}), read secured; KNX Data Secure is on",
+    if let Some(mask) = v.mask {
+        let how = if secured {
+            ", read secured; KNX Data Secure is on"
+        } else {
+            ""
+        };
+        println!(
+            "  {}mask {mask:#06x} ({}){how}",
             label("verified"),
             system_type(mask)
-        ),
-        Some(mask) => println!(
-            "  {}mask {mask:#06x} ({})",
-            label("verified"),
-            system_type(mask)
-        ),
-        None => {}
+        );
     }
     if let Some(serial) = &v.serial {
         println!("  {}{}", label("serial number"), hex(serial).to_uppercase());
     }
-    println!("  {}{}", label("device file"), path.display());
-    match selected {
-        Some(sel) if !sel.com_objects.is_empty() => {
-            println!(
-                "  {}{} ({} com objects)",
-                label("product"),
-                sel.display_name(),
-                sel.com_objects.len()
-            );
-        }
-        Some(sel) => println!(
-            "  {}{} (identity only)",
-            label("product"),
-            sel.display_name()
+    println!("  {}{path}", label("device file"));
+    let product = match selected {
+        Some(sel) if !sel.com_objects.is_empty() => format!(
+            "{} ({} com objects)",
+            sel.display_name(),
+            sel.com_objects.len()
         ),
-        None => println!("  {}none (stub-only adoption)", label("product")),
-    }
-    if mismatch {
+        Some(sel) => format!("{} (identity only)", sel.display_name()),
+        None => "none (stub-only adoption)".to_string(),
+    };
+    println!("  {}{product}", label("product"));
+    if adopted.order_mismatch.is_some() {
         println!(
             "  {}",
             style.warn("the order number check flagged a possible mismatch (see above)")
         );
     }
 
-    let edit = format!("edit {}", path.display());
+    let edit = format!("edit {path}");
     let plan = format!("bussard plan {target}");
     let apply = format!("bussard apply {target}");
     let flash = format!("bussard flash {target}");
-    let mut steps: Vec<(&str, &str)> = vec![(edit.as_str(), "set the device's name and room")];
+    let mut steps: Vec<(&str, &str)> = Vec::new();
     if secured {
+        steps.push((edit.as_str(), "set the device's name and room"));
         steps.push((
             plan.as_str(),
             "should report no change: your project now holds what the device holds",
         ));
     } else {
-        steps[0].1 = "set the device's name and room, and wire its group objects (snippet above)";
+        steps.push((
+            edit.as_str(),
+            "set the device's name and room, and wire its group objects (snippet above)",
+        ));
         steps.push((plan.as_str(), "shows what writing the tables would change"));
         steps.push((apply.as_str(), "writes them to the device"));
         // A factory-fresh device needs its first application download before
-        // links take effect; `bussard flash` (#43) is the path when product
-        // data is in hand.
+        // links take effect (#43).
         if selected.is_some_and(|s| !s.com_objects.is_empty()) {
             steps.push((
                 flash.as_str(),
@@ -800,85 +647,9 @@ fn print_summary(
 }
 
 /// One step heading of the flow: `Step 2 of 5  assign an address`.
-fn step(n: u8, what: &str) {
+pub(crate) fn step(n: u8, what: &str) {
     let style = Style::stdout();
     println!("{} {what}", style.bold(&format!("Step {n} of 5")));
-}
-
-// ---------------------------------------------------------------------------
-// A KNX Data Secure-activated device (issue #201, tier 1)
-// ---------------------------------------------------------------------------
-
-/// The failure for a device that hides its mask (Data Secure-activated) while
-/// the keyring holds no tool key for it
-/// ([`bussard_service::adopt::flow::activated_without_key`]).
-fn activated_without_key(
-    target: IndividualAddress,
-    current: IndividualAddress,
-    adopt_keys: &AdoptKeys<'_>,
-) -> anyhow::Error {
-    anyhow!(bussard_service::adopt::flow::activated_without_key(
-        target,
-        current,
-        adopt_keys.keys,
-        adopt_keys.keyring,
-    ))
-}
-
-/// Reads an activated device's tables, security object and parameters in one
-/// management session over `A_SecureData`
-/// ([`bussard_service::adopt::flow::read_secured`]). Read-only.
-#[allow(clippy::too_many_arguments)] // one call site; the inputs are the flow's state
-async fn read_secured(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    dir: &Path,
-    model: Option<&Model>,
-    device: &bussard_model::schema::Device,
-    selected: Option<&SelectedProduct>,
-    product: Option<&Path>,
-    material: &SecureMaterial,
-) -> anyhow::Result<SecuredRead> {
-    println!(
-        "  reading the secured device over A_SecureData (tables, security object, parameters)"
-    );
-    // The product the parameter read-back decodes with, found through the
-    // device file being written (its order number and application).
-    let with_device = bussard_service::adopt::flow::with_device(model, device, target);
-    let mut notes = Vec::new();
-    let selection = bussard_service::params::Selection {
-        product,
-        application: selected.map(|s| s.application_ref.as_str()),
-    };
-    let product_source = match crate::param_readback::resolve(
-        dir,
-        selection,
-        Some(&with_device),
-        target,
-        bussard_service::params::MissingProduct::Warn,
-    ) {
-        Ok(found) => found,
-        Err(err) => {
-            notes.push(format!("parameters not read: {err:#}"));
-            None
-        }
-    };
-    bussard_service::adopt::flow::read_secured(
-        service,
-        source,
-        target,
-        &with_device,
-        product_source.as_ref(),
-        material,
-        notes,
-    )
-    .await
-    .map_err(|err| {
-        anyhow::Error::from(err).context(format!(
-            "reading {target} over A_SecureData with its tool key"
-        ))
-    })
 }
 
 /// Prints the Data Secure part of the summary.
@@ -922,30 +693,28 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
         ),
         None => println!("  secured senders (PID 54): not read"),
     }
-    if !s.adoption.flagged_without_key.is_empty() {
-        let (noun, verb) = objects_are(s.adoption.flagged_without_key.len());
-        let link = if s.adoption.flagged_without_key.len() == 1 {
-            "links"
-        } else {
-            "link"
-        };
+    let objects = |o: &[u16]| list(&mut o.iter().map(u16::to_string));
+    // (objects, "is"/"are", "links"/"link") by count.
+    let grammar = |n: usize| match n {
+        1 => ("object", "is", "links"),
+        _ => ("objects", "are", "link"),
+    };
+    let flagged = &s.adoption.flagged_without_key;
+    if !flagged.is_empty() {
+        let (noun, verb, link) = grammar(flagged.len());
         println!(
             "  NOTE: {noun} {} {verb} secured on the device but {link} no group address bussard \
              has a key for: the keys may be older than the device's last download",
-            list(&mut s.adoption.flagged_without_key.iter().map(u16::to_string))
+            objects(flagged)
         );
     }
-    if !s.adoption.keyed_not_flagged.is_empty() {
-        let (noun, verb) = objects_are(s.adoption.keyed_not_flagged.len());
-        let link = if s.adoption.keyed_not_flagged.len() == 1 {
-            "links"
-        } else {
-            "link"
-        };
+    let keyed = &s.adoption.keyed_not_flagged;
+    if !keyed.is_empty() {
+        let (noun, verb, link) = grammar(keyed.len());
         println!(
             "  NOTE: {noun} {} {link} a group address with a group key but {verb} not secured on \
              the device: the keys may be newer than the device's last download",
-            list(&mut s.adoption.keyed_not_flagged.iter().map(u16::to_string))
+            objects(keyed)
         );
     }
     for note in &s.notes {
@@ -954,74 +723,19 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
     println!("  nothing was written to {target}; Secure and its keys stay with ETS");
 }
 
-/// "object … is" or "objects … are", by count.
-fn objects_are(n: usize) -> (&'static str, &'static str) {
-    if n == 1 {
-        ("object", "is")
-    } else {
-        ("objects", "are")
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Duplicated import-product helpers (private in `import_product_cmd`)
-// ---------------------------------------------------------------------------
-
-/// Imports a `.knxprod`: caches it under `<dir>/vendor/` and writes one
-/// product model per application program under `<dir>/.bussard/model-cache/`, then
-/// returns the parsed product data.
-// DUP: mirrors the file-writing half of `import_product_cmd::run`; the product
-// models themselves come from `bussard_prod::product_model`, not duplicated here.
+/// Imports a `.knxprod` (or an ETS project export) into the product store
+/// as `bussard import-product` does, and returns its product data.
 fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
-    if !file.exists() {
-        bail!("product file not found: {}", file.display());
+    let mut said = bussard_service::setup::Collected::default();
+    let imported =
+        bussard_service::files::products::import_product_file(file, dir, None, &mut said)?;
+    let archive = imported.archive.as_deref().unwrap_or(file);
+    if archive != file {
+        println!("  {}", imported.stored);
     }
-    let product = bussard_prod::read_knxprod(file)
-        .with_context(|| format!("reading product data from {}", file.display()))?;
-    if product.applications.is_empty() {
-        bail!(
-            "no application programs found in {} (is it a valid .knxprod?)",
-            file.display()
-        );
-    }
-
-    // An ETS project export is stored the way `import-product` stores it:
-    // every application program extracted once into products/ and pinned
-    // (issue #228, item 4); the export itself is not copied.
-    if is_project_export(file, &product) {
-        let apps: Vec<String> = product
-            .applications
-            .iter()
-            .filter(|a| !a.is_pei_program())
-            .map(|a| a.id.clone())
-            .collect();
-        let entries = crate::lock_pin::extract_and_entries(dir, file, &product, &apps)?;
-        println!(
-            "  extracted {} application program(s) from the ETS project export {} into products/",
-            entries.len(),
-            file.display()
-        );
-        crate::lock_pin::pin(dir, &entries);
-        crate::import_product_cmd::write_product_models(&product, dir)?;
-        return Ok(product);
-    }
-
-    // Store the archive under <dir>/products/ (retained model data) and pin
-    // it in bussard.lock (issue #228); the device save that follows links the
-    // device to it. An archive already in the store was pinned when it was
-    // stored.
-    let stored = bussard_service::files::products::store_file(dir, file)?;
-    if stored != file {
-        println!("  stored vendor file: {}", stored.display());
-        let origin = bussard_model::schema::ProductOrigin::File {
-            path: file.display().to_string(),
-        };
-        let entry = crate::lock_pin::archive_entry(&stored, dir, &product, origin)?;
-        crate::lock_pin::pin(dir, &[entry]);
-    }
-    crate::import_product_cmd::write_product_models(&product, dir)?;
-
-    Ok(product)
+    Ok(bussard_service::setup::products::read_in_model_language(
+        archive, dir, None,
+    )?)
 }
 
 // ---------------------------------------------------------------------------

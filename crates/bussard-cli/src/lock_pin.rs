@@ -11,8 +11,6 @@ use bussard_prod::ProductData;
 use bussard_service::params::Selection;
 use bussard_service::setup::products;
 
-use crate::console::Console;
-
 /// The `[[product]]` entry for an archive `import-product` or a download
 /// read ([`bussard_service::setup::products::archive_entry`]).
 pub(crate) fn archive_entry(
@@ -22,31 +20,6 @@ pub(crate) fn archive_entry(
     origin: ProductOrigin,
 ) -> anyhow::Result<ProductEntry> {
     Ok(products::archive_entry(archive, dir, product, origin)?)
-}
-
-/// Extracts each of `applications` from the ETS project export `project`
-/// into its own archive under `<dir>/products/` and returns the
-/// `[[product]]` entries to pin
-/// ([`bussard_service::setup::products::extract_and_entries`]).
-pub(crate) fn extract_and_entries(
-    dir: &Path,
-    project: &Path,
-    product: &ProductData,
-    applications: &[String],
-) -> anyhow::Result<Vec<ProductEntry>> {
-    Ok(products::extract_and_entries(
-        dir,
-        project,
-        product,
-        applications,
-        &mut Console,
-    )?)
-}
-
-/// Pins `entries` in `<dir>/bussard.lock` and says which devices now point at
-/// them. A failure is a warning: the archive is cached either way.
-pub(crate) fn pin(dir: &Path, entries: &[ProductEntry]) {
-    products::pin(dir, entries, &mut Console);
 }
 
 /// `flash --product <file> --force`: stores `file` in `<dir>/products/` (an

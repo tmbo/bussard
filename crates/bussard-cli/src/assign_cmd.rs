@@ -13,18 +13,22 @@
 //! more than one device in programming mode, and refuses an *implicit* address
 //! allocation when there is no TTY to confirm on.
 
-use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow};
 use bussard_mgmt::system_type;
-use bussard_model::schema::Device;
-use bussard_model::{IndividualAddress, Model};
-use bussard_service::assign::{ProgrammingWait, WaitEvent, wait_for_programming_mode};
+use bussard_model::Model;
+use bussard_service::assign::{VerifyKey, build_stub_device, write_device_file};
 use bussard_service::identity::SecureStatus;
+use bussard_service::program::assign::{Assign, AssignFlow};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::{BusService, WritePolicy};
+
+use crate::addressing::{Bench, question, stopped, warn_forced};
+
+/// Formats a byte slice as lowercase hex.
+pub(crate) use bussard_service::assign::hex;
 
 use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{
@@ -74,9 +78,7 @@ impl Run for AssignArgs {
 
 /// Runs `bussard assign`.
 fn run(args: &AssignArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
-    let (address, yes, force) = (args.address.as_deref(), args.consent.yes, args.force);
-    let (dir, allow_remote_gateway, json, overrides) =
-        (g.dir(), g.allow_remote_gateway, g.json, g.mgmt());
+    let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
     // `--tool-key` overrides the keyring's device entries; the keyring
     // still opens a KNXnet/IP Secure tunnel (issue #203).
     let tool_key_source = ToolKeySource {
@@ -85,9 +87,14 @@ fn run(args: &AssignArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     };
     // A non-TTY run without --yes was refused before this (issue #74), by
     // `confirm::require_terminal_or_yes` in `main`.
-    // 1. Load the model. Address allocation needs it; an explicit --address on an
-    //    empty/missing model is allowed with a warning.
-    let model = load_model_for_assign(dir, address.is_some())?;
+    // Address allocation needs the model; an explicit address on a missing
+    // model is allowed with a warning, a broken model never (issue #55).
+    let model = load_model_optional(
+        dir,
+        args.address.is_some(),
+        "assign",
+        "pass an explicit address (e.g. `bussard assign 1.1.47`) to proceed without one",
+    )?;
     let config = resolve_config(model.as_ref(), &overrides)?;
     // Safety envelope (issue #74): refuse a write to a real (non-loopback)
     // gateway unless the operator opted in.
@@ -110,7 +117,7 @@ fn run(args: &AssignArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         // clean `service.close()` so the gateway tunnel slot is released rather
         // than leaked — see issue #31.
         let result = tokio::select! {
-            result = assign_flow(&service, source, address, AssignRun { yes, json, force, gateway: &gateway }, model.as_ref(), dir, &keys) => result,
+            result = assign_flow(AssignFlow { service: &service, source }, args, g, &gateway, model.as_ref(), &keys) => result,
             _ = tokio::signal::ctrl_c() => {
                 eprintln!("\ninterrupted; closing the bus connection");
                 Err(anyhow!("assign interrupted by Ctrl-C"))
@@ -119,37 +126,6 @@ fn run(args: &AssignArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         service.close().await;
         result
     })
-}
-
-/// The per-run choices `assign_flow` needs besides the bus and the model.
-#[derive(Clone, Copy)]
-struct AssignRun<'a> {
-    /// `--yes`: skip the confirmation prompt.
-    yes: bool,
-    /// `--json`: print the result as a JSON document.
-    json: bool,
-    /// `--force`: write the address although another device answers at it.
-    force: bool,
-    /// The resolved gateway, for the prompt.
-    gateway: &'a str,
-}
-
-/// Loads the model for an assign run.
-///
-/// The model is required for implicit allocation (we need the device list to
-/// pick a free number and the dominant line). Two failure modes are kept
-/// distinct (issue #55): an **absent** model directory is a fresh project, so
-/// with an explicit address we warn and continue (a brand-new project can assign
-/// its first device); a directory that is **present but fails to parse** is a
-/// hard error either way — assign is a management command and must never proceed
-/// against a broken model, even with an explicit address.
-fn load_model_for_assign(dir: &Path, have_explicit_address: bool) -> anyhow::Result<Option<Model>> {
-    load_model_optional(
-        dir,
-        have_explicit_address,
-        "assign",
-        "pass an explicit address (e.g. `bussard assign 1.1.47`) to proceed without one",
-    )
 }
 
 /// The model load shared by `assign` and `adopt`: an absent directory is a
@@ -189,69 +165,56 @@ pub(crate) fn load_model_optional(
     }
 }
 
-/// The end-to-end assign flow over the bus actor. Each connectionless broadcast
-/// and each connection-oriented verify leases the bus for the duration of that
-/// step (releasing it in between), so other bus consumers keep observing.
-#[allow(clippy::too_many_arguments)] // one call site; the flow's inputs, spelled out
+/// The end-to-end assign flow ([`AssignFlow`]). Each broadcast and each
+/// connected verify leases the bus for the duration of that step
+/// (releasing it in between), so other bus consumers keep observing.
 async fn assign_flow(
-    service: &BusService,
-    source: IndividualAddress,
-    address: Option<&str>,
-    run: AssignRun<'_>,
+    flow: AssignFlow<'_>,
+    args: &AssignArgs,
+    g: &Resolved,
+    gateway: &str,
     model: Option<&Model>,
-    dir: &Path,
     keys: &ToolKeys,
 ) -> anyhow::Result<ExitCode> {
-    let AssignRun {
-        yes,
-        json,
-        force,
-        gateway,
-    } = run;
-    // 2. Decide the target address. The model says it is free; the bus has
-    //    the last word (step 3).
+    let (dir, json) = (g.dir(), g.json);
+    let bench = &mut Bench::new(args.consent.yes);
+    // The model says the target is free; the bus has the last word
+    // (NM_IndividualAddress_Write step 1, issue #530).
     let target = bussard_service::assign::target_address(
-        address,
+        args.address.as_deref(),
         model,
         "pass one explicitly, e.g. `bussard assign 1.1.47`",
     )?;
-
-    // 3. NM_IndividualAddress_Write step 1 (Management Procedures 03_05_02
-    //    §2.3, issue #530): nothing may answer at the target before it is
-    //    given away, or two devices end up on one address.
-    if !target_is_free(service, source, target, force, "assign").await {
-        return Ok(ExitCode::FAILURE);
-    }
-
-    // 4. Find exactly one device in programming mode.
-    let current = match wait_for_single_device(service, source).await? {
-        Some(addr) => addr,
-        None => return Ok(ExitCode::FAILURE),
+    let located = async {
+        if let Some(occupant) = flow.check_free(target, args.force, bench).await? {
+            warn_forced(target, &occupant);
+        }
+        flow.wait_for_one(bench).await
     };
-    eprintln!("device in programming mode: {current} (its current address)");
-
-    // The tool key the verification needs, if the device is Data Secure
-    // activated (issue #203): the keyring lists devices by IA, so look for the
-    // new address first and fall back to the old one.
-    let verify_key = VerifyKey::resolve(keys, current, target);
-
-    // 4. Confirm.
-    if !confirm_assignment(current, target, yes, gateway)? {
-        eprintln!("aborted; no address was written.");
-        return Ok(ExitCode::FAILURE);
-    }
-
-    // 5. Write, then verify.
-    bussard_service::assign::write_address(service, source, target)
-        .await
-        .context("broadcasting the new individual address")?;
-    eprintln!("wrote {target}; verifying…");
-
-    let verified = verify_assignment(service, source, target, &verify_key).await?;
-    if verified.programming_mode_cleared {
-        eprintln!("cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
-    }
-    if verify_key.from_old_address {
+    let current = match located.await {
+        Ok(current) => current,
+        Err(stop) => return stopped(stop, "assign"),
+    };
+    // The keyring lists devices by address: the tool key of the new address,
+    // else of the old one (issue #203).
+    let key = VerifyKey::resolve(keys, current, target);
+    let question = question("assign", current, target, gateway);
+    let request = Assign {
+        current,
+        target,
+        question: Some(&question),
+        key: &key,
+        clear_programming_mode: true,
+        identified: None,
+        refuse_hidden: false,
+        require_identified: false,
+        forget_facts: None,
+    };
+    let verified = match flow.assign(&request, bench).await {
+        Ok(assigned) => assigned.verified,
+        Err(stop) => return stopped(stop, "assign"),
+    };
+    if key.from_old_address {
         eprintln!(
             "note: the keyring lists this device under its old address {current}; the tool key \
              was taken from that entry. Re-export the keyring from ETS after the address \
@@ -259,18 +222,7 @@ async fn assign_flow(
         );
     }
 
-    // 5a. Programming-mode persistence check (fallback). We already cleared
-    //     programming mode explicitly above (PID_PROGMODE = 0), exactly as ETS
-    //     does. This re-runs the programming-mode broadcast once, briefly, and
-    //     warns only if `target` STILL answers it — meaning neither the explicit
-    //     clear nor the device's own auto-clear took, so the next assign/adopt
-    //     would re-capture and re-address it. On a conformant device this is now a
-    //     no-op; the warning remains the backstop for a device that ignored both.
-    warn_if_still_in_programming_mode(service, source, target).await;
-
-    // The identity verdict at the new address (issue #228, item 5): the
-    // device the model has there, if any, against what answered; facts
-    // stored under another mask are dropped.
+    // The identity verdict at the new address (issue #228, item 5).
     if let Some(mask) = verified.mask {
         let modelled = model
             .and_then(|m| m.devices.get(&target))
@@ -279,18 +231,20 @@ async fn assign_flow(
             bussard_service::scan::observe_identity(dir, model.is_some(), target, mask, modelled);
         println!("  {}", bussard_service::identity_line(target, &check));
     }
-
-    // A certificate entered before the device had an address (issue #728):
-    // its factory key moves to the new address now that the serial is known.
+    // A certificate entered before the device had an address (issue #728).
     if let Some(serial) = &verified.serial {
         crate::keys_cmd::attach_learned_serials(dir, &[(target, serial.clone())]).print(json);
     }
-
-    // 6. Create the stub device file; the lock records the serial (#752).
+    // The stub device file; the lock records the serial (#752).
     let device = build_stub_device(target, &verified);
-    let path = write_stub_device_file(model, dir, device, verified.serial.as_deref())?;
+    let path = write_device_file(
+        model,
+        dir,
+        device,
+        verified.serial.as_deref(),
+        "stub device file",
+    )?;
 
-    // 7. Next steps.
     if json {
         crate::output::print(
             crate::output::schema::ASSIGN,
@@ -333,211 +287,5 @@ async fn assign_flow(
         "  - wire its group objects in {} ([links] or [channel.<handle>])",
         path.display()
     );
-
     Ok(ExitCode::SUCCESS)
-}
-
-/// What answers at an address bussard is about to give a device
-/// ([`bussard_service::assign::Occupant`]).
-pub(crate) use bussard_service::assign::Occupant;
-
-/// What the post-write verification read back from the device
-/// ([`bussard_service::assign::Verified`]).
-pub(crate) use bussard_service::assign::Verified;
-
-/// The tool key for the post-write verification
-/// ([`bussard_service::assign::VerifyKey`]).
-pub(crate) use bussard_service::assign::VerifyKey;
-
-pub(crate) use bussard_service::assign::{build_stub_device, hex};
-
-/// Step 1 of NM_IndividualAddress_Write
-/// ([`bussard_service::assign::probe_occupant`]).
-pub(crate) async fn probe_occupant(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-) -> Option<Occupant> {
-    bussard_service::assign::probe_occupant(service, source, target).await
-}
-
-/// Whether `verb` may write `target`: nothing answers there, or `force`
-/// overrides an occupant (with a warning). Prints the refusal otherwise.
-pub(crate) async fn target_is_free(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    force: bool,
-    verb: &str,
-) -> bool {
-    let Some(occupant) = probe_occupant(service, source, target).await else {
-        return true;
-    };
-    if force {
-        eprintln!(
-            "warning: {target} already answers on the bus ({}); --force given, continuing",
-            occupant.describe()
-        );
-        return true;
-    }
-    eprintln!(
-        "{}",
-        bussard_service::assign::occupied_refusal(target, &occupant, verb)
-    );
-    false
-}
-
-/// Polls for devices in programming mode, nagging the user to press the button
-/// if none appear, until exactly one is found or the budget is exhausted.
-///
-/// Returns `Ok(Some(addr))` for the single found device, or `Ok(None)` after
-/// printing friendly guidance for the zero-found (timeout) and multiple-found
-/// cases — both of which are a clean command failure, not an error.
-pub(crate) async fn wait_for_single_device(
-    service: &BusService,
-    source: IndividualAddress,
-) -> anyhow::Result<Option<IndividualAddress>> {
-    wait_for_single_device_as(service, source, "assign").await
-}
-
-/// [`wait_for_single_device`], naming `verb` (the command, e.g. `adopt`) in the
-/// guidance it prints. The wait is
-/// [`bussard_service::assign::wait_for_programming_mode`].
-pub(crate) async fn wait_for_single_device_as(
-    service: &BusService,
-    source: IndividualAddress,
-    verb: &str,
-) -> anyhow::Result<Option<IndividualAddress>> {
-    let mut on_event = |event: WaitEvent| match event {
-        WaitEvent::Remind => eprintln!(
-            "no device in programming mode yet — press the programming button on the device, \
-             then keep waiting (or re-run)."
-        ),
-        WaitEvent::Waiting { remaining } => {
-            eprint!("\rwaiting for a device… {}s left   ", remaining.as_secs());
-            let _ = std::io::stderr().flush();
-        }
-    };
-    match wait_for_programming_mode(service, source, &mut on_event).await? {
-        ProgrammingWait::One(addr) => Ok(Some(addr)),
-        ProgrammingWait::Several(found) => {
-            eprintln!("{} devices are in programming mode:", found.len());
-            for addr in &found {
-                eprintln!("  {addr}");
-            }
-            eprintln!(
-                "{verb} works on one device at a time — leave programming mode on all but \
-                 the one you want, then re-run."
-            );
-            Ok(None)
-        }
-        ProgrammingWait::Nothing { waited } => {
-            eprintln!();
-            eprintln!(
-                "no device entered programming mode within {}s.",
-                waited.as_secs()
-            );
-            eprintln!(
-                "press the programming button on the new device (its LED usually lights up), \
-                 then re-run `bussard {verb}`."
-            );
-            Ok(None)
-        }
-    }
-}
-
-/// Confirms the assignment on a TTY (y/N), naming the resolved gateway. `--yes`
-/// (`yes = true`) skips the prompt. The non-TTY-without-`--yes` case is refused
-/// up front in [`run`] (issue #74), so this is only reached on a TTY or with
-/// `--yes`.
-fn confirm_assignment(
-    current: IndividualAddress,
-    target: IndividualAddress,
-    yes: bool,
-    gateway: &str,
-) -> anyhow::Result<bool> {
-    // `run` already refused the non-interactive shape without --yes; the
-    // refusal here is defensive, failing loudly if that invariant ever breaks.
-    crate::confirm::confirm(
-        yes,
-        &format!("assign {current} → {target} via {gateway}?"),
-        &format!("assign {current} → {target} via {gateway}"),
-    )
-}
-
-/// Verifies the write by connecting to `target`
-/// ([`bussard_service::assign::verify_assignment_with`]), clearing programming
-/// mode as ETS does.
-pub(crate) async fn verify_assignment(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    key: &VerifyKey,
-) -> anyhow::Result<Verified> {
-    verify_assignment_with(service, source, target, true, key).await
-}
-
-/// [`verify_assignment`], with the explicit programming-mode clear optional:
-/// `adopt` reads back without clearing it (its wizard re-checks the broadcast
-/// itself). Prints the warnings the read raised.
-pub(crate) async fn verify_assignment_with(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-    clear_programming_mode: bool,
-    key: &VerifyKey,
-) -> anyhow::Result<Verified> {
-    let verified = bussard_service::assign::verify_assignment_with(
-        service,
-        source,
-        target,
-        clear_programming_mode,
-        key,
-    )
-    .await?;
-    for warning in &verified.warnings {
-        eprintln!("{warning}");
-    }
-    Ok(verified)
-}
-
-/// Re-runs the programming-mode broadcast once
-/// ([`bussard_service::assign::still_in_programming_mode`]) and warns if the
-/// just-assigned `target` still answers it. Best-effort and non-fatal.
-pub(crate) async fn warn_if_still_in_programming_mode(
-    service: &BusService,
-    source: IndividualAddress,
-    target: IndividualAddress,
-) {
-    if bussard_service::assign::still_in_programming_mode(service, source, target).await {
-        eprintln!();
-        for line in bussard_service::assign::still_in_programming_mode_warning(target) {
-            eprintln!("{line}");
-        }
-    }
-}
-
-/// Writes the stub device file.
-fn write_stub_device_file(
-    model: Option<&Model>,
-    dir: &Path,
-    device: Device,
-    serial: Option<&[u8]>,
-) -> anyhow::Result<std::path::PathBuf> {
-    write_device_file(model, dir, device, serial, "stub device file")
-}
-
-/// Inserts `device` into the model (or a fresh one) and saves it without
-/// pruning ([`bussard_service::assign::write_device_file`]); shared by
-/// `assign` and `adopt`.
-pub(crate) fn write_device_file(
-    model: Option<&Model>,
-    dir: &Path,
-    device: Device,
-    serial: Option<&[u8]>,
-    what: &str,
-) -> anyhow::Result<std::path::PathBuf> {
-    Ok(bussard_service::assign::write_device_file(
-        model, dir, device, serial, what,
-    )?)
 }

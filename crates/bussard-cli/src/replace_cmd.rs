@@ -24,11 +24,11 @@
 //!
 //! # No new write primitive
 //!
-//! The flow is [`bussard_service::replace`], the step machine `knx_replace_device`
-//! runs too (issue #751). Every write here is an existing command's: the
-//! address goes on with [`bussard_service::assign::write_address`] and is
-//! verified by [`crate::assign_cmd::verify_assignment`]; the application is
-//! written by [`crate::flash_cmd::run`]; the tables by [`crate::apply_cmd::run`].
+//! The flow is [`bussard_service::replace`], which `knx_replace_device`
+//! runs too (issues #751, #902). Every write here is an existing command's:
+//! the address goes on through
+//! [`bussard_service::program::assign::AssignFlow`]; the application is
+//! written by `bussard flash`; the tables by `bussard apply`.
 //! `replace` adds sequencing, the identity cross-check and the record —
 //! nothing that touches the bus on its own.
 
@@ -39,11 +39,14 @@ use anyhow::{Context, anyhow, bail};
 use bussard_download::backup::rfc3339_utc;
 use bussard_mgmt::system_type;
 use bussard_model::IndividualAddress;
-use bussard_service::replace::{self, Pressed, Replacement, Step};
-use bussard_service::{BusService, WritePolicy};
+use bussard_service::WritePolicy;
+use bussard_service::program::Question;
+use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::replace::{self, Pressed, Replacement};
 
+use crate::addressing::{Bench, stopped};
 use crate::apply_cmd::ApplyArgs;
-use crate::assign_cmd;
+use crate::assign_cmd::hex;
 use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
     enforce_write_gate, gateway_display, load_model_required, open_checked, resolve_config,
@@ -159,8 +162,12 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         runtime.block_on(async move {
             let (service, source) =
                 open_checked(config, WritePolicy::transmit(allow_remote_gateway), &conn).await?;
+            let flow = AssignFlow {
+                service: &service,
+                source,
+            };
             let result = tokio::select! {
-                result = swap_flow(&service, source, &replacement, &gateway, yes, force) => result,
+                result = swap_flow(flow, dir, &replacement, &gateway, yes, force) => result,
                 _ = tokio::signal::ctrl_c() => {
                     eprintln!("\ninterrupted; closing the bus connection");
                     Err(anyhow!("replace interrupted by Ctrl-C"))
@@ -174,10 +181,6 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let Some(pressed) = assigned else {
         return Ok(ExitCode::FAILURE);
     };
-    // The stored device facts describe the old box: drop them, so the flash
-    // and apply below read the replacement's (issue #209, #228 item 5).
-    replace::forget_facts(dir, target);
-
     // Phase 2: the application image, through `bussard flash`.
     let mut flashed = false;
     if let Some(product) = product_path.as_deref() {
@@ -252,134 +255,100 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The read, cross-check, confirm and address-write half of a replacement:
-/// the steps of [`bussard_service::replace`] up to [`Step::Assign`], with
-/// this command's lines and prompt.
+/// The read, cross-check, confirm and address-write half of a replacement
+/// ([`replace::locate`], [`replace::assign_replacement`]), with this
+/// command's lines and prompt.
 ///
 /// Returns `Ok(Some(pressed))` when the new device took the address, `Ok(None)`
-/// when the run was declined or nothing could be identified (a clean command
-/// failure, not an error).
+/// when the run was declined or refused (a clean command failure, not an
+/// error).
 async fn swap_flow(
-    service: &BusService,
-    source: IndividualAddress,
+    flow: AssignFlow<'_>,
+    dir: &Path,
     replacement: &Replacement,
     gateway: &str,
     yes: bool,
     force: bool,
 ) -> anyhow::Result<Option<Pressed>> {
     let target = replacement.target;
-    let mut step = Step::CheckGone;
-    let mut current = None;
-    let mut pressed = None;
-    loop {
-        match step {
-            // 1. The old device must be gone.
-            Step::CheckGone => {
-                if let Some(occupant) =
-                    bussard_service::assign::probe_occupant(service, source, target).await
-                {
-                    if !force {
-                        eprintln!(
-                            "{target} still answers on the bus ({}).\n\
-                             `replace` is for a device that has failed or been removed. If you \
-                             really mean to re-address whatever is in programming mode onto \
-                             {target}, re-run with --force.",
-                            occupant.describe()
-                        );
-                        return Ok(None);
-                    }
-                    eprintln!(
-                        "warning: {target} still answers ({}); --force given, continuing",
-                        occupant.describe()
-                    );
-                } else {
-                    println!(
-                        "{target} does not answer, consistent with a failed or removed device"
-                    );
-                }
-            }
-            // 2. The replacement, via its programming button.
-            Step::PressButton => {
-                println!("\nPress the programming button on the replacement device for {target}.");
-                let Some(found) = assign_cmd::wait_for_single_device(service, source).await? else {
-                    return Ok(None);
-                };
-                current = Some(found);
-            }
-            Step::Identify => {
-                let Some(at) = current else {
-                    return Ok(None);
-                };
-                let read = replace::identify(service, source, at).await;
-                print_identity(&read);
-                if let Some(check) = replacement.identity_check(&read) {
-                    println!("  {}", bussard_service::identity_line(target, &check));
-                }
-                pressed = Some(read);
-            }
-            // 3. Cross-check against the model's device file.
-            Step::CrossCheck => {
-                let Some(read) = &pressed else {
-                    return Ok(None);
-                };
-                if let Some(problem) = replacement.mismatch(read) {
-                    if !force {
-                        eprintln!(
-                            "\nrefusing to replace {target}: {problem}\n\
-                             A different product means a different application, and flashing it \
-                             would load the wrong image. Fix the device file, use the right \
-                             spare, or re-run with --force if you know the model is out of date."
-                        );
-                        return Ok(None);
-                    }
-                    eprintln!("\nwarning: {problem}; --force given, continuing");
-                }
-            }
-            // 4. One confirmation for the whole run.
-            Step::Confirm => {
-                let Some(at) = current else {
-                    return Ok(None);
-                };
-                if !confirm(target, at, gateway, yes)? {
-                    eprintln!("aborted; nothing was written.");
-                    return Ok(None);
-                }
-            }
-            // 5. The address, exactly as `assign` writes it.
-            Step::Assign => {
-                let (Some(at), Some(read)) = (current, pressed.take()) else {
-                    return Ok(None);
-                };
-                bussard_service::assign::write_address(service, source, target)
-                    .await
-                    .context("broadcasting the new individual address")?;
-                eprintln!("wrote {target}; verifying…");
-                let verified = assign_cmd::verify_assignment(
-                    service,
-                    source,
-                    target,
-                    &assign_cmd::VerifyKey::default(),
-                )
-                .await?;
-                if verified.programming_mode_cleared {
-                    eprintln!(
-                        "cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does."
-                    );
-                }
-                assign_cmd::warn_if_still_in_programming_mode(service, source, target).await;
-                println!("assigned {at} → {target}");
-                return Ok(Some(replace::assigned(read, &verified)));
-            }
-            // The flash and the apply run on their own runtimes, in `run`.
-            Step::Flash | Step::Apply | Step::Record | Step::Done => return Ok(None),
+    let bench = &mut Bench::new(yes).press(format!(
+        "\nPress the programming button on the replacement device for {target}."
+    ));
+    let refused = |stop| stopped(stop, "replace").map(|_| None);
+    // 1. The old device must be gone.
+    match flow.check_free(target, force, bench).await {
+        Ok(None) => {
+            println!("{target} does not answer, consistent with a failed or removed device")
         }
-        step = replacement.next(step);
+        Ok(Some(occupant)) => eprintln!(
+            "warning: {target} still answers ({}); --force given, continuing",
+            occupant.describe()
+        ),
+        Err(Stop::Occupied { occupant, .. }) => {
+            eprintln!(
+                "{target} still answers on the bus ({}).\n`replace` is for a device that has \
+                 failed or been removed. If you really mean to re-address whatever is in \
+                 programming mode onto {target}, re-run with --force.",
+                occupant.describe()
+            );
+            return Ok(None);
+        }
+        Err(stop) => return refused(stop),
+    }
+    // 2. The replacement, via its programming button, checked against the
+    //    model's device file.
+    let located = match replace::locate(&flow, replacement, bench).await {
+        Ok(located) => located,
+        Err(stop) => return refused(stop),
+    };
+    print_identity(&located.pressed);
+    if let Some(check) = replacement.identity_check(&located.pressed) {
+        println!("  {}", bussard_service::identity_line(target, &check));
+    }
+    match &located.mismatch {
+        Some(problem) if !force => {
+            eprintln!(
+                "\nrefusing to replace {target}: {problem}\nA different product means a \
+                 different application, and flashing it would load the wrong image. Fix the \
+                 device file, use the right spare, or re-run with --force if you know the model \
+                 is out of date."
+            );
+            return Ok(None);
+        }
+        Some(problem) => eprintln!("\nwarning: {problem}; --force given, continuing"),
+        None => {}
+    }
+    // 3. One confirmation for the whole run, then the address, exactly as
+    //    `assign` writes it.
+    let current = located.pressed.address;
+    let question = Question {
+        prompt: format!(
+            "replace {target}: address {current} → {target}, flash the application and apply \
+             the model's tables, via {gateway}?"
+        ),
+        action: format!("replace {target} via {gateway}"),
+    };
+    let assigned = replace::assign_replacement(
+        &flow,
+        dir,
+        replacement,
+        located.pressed,
+        Some(&question),
+        false,
+        bench,
+    )
+    .await;
+    match assigned {
+        Ok((pressed, _)) => {
+            println!("assigned {current} → {target}");
+            Ok(Some(pressed))
+        }
+        Err(stop) => refused(stop),
     }
 }
 
 /// Prints what the pressed device says it is.
 fn print_identity(pressed: &Pressed) {
-    println!("device in programming mode: {}", pressed.address);
     match pressed.mask {
         Some(mask) => println!("  mask: {mask:04X} ({})", system_type(mask)),
         None => println!("  mask: unreadable"),
@@ -393,25 +362,8 @@ fn print_identity(pressed: &Pressed) {
         pressed.application.as_deref().unwrap_or("none resident")
     );
     if let Some(serial) = &pressed.serial {
-        println!("  serial: {}", assign_cmd::hex(serial));
+        println!("  serial: {}", hex(serial));
     }
-}
-
-/// The single confirmation for the whole run, naming the gateway.
-fn confirm(
-    target: IndividualAddress,
-    current: IndividualAddress,
-    gateway: &str,
-    yes: bool,
-) -> anyhow::Result<bool> {
-    crate::confirm::confirm(
-        yes,
-        &format!(
-            "replace {target}: address {current} → {target}, flash the application and apply \
-             the model's tables, via {gateway}?"
-        ),
-        &format!("replace {target} via {gateway}"),
-    )
 }
 
 /// Prints the closing summary.
@@ -435,7 +387,7 @@ fn print_summary(
         println!("  mask: {mask:04X} ({})", system_type(mask));
     }
     if let Some(serial) = &pressed.serial {
-        println!("  serial: {}", assign_cmd::hex(serial));
+        println!("  serial: {}", hex(serial));
     }
     println!(
         "  application: {}",

@@ -4,6 +4,7 @@
 //! runs itself ([`cli::Run`]); `main` parses, resolves the global options once
 //! and hands them to it.
 
+mod addressing;
 mod adopt_cmd;
 mod apply_cmd;
 mod assign_cmd;
