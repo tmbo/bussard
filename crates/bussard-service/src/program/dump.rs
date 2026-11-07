@@ -443,9 +443,12 @@ pub fn write_dump(
             }
             // A load procedure's property write (issue #390), as the wire
             // carries it: an index-addressed object with the plain service,
-            // one named by type with the extended service (instance 1-based).
-            // A System B plan keeps the label-only record the oracle rows
-            // were recorded with.
+            // one named by type with the extended service (instance 1-based),
+            // one record per request as the executor splits it
+            // ([`bussard_download::flash::property_write_requests`]: at most
+            // 15 elements per plain request, 255 per extended one, within the
+            // nominal APDU). A System B write of one element keeps the
+            // label-only record the oracle rows were recorded with.
             FlashStep::WriteProp {
                 object,
                 prop_id,
@@ -454,60 +457,45 @@ pub fn write_dump(
                 count,
                 verify,
                 ..
-            } if plan.is_sys7() || plan.is_property_only() => {
-                let hex: String = value.iter().map(|b| format!("{b:02x}")).collect();
-                let mut prop = match object {
-                    bussard_download::PropObject::Index(index) => json!({ "object": index }),
-                    bussard_download::PropObject::Type {
-                        object_type,
-                        occurrence,
-                    } => json!({
-                        "object_type": object_type,
-                        "instance": u32::from(*occurrence) + 1,
-                    }),
-                };
-                prop["pid"] = json!(prop_id);
-                prop["start_element"] = json!(start_element);
-                prop["count"] = json!(count);
-                prop["length"] = json!(value.len());
-                prop["data"] = json!(hex);
-                prop["verify"] = json!(verify);
-                prop["source"] = json!("load-procedure");
-                record["property"] = prop;
-            }
-            // A System B write of several elements (a declared property,
-            // issue #938), one record per plain request as the executor
-            // splits it: at most 15 elements each, within the nominal APDU.
-            FlashStep::WriteProp {
-                object: bussard_download::PropObject::Index(index),
-                prop_id,
-                value,
-                start_element,
-                count,
-                verify,
-                ..
-            } if *count > 1 => {
-                let elem = (value.len() / usize::from(*count)).max(1);
-                let per =
-                    bussard_download::flash::plain_write_elements(DUMP_NOMINAL_MAX_APDU, elem)
-                        * elem;
-                let records: Vec<Value> = value
-                    .chunks(per)
-                    .enumerate()
-                    .map(|(i, chunk)| {
-                        json!({
-                            "object": index,
-                            "pid": prop_id,
-                            "start_element": usize::from(*start_element) + i * per / elem,
-                            "count": chunk.len() / elem,
-                            "length": chunk.len(),
-                            "data": chunk.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                            "verify": verify,
-                            "source": "load-procedure",
-                        })
+            } if plan.is_sys7() || plan.is_property_only() || *count > 1 => {
+                let requests = bussard_download::flash::property_write_requests(
+                    *object,
+                    *start_element,
+                    *count,
+                    value.len(),
+                    DUMP_NOMINAL_MAX_APDU,
+                );
+                let records: Vec<Value> = requests
+                    .into_iter()
+                    .map(|request| {
+                        let chunk = value.get(request.octets).unwrap_or_default();
+                        let mut prop = match object {
+                            bussard_download::PropObject::Index(index) => {
+                                json!({ "object": index })
+                            }
+                            bussard_download::PropObject::Type {
+                                object_type,
+                                occurrence,
+                            } => json!({
+                                "object_type": object_type,
+                                "instance": u32::from(*occurrence) + 1,
+                            }),
+                        };
+                        prop["pid"] = json!(prop_id);
+                        prop["start_element"] = json!(request.start);
+                        prop["count"] = json!(request.count);
+                        prop["length"] = json!(chunk.len());
+                        prop["data"] =
+                            json!(chunk.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                        prop["verify"] = json!(verify);
+                        prop["source"] = json!("load-procedure");
+                        prop
                     })
                     .collect();
-                record["properties"] = json!(records);
+                match <[Value; 1]>::try_from(records) {
+                    Ok([one]) => record["property"] = one,
+                    Err(records) => record["properties"] = json!(records),
+                }
             }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),
             // one record per write as the executor sends them: plain at the
@@ -654,6 +642,81 @@ pub fn write_dump(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A property-only plan (mask 0021) of one `LdCtrlWriteProp` of `count`
+    /// one-octet elements to `object` (`ObjIdx="3"` or `ObjType="11"`).
+    fn property_only_plan(
+        object: &str,
+        count: usize,
+    ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let data: String = (0..count).map(|i| format!("{:02X}", i % 251)).collect();
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+             <ApplicationProgram Id="M-0004_A-1" ApplicationNumber="22" ApplicationVersion="16"
+                MaskVersion="MV-0021" Name="IP">
+              <Static>
+               <LoadProcedures>
+                <LoadProcedure>
+                 <LdCtrlWriteProp {object} PropId="205" Count="{count}" InlineData="{data}" />
+                </LoadProcedure>
+               </LoadProcedures>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        let app =
+            bussard_prod::application::parse_application_program("M-0004_A-1", xml.as_bytes())?;
+        Ok(bussard_download::plan_flash(
+            &app,
+            "1.1.200",
+            0x0021,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )?)
+    }
+
+    /// The `(start_element, count)` of each property record `write_dump`
+    /// gives the plan's one step.
+    fn dumped_requests(
+        plan: &FlashPlan,
+        name: &str,
+    ) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("bussard-dump-{name}-{}", std::process::id()));
+        write_dump(&dir, "1.1.200", 0x0021, plan, &BTreeMap::new())?;
+        let text = std::fs::read_to_string(dir.join("plan.json"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let dump: Value = serde_json::from_str(&text)?;
+        let step = dump["steps"].get(0).ok_or("one step")?;
+        let records = match step.get("properties") {
+            Some(Value::Array(records)) => records.clone(),
+            _ => vec![step.get("property").ok_or("a property record")?.clone()],
+        };
+        Ok(records
+            .iter()
+            .map(|r| {
+                (
+                    r["start_element"].as_u64().unwrap_or(0),
+                    r["count"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect())
+    }
+
+    #[test]
+    fn test_write_dump_splits_a_property_only_write_as_the_executor_does()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #947: a plain write of 20 elements goes out as 15 and 5, as
+        // `write_plain` sends it; by type on the extended service, 300
+        // one-octet elements as 224 and 76 within the nominal 233-octet APDU.
+        let plain = property_only_plan(r#"ObjIdx="3""#, 20)?;
+        assert_eq!(dumped_requests(&plain, "plain")?, vec![(1, 15), (16, 5)]);
+        let typed = property_only_plan(r#"ObjType="11""#, 300)?;
+        assert_eq!(dumped_requests(&typed, "typed")?, vec![(1, 224), (225, 76)]);
+        Ok(())
+    }
 
     #[test]
     fn test_file_safe_replaces_separators() {

@@ -139,7 +139,8 @@ pub use plan_sys7::{
     sys7_task_identity,
 };
 pub use props::{
-    compare_property_value, plain_write_elements, read_property_value, write_property_value,
+    PropertyWriteRequest, compare_property_value, plain_write_elements, property_write_requests,
+    read_property_value, write_property_value,
 };
 pub use restart_form::{RestartForm, restart_form};
 pub use session::{
@@ -308,8 +309,12 @@ pub enum FlashStep {
         /// The 1-based element the value is written from (`StartElement`, default 1).
         start_element: u16,
         /// How many elements `value` spans (`Count`, default 1). A System B
-        /// plan keeps 1: its value is written as one element, as before
-        /// issue #390.
+        /// write with `InlineData` keeps 1: its value is written as one
+        /// element, as before issue #390. The executor splits the write as
+        /// [`property_write_requests`] lists it: on the plain service (an
+        /// object named by index) in requests of at most 15 elements (issue
+        /// #947), on the extended service (an object named by type) in
+        /// requests of at most 255.
         count: u16,
         /// `Verify="true"`: read the property back right after writing it and
         /// fail the flash on a difference, as ETS does.

@@ -102,9 +102,67 @@ fn plain_elements<Ch: L4Channel>(l4: &Layer4Connection<Ch>, elem: usize) -> usiz
     plain_write_elements(l4.effective_max_apdu(), elem)
 }
 
+/// One request of a property write: the element it starts at, how many
+/// elements it carries, and which octets of the value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyWriteRequest {
+    /// The 1-based element the request writes from.
+    pub start: u16,
+    /// The elements it carries.
+    pub count: usize,
+    /// The octets of the value it carries.
+    pub octets: std::ops::Range<usize>,
+}
+
+/// The requests a [`FlashStep::WriteProp`](super::FlashStep::WriteProp) of
+/// `value_len` octets (`count` elements from `start`) goes out as under an
+/// APDU limit of `max_apdu`, by the rule the executor follows: on the plain
+/// service a single element is written whole and more are split into requests
+/// of at most 15 elements ([`plain_write_elements`]); an object named by type
+/// goes out on the extended service in requests of at most 255
+/// ([`bussard_mgmt::property_ext::write_elements_for_apdu`]). The dry-run dump
+/// lists the same requests.
+pub fn property_write_requests(
+    object: PropObject,
+    start: u16,
+    count: u16,
+    value_len: usize,
+    max_apdu: u16,
+) -> Vec<PropertyWriteRequest> {
+    let elem = (value_len / usize::from(count.max(1))).max(1);
+    let per = match object {
+        PropObject::Index(_) if count <= 1 => {
+            return vec![PropertyWriteRequest {
+                start,
+                count: 1,
+                octets: 0..value_len,
+            }];
+        }
+        PropObject::Index(_) => plain_write_elements(max_apdu, elem),
+        PropObject::Type { .. } => {
+            bussard_mgmt::property_ext::write_elements_for_apdu(max_apdu, elem)
+        }
+    };
+    let mut out = Vec::new();
+    let mut at = 0usize;
+    let mut element = start;
+    while at < value_len {
+        let end = (at + per * elem).min(value_len);
+        let n = (end - at) / elem;
+        out.push(PropertyWriteRequest {
+            start: element,
+            count: n,
+            octets: at..end,
+        });
+        element = element.saturating_add(u16::try_from(n).unwrap_or(u16::MAX));
+        at = end;
+    }
+    out
+}
+
 /// Writes `value` (`count` elements from `start`) to `index` with
-/// `A_PropertyValue_Write`, each request echo-validated. One element is
-/// written whole as before issue #390; more are split to the APDU budget.
+/// `A_PropertyValue_Write`, each request echo-validated, in the requests
+/// [`property_write_requests`] lists.
 async fn write_plain<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     index: u8,
@@ -113,17 +171,17 @@ async fn write_plain<Ch: L4Channel>(
     count: u16,
     value: &[u8],
 ) -> Result<(), WriteError> {
-    if count <= 1 {
-        write_property(l4, index, pid, 1, start, value, None).await?;
-        return Ok(());
-    }
-    let elem = element_size(value, count);
-    let per = plain_elements(l4, elem);
-    let mut at = start;
-    for chunk in value.chunks(per * elem) {
-        let n = chunk.len() / elem;
-        write_property(l4, index, pid, n as u8, at, chunk, None).await?;
-        at = at.saturating_add(n as u16);
+    let requests = property_write_requests(
+        PropObject::Index(u32::from(index)),
+        start,
+        count,
+        value.len(),
+        l4.effective_max_apdu(),
+    );
+    for request in requests {
+        let n = u8::try_from(request.count).unwrap_or(u8::MAX);
+        let chunk = value.get(request.octets).unwrap_or_default();
+        write_property(l4, index, pid, n, request.start, chunk, None).await?;
     }
     Ok(())
 }
