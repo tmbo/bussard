@@ -16,8 +16,8 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress};
 
 use crate::container::Container;
 use crate::error::Result;
-use crate::facts::{apply_facts, derive_facts};
 use crate::knx_master;
+use crate::lock_keys::{apply_lock_keys, derive_lock_keys};
 use crate::project::{RawComObjectInstance, RawDevice, RawProject};
 use bussard_ets::application::ApplicationProgram;
 use bussard_ets::hardware::Hardware;
@@ -460,7 +460,7 @@ pub fn build_model(
             },
         };
 
-        // The lock-side facts (channel handles, object and parameter keys,
+        // The lock keys (channel handles, object and parameter keys,
         // labels) from the primary program evaluated with the project's
         // values; without a program the values keep the `<slug>@<ref>` key.
         match primary_app {
@@ -471,12 +471,12 @@ pub fn build_model(
                     .iter()
                     .filter_map(|(r, v)| Some((r.strip_prefix(&prefix)?.to_string(), v.clone())))
                     .collect();
-                let facts = derive_facts(app, &values, &raw_dev.module_instances);
+                let facts = derive_lock_keys(app, &values, &raw_dev.module_instances);
                 let stored: BTreeMap<String, String> = stored
                     .into_iter()
                     .map(|(reference, (_, value))| (reference, value))
                     .collect();
-                apply_facts(&mut device, app, &facts, &stored);
+                apply_lock_keys(&mut device, app, &facts, &stored);
                 // A keyed object reads by its key; the vendor text the link
                 // carried is in the lock, so it is not repeated as a name.
                 for link in &mut dev_links {
@@ -847,7 +847,7 @@ fn resolve_com_object(
 /// The map is keyed by the app-relative ref id, which preserves the
 /// module-instance selector (`MD-2_M-20_MI-1_P-15_R-17`), the unique+stable
 /// handle, and holds the parameter `Name` next to the value. The in-memory key
-/// comes from the lock-side facts ([`crate::facts::apply_facts`]); see the
+/// comes from the lock keys ([`crate::lock_keys::apply_lock_keys`]); see the
 /// `parameters` field rustdoc on [`bussard_model::schema::Device`] for the key
 /// scheme.
 fn resolve_parameters(

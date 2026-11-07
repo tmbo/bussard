@@ -302,7 +302,7 @@ impl BussardMcp {
                 user_memory_above_64k: &user_memory,
             };
             let captures = capture_devices(&service, inputs, &targets, &mut |_| {}).await;
-            write_backup_run(&run_dir, run_gateway, started, &captures)
+            write_backup_run(&run_dir, run_gateway, started, captures)
         });
         let written = task
             .await

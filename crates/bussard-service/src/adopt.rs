@@ -133,22 +133,13 @@ pub fn derive_secure_adoption(
     }
 }
 
-/// The device-generated security facts of an adopted device.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct SecureDeviceFacts {
-    /// The keyring's `SequenceNumber` for the device, if it has one.
-    pub sequence_number: Option<u64>,
-    /// The security individual address table read from PID 54 (empty when it
-    /// was not read or is empty).
-    pub senders: Vec<SecureSender>,
-}
-
 /// Records an adopted, Data Secure-activated device in `model`.
 ///
 /// - the device file's `[security]` gets `activated = true` and
 ///   `secure_commissioning = true` (ETS commissioned it with a tool key);
-/// - the lock gets `secure_capable = true`, the keyring sequence and the sender
-///   table (`secure_senders`), which a later secured download writes back;
+/// - the lock gets `secure_capable = true`, the keyring's `sequence_number`
+///   for the device and the sender table read from PID 54 (`senders`, empty
+///   when it was not read), which a later secured download writes back;
 /// - every object in [`SecureAdoption::secure_objects`] is marked `secure`
 ///   (an object the model does not know yet is left alone: its flags come from
 ///   the product data or the caller's placeholder);
@@ -161,7 +152,8 @@ pub fn apply_secure_adoption(
     model: &mut Model,
     device: IndividualAddress,
     adoption: &SecureAdoption,
-    facts: &SecureDeviceFacts,
+    sequence_number: Option<u64>,
+    senders: &[SecureSender],
     placeholder_name: impl Fn(GroupAddress) -> String,
 ) {
     let Some(loaded) = model.devices.get_mut(&device) else {
@@ -174,8 +166,8 @@ pub fn apply_secure_adoption(
         activated: true,
         secure_commissioning: true,
         has_fdsk_certificate: previous.has_fdsk_certificate,
-        sequence_number: facts.sequence_number.or(previous.sequence_number),
-        secure_senders: facts.senders.clone(),
+        sequence_number: sequence_number.or(previous.sequence_number),
+        secure_senders: senders.to_vec(),
     });
     for number in &adoption.secure_objects {
         if let Some(co) = dev.com_objects.get_mut(number) {
@@ -347,21 +339,18 @@ mod tests {
             secure_groups: BTreeSet::from([ga("1/2/3")?, ga("1/2/9")?]),
             ..SecureAdoption::default()
         };
-        let facts = SecureDeviceFacts {
-            sequence_number: Some(42),
-            senders: vec![SecureSender {
-                address: "1.1.5".parse()?,
-                sequence: 9,
-            }],
-        };
-        apply_secure_adoption(&mut model, address, &adoption, &facts, |g| {
+        let senders = vec![SecureSender {
+            address: "1.1.5".parse()?,
+            sequence: 9,
+        }];
+        apply_secure_adoption(&mut model, address, &adoption, Some(42), &senders, |g| {
             format!("GA {g} (adopted)")
         });
         let dev = &model.devices.get(&address).ok_or("device")?.device;
         let sec = dev.security.as_ref().ok_or("security")?;
         assert!(sec.activated && sec.secure_commissioning && sec.secure_capable);
         assert_eq!(sec.sequence_number, Some(42));
-        assert_eq!(sec.secure_senders, facts.senders);
+        assert_eq!(sec.secure_senders, senders);
         assert!(dev.com_objects.get(&1).is_some_and(|c| c.secure));
         assert!(!dev.com_objects.contains_key(&7), "no object invented");
         let g = model.groups.groups.get(&ga("1/2/3")?).ok_or("1/2/3")?;
