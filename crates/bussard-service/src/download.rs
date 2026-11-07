@@ -7,7 +7,7 @@
 //! through it. [`write_parameters`] is the parameter half of an apply: the
 //! parameter-only plan, then a read-back of every octet it meant to change.
 
-use bussard_download::{DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, Progress, Session};
+use bussard_download::{DeviceFacts, FlashOptions, FlashOutcome, FlashPlan, Session};
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
@@ -93,20 +93,9 @@ impl bussard_download::Connector for ServiceConnector<'_> {
     }
 }
 
-/// Watches a download: each progress event, and the end.
-pub trait FlashObserver {
-    /// One progress event.
-    fn progress(&mut self, event: Progress);
-    /// The download ended; `verified` when it verified.
-    fn finished(&mut self, verified: bool) {
-        let _ = verified;
-    }
-}
-
-/// An observer that ignores everything (the MCP tier reports the outcome).
-impl FlashObserver for () {
-    fn progress(&mut self, _event: Progress) {}
-}
+/// Watches a download: each progress event, and the end. The one observer
+/// of every programming flow ([`crate::program::Observer`], issue #901).
+pub use crate::program::Observer as FlashObserver;
 
 /// What [`flash_session`] needs besides the plan.
 pub struct FlashRun<'a> {
@@ -216,27 +205,52 @@ impl ParamWriteOutcome {
     }
 }
 
-/// Writes the parameter octets that differ (the `flash --parameters-only`
-/// download `partial`, built by [`crate::params::build_device_plan`]) and
-/// verifies them by reading the memory back on `read_options`.
+/// One parameter write: the parameter-only download and the read it was
+/// planned from.
+pub struct ParamWrite<'a> {
+    /// The bus.
+    pub service: &'a BusService,
+    /// The device.
+    pub target: IndividualAddress,
+    /// The checked source address.
+    pub source: IndividualAddress,
+    /// The download: the parameter octets that differ (the `flash
+    /// --parameters-only` download, built by
+    /// [`crate::params::build_device_plan`]).
+    pub partial: &'a FlashPlan,
+    /// The read the download was planned from.
+    pub detail: &'a ParamDetail,
+    /// The KNX Data Secure tool key, `None` on the plain path.
+    pub tool_key: Option<Key16>,
+    /// The send-sequence high-water mark.
+    pub high_water: SequenceHighWater,
+    /// The session the memory is read back on.
+    pub read_options: &'a L4Options,
+}
+
+/// Writes the parameter octets that differ and verifies them by reading the
+/// memory back on `read_options`.
 ///
-/// The one parameter write of `bussard apply` and `knx_apply_device`.
+/// The one parameter write of `bussard apply`, `bussard restore
+/// --parameters`, `knx_apply_device` and `knx_restore_parameters`.
 ///
 /// # Errors
 ///
 /// The read-back session could not be opened.
-#[allow(clippy::too_many_arguments)] // one write phase's context
 pub async fn write_parameters(
-    service: &BusService,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    partial: &FlashPlan,
-    detail: &ParamDetail,
-    tool_key: Option<Key16>,
-    high_water: SequenceHighWater,
-    read_options: &L4Options,
+    write: ParamWrite<'_>,
     observer: &mut impl FlashObserver,
 ) -> Result<ParamWriteOutcome, ServiceError> {
+    let ParamWrite {
+        service,
+        target,
+        source,
+        partial,
+        detail,
+        tool_key,
+        high_water,
+        read_options,
+    } = write;
     let facts = DeviceFacts {
         object_table: detail.resident.object_table.clone(),
         ..DeviceFacts::default()

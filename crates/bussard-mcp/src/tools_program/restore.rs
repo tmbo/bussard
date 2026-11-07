@@ -19,12 +19,13 @@ use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
+use bussard_service::program::{self, read::FlagsCache};
 use bussard_service::restore::{RestorePlan, build_restore_plan};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    BussardMcp, DeviceRead, JobObserver, PARAMETER_DOWNLOAD, ProgrammingTier, chain, live_digest,
+    BussardMcp, DeviceRead, JobObserver, PARAMETER_DOWNLOAD, ProgrammingTier, Read, chain,
     product_for, put, read_device, refuse_drift,
 };
 
@@ -110,7 +111,7 @@ fn restore_digest(
         )
         .as_bytes(),
     );
-    put(&mut h, &live_digest(read));
+    put(&mut h, &program::plan::live_fingerprint(read));
     match &plan.partial {
         Some(partial) => {
             for (segment, octets) in partial.changed_bits() {
@@ -180,14 +181,16 @@ impl BussardMcp {
         let (checked, read) = read_device(
             &service,
             target,
-            &tool_key,
-            &material.fdsk,
-            &high_water,
             &dir,
-            &model,
-            Some(source),
-            &[],
-            None,
+            Read {
+                tool_key: &tool_key,
+                factory_key: &material.fdsk,
+                high_water: &high_water,
+                model: &model,
+                product: Some(source),
+                tunnel: &[],
+                flags_cache: FlagsCache::Off,
+            },
         )
         .await?;
         refuse_drift(target, &read)?;
@@ -250,7 +253,7 @@ impl BussardMcp {
             "address": target.to_string(),
             "gateway": gateway,
             "backup": file.display().to_string(),
-            "identity": planned.read.check.as_ref().map(|c| bussard_service::identity_line(target, c)),
+            "identity": planned.read.check().map(|c| bussard_service::identity_line(target, c)),
             "noop": noop,
             "sentences": plan.render_text(target),
             "octets": plan.octets,
@@ -419,20 +422,18 @@ impl BussardMcp {
             planned.tool_key.clone(),
             planned.high_water.clone(),
         );
-        let mut observer = JobObserver {
-            jobs: &tier.jobs,
-            job,
-            what: PARAMETER_DOWNLOAD,
-        };
+        let mut observer = JobObserver::download(&tier.jobs, job, PARAMETER_DOWNLOAD, target);
         let outcome = bussard_service::download::write_parameters(
-            service,
-            target,
-            planned.source,
-            partial,
-            detail,
-            planned.tool_key.clone(),
-            planned.high_water.clone(),
-            &read_options,
+            bussard_service::download::ParamWrite {
+                service,
+                target,
+                source: planned.source,
+                partial,
+                detail,
+                tool_key: planned.tool_key.clone(),
+                high_water: planned.high_water.clone(),
+                read_options: &read_options,
+            },
             &mut observer,
         )
         .await;

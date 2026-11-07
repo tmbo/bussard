@@ -6,7 +6,7 @@
 //! 1. Read the vendor `.knxprod`, select the application program (by `--application`
 //!    id, or the sole candidate).
 //! 2. Read the device descriptor (mask). Gate on System B (07B0); refuse others.
-//! 3. Build a pre-flight [`FlashPlan`] — this also refuses a mask mismatch or any
+//! 3. Build a pre-flight `FlashPlan` — this also refuses a mask mismatch or any
 //!    unsupported op — and show it. A refused plan exits non-zero before any write.
 //! 4. Check the device is **factory-fresh** (issue #79): the read-only probe in
 //!    step 2 read the load state of every object this flash would rewrite, plus
@@ -26,25 +26,14 @@
 //! reference bus; the mask gate and the pre-flight validation are the guard-rails
 //! that keep it from touching an unsupported or mismatched device.
 
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::{
-    CurrentMemory, FlashPlan, FlashStep, Freshness, ParamPlan, ParamValue, assess_freshness,
-    param_plan, select_application, trace,
-};
-use bussard_mgmt::load::WriteError;
-use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError};
 use bussard_model::IndividualAddress;
-use bussard_prod::{AppSelection, ApplicationProgram, ProductData};
 use bussard_service::flash::FlashInputs;
-// The flow's decisions live in the service (issue #750); the CLI prints them.
-use bussard_service::flash_flow::decide_freshness;
-#[cfg(test)]
-use bussard_service::flash_flow::{FreshnessDecision, preflight_interrupted};
-use bussard_service::{BusService, Management};
+use bussard_service::program::flash::{self as flow, FlashChoices, FlashStop};
+use bussard_service::program::{Declined, report};
 
 use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
@@ -171,36 +160,24 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         args.bcu_key.as_deref(),
     );
     let (application, order_number) = (args.application.as_deref(), args.order_number.as_deref());
-    let FlashArgs {
-        force,
-        full,
-        no_factory_reset,
-        parameters_only,
-        secure_sender,
-        ..
-    } = args;
+    let choices = FlashChoices {
+        force: args.force,
+        full: args.full,
+        no_factory_reset: args.no_factory_reset,
+        parameters_only: args.parameters_only,
+    };
     let (dir, yes, allow_remote_gateway) = (g.dir(), args.consent.yes, g.allow_remote_gateway);
     let tool_key_source = g.tool_keys(args.tool_key.tool_key.as_deref());
     let overrides = g.mgmt_with_facts();
-    let output = FlashOutput {
-        json: g.json,
-        verbose: g.verbose,
-        dry_run: args.dry_run.then(|| DryRun {
-            dump_images: args.dump_images.clone(),
-            resident: args.resident.clone(),
-        }),
-    };
+    let (json, verbose) = (g.json, g.verbose);
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
 
-    // KNX Data Secure (issue #71, spec §6.2): the target's tool key, from the
-    // keyring (the real flow) or a raw `--tool-key` (test/bench). `None` is the
-    // plain, byte-identical path. The key is never printed or logged (§2.3).
     // A flash is a management command: a present-but-broken model is a hard
-    // error (its parameter overrides drive what is written to the device). It
-    // is loaded first because it also says whether a device the keyring does
-    // not list is security-activated (issue #189).
+    // error (its parameter values drive what is written to the device). It is
+    // loaded first because it also says whether a device the keyring does not
+    // list is security-activated (issue #189).
     let model = load_model_required(dir)?;
     // Issue #321: a value the file stores for a parameter the configuration
     // does not show is not in the image; say so before anything is planned.
@@ -209,47 +186,34 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             eprintln!("note: {line}");
         }
     }
+    // KNX Data Secure (issue #71, spec §6.2): the target's tool key, from the
+    // keyring or a raw `--tool-key`; `None` is the plain path. Never printed.
     let activated = bussard_service::secure::model_activated(model.as_ref(), target);
     let secure_material = crate::timing::time("tool keys", || {
         bussard_service::secure::resolve_material(target, tool_key_source, activated)
     })?;
-    let tool_key = secure_material.tool_key.clone();
-    // The extra secured senders of the security individual address table:
-    // `--secure-sender` and, with `admit_tunnel_senders` (issue #297), the key
-    // store's tunnelling addresses.
-    let mut extra_senders: Vec<IndividualAddress> = secure_sender.into_iter().collect();
+    // The extra secured senders of PID 54: `--secure-sender` and, with
+    // `admit_tunnel_senders` (issue #297), the key store's tunnelling
+    // addresses.
+    let mut extra_senders: Vec<IndividualAddress> = args.secure_sender.into_iter().collect();
     extra_senders.extend(crate::secure_key::admitted_tunnel(
         model.as_ref(),
         tool_key_source,
-        tool_key.is_some(),
+        secure_material.tool_key.is_some(),
     )?);
-    // One send-sequence high-water mark for the whole command (spec §5.9): the
-    // pre-flight probe, the flash, and every mid-flash reconnect share it, so no
-    // session ever replays a sequence the device already accepted.
-    let secure_seq = bussard_secure::SequenceHighWater::new();
+    // Unset presents the free-access key on every management connect; a keyed
+    // device needs its project BCU key (issue #52).
+    let bcu_key = bcu_key.map(parse_bcu_key).transpose()?;
 
-    // Parse the optional BCU access key (hex, e.g. `FFFFFFFF` or `0x11223344`).
-    // Unset means present the free-access key on every management connect — the
-    // capture used free access; keyed devices need the project BCU key here.
-    let bcu_key = match bcu_key {
-        Some(raw) => Some(parse_bcu_key(raw)?),
-        None => None,
-    };
-
-    // Load the product data and pick the application program. Without
-    // `--product`, the archive bussard.lock pins for the device in
-    // `<dir>/products/`, verified by its SHA-256 (issue #228); a pinned
-    // archive that is missing or changed refuses here, before any bus access.
-    let device_product = model
-        .as_ref()
-        .and_then(|m| m.devices.get(&target))
-        .and_then(|d| d.device.product.clone());
+    // The product data: `--product`, else the archive bussard.lock pins for
+    // the device in `<dir>/products/`, verified by its SHA-256 (issue #228);
+    // a pinned archive that is missing or changed refuses before any bus
+    // access.
     let model_device = model
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let explicit_product = product;
-    let model_device_for_override = model_device.cloned();
+    let device_product = model_device.and_then(|d| d.product.clone());
     let product_path = match product {
         Some(path) => path.to_path_buf(),
         None => match model_device
@@ -270,159 +234,84 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             }
         },
     };
-    let product = product_path.as_path();
-    // Only the selected program is parsed (issue #214): by order number, by
-    // `--application`, else every program (the sole-application rule needs
-    // them all).
-    // Texts in the lock's language: the device file names enum members by
-    // the labels `import` wrote in it (issue #231).
+    // Only the selected program is parsed (issue #214), in the lock's
+    // language (issue #231).
     let language = bussard_service::params::model_language(model.as_ref(), dir);
     let pinned_app = device_product
         .as_ref()
-        .and_then(|p| p.application_ref.clone());
+        .and_then(|p| p.application_ref.as_deref());
     let product_data = bussard_service::params::read_product(
-        product,
+        &product_path,
         None,
         dir,
         language.as_deref(),
-        |catalog| {
-            match (order_number, application) {
-                (Some(order), _) => {
-                    AppSelection::Only(bussard_service::params::order_refs(catalog, order))
-                }
-                (None, Some(wanted)) => by_application(catalog, wanted),
-                // Without a selector, the program the lock pins (issue #228):
-                // an ETS export needs no --application when the lock names it.
-                (None, None) => match pinned_app.as_deref() {
-                    Some(app) => by_application(catalog, app),
-                    None => AppSelection::All,
-                },
-            }
-        },
+        |catalog| flow::app_selection(catalog, order_number, application, pinned_app),
         Some(crate::timing::record_product_parse),
     )
-    .with_context(|| format!("reading product data from {}", product.display()))?;
-
-    // Resolve the application program. Three modes, in precedence order:
-    //   --order-number : look the order number up in the hardware catalogue and
-    //                    require exactly one matching application (clap already
-    //                    rejects combining it with --application);
-    //   --application  : an explicit application ref, looked up directly;
-    //   neither        : the sole application in a single-app archive.
-    let app = if let Some(order) = order_number {
-        match resolve_by_order_number(&product_data, order) {
-            Ok(app) => app,
-            Err(err) => {
-                eprintln!("{err}");
-                return Ok(ExitCode::FAILURE);
-            }
-        }
-    } else {
-        let candidates: Vec<&ApplicationProgram> = product_data.applications.iter().collect();
-        // Without a selector, the program the lock pins (or the device file
-        // overrides) when the archive has it, else the order number's.
-        let pinned = device_product
-            .as_ref()
-            .and_then(|p| p.application_ref.as_deref())
-            .filter(|id| select_application(&candidates, Some(id)).is_ok());
-        let by_order = device_product
-            .as_ref()
-            .and_then(|p| p.order_number.as_deref())
-            .and_then(|order| resolve_by_order_number(&product_data, order).ok())
-            .map(|app| app.id.as_str());
-        let application =
-            application
-                .or(pinned)
-                .or(if candidates.len() > 1 { by_order } else { None });
-        match select_application(&candidates, application) {
-            Ok(app) => app,
-            Err(err) => {
-                eprintln!("cannot select an application program: {err}");
-                return Ok(ExitCode::FAILURE);
-            }
+    .with_context(|| format!("reading product data from {}", product_path.display()))?;
+    let app = match flow::select_app(
+        &product_data,
+        order_number,
+        application,
+        device_product.as_ref(),
+    ) {
+        Ok(app) => app,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(ExitCode::FAILURE);
         }
     };
-
-    // Parameter overrides come from the target device's parameter values in
-    // the model (`devices/*.toml`), re-keyed to the app-relative ParameterRef id
-    // the flash engine expects (the #46 contract: keys are `<slug>@<ref-id>`; the
-    // part after `@` is the ETS-stable identity). The model is also the source of
-    // the connection config.
-    // Module-instance base offsets persisted by the importer (issue #48): the
-    // keys are module-instance selectors, byte-identical to what
-    // compute_parameter_image expects, so per-channel parameter overrides place
-    // at their real per-instance offsets.
-    // The plan inputs that do not depend on the device: the master-template
-    // `Load` procedure for this app's mask, if the archive shipped a
-    // `knx_master.xml` (a merged application, e.g. KNX Virtual DA.tp, only
-    // carries its own app-segment blocks; the load-control ops for the table
-    // objects obj1/obj2/obj3 live in the template and are spliced in), and the
-    // computed table images (obj1 address, obj2 association, obj3 group-object)
-    // from the model links. A merged app's template writes these objects; a
-    // self-contained (thelsing) app's does not, so an empty map simply leaves
-    // the single-object flash untouched. The MCP tier's flash builds its image
-    // from the same inputs (issue #303).
+    // The image inputs from the model (issue #303): parameter values keyed by
+    // ParameterRef id, module bases, the master-template load procedure and
+    // the table images from the links.
     let (inputs, malformed) =
         FlashInputs::from_model(&product_data, app, address, model.as_ref(), target);
     for warning in malformed {
         eprintln!("{warning}");
     }
-    let overrides_map = inputs.overrides();
-    let base_offsets = inputs.base_offsets();
 
-    // `--dry-run` (the offline conformance oracle, #89): plan against the
-    // application's own mask and stop. No gateway is resolved, no connection is
-    // opened, nothing is recorded in the history.
-    if let Some(dry) = &output.dry_run {
-        if let Some(device) = model_device_for_override.as_ref()
+    // `--dry-run` (the offline conformance oracle, #89): no gateway, no
+    // connection, nothing recorded in the history.
+    if args.dry_run {
+        if let Some(device) = model_device
             && let Some(conflict) =
-                crate::lock_pin::override_conflict(device, explicit_product, application)?
+                crate::lock_pin::override_conflict(device, product, application)?
         {
             eprintln!("warning: {conflict} (a dry run writes nothing, so it is not refused)");
         }
-        return dry_run(
+        let request = flow::OfflineRequest {
+            inputs: &inputs,
+            model: model.as_ref(),
             target,
-            &inputs,
-            model.as_ref(),
-            dry.dump_images.as_deref(),
-            dry.resident.as_deref(),
-            full,
-            no_factory_reset,
-            parameters_only,
-            &secure_material,
-            &extra_senders,
-            &output,
-        );
+            resident: args.resident.as_deref(),
+            choices,
+            material: &secure_material,
+            extra_senders: &extra_senders,
+        };
+        return dry_run(&request, args.dump_images.as_deref(), json, verbose);
     }
-    // An override that contradicts the lock (another archive, another
-    // application) is refused unless `--force`, which pins the archive for the
-    // device (issue #228, item 4). The dry run above only warns: it writes
-    // nothing.
-    if let Some(device) = model_device_for_override.as_ref() {
+    // An override that contradicts the lock is refused unless `--force`,
+    // which pins the archive for the device (issue #228, item 4).
+    if let Some(device) = model_device {
         crate::lock_pin::enforce_override(
             dir,
             device,
-            explicit_product,
+            product,
             application,
-            force,
+            choices.force,
             "flash",
         )?;
     }
 
     let config = resolve_config(model.as_ref(), &overrides)?;
-    // Safety envelope (issue #74): refuse a flash to a real (non-loopback)
-    // gateway unless the operator opted in.
+    // Safety envelope (issue #74).
     enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = gateway_display(&config);
     // An edit made outside bussard is recorded before this command acts on it.
     crate::history_cmd::capture_external_edit(dir);
 
-    // ONE tunnel for the whole command: the read-only pre-flight below, the
-    // interactive confirmation, and the write phase all run over it, and
-    // `BusSession` closes it on every exit path. Opening a second tunnel for the
-    // write phase used to cost another CONNECT/DISCONNECT round trip — and the
-    // gateway's only tunnel slot — for no gain; the tunnel heartbeat holds the
-    // slot across the confirmation prompt.
+    // ONE tunnel for the whole command: the pre-flight, the confirmation and
+    // the write phase run over it, and `BusSession` closes it on every exit.
     let runtime = tokio::runtime::Runtime::new()?;
     let bus = BusSession::open(
         &runtime,
@@ -430,619 +319,352 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         bussard_service::WritePolicy::transmit(allow_remote_gateway),
     )?;
     let service = bus.service();
-    // The tunnel-assigned source address, resolved and checked against the bus
-    // once for both phases (they share this tunnel, so one probe covers both).
-    // `BusSession` closes the tunnel if the check refuses.
     let source = runtime.block_on(service.checked_source(overrides.skip_address_check))?;
-
-    // Phase A (read-only): read the device descriptor, probe what is already
-    // resident on the device (issue #79) and read back the current parameter
-    // memory (issue #109). All of it runs over one connection; none of it
-    // writes anything. The flow lives in the service (issue #750), so the
-    // MCP tier's flash probes the same way.
-    let preflight_started = std::time::Instant::now();
-    let secure_probe = tool_key.is_some();
-    // Under `--yes` nothing waits between the pre-flight and the write phase,
-    // so the pre-flight's connection is kept here and handed over (issue
-    // #213); without it the prompt sits in between and the write phase
-    // reconnects. Declared after the bus session so an unused connection is
-    // disconnected before the tunnel closes.
-    let mut handover = crate::flash_handover::Handover::new(&runtime);
-    let request = bussard_service::flash_flow::ProbeRequest {
+    let request = flow::FlashRequest {
         service,
         target,
         source,
+        dir,
+        model: model.as_ref(),
         inputs: &inputs,
-        tool_key: tool_key.clone(),
-        factory_key: secure_material.fdsk.clone(),
-        high_water: secure_seq.clone(),
+        material: &secure_material,
+        extra_senders: &extra_senders,
+        // One send-sequence high-water mark for the whole command (§5.9).
+        high_water: bussard_secure::SequenceHighWater::new(),
         bcu_key,
         facts: crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts),
-        force,
-        parameters_only,
+        choices,
         keep_connection: crate::flash_handover::wanted(yes),
     };
-    // `--parameters-only` reads the parameter regions (and the System 7 code
-    // and table samples) on the pre-flight connection (issue #215).
-    let preread = async |l4: &mut bussard_service::Management, plan: &FlashPlan| {
-        crate::flash_params::read_parameters_on(l4, plan, app).await
+    // Under `--yes` the pre-flight's connection is handed to the write phase
+    // (issue #213); declared after the bus session so an unused connection is
+    // disconnected before the tunnel closes.
+    let mut handover = crate::flash_handover::Handover::new(&runtime);
+    let mut probed = match runtime.block_on(flow::probe(&request)) {
+        Ok(probed) => probed,
+        Err(stop) => return stopped(target, stop, json),
     };
-    let mut probe = runtime.block_on(bussard_service::flash_flow::probe(request, &preread))?;
-    // A flash rewrites the security object: the next plan reads PID 61 again
-    // instead of a cache (issue #336).
-    bussard_service::security_change::forget_flags(dir, target);
-    if let Some(l4) = probe.kept.take() {
+    if let Some(l4) = probed.kept.take() {
         handover.keep(l4);
     }
-    let device_mask = match std::mem::replace(&mut probe.descriptor, Ok(0)) {
-        Ok(mask) => mask,
-        Err(err) => {
-            return Err(descriptor_read_error(
-                target,
-                probe.connected,
-                secure_probe,
-                err,
-            ));
-        }
-    };
-
-    // Pre-flight: build and validate the plan (System B gate, mask match,
-    // unsupported-op refusal all happen here), reusing the one built ahead of
-    // the connection when the device reports the declared mask.
-    let plan = match probe.take_plan(&inputs, device_mask) {
-        Ok(plan) => plan,
-        Err(err) => {
-            eprintln!("cannot flash: {err}");
-            return Ok(ExitCode::FAILURE);
-        }
-    };
-    let bussard_service::flash_flow::Probe {
-        resident,
-        facts,
-        current,
-        preread,
-        sys7,
-        security_flags: live_flags,
-        ..
-    } = probe;
-
-    // `--parameters-only` (issue #119): rewrite the parameter memory of a device
-    // that already runs this application, and nothing else.
-    if parameters_only {
+    if choices.parameters_only {
         return crate::flash_params::run(crate::flash_params::Context {
             runtime: &runtime,
-            service,
-            target,
-            source,
-            gateway: gateway.clone(),
-            dir,
+            request: &request,
+            gateway,
             yes,
-            json: output.json,
-            app,
-            plan: &plan,
-            overrides: overrides_map,
-            base_offsets,
-            resident: resident.as_ref(),
-            preread,
-            facts,
-            bcu_key,
-            tool_key,
-            secure_seq,
+            json,
+            probed,
             handover,
         });
     }
-
-    // The factory-freshness verdict (issue #79), computed up front because it
-    // also shapes the plan: a device that is not factory-fresh gets a factory
-    // reset before the download (issue #117), on top of the one the planner adds
-    // for a sparse, filled-segment download.
-    // The one identity verdict (issue #228, item 5): what the device runs
-    // against what the lock pins. A flash is how drift is fixed, so it is not
-    // refused here; a device carrying another application meets the freshness
-    // gate below (`--force`).
-    if !output.json {
-        let check = bussard_model::identity::IdentityCheck::compare(
-            model
-                .as_ref()
-                .and_then(|m| m.devices.get(&target))
-                .map(|d| &d.device),
-            bussard_model::identity::ReportedIdentity {
-                mask: bussard_model::facts::format_mask(device_mask),
-                application_id: resident
-                    .as_ref()
-                    .and_then(|state| state.app_id.as_deref())
-                    .map(bussard_model::facts::format_application_id),
-            },
-        );
-        eprintln!("{}", bussard_service::identity_line(target, &check));
-    }
-    let freshness = match &resident {
-        Some(state) => assess_freshness(state, &plan.identity),
-        // Unreachable in practice: the descriptor read succeeded above, so the
-        // probe ran. Treated as unknown rather than fresh all the same.
-        None => Freshness::Unknown {
-            reason: "the pre-flight probe did not run".to_string(),
-        },
+    let planned = match flow::plan_full(&request, probed, &gateway) {
+        Ok(planned) => planned,
+        Err(stop) => return stopped(target, stop, json),
     };
-    // The factory reset the verdict asks for, then the security object of a
-    // secured download (issue #156): the shaping the MCP tier's flash shares
-    // (issue #303).
-    let mut plan = plan;
-    let written_senders = match inputs.finish(
-        &mut plan,
-        Some(&freshness),
-        resident.as_ref(),
-        no_factory_reset,
-        full,
-        model.as_ref(),
-        target,
-        &secure_material,
-        &extra_senders,
-    ) {
-        Ok(senders) => senders,
-        Err(err) => {
-            eprintln!("cannot flash: {err}");
-            return Ok(ExitCode::FAILURE);
-        }
-    };
-    // A group address that leaves or joins Data Secure (issue #331): the
-    // security program against the PID 61 the pre-flight read.
-    // `--json` carries the same line as `security_object` (issue #336).
-    let security_change = live_flags.as_deref().and_then(|flags| {
-        let links = model
-            .as_ref()
-            .and_then(|m| m.links.links.get(&target))
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        bussard_service::security_change::from_flash_plan(target, &plan, links, flags)
-            .and_then(|change| change.change(model.as_ref()))
-    });
-    if let (Some(line), false) = (&security_change, output.json) {
-        println!("{}", line.line());
+    let plan = &planned.plan;
+    // The identity verdict (issue #228, item 5): a flash is how drift is
+    // fixed, so it is not refused here.
+    if !json {
+        eprintln!("{}", bussard_service::identity_line(target, &planned.check));
     }
-
-    // The parameter-level plan (issue #109): what this flash changes in the
-    // vendor's own words, before the memory-level plan. The current values were
-    // read on the pre-flight connection above, and only where they mean
-    // something (see `wants_current_parameters`): a factory-fresh device has no
-    // segment to read, and `--force` rewrites everything, so every value is then
-    // reported as an unknown current value.
-    let skipped_for_force = force
-        && !plan.is_sys7()
-        && resident
-            .as_ref()
-            .is_some_and(|r| r.has_loaded_application());
-    let current_params = current.unwrap_or_else(CurrentMemory::new);
-    // System 7 writes whole absolute memory regions rather than a parameter
-    // image over an allocated segment, so the memory-level plan is the
-    // authoritative one there.
-    let params = bussard_service::flash_flow::parameter_plan(
-        app,
-        &inputs,
-        &plan,
-        &current_params,
-        skipped_for_force,
-    );
-    let preflight_elapsed = preflight_started.elapsed();
-
-    if output.json {
-        print_plan_json(
-            target,
-            device_mask,
-            &plan,
-            &params,
-            security_change.as_ref(),
+    if let (Some(change), false) = (&planned.security_change, json) {
+        println!("{}", change.line());
+    }
+    if json {
+        crate::output::print(
+            crate::output::schema::FLASH,
+            &report::flash_plan_json(
+                target,
+                planned.device_mask,
+                plan,
+                &planned.params,
+                planned.security_change.as_ref(),
+            ),
         )?;
     } else {
-        print_plan(
-            target,
-            device_mask,
-            &plan,
-            overrides_map,
-            &params,
-            output.verbose,
+        print!(
+            "{}",
+            report::flash_plan_text(
+                target,
+                planned.device_mask,
+                plan,
+                inputs.overrides(),
+                &planned.params,
+                verbose,
+            )
         );
     }
-
-    // The factory-freshness gate (issue #79): a flash takes no backup, so a
-    // device that already carries a *different* application is refused unless
-    // `--force`, and an unreadable state is refused too (unknown is not fresh).
-    // A re-flash of the same application — the documented recovery path — goes
-    // through with a notice.
-    // System 7 exposes no application id: the code sample read on the
-    // pre-flight connection decides there (issue #314), the verdict the MCP
-    // flash plan decides on too. The image above stays shaped by `freshness`.
-    let gate = bussard_download::flash_gate(&freshness, &plan, resident.as_ref(), sys7.as_ref());
-    let decision = decide_freshness(target, &gateway, dir, force, &gate);
+    // The factory-freshness gate (issue #79): a flash takes no backup.
     if plan.is_property_only() {
         eprintln!(
             "\npre-flight: {target} runs a property-only load procedure: it loads no object \
              and erases nothing; every property it writes is read back after the download."
         );
     } else {
-        eprintln!("{}", decision.message);
+        eprintln!("{}", planned.decision.message);
     }
-    if !decision.proceed {
+    if !planned.decision.proceed {
         return Ok(ExitCode::FAILURE);
     }
 
-    // Confirm unless --yes.
-    if !confirm(
-        target,
-        &gateway,
-        yes,
-        &plan,
-        decision.prompt_note.as_deref(),
-    )? {
-        eprintln!("aborted — nothing written.");
-        return Ok(ExitCode::FAILURE);
-    }
-
-    // History (issue #110): record the model state this flash is about to act
-    // on, together with the gateway it goes to.
-    crate::history_cmd::snapshot(
+    let mut observer = crate::progress::Terminal::new(yes, json).snapshot(
         dir,
         bussard_model::history::SnapshotReason::new("flash")
             .with_args([target.to_string()])
             .with_gateway(Some(gateway.clone()))
             .with_result("before flashing the application program"),
     );
-
-    // Phase B (write): execute the flash with a progress line.
-    let plan_ref = &plan;
-    // Verify the flash *after* the terminal restart: a real device (KNX Virtual)
-    // only holds the load if it survives the reboot, so bussard reconnects and
-    // re-reads the load state once the device is back rather than trusting the
-    // transient `Loaded` it reports before rebooting.
-    //
-    // Differential download (the ETS group-B behaviour): an object whose resident
-    // image already matches what bussard would stream (MCB size + CRC, and the
-    // object reports `Loaded`) is not re-streamed. Only taken when the device
-    // carries no application or the same one — never when `--force` is replacing
-    // a different or unidentified application, and never with `--full`.
-    //
-    // A factory reset erases every object first, so nothing resident is left to
-    // match: the differential download only applies with `--no-factory-reset`.
-    let skip_unchanged = bussard_service::flash::skip_unchanged(full, &plan, &freshness);
-    if plan.has_factory_reset() {
-        eprintln!(
-            "factory reset: the device's application, parameters and links are erased \
-             before the download (its individual address is kept); every object is \
-             streamed in full. Pass --no-factory-reset only when the device is known to \
-             hold no stale image."
-        );
-    }
-    if skip_unchanged && matches!(freshness, Freshness::SameApplication { .. }) {
-        eprintln!(
-            "differential download: objects whose resident image already matches are \
-             skipped (pass --full to re-stream everything)"
-        );
-    }
-    let options = bussard_service::flash::flash_options(bcu_key, full, &plan, &freshness);
-    // The same tunnel phase A used: the pre-flight's L4 session and its bus lease
-    // are both released by now, so the write phase simply takes the lease again.
-    let restart_started = std::cell::Cell::new(None);
-    // Under `--yes` the pre-flight's connection, when it is still fresh
-    // (issue #213); otherwise the write phase opens its own.
-    let handed_over = handover.take();
-    let download_started = std::time::Instant::now();
-    // Issue #319: on the flash's last connection, read the parameter memory
-    // back and compare it with the model the way `bussard plan` does.
-    // Issue #349: the tables, the group-object count, the parameters and
-    // the security object, through the one post-write read-back.
-    let mut observer = DisplayObserver {
-        display: Some(crate::progress::Display::flash(plan_ref, output.json)),
-        restart_started: &restart_started,
-    };
-    let run = bussard_service::download::FlashRun {
+    let execution = flow::FlashExecution {
         service,
         target,
         source,
-        options,
-        facts,
-        tool_key,
-        high_water: secure_seq,
-        handover: handed_over,
-    };
-    let bussard_service::flash_flow::Flashed {
-        outcome,
-        readback: flashed,
-    } = runtime.block_on(bussard_service::flash_flow::flash_and_verify(
-        run,
-        plan_ref,
-        &mut observer,
-        Some(bussard_service::flash_flow::ReadbackInputs {
+        dir,
+        plan,
+        options: planned.options,
+        facts: planned.facts.clone(),
+        tool_key: secure_material.tool_key.clone(),
+        high_water: request.high_water.clone(),
+        handover: handover.take(),
+        // Issues #319, #349: the tables, the group-object count, the
+        // parameters and the security object, read back on the flash's last
+        // connection after the restart.
+        readback: Some(bussard_service::flash_flow::ReadbackInputs {
             product: &product_data,
             app,
             model: model.as_ref(),
-            device_mask,
+            device_mask: planned.device_mask,
         }),
-        target,
-    ));
-    if output.verbose > 0 {
-        let readiness = outcome
-            .as_ref()
-            .map(|o| o.reboot_readiness.as_slice())
-            .unwrap_or_default();
-        eprintln!(
-            "{}{}",
-            phase_timings(
-                preflight_elapsed,
-                download_started,
-                restart_started.get(),
-                std::time::Instant::now()
-            ),
-            readiness_summary(&plan.identity.id, readiness)
+        senders: planned.senders.as_deref().filter(|_| model.is_some()),
+        question: planned.question(target, &gateway),
+        differential: planned.differential(),
+    };
+    let written = match runtime.block_on(flow::execute(execution, &mut observer)) {
+        Ok(written) => written,
+        Err(Declined::No) => {
+            eprintln!("aborted — nothing written.");
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(Declined::Refused(refusal)) => bail!("{refusal}"),
+    };
+    if verbose > 0 {
+        eprint!(
+            "{}",
+            report::flash_timing(&plan.identity.id, planned.preflight, &written)
         );
-        // Issue #524: the verify-mode echoes the System 7 stream compared.
-        if let Some(echoes) = outcome.as_ref().ok().and_then(|o| o.verify_echoes) {
-            eprintln!(
-                "verify mode: {} of {} memory-write echoes compared, set again on {} \
-                 reconnect(s)",
-                echoes.echoes_compared, echoes.chunks_written, echoes.re_enabled
-            );
-        }
     }
+    Ok(render_outcome(target, &plan.identity.id, &written))
+}
 
-    match outcome {
-        Ok(verify) if verify.ok() => {
-            // The application is loaded; the parameters must match the model
-            // too, or the flash did not do what the plan said (issue #319).
-            let params_failure = flashed.as_ref().and_then(|f| f.failure());
-            let not_compared = flashed
-                .as_ref()
-                .and_then(|f| f.parameters.as_ref())
-                .and_then(|p| p.note.as_ref());
-            if let Some(failure) = &params_failure {
-                eprintln!("\nERROR: flash {target}: {failure}");
-                eprintln!(
-                    "the application program {} is {} on {target}, but the device does not \
-                     hold the model's configuration; run `bussard plan {target}` to see what \
-                     is left",
-                    plan.identity.id, verify.load_state,
-                );
-            } else if verify.property_only {
-                // A property-only procedure (issue #390) loads no object.
-                println!(
-                    "\nflash verified: the property procedure of {} ran on {target} and every \
-                     property it wrote reads back as written",
-                    plan.identity.id,
-                );
-                if let Some(note) = not_compared {
-                    eprintln!("note: parameters not compared with your project: {note}");
-                }
-            } else if let Some(note) = not_compared {
-                println!(
-                    "\nflash verified: application program {} is {} on {target}",
-                    plan.identity.id, verify.load_state,
-                );
-                eprintln!("warning: parameters not compared with your project: {note}");
-            } else {
-                println!(
-                    "\nflash verified: application program {} is {} on {target}, and its \
-                     parameters match your project",
-                    plan.identity.id, verify.load_state,
-                );
-            }
-            if let Some(readback) = &flashed {
-                for note in readback
-                    .notes
-                    .iter()
-                    .filter(|n| !n.starts_with("parameters not compared"))
-                {
-                    eprintln!("warning: {note}");
-                }
-                if params_failure.is_none() {
-                    println!(
-                        "read back from {target} and compared with your project: {}",
-                        readback.summary()
-                    );
-                }
-            }
-            // Advisory findings (issue #145) do not fail the flash.
-            for warning in &verify.warnings {
-                eprintln!("{warning}");
-            }
-            // The verified flash wrote this PID 54 table: record it in the
-            // lock, as `adopt` does (issue #297).
-            if let (Some(senders), Some(_)) = (&written_senders, model.as_ref()) {
-                let record =
-                    bussard_service::flash_flow::record_lock(dir, target, Some(senders), &plan);
-                if let Some((recorded, count)) = record.senders {
-                    match recorded {
-                        Ok(true) => println!(
-                            "recorded {target}'s security individual address table (PID 54, \
-                             {count} sender(s)) in bussard.lock"
-                        ),
-                        Ok(false) => {}
-                        Err(err) => eprintln!("warning: {err}"),
-                    }
-                }
-                // And the group-object flags it wrote (PID 61, issue #331).
-                if let Some((recorded, count)) = record.flags {
-                    match recorded {
-                        Ok(true) => println!(
-                            "recorded {target}'s group-object security flags (PID 61, {count} \
-                             secured object(s)) in bussard.lock"
-                        ),
-                        Ok(false) => {}
-                        Err(err) => eprintln!("warning: {err}"),
-                    }
-                }
-            }
-            if params_failure.is_some() {
-                return Ok(ExitCode::FAILURE);
-            }
-            Ok(ExitCode::SUCCESS)
-        }
+/// Prints how the download ended and what it recorded in the lock; the exit
+/// code says whether the device holds the model.
+fn render_outcome(target: IndividualAddress, id: &str, written: &flow::FlashWritten) -> ExitCode {
+    let flashed = &written.flashed;
+    let readback = flashed.readback.as_ref();
+    let verify = match &flashed.outcome {
+        Ok(verify) if verify.ok() => verify,
         Ok(verify) => {
             eprintln!("\nERROR: flash did not verify: {verify:?}");
             // Issue #349: the read-back names what differs.
-            if let Some(failure) = flashed.as_ref().and_then(|f| f.failure()) {
+            if let Some(failure) = flashed.failure() {
                 eprintln!("ERROR: flash {target}: {failure}");
             }
-            recovery_notice(target);
-            Ok(ExitCode::FAILURE)
+            eprintln!("{}", bussard_service::flash_flow::recovery_text(target));
+            return ExitCode::FAILURE;
         }
         Err(err) => {
             eprintln!("\nERROR: flash failed: {err}");
-            recovery_notice(target);
+            eprintln!("{}", bussard_service::flash_flow::recovery_text(target));
+            return ExitCode::FAILURE;
+        }
+    };
+    // The application is loaded; the parameters must match the model too, or
+    // the flash did not do what the plan said (issue #319).
+    let params_failure = flashed.failure();
+    let not_compared = readback
+        .and_then(|f| f.parameters.as_ref())
+        .and_then(|p| p.note.as_ref());
+    if let Some(failure) = &params_failure {
+        eprintln!("\nERROR: flash {target}: {failure}");
+        eprintln!(
+            "the application program {id} is {} on {target}, but the device does not hold the \
+             model's configuration; run `bussard plan {target}` to see what is left",
+            verify.load_state,
+        );
+    } else if verify.property_only {
+        // A property-only procedure (issue #390) loads no object.
+        println!(
+            "\nflash verified: the property procedure of {id} ran on {target} and every \
+             property it wrote reads back as written",
+        );
+        if let Some(note) = not_compared {
+            eprintln!("note: parameters not compared with your project: {note}");
+        }
+    } else if let Some(note) = not_compared {
+        println!(
+            "\nflash verified: application program {id} is {} on {target}",
+            verify.load_state,
+        );
+        eprintln!("warning: parameters not compared with your project: {note}");
+    } else {
+        println!(
+            "\nflash verified: application program {id} is {} on {target}, and its parameters \
+             match your project",
+            verify.load_state,
+        );
+    }
+    if let Some(readback) = readback {
+        for note in readback
+            .notes
+            .iter()
+            .filter(|n| !n.starts_with("parameters not compared"))
+        {
+            eprintln!("warning: {note}");
+        }
+        if params_failure.is_none() {
+            println!(
+                "read back from {target} and compared with your project: {}",
+                readback.summary()
+            );
+        }
+    }
+    // Advisory findings (issue #145) do not fail the flash.
+    for warning in &verify.warnings {
+        eprintln!("{warning}");
+    }
+    // The verified flash wrote this PID 54 table and these PID 61 flags:
+    // recorded in the lock, as `adopt` does (issues #297, #331).
+    let record = written.lock.as_ref();
+    let lines = [
+        (
+            record.and_then(|r| r.senders.as_ref()),
+            "security individual address table (PID 54",
+            "sender(s)",
+        ),
+        (
+            record.and_then(|r| r.flags.as_ref()),
+            "group-object security flags (PID 61",
+            "secured object(s)",
+        ),
+    ];
+    for (recorded, what, unit) in lines {
+        match recorded {
+            Some((Ok(true), count)) => {
+                println!("recorded {target}'s {what}, {count} {unit}) in bussard.lock");
+            }
+            Some((Err(err), _)) => eprintln!("warning: {err}"),
+            _ => {}
+        }
+    }
+    if params_failure.is_some() {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+/// Says why the flash stopped before anything was written.
+fn stopped(target: IndividualAddress, stop: FlashStop, json: bool) -> anyhow::Result<ExitCode> {
+    match stop {
+        // The KNX Virtual IP-medium pattern and a silent Data Secure device
+        // are named; any other failure is passed through with context.
+        FlashStop::Descriptor {
+            connected,
+            secure,
+            error,
+        } => Err(
+            match bussard_service::flash_flow::descriptor_read_message(
+                target, connected, secure, &error,
+            ) {
+                Some(message) => anyhow::anyhow!(message),
+                None => anyhow::Error::new(error).context("reading the device descriptor"),
+            },
+        ),
+        FlashStop::Service(err) => Err(err.into()),
+        FlashStop::Refused { check, reason } => {
+            if let (Some(check), false) = (check, json) {
+                eprintln!("{}", bussard_service::identity_line(target, &check));
+            }
+            eprintln!("cannot flash: {reason}");
             Ok(ExitCode::FAILURE)
         }
     }
 }
 
-/// `flash --dry-run`: build the pre-flight plan against the application's own
-/// mask, print it, and (with `--dump-images`) write the images it would
-/// stream. Opens no connection and resolves no gateway, so it runs with no
-/// gateway configured at all.
-#[allow(clippy::too_many_arguments)] // the planner's inputs, passed through 1:1
+/// `flash --dry-run`: the plan against the application's own mask, printed,
+/// and (with `--dump-images`) the images it would stream. Opens no
+/// connection and resolves no gateway.
 fn dry_run(
-    target: IndividualAddress,
-    inputs: &FlashInputs<'_>,
-    model: Option<&bussard_model::Model>,
-    dump_images: Option<&Path>,
-    resident: Option<&Path>,
-    full: bool,
-    no_factory_reset: bool,
-    parameters_only: bool,
-    secure_material: &bussard_service::secure::SecureMaterial,
-    extra_senders: &[IndividualAddress],
-    output: &FlashOutput,
+    request: &flow::OfflineRequest<'_>,
+    dump_images: Option<&std::path::Path>,
+    json: bool,
+    verbose: u8,
 ) -> anyhow::Result<ExitCode> {
-    // No device to read the descriptor from: the plan is checked against the
-    // mask the application declares, which is what a matching device reports.
-    let app = inputs.app();
-    let Some(device_mask) = inputs.declared_mask() else {
-        eprintln!(
-            "cannot plan offline: application program {} declares no usable mask version",
-            app.id
-        );
-        return Ok(ExitCode::FAILURE);
-    };
-    let (overrides_map, base_offsets) = (inputs.overrides(), inputs.base_offsets());
-    let plan = match inputs.plan(device_mask) {
-        Ok(plan) => plan,
-        Err(err) => {
-            eprintln!("cannot flash: {err}");
+    let (target, inputs) = (request.target, request.inputs);
+    let offline = match flow::plan_offline(request) {
+        Ok(offline) => offline,
+        Err(flow::OfflineStop::Recorded(err)) => return Err(err.into()),
+        Err(stop @ flow::OfflineStop::NoMask(_)) => {
+            eprintln!("{stop}");
+            return Ok(ExitCode::FAILURE);
+        }
+        Err(flow::OfflineStop::Refused(reason)) => {
+            eprintln!("cannot flash: {reason}");
             return Ok(ExitCode::FAILURE);
         }
     };
-    // Offline there is no device to judge freshness on, so only the planner's
-    // own factory reset (a sparse, filled-segment download) shows, unless the
-    // operator waived it. A recorded device state (`--resident`, issue #490)
-    // stands in for the pre-flight probe: the verdict shapes the plan as it
-    // does live.
-    // The recorded objects are System B interface objects, or on a System 7
-    // plan the load-state machines. A property-only plan keeps the offline
-    // shape. The System 7 pre-download pass follows `--full` alone, as live
-    // (issue #488).
-    let recorded = match resident {
-        Some(path) if !parameters_only && !plan.is_property_only() => {
-            let recorded = crate::flash_resident::Recorded::read(path)?;
-            let recorded = if plan.is_sys7() {
-                recorded.into_sys7()
-            } else {
-                recorded
-            };
-            Some(recorded).filter(|r| r.has_states())
-        }
-        _ => None,
-    };
-    let freshness = recorded
-        .as_ref()
-        .map(|r| assess_freshness(&r.state, &plan.identity));
-    let mut plan = plan;
-    bussard_service::flash::apply_freshness(
-        &mut plan,
-        freshness.as_ref(),
-        recorded.as_ref().map(|r| &r.state),
-        no_factory_reset,
-        full,
-    );
-    if parameters_only {
-        return crate::flash_params::dry_run(target, &plan, output.json);
+    if request.choices.parameters_only {
+        return crate::flash_params::dry_run(target, &offline, json);
     }
-    if let Err(err) =
-        inputs.add_security_steps(&mut plan, model, target, secure_material, extra_senders)
-    {
-        eprintln!("cannot flash: {err}");
-        return Ok(ExitCode::FAILURE);
-    }
-    if let (Some(recorded), Some(freshness)) = (&recorded, &freshness) {
-        let verdict = match freshness {
-            Freshness::Fresh => "no loaded application".to_string(),
-            Freshness::SameApplication { resident } => {
-                format!("holds this application ({resident})")
-            }
-            Freshness::Resident { resident, .. } => format!(
-                "holds another application ({})",
-                resident.as_deref().unwrap_or("unidentified")
-            ),
-            Freshness::Mismatch { reason } | Freshness::Unknown { reason } => reason.clone(),
-        };
+    if let Some(recorded) = &offline.recorded {
         eprintln!(
-            "dry run: the recorded device {verdict}; load procedure {}",
-            if plan.is_par_procedure() {
-                "par"
-            } else {
-                "full"
-            }
+            "dry run: the recorded device {}; load procedure {}",
+            recorded.verdict,
+            if recorded.par { "par" } else { "full" }
         );
-        if !plan.is_sys7() && bussard_service::flash::skip_unchanged(full, &plan, freshness) {
-            let skipped = recorded.skip_matching(&mut plan);
-            if !skipped.is_empty() {
-                eprintln!(
-                    "dry run: object(s) {skipped:?} skipped: the recorded MCB matches the image"
-                );
-            }
+        if !recorded.skipped.is_empty() {
+            eprintln!(
+                "dry run: object(s) {:?} skipped: the recorded MCB matches the image",
+                recorded.skipped
+            );
         }
     }
-    let params = if plan.is_sys7() {
-        ParamPlan {
-            note: Some(bussard_download::SYS7_NOTE.to_string()),
-            ..Default::default()
-        }
+    if json {
+        crate::output::print(
+            crate::output::schema::FLASH,
+            &report::flash_plan_json(
+                target,
+                offline.device_mask,
+                &offline.plan,
+                &offline.params,
+                None,
+            ),
+        )?;
     } else {
-        // Offline there is no current value to read back: every value is new.
-        param_plan(app, overrides_map, base_offsets, &CurrentMemory::new())
-    };
-    if output.json {
-        print_plan_json(target, device_mask, &plan, &params, None)?;
-    } else {
-        print_plan(
-            target,
-            device_mask,
-            &plan,
-            overrides_map,
-            &params,
-            output.verbose,
+        print!(
+            "{}",
+            report::flash_plan_text(
+                target,
+                offline.device_mask,
+                &offline.plan,
+                inputs.overrides(),
+                &offline.params,
+                verbose,
+            )
         );
     }
     if let Some(dir) = dump_images {
-        crate::flash_dump::write_dump(
+        bussard_service::program::dump::write_dump(
             dir,
             &target.to_string(),
-            device_mask,
-            &plan,
+            offline.device_mask,
+            &offline.plan,
             inputs.table_images(),
         )?;
         eprintln!("dry run: images written to {}", dir.display());
     }
     eprintln!("dry run: no connection opened, nothing written.");
     Ok(ExitCode::SUCCESS)
-}
-
-/// Resolves an application program from a hardware order number, requiring
-/// exactly one match ([`bussard_download::resolve_by_order_number`]).
-pub(crate) fn resolve_by_order_number<'a>(
-    product: &'a ProductData,
-    order_number: &str,
-) -> anyhow::Result<&'a ApplicationProgram> {
-    Ok(bussard_download::resolve_by_order_number(
-        product,
-        order_number,
-    )?)
 }
 
 /// Parses a `--bcu-key` value: a 32-bit access key in hex, with or without a
@@ -1063,1112 +685,11 @@ fn parse_bcu_key(raw: &str) -> anyhow::Result<u32> {
     })
 }
 
-/// Turns a failed device-descriptor read into a helpful error.
-///
-/// The KNX Virtual IP-medium devices (order `*.ip`, e.g. a binary output at
-/// `1.0.10`) accept the `T_Connect` but `T_Disconnect` on the very first
-/// descriptor read, while their TP-medium siblings answer fully. When we see
-/// exactly that shape — the connection established, then the first read
-/// disconnected — name the pattern so the user gets guidance instead of a bare
-/// "disconnected". Any other failure is passed through with context.
-fn descriptor_read_error(
-    target: IndividualAddress,
-    connected: bool,
-    secure: bool,
-    err: MgmtError,
-) -> anyhow::Error {
-    match bussard_service::flash_flow::descriptor_read_message(target, connected, secure, &err) {
-        Some(message) => anyhow::anyhow!(message),
-        None => anyhow::Error::new(err).context("reading the device descriptor"),
-    }
-}
-
-/// Runs the flash, then `after` on the session's last connection (the one the
-/// post-restart verification ran on) when the flash verified, before the
-/// disconnect: `flash --parameters-only` reads its parameters back there
-/// instead of opening another session (issue #215). `after` gets `None`
-/// back when the flash failed or did not verify.
-///
-/// `handover` is the pre-flight's still-open connection under `--yes` (issue
-/// #213): the session takes it over instead of opening its own. `None`
-/// opens a fresh connection, seeded with `facts`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn execute_then<R>(
-    service: &BusService,
-    target: IndividualAddress,
-    source: IndividualAddress,
-    plan: &FlashPlan,
-    options: bussard_download::FlashOptions,
-    facts: bussard_download::DeviceFacts,
-    secure_tool_key: Option<bussard_secure::Key16>,
-    secure_seq: bussard_secure::SequenceHighWater,
-    json: bool,
-    restart_started: &std::cell::Cell<Option<std::time::Instant>>,
-    handover: Option<Management>,
-    after: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> R,
-) -> (
-    Result<bussard_download::FlashOutcome, WriteError>,
-    Option<R>,
-) {
-    // Progress (issue #147): the plain `  [k/n] label` / `n/m bytes` lines, or
-    // the live view on an interactive terminal. The terminal restart is the
-    // last step: from there on the flash waits out the reboot and verifies, so
-    // `flash -v` reports it as its own phase.
-    let mut observer = DisplayObserver {
-        display: Some(crate::progress::Display::flash(plan, json)),
-        restart_started,
-    };
-    // Authorize the management connect with the project BCU key (or free
-    // access when unset), issue #52 finding #1. Opened with what the read-only
-    // pre-flight already learned (the object table, the authorize verdict, the
-    // max APDU), so the write phase does not rediscover any of it. KNX Data
-    // Secure (issue #71, spec §6.2): `None` is the plain, byte-identical path.
-    let run = bussard_service::download::FlashRun {
-        service,
-        target,
-        source,
-        options,
-        facts,
-        tool_key: secure_tool_key,
-        high_water: secure_seq,
-        handover,
-    };
-    bussard_service::download::flash_session(run, plan, &mut observer, after).await
-}
-
-/// The CLI's flash progress: the display, and the moment the restart began.
-struct DisplayObserver<'a> {
-    display: Option<crate::progress::Display>,
-    restart_started: &'a std::cell::Cell<Option<std::time::Instant>>,
-}
-
-impl bussard_service::download::FlashObserver for DisplayObserver<'_> {
-    fn progress(&mut self, p: bussard_download::Progress) {
-        if let bussard_download::Progress::Step { index, total, .. } = &p
-            && index == total
-        {
-            self.restart_started.set(Some(std::time::Instant::now()));
-        }
-        if let Some(display) = &mut self.display {
-            display.on_progress(p);
-        }
-    }
-
-    fn finished(&mut self, verified: bool) {
-        if let Some(mut display) = self.display.take() {
-            display.finish(verified);
-        }
-    }
-}
-
-/// The selection of the one program `wanted` names, by the rule of
-/// [`select_application`] (the exact id, else the one program with the same
-/// manufacturer, number and version). Anything that rule would refuse selects
-/// every program, so the refusal reads exactly as before.
-fn by_application(catalog: &bussard_prod::ProductCatalog, wanted: &str) -> AppSelection {
-    match bussard_service::params::select_id(catalog, wanted) {
-        Some(id) => AppSelection::Only(vec![id]),
-        None => AppSelection::All,
-    }
-}
-
-/// Prints the pre-flight plan: application identity, mask compatibility, the
-/// applied parameter overrides, and the ordered step list with byte counts and
-/// time estimate.
-/// How the flash pre-flight reports itself: the `--json` switch and the global
-/// `-v` count that unfolds the memory-level plan.
-#[derive(Debug, Clone, Default)]
-pub struct FlashOutput {
-    /// Emit the pre-flight as JSON (including the `parameters` array) instead of
-    /// the human report.
-    pub json: bool,
-    /// The global `-v` repeat count. One or more unfolds the memory-level plan
-    /// (the step trace) under the parameter-level one.
-    pub verbose: u8,
-    /// `--dry-run`: plan offline and stop, optionally dumping the images.
-    pub dry_run: Option<DryRun>,
-}
-
-/// The `--dry-run` options: plan without any bus access.
-#[derive(Debug, Clone, Default)]
-pub struct DryRun {
-    /// `--dump-images <dir>`: write `plan.json` and one `.bin` per streamed
-    /// image (plus the table images) into this directory.
-    pub dump_images: Option<std::path::PathBuf>,
-    /// `--resident <file>`: plan against this recorded device state
-    /// ([`crate::flash_resident`]) instead of no device.
-    pub resident: Option<std::path::PathBuf>,
-}
-
-/// The `flash -v` timing line (issue #194): the pre-flight (descriptor, probe,
-/// plan and parameter read-back; the confirmation prompt excluded), the
-/// download up to the terminal restart, and the restart with the post-reboot
-/// verification.
-fn phase_timings(
-    preflight: std::time::Duration,
-    download_started: std::time::Instant,
-    restart_started: Option<std::time::Instant>,
-    finished: std::time::Instant,
-) -> String {
-    let secs = |d: std::time::Duration| format!("{:.1} s", d.as_secs_f64());
-    match restart_started {
-        Some(at) => format!(
-            "timing: pre-flight {}, download {}, restart + verification {}",
-            secs(preflight),
-            secs(at.saturating_duration_since(download_started)),
-            secs(finished.saturating_duration_since(at)),
-        ),
-        None => format!(
-            "timing: pre-flight {}, download {} (did not reach the terminal restart)",
-            secs(preflight),
-            secs(finished.saturating_duration_since(download_started)),
-        ),
-    }
-}
-
-/// The readiness part of the `flash -v` timing line (issue #212): per restart
-/// the device confirmed, the time from its `A_Restart_Response` to the first
-/// answered readiness probe and the process time it reported, keyed by the
-/// application id so the waits can be tuned per product. Empty when the flash
-/// confirmed no restart.
-fn readiness_summary(app_id: &str, readiness: &[bussard_download::RebootReadiness]) -> String {
-    if readiness.is_empty() {
-        return String::new();
-    }
-    let parts: Vec<String> = readiness
-        .iter()
-        .map(|r| {
-            let ready = r.ready_after.map_or("no probe answered".to_string(), |d| {
-                format!("{:.1} s", d.as_secs_f64())
-            });
-            format!(
-                "{} {} (process time {} s)",
-                r.kind,
-                ready,
-                r.process_time.as_secs()
-            )
-        })
-        .collect();
-    format!("; readiness {app_id}: {}", parts.join(", "))
-}
-
-/// Prints the parameter-level plan: what changes, in the vendor's own words.
-fn print_param_plan(params: &ParamPlan) {
-    if let Some(note) = &params.note {
-        println!("  note        : {note}");
-    }
-    print_kept_params(params);
-    if params.changes.is_empty() {
-        println!("  parameters  : no parameter change");
-        return;
-    }
-    println!(
-        "  parameters  : {} change(s){}:",
-        params.changes.len(),
-        if params.unknown > 0 {
-            format!(", {} without a readable current value", params.unknown)
-        } else {
-            String::new()
-        }
-    );
-    for change in &params.changes {
-        println!("      {}", change.line());
-    }
-}
-
-/// The parameters the download leaves as the device holds them (issue #411):
-/// neither written nor ignored, and not verifiable after a fresh allocation.
-fn print_kept_params(params: &ParamPlan) {
-    if params.kept.is_empty() {
-        return;
-    }
-    println!(
-        "  kept        : {} parameter(s) kept on the device: the load procedure's branch does \
-         not write their octets (as ETS's download), so the device keeps what it holds; after a \
-         fresh allocation that is whatever the allocation left, so the model's value is not \
-         verified:",
-        params.kept.len()
-    );
-    for kept in &params.kept {
-        println!("      {}", kept.kept_line());
-    }
-}
-
-/// The `kept_memory` array of the JSON plan (issue #411).
-fn kept_memory_json(plan: &FlashPlan) -> Vec<serde_json::Value> {
-    plan.kept()
-        .iter()
-        .map(|k| {
-            serde_json::json!({
-                "object": k.object,
-                "segment": k.segment,
-                "allocated": k.allocated,
-                "address": k.address,
-                "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
-                "label": k.label(),
-            })
-        })
-        .collect()
-}
-
-/// The octet runs the download leaves as the device holds them (issue
-/// #411), one line each: `object 4 octets 128..256 kept`.
-fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
-    plan.kept()
-        .iter()
-        .map(|k| match k.address {
-            // System 7: the taken branch allocates the segment in parts and
-            // the gap in no allocation (issue #411).
-            Some(_) => format!(
-                "{} (segment {} of {} octets: not allocated, not written, not compared)",
-                k.label(),
-                k.segment,
-                k.allocated
-            ),
-            None => format!(
-                "{} (segment {} of {} octets: not written, not read back, no MCB CRC compared)",
-                k.label(),
-                k.segment,
-                k.allocated
-            ),
-        })
-        .collect()
-}
-
-/// Emits the pre-flight as JSON, including the `parameters` array (issue #109)
-/// and, when the pre-flight read PID 61 and a group address leaves or joins
-/// Data Secure, the `security_object` change the text output prints (issue
-/// #336): `line` as printed (`- security object: Data Secure off for …`),
-/// with its `mark`, `subject` and `sentence`.
-fn print_plan_json(
-    target: IndividualAddress,
-    device_mask: u16,
-    plan: &FlashPlan,
-    params: &ParamPlan,
-    security_change: Option<&bussard_download::PlanChange>,
-) -> anyhow::Result<()> {
-    let value = plan_json(target, device_mask, plan, params, security_change);
-    crate::output::print(crate::output::schema::FLASH, &value)?;
-    Ok(())
-}
-
-/// The document [`print_plan_json`] prints.
-fn plan_json(
-    target: IndividualAddress,
-    device_mask: u16,
-    plan: &FlashPlan,
-    params: &ParamPlan,
-    security_change: Option<&bussard_download::PlanChange>,
-) -> serde_json::Value {
-    let parameters: Vec<serde_json::Value> = params
-        .changes
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "key": c.key,
-                "name": c.name,
-                "old": match &c.old {
-                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                    ParamValue::Unknown => serde_json::Value::Null,
-                },
-                "new": match &c.new {
-                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                    ParamValue::Unknown => serde_json::Value::Null,
-                },
-                "unit": c.unit,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "device": target.to_string(),
-        "device_mask": format!("{device_mask:04X}"),
-        "application": {
-            "id": plan.identity.id,
-            "name": plan.identity.name,
-            "number": plan.identity.application_number,
-            "version": plan.identity.application_version,
-            "mask": plan.identity.mask_version,
-        },
-        "parameters": parameters,
-        "parameter_note": params.note,
-        // Issue #411: the parameters and octets the download keeps on the
-        // device (not written, not verified).
-        "kept_parameters": params.kept.iter().map(|c| serde_json::json!({
-            "key": c.key,
-            "name": c.name,
-            "device": match &c.old {
-                ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                ParamValue::Unknown => serde_json::Value::Null,
-            },
-            "model": c.new.to_string(),
-            "unit": c.unit,
-            "written": false,
-            "verified": false,
-        })).collect::<Vec<_>>(),
-        "kept_memory": kept_memory_json(plan),
-        "security_object": security_change.map(|change| {
-            let mut value = serde_json::json!(change);
-            value["line"] = serde_json::Value::String(change.line());
-            value
-        }),
-        "memory": {
-            "write_bytes": plan.total_write_bytes(),
-            "steps": plan.steps.len(),
-            "frames": plan.estimated_write_frames(),
-            "estimated_seconds": plan.estimated_duration().as_secs_f64(),
-        },
-        "procedure": trace(plan),
-    })
-}
-
-fn print_plan(
-    target: IndividualAddress,
-    device_mask: u16,
-    plan: &FlashPlan,
-    overrides: &BTreeMap<String, String>,
-    params: &ParamPlan,
-    verbose: u8,
-) {
-    println!("Flash plan for {target}");
-    println!(
-        "  application : {} {}",
-        plan.identity.id,
-        plan.identity.name.as_deref().unwrap_or(""),
-    );
-    if let (Some(num), Some(ver)) = (
-        plan.identity.application_number,
-        plan.identity.application_version,
-    ) {
-        println!("  app number  : {num} (version {ver})");
-    }
-    println!(
-        "  mask        : app {} vs device {device_mask:04X} — compatible",
-        plan.identity.mask_version,
-    );
-    // The parameter-level plan first (issue #109): an owner reads "night setback:
-    // 18 to 17 °C", not a byte offset. The model's own override keys follow only
-    // when asked for, and the memory-level plan only under `-v`.
-    print_param_plan(params);
-    if verbose > 0 && !overrides.is_empty() {
-        println!(
-            "  overrides   : {} model value(s), keyed by the app-relative ParameterRef id:",
-            overrides.len()
-        );
-        for (key, value) in overrides {
-            println!("      {key} = {value}");
-        }
-    }
-    println!(
-        "  writes      : {} byte(s) across {} step(s), ~{} memory frame(s), est. {:.1}s on TP1",
-        plan.total_write_bytes(),
-        plan.steps.len(),
-        plan.estimated_write_frames(),
-        plan.estimated_duration().as_secs_f64(),
-    );
-    if plan.has_security_program() {
-        // Data Secure (issue #156): the security object is part of the
-        // download; name what it receives, never a key.
-        let (senders, keys, secured) =
-            plan.steps
-                .iter()
-                .fold((0usize, 0usize, 0usize), |(s, k, o), step| match step {
-                    bussard_download::FlashStep::SecuritySenders { entries } => {
-                        (s + entries.len(), k, o)
-                    }
-                    bussard_download::FlashStep::SecurityGroupKeys { entries } => {
-                        (s, k + entries.len(), o)
-                    }
-                    bussard_download::FlashStep::SecurityGoFlags { flags } => {
-                        (s, k, o + flags.iter().filter(|f| **f != 0).count())
-                    }
-                    _ => (s, k, o),
-                });
-        println!(
-            "  data secure : security object reprogrammed: {senders} secured sender(s), {keys} \
-             group key(s), {secured} secured group object(s)"
-        );
-    }
-    for line in kept_memory_lines(plan) {
-        println!("  kept memory : {line}");
-    }
-    if verbose > 0 {
-        println!("  procedure   :");
-        for line in trace(plan) {
-            println!("    {line}");
-        }
-    } else {
-        println!(
-            "  procedure   : {} step(s); re-run with -v for the memory-level plan",
-            plan.steps.len()
-        );
-    }
-}
-
-/// Confirms on a TTY (y/N), naming the resolved gateway (issue #74) and, when
-/// the device is not factory-fresh, what this flash destroys (issue #79).
-/// Non-interactive without `--yes` is refused.
-fn confirm(
-    target: IndividualAddress,
-    gateway: &str,
-    yes: bool,
-    plan: &FlashPlan,
-    prompt_note: Option<&str>,
-) -> anyhow::Result<bool> {
-    let writes = plan
-        .steps
-        .iter()
-        .filter(|s| {
-            matches!(
-                s,
-                FlashStep::WriteRelMem { .. } | FlashStep::WriteMem { .. }
-            )
-        })
-        .count();
-    let question = format!(
-        "flash {} ({writes} memory write(s)) to {target} via {gateway}?",
-        plan.identity.id
-    );
-    // The note goes on its own line above the question, as before.
-    let prompt = match prompt_note {
-        Some(note) => format!("{note}\n{question}"),
-        None => question,
-    };
-    crate::confirm::confirm(yes, &prompt, &format!("flash {target} via {gateway}"))
-}
-
-/// Prints loud recovery guidance on any flash failure.
-fn recovery_notice(target: IndividualAddress) {
-    eprintln!("{}", bussard_service::flash_flow::recovery_text(target));
-}
-
-#[cfg(test)]
-mod tests {
-    /// The overrides `bussard flash` plans with (the warnings dropped).
-    fn collect_parameter_overrides(
-        model: Option<&bussard_model::Model>,
-        target: IndividualAddress,
-    ) -> BTreeMap<String, String> {
-        bussard_download::parameter_overrides(model, target).0
-    }
-
-    use super::*;
-    use bussard_prod::parse_application_program;
-
-    fn catalog(ids: &[&str]) -> bussard_prod::ProductCatalog {
-        bussard_prod::ProductCatalog {
-            application_ids: ids.iter().map(|s| s.to_string()).collect(),
-            ..bussard_prod::ProductCatalog::default()
-        }
-    }
-
-    #[test]
-    fn test_by_application_exact_and_same_program() {
-        let cat = catalog(&["M-0004_A-A011-13-400D-O000A", "M-0004_A-B022-10-1111-O000A"]);
-        assert_eq!(
-            by_application(&cat, "M-0004_A-A011-13-400D-O000A"),
-            AppSelection::Only(vec!["M-0004_A-A011-13-400D-O000A".to_string()])
-        );
-        // Another build hash of the same program (issue #142).
-        assert_eq!(
-            by_application(&cat, "M-0004_A-A011-13-60BC-O000A"),
-            AppSelection::Only(vec!["M-0004_A-A011-13-400D-O000A".to_string()])
-        );
-    }
-
-    #[test]
-    fn test_by_application_unknown_selects_all() {
-        let cat = catalog(&["M-0004_A-A011-13-400D-O000A"]);
-        assert_eq!(
-            by_application(&cat, "M-0083_A-0001-10-0000"),
-            AppSelection::All
-        );
-    }
-
-    /// Builds a one-device model whose device at `addr` carries `params`.
-    fn model_with_params(addr: &str, params: &[(&str, &str)]) -> bussard_model::Model {
-        use bussard_model::schema::Device;
-        let address: IndividualAddress = addr.parse().expect("test fixture");
-        let device = Device {
-            address,
-            name: "test".to_string(),
-            description: None,
-            location: None,
-            replaced: None,
-            product: None,
-            channels: Default::default(),
-            parameters: params
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_string()))
-                .collect(),
-            module_bases: Default::default(),
-            com_objects: Default::default(),
-            security: None,
-            application_override: None,
-            knxnet: None,
-            lock: Default::default(),
-        };
-        let mut devices = std::collections::BTreeMap::new();
-        devices.insert(
-            address,
-            bussard_model::loader::LoadedDevice {
-                device,
-                file_stem: "test".to_string(),
-            },
-        );
-        bussard_model::Model {
-            config: Default::default(),
-            groups: Default::default(),
-            links: Default::default(),
-            devices,
-        }
-    }
-
-    #[test]
-    fn parameter_overrides_are_rekeyed_to_ref_id() -> Result<(), Box<dyn std::error::Error>> {
-        // A device file keys parameters `<slug>@<ref-id>`; collection drops the
-        // slug and keys by the ETS-stable ref id (the part after @).
-        let target: IndividualAddress = "1.1.4".parse()?;
-        let model = model_with_params(
-            "1.1.4",
-            &[
-                ("windalarm-1@MD-1_M-3_MI-1_P-3_R-45", "1"),
-                ("nachtabsenkung@P-1312_R-2140", "18"),
-            ],
-        );
-        let out = collect_parameter_overrides(Some(&model), target);
-        assert_eq!(
-            out.get("MD-1_M-3_MI-1_P-3_R-45").map(String::as_str),
-            Some("1")
-        );
-        assert_eq!(out.get("P-1312_R-2140").map(String::as_str), Some("18"));
-        // The human slug is gone from the key entirely.
-        assert!(!out.keys().any(|k| k.contains('@')));
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_parameter_key_without_at_is_skipped() -> Result<(), Box<dyn std::error::Error>> {
-        // A key with no `@` has no determinable ref-id identity; it is skipped
-        // rather than fed to the engine as a bogus ref id.
-        let target: IndividualAddress = "1.1.4".parse()?;
-        let model = model_with_params("1.1.4", &[("bogus_no_at_sign", "5")]);
-        let out = collect_parameter_overrides(Some(&model), target);
-        assert!(out.is_empty());
-        Ok(())
-    }
-
-    #[test]
-    fn no_model_or_unknown_device_yields_no_overrides() -> Result<(), Box<dyn std::error::Error>> {
-        let target: IndividualAddress = "1.1.4".parse()?;
-        assert!(collect_parameter_overrides(None, target).is_empty());
-        // A model that has no device at the target address contributes nothing.
-        let model = model_with_params("1.1.9", &[("x@P-1_R-1", "1")]);
-        assert!(collect_parameter_overrides(Some(&model), target).is_empty());
-        Ok(())
-    }
-
-    /// A minimal parseable single-segment System B application under id `id`.
-    fn app(id: &str) -> ApplicationProgram {
-        let xml = format!(
-            r#"<KNX xmlns="http://knx.org/xml/project/23">
-             <ApplicationProgram Id="{id}" ApplicationNumber="1" ApplicationVersion="1"
-                MaskVersion="MV-07B0" Name="Fab" LoadProcedureStyle="ProductDefault">
-              <Static>
-               <Code>
-                <RelativeSegment Id="{id}_RS-1" Size="1" LoadStateMachine="4" Offset="0"><Data>AA==</Data></RelativeSegment>
-               </Code>
-               <LoadProcedures>
-                <LoadProcedure><LdCtrlConnect /><LdCtrlDisconnect /></LoadProcedure>
-               </LoadProcedures>
-              </Static>
-             </ApplicationProgram></KNX>"#
-        );
-        parse_application_program(id, xml.as_bytes()).expect("test fixture")
-    }
-
-    /// Builds a [`ProductData`] from `(order_number, [app_ref…])` rows and the
-    /// application ids present in the archive.
-    fn product(rows: &[(&str, &[&str])], app_ids: &[&str]) -> ProductData {
-        let mut data = ProductData {
-            manufacturers: vec!["M-0083".to_string()],
-            ..ProductData::default()
-        };
-        for id in app_ids {
-            data.applications.push(app(id));
-        }
-        for (order, refs) in rows {
-            data.hardware.order_to_apps.insert(
-                order.to_string(),
-                refs.iter().map(|r| r.to_string()).collect(),
-            );
-        }
-        data
-    }
-
-    #[test]
-    fn resolves_exactly_one_match() -> Result<(), Box<dyn std::error::Error>> {
-        let data = product(
-            &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
-            &["M-0083_A-000D-23-5BFD"],
-        );
-        let app = resolve_by_order_number(&data, "AKK-0216.03")?;
-        assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
-        Ok(())
-    }
-
-    #[test]
-    fn resolution_normalizes_case_and_whitespace() -> Result<(), Box<dyn std::error::Error>> {
-        // Index-style normalization: trim + upper-case, interior separators kept.
-        let data = product(
-            &[("AKK-0216.03", &["M-0083_A-000D-23-5BFD"])],
-            &["M-0083_A-000D-23-5BFD"],
-        );
-        let app = resolve_by_order_number(&data, "  akk-0216.03 ")?;
-        assert_eq!(app.id, "M-0083_A-000D-23-5BFD");
-        Ok(())
-    }
-
-    #[test]
-    fn zero_matches_lists_known_order_numbers() {
-        let data = product(
-            &[
-                ("AKK-0216.03", &["M-0083_A-1"]),
-                ("AKK-0416.03", &["M-0083_A-1"]),
-            ],
-            &["M-0083_A-1"],
-        );
-        let err = resolve_by_order_number(&data, "NOPE-9").expect_err("expected an error");
-        let msg = err.to_string();
-        assert!(msg.contains("no application matches order number"), "{msg}");
-        assert!(
-            msg.contains("AKK-0216.03"),
-            "should list known order numbers: {msg}"
-        );
-        assert!(
-            msg.contains("--application"),
-            "should point at the fallback: {msg}"
-        );
-    }
-
-    #[test]
-    fn multiple_matches_lists_candidate_ids() {
-        // One order number mapping to two distinct applications is ambiguous.
-        let data = product(
-            &[("AKK-0216.03", &["M-0083_A-1", "M-0083_A-2"])],
-            &["M-0083_A-1", "M-0083_A-2"],
-        );
-        let err = resolve_by_order_number(&data, "AKK-0216.03").expect_err("expected an error");
-        let msg = err.to_string();
-        assert!(msg.contains("maps to 2 applications"), "{msg}");
-        assert!(
-            msg.contains("M-0083_A-1") && msg.contains("M-0083_A-2"),
-            "{msg}"
-        );
-        assert!(msg.contains("--application"), "{msg}");
-    }
-
-    #[test]
-    fn descriptor_disconnect_after_connect_names_the_pattern()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let target: IndividualAddress = "1.0.10".parse()?;
-        let err = descriptor_read_error(
-            target,
-            true, // the T_Connect established before the read
-            false,
-            MgmtError::Disconnected { address: target },
-        );
-        let msg = err.to_string();
-        assert!(
-            msg.contains("accepted the connection but disconnected on the first read"),
-            "{msg}"
-        );
-        assert!(msg.contains("*.ip") && msg.contains("*.tp"), "{msg}");
-        Ok(())
-    }
-
-    #[test]
-    fn descriptor_disconnect_without_connect_is_passed_through()
-    -> Result<(), Box<dyn std::error::Error>> {
-        // A disconnect that happened before the connection established is not the
-        // IP-medium pattern; it passes through with the generic context.
-        let target: IndividualAddress = "1.0.10".parse()?;
-        let err = descriptor_read_error(
-            target,
-            false,
-            false,
-            MgmtError::Disconnected { address: target },
-        );
-        let msg = err.to_string();
-        assert!(msg.contains("reading the device descriptor"), "{msg}");
-        assert!(
-            !msg.contains("accepted the connection but disconnected"),
-            "{msg}"
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn descriptor_other_error_is_passed_through() -> Result<(), Box<dyn std::error::Error>> {
-        let target: IndividualAddress = "1.0.10".parse()?;
-        let err = descriptor_read_error(target, true, false, MgmtError::Nak { address: target });
-        let msg = err.to_string();
-        assert!(msg.contains("reading the device descriptor"), "{msg}");
-        Ok(())
-    }
-
-    /// A silent activated device (wrong tool key, or a plain device ignoring the
-    /// wrapper) names the KNX Data Secure cause, not the IP-medium pattern.
-    #[test]
-    fn descriptor_silence_on_a_secure_connection_names_the_tool_key()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let target: IndividualAddress = "1.1.2".parse()?;
-        for err in [
-            MgmtError::Disconnected { address: target },
-            MgmtError::NoResponse { address: target },
-            MgmtError::Secure {
-                address: target,
-                source: bussard_secure::AsduError::SyncUnanswered,
-            },
-        ] {
-            let msg = descriptor_read_error(target, true, true, err).to_string();
-            assert!(msg.contains("SECURED management access"), "{msg}");
-            assert!(msg.contains("tool key"), "{msg}");
-            assert!(msg.contains("Nothing was written"), "{msg}");
-            assert!(
-                !msg.contains("*.ip"),
-                "the IP-medium guidance is wrong here: {msg}"
-            );
-        }
-        Ok(())
-    }
-
-    /// A silent PLAIN connection points at the keyring: an activated device
-    /// refuses unsecured management (spec §6.4).
-    #[test]
-    fn descriptor_silence_on_a_plain_connection_suggests_the_keyring()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let target: IndividualAddress = "1.1.2".parse()?;
-        for err in [
-            MgmtError::NoResponse { address: target },
-            MgmtError::Disconnected { address: target },
-            MgmtError::MidSessionSilence {
-                address: target,
-                kind: bussard_mgmt::SilenceKind::NoResponse,
-                exchanges: 2,
-                wraps: 0,
-            },
-        ] {
-            let msg = descriptor_read_error(target, true, false, err).to_string();
-            assert!(msg.contains("--keyring"), "{msg}");
-            assert!(msg.contains("KNX Data Secure"), "{msg}");
-        }
-        Ok(())
-    }
-
-    #[test]
-    fn duplicate_refs_across_rows_collapse_to_one() -> Result<(), Box<dyn std::error::Error>> {
-        // Two order-number rows pointing at the same application resolve cleanly.
-        let data = product(
-            &[
-                ("AKK-0216.03", &["M-0083_A-1"]),
-                ("AKK-0216.03 ", &["M-0083_A-1"]),
-            ],
-            &["M-0083_A-1"],
-        );
-        let app = resolve_by_order_number(&data, "AKK-0216.03")?;
-        assert_eq!(app.id, "M-0083_A-1");
-        Ok(())
-    }
-
-    // --- The factory-freshness gate (issue #79) -----------------------------
-
-    /// A target, gateway and model dir for the gate messages.
-    fn gate(force: bool, freshness: &Freshness) -> FreshnessDecision {
-        let target: IndividualAddress = "1.0.2".parse().expect("test fixture");
-        decide_freshness(target, "127.0.0.1:3671", Path::new("knx"), force, freshness)
-    }
-
-    fn resident_other() -> Freshness {
-        Freshness::Resident {
-            resident: Some("M-0083 A-0007 v35".to_string()),
-            objects: vec!["object 3 (application program)".to_string()],
-            reason: None,
-        }
-    }
-
-    #[test]
-    fn test_readiness_summary_names_each_confirmed_restart() {
-        use bussard_download::{RebootReadiness, RestartKind};
-        use std::time::Duration;
-        assert_eq!(readiness_summary("M-1_A-1", &[]), "");
-        let readiness = [
-            RebootReadiness {
-                kind: RestartKind::FactoryReset,
-                process_time: Duration::from_secs(8),
-                ready_after: Some(Duration::from_millis(3050)),
-            },
-            RebootReadiness {
-                kind: RestartKind::Restart,
-                process_time: Duration::ZERO,
-                ready_after: None,
-            },
-        ];
-        assert_eq!(
-            readiness_summary("M-1_A-1", &readiness),
-            "; readiness M-1_A-1: factory reset 3.0 s (process time 8 s), \
-             restart no probe answered (process time 0 s)"
-        );
-    }
-
-    #[test]
-    fn test_decide_freshness_fresh_device_proceeds_with_the_no_backup_note() {
-        let decision = gate(false, &Freshness::Fresh);
-        assert!(decision.proceed);
-        assert!(decision.prompt_note.is_none());
-        assert!(
-            decision
-                .message
-                .contains("no application is loaded on 1.0.2"),
-            "{}",
-            decision.message
-        );
-        // The long-standing no-backup note is still stated before the write.
-        assert!(
-            decision.message.contains("no backup is"),
-            "{}",
-            decision.message
-        );
-    }
-
-    #[test]
-    fn test_decide_freshness_same_application_proceeds_without_force() {
-        let decision = gate(
-            false,
-            &Freshness::SameApplication {
-                resident: "M-00FA A-2500 v16".to_string(),
-            },
-        );
-        assert!(
-            decision.proceed,
-            "a re-flash of the same app needs no --force"
-        );
-        assert!(
-            decision
-                .message
-                .contains("1.0.2 already runs this application (M-00FA A-2500 v16)"),
-            "{}",
-            decision.message
-        );
-        // It says what a re-flash resets, so "allowed" is not read as "harmless".
-        assert!(
-            decision.message.contains("reset to the vendor"),
-            "{}",
-            decision.message
-        );
-        let note = decision.prompt_note.expect("the prompt names the re-flash");
-        assert!(note.contains("M-00FA A-2500 v16"), "{note}");
-        assert!(note.contains("Loaded"), "{note}");
-    }
-
-    #[test]
-    fn test_decide_freshness_other_application_is_refused_without_force() {
-        let decision = gate(false, &resident_other());
-        assert!(
-            !decision.proceed,
-            "a different resident app must be refused"
-        );
-        let msg = &decision.message;
-        assert!(msg.contains("REFUSING to flash 1.0.2"), "{msg}");
-        // Names the resident application and where it is loaded.
-        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
-        assert!(msg.contains("object 3 (application program)"), "{msg}");
-        // Names both ways forward.
-        assert!(msg.contains("--force"), "{msg}");
-        assert!(msg.contains("bussard reconstruct 1.0.2 --dir knx"), "{msg}");
-        assert!(msg.contains("bussard apply 1.0.2"), "{msg}");
-        // States the same-application rule explicitly.
-        assert!(msg.contains("Re-flashing the SAME application"), "{msg}");
-    }
-
-    #[test]
-    fn test_decide_freshness_force_proceeds_with_a_loud_warning() {
-        let decision = gate(true, &resident_other());
-        assert!(decision.proceed);
-        let msg = &decision.message;
-        assert!(msg.contains("WARNING: --force"), "{msg}");
-        // The warning names the device, the gateway and what is destroyed.
-        assert!(msg.contains("1.0.2"), "{msg}");
-        assert!(msg.contains("127.0.0.1:3671"), "{msg}");
-        assert!(msg.contains("M-0083 A-0007 v35"), "{msg}");
-        assert!(msg.contains("DESTROYS"), "{msg}");
-        let note = decision.prompt_note.expect("the prompt warns too");
-        assert!(note.contains("Loaded"), "{note}");
-        assert!(note.contains("DESTROYS it"), "{note}");
-    }
-
-    #[test]
-    fn test_decide_freshness_unidentified_resident_application_is_refused() {
-        let decision = gate(
-            false,
-            &Freshness::Resident {
-                resident: None,
-                objects: vec!["LSM 3".to_string()],
-                reason: None,
-            },
-        );
-        assert!(!decision.proceed);
-        assert!(
-            decision.message.contains("could not identify"),
-            "{}",
-            decision.message
-        );
-        assert!(decision.message.contains("LSM 3"), "{}", decision.message);
-    }
-
-    #[test]
-    fn test_decide_freshness_system7_code_difference_is_refused_with_the_segment() {
-        let decision = gate(
-            false,
-            &Freshness::Resident {
-                resident: None,
-                objects: vec!["LSM 1".to_string()],
-                reason: Some(
-                    "the code segment M-00FA_A-0007_AS-1 at 0x4800 differs from \
-                     M-00FA_A-0007's at offset 3"
-                        .to_string(),
-                ),
-            },
-        );
-        assert!(!decision.proceed);
-        assert!(
-            decision.message.contains("AS-1") && decision.message.contains("offset 3"),
-            "{}",
-            decision.message
-        );
-        assert!(
-            !decision.message.contains("could not identify"),
-            "{}",
-            decision.message
-        );
-        assert!(decision.message.contains("--force"), "{}", decision.message);
-    }
-
-    #[test]
-    fn test_preflight_interrupted_retries_only_on_connection_loss()
-    -> Result<(), Box<dyn std::error::Error>> {
-        use bussard_transport::TransportError;
-        let address: IndividualAddress = "1.1.12".parse()?;
-        let ack_timeout = Err(MgmtError::Transport(TransportError::Timeout(
-            "TUNNELING_ACK",
-        )));
-        assert!(preflight_interrupted(&ack_timeout, None, false));
-        // A silent device retries only when the bus saw a link loss meanwhile.
-        let silent = Err(MgmtError::NoResponse { address });
-        assert!(!preflight_interrupted(&silent, None, false));
-        assert!(preflight_interrupted(&silent, None, true));
-        // A refusal never retries.
-        let denied = Err(MgmtError::AccessDenied { address, level: 1 });
-        assert!(!preflight_interrupted(&denied, None, true));
-        // A clean descriptor read retries when the resident probe was cut short.
-        let interrupted = bussard_download::ResidentState {
-            interrupted: true,
-            ..Default::default()
-        };
-        assert!(preflight_interrupted(
-            &Ok(0x07B0),
-            Some(&interrupted),
-            false
-        ));
-        let complete = bussard_download::ResidentState::default();
-        assert!(!preflight_interrupted(&Ok(0x07B0), Some(&complete), true));
-        Ok(())
-    }
-
-    #[test]
-    fn test_decide_freshness_unreadable_state_is_refused_as_unknown() {
-        let decision = gate(
-            false,
-            &Freshness::Unknown {
-                reason: "no object reported a load state".to_string(),
-            },
-        );
-        assert!(
-            !decision.proceed,
-            "unknown is refused, not treated as fresh"
-        );
-        let msg = &decision.message;
-        assert!(msg.contains("load state is unreadable"), "{msg}");
-        assert!(msg.contains("no object reported a load state"), "{msg}");
-        // The message must not leave the operator thinking the device reported
-        // an application as Loaded.
-        assert!(
-            msg.contains("did NOT report an application as Loaded"),
-            "{msg}"
-        );
-        assert!(msg.contains("--force"), "{msg}");
-    }
-
-    #[test]
-    fn test_decide_freshness_unknown_with_force_proceeds() {
-        let decision = gate(
-            true,
-            &Freshness::Unknown {
-                reason: "device refused the read".to_string(),
-            },
-        );
-        assert!(decision.proceed);
-        assert!(
-            decision.message.contains("WARNING: --force"),
-            "{}",
-            decision.message
-        );
-        assert!(
-            decision.message.contains("127.0.0.1:3671"),
-            "{}",
-            decision.message
-        );
-        assert!(decision.prompt_note.is_some());
-    }
-
-    #[test]
-    fn test_plan_json_carries_the_security_object_line() -> Result<(), Box<dyn std::error::Error>> {
-        // Issue #336: `flash --json` carries the "Data Secure off for <GA>"
-        // line the text output prints from the pre-flight PID 61 read.
-        let plan = bussard_download::plan_flash(
-            &app("M-0083_A-0001-01-0001"),
-            "1.1.10",
-            0x07B0,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app("M-0083_A-0001-01-0001")),
-        )?;
-        let change = bussard_download::PlanChange {
-            mark: bussard_download::ChangeMark::Removed,
-            subject: bussard_download::ChangeSubject::Security,
-            channel: None,
-            key: "security object".to_string(),
-            object: None,
-            sentence: "security object: Data Secure off for 1/2/3 (Level): its group key leaves \
-                       the group key table (PID 53) and object 22 loses its security flag (PID \
-                       61 0x03 to 0x00)"
-                .to_string(),
-        };
-        let target: IndividualAddress = "1.1.10".parse()?;
-        let params = ParamPlan::default();
-        let with = plan_json(target, 0x07B0, &plan, &params, Some(&change));
-        assert_eq!(with["security_object"]["line"], change.line());
-        assert!(
-            with["security_object"]["line"]
-                .as_str()
-                .is_some_and(|l| l.starts_with("- security object: Data Secure off for 1/2/3")),
-            "{with}"
-        );
-        assert_eq!(with["security_object"]["subject"], "security");
-        let without = plan_json(target, 0x07B0, &plan, &params, None);
-        assert!(without["security_object"].is_null(), "{without}");
-        Ok(())
-    }
+/// Resolves an application program from a hardware order number, requiring
+/// exactly one match ([`flow::resolve_by_order_number`]).
+pub(crate) fn resolve_by_order_number<'a>(
+    product: &'a bussard_prod::ProductData,
+    order_number: &str,
+) -> anyhow::Result<&'a bussard_prod::ApplicationProgram> {
+    Ok(flow::resolve_by_order_number(product, order_number)?)
 }

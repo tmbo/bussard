@@ -5,7 +5,7 @@
 //! [`bussard_download`]), and shows what `apply` would change: additions,
 //! removals, unchanged links, resulting table sizes, and the load-op sequence.
 //!
-//! Two device families are read here, behind one seam ([`read_live_tables`]):
+//! Two device families are read here, behind one seam ([`bussard_service::program::read`]):
 //! **System B** (mask `x7B0`) serves its tables as interface-object property
 //! arrays ([`bussard_mgmt::tables`]); **System 7** (mask `0705` / `0701`) keeps
 //! them in absolute memory at `0x4000` / `0x4201`
@@ -20,10 +20,11 @@
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::{DesiredTables, PlanReport, plan};
+use bussard_download::{DesiredTables, PlanReport};
 use bussard_mgmt::tables::DeviceTables;
-use bussard_mgmt::{L4Channel, Layer4Connection, MaskProfile, system_type};
+use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::program;
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 use bussard_transport::ConnectionConfig;
 
@@ -68,124 +69,6 @@ struct PlanJson {
     identity: Option<bussard_model::identity::IdentityCheck>,
 }
 
-// The live read, the desired-table computation and the plan rendering are
-// shared with the MCP programming tier (issue #118), so they live in
-// `bussard_download::program`; the CLI keeps its anyhow-returning wrappers.
-pub(crate) use bussard_download::LiveRead;
-
-/// Where the device's product puts a System 7 device's tables (see
-/// [`bussard_download::sys7_table_bases`]); the corpus defaults without a
-/// product.
-pub(crate) fn table_bases(
-    product: Option<&bussard_service::params::ProductSource>,
-) -> bussard_download::Sys7TableBases {
-    product
-        .and_then(|p| p.app())
-        .map(bussard_download::sys7_table_bases)
-        .unwrap_or_default()
-}
-
-/// Reads a device's live tables on an open (and authorized) connection, picking
-/// the reader by mask family (see [`bussard_download::read_live_tables`]).
-/// With the device's `product`, a System 7 device that does not answer
-/// `PID_TABLE_REFERENCE` is read where the product puts its tables.
-pub(crate) async fn read_live_tables<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    product: Option<&bussard_service::params::ProductSource>,
-) -> anyhow::Result<LiveRead> {
-    Ok(bussard_download::read_live_tables(l4, table_bases(product)).await?)
-}
-
-/// Reads the device's security individual address table (PID 54) when
-/// `admit_tunnel_senders` has tunnelling addresses to admit (`tunnel` not
-/// empty) and the device is System B (issue #297). `None` when it is not read
-/// or the device refuses the read.
-pub(crate) async fn read_admission_table<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    read: &LiveRead,
-    tunnel: &[IndividualAddress],
-) -> anyhow::Result<Option<Vec<bussard_download::SecureSenderEntry>>> {
-    match read {
-        LiveRead::Tables(live) if !tunnel.is_empty() && live.sys7().is_none() => {
-            Ok(bussard_download::read_security_sender_table(l4).await?)
-        }
-        _ => Ok(None),
-    }
-}
-
-/// Reads the device's group-object security flags (PID 61) on a secured
-/// session (`secured`) of a System B device (issue #331), as the session's
-/// last read. `None` when it is not read, or the device refuses or does not
-/// answer the read: the flags are then unknown and the plan shows no
-/// security-object change (the write still programs the whole object).
-///
-/// `known` is a plan's cached read that shows no pending security change
-/// ([`bussard_service::security_change::unchanged_cached_flags`], issue
-/// #336): it is returned instead of reading the device.
-pub(crate) async fn read_security_flags<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    read: &LiveRead,
-    secured: bool,
-    known: Option<Vec<u8>>,
-) -> anyhow::Result<Option<Vec<u8>>> {
-    match read {
-        LiveRead::Tables(live) if secured && live.sys7().is_none() && known.is_some() => Ok(known),
-        LiveRead::Tables(live) if secured && live.sys7().is_none() => {
-            match bussard_download::read_security_flags(l4).await {
-                Ok(flags) => Ok(flags),
-                Err(err) => {
-                    tracing::debug!("{}: PID 61 not read: {err}", l4.target());
-                    Ok(None)
-                }
-            }
-        }
-        _ => Ok(None),
-    }
-}
-
-/// The security-object change of `target` (issue #331): its PID 61 as read
-/// (`live`) against the flags the model and the key store's group keys ask
-/// for. `None` without a secured read of PID 61.
-pub(crate) fn security_change(
-    model: Option<&Model>,
-    target: IndividualAddress,
-    desired: &DesiredTables,
-    group_keys: Option<
-        &std::collections::HashMap<bussard_model::GroupAddress, bussard_secure::Key16>,
-    >,
-    live: Option<&[u8]>,
-) -> Option<bussard_service::security_change::SecurityObjectChange> {
-    let live = live?;
-    let empty = std::collections::HashMap::new();
-    let keys = group_keys.unwrap_or(&empty);
-    let inputs = bussard_download::security_inputs_for(model, target, desired, keys);
-    Some(
-        bussard_service::security_change::SecurityObjectChange::compare(
-            target, desired, &inputs, live,
-        ),
-    )
-}
-
-/// The `admit_tunnel_senders` comparison of `target` (issue #297), or `None`
-/// when there is nothing to admit (the option is off, no tool key, no
-/// tunnelling address) or the device is System 7, whose security object a
-/// table write does not reprogram.
-pub(crate) fn tunnel_admission(
-    target: IndividualAddress,
-    tunnel: &[IndividualAddress],
-    sys7: bool,
-    live: Option<Vec<bussard_download::SecureSenderEntry>>,
-) -> Option<bussard_service::admission::TunnelAdmission> {
-    if tunnel.is_empty() || sys7 {
-        return None;
-    }
-    Some(bussard_service::admission::TunnelAdmission::new(
-        target,
-        tunnel,
-        live.as_deref(),
-    ))
-}
-
 /// Prints the friendly refusal for a mask no table reader speaks.
 ///
 /// The wording is derived from the central capability table
@@ -213,47 +96,44 @@ pub(crate) fn report_unsupported_mask(command: &str, address: IndividualAddress,
 /// returns the real one.
 const SECURE_PLAIN_MASK: u16 = 0xFFFF;
 
-/// What one read-only management session returned: the live tables (or the
-/// unsupported-mask refusal) and, when a product file was given, the parameter
-/// read-back.
-pub(crate) type DeviceRead = (
-    LiveRead,
-    Option<bussard_service::params::ParamState>,
-    Option<bussard_model::identity::ReportedIdentity>,
-    Option<Vec<bussard_download::SecureSenderEntry>>,
-    Option<Vec<u8>>,
-    Option<Vec<bussard_service::property_plan::PropertyRow>>,
-);
+/// What `plan` and `reconstruct` read besides the device's identity and
+/// tables ([`bussard_service::program::read::ReadRequest`]).
+pub(crate) struct Reading<'a> {
+    /// The product data the parameter memory is decoded with.
+    pub product: Option<&'a ProductSource>,
+    /// The tunnelling addresses `admit_tunnel_senders` admits (PID 54).
+    pub tunnel: &'a [IndividualAddress],
+    /// The PID 61 cache.
+    pub flags_cache: program::read::FlagsCache<'a>,
+    /// A property-only load procedure whose properties are read.
+    pub properties: Option<&'a bussard_download::FlashPlan>,
+}
 
-/// Opens a read-only bus service, reads `target`'s live tables in one management
-/// session and, when `product` is given and the tables read, the parameter
-/// memory too. Shared by `plan` and `reconstruct` (issue #170).
+/// Opens a read-only bus service and reads `target` in one management
+/// session ([`bussard_service::program::read`]). Shared by `plan` and
+/// `reconstruct` (issue #170).
 ///
 /// With a tool key from `tool_key_source` every APDU, the device descriptor
 /// read included, rides `A_SecureData`, so a KNX Data Secure device reports its
 /// real mask instead of the `FFFF` it answers in the clear. Without one the
 /// frames are exactly those of the plain path before KNX Secure existed.
-#[allow(clippy::too_many_arguments)] // one read's context; a struct would only move it
 pub(crate) fn read_device(
     config: ConnectionConfig,
     target: IndividualAddress,
     overrides: &ConnOverrides,
     tool_key_source: ToolKeySource<'_>,
-    product: Option<&ProductSource>,
     model: Option<&Model>,
     mut facts: bussard_service::FactsCache,
-    tunnel: &[IndividualAddress],
-    properties: Option<&bussard_download::FlashPlan>,
-    known_flags: Option<Vec<u8>>,
-) -> anyhow::Result<DeviceRead> {
+    reading: Reading<'_>,
+) -> anyhow::Result<program::read::DeviceRead> {
     let activated = bussard_service::secure::model_activated(model, target);
     let (tool_key, factory_key) = crate::timing::time("tool keys", || {
         bussard_service::secure::resolve_session_keys(target, tool_key_source, activated)
     })?;
     let presented_tool_key = tool_key.is_some();
     // Authorize (free access) before reading, as ETS does (issue #52 finding
-    // #1) and as System 7 requires before any memory access. Best-effort on a
-    // read; skipped for a device whose facts say it never answers (issue #209).
+    // #1) and as System 7 requires before any memory access; skipped for a
+    // device whose facts say it never answers (#209).
     let options = L4Options::secured(
         SourcePolicy::Check {
             skip: overrides.skip_address_check,
@@ -265,65 +145,32 @@ pub(crate) fn read_device(
     .with_authorize(bussard_service::status::read_only_authorize(
         &mut facts, target,
     ));
+    let request = program::read::ReadRequest {
+        target,
+        model,
+        product: reading.product,
+        facts: &facts,
+        tunnel: reading.tunnel,
+        secured: presented_tool_key,
+        flags_cache: reading.flags_cache,
+        properties: reading.properties,
+    };
     let runtime = tokio::runtime::Runtime::new()?;
-    runtime
-        .block_on(async move {
+    let read = runtime
+        .block_on(async {
             let service = open_service(config, WritePolicy::ReadOnly).await?;
-            let outcome = service
-                .with_l4(target, &options, async |l4| {
-                    // The device facts (issue #209): a valid set seeds the
-                    // connection so neither the table reader nor the parameter
-                    // read-back walks the interface objects again.
-                    // The facts and what the device says it is, for the lock
-                    // comparison (issue #228, item 5).
-                    let identity = bussard_service::identify(l4, &facts, None)
-                        .await?
-                        .check
-                        .map(|check| check.device);
-                    let read = read_live_tables(l4, product).await?;
-                    let params = match (&read, product) {
-                        (LiveRead::Tables(live), Some(product)) => {
-                            let started = std::time::Instant::now();
-                            let state = bussard_service::params::read_state(
-                                l4,
-                                product,
-                                model,
-                                target,
-                                live.tables().mask,
-                            )
-                            .await;
-                            // The parameter memory's reads plus its plan and
-                            // decode (issue #367), a `--timing` phase.
-                            crate::timing::record(
-                                "parameter read",
-                                started.elapsed(),
-                                "bus reads, plan and decode",
-                            );
-                            Some(state)
-                        }
-                        _ => None,
-                    };
-                    // PID 54, for `admit_tunnel_senders` only (issue #297).
-                    let senders = read_admission_table(l4, &read, tunnel).await?;
-                    // PID 61 on a secured session (issue #331).
-                    let flags =
-                        read_security_flags(l4, &read, presented_tool_key, known_flags).await?;
-                    // A property-only procedure (issue #390): no table reader
-                    // speaks the mask, the properties it writes are the plan.
-                    let rows = match (&read, properties) {
-                        (LiveRead::UnsupportedMask { .. }, Some(plan)) => {
-                            Some(bussard_service::property_plan::read_property_rows(l4, plan).await)
-                        }
-                        _ => None,
-                    };
-                    anyhow::Ok((read, params, identity, senders, flags, rows))
-                })
-                .await;
+            let read = program::read::read_device(&service, &options, &request).await;
             // Close the bus cleanly (release the gateway tunnel slot), issue #31.
             service.close().await;
-            outcome
+            anyhow::Ok(read?)
         })
-        .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))
+        .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))?;
+    if let Some(elapsed) = read.parameter_time {
+        // The parameter memory's reads plus its plan and decode (issue
+        // #367), a `--timing` phase.
+        crate::timing::record("parameter read", elapsed, "bus reads, plan and decode");
+    }
+    Ok(read)
 }
 
 /// `bussard plan`.
@@ -449,7 +296,7 @@ fn run(
             },
         );
     }
-    let desired = compute_desired(&model, target, app)?;
+    let desired = compute_desired(&model, target, product_ref)?;
     // A property-only load procedure (issue #390): what `plan` reads instead
     // of tables.
     let properties =
@@ -464,47 +311,36 @@ fn run(
             bussard_service::secure::model_activated(Some(model_ref), target),
         )
     })?;
-    let secured = material.tool_key.is_some();
-    let tunnel = crate::secure_key::admitted_tunnel(Some(model_ref), tool_key_source, secured)?;
-    // The read budget of PID 61 (issue #336): a cached read is used when the
-    // model asks for exactly those flags, so no security change is pending.
-    let empty_keys = std::collections::HashMap::new();
-    let security_inputs = bussard_download::security_inputs_for(
+    let tunnel = crate::secure_key::admitted_tunnel(
         Some(model_ref),
-        target,
-        &desired,
-        material.group_keys.as_ref().unwrap_or(&empty_keys),
-    );
-    let known_flags = secured
-        .then(|| {
-            bussard_service::security_change::unchanged_cached_flags(
-                dir,
-                target,
-                &desired,
-                &security_inputs,
-                overrides.refresh_facts,
-            )
-        })
-        .flatten();
-    let flags_cached = known_flags.is_some();
-    let (read, params, identity, live_senders, live_flags, property_rows) = read_device(
+        tool_key_source,
+        material.tool_key.is_some(),
+    )?;
+    let mut read = read_device(
         config,
         target,
         &overrides,
         tool_key_source,
-        product_ref,
         Some(model_ref),
         crate::conn_cmd::facts_cache(dir, true, overrides.refresh_facts),
-        &tunnel,
-        properties.as_ref(),
-        known_flags,
+        Reading {
+            product: product_ref,
+            tunnel: &tunnel,
+            // The read budget of PID 61 (issue #336): a cached read is used
+            // when the model asks for exactly those flags.
+            flags_cache: program::read::FlagsCache::Plan {
+                dir,
+                refresh: overrides.refresh_facts,
+                desired: &desired,
+                group_keys: material.group_keys.as_ref(),
+            },
+            properties: properties.as_ref(),
+        },
     )?;
-    if let (false, Some(flags)) = (flags_cached, live_flags.as_deref()) {
-        bussard_service::security_change::remember_flags(dir, target, flags);
-    }
-    let live_tables = match read {
-        LiveRead::Tables(live) => live,
-        LiveRead::UnsupportedMask { address, mask } => {
+    let property_rows = read.property_rows.take();
+    let read = match read.into_tables() {
+        Ok(read) => read,
+        Err((address, mask)) => {
             if let (Some(rows), Some(app)) = (property_rows, app) {
                 return print_property_plan(target, mask, &app.id, &rows, json);
             }
@@ -512,41 +348,28 @@ fn run(
             return Ok(ExitCode::FAILURE);
         }
     };
-    let live = live_tables.tables();
-
-    let report = plan(live, &desired);
-    let admission = tunnel_admission(target, &tunnel, live_tables.sys7().is_some(), live_senders);
-    let mut built = crate::device_plan::build(
-        &model,
-        target,
-        &gateway,
-        dir,
-        &live_tables,
-        &report,
-        params.as_ref(),
+    let live = read.live.tables();
+    // The plan in the model's words, with the tunnel admission (issue #297)
+    // and the security-object change (issue #331).
+    let planned = program::plan::plan_device(
+        &program::plan::PlanInputs {
+            model: model_ref,
+            target,
+            gateway: &gateway,
+            dir,
+            desired: &desired,
+            tunnel: &tunnel,
+            group_keys: material.group_keys.as_ref(),
+            parameters_skipped: None,
+        },
+        &read,
     );
-    if let Some(admission) = &admission {
-        admission.add_to(&mut built.plan, &report);
-    }
-    // A group address that left or joined Data Secure (issue #331).
-    if let Some(change) = security_change(
-        Some(model_ref),
-        target,
-        &desired,
-        material.group_keys.as_ref(),
-        live_flags.as_deref(),
-    ) {
-        change.add_to(&mut built.plan, &report, Some(model_ref));
-    }
-    let identity = identity.map(|reported| {
-        bussard_model::identity::IdentityCheck::compare(
-            model.devices.get(&target).map(|d| &d.device),
-            reported,
-        )
-    });
+    let (report, built) = (&planned.report, &planned.built);
+    let identity = read.check().cloned();
+    let params = read.params.as_ref();
     if json {
-        let mut out = to_json(live, &report, built.plan.clone());
-        out.parameters = params.map(|p| p.readback);
+        let mut out = to_json(live, report, built.plan.clone());
+        out.parameters = params.map(|p| p.readback.clone());
         out.identity = identity;
         crate::output::print(crate::output::schema::PLAN, &out)?;
     } else {
@@ -576,9 +399,9 @@ fn run(
             println!();
             print!(
                 "{}",
-                bussard_download::render_plan_text(target, live, &report)
+                bussard_download::render_plan_text(target, live, report)
             );
-            if let Some(params) = &params {
+            if let Some(params) = params {
                 crate::param_readback::print_text(&params.readback, target);
             }
         }
@@ -601,16 +424,14 @@ fn run(
 }
 
 /// Computes the desired tables from the model's links for `target`, refusing a
-/// device with no links unless its application `app` has no group objects
-/// (see [`bussard_download::desired_tables_for_app`]).
+/// device with no links unless its application has no group objects
+/// ([`program::plan::desired_tables`]).
 pub(crate) fn compute_desired(
     model: &Model,
     target: IndividualAddress,
-    app: Option<&bussard_prod::ApplicationProgram>,
+    product: Option<&ProductSource>,
 ) -> anyhow::Result<DesiredTables> {
-    Ok(bussard_download::desired_tables_for_app(
-        model, target, app,
-    )?)
+    program::plan::desired_tables(model, target, product).map_err(anyhow::Error::msg)
 }
 
 /// Prints the plan of a property-only load procedure (issue #390): each

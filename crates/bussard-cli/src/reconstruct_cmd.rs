@@ -168,37 +168,30 @@ fn run(
     let product_ref = product.as_ref();
 
     let facts = crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts);
-    let (read_result, params, identity, _, _, _) = crate::plan_cmd::read_device(
+    let read = crate::plan_cmd::read_device(
         config,
         target,
         &overrides,
         tool_key_source,
-        product_ref,
         model_ref,
         facts,
-        &[],
-        None,
-        None,
+        crate::plan_cmd::Reading {
+            product: product_ref,
+            tunnel: &[],
+            flags_cache: bussard_service::program::read::FlagsCache::Off,
+            properties: None,
+        },
     )?;
-    let live = match read_result {
-        crate::plan_cmd::LiveRead::Tables(live) => live,
-        crate::plan_cmd::LiveRead::UnsupportedMask { address, mask } => {
+    let read = match read.into_tables() {
+        Ok(read) => read,
+        Err((address, mask)) => {
             crate::plan_cmd::report_unsupported_mask("reconstruct", address, mask);
             return Ok(ExitCode::FAILURE);
         }
     };
-    let read = live.tables();
-
-    let mut report = build_report(target, read, model.as_ref());
-    report.parameters = params.map(|p| p.readback);
-    report.identity = identity.map(|reported| {
-        bussard_model::identity::IdentityCheck::compare(
-            model_ref
-                .and_then(|m| m.devices.get(&target))
-                .map(|d| &d.device),
-            reported,
-        )
-    });
+    let mut report = build_report(target, read.live.tables(), model.as_ref());
+    report.identity = read.check().cloned();
+    report.parameters = read.params.map(|p| p.readback);
     if json {
         crate::output::print(crate::output::schema::RECONSTRUCT, &report)?;
     } else {

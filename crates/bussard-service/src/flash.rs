@@ -172,29 +172,33 @@ impl<'a> FlashInputs<'a> {
 
     /// Shapes a pre-flight plan into what is downloaded: the factory reset
     /// or the `par` load procedure the freshness verdict asks for
-    /// ([`apply_freshness`], `resident` is the probe's state), then the Data
-    /// Secure security object ([`FlashInputs::add_security_steps`]). Returns
-    /// the security individual address table the download writes, when it
-    /// writes one, so a verified flash can record it in the lock.
+    /// ([`apply_freshness`]), then the Data Secure security object
+    /// ([`FlashInputs::add_security_steps`]). Returns the security
+    /// individual address table the download writes, when it writes one, so
+    /// a verified flash can record it in the lock.
     ///
     /// # Errors
     ///
     /// The security program cannot be built (a group key is missing).
-    #[allow(clippy::too_many_arguments)] // the shaping inputs, passed through 1:1
     pub fn finish(
         &self,
         plan: &mut FlashPlan,
-        freshness: Option<&Freshness>,
-        resident: Option<&ResidentState>,
-        no_factory_reset: bool,
-        unload_first: bool,
-        model: Option<&Model>,
-        target: IndividualAddress,
-        material: &SecureMaterial,
-        extra_senders: &[IndividualAddress],
+        shape: &Shape<'_>,
     ) -> Result<Option<Vec<SecureSenderEntry>>, SecurityPlanError> {
-        apply_freshness(plan, freshness, resident, no_factory_reset, unload_first);
-        self.add_security_steps(plan, model, target, material, extra_senders)
+        apply_freshness(
+            plan,
+            shape.freshness,
+            shape.resident,
+            shape.no_factory_reset,
+            shape.unload_first,
+        );
+        self.add_security_steps(
+            plan,
+            shape.model,
+            shape.target,
+            shape.material,
+            shape.extra_senders,
+        )
     }
 
     /// Adds the KNX Data Secure security-object steps to a full flash over a
@@ -274,6 +278,27 @@ impl<'a> FlashInputs<'a> {
     pub fn visible_objects(&self, values: &BTreeMap<String, String>) -> BTreeSet<u16> {
         visible_objects(self.app, values)
     }
+}
+
+/// How [`FlashInputs::finish`] shapes a pre-flight plan for one device.
+pub struct Shape<'a> {
+    /// The probe's factory-freshness verdict; `None` offline.
+    pub freshness: Option<&'a Freshness>,
+    /// The probe's state, whose object load states decide which unloads the
+    /// `par` procedure leaves out.
+    pub resident: Option<&'a ResidentState>,
+    /// `--no-factory-reset`.
+    pub no_factory_reset: bool,
+    /// `--full`: keep the System 7 pre-download pass (issue #488).
+    pub unload_first: bool,
+    /// The model.
+    pub model: Option<&'a Model>,
+    /// The device.
+    pub target: IndividualAddress,
+    /// The Data Secure material.
+    pub material: &'a SecureMaterial,
+    /// The extra secured senders of PID 54.
+    pub extra_senders: &'a [IndividualAddress],
 }
 
 /// The com-objects `app` shows with the parameter `values` (keyed by
@@ -568,32 +593,22 @@ mod tests {
                 FlashInputs::from_model(&product, app, "1.1.4", Some(&model), target);
             let mask = cli_inputs.declared_mask().ok_or("no declared mask")?;
             let mut cli = cli_inputs.plan(mask)?;
-            cli_inputs.finish(
-                &mut cli,
-                Some(&freshness),
-                None,
-                false,
-                false,
-                Some(&model),
+            let shape = Shape {
+                freshness: Some(&freshness),
+                resident: None,
+                no_factory_reset: false,
+                unload_first: false,
+                model: Some(&model),
                 target,
-                &plain,
-                &[],
-            )?;
+                material: &plain,
+                extra_senders: &[],
+            };
+            cli_inputs.finish(&mut cli, &shape)?;
             // `knx_apply_device` with `method: flash`: the reported mask.
             let (mcp_inputs, _) =
                 FlashInputs::from_model(&product, app, &target.to_string(), Some(&model), target);
             let mut mcp = mcp_inputs.plan(0x07B0)?;
-            mcp_inputs.finish(
-                &mut mcp,
-                Some(&freshness),
-                None,
-                false,
-                false,
-                Some(&model),
-                target,
-                &plain,
-                &[],
-            )?;
+            mcp_inputs.finish(&mut mcp, &shape)?;
             let primitive = primitive_plan(&product, app, &model, target, &freshness)?;
             assert_eq!(format!("{cli:?}"), format!("{mcp:?}"), "{freshness:?}");
             assert_eq!(

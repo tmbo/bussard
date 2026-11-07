@@ -610,6 +610,110 @@ impl Drop for Display {
     }
 }
 
+/// The terminal's side of a programming flow (issue #901): the progress
+/// display of each download and table write, the flow's lines on stdout and
+/// stderr, the confirmation prompt, and the history snapshot recorded once
+/// the human said yes.
+pub(crate) struct Terminal<'a> {
+    /// `--yes`.
+    yes: bool,
+    /// `--json`: the download's live view stays off.
+    json: bool,
+    /// The display of the step running.
+    display: Option<Display>,
+    /// The spinner label of a table write.
+    tables: String,
+    /// The history snapshot to record on a yes.
+    snapshot: Option<(&'a std::path::Path, bussard_model::history::SnapshotReason)>,
+}
+
+impl<'a> Terminal<'a> {
+    /// A terminal that asks unless `yes`.
+    pub(crate) fn new(yes: bool, json: bool) -> Self {
+        Terminal {
+            yes,
+            json,
+            display: None,
+            tables: String::new(),
+            snapshot: None,
+        }
+    }
+
+    /// Records `reason` in the history of `dir` once the human said yes.
+    pub(crate) fn snapshot(
+        mut self,
+        dir: &'a std::path::Path,
+        reason: bussard_model::history::SnapshotReason,
+    ) -> Self {
+        self.snapshot = Some((dir, reason));
+        self
+    }
+
+    /// The spinner label of a table write (`apply 1.1.4: writing the tables`).
+    pub(crate) fn tables(mut self, label: String) -> Self {
+        self.tables = label;
+        self
+    }
+
+    /// Finishes the display on screen.
+    fn finish(&mut self, verified: bool) {
+        if let Some(mut display) = self.display.take() {
+            display.finish(verified);
+        }
+    }
+}
+
+impl bussard_service::program::Observer for Terminal<'_> {
+    fn step(&mut self, step: bussard_service::program::Step<'_>) {
+        use bussard_service::program::Step;
+        self.display = match step {
+            Step::Download { plan } => Some(Display::flash(plan, self.json)),
+            Step::WriteParameters { plan } => Some(Display::flash(plan, false)),
+            Step::WriteTables => Some(Display::task(self.tables.clone(), false)),
+            Step::WaitRestart | Step::ReadBack => return,
+        };
+    }
+
+    fn done(&mut self, _step: bussard_service::program::Step<'_>, verified: bool) {
+        self.finish(verified);
+    }
+
+    fn note(&mut self, note: bussard_service::program::Note) {
+        match note {
+            bussard_service::program::Note::Say(line) => println!("{line}"),
+            bussard_service::program::Note::Warn(line) => eprintln!("{line}"),
+        }
+    }
+
+    fn progress(&mut self, event: Progress) {
+        if let Some(display) = &mut self.display {
+            display.on_progress(event);
+        }
+    }
+
+    fn finished(&mut self, verified: bool) {
+        self.finish(verified);
+    }
+
+    fn confirm(
+        &mut self,
+        question: &bussard_service::program::Question,
+    ) -> bussard_service::program::Answer {
+        use bussard_service::program::Answer;
+        match crate::confirm::confirm(self.yes, &question.prompt, &question.action) {
+            Ok(true) => Answer::Yes,
+            Ok(false) => Answer::No,
+            Err(err) => Answer::Refused(format!("{err:#}")),
+        }
+    }
+
+    fn approved(&mut self) {
+        if let Some((dir, reason)) = self.snapshot.take() {
+            crate::history_cmd::snapshot(dir, reason);
+        }
+    }
+}
+
 /// The exact pre-#147 flash progress output (issue #147 keeps it byte-identical).
 fn plain_flash_line(progress: Progress) {
     match progress {

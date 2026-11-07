@@ -28,7 +28,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use anyhow::Context;
+use super::{Ctx, FileError};
 use bussard_download::{FlashPlan, FlashStep, ImageRef, trace};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -93,14 +93,14 @@ fn write_file(
     step: usize,
     suffix: &str,
     bytes: &[u8],
-) -> anyhow::Result<String> {
+) -> Result<String, FileError> {
     let mut name = format!("{stem}{suffix}");
     if !used.insert(name.clone()) {
         name = format!("{stem}_s{step}{suffix}");
         used.insert(name.clone());
     }
     std::fs::write(dir.join(&name), bytes)
-        .with_context(|| format!("writing {}", dir.join(&name).display()))?;
+        .ctx(|| format!("writing {}", dir.join(&name).display()))?;
     Ok(name)
 }
 
@@ -118,7 +118,7 @@ fn image_record(
     object: Option<u32>,
     offset: Option<u32>,
     part: Option<(usize, usize)>,
-) -> anyhow::Result<Value> {
+) -> Result<Value, FileError> {
     let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
     // A System 7 allocation that holds a part of its segment's image (issue
     // #413) streams only that part, at its own address: dump the part, its
@@ -292,8 +292,8 @@ pub fn write_dump(
     device_mask: u16,
     plan: &FlashPlan,
     table_images: &BTreeMap<u32, Vec<u8>>,
-) -> anyhow::Result<()> {
-    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+) -> Result<(), FileError> {
+    std::fs::create_dir_all(dir).ctx(|| format!("creating {}", dir.display()))?;
     let labels = trace(plan);
     let salt = std::env::var(ORACLE_SALT_ENV)
         .ok()
@@ -610,8 +610,8 @@ pub fn write_dump(
         })).collect::<Vec<_>>(),
     });
     let path = dir.join("plan.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&doc)? + "\n")
-        .with_context(|| format!("writing {}", path.display()))?;
+    let text = serde_json::to_string_pretty(&doc).ctx(|| "rendering plan.json".to_string())?;
+    std::fs::write(&path, text + "\n").ctx(|| format!("writing {}", path.display()))?;
     Ok(())
 }
 
@@ -632,15 +632,17 @@ mod tests {
     }
 
     #[test]
-    fn test_group_key_entries_names_group_and_salts_key() -> anyhow::Result<()> {
+    fn test_group_key_entries_names_group_and_salts_key() -> Result<(), Box<dyn std::error::Error>>
+    {
         use bussard_download::GroupKeyEntry;
-        let entry = |index: u16, ga: &str, fill: u8| -> anyhow::Result<GroupKeyEntry> {
-            Ok(GroupKeyEntry {
-                address_index: index,
-                group_address: ga.parse()?,
-                key: bussard_secure::Key16::new([fill; 16]),
-            })
-        };
+        let entry =
+            |index: u16, ga: &str, fill: u8| -> Result<GroupKeyEntry, Box<dyn std::error::Error>> {
+                Ok(GroupKeyEntry {
+                    address_index: index,
+                    group_address: ga.parse()?,
+                    key: bussard_secure::Key16::new([fill; 16]),
+                })
+            };
         let entries = [entry(2, "0/0/6", 0x11)?, entry(5, "1/2/3", 0x22)?];
         let a = group_key_entries(&entries, "salt-a");
         assert_eq!(a.len(), 2);

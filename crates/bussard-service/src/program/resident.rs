@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use anyhow::Context;
+use super::{Ctx, FileError};
 use bussard_download::{FlashPlan, ResidentObject, ResidentState};
 use bussard_mgmt::LoadState;
 use bussard_mgmt::load::McbEntry;
@@ -69,30 +69,30 @@ struct RecordedState {
 
 /// A recorded device state, read from a `--resident` file.
 #[derive(Debug, Default)]
-pub(crate) struct Recorded {
+pub struct Recorded {
     /// The state the pre-flight probe would have read.
-    pub(crate) state: ResidentState,
+    pub state: ResidentState,
     /// The first MCB entry per object: segment size and CRC.
     mcbs: BTreeMap<u8, (u32, u16)>,
 }
 
 /// Decodes a hex string: an odd length or a non-hex digit is an error.
-fn hex(text: &str) -> anyhow::Result<Vec<u8>> {
-    bussard_model::text::from_hex(text.trim()).with_context(|| format!("hex {text:?}"))
+fn hex(text: &str) -> Result<Vec<u8>, FileError> {
+    bussard_model::text::from_hex(text.trim()).ctx(|| format!("hex {text:?}"))
 }
 
 impl Recorded {
     /// Reads a `--resident` file.
-    pub(crate) fn read(path: &Path) -> anyhow::Result<Recorded> {
+    pub fn read(path: &Path) -> Result<Recorded, FileError> {
         let text = std::fs::read_to_string(path)
-            .with_context(|| format!("reading the recorded device state {}", path.display()))?;
+            .ctx(|| format!("reading the recorded device state {}", path.display()))?;
         let recorded: RecordedState = serde_json::from_str(&text)
-            .with_context(|| format!("parsing the recorded device state {}", path.display()))?;
+            .ctx(|| format!("parsing the recorded device state {}", path.display()))?;
         Recorded::from_state(recorded)
     }
 
     /// Builds the probe state and the MCB entries from the parsed file.
-    fn from_state(recorded: RecordedState) -> anyhow::Result<Recorded> {
+    fn from_state(recorded: RecordedState) -> Result<Recorded, FileError> {
         let objects = recorded
             .objects
             .iter()
@@ -112,7 +112,7 @@ impl Recorded {
         for (index, entry) in &recorded.mcb {
             let index: u8 = index
                 .parse()
-                .with_context(|| format!("MCB object index {index:?}"))?;
+                .ctx(|| format!("MCB object index {index:?}"))?;
             if let Some(entry) = McbEntry::decode(&hex(entry)?) {
                 mcbs.insert(index, (entry.segment_size, entry.crc16));
             }
@@ -131,7 +131,7 @@ impl Recorded {
     /// recorded `index` is an LSM, with no interface-object type, as the
     /// System 7 pre-flight probe reports them. The MCB entries are System B
     /// only and dropped.
-    pub(crate) fn into_sys7(mut self) -> Recorded {
+    pub fn into_sys7(mut self) -> Recorded {
         for object in &mut self.state.objects {
             object.object_type = None;
         }
@@ -142,7 +142,7 @@ impl Recorded {
     /// Whether the file recorded any object load state. Without one there
     /// is no freshness verdict, and the dry run plans as it does without a
     /// file.
-    pub(crate) fn has_states(&self) -> bool {
+    pub fn has_states(&self) -> bool {
         !self.state.objects.is_empty()
     }
 
@@ -151,7 +151,7 @@ impl Recorded {
     /// load state was not recorded counts as `Loaded` when its MCB was: ETS
     /// reads the MCB of the objects it keeps and not their load state, and
     /// the recorded MCB is the evidence the object holds that image.
-    pub(crate) fn skip_matching(&self, plan: &mut FlashPlan) -> Vec<u8> {
+    pub fn skip_matching(&self, plan: &mut FlashPlan) -> Vec<u8> {
         let app_obj = self
             .state
             .loaded_applications()
@@ -177,7 +177,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_from_state_reads_objects_app_id_and_mcb() -> anyhow::Result<()> {
+    fn test_from_state_reads_objects_app_id_and_mcb() -> Result<(), Box<dyn std::error::Error>> {
         let recorded: RecordedState = serde_json::from_str(
             r#"{"objects": [{"index": 4, "state": 1}, {"index": 5, "state": 0}],
                 "app_id": "000420de22", "mcb": {"3": "000005f600330b93"}}"#,
@@ -198,7 +198,7 @@ mod tests {
     /// Issue #488: on a System 7 plan the recorded objects are LSMs, so an
     /// all-Unloaded record reads as a probed fresh System 7 device.
     #[test]
-    fn test_into_sys7_reads_the_objects_as_lsms() -> anyhow::Result<()> {
+    fn test_into_sys7_reads_the_objects_as_lsms() -> Result<(), Box<dyn std::error::Error>> {
         let recorded: RecordedState = serde_json::from_str(
             r#"{"objects": [{"index": 1, "state": 0}, {"index": 2, "state": 0},
                             {"index": 3, "state": 0}, {"index": 4, "state": 0}]}"#,
@@ -211,7 +211,7 @@ mod tests {
     }
 
     #[test]
-    fn test_from_state_without_objects_has_no_states() -> anyhow::Result<()> {
+    fn test_from_state_without_objects_has_no_states() -> Result<(), Box<dyn std::error::Error>> {
         let recorded = Recorded::from_state(RecordedState {
             app_id: Some("0000000000".to_string()),
             ..Default::default()
