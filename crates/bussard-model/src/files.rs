@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
@@ -133,7 +133,7 @@ pub(crate) struct GroupEntry {
 // ---------------------------------------------------------------------------
 
 /// `bussard.lock` as parsed and as rendered.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockFile {
     pub version: u32,
@@ -141,14 +141,14 @@ pub(crate) struct LockFile {
     pub written_by: Option<String>,
     pub source: Option<String>,
     pub language: Option<String>,
-    #[serde(default, rename = "product")]
+    #[serde(default, rename = "product", skip_serializing_if = "Vec::is_empty")]
     pub products: Vec<ProductEntry>,
-    #[serde(default, rename = "device")]
+    #[serde(default, rename = "device", skip_serializing_if = "Vec::is_empty")]
     pub devices: Vec<LockDevice>,
 }
 
 /// One `[[device]]` entry of the lock.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockDevice {
     pub address: IndividualAddress,
@@ -162,28 +162,28 @@ pub(crate) struct LockDevice {
     pub hardware_ref: Option<String>,
     pub mask: Option<String>,
     pub serial_number: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secure_capable: bool,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub has_fdsk_certificate: bool,
     pub sequence_number: Option<u64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub secure_senders: Vec<SecureSender>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub channels: Vec<LockChannel>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub module_bases: BTreeMap<String, u32>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objects: Vec<LockObject>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub parameters: Vec<LockParameter>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hidden: Vec<LockHidden>,
 }
 
 /// One `hidden[]` entry: a value ETS stores for a parameter ref the
 /// configuration does not show.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockHidden {
     #[serde(rename = "ref")]
@@ -192,7 +192,7 @@ pub(crate) struct LockHidden {
 }
 
 /// One `channels[]` entry.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockChannel {
     pub key: Option<String>,
@@ -211,7 +211,7 @@ impl LockChannel {
 }
 
 /// One `objects[]` entry.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockObject {
     pub number: u16,
@@ -224,12 +224,12 @@ pub(crate) struct LockObject {
     pub flags: Flags,
     #[serde(rename = "ref")]
     pub reference: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub secure: bool,
 }
 
 /// One `parameters[]` entry.
-#[derive(Debug, Deserialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LockParameter {
     pub key: String,

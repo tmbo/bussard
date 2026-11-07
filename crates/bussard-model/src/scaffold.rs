@@ -162,226 +162,105 @@ pub struct FunctionSpec {
     pub offsets: &'static [u8],
 }
 
+/// A command role of a trade block.
+const fn role(offset: u8, label: &'static str, dpt_main: u16, dpt_sub: u16) -> Role {
+    Role {
+        offset,
+        label,
+        dpt_main,
+        dpt_sub,
+        status_of: None,
+    }
+}
+
+/// A feedback role: the status of the command role at offset `of`.
+const fn status(offset: u8, label: &'static str, dpt_main: u16, dpt_sub: u16, of: u8) -> Role {
+    Role {
+        status_of: Some(of),
+        ..role(offset, label, dpt_main, dpt_sub)
+    }
+}
+
+/// A trade row of [`TRADES`].
+const fn trade_spec(
+    key: &'static str,
+    label: &'static str,
+    index: u8,
+    block: u8,
+    roles: &'static [Role],
+) -> TradeSpec {
+    TradeSpec {
+        key,
+        label,
+        index,
+        block,
+        roles,
+    }
+}
+
+/// A function row of [`FUNCTIONS`].
+const fn function_spec(
+    key: &'static str,
+    label: &'static str,
+    trade: &'static str,
+    offsets: &'static [u8],
+) -> FunctionSpec {
+    FunctionSpec {
+        key,
+        label,
+        trade,
+        offsets,
+    }
+}
+
 /// Light: switch, dim, value and their feedbacks in a five-address block.
 const LIGHT_ROLES: &[Role] = &[
-    Role {
-        offset: 0,
-        label: "Switch",
-        dpt_main: 1,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 1,
-        label: "Dim",
-        dpt_main: 3,
-        dpt_sub: 7,
-        status_of: None,
-    },
-    Role {
-        offset: 2,
-        label: "Value",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 3,
-        label: "Switch status",
-        dpt_main: 1,
-        dpt_sub: 1,
-        status_of: Some(0),
-    },
-    Role {
-        offset: 4,
-        label: "Value status",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: Some(2),
-    },
+    role(0, "Switch", 1, 1),
+    role(1, "Dim", 3, 7),
+    role(2, "Value", 5, 1),
+    status(3, "Switch status", 1, 1, 0),
+    status(4, "Value status", 5, 1, 2),
 ];
 
 /// Socket: a switched outlet, laid out like a light's switch/feedback pair.
-const SOCKET_ROLES: &[Role] = &[
-    Role {
-        offset: 0,
-        label: "Switch",
-        dpt_main: 1,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 3,
-        label: "Switch status",
-        dpt_main: 1,
-        dpt_sub: 1,
-        status_of: Some(0),
-    },
-];
+const SOCKET_ROLES: &[Role] = &[role(0, "Switch", 1, 1), status(3, "Switch status", 1, 1, 0)];
 
 /// Blind: move/step/position/slat plus their feedbacks; offsets 7-9 stay free.
 const BLIND_ROLES: &[Role] = &[
-    Role {
-        offset: 0,
-        label: "Move",
-        dpt_main: 1,
-        dpt_sub: 8,
-        status_of: None,
-    },
-    Role {
-        offset: 1,
-        label: "Step",
-        dpt_main: 1,
-        dpt_sub: 7,
-        status_of: None,
-    },
-    Role {
-        offset: 2,
-        label: "Position",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 3,
-        label: "Slat",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 4,
-        label: "Position status",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: Some(2),
-    },
-    Role {
-        offset: 5,
-        label: "Slat status",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: Some(3),
-    },
-    Role {
-        offset: 6,
-        label: "Moving status",
-        dpt_main: 1,
-        dpt_sub: 11,
-        status_of: Some(0),
-    },
+    role(0, "Move", 1, 8),
+    role(1, "Step", 1, 7),
+    role(2, "Position", 5, 1),
+    role(3, "Slat", 5, 1),
+    status(4, "Position status", 5, 1, 2),
+    status(5, "Slat status", 5, 1, 3),
+    status(6, "Moving status", 1, 11, 0),
 ];
 
 /// Heating: setpoint, mode, measured values and feedbacks; 6-9 stay free.
 const HEATING_ROLES: &[Role] = &[
-    Role {
-        offset: 0,
-        label: "Setpoint",
-        dpt_main: 9,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 1,
-        label: "Operating mode",
-        dpt_main: 20,
-        dpt_sub: 102,
-        status_of: None,
-    },
-    Role {
-        offset: 2,
-        label: "Actual temperature",
-        dpt_main: 9,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 3,
-        label: "Control value",
-        dpt_main: 5,
-        dpt_sub: 1,
-        status_of: None,
-    },
-    Role {
-        offset: 4,
-        label: "Setpoint status",
-        dpt_main: 9,
-        dpt_sub: 1,
-        status_of: Some(0),
-    },
-    Role {
-        offset: 5,
-        label: "Operating mode status",
-        dpt_main: 20,
-        dpt_sub: 102,
-        status_of: Some(1),
-    },
+    role(0, "Setpoint", 9, 1),
+    role(1, "Operating mode", 20, 102),
+    role(2, "Actual temperature", 9, 1),
+    role(3, "Control value", 5, 1),
+    status(4, "Setpoint status", 9, 1, 0),
+    status(5, "Operating mode status", 20, 102, 1),
 ];
 
 /// Every trade bussard scaffolds and lints, in index order.
 pub const TRADES: &[TradeSpec] = &[
-    TradeSpec {
-        key: "light",
-        label: "Light",
-        index: 1,
-        block: 5,
-        roles: LIGHT_ROLES,
-    },
-    TradeSpec {
-        key: "blind",
-        label: "Blind",
-        index: 2,
-        block: 10,
-        roles: BLIND_ROLES,
-    },
-    TradeSpec {
-        key: "heating",
-        label: "Heating",
-        index: 3,
-        block: 10,
-        roles: HEATING_ROLES,
-    },
-    TradeSpec {
-        key: "socket",
-        label: "Socket",
-        index: 4,
-        block: 5,
-        roles: SOCKET_ROLES,
-    },
+    trade_spec("light", "Light", 1, 5, LIGHT_ROLES),
+    trade_spec("blind", "Blind", 2, 10, BLIND_ROLES),
+    trade_spec("heating", "Heating", 3, 10, HEATING_ROLES),
+    trade_spec("socket", "Socket", 4, 5, SOCKET_ROLES),
 ];
 
 /// Every function a plan may list.
 pub const FUNCTIONS: &[FunctionSpec] = &[
-    FunctionSpec {
-        key: "light",
-        label: "Light",
-        trade: "light",
-        offsets: &[0, 3],
-    },
-    FunctionSpec {
-        key: "light-dim",
-        label: "Dimmer",
-        trade: "light",
-        offsets: &[0, 1, 2, 3, 4],
-    },
-    FunctionSpec {
-        key: "blind",
-        label: "Blind",
-        trade: "blind",
-        offsets: &[0, 1, 2, 3, 4, 5, 6],
-    },
-    FunctionSpec {
-        key: "heating",
-        label: "Heating",
-        trade: "heating",
-        offsets: &[0, 1, 2, 3, 4, 5],
-    },
-    FunctionSpec {
-        key: "socket",
-        label: "Socket",
-        trade: "socket",
-        offsets: &[0, 3],
-    },
+    function_spec("light", "Light", "light", &[0, 3]),
+    function_spec("light-dim", "Dimmer", "light", &[0, 1, 2, 3, 4]),
+    function_spec("blind", "Blind", "blind", &[0, 1, 2, 3, 4, 5, 6]),
+    function_spec("heating", "Heating", "heating", &[0, 1, 2, 3, 4, 5]),
+    function_spec("socket", "Socket", "socket", &[0, 3]),
 ];
 
 /// Looks up a trade by its key.

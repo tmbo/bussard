@@ -4,13 +4,13 @@
 //! corpus, under the vendor defaults and 50 seeded random valid value sets
 //! stored in the device file,
 //!
-//! - the refs the view shows ([`parameter_visibility`], `shown`) are the
+//! - the refs the view shows ([`DeviceAnalysis::visibility`], `shown`) are the
 //!   refs the image writes at the application level
 //!   ([`dynamic_parameter_slots`] with a `param_ref_id`), the internal ones
 //!   (`Access="None"`, which the view never lists) left out on both sides;
 //! - the objects the view shows ([`shown_objects`]) are the ones the object
 //!   table gets a descriptor for ([`dynamic_group_object_descriptors`]);
-//! - [`ignored_overrides`] names exactly the stored values the image does
+//! - [`DeviceAnalysis::ignored_overrides`] names exactly the stored values the image does
 //!   not carry: on refs without a slot (and, for a ref without memory, that
 //!   the evaluation does not reach), or replaced by an `<Assign>`.
 //!
@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bussard_download::compute::dynamic_group_object_descriptors;
 use bussard_download::model_params::parameter_overrides;
-use bussard_model::device_view::{ignored_overrides, parameter_visibility, shown_objects};
+
 use bussard_model::dynamic::evaluate_dynamic;
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 use bussard_prod::image::dynamic_parameter_slots;
@@ -148,7 +148,9 @@ fn compare(
         .collect();
 
     // The view side.
-    let visibility = parameter_visibility(&model, products, address).map_err(|e| e.to_string())?;
+    let visibility = bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
+        .map(|a| a.visibility())
+        .map_err(|e| e.to_string())?;
     let shown: BTreeSet<String> = visibility
         .iter()
         .filter(|(r, v)| v.shown && located.contains(*r) && !internal(r))
@@ -179,15 +181,17 @@ fn compare(
         .iter()
         .map(|d| d.asap)
         .collect();
-    let view_objects: BTreeSet<u16> = shown_objects(&model, products, address)
-        .map_err(|e| e.to_string())?
-        .iter()
-        // Every shown object gets a descriptor, one with every flag disabled
-        // too (issue #686).
-        .filter_map(|r| app.resolve(r))
-        .map(|(base, _)| base.number)
-        .filter(|n| *n != 0)
-        .collect();
+    let view_objects: BTreeSet<u16> =
+        bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
+            .map(|a| a.shown_objects())
+            .map_err(|e| e.to_string())?
+            .iter()
+            // Every shown object gets a descriptor, one with every flag disabled
+            // too (issue #686).
+            .filter_map(|r| app.resolve(r))
+            .map(|(base, _)| base.number)
+            .filter(|n| *n != 0)
+            .collect();
     tally.objects += view_objects.len();
     if let Some(d) = difference("shown objects", &view_objects, &table) {
         return Ok(Some(d));
@@ -203,11 +207,13 @@ fn compare(
         .filter(|p| p.module.is_none())
         .map(|p| p.param_ref_id.as_str())
         .collect();
-    let ignored: BTreeSet<String> = ignored_overrides(&model, products, address)
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .map(|o| o.reference)
-        .collect();
+    let ignored: BTreeSet<String> =
+        bussard_model::device_view::DeviceAnalysis::new(&model, products, address)
+            .map(|a| a.ignored_overrides())
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .map(|o| o.reference)
+            .collect();
     let expected: BTreeSet<String> = values
         .iter()
         .filter(|(r, _)| !r.starts_with("MD-") && held.contains(r.as_str()))
@@ -430,7 +436,9 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
             let product = bussard_prod::product_model::product_model(&app, &product);
             let mut products = ProductModels::default();
             products.insert(app.id.clone(), product.clone());
-            let visibility = parameter_visibility(&indexed, &products, address)?;
+            let visibility =
+                bussard_model::device_view::DeviceAnalysis::new(&indexed, &products, address)?
+                    .visibility();
             let device = &mut indexed.devices.get_mut(&address).ok_or("no device")?.device;
             moved += bussard_model::device_view::show_reached_hidden(device, &product);
             for reference in values.keys() {

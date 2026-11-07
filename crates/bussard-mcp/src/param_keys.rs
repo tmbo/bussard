@@ -13,9 +13,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use bussard_model::blocks::ref_param_id;
-use bussard_model::device_view::{
-    DEVICE_SCOPE, RefVisibility, parameter_pages, parameter_visibility, unindexed_parameters,
-};
+use bussard_model::device_view::{DEVICE_SCOPE, DeviceAnalysis, RefVisibility};
 use bussard_model::param_model::ProductModels;
 use bussard_model::schema::{Device, LockedParameter};
 use bussard_model::text::edit_distance;
@@ -67,7 +65,11 @@ impl KeyContext {
     /// The context of device `address` in `model`, from the product models
     /// in `products` (empty without one).
     pub fn new(model: &Model, products: &ProductModels, address: IndividualAddress) -> Self {
-        let mut pages = parameter_pages(model, products, address).unwrap_or_default();
+        let analysis = DeviceAnalysis::new(model, products, address).ok();
+        let mut pages = analysis
+            .as_ref()
+            .map(DeviceAnalysis::pages)
+            .unwrap_or_default();
         let mut texts = HashMap::new();
         let mut unindexed = BTreeMap::new();
         let mut application = None;
@@ -97,8 +99,11 @@ impl KeyContext {
                 [id] => Some((*id).clone()),
                 _ => None,
             };
-            for (reference, u) in unindexed_parameters(model, products, address).unwrap_or_default()
-            {
+            let unindexed_refs = analysis
+                .as_ref()
+                .map(DeviceAnalysis::unindexed)
+                .unwrap_or_default();
+            for (reference, u) in unindexed_refs {
                 if let Some(page) = u.page {
                     pages.insert(reference.clone(), page);
                 }
@@ -123,7 +128,10 @@ impl KeyContext {
             texts,
             unindexed,
             application,
-            visibility: parameter_visibility(model, products, address).unwrap_or_default(),
+            visibility: analysis
+                .as_ref()
+                .map(DeviceAnalysis::visibility)
+                .unwrap_or_default(),
         }
     }
 

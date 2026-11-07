@@ -6,7 +6,8 @@
 use std::collections::BTreeMap;
 
 use bussard_ets::application::{
-    ApplicationProgram, DynamicNode, flatten_containers, parse_application_program,
+    ApplicationProgram, DynamicNode, DynamicWhen, WhenTest, parse_application_program,
+    parse_application_program_str,
 };
 use bussard_ets::dynamic::{DynamicConfig, evaluate_dynamic, visible_parameter_refs};
 use bussard_ets::label::substitute_label;
@@ -293,5 +294,112 @@ fn test_dynamic_config_label_and_substitution() -> TestResult {
         config.labelled_text(&app, None, text, cref.text_parameter_ref.as_deref()),
         "Switch (Kitchen)"
     );
+    Ok(())
+}
+
+/// The Dynamic tree with every `<Channel>` and `<ParameterBlock>` replaced
+/// by its children, recursively: the shape the parser produced before it
+/// kept those containers.
+fn flatten_containers(nodes: &[DynamicNode]) -> Vec<DynamicNode> {
+    let mut out = Vec::with_capacity(nodes.len());
+    for node in nodes {
+        match node {
+            DynamicNode::Channel { children, .. }
+            | DynamicNode::ParameterBlock { children, .. } => {
+                out.extend(flatten_containers(children));
+            }
+            DynamicNode::Repeat {
+                id,
+                param_ref_id,
+                count,
+                children,
+            } => out.push(DynamicNode::Repeat {
+                id: id.clone(),
+                param_ref_id: param_ref_id.clone(),
+                count: *count,
+                children: flatten_containers(children),
+            }),
+            DynamicNode::Choose {
+                param_ref_id,
+                whens,
+            } => out.push(DynamicNode::Choose {
+                param_ref_id: param_ref_id.clone(),
+                whens: whens
+                    .iter()
+                    .map(|w| DynamicWhen {
+                        test: w.test.clone(),
+                        children: flatten_containers(&w.children),
+                    })
+                    .collect(),
+            }),
+            other => out.push(other.clone()),
+        }
+    }
+    out
+}
+
+#[test]
+fn test_parse_dynamic_tree_keeps_modules_and_nested_chooses() -> TestResult {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+     <ApplicationProgram Id="A" Name="x">
+      <ModuleDefs><ModuleDef Id="A_MD-1">
+       <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></ParameterBlock></Dynamic>
+      </ModuleDef></ModuleDefs>
+      <Dynamic>
+       <Channel Id="A_CH-1"><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        <choose ParamRefId="A_P-1_R-1">
+         <when test="0" />
+         <when test="1">
+          <choose ParamRefId="A_P-2_R-2"><when default="true">
+           <Module Id="A_MD-1_M-3" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="65" /></Module>
+          </when></choose>
+         </when>
+        </choose>
+        <Assign TargetParamRefRef="A_P-3_R-3" SourceParamRefRef="A_P-1_R-1" />
+       </ParameterBlock></Channel>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+    let app = parse_application_program_str("A", xml)?;
+    // The containers are kept now; this test pins the flattened view.
+    assert_eq!(
+        app.module_dynamics
+            .get("MD-1")
+            .map(|b| flatten_containers(b)),
+        Some(vec![DynamicNode::ComObjectRefRef("MD-1_O-1_R-1".into())])
+    );
+    let dynamic = flatten_containers(&app.dynamic);
+    assert_eq!(dynamic.len(), 3);
+    assert_eq!(dynamic[0], DynamicNode::ParameterRefRef("P-1_R-1".into()));
+    let DynamicNode::Choose {
+        param_ref_id,
+        whens,
+    } = &dynamic[1]
+    else {
+        panic!("expected a choose, got {:?}", dynamic[1]);
+    };
+    assert_eq!(param_ref_id, "P-1_R-1");
+    assert_eq!(whens.len(), 2);
+    assert!(whens[0].children.is_empty());
+    let DynamicNode::Choose { whens: inner, .. } = &whens[1].children[0] else {
+        panic!("expected a nested choose");
+    };
+    assert_eq!(inner[0].test, WhenTest::Default);
+    let DynamicNode::Module {
+        id,
+        module_def,
+        args,
+        ..
+    } = &inner[0].children[0]
+    else {
+        panic!("expected a module");
+    };
+    assert_eq!((id.as_str(), module_def.as_str()), ("MD-1_M-3", "MD-1"));
+    assert_eq!(args.get("MD-1_A-1"), Some(&65));
+    assert!(
+        matches!(&dynamic[2], DynamicNode::Assign { target, source: Some(src), .. }
+        if target == "P-3_R-3" && src == "P-1_R-1")
+    );
+    assert_eq!(app.module_instances[0].id, "MD-1_M-3");
     Ok(())
 }
