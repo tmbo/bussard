@@ -469,13 +469,32 @@ pub(super) fn lower_write_prop(
     };
     write_prop_step(
         step,
-        object,
-        prop_id,
+        WriteTarget {
+            object,
+            prop_id,
+            start_element: *start_element,
+            count: *count,
+        },
         value,
         from_parameters,
-        (*start_element, *count, *verify),
+        verify.unwrap_or(false),
         typed_by_list,
     )
+}
+
+/// What an undeclared `LdCtrlWriteProp` writes to: the object, the PID, and
+/// the op's `StartElement` and `Count` as the procedure gives them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WriteTarget {
+    /// The object the op names ([`prop_object`]).
+    pub(super) object: PropObject,
+    /// The property id.
+    pub(super) prop_id: u32,
+    /// `StartElement`, 1 when absent or 0.
+    pub(super) start_element: Option<u32>,
+    /// `Count`, one element when absent
+    /// ([`undeclared_element_count`](super::declare::undeclared_element_count)).
+    pub(super) count: Option<u32>,
 }
 
 /// Whether the services reach `object`/`prop_id`: an index and its PID go
@@ -527,11 +546,10 @@ pub(super) fn check_addressable(
     Ok(())
 }
 
-/// The [`FlashStep::WriteProp`] of `value` to `object`/`prop_id` an
-/// undeclared `LdCtrlWriteProp` lowers to, from the op's `StartElement`,
-/// `Count` and `Verify` (`extent`): the one rule of the System B planner's
-/// writes with and without `InlineData` and of the System 7 and
-/// property-only planners (issues #957, #964).
+/// The [`FlashStep::WriteProp`] of `value` to `target` an undeclared
+/// `LdCtrlWriteProp` lowers to, with `verify` as the caller decides it: the
+/// one rule of the System B planner's writes with and without `InlineData`
+/// and of the System 7 and property-only planners (issues #957, #964).
 ///
 /// # Errors
 ///
@@ -541,14 +559,18 @@ pub(super) fn check_addressable(
 /// ([`check_addressable`]).
 pub(super) fn write_prop_step(
     step: usize,
-    object: PropObject,
-    prop_id: u32,
+    target: WriteTarget,
     value: Vec<u8>,
     from_parameters: bool,
-    extent: (Option<u32>, Option<u32>, Option<bool>),
+    verify: bool,
     typed_by_list: bool,
 ) -> Result<FlashStep, PlanError> {
-    let (start_element, count, verify) = extent;
+    let WriteTarget {
+        object,
+        prop_id,
+        start_element,
+        count,
+    } = target;
     let name = format!("{object} PID {prop_id}");
     let start_element = start_element.unwrap_or(1).max(1);
     // `Count` is a 16-bit element count in the procedure; only the per-request
@@ -587,7 +609,7 @@ pub(super) fn write_prop_step(
         value,
         start_element,
         count,
-        verify: verify.unwrap_or(false),
+        verify,
         from_parameters,
     })
 }

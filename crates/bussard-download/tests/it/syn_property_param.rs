@@ -873,6 +873,55 @@ async fn test_flash_resolves_a_write_prop_by_type_past_a_walk_that_stops_short()
 }
 
 #[tokio::test]
+async fn test_write_property_value_refuses_a_pid_past_8_bits_on_the_plain_services() -> TestResult {
+    // Issue #964: a plan that reaches the executor without its plan-time
+    // check never has an over-wide PID clamped to 255: the write is refused
+    // and nothing goes out.
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_writable_property(4, 255, 1, &[0])
+        .with_hook(move |_, apci, data| {
+            if let Ok(mut log) = log.lock() {
+                log.push((apci, data.to_vec()));
+            }
+            None
+        });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let result = bussard_download::write_property_value(
+        &mut l4,
+        PropObject::Index(4),
+        300,
+        1,
+        1,
+        &[7],
+        false,
+    )
+    .await;
+    let _ = l4.disconnect().await;
+    let text = match result {
+        Err(err) => err.to_string(),
+        Ok(()) => return Err("expected a refusal".into()),
+    };
+    assert!(text.contains("PID 300"), "{text}");
+    let seen = seen.lock().map_err(|e| e.to_string())?.clone();
+    assert!(
+        !seen.iter().any(|(a, _)| *a == PROPERTY_VALUE_WRITE),
+        "no write"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> TestResult {
     // Issue #948: a type the object list does not hold is an error naming
     // the type, never a write to object 0.
@@ -889,6 +938,14 @@ async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> T
         Err(text) => assert!(text.contains("type 50215"), "{text}"),
         Ok(ok) => return Err(format!("expected a refusal, the flash ended ok={ok}").into()),
     }
+    // Issue #964: the miss is looked up in PID_IO_LIST, never in a second
+    // PID_OBJECT_TYPE walk: the walk's terminating index (5) is read once.
+    const PROPERTY_VALUE_READ: u16 = 0x3D5;
+    let terminator_reads = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_READ && d.first() == Some(&5) && d.get(1) == Some(&1))
+        .count();
+    assert_eq!(terminator_reads, 1, "one walk");
     assert!(
         !seen
             .iter()

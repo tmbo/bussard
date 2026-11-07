@@ -319,6 +319,9 @@ struct SystemB<'a> {
     app_obj: u8,
     /// The discovered interface objects, `(index, object type)`.
     object_table: Vec<(u8, u16)>,
+    /// The device object's `PID_IO_LIST`, read once on the first object
+    /// named by type `object_table` does not hold (issue #964).
+    io_list: super::props::IoListCache,
     /// The objects whose resident MCB matched the image (see [`flash_steps`]).
     skip_objects: BTreeSet<u8>,
     /// Set between the security object's `Unload` and its `LoadCompleted`.
@@ -750,6 +753,7 @@ impl StepExecutor for SystemB<'_> {
                 let target = super::props::resolve_type_index(
                     session.l4(),
                     object_table,
+                    &mut self.io_list,
                     *object_type,
                     *occurrence,
                 )
@@ -791,6 +795,7 @@ impl StepExecutor for SystemB<'_> {
                 if let Some(index) = super::props::resolve_type_index(
                     session.l4(),
                     object_table,
+                    &mut self.io_list,
                     *object_type,
                     *occurrence,
                 )
@@ -1311,6 +1316,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         plan,
         app_obj,
         object_table,
+        io_list: None,
         skip_objects,
         security_open,
         verify_after_restart: options.verify_after_restart,

@@ -400,6 +400,28 @@ pub(super) fn placed_value(
     compose_over(name, &names, prop_id, params, template, 0).map(Some)
 }
 
+/// Whether a parameter is placed in `object`/`prop_id` under a name of
+/// `object`: what the PID 13 placeholder rule asks before it refuses a
+/// placeholder without an application id (issue #964).
+///
+/// # Errors
+///
+/// The reason, naming `name`, when a parameter may be stored in the property
+/// under a name bussard does not resolve to `object`.
+pub(super) fn is_placed(
+    name: &str,
+    object: PropObject,
+    prop_id: u32,
+    params: &PropertyParameters<'_>,
+    app: &ApplicationProgram,
+) -> Result<bool, String> {
+    let (names, unresolved) = placements(app, object, prop_id);
+    if unresolved {
+        return Err(unresolved_reason(name));
+    }
+    Ok(names.iter().any(|n| params.places(*n, prop_id)))
+}
+
 /// Why a write is refused when a parameter may be stored in its property
 /// under another name of the object.
 fn unresolved_reason(name: &str) -> String {

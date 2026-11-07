@@ -44,15 +44,22 @@ fn ext_address(object_type: u16, occurrence: u16, prop_id: u32) -> PropertyExtAd
     }
 }
 
+/// The device object's `PID_IO_LIST` read at most once per session:
+/// `None` until read, then the answer (`None` inside for a device without
+/// the list).
+pub(super) type IoListCache = Option<Option<Vec<u16>>>;
+
 /// The index of the `occurrence`-th object of `object_type`, the one
 /// resolver of an object named by type for the write and the read-back
-/// (issue #964): from `known`, the interface-object list the caller already
-/// holds (the System B executor's walk before the first step), else from the
-/// device object's `PID_IO_LIST` when the device offers it, else from the
-/// `PID_OBJECT_TYPE` walk (or the table the connection was seeded with). The
-/// IPS 300 SREG's walk stops before its KNXnet/IP parameter object (object 7
-/// on 1.1.200, issue #393), so a type `known` misses is looked up again
-/// rather than refused. Every table is read by the index it records
+/// (issue #964). From `known`, the interface-object list the caller already
+/// holds (the System B executor's resumable walk before the first step); a
+/// type `known` misses is looked up in the device object's `PID_IO_LIST`,
+/// read once per session into `io_list`, since the IPS 300 SREG's walk stops
+/// before its KNXnet/IP parameter object (object 7 on 1.1.200, issue #393).
+/// The `PID_OBJECT_TYPE` walk (or the table the connection was seeded with)
+/// runs only when `known` is empty: a second walk ends where the first did,
+/// and a one-shot walk on a device with a small per-connection budget dies
+/// mid-flash. Every table is read by the index it records
 /// ([`listed_index`]), never by position, so a list with a gap names the
 /// same object for the write and the read-back.
 ///
@@ -64,13 +71,18 @@ fn ext_address(object_type: u16, occurrence: u16, prop_id: u32) -> PropertyExtAd
 pub(super) async fn resolve_type_index<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     known: &[(u8, u16)],
+    io_list: &mut IoListCache,
     object_type: u16,
     occurrence: u16,
 ) -> Result<Option<u8>, WriteError> {
     if let Some(index) = listed_index(known, object_type, occurrence) {
         return Ok(Some(index));
     }
-    if let Some(types) = bussard_mgmt::read_io_list(l4).await? {
+    let types = match io_list {
+        Some(types) => types,
+        None => io_list.insert(bussard_mgmt::read_io_list(l4).await?),
+    };
+    if let Some(types) = types {
         let table: Vec<(u8, u16)> = types
             .iter()
             .enumerate()
@@ -79,6 +91,9 @@ pub(super) async fn resolve_type_index<Ch: L4Channel>(
         if let Some(index) = listed_index(&table, object_type, occurrence) {
             return Ok(Some(index));
         }
+    }
+    if !known.is_empty() {
+        return Ok(None);
     }
     let table = bussard_mgmt::probe_object_types(l4).await?;
     Ok(listed_index(&table, object_type, occurrence))
@@ -92,7 +107,7 @@ pub(super) async fn index_of_type<Ch: L4Channel>(
     object_type: u16,
     occurrence: u16,
 ) -> Result<u8, WriteError> {
-    resolve_type_index(l4, &[], object_type, occurrence)
+    resolve_type_index(l4, &[], &mut None, object_type, occurrence)
         .await?
         .ok_or_else(|| {
             WriteError::Mgmt(MgmtError::MalformedResponse {
@@ -104,25 +119,6 @@ pub(super) async fn index_of_type<Ch: L4Channel>(
                 ),
             })
         })
-}
-
-/// The 8-bit PID of a property addressed on the plain services at the index
-/// an object named by type resolved to; a PID past 8 bits is an error, never
-/// a write to PID 255.
-fn plain_pid<Ch: L4Channel>(
-    l4: &Layer4Connection<Ch>,
-    object_type: u16,
-    prop_id: u32,
-) -> Result<u8, WriteError> {
-    u8::try_from(prop_id).map_err(|_| {
-        WriteError::Mgmt(MgmtError::MalformedResponse {
-            address: l4.target(),
-            reason: format!(
-                "PID {prop_id} of object type {object_type} exceeds the 8-bit PID the plain \
-                 property services address, and the device declined the extended ones"
-            ),
-        })
-    })
 }
 
 /// The index of the `occurrence`-th object of `object_type` in the
@@ -289,12 +285,26 @@ async fn read_ext<Ch: L4Channel>(
     Ok(out)
 }
 
-/// The 8-bit index and PID of an index-addressed property.
-fn plain_target(index: u32, prop_id: u32) -> (u8, u8) {
-    (
-        u8::try_from(index).unwrap_or(u8::MAX),
-        u8::try_from(prop_id).unwrap_or(u8::MAX),
-    )
+/// The 8-bit index and PID the plain services address `index`/`prop_id`
+/// with. An index or PID past 8 bits is an error, never clamped to 255: a
+/// plan that reached the executor without its plan-time check
+/// ([`check_addressable`](super::plan_props::check_addressable)) must not
+/// write another property (issue #964).
+fn plain_target<Ch: L4Channel>(
+    l4: &Layer4Connection<Ch>,
+    index: u32,
+    prop_id: u32,
+) -> Result<(u8, u8), WriteError> {
+    match (u8::try_from(index), u8::try_from(prop_id)) {
+        (Ok(index), Ok(pid)) => Ok((index, pid)),
+        _ => Err(WriteError::Mgmt(MgmtError::MalformedResponse {
+            address: l4.target(),
+            reason: format!(
+                "object {index} PID {prop_id} exceeds the 8-bit object index or PID the plain \
+                 property services address"
+            ),
+        })),
+    }
 }
 
 /// Reads `count` elements from `start` of the property `object`/`prop_id`,
@@ -314,7 +324,7 @@ pub async fn read_property_value<Ch: L4Channel>(
 ) -> Result<Vec<u8>, WriteError> {
     match object {
         PropObject::Index(index) => {
-            let (index, pid) = plain_target(index, prop_id);
+            let (index, pid) = plain_target(l4, index, prop_id)?;
             read_plain(l4, index, pid, start, count, elem).await
         }
         PropObject::Type {
@@ -328,7 +338,7 @@ pub async fn read_property_value<Ch: L4Channel>(
                 Some(data) => Ok(data),
                 None => {
                     let index = index_of_type(l4, object_type, occurrence).await?;
-                    let pid = plain_pid(l4, object_type, prop_id)?;
+                    let (index, pid) = plain_target(l4, u32::from(index), prop_id)?;
                     read_plain(l4, index, pid, start, count, elem).await
                 }
             }
@@ -356,7 +366,7 @@ pub async fn write_property_value<Ch: L4Channel>(
     let elem = element_size(value, count);
     let object = match object {
         PropObject::Index(index) => {
-            let (index, pid) = plain_target(index, prop_id);
+            let (index, pid) = plain_target(l4, index, prop_id)?;
             write_plain(l4, index, pid, start, count, value).await?;
             PropObject::Index(u32::from(index))
         }
@@ -373,7 +383,7 @@ pub async fn write_property_value<Ch: L4Channel>(
                 Some(()) => object,
                 None => {
                     let index = index_of_type(l4, object_type, occurrence).await?;
-                    let pid = plain_pid(l4, object_type, prop_id)?;
+                    let (index, pid) = plain_target(l4, u32::from(index), prop_id)?;
                     write_plain(l4, index, pid, start, count, value).await?;
                     PropObject::Index(u32::from(index))
                 }
@@ -458,7 +468,7 @@ pub async fn compare_property_value<Ch: L4Channel>(
     mask: Option<&[u8]>,
 ) -> Result<(), WriteError> {
     if let PropObject::Index(index) = object {
-        let (index, pid) = plain_target(index, prop_id);
+        let (index, pid) = plain_target(l4, index, prop_id)?;
         return bussard_mgmt::compare_property(l4, index, pid, start, expected, mask).await;
     }
     let held = read_property_value(l4, object, prop_id, start, 1, expected.len().max(1)).await?;
