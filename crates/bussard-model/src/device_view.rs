@@ -48,7 +48,7 @@ use serde::Serialize;
 
 use crate::address::IndividualAddress;
 use crate::blocks::{
-    BlockDef, BlockKind, Gate, def_ref, object_number, parent_indexes, ref_param_id, subtree,
+    BlockDef, BlockKind, def_ref, object_number, parent_indexes, ref_param_id, subtree,
 };
 use crate::dynamic::{
     ChannelRef, CompareOp, DynamicConfig, RefGate, RefIndex, RefOccurrence, WhenTest,
@@ -56,7 +56,9 @@ use crate::dynamic::{
 };
 use crate::flags::Flags;
 use crate::loader::Model;
-use crate::param_model::{ParamDef, ParamKind, ProductModel, ProductModels, enum_label};
+use crate::param_model::{
+    ParamDef, ParamKind, ProductModel, ProductModels, display_value, same_value,
+};
 use crate::schema::Device;
 
 /// The channel argument that selects the device-level scope (`[parameters]`
@@ -370,6 +372,7 @@ pub enum ViewError {
 }
 
 /// One parameter the lock or the file knows, before rendering.
+#[derive(Clone)]
 struct ParamEntry {
     reference: String,
     key: String,
@@ -450,22 +453,25 @@ pub fn device_ref(module_instance: &str, param_ref: &str) -> String {
 /// diff read the calculation outputs from it (issue #712).
 pub struct Evaluated<'a> {
     product: &'a ProductModel,
+    /// The values evaluated with ([`device_overrides`]).
+    overrides: BTreeMap<String, String>,
     config: DynamicConfig,
 }
 
 impl<'a> Evaluated<'a> {
     /// Evaluates `product` with `overrides` (see [`device_overrides`]).
-    fn new(product: &'a ProductModel, overrides: &BTreeMap<String, String>) -> Self {
+    fn new(product: &'a ProductModel, overrides: BTreeMap<String, String>) -> Self {
         Evaluated {
             product,
-            config: evaluate_dynamic(product, overrides),
+            config: evaluate_dynamic(product, &overrides),
+            overrides,
         }
     }
 
     /// Evaluates `product` with the values `device` stores
     /// ([`device_overrides`]).
     pub fn of_device(product: &'a ProductModel, device: &Device) -> Self {
-        Self::new(product, &device_overrides(device).0)
+        Self::new(product, device_overrides(device).0)
     }
 
     /// The values the `<ParameterCalculation>`s compute under this
@@ -501,8 +507,9 @@ impl<'a> Evaluated<'a> {
         self.config.value(self.product, module, &reference)
     }
 
-    /// The vendor default of a ref ([`DynamicConfig::vendor_default`]).
-    fn vendor_default(&self, key: &str) -> Option<String> {
+    /// The vendor default of a device-form ref
+    /// ([`DynamicConfig::vendor_default`]).
+    pub fn vendor_default(&self, key: &str) -> Option<String> {
         let (module, reference) = self.locate(key);
         self.config.vendor_default(self.product, module, &reference)
     }
@@ -520,33 +527,6 @@ impl<'a> Evaluated<'a> {
     fn number(&self, key: &str) -> Option<f64> {
         self.value(key)?.trim().parse().ok()
     }
-}
-
-/// Renders a stored or default code as the file writes it: the enum label
-/// when there is a usable one, else the value as is.
-fn display_value(def: Option<&ParamDef>, value: &str) -> String {
-    match def {
-        Some(d) if !d.labels.is_empty() => enum_label(&d.labels, value)
-            .map(str::to_string)
-            .unwrap_or_else(|| value.to_string()),
-        _ => value.to_string(),
-    }
-}
-
-/// Whether two renderings of a value mean the same (a label and its code).
-fn same_value(def: Option<&ParamDef>, a: &str, b: &str) -> bool {
-    let a = a.trim();
-    let b = b.trim();
-    if a == b {
-        return true;
-    }
-    let Some(d) = def else { return false };
-    let code = |v: &str| {
-        v.parse::<i64>()
-            .ok()
-            .or_else(|| crate::param_model::enum_code(&d.labels, v))
-    };
-    matches!((code(a), code(b)), (Some(x), Some(y)) if x == y)
 }
 
 fn param_row(
@@ -627,36 +607,6 @@ fn enum_codes(def: &ParamDef) -> Vec<i64> {
     }
 }
 
-/// A page condition as the evaluator's [`RefGate`], to test it.
-fn ref_gate(gate: &Gate) -> RefGate {
-    let parse = |t: &str| {
-        if t.trim() == "default" {
-            WhenTest::Default
-        } else {
-            WhenTest::parse(Some(t), None)
-        }
-    };
-    RefGate {
-        param_ref_id: gate.reference.clone(),
-        test: parse(&gate.test),
-        siblings: gate.others.iter().map(|o| parse(o)).collect(),
-    }
-}
-
-/// An evaluator [`RefGate`] as the page condition words take it.
-fn words_gate(gate: &RefGate) -> Gate {
-    let is_default = gate.test == WhenTest::Default;
-    Gate {
-        reference: gate.param_ref_id.clone(),
-        test: gate.test.text().unwrap_or_else(|| "default".to_string()),
-        others: if is_default {
-            gate.siblings.iter().filter_map(WhenTest::text).collect()
-        } else {
-            Vec::new()
-        },
-    }
-}
-
 /// The value to set the controlling parameter of `gate` to so its branch is
 /// taken, out of the parameter's enum `codes`; else the first exact value
 /// the test names. `None` when neither gives one.
@@ -692,8 +642,7 @@ type EnablingValues = Vec<(String, String)>;
 /// static [`RefIndex`] gives the conditions in front of each ref.
 struct Pages<'a> {
     product: &'a ProductModel,
-    evaluated: &'a Evaluated<'a>,
-    overrides: &'a BTreeMap<String, String>,
+    evaluated: Evaluated<'a>,
     blocks: &'a [BlockDef],
     parents: Vec<Option<usize>>,
     states: Vec<PageState>,
@@ -711,9 +660,9 @@ struct Pages<'a> {
     active_params: HashSet<String>,
     placed_params: HashSet<String>,
     /// The device's parameters by ref, without the hidden ones.
-    entries: HashMap<&'a str, &'a ParamEntry>,
+    entries: HashMap<String, ParamEntry>,
     /// The block each of the device's parameter refs sits on.
-    param_block: HashMap<&'a str, usize>,
+    param_block: HashMap<String, usize>,
     /// The block each of the device's object refs sits on.
     object_block: HashMap<String, usize>,
     /// Per inactive block: the configuration with its enabling values
@@ -722,10 +671,6 @@ struct Pages<'a> {
     /// Those configurations by their enabling values: inactive channels of
     /// one switch share one evaluation.
     by_values: RefCell<HashMap<EnablingValues, Rc<DynamicConfig>>>,
-    /// The blocks whose inactive rows get their detail (enable steps, the
-    /// objects they would show, counts); `None` for every block. An
-    /// inactive row of another block has neither detail nor counts.
-    detail: Option<HashSet<String>>,
     /// The `<Assign>`s of the product by target ref, collected on first use.
     assigns: OnceCell<HashMap<String, Vec<AssignSite>>>,
 }
@@ -743,12 +688,7 @@ fn container_of(
 }
 
 impl<'a> Pages<'a> {
-    fn new(
-        device: &'a Device,
-        evaluated: &'a Evaluated<'a>,
-        overrides: &'a BTreeMap<String, String>,
-        params: &'a [ParamEntry],
-    ) -> Self {
+    fn new(device: &'a Device, evaluated: Evaluated<'a>, params: &[ParamEntry]) -> Self {
         let product = evaluated.product;
         let config = &evaluated.config;
         let blocks = product.blocks_with_module_channels();
@@ -806,7 +746,6 @@ impl<'a> Pages<'a> {
         let mut pages = Pages {
             product,
             evaluated,
-            overrides,
             blocks,
             parents,
             states,
@@ -821,13 +760,11 @@ impl<'a> Pages<'a> {
             object_block: HashMap::new(),
             enabled: (0..blocks.len()).map(|_| OnceCell::new()).collect(),
             by_values: RefCell::new(HashMap::new()),
-            detail: None,
             assigns: OnceCell::new(),
         };
         for (i, b) in blocks.iter().enumerate() {
             if !pages.states[i].active && !pages.states[i].parent_inactive {
-                let gates: Vec<RefGate> = b.when.iter().map(ref_gate).collect();
-                pages.states[i].failing = pages.failing_gates(&gates);
+                pages.states[i].failing = pages.failing_gates(&b.when);
             }
         }
         pages.reached_at = reached_place
@@ -857,13 +794,13 @@ impl<'a> Pages<'a> {
             .filter(|p| {
                 !hidden_only.contains(p.reference.as_str()) || pages.reached.contains(&p.reference)
             })
-            .map(|p| (p.reference.as_str(), p))
+            .map(|p| (p.reference.clone(), p.clone()))
             .collect();
         // A reached ref sits where the evaluator reached it; any other on the
         // first page holding it, a shown page before a hidden one.
-        let mut param_block: HashMap<&str, usize> = HashMap::new();
+        let mut param_block: HashMap<String, usize> = HashMap::new();
         for reference in pages.entries.keys() {
-            let at = pages.reached_at.get(*reference).copied().or_else(|| {
+            let at = pages.reached_at.get(reference).copied().or_else(|| {
                 pages.first_holder(
                     pages
                         .index
@@ -873,10 +810,11 @@ impl<'a> Pages<'a> {
                 )
             });
             if let Some(i) = at {
-                param_block.insert(*reference, i);
+                param_block.insert(reference.clone(), i);
             }
         }
         let mut reached_objects: HashMap<&str, usize> = HashMap::new();
+        let config = &pages.evaluated.config;
         for (c, place) in config.com_objects.iter().zip(&config.com_object_placements) {
             if c.module.is_some() || place.module.is_some() {
                 continue;
@@ -1000,19 +938,19 @@ impl<'a> Pages<'a> {
 
     /// The failing conditions of inactive block `i` with the values that
     /// make them hold: (gate, value to show, value to evaluate).
-    fn enable_values(&self, i: usize) -> Vec<(&'a Gate, String, Option<i64>)> {
+    fn enable_values(&self, i: usize) -> Vec<(&'a RefGate, String, Option<i64>)> {
         let blocks: &'a [BlockDef] = self.blocks;
         self.states[i]
             .failing
             .iter()
             .filter_map(|n| blocks[i].when.get(*n))
             .map(|g| {
-                let def = self.def_of(&g.reference);
+                let def = self.def_of(&g.param_ref_id);
                 let codes = def.map(enum_codes).unwrap_or_default();
-                let code = enabling_code(&ref_gate(g), &codes);
+                let code = enabling_code(g, &codes);
                 let set_to = code
                     .map(|c| display_value(def, &c.to_string()))
-                    .unwrap_or_else(|| g.test.clone());
+                    .unwrap_or_else(|| g.test_text());
                 (g, set_to, code)
             })
             .collect()
@@ -1024,8 +962,7 @@ impl<'a> Pages<'a> {
         self.enabled[i].get_or_init(|| {
             let mut values: EnablingValues = Vec::new();
             for (g, _, code) in self.enable_values(i) {
-                let test = ref_gate(g);
-                let value = code.or_else(|| match test.test {
+                let value = code.or_else(|| match g.test {
                     WhenTest::Compare { op, value } => Some(match op {
                         CompareOp::Ne | CompareOp::Gt => value.saturating_add(1),
                         CompareOp::Lt => value.saturating_sub(1),
@@ -1034,13 +971,13 @@ impl<'a> Pages<'a> {
                     _ => None,
                 });
                 if let Some(v) = value {
-                    values.push((g.reference.clone(), v.to_string()));
+                    values.push((g.param_ref_id.clone(), v.to_string()));
                 }
             }
             if let Some(done) = self.by_values.borrow().get(&values) {
                 return Rc::clone(done);
             }
-            let mut overrides = self.overrides.clone();
+            let mut overrides = self.evaluated.overrides.clone();
             overrides.extend(values.iter().cloned());
             let config = Rc::new(evaluate_dynamic(self.product, &overrides));
             self.by_values
@@ -1236,7 +1173,7 @@ impl<'a> Pages<'a> {
             {
                 page = p;
             }
-            let mut failing: Vec<Gate> = if self.states[page].active {
+            let mut failing: Vec<RefGate> = if self.states[page].active {
                 Vec::new()
             } else {
                 self.states[page]
@@ -1250,7 +1187,7 @@ impl<'a> Pages<'a> {
             failing.extend(
                 self.failing_gates(inner)
                     .into_iter()
-                    .map(|n| words_gate(&inner[n])),
+                    .map(|n| inner[n].clone()),
             );
             let mut needs: Vec<String> = Vec::new();
             let mut now: Vec<String> = Vec::new();
@@ -1259,13 +1196,13 @@ impl<'a> Pages<'a> {
                 if !needs.contains(&words) {
                     needs.push(words);
                 }
-                let def = self.def_of(&g.reference);
+                let def = self.def_of(&g.param_ref_id);
                 let name = def
                     .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
-                    .unwrap_or_else(|| g.reference.clone());
+                    .unwrap_or_else(|| g.param_ref_id.clone());
                 let line = format!(
                     "{name} is {}",
-                    self.current(&g.reference)
+                    self.current(&g.param_ref_id)
                         .unwrap_or_else(|| "unset".to_string())
                 );
                 if !now.contains(&line) {
@@ -1290,7 +1227,7 @@ impl<'a> Pages<'a> {
             condition: inner.filter(|gates| !gates.is_empty()).map(|gates| {
                 gates
                     .iter()
-                    .map(|g| self.gate_words(&words_gate(g)))
+                    .map(|g| self.gate_words(g))
                     .collect::<Vec<_>>()
                     .join(" and ")
             }),
@@ -1302,11 +1239,11 @@ impl<'a> Pages<'a> {
     /// A condition in words: the controlling parameter's text and the values
     /// that satisfy the test, as the device file writes them ("Funktion des
     /// Kanals = Helligkeit").
-    fn gate_words(&self, gate: &Gate) -> String {
-        let def = self.def_of(&gate.reference);
+    fn gate_words(&self, gate: &RefGate) -> String {
+        let def = self.def_of(&gate.param_ref_id);
         let name = def
             .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
-            .unwrap_or_else(|| gate.reference.clone());
+            .unwrap_or_else(|| gate.param_ref_id.clone());
         // `1 2` becomes "A or B", `!=0` becomes "!= A".
         let plain = |test: &str, join: &str| -> String {
             let t = test.trim();
@@ -1320,12 +1257,14 @@ impl<'a> Pages<'a> {
                 .collect::<Vec<_>>()
                 .join(join)
         };
-        let test = gate.test.trim();
+        let test = gate.test_text();
+        let test = test.trim();
         if test == "default" {
-            if gate.others.is_empty() {
+            let others = gate.others_text();
+            if others.is_empty() {
                 return format!("{name} at any value");
             }
-            let others: Vec<String> = gate.others.iter().map(|o| plain(o, ", ")).collect();
+            let others: Vec<String> = others.iter().map(|o| plain(o, ", ")).collect();
             return format!("{name} is none of {}", others.join(", "));
         }
         if test.starts_with(['!', '<', '>', '?']) {
@@ -1366,7 +1305,7 @@ impl<'a> Pages<'a> {
     /// copies into it, else the controlling parameter of the nearest
     /// `<choose>` in front of an `<Assign>` of a value that enables it; with
     /// neither the step says "enabled by ETS only".
-    fn enable_step(&self, gate: &Gate, set_to: String, code: Option<i64>) -> EnableStep {
+    fn enable_step(&self, gate: &RefGate, set_to: String, code: Option<i64>) -> EnableStep {
         let step = |reference: &str, set_to: String| {
             let def = self.def_of(reference);
             EnableStep {
@@ -1382,18 +1321,17 @@ impl<'a> Pages<'a> {
                 ets_only: false,
             }
         };
-        if !self.internal(&gate.reference) {
-            return step(&gate.reference, set_to);
+        if !self.internal(&gate.param_ref_id) {
+            return step(&gate.param_ref_id, set_to);
         }
-        let (instance, _) = split_selector(&gate.reference);
+        let (instance, _) = split_selector(&gate.param_ref_id);
         let in_scope = |r: &str| match instance.as_deref() {
             Some(i) if r.starts_with("MD-") => crate::dynamic::selector_key(Some(i), r),
             _ => r.to_string(),
         };
-        let test = ref_gate(gate);
         let assigns = self.assigns.get_or_init(|| assign_sites(self.product));
         let none = Vec::new();
-        let sites = assigns.get(&def_ref(&gate.reference)).unwrap_or(&none);
+        let sites = assigns.get(&def_ref(&gate.param_ref_id)).unwrap_or(&none);
         for assign in sites {
             if let Some(source) = assign.source.as_deref().map(in_scope)
                 && !self.internal(&source)
@@ -1408,7 +1346,7 @@ impl<'a> Pages<'a> {
                 .value
                 .as_deref()
                 .and_then(|v| v.trim().parse::<f64>().ok())
-                .is_some_and(|v| test.holds(Some(v)));
+                .is_some_and(|v| gate.holds(Some(v)));
             if !enables {
                 continue;
             }
@@ -1426,11 +1364,11 @@ impl<'a> Pages<'a> {
         }
         EnableStep {
             key: None,
-            reference: gate.reference.clone(),
+            reference: gate.param_ref_id.clone(),
             text: Some("enabled by ETS only".to_string()),
             set_to,
             default: None,
-            current: self.current(&gate.reference),
+            current: self.current(&gate.param_ref_id),
             ets_only: true,
         }
     }
@@ -1501,12 +1439,12 @@ impl<'a> Pages<'a> {
 
     /// The row of block `i` (with the blocks folded into it, `members`)
     /// under `handle`.
-    fn row(&self, listed: &Listed) -> BlockRow {
+    fn row(&self, listed: &Listed, detail: Option<&HashSet<String>>) -> BlockRow {
         let i = listed.index;
         let members = listed.members.as_slice();
         let b = &self.blocks[i];
         let active = self.states[i].active;
-        let detailed = self.detail.as_ref().is_none_or(|wanted| {
+        let detailed = detail.is_none_or(|wanted| {
             members
                 .iter()
                 .any(|m| wanted.contains(self.blocks[*m].id.as_str()))
@@ -1545,12 +1483,12 @@ impl<'a> Pages<'a> {
     }
 
     /// The failing conditions of inactive block `i`, as (ref, test) pairs.
-    fn failing(&self, i: usize) -> Vec<(&str, &str)> {
+    fn failing(&self, i: usize) -> Vec<(&str, &WhenTest)> {
         self.states[i]
             .failing
             .iter()
             .filter_map(|n| self.blocks[i].when.get(*n))
-            .map(|g| (g.reference.as_str(), g.test.as_str()))
+            .map(|g| (g.param_ref_id.as_str(), &g.test))
             .collect()
     }
 
@@ -1646,53 +1584,22 @@ struct AssignSite {
 /// The `<Assign>`s of the application's Dynamic section and the module
 /// definitions' bodies, by app-relative target ref.
 fn assign_sites(product: &ProductModel) -> HashMap<String, Vec<AssignSite>> {
-    fn walk(
-        nodes: &[crate::dynamic::DynamicNode],
-        gates: &mut Vec<RefGate>,
-        out: &mut HashMap<String, Vec<AssignSite>>,
-    ) {
-        use crate::dynamic::DynamicNode;
-        for node in nodes {
-            match node {
-                DynamicNode::Assign {
-                    target,
-                    source,
-                    value,
-                } => out.entry(target.clone()).or_default().push(AssignSite {
-                    source: source.clone(),
-                    value: value.clone(),
-                    gates: gates.clone(),
-                }),
-                DynamicNode::Channel { children, .. }
-                | DynamicNode::ParameterBlock { children, .. }
-                | DynamicNode::Repeat { children, .. } => walk(children, gates, out),
-                DynamicNode::Choose {
-                    param_ref_id,
-                    whens,
-                } => {
-                    for when in whens {
-                        gates.push(RefGate {
-                            param_ref_id: param_ref_id.clone(),
-                            test: when.test.clone(),
-                            siblings: whens
-                                .iter()
-                                .filter(|w| !std::ptr::eq(*w, when))
-                                .map(|w| w.test.clone())
-                                .collect(),
-                        });
-                        walk(&when.children, gates, out);
-                        gates.pop();
-                    }
-                }
-                _ => {}
-            }
+    let mut out: HashMap<String, Vec<AssignSite>> = HashMap::new();
+    crate::dynamic::walk_all(product, &mut |node, path| {
+        if let crate::dynamic::DynamicNode::Assign {
+            target,
+            source,
+            value,
+        } = node
+        {
+            out.entry(target.clone()).or_default().push(AssignSite {
+                source: source.clone(),
+                value: value.clone(),
+                gates: path.gates(),
+            });
         }
-    }
-    let mut out = HashMap::new();
-    walk(&product.dynamic, &mut Vec::new(), &mut out);
-    for body in product.module_dynamics.values() {
-        walk(body, &mut Vec::new(), &mut out);
-    }
+        true
+    });
     out
 }
 
@@ -1815,7 +1722,7 @@ fn block_scope(
             .entries
             .iter()
             .filter(|(r, _)| pg.param_block.get(*r).is_some_and(|b| tree.contains(b)))
-            .map(|(_, e)| param_row(e, Some(pg.product), Some(pg.evaluated)))
+            .map(|(_, e)| param_row(e, Some(pg.product), Some(&pg.evaluated)))
             .collect();
         parameters.sort_by(|a, b| a.key.cmp(&b.key));
         let objects: Vec<ObjectRow> = device
@@ -1846,7 +1753,7 @@ fn block_scope(
             // A ref the lock indexes (or the file stores) keeps its key and
             // value, so the key printed here is the one the edit tools take.
             if let Some(e) = pg.entries.get(reference) {
-                return param_row(e, Some(pg.product), Some(pg.evaluated));
+                return param_row(e, Some(pg.product), Some(&pg.evaluated));
             }
             let entry = ParamEntry {
                 reference: reference.to_string(),
@@ -1855,7 +1762,7 @@ fn block_scope(
                 param: Some(ref_param_id(reference).to_string()),
                 stored: None,
             };
-            param_row(&entry, Some(pg.product), Some(pg.evaluated))
+            param_row(&entry, Some(pg.product), Some(&pg.evaluated))
         })
         .collect();
     let inactive = pg.inactive(i, &listed.members);
@@ -1890,54 +1797,132 @@ fn has_pages(product: &ProductModel) -> bool {
     !product.blocks().is_empty() && !product.dynamic.is_empty()
 }
 
+/// One device's analysis: its parameters, one evaluation of its product
+/// model with the values it stores ([`Evaluated`]), and the ETS pages that
+/// evaluation shows. Every view and lookup of the device reads it, so a
+/// caller that needs several of them evaluates the device once.
+pub struct DeviceAnalysis<'a> {
+    address: IndividualAddress,
+    device: &'a Device,
+    links: Option<&'a Vec<crate::schema::Link>>,
+    product: Option<&'a ProductModel>,
+    params: Vec<ParamEntry>,
+    /// The evaluation, for a product model without pages.
+    evaluated: Option<Evaluated<'a>>,
+    /// The pages (holding the evaluation), for a product model with pages.
+    pages: Option<Pages<'a>>,
+}
+
+impl<'a> DeviceAnalysis<'a> {
+    /// Analyses device `address` of `model`, with its product model from
+    /// `products` when at hand.
+    ///
+    /// # Errors
+    ///
+    /// [`ViewError::NoDevice`] when the model has no device `address`.
+    pub fn new(
+        model: &'a Model,
+        products: &'a ProductModels,
+        address: IndividualAddress,
+    ) -> Result<Self, ViewError> {
+        let device = &model
+            .devices
+            .get(&address)
+            .ok_or(ViewError::NoDevice(address))?
+            .device;
+        let product = device
+            .product
+            .as_ref()
+            .and_then(|p| p.application_ref.as_deref())
+            .and_then(|a| products.get(a));
+        let mut analysis = Self::of_device(device, product);
+        analysis.address = address;
+        analysis.links = model.links.links.get(&address);
+        Ok(analysis)
+    }
+
+    /// Analyses `device` (without its links) with `product`.
+    fn of_device(device: &'a Device, product: Option<&'a ProductModel>) -> Self {
+        let params = parameter_entries(device);
+        let evaluated = product.map(|p| Evaluated::new(p, device_overrides(device).0));
+        let (pages, evaluated) = match evaluated {
+            Some(e) if has_pages(e.product) => (Some(Pages::new(device, e, &params)), None),
+            other => (None, other),
+        };
+        DeviceAnalysis {
+            address: device.address,
+            device,
+            links: None,
+            product,
+            params,
+            evaluated,
+            pages,
+        }
+    }
+
+    /// The evaluation, when the product model is at hand.
+    pub fn evaluated(&self) -> Option<&Evaluated<'a>> {
+        self.pages
+            .as_ref()
+            .map(|p| &p.evaluated)
+            .or(self.evaluated.as_ref())
+    }
+
+    /// The view, with `channel` (a handle, a channel id, the vendor number,
+    /// or [`DEVICE_SCOPE`]) in detail when given.
+    ///
+    /// # Errors
+    ///
+    /// [`ViewError::NoChannel`] when the device has no such channel.
+    pub fn view(&self, channel: Option<&str>) -> Result<DeviceView, ViewError> {
+        build_view(self, channel, None)
+    }
+
+    /// The unscoped [`Self::view`] with the inactive detail (`inactive`,
+    /// the parameter and object counts) only on the rows of `blocks` (block
+    /// or channel ids, or a block folded into a row): what the capability
+    /// lookup needs, without evaluating every inactive page of the device
+    /// with its enabling values (issue #302). Every other inactive row has
+    /// `inactive: None` and zero counts.
+    ///
+    /// # Errors
+    ///
+    /// None in practice: an unscoped view has no channel to miss.
+    pub fn view_for_blocks(&self, blocks: &HashSet<String>) -> Result<DeviceView, ViewError> {
+        build_view(self, None, Some(blocks))
+    }
+}
+
 /// Builds the view of `address`, with `channel` (a handle, a channel id, the
 /// vendor number, or [`DEVICE_SCOPE`]) in detail when given.
+///
+/// # Errors
+///
+/// [`ViewError::NoDevice`] when the model has no device `address`,
+/// [`ViewError::NoChannel`] when it has no such channel.
 pub fn device_view(
     model: &Model,
     products: &ProductModels,
     address: IndividualAddress,
     channel: Option<&str>,
 ) -> Result<DeviceView, ViewError> {
-    build_view(model, products, address, channel, None)
+    DeviceAnalysis::new(model, products, address)?.view(channel)
 }
 
-/// The unscoped [`device_view`] of `address` with the inactive detail
-/// (`inactive`, the parameter and object counts) only on the rows of
-/// `blocks` (block or channel ids, or a block folded into a row): what the
-/// capability lookup needs, without evaluating every inactive page of the
-/// device with its enabling values (issue #302). Every other inactive row
-/// has `inactive: None` and zero counts.
-pub fn device_view_for_blocks(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-    blocks: HashSet<String>,
-) -> Result<DeviceView, ViewError> {
-    build_view(model, products, address, None, Some(blocks))
-}
-
-/// [`device_view`], with the inactive detail limited to `detail` when given.
+/// [`DeviceAnalysis::view`], with the inactive detail limited to `detail`
+/// when given.
 fn build_view(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
+    a: &DeviceAnalysis<'_>,
     channel: Option<&str>,
-    detail: Option<HashSet<String>>,
+    detail: Option<&HashSet<String>>,
 ) -> Result<DeviceView, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
+    let (address, device, links, product) = (a.address, a.device, a.links, a.product);
+    let params = &a.params;
     let application = device
         .product
         .as_ref()
         .and_then(|p| p.application_ref.clone());
-    let product = application.as_deref().and_then(|a| products.get(a));
-    let params = parameter_entries(device);
-    let links = model.links.links.get(&address);
-    let (overrides, _) = device_overrides(device);
-    let evaluated = product.map(|p| Evaluated::new(p, &overrides));
+    let evaluated = a.evaluated();
 
     let user_name = |id: &str| {
         let ch = device.channels.get(id)?;
@@ -1975,14 +1960,7 @@ fn build_view(
 
     // The ETS parameter pages: listed for a device without channels of its
     // own, and the inactive channels of one with channels (issue #298).
-    let pages = evaluated
-        .as_ref()
-        .filter(|e| has_pages(e.product))
-        .map(|e| {
-            let mut pages = Pages::new(device, e, &overrides, &params);
-            pages.detail = detail;
-            pages
-        });
+    let pages = a.pages.as_ref();
     let channel_less = device.channels.len() <= 1;
     let listed: Vec<Listed> = match &pages {
         Some(pg) if channel_less => pg.listed(
@@ -1994,7 +1972,7 @@ fn build_view(
         _ => Vec::new(),
     };
     let blocks: Vec<BlockRow> = match &pages {
-        Some(pg) => listed.iter().map(|l| pg.row(l)).collect(),
+        Some(pg) => listed.iter().map(|l| pg.row(l, detail)).collect(),
         None => Vec::new(),
     };
     let mut used_handles: HashSet<String> = channels.iter().map(|c| c.handle.clone()).collect();
@@ -2029,11 +2007,14 @@ fn build_view(
                     n += 1;
                 }
                 used_handles.insert(handle.clone());
-                pg.row(&Listed {
-                    index: i,
-                    handle,
-                    members: vec![i],
-                })
+                pg.row(
+                    &Listed {
+                        index: i,
+                        handle,
+                        members: vec![i],
+                    },
+                    detail,
+                )
             })
             .collect(),
         _ => Vec::new(),
@@ -2089,7 +2070,7 @@ fn build_view(
             let parameters: Vec<ParamRow> = params
                 .iter()
                 .filter(|p| p.channel == id)
-                .map(|p| param_row(p, product, evaluated.as_ref()))
+                .map(|p| param_row(p, product, evaluated))
                 .collect();
             let objects: Vec<ObjectRow> = device
                 .com_objects
@@ -2214,62 +2195,6 @@ impl DeviceView {
     }
 }
 
-/// The ETS page handle (as [`DeviceView::blocks`] lists it) each parameter
-/// ref of `address` sits on, keyed by the app-relative `ParameterRef` id.
-/// Empty for a device whose view lists no pages (one with channels of its
-/// own, or without a product model).
-pub fn parameter_pages(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-) -> Result<BTreeMap<String, String>, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
-    let mut out = BTreeMap::new();
-    let product = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|a| products.get(a))
-        .filter(|p| has_pages(p));
-    let Some(product) = product else {
-        return Ok(out);
-    };
-    if device.channels.len() > 1 {
-        return Ok(out);
-    }
-    let params = parameter_entries(device);
-    let (overrides, _) = device_overrides(device);
-    let evaluated = Evaluated::new(product, &overrides);
-    let pg = Pages::new(device, &evaluated, &overrides, &params);
-    let taken: Vec<String> = device
-        .channels
-        .keys()
-        .map(|id| device.channel_handle(id))
-        .collect();
-    let listed = pg.listed(&taken);
-    let mut handle_of: HashMap<usize, &str> = HashMap::new();
-    for l in &listed {
-        for m in &l.members {
-            handle_of.entry(*m).or_insert(l.handle.as_str());
-        }
-    }
-    for (reference, block) in &pg.param_block {
-        let mut at = Some(*block);
-        while let Some(i) = at {
-            if let Some(handle) = handle_of.get(&i) {
-                out.insert((*reference).to_string(), (*handle).to_string());
-                break;
-            }
-            at = pg.parents[i];
-        }
-    }
-    Ok(out)
-}
-
 /// A parameter of a device's application that its pages hold but the lock
 /// does not index: one on a page that was inactive at import and that ETS
 /// stores nothing for (it is at its default). See [`unindexed_parameters`].
@@ -2300,125 +2225,6 @@ fn unindexed_key(def: &ParamDef, reference: &str) -> String {
     )
 }
 
-/// Every parameter ref the product model's pages hold for device `address`
-/// that neither the lock indexes nor the device file stores, keyed by the
-/// app-relative `ParameterRef` id: what [`device_view`] prints on an
-/// inactive page, and what an active page holds beyond the lock. Headings
-/// (`type: none`) are left out. Empty without a product model with pages.
-pub fn unindexed_parameters(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-) -> Result<BTreeMap<String, UnindexedParameter>, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
-    let mut out = BTreeMap::new();
-    let product = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|a| products.get(a))
-        .filter(|p| has_pages(p));
-    let Some(product) = product else {
-        return Ok(out);
-    };
-    let params = parameter_entries(device);
-    // A ref whose only value is a `hidden@` one is not one of the device's
-    // parameters to list (see `Pages::new`), so it is unindexed like a ref
-    // without a value: a key names it, and an edit re-keys the value to the
-    // visible key (issue #375).
-    let known: HashSet<&str> = params
-        .iter()
-        .filter(|p| !crate::files::is_hidden_mem_key(&p.key))
-        .map(|p| p.reference.as_str())
-        .collect();
-    let (overrides, _) = device_overrides(device);
-    let evaluated = Evaluated::new(product, &overrides);
-    let pg = Pages::new(device, &evaluated, &overrides, &params);
-    let mut handle_of: HashMap<usize, &str> = HashMap::new();
-    let listed = if device.channels.len() > 1 {
-        Vec::new()
-    } else {
-        let taken: Vec<String> = device
-            .channels
-            .keys()
-            .map(|id| device.channel_handle(id))
-            .collect();
-        pg.listed(&taken)
-    };
-    for l in &listed {
-        for m in &l.members {
-            handle_of.entry(*m).or_insert(l.handle.as_str());
-        }
-    }
-    let mut used: HashSet<String> = listed.iter().map(|l| l.handle.clone()).collect();
-    used.extend(device.channels.keys().map(|id| device.channel_handle(id)));
-    used.insert(DEVICE_SCOPE.to_string());
-    // Active blocks claim a ref first, as `Pages::new` does.
-    let order = (0..pg.blocks.len())
-        .filter(|i| pg.states[*i].active)
-        .chain((0..pg.blocks.len()).filter(|i| !pg.states[*i].active));
-    for i in order {
-        for reference in &pg.blocks[i].parameters {
-            if known.contains(reference.as_str()) || out.contains_key(reference) {
-                continue;
-            }
-            // An internal ref (`Access="None"`) is reached but never shown.
-            if product
-                .parameter_refs
-                .get(reference)
-                .is_some_and(|r| r.internal)
-            {
-                continue;
-            }
-            let id = ref_param_id(reference);
-            let Some(def) = product.parameters.get(id) else {
-                continue;
-            };
-            if matches!(def.kind, ParamKind::None) {
-                continue;
-            }
-            let mut page = None;
-            let mut at = Some(i);
-            while let Some(b) = at {
-                if let Some(handle) = handle_of.get(&b) {
-                    page = Some((*handle).to_string());
-                    break;
-                }
-                at = pg.parents[b];
-            }
-            // An active page the view does not list (just enabled, nothing
-            // on it indexed yet) keeps the handle it had while inactive, when
-            // that handle is free.
-            if page.is_none() && !listed.is_empty() && pg.blocks[i].kind == BlockKind::Block {
-                let b = &pg.blocks[i];
-                let base = [b.text.as_deref(), b.name.as_deref()]
-                    .into_iter()
-                    .flatten()
-                    .map(crate::slug)
-                    .find(|s| !s.is_empty())
-                    .unwrap_or_else(|| b.id.to_lowercase());
-                if !used.contains(&base) {
-                    page = Some(base);
-                }
-            }
-            out.insert(
-                reference.clone(),
-                UnindexedParameter {
-                    key: unindexed_key(def, reference),
-                    page,
-                    param: id.to_string(),
-                    text: def.text.clone().or_else(|| def.name.clone()),
-                },
-            );
-        }
-    }
-    Ok(out)
-}
-
 /// Whether a device's configuration shows a parameter ref its pages hold,
 /// and the conditions inside its page that decide it (issue #315). See
 /// [`parameter_visibility`].
@@ -2445,36 +2251,194 @@ pub struct RefVisibility {
     pub now: Option<String>,
 }
 
-/// Every parameter ref the product model's pages hold for device `address`,
-/// keyed by the app-relative `ParameterRef` id, with whether the device's
-/// configuration shows it under its current values: the page states
-/// [`device_view`] lists, and the conditions inside each page. A ref on
-/// several pages counts as shown when one of them shows it. Empty without a
-/// product model with pages.
-pub fn parameter_visibility(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-) -> Result<BTreeMap<String, RefVisibility>, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
-    let product = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|a| products.get(a))
-        .filter(|p| has_pages(p));
-    let Some(product) = product else {
-        return Ok(BTreeMap::new());
-    };
-    let params = parameter_entries(device);
-    let (overrides, _) = device_overrides(device);
-    let evaluated = Evaluated::new(product, &overrides);
-    let pg = Pages::new(device, &evaluated, &overrides, &params);
-    Ok(pg.visibility())
+impl DeviceAnalysis<'_> {
+    /// The handles of the device's channels.
+    fn channel_handles(&self) -> Vec<String> {
+        self.device
+            .channels
+            .keys()
+            .map(|id| self.device.channel_handle(id))
+            .collect()
+    }
+
+    /// The ETS page handle (as [`DeviceView::blocks`] lists it) each
+    /// parameter ref sits on, keyed by the app-relative `ParameterRef` id.
+    /// Empty for a device whose view lists no pages (one with channels of
+    /// its own, or without a product model).
+    pub fn pages(&self) -> BTreeMap<String, String> {
+        let Some(pg) = self
+            .pages
+            .as_ref()
+            .filter(|_| self.device.channels.len() <= 1)
+        else {
+            return BTreeMap::new();
+        };
+        let listed = pg.listed(&self.channel_handles());
+        let handle_of = handles_of(&listed);
+        pg.param_block
+            .iter()
+            .filter_map(|(reference, block)| {
+                Some((reference.clone(), pg.page_handle(&handle_of, *block)?))
+            })
+            .collect()
+    }
+
+    /// Every parameter ref the product model's pages hold that neither the
+    /// lock indexes nor the device file stores, keyed by the app-relative
+    /// `ParameterRef` id: what [`Self::view`] prints on an inactive page,
+    /// and what an active page holds beyond the lock. Headings (`type:
+    /// none`) are left out. Empty without a product model with pages.
+    pub fn unindexed(&self) -> BTreeMap<String, UnindexedParameter> {
+        let mut out = BTreeMap::new();
+        let Some(pg) = &self.pages else {
+            return out;
+        };
+        let (device, product) = (self.device, pg.product);
+        // A ref whose only value is a `hidden@` one is not one of the
+        // device's parameters to list (see `Pages::new`), so it is unindexed
+        // like a ref without a value: a key names it, and an edit re-keys
+        // the value to the visible key (issue #375).
+        let known: HashSet<&str> = self
+            .params
+            .iter()
+            .filter(|p| !crate::files::is_hidden_mem_key(&p.key))
+            .map(|p| p.reference.as_str())
+            .collect();
+        let listed = if device.channels.len() > 1 {
+            Vec::new()
+        } else {
+            pg.listed(&self.channel_handles())
+        };
+        let handle_of = handles_of(&listed);
+        let mut used: HashSet<String> = listed.iter().map(|l| l.handle.clone()).collect();
+        used.extend(self.channel_handles());
+        used.insert(DEVICE_SCOPE.to_string());
+        // Active blocks claim a ref first, as `Pages::new` does.
+        let order = (0..pg.blocks.len())
+            .filter(|i| pg.states[*i].active)
+            .chain((0..pg.blocks.len()).filter(|i| !pg.states[*i].active));
+        for i in order {
+            for reference in &pg.blocks[i].parameters {
+                if known.contains(reference.as_str()) || out.contains_key(reference) {
+                    continue;
+                }
+                // An internal ref (`Access="None"`) is reached but never shown.
+                if product
+                    .parameter_refs
+                    .get(reference)
+                    .is_some_and(|r| r.internal)
+                {
+                    continue;
+                }
+                let id = ref_param_id(reference);
+                let Some(def) = product.parameters.get(id) else {
+                    continue;
+                };
+                if matches!(def.kind, ParamKind::None) {
+                    continue;
+                }
+                let mut page = pg.page_handle(&handle_of, i);
+                // An active page the view does not list (just enabled,
+                // nothing on it indexed yet) keeps the handle it had while
+                // inactive, when that handle is free.
+                if page.is_none() && !listed.is_empty() && pg.blocks[i].kind == BlockKind::Block {
+                    let b = &pg.blocks[i];
+                    let base = [b.text.as_deref(), b.name.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .map(crate::slug)
+                        .find(|s| !s.is_empty())
+                        .unwrap_or_else(|| b.id.to_lowercase());
+                    if !used.contains(&base) {
+                        page = Some(base);
+                    }
+                }
+                out.insert(
+                    reference.clone(),
+                    UnindexedParameter {
+                        key: unindexed_key(def, reference),
+                        page,
+                        param: id.to_string(),
+                        text: def.text.clone().or_else(|| def.name.clone()),
+                    },
+                );
+            }
+        }
+        out
+    }
+
+    /// Every parameter ref the product model's pages hold, keyed by the
+    /// app-relative `ParameterRef` id, with whether the configuration shows
+    /// it under the device's values: the page states [`Self::view`] lists,
+    /// and the conditions inside each page. A ref on several pages counts as
+    /// shown when one of them shows it. Empty without a product model with
+    /// pages.
+    pub fn visibility(&self) -> BTreeMap<String, RefVisibility> {
+        self.pages
+            .as_ref()
+            .map(Pages::visibility)
+            .unwrap_or_default()
+    }
+
+    /// The application-level com-object refs the configuration shows under
+    /// the device's values: reached by the evaluation, on an active page or
+    /// outside every page. Empty without a product model with pages.
+    pub fn shown_objects(&self) -> BTreeSet<String> {
+        let Some(pg) = &self.pages else {
+            return BTreeSet::new();
+        };
+        let config = &pg.evaluated.config;
+        config
+            .com_objects
+            .iter()
+            .zip(&config.com_object_placements)
+            .filter(|(c, place)| c.module.is_none() && place.module.is_none() && place.shown)
+            .filter(|(_, place)| {
+                container_of(&place.blocks, place.channel.as_ref())
+                    .and_then(|id| pg.block_of(&id))
+                    .is_none_or(|i| pg.states[i].active)
+            })
+            .map(|(c, _)| c.com_object_ref_id.clone())
+            .collect()
+    }
+
+    /// Every value the device file stores for a parameter ref the
+    /// configuration does not reach under its current values, by ref (issue
+    /// #321). A value at the ref's default, a hidden value ETS stored
+    /// (`hidden@…`, which a flash writes as is) and a channel label are left
+    /// out. Empty without a product model with pages.
+    pub fn ignored_overrides(&self) -> Vec<IgnoredOverride> {
+        self.pages
+            .as_ref()
+            .map(|pg| ignored_in(self.device, pg))
+            .unwrap_or_default()
+    }
+}
+
+/// The handle of each listed block and of the blocks folded into it.
+fn handles_of(listed: &[Listed]) -> HashMap<usize, &str> {
+    let mut out: HashMap<usize, &str> = HashMap::new();
+    for l in listed {
+        for m in &l.members {
+            out.entry(*m).or_insert(l.handle.as_str());
+        }
+    }
+    out
+}
+
+impl Pages<'_> {
+    /// The handle of the listed page block `i` sits on: its own, else that
+    /// of the nearest enclosing listed page.
+    fn page_handle(&self, handle_of: &HashMap<usize, &str>, i: usize) -> Option<String> {
+        let mut at = Some(i);
+        while let Some(b) = at {
+            if let Some(handle) = handle_of.get(&b) {
+                return Some((*handle).to_string());
+            }
+            at = self.parents[b];
+        }
+        None
+    }
 }
 
 /// Moves every `hidden@<ref>` value of `device` that the configuration
@@ -2513,12 +2477,7 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
     if candidates.is_empty() || !has_pages(product) {
         return 0;
     }
-    let visibility = {
-        let params = parameter_entries(device);
-        let (overrides, _) = device_overrides(device);
-        let evaluated = Evaluated::new(product, &overrides);
-        Pages::new(device, &evaluated, &overrides, &params).visibility()
-    };
+    let visibility = DeviceAnalysis::of_device(device, Some(product)).visibility();
     let mut moved = 0;
     for (hidden, visible) in candidates {
         let shown = hidden
@@ -2536,54 +2495,8 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
     moved
 }
 
-/// The application-level com-object refs the configuration of device
-/// `address` shows under its current values: reached by the evaluation, on
-/// an active page or outside every page. Empty without a product model with
-/// pages.
-///
-/// # Errors
-///
-/// [`ViewError::NoDevice`] when the model has no device `address`.
-pub fn shown_objects(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-) -> Result<BTreeSet<String>, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
-    let product = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|a| products.get(a))
-        .filter(|p| has_pages(p));
-    let Some(product) = product else {
-        return Ok(BTreeSet::new());
-    };
-    let params = parameter_entries(device);
-    let (overrides, _) = device_overrides(device);
-    let evaluated = Evaluated::new(product, &overrides);
-    let pg = Pages::new(device, &evaluated, &overrides, &params);
-    let config = &evaluated.config;
-    Ok(config
-        .com_objects
-        .iter()
-        .zip(&config.com_object_placements)
-        .filter(|(c, place)| c.module.is_none() && place.module.is_none() && place.shown)
-        .filter(|(_, place)| {
-            container_of(&place.blocks, place.channel.as_ref())
-                .and_then(|id| pg.block_of(&id))
-                .is_none_or(|i| pg.states[i].active)
-        })
-        .map(|(c, _)| c.com_object_ref_id.clone())
-        .collect())
-}
-
 impl Pages<'_> {
-    /// [`parameter_visibility`] of every ref the pages hold.
+    /// [`DeviceAnalysis::visibility`] of every ref the pages hold.
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
         // The application's own pages: a module channel's refs are keyed by
@@ -2638,42 +2551,7 @@ impl IgnoredOverride {
     }
 }
 
-/// Every value the file of device `address` stores for a parameter ref the
-/// configuration does not reach under its current values, by ref (issue
-/// #321). A value at the ref's default, a hidden value ETS stored
-/// (`hidden@…`, which a flash writes as is) and a channel label are left
-/// out. Empty without a product model with pages.
-///
-/// # Errors
-///
-/// [`ViewError::NoDevice`] when the model has no device `address`.
-pub fn ignored_overrides(
-    model: &Model,
-    products: &ProductModels,
-    address: IndividualAddress,
-) -> Result<Vec<IgnoredOverride>, ViewError> {
-    let device = &model
-        .devices
-        .get(&address)
-        .ok_or(ViewError::NoDevice(address))?
-        .device;
-    let product = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|a| products.get(a))
-        .filter(|p| has_pages(p));
-    let Some(product) = product else {
-        return Ok(Vec::new());
-    };
-    let params = parameter_entries(device);
-    let (overrides, _) = device_overrides(device);
-    let evaluated = Evaluated::new(product, &overrides);
-    let pg = Pages::new(device, &evaluated, &overrides, &params);
-    Ok(ignored_in(device, &pg))
-}
-
-/// [`ignored_overrides`] on the pages `pg` of `device`.
+/// [`DeviceAnalysis::ignored_overrides`] on the pages `pg` of `device`.
 fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
     let visibility = pg.visibility();
     let config = &pg.evaluated.config;
@@ -2766,34 +2644,11 @@ fn one_line(text: &str) -> String {
 /// A TOML key as the device file writes it: bare when TOML allows, quoted
 /// otherwise; a page-qualified key (`sollwerte.komfort`) stays dotted.
 fn toml_key(key: &str) -> String {
-    let bare = |s: &str| {
-        !s.is_empty()
-            && s.chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    };
-    if bare(key) {
+    let dotted = key.contains('.') && !key.contains('@');
+    if dotted && key.split('.').all(|k| crate::emit::toml_key(k) == k) {
         return key.to_string();
     }
-    if !key.contains('@') && key.split('.').all(bare) {
-        return key.to_string();
-    }
-    toml_string(key)
-}
-
-/// A TOML basic string.
-fn toml_string(s: &str) -> String {
-    let mut out = String::from("\"");
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
+    crate::emit::toml_key(key)
 }
 
 /// How the terminal user runs the push [`Inactive::needs`] names, for
@@ -3055,10 +2910,10 @@ impl DeviceView {
                 }
                 out.push('\n');
                 match &c.name {
-                    Some(n) => out.push_str(&format!("name = {}\n", toml_string(n))),
+                    Some(n) => out.push_str(&format!("name = {}\n", crate::emit::basic_string(n))),
                     None => out.push_str(&format!(
                         "# name = {}\n",
-                        toml_string(c.text.as_deref().unwrap_or(""))
+                        crate::emit::basic_string(c.text.as_deref().unwrap_or(""))
                     )),
                 }
             }
@@ -3072,10 +2927,10 @@ impl DeviceView {
                 }
                 out.push('\n');
                 match &scope.name {
-                    Some(n) => out.push_str(&format!("name = {}\n", toml_string(n))),
+                    Some(n) => out.push_str(&format!("name = {}\n", crate::emit::basic_string(n))),
                     None => out.push_str(&format!(
                         "# name = {}\n",
-                        toml_string(scope.text.as_deref().unwrap_or(""))
+                        crate::emit::basic_string(scope.text.as_deref().unwrap_or(""))
                     )),
                 }
             }
@@ -3109,7 +2964,7 @@ impl DeviceView {
                 out.push_str(&format!(
                     "# {} = {}   # {hint}\n",
                     toml_key(&p.key),
-                    toml_string(v)
+                    crate::emit::basic_string(v)
                 ));
                 continue;
             }
@@ -3122,12 +2977,12 @@ impl DeviceView {
                 Some(v) => out.push_str(&format!(
                     "{} = {}{comment}\n",
                     toml_key(&p.key),
-                    toml_string(v)
+                    crate::emit::basic_string(v)
                 )),
                 None => out.push_str(&format!(
                     "# {} = {}{comment}\n",
                     toml_key(&p.key),
-                    toml_string(p.default.as_deref().unwrap_or(""))
+                    crate::emit::basic_string(p.default.as_deref().unwrap_or(""))
                 )),
             }
         }
@@ -3153,10 +3008,17 @@ impl DeviceView {
                 continue;
             }
             if let Some(s) = &o.send {
-                out.push_str(&format!("{key}.send = {}{comment}\n", toml_string(s)));
+                out.push_str(&format!(
+                    "{key}.send = {}{comment}\n",
+                    crate::emit::basic_string(s)
+                ));
             }
             if !o.listen.is_empty() {
-                let list: Vec<String> = o.listen.iter().map(|g| toml_string(g)).collect();
+                let list: Vec<String> = o
+                    .listen
+                    .iter()
+                    .map(|g| crate::emit::basic_string(g))
+                    .collect();
                 out.push_str(&format!("{key}.listen = [{}]{comment}\n", list.join(", ")));
             }
         }

@@ -26,12 +26,10 @@ use serde::Serialize;
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::blocks::ref_param_id;
 use crate::change::{Change, ChangeKind, ChangeSet, parameter_label};
-use crate::device_view::{
-    RefVisibility, device_view, parameter_pages, parameter_visibility, unindexed_parameters,
-};
-use crate::dynamic::{DynamicConfig, RefIndex, evaluate_dynamic, split_selector};
+use crate::device_view::{DeviceAnalysis, RefVisibility};
+use crate::dynamic::split_selector;
 use crate::loader::Model;
-use crate::param_model::{ParamDef, ProductModel, ProductModels, enum_code, enum_label};
+use crate::param_model::{ParamDef, ProductModel, ProductModels, display_value, same_value};
 use crate::schema::Device;
 
 /// One line of the checklist: a checkbox item, or a plain note.
@@ -572,7 +570,8 @@ fn security_items(change: &Change, old: &Model, new: &Model, ia: IndividualAddre
 struct DeviceContext<'a> {
     device: &'a Device,
     product: Option<&'a ProductModel>,
-    config: Option<DynamicConfig>,
+    /// The device's analysis, when its product model is at hand.
+    analysis: Option<DeviceAnalysis<'a>>,
     /// Page handle → (ETS order, title).
     page_order: HashMap<String, (usize, String)>,
     /// Ref → page handle.
@@ -580,7 +579,6 @@ struct DeviceContext<'a> {
     /// Ref → document position in the product model's pages.
     positions: HashMap<String, usize>,
     visibility: BTreeMap<String, RefVisibility>,
-    index: Option<RefIndex>,
     /// The product model carries no ETS pages: one of an older format.
     pageless: bool,
 }
@@ -596,32 +594,34 @@ impl<'a> DeviceContext<'a> {
         let mut ctx = DeviceContext {
             device,
             product,
-            config: None,
+            analysis: None,
             page_order: HashMap::new(),
             pages: BTreeMap::new(),
             positions: HashMap::new(),
             visibility: BTreeMap::new(),
-            index: None,
             pageless: false,
         };
         let Some(product) = product else {
             return Some(ctx);
         };
         ctx.pageless = product.blocks().is_empty();
-        let (overrides, _) = crate::device_view::device_overrides(device);
-        ctx.config = Some(evaluate_dynamic(product, &overrides));
-        if let Ok(view) = device_view(model, products, ia, None) {
+        let Ok(analysis) = DeviceAnalysis::new(model, products, ia) else {
+            return Some(ctx);
+        };
+        if let Ok(view) = analysis.view(None) {
             for (n, row) in view.blocks.iter().enumerate() {
                 let title = row.text.clone().unwrap_or_else(|| row.handle.clone());
                 ctx.page_order.insert(row.handle.clone(), (n, title));
             }
         }
-        ctx.pages = parameter_pages(model, products, ia).unwrap_or_default();
-        for (reference, u) in unindexed_parameters(model, products, ia).unwrap_or_default() {
+        ctx.pages = analysis.pages();
+        for (reference, u) in analysis.unindexed() {
             if let Some(page) = u.page {
                 ctx.pages.entry(reference).or_insert(page);
             }
         }
+        ctx.visibility = analysis.visibility();
+        ctx.analysis = Some(analysis);
         let mut n = 0;
         for block in product.blocks() {
             for reference in &block.parameters {
@@ -631,8 +631,6 @@ impl<'a> DeviceContext<'a> {
                 });
             }
         }
-        ctx.visibility = parameter_visibility(model, products, ia).unwrap_or_default();
-        ctx.index = Some(RefIndex::new(product));
         Some(ctx)
     }
 
@@ -691,20 +689,18 @@ impl<'a> DeviceContext<'a> {
 
     /// The vendor default of the ref of in-memory key `key`.
     fn vendor_default(&self, key: &str) -> Option<String> {
-        let (product, config) = (self.product?, self.config.as_ref()?);
         let (_, full) = key.split_once('@')?;
-        let (instance, reference) = split_selector(full);
-        let module = instance.and_then(|id| config.modules.iter().position(|m| m.id == id));
-        config.vendor_default(product, module, &reference)
+        self.analysis.as_ref()?.evaluated()?.vendor_default(full)
     }
 
     /// The parameter refs whose `<when>` conditions stand in front of
     /// `reference` (app-relative, the same module instance).
     fn gates(&self, reference: &str) -> BTreeSet<String> {
-        let Some(index) = &self.index else {
+        let Some(product) = self.product else {
             return BTreeSet::new();
         };
-        index
+        product
+            .ref_index()
             .parameter(reference)
             .iter()
             .flat_map(|o| o.gates.iter().map(|g| g.param_ref_id.clone()))
@@ -712,34 +708,15 @@ impl<'a> DeviceContext<'a> {
     }
 }
 
-/// A value as ETS shows it: an enumeration's text, else the value.
+/// A value as ETS shows it: an enumeration's text, else the value; `""`
+/// for an empty one.
 fn value_text(def: Option<&ParamDef>, value: &str) -> String {
-    let shown = match def {
-        Some(d) if !d.labels.is_empty() => {
-            let code = enum_code(&d.labels, value)
-                .map(|c| c.to_string())
-                .unwrap_or_else(|| value.trim().to_string());
-            enum_label(&d.labels, &code)
-                .map(|l| l.trim().to_string())
-                .unwrap_or_else(|| value.trim().to_string())
-        }
-        _ => value.trim().to_string(),
-    };
+    let shown = display_value(def, value.trim()).trim().to_string();
     if shown.is_empty() {
         "\"\"".to_string()
     } else {
         shown
     }
-}
-
-/// Whether two values mean the same (a label and its code).
-fn same_value(def: Option<&ParamDef>, a: &str, b: &str) -> bool {
-    let code = |v: &str| -> String {
-        def.and_then(|d| enum_code(&d.labels, v))
-            .map(|c| c.to_string())
-            .unwrap_or_else(|| v.trim().to_string())
-    };
-    code(a) == code(b)
 }
 
 /// One parameter line before ordering.

@@ -15,6 +15,7 @@ use crate::address::IndividualAddress;
 use crate::emit;
 use crate::files::LockFile;
 use crate::loader::{LOCK_FILE, LoadError, parse_lock};
+use crate::memo::StampedMemo;
 use crate::schema::{ProductEntry, ProductOrigin};
 
 /// Why [`pin_products`] failed.
@@ -75,53 +76,14 @@ pub fn sha256_file(path: &Path) -> std::io::Result<(String, u64)> {
 ///
 /// The file cannot be read.
 pub fn sha256_file_cached(path: &Path) -> std::io::Result<(String, u64)> {
-    static MEMO: HashMemo = HashMemo::new();
-    MEMO.hash(path)
+    static MEMO: StampedMemo<(String, u64)> = StampedMemo::new();
+    hash_with(&MEMO, path)
 }
 
-/// The identity a memoized hash stays valid for: the canonical path, the
-/// size and the modification time.
-type FileStamp = (PathBuf, u64, Option<std::time::SystemTime>);
-
-/// A memo of file hashes keyed by [`FileStamp`].
-struct HashMemo {
-    entries: std::sync::Mutex<Vec<(FileStamp, String)>>,
-}
-
-impl HashMemo {
-    const fn new() -> HashMemo {
-        HashMemo {
-            entries: std::sync::Mutex::new(Vec::new()),
-        }
-    }
-
-    /// The entries; a poisoned lock still holds whole entries.
-    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(FileStamp, String)>> {
-        self.entries.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// The stamp of `path` as it is on disk now.
-    fn stamp(path: &Path) -> std::io::Result<FileStamp> {
-        let canonical = std::fs::canonicalize(path)?;
-        let meta = std::fs::metadata(&canonical)?;
-        Ok((canonical, meta.len(), meta.modified().ok()))
-    }
-
-    /// The memoized hash of `path`, hashing it when its stamp is new. A
-    /// file whose stamp changed while it was hashed is not memoized.
-    fn hash(&self, path: &Path) -> std::io::Result<(String, u64)> {
-        let stamp = Self::stamp(path)?;
-        if let Some((_, sha)) = self.entries().iter().find(|(s, _)| *s == stamp) {
-            return Ok((sha.clone(), stamp.1));
-        }
-        let (sha, size) = sha256_file(&stamp.0)?;
-        if size == stamp.1 && Self::stamp(path)? == stamp {
-            let mut entries = self.entries();
-            entries.retain(|(s, _)| s.0 != stamp.0);
-            entries.push((stamp, sha.clone()));
-        }
-        Ok((sha, size))
-    }
+/// [`sha256_file`] through `memo`, keyed by the canonical path.
+fn hash_with(memo: &StampedMemo<(String, u64)>, path: &Path) -> std::io::Result<(String, u64)> {
+    let canonical = std::fs::canonicalize(path)?;
+    memo.get_or_try_insert(&canonical, || sha256_file(&canonical))
 }
 
 /// Lowercase hex of `bytes`.
@@ -516,8 +478,8 @@ product = "OTHER-1"
     fn test_sha256_file_cached_hit_and_miss() -> Result<(), Box<dyn std::error::Error>> {
         let path = std::env::temp_dir().join(format!("bussard-sha-memo-{}", std::process::id()));
         std::fs::write(&path, b"abc")?;
-        let memo = HashMemo::new();
-        let (first, size) = memo.hash(&path)?;
+        let memo = StampedMemo::new();
+        let (first, size) = hash_with(&memo, &path)?;
         assert_eq!((first.as_str(), size), (sha256_file(&path)?.0.as_str(), 3));
         // Same size and mtime: a hit, even though the bytes changed.
         let mtime = std::fs::metadata(&path)?.modified()?;
@@ -526,10 +488,10 @@ product = "OTHER-1"
             .write(true)
             .open(&path)?
             .set_modified(mtime)?;
-        assert_eq!(memo.hash(&path)?.0, first);
+        assert_eq!(hash_with(&memo, &path)?.0, first);
         // Another size: a miss, hashed again.
         std::fs::write(&path, b"abcd")?;
-        let (changed, size) = memo.hash(&path)?;
+        let (changed, size) = hash_with(&memo, &path)?;
         let fresh = sha256_file(&path)?.0;
         std::fs::remove_file(&path)?;
         assert_eq!((changed.as_str(), size), (fresh.as_str(), 4));

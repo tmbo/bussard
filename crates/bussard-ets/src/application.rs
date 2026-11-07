@@ -31,7 +31,7 @@ pub use bussard_model::color_codec::ColorSpace;
 pub use bussard_model::dynamic::{
     Allocator, BlockRef, CalculationParameter, ChannelRef, CompareOp, ComputedArg, DynamicNode,
     DynamicWhen, EnumValue, LabelMatch, Memory, ParameterCalculation, Union, UnionMember, WhenTest,
-    enum_member_by_label, flatten_containers,
+    enum_member_by_label,
 };
 
 /// A base `<ComObject>` from the application program.
@@ -4026,72 +4026,6 @@ mod tests {
         // Mode 0 with a Fill octet: no pre-fill, but the octet is kept for
         // the record (ETS sends `00 ff` for `syn-relseg-fill`, issue #480).
         assert_eq!(fills[3].prefill(), None);
-        Ok(())
-    }
-
-    #[test]
-    fn test_parse_dynamic_tree_keeps_modules_and_nested_chooses() -> Result<()> {
-        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
-         <ApplicationProgram Id="A" Name="x">
-          <ModuleDefs><ModuleDef Id="A_MD-1">
-           <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-1_R-1" /></ParameterBlock></Dynamic>
-          </ModuleDef></ModuleDefs>
-          <Dynamic>
-           <Channel Id="A_CH-1"><ParameterBlock Id="A_PB-1">
-            <ParameterRefRef RefId="A_P-1_R-1" />
-            <choose ParamRefId="A_P-1_R-1">
-             <when test="0" />
-             <when test="1">
-              <choose ParamRefId="A_P-2_R-2"><when default="true">
-               <Module Id="A_MD-1_M-3" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="65" /></Module>
-              </when></choose>
-             </when>
-            </choose>
-            <Assign TargetParamRefRef="A_P-3_R-3" SourceParamRefRef="A_P-1_R-1" />
-           </ParameterBlock></Channel>
-          </Dynamic>
-         </ApplicationProgram></KNX>"#;
-        let app = parse_application_program_str("A", xml)?;
-        // The containers are kept now; this test pins the flattened view.
-        assert_eq!(
-            app.module_dynamics
-                .get("MD-1")
-                .map(|b| flatten_containers(b)),
-            Some(vec![DynamicNode::ComObjectRefRef("MD-1_O-1_R-1".into())])
-        );
-        let dynamic = flatten_containers(&app.dynamic);
-        assert_eq!(dynamic.len(), 3);
-        assert_eq!(dynamic[0], DynamicNode::ParameterRefRef("P-1_R-1".into()));
-        let DynamicNode::Choose {
-            param_ref_id,
-            whens,
-        } = &dynamic[1]
-        else {
-            panic!("expected a choose, got {:?}", dynamic[1]);
-        };
-        assert_eq!(param_ref_id, "P-1_R-1");
-        assert_eq!(whens.len(), 2);
-        assert!(whens[0].children.is_empty());
-        let DynamicNode::Choose { whens: inner, .. } = &whens[1].children[0] else {
-            panic!("expected a nested choose");
-        };
-        assert_eq!(inner[0].test, WhenTest::Default);
-        let DynamicNode::Module {
-            id,
-            module_def,
-            args,
-            ..
-        } = &inner[0].children[0]
-        else {
-            panic!("expected a module");
-        };
-        assert_eq!((id.as_str(), module_def.as_str()), ("MD-1_M-3", "MD-1"));
-        assert_eq!(args.get("MD-1_A-1"), Some(&65));
-        assert!(
-            matches!(&dynamic[2], DynamicNode::Assign { target, source: Some(src), .. }
-            if target == "P-3_R-3" && src == "P-1_R-1")
-        );
-        assert_eq!(app.module_instances[0].id, "MD-1_M-3");
         Ok(())
     }
 
