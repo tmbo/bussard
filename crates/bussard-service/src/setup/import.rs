@@ -12,7 +12,8 @@ use bussard_project::keystore::{ImportReport, KeyStore, SaveOutcome};
 
 use super::products::{self, error_chain};
 use super::skeleton::{self, KEYRING_PASSWORD_ENV};
-use super::{Context as _, DownloadPrompt, Output, SetupError};
+use super::{Context as _, SetupError};
+use crate::observer::{ProgressSink, Prompt};
 
 /// The environment variable the project password is read from.
 pub const PROJECT_PASSWORD_ENV: &str = "BUSSARD_PROJECT_PASSWORD";
@@ -58,7 +59,11 @@ pub fn load_project(
 /// if the history cannot be written.
 ///
 /// Returns the new snapshot's id when one was taken.
-pub fn snapshot(dir: &Path, reason: SnapshotReason, out: &mut dyn Output) -> Option<SnapshotId> {
+pub fn snapshot(
+    dir: &Path,
+    reason: SnapshotReason,
+    out: &mut dyn ProgressSink,
+) -> Option<SnapshotId> {
     let history = History::open(dir);
     // An empty or absent directory has no state worth keeping, and snapshotting
     // it would create a model directory where there was none.
@@ -78,7 +83,7 @@ pub fn snapshot(dir: &Path, reason: SnapshotReason, out: &mut dyn Output) -> Opt
 
 /// Records an `external edit` snapshot when the working model differs from the
 /// latest one, warning (never failing) if the history cannot be written.
-pub fn capture_external_edit(dir: &Path, out: &mut dyn Output) {
+pub fn capture_external_edit(dir: &Path, out: &mut dyn ProgressSink) {
     match History::open(dir).snapshot_if_changed_externally() {
         Ok(Some(id)) => out.warn(&format!(
             "recorded the current model as history snapshot {id} (external edit)"
@@ -93,7 +98,7 @@ pub fn capture_external_edit(dir: &Path, out: &mut dyn Output) {
 /// What comes before an import writes `dir`: the product models a pinned
 /// archive lacks, an `external edit` snapshot of hand edits, and the
 /// `before writing the imported model` snapshot `bussard undo` returns to.
-pub fn prepare_write(dir: &Path, out: &mut dyn Output) {
+pub fn prepare_write(dir: &Path, out: &mut dyn ProgressSink) {
     if dir.is_dir() && bussard_prod::product_model::models_incomplete(dir) {
         products::complete_models(dir, None, out);
     }
@@ -101,7 +106,7 @@ pub fn prepare_write(dir: &Path, out: &mut dyn Output) {
 }
 
 /// The two history snapshots of [`prepare_write`].
-pub fn before_write(dir: &Path, out: &mut dyn Output) {
+pub fn before_write(dir: &Path, out: &mut dyn ProgressSink) {
     // History (issue #110): record an edit made outside bussard before the
     // import overwrites it, then snapshot the pre-import state so `bussard undo`
     // can put it back.
@@ -143,8 +148,8 @@ pub fn write_fresh(
     model: Model,
     dir: &Path,
     project: Option<&Path>,
-    fetch: Option<&mut dyn DownloadPrompt>,
-    out: &mut dyn Output,
+    fetch: Option<&mut dyn Prompt>,
+    out: &mut dyn ProgressSink,
 ) -> Result<Written, SetupError> {
     let mut to_save = model;
     // A group address a device file uses but the plan does not define is
@@ -202,8 +207,8 @@ pub fn after_write(
     dir: &Path,
     model: &Model,
     project: Option<&Path>,
-    fetch: Option<&mut dyn DownloadPrompt>,
-    out: &mut dyn Output,
+    fetch: Option<&mut dyn Prompt>,
+    out: &mut dyn ProgressSink,
 ) -> Result<(usize, usize), SetupError> {
     // The export's manufacturer list names the devices from now on (#788).
     if let Some(project) = project {
@@ -228,7 +233,7 @@ pub fn after_write(
 /// assignment only when it is not ETS's default, so a `dhcp` line says it is
 /// that default, and every line names the command that reads what the
 /// project does not carry (the address in use, the MAC address).
-pub fn knxnet_summary(model: &Model, out: &mut dyn Output) {
+pub fn knxnet_summary(model: &Model, out: &mut dyn ProgressSink) {
     for (ia, loaded) in &model.devices {
         let Some(k) = &loaded.device.knxnet else {
             continue;
@@ -266,8 +271,8 @@ pub fn knxnet_summary(model: &Model, out: &mut dyn Output) {
 pub fn fetch_product_data(
     dir: &Path,
     model: &Model,
-    fetch: Option<&mut dyn DownloadPrompt>,
-    out: &mut dyn Output,
+    fetch: Option<&mut dyn Prompt>,
+    out: &mut dyn ProgressSink,
 ) -> Result<(), SetupError> {
     let Some(prompt) = fetch else {
         return Ok(());
@@ -314,7 +319,7 @@ pub fn fetch_product_data(
 ///
 /// Errors never undo the import (the files are what the project says); they
 /// are what the owner fixes next, so they are listed with their location.
-pub fn validation_summary(dir: &Path, out: &mut dyn Output) -> (usize, usize) {
+pub fn validation_summary(dir: &Path, out: &mut dyn ProgressSink) -> (usize, usize) {
     let model = match Model::load(dir) {
         Ok(model) => model,
         Err(err) => {
@@ -415,7 +420,7 @@ pub fn rekeyed_warnings(dir: &Path, report: &ImportReport) -> Vec<bussard_model:
 }
 
 /// Says warnings as `warning[CODE]: message`.
-pub fn warn_diagnostics(diags: &[bussard_model::Diagnostic], out: &mut dyn Output) {
+pub fn warn_diagnostics(diags: &[bussard_model::Diagnostic], out: &mut dyn ProgressSink) {
     for d in diags {
         out.warn(&format!("warning[{}]: {}", d.code, d.message));
     }
@@ -426,7 +431,7 @@ pub fn warn_diagnostics(diags: &[bussard_model::Diagnostic], out: &mut dyn Outpu
 /// listed and none is picked; without the password the command to run is
 /// said. Never fails the import: a keyring that does not load is a warning.
 /// No key material is ever said: addresses, counts and file names only.
-pub fn import_neighbour(project: &Path, dir: &Path, out: &mut dyn Output) {
+pub fn import_neighbour(project: &Path, dir: &Path, out: &mut dyn ProgressSink) {
     let mut found = skeleton::neighbour_keyrings(project);
     match found.len() {
         0 => {}

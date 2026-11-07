@@ -12,7 +12,8 @@ use std::path::Path;
 use bussard_model::{GroupAddress, Model};
 use bussard_project::keystore::{ExportCheck, KeyStore, KeyringExport};
 
-use crate::setup::{Context as _, Output, SetupError};
+use crate::observer::ProgressSink;
+use crate::setup::{Context as _, SetupError};
 
 /// Loads the store in `dir`, failing with a hint when there is none.
 ///
@@ -44,7 +45,7 @@ pub fn export_keyring(
     file: &Path,
     password: &str,
     force: bool,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<KeyringExport, SetupError> {
     if file.exists() && !force {
         return Err(SetupError::Message(format!(

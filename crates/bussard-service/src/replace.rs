@@ -35,7 +35,7 @@ use bussard_model::{IndividualAddress, Model};
 use crate::assign::{Verified, VerifyKey};
 use crate::identity::read_identity;
 use crate::program::assign::{Assign, AssignFlow, Assigned, Stop};
-use crate::program::{Observer, Question, Step};
+use crate::program::{Event, Observer, Question, Step};
 use crate::{Authorize, BusService, L4Options, ServiceError};
 
 /// Why a replace step failed.
@@ -272,7 +272,7 @@ pub async fn locate<O: Observer + Send>(
     observer: &mut O,
 ) -> Result<Located, Stop> {
     let current = flow.wait_for_one(observer).await?;
-    observer.step(Step::Identify { at: current });
+    observer.event(Event::Step(Step::Identify { at: current }));
     let pressed = identify(flow.service, flow.source, current).await;
     let mismatch = replacement.mismatch(&pressed);
     Ok(Located { pressed, mismatch })

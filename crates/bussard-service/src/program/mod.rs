@@ -1,7 +1,7 @@
 //! Device programming, once for both surfaces (issue #901): the read of a
 //! device ([`read`]), the plan of writing the model to it ([`plan`]), the
 //! write with its independent read-back ([`apply`]) and the full application
-//! download ([`flash`]), driven through one [`Observer`].
+//! download ([`flash`]), driven through one [`Observer`] (a [`ProgressSink`] and a [`Prompt`]).
 //!
 //! `bussard flash`, `plan`, `apply` and `restore` and the MCP tier's
 //! `knx_plan_device`, `knx_apply_device` and `knx_restore_tables` call these
@@ -15,14 +15,15 @@ pub mod apply;
 pub mod assign;
 pub mod dump;
 pub mod flash;
-pub mod observer;
 pub mod params_only;
 pub mod plan;
 pub mod read;
 pub mod report;
 pub mod resident;
 
-pub use observer::{Answer, Declined, Note, Observer, Question, Step, ask};
+pub use crate::observer::{
+    Answer, Ask, Declined, Event, Note, Observer, ProgressSink, Prompt, Question, Step, ask,
+};
 
 /// An error and its sources, joined with `": "` (anyhow's `{:#}`).
 pub fn chain(err: &dyn std::error::Error) -> String {

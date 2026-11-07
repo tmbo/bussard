@@ -39,7 +39,7 @@ use crate::BusService;
 use crate::assign::{Occupant, Verified, VerifyError, VerifyKey, identify, probe_occupant};
 use crate::line::{WalkEvent, model_devices_on_line, walk};
 use crate::program::assign::{Assign, AssignFlow, Assigned, Stop, completed};
-use crate::program::{Observer, Step};
+use crate::program::{Event, Observer, Step};
 
 /// One device the model expects on the line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -416,7 +416,7 @@ pub async fn identify_pressed<O: Observer>(
     current: IndividualAddress,
     observer: &mut O,
 ) -> Result<Identified, Stop> {
-    observer.step(Step::Identify { at: current });
+    observer.event(Event::Step(Step::Identify { at: current }));
     let verified = identify(flow.service, flow.source, current, None)
         .await
         .map_err(|source| Stop::Identify { current, source })?;

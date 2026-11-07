@@ -10,7 +10,8 @@ use bussard_transport::config::DEFAULT_PORT;
 use bussard_transport::knxnet::{GatewayDescription, GatewayInfo};
 use bussard_transport::{BusConnection, ConnectionConfig, Transport};
 
-use super::{Context as _, Output, SetupError, SetupHooks};
+use super::{Context as _, SetupError, SetupHooks};
+use crate::observer::ProgressSink;
 
 /// Per-interface discovery timeout.
 const DISCOVER_TIMEOUT: Duration = Duration::from_secs(2);
@@ -41,7 +42,7 @@ pub fn resolve<H: SetupHooks>(
     gateway: Option<&str>,
     routing: bool,
     hooks: &mut H,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<Option<Resolution>, SetupError> {
     // Routing wins: no gateway needed.
     if routing {
@@ -171,7 +172,7 @@ fn block_on<F: std::future::Future>(future: F) -> std::io::Result<F::Output> {
 /// A failure only warns — the user may legitimately be offline while setting up
 /// the repo. Runs with an overall timeout so a black-holing address cannot
 /// hang the setup.
-pub fn probe_reachability(endpoint: SocketAddrV4, out: &mut dyn Output) {
+pub fn probe_reachability(endpoint: SocketAddrV4, out: &mut dyn ProgressSink) {
     // Ask the interface to describe itself first: it is a single unicast
     // exchange, costs no tunnel slot, and carries the tunnelling budget the
     // owner needs to see (issue #105).
@@ -228,7 +229,11 @@ pub fn probe_reachability(endpoint: SocketAddrV4, out: &mut dyn Output) {
 }
 
 /// Says what a DESCRIPTION_RESPONSE said about the interface.
-fn describe_to(endpoint: SocketAddrV4, description: &GatewayDescription, out: &mut dyn Output) {
+fn describe_to(
+    endpoint: SocketAddrV4,
+    description: &GatewayDescription,
+    out: &mut dyn ProgressSink,
+) {
     let name = description.name.as_deref().unwrap_or("KNXnet/IP gateway");
     let ia = description
         .individual_address

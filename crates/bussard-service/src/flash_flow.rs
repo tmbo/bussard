@@ -5,7 +5,7 @@
 //!
 //! `bussard flash` and the MCP tier's `knx_apply_device` (when its plan says
 //! the application must be loaded) both run a flash through these functions:
-//! progress goes to a [`FlashObserver`], and what the front end must tell
+//! progress goes to a [`ProgressSink`], and what the front end must tell
 //! the human (the freshness paragraph, the line folded into the
 //! confirmation, the recovery advice, what was recorded in the lock) comes
 //! back as values. The CLI prints them and asks on the terminal; the MCP
@@ -28,10 +28,11 @@ use bussard_prod::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::bus::{Authorize, BusService, L4Options, Management};
-use crate::download::{FlashObserver, FlashRun};
+use crate::download::FlashRun;
 use crate::error::ServiceError;
 use crate::facts::{FactsCache, FactsSource, FactsWant};
 use crate::flash::FlashInputs;
+use crate::observer::ProgressSink;
 use crate::verify::{Expected, WriteReadback};
 
 /// How often the read-only pre-flight runs before its result stands, when a
@@ -800,7 +801,7 @@ impl Flashed {
 pub async fn flash_and_verify(
     run: FlashRun<'_>,
     plan: &FlashPlan,
-    observer: &mut impl FlashObserver,
+    observer: &mut impl ProgressSink,
     expected: Option<ReadbackInputs<'_>>,
     target: IndividualAddress,
 ) -> Flashed {

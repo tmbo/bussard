@@ -31,8 +31,8 @@ use bussard_prod::ApplicationProgram;
 use bussard_secure::{Key16, SequenceHighWater};
 
 use super::apply::BackupError;
-use super::observer::{Declined, Note, Observer, Question, Step};
 use crate::flash::FlashInputs;
+use crate::observer::{Declined, Event, Note, Observer, Question, Step};
 use crate::{Authorize, BusService, L4Options, Management, ServiceError};
 
 /// What one read-only pass over the parameter memory learned.
@@ -224,6 +224,7 @@ impl ParamsPlanned {
             )
         };
         Question {
+            kind: crate::observer::Ask::Write,
             prompt: format!("download the parameters ({what}) to {target} via {gateway}?"),
             action: format!("flash the parameters of {target} via {gateway}"),
         }
@@ -353,7 +354,7 @@ pub async fn write_parameters_only(
     planned: &ParamsPlanned,
     observer: &mut impl Observer,
 ) -> Result<ParamsWritten, ParamsWriteError> {
-    match super::observer::ask(observer, &write.question) {
+    match crate::observer::ask(observer, &write.question) {
         Ok(()) => {}
         Err(Declined::No) => return Ok(ParamsWritten::Declined),
         Err(Declined::Refused(refusal)) => return Err(ParamsWriteError::Refused(refusal)),
@@ -368,10 +369,10 @@ pub async fn write_parameters_only(
         &planned.regions,
     )
     .map_err(|e| ParamsWriteError::Backup(BackupError::Parameters(e)))?;
-    observer.note(Note::Say(format!(
+    observer.event(Event::Note(Note::Say(format!(
         "parameter backup written to {}",
         backup.display()
-    )));
+    ))));
     let run = crate::download::FlashRun {
         service: write.session.service,
         target,
@@ -386,9 +387,9 @@ pub async fn write_parameters_only(
         high_water: write.session.high_water.clone(),
         handover: write.handover,
     };
-    observer.step(Step::Download {
+    observer.event(Event::Step(Step::Download {
         plan: &planned.partial,
-    });
+    }));
     let (plan, app) = (write.plan, write.app);
     // Write, restart, verify, then read the parameters back on the same
     // (post-restart) connection (issue #215).

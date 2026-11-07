@@ -19,7 +19,8 @@ use bussard_model::Model;
 use bussard_model::schema::{ProductEntry, ProductOrigin};
 use bussard_prod::{DownloadConsent, ProductData, ProductIndex, normalize_order_number};
 
-use super::{Context as _, DownloadAnswer, DownloadPrompt, Output, SetupError};
+use super::{Context as _, SetupError};
+use crate::observer::{Answer, Ask, ProgressSink, Prompt, Question};
 
 /// The product store under a model directory.
 pub const PRODUCTS_DIR: &str = crate::params::PRODUCTS_DIR;
@@ -199,7 +200,7 @@ pub fn generate_models_pinned(
     file: &Path,
     dir: &Path,
     origin: Option<ProductOrigin>,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<Vec<String>, SetupError> {
     let product = read_in_model_language(file, dir, None)?;
     if product.applications.is_empty() {
@@ -310,7 +311,7 @@ pub fn extract_and_entries(
     project: &Path,
     product: &ProductData,
     applications: &[String],
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<Vec<ProductEntry>, SetupError> {
     let (project_hash, _) =
         bussard_model::sha256_file(project).ctx(|| format!("hashing {}", project.display()))?;
@@ -436,7 +437,7 @@ pub fn enforce_override(
 
 /// Pins `entries` in `<dir>/bussard.lock` and says which devices now point at
 /// them. A failure is a warning: the archive is cached either way.
-pub fn pin(dir: &Path, entries: &[ProductEntry], out: &mut dyn Output) {
+pub fn pin(dir: &Path, entries: &[ProductEntry], out: &mut dyn ProgressSink) {
     match bussard_model::pin_products(dir, entries) {
         Ok(report) if !report.linked.is_empty() => {
             let list: Vec<String> = report.linked.iter().map(ToString::to_string).collect();
@@ -458,7 +459,7 @@ pub fn pin(dir: &Path, entries: &[ProductEntry], out: &mut dyn Output) {
 /// stored vendor archive keeps, or regains, its link), and each application
 /// the imported devices use that no stored archive carries is extracted once
 /// from the export into `products/` (see [`extract_and_entries`]).
-pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut dyn Output) {
+pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut dyn ProgressSink) {
     let mut entries = pinned_archives(dir);
     if let Some(project) = project {
         let served: BTreeSet<&String> =
@@ -515,7 +516,7 @@ fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
 /// Writes the product model of every application a device in the lock pins
 /// that `.bussard/model-cache/` lacks, or only of `only` when given (see
 /// [`bussard_prod::product_model::complete_models`]). Failures are warnings.
-pub fn complete_models(dir: &Path, only: Option<&str>, out: &mut dyn Output) {
+pub fn complete_models(dir: &Path, only: Option<&str>, out: &mut dyn ProgressSink) {
     warn_models(bussard_prod::product_model::complete_models(dir, only), out);
 }
 
@@ -523,12 +524,12 @@ pub fn complete_models(dir: &Path, only: Option<&str>, out: &mut dyn Output) {
 /// pins that `.bussard/model-cache/` lacks, pinned by a device or not (see
 /// [`bussard_prod::product_model::complete_all_models`]): what `import` has
 /// always written. Failures are warnings.
-pub fn complete_all_models(dir: &Path, out: &mut dyn Output) {
+pub fn complete_all_models(dir: &Path, out: &mut dyn ProgressSink) {
     warn_models(bussard_prod::product_model::complete_all_models(dir), out);
 }
 
 /// Says the warnings of a model completion.
-fn warn_models(warnings: Vec<String>, out: &mut dyn Output) {
+fn warn_models(warnings: Vec<String>, out: &mut dyn ProgressSink) {
     for warning in warnings {
         out.warn(&format!(
             "warning: regenerating the product models: {warning}"
@@ -594,8 +595,8 @@ pub fn not_found_sentence(order: &str, dir: &Path) -> String {
 pub fn fetch_missing(
     dir: &Path,
     orders: &[String],
-    prompt: &mut dyn DownloadPrompt,
-    out: &mut dyn Output,
+    prompt: &mut dyn Prompt,
+    out: &mut dyn ProgressSink,
 ) -> Result<Outcome, SetupError> {
     let cached = cached_orders(dir);
     let mut seen = BTreeSet::new();
@@ -633,7 +634,7 @@ pub fn fetch_missing(
             }
         }
     };
-    if let Some(why) = prompt.skip_downloads() {
+    if let Some(why) = prompt.skips(Ask::Download) {
         not_fetched(&why, &mut outcome, &downloads);
         return Ok(outcome);
     }
@@ -665,10 +666,15 @@ pub fn fetch_missing(
         downloads.len(),
         total as f64 / 1_000_000.0
     );
-    let agreed = match prompt.download(&question, downloads.len())? {
-        DownloadAnswer::Yes => true,
-        DownloadAnswer::No => false,
-        DownloadAnswer::Refused(line) => {
+    let question = Question {
+        kind: Ask::Download,
+        prompt: question,
+        action: format!("{} file(s)", downloads.len()),
+    };
+    let agreed = match prompt.ask(&question) {
+        Answer::Yes => true,
+        Answer::No => false,
+        Answer::Refused(line) => {
             out.say(&line);
             false
         }
@@ -712,7 +718,7 @@ pub fn fetch_missing(
 
 /// Says the end-of-command report: one sentence per order number without
 /// product data.
-pub fn report_missing(outcome: &Outcome, dir: &Path, out: &mut dyn Output) {
+pub fn report_missing(outcome: &Outcome, dir: &Path, out: &mut dyn ProgressSink) {
     if outcome.not_found.is_empty() && outcome.not_fetched.is_empty() {
         return;
     }
@@ -896,7 +902,7 @@ mod tests {
             &stored,
             &dir,
             Some(origin),
-            &mut super::super::Collected::default(),
+            &mut crate::observer::Collected::default(),
         )?;
         let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
         assert!(lock.contains("[[product]]"), "{lock}");

@@ -23,7 +23,9 @@
 //!   with a restart, after which the tables are read back on a fresh session.
 //!
 //! The visit never prints; what the CLI printed while visiting a device is
-//! handed to the caller as [`LineNote`]s.
+//! handed to the caller as [`crate::observer::Note`]s: `Say` for a line about the
+//! device (the CLI indents it under the device), `Warn` for a
+//! warning that does not change the outcome.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -39,6 +41,7 @@ use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 use sha2::{Digest, Sha256};
 
+use crate::observer::ProgressSink;
 use crate::params::{MissingProduct, ParseHook, ProductSource, Selection, resolve_product};
 use crate::secure::SecureMaterial;
 use crate::util::{chain, one_line, session_error_detail};
@@ -315,26 +318,6 @@ pub fn targets_digest(targets: &[LineTarget]) -> String {
     hex(&h.finalize())
 }
 
-/// What a visit says while it runs, the lines `bussard apply --line` prints
-/// under the device's progress line.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LineNote {
-    /// A line about this device (a backup path, an unchecked flag, a product
-    /// warning); the CLI indents it under the device.
-    Detail(String),
-    /// A warning that does not change the outcome; the CLI prints it as is.
-    Warning(String),
-}
-
-impl LineNote {
-    /// The note's text.
-    pub fn text(&self) -> &str {
-        match self {
-            LineNote::Detail(s) | LineNote::Warning(s) => s,
-        }
-    }
-}
-
 /// One device's line in the summary.
 #[derive(Debug, Clone)]
 pub struct LineOutcome {
@@ -394,7 +377,7 @@ pub struct LineVisit<'a> {
 pub async fn visit_device(
     ctx: &LineVisit<'_>,
     target: &LineTarget,
-    note: &mut (dyn FnMut(LineNote) + Send),
+    note: &mut (dyn ProgressSink + Send),
 ) -> LineOutcome {
     let mut outcome = LineOutcome {
         address: target.address,
@@ -415,7 +398,7 @@ pub async fn visit_device(
 async fn visit(
     ctx: &LineVisit<'_>,
     target: &LineTarget,
-    note: &mut (dyn FnMut(LineNote) + Send),
+    note: &mut (dyn ProgressSink + Send),
     out: &mut LineOutcome,
 ) -> DeviceStatus {
     let (service, source, model, dir) = (ctx.service, ctx.source, ctx.model, ctx.dir);
@@ -473,7 +456,7 @@ async fn visit(
     ) {
         Ok(lookup) => {
             if let Some(warning) = lookup.warning {
-                note(LineNote::Detail(format!("warning: {warning}")));
+                note.say(&format!("warning: {warning}"));
             }
             lookup.source
         }
@@ -533,7 +516,7 @@ async fn visit(
         (writes.len(), unchecked)
     });
     if !unchecked.is_empty() {
-        note(LineNote::Detail(unchecked_flags_note(&unchecked)));
+        note.say(&unchecked_flags_note(&unchecked));
     }
     // A System B group-object table that differs from the image the full
     // flash writes is reloaded first (issue #540), as the single-device apply
@@ -542,20 +525,20 @@ async fn visit(
         Some(check) => match &check.live {
             Ok(_) => check.change().map(|change| {
                 for sentence in change.sentences() {
-                    note(LineNote::Detail(format!("group-object table: {sentence}")));
+                    note.say(&format!("group-object table: {sentence}"));
                 }
                 (check.model.clone(), change.objects.len().max(1))
             }),
             Err(why) => {
                 if let Some(line) = unchecked_object_table_note(&report, why) {
-                    note(LineNote::Detail(line));
+                    note.say(&line);
                 }
                 None
             }
         },
         None if sys7_live.is_none() => {
             if let Some(line) = unchecked_object_table_note(&report, "no product data writes it") {
-                note(LineNote::Detail(line));
+                note.say(&line);
             }
             None
         }
@@ -617,10 +600,7 @@ async fn visit(
             ));
         }
     };
-    note(LineNote::Detail(format!(
-        "backup written to {}",
-        backup_path.display()
-    )));
+    note.say(&format!("backup written to {}", backup_path.display()));
     out.backup = Some(backup_path.clone());
 
     // The table write of the single-device apply (issue #901): the same
@@ -685,10 +665,7 @@ async fn visit(
                 && let Err(err) =
                     crate::admission::record_secure_senders(dir, target.address, &inputs.senders)
             {
-                note(LineNote::Warning(format!(
-                    "warning: {}: {err}",
-                    target.address
-                )));
+                note.warn(&format!("warning: {}: {err}", target.address));
             }
             DeviceStatus::Applied(changes)
         }

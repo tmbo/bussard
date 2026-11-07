@@ -5,7 +5,7 @@
 //!
 //! The flows build on the pieces of [`crate::setup`] (the product store, the
 //! download step, the history snapshots, the fresh import write) and report
-//! the same way: every line goes to a [`crate::setup::Output`], every
+//! the same way: every line goes to a [`crate::observer::ProgressSink`], every
 //! question to a prompt trait the surface implements. The CLI prints and asks
 //! on the terminal; the MCP tools collect the lines and answer from their
 //! arguments.

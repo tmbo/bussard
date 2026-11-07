@@ -100,6 +100,7 @@ pub mod ip_secure;
 pub mod knxnet;
 pub mod line;
 pub mod model_handle;
+pub mod observer;
 pub mod params;
 pub mod policy;
 pub mod program;

@@ -67,6 +67,7 @@ use bussard_project::keystore::{StoreInterface, StoreRevision};
 use bussard_secure::{Key16, Password, Sequence, SequenceHighWater, salt};
 use sha2::{Digest, Sha256};
 
+use crate::observer::{Event, ProgressSink};
 use crate::verify::{Counted, LeftoverKind, WriteReadback};
 
 /// Which way the switch goes.
@@ -888,8 +889,8 @@ pub struct ConnectionReport {
 ///
 /// The connection must be open under the step's first key: the FDSK for
 /// `on`, the tool key for `off`'s first pass, the FDSK for its second. A
-/// tool-key step switches the connection to the key it writes. `progress` is
-/// called with each step's line before it is sent.
+/// tool-key step switches the connection to the key it writes. `progress` hears
+/// each step's line ([`Event::Phase`]) before it is sent.
 ///
 /// # Errors
 ///
@@ -898,11 +899,11 @@ pub async fn run_steps<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &SwitchPlan,
     steps: &[PlannedStep],
-    progress: &mut (dyn FnMut(&str) + Send),
+    progress: &mut (dyn ProgressSink + Send),
 ) -> Result<ConnectionReport, IpSecureError> {
     let mut report = ConnectionReport::default();
     for planned in steps {
-        progress(&plan.describe(planned));
+        progress.event(Event::Phase(plan.describe(planned)));
         match &planned.step {
             Step::SecurityMode(on) => wire::set_security_mode(l4, *on).await?,
             Step::ToolKey => wire::write_tool_key(l4, plan.written_tool_key()).await?,
@@ -1200,7 +1201,7 @@ async fn connection(
     steps: &[PlannedStep],
     key: Key16,
     stage: &'static str,
-    progress: &mut (dyn FnMut(&str) + Send),
+    progress: &mut (dyn ProgressSink + Send),
 ) -> Result<ConnectionReport, SwitchError> {
     // The connection ends with the device's restart: a tunnel that tried to
     // re-establish itself through the rebooting interface would only delay
@@ -1220,7 +1221,7 @@ async fn connection(
                 let known = plan.notes.len();
                 plan.resolve_tunnel_users(table.as_deref())?;
                 for note in &plan.notes[known..] {
-                    progress(note);
+                    progress.event(Event::Phase(note.clone()));
                 }
             }
             run_steps(l4, plan, steps, progress).await
@@ -1250,7 +1251,7 @@ pub async fn run_switch(
     ctx: &SwitchContext<'_>,
     plan: &mut SwitchPlan,
     store: &KeyStore,
-    progress: &mut (dyn FnMut(&str) + Send),
+    progress: &mut (dyn ProgressSink + Send),
 ) -> Result<SwitchOutcome, SwitchError> {
     let gateway = probe_gateway(&ctx.config).await;
     let target_is_gateway = gateway.and_then(|(ia, _)| ia) == Some(plan.target);

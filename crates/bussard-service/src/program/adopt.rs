@@ -23,7 +23,7 @@ use bussard_model::schema::Device;
 use bussard_model::{IndividualAddress, Model};
 
 use super::assign::{Assign, AssignFlow, Assigned, Stop};
-use super::{Note, Observer, Question, Step, chain};
+use super::{Event, Observer, Question, Step, chain};
 use crate::adopt::flow::{self as adopt, SecureSummary, SelectedProduct};
 use crate::assign::{Occupant, Verified, VerifyKey, identify, write_device_file};
 use crate::identity::SecureStatus;
@@ -101,7 +101,7 @@ pub async fn plan<O: Observer>(
 ) -> Result<Planned, Stop> {
     let secured = req.keys.keys.lists(current);
     let identified = if req.identify {
-        observer.step(Step::Identify { at: current });
+        observer.event(Event::Step(Step::Identify { at: current }));
         let key = secured.then(|| req.keys.keys.tool_key(current)).flatten();
         let identified = identify(flow.service, flow.source, current, key)
             .await
@@ -252,12 +252,12 @@ pub async fn run<O: Observer>(
         _ => None,
     };
 
-    observer.step(Step::DeviceFile);
+    observer.event(Event::Step(Step::DeviceFile));
     let device = adopt::build_device(target, verified, selected.as_ref());
     // A Data Secure device is commissioned: read what ETS programmed into it
     // (links, parameters, security object) over A_SecureData (issue #201).
     let (mut device, model_out, secure) = if verified.secure == SecureStatus::Activated {
-        observer.step(Step::ReadSecured { target });
+        observer.event(Event::Step(Step::ReadSecured { target }));
         let inputs = SecuredInputs {
             dir: req.dir,
             model: req.model,
@@ -291,7 +291,7 @@ pub async fn run<O: Observer>(
             Err(err) => Knxnet::Failed(chain(&err)),
         }
     };
-    crate::setup::import::snapshot(req.dir, req.snapshot, &mut Notes(observer));
+    crate::setup::import::snapshot(req.dir, req.snapshot, observer);
     let path = write_device_file(
         model_out.as_ref().or(req.model),
         req.dir,
@@ -398,17 +398,4 @@ pub struct SecuredReadError {
     /// The cause.
     #[source]
     pub source: Box<dyn std::error::Error + Send + Sync>,
-}
-
-/// The history snapshot's lines, as the observer's notes.
-struct Notes<'o, O>(&'o mut O);
-
-impl<O: Observer> crate::setup::Output for Notes<'_, O> {
-    fn say(&mut self, line: &str) {
-        self.0.note(Note::Say(line.to_string()));
-    }
-
-    fn warn(&mut self, line: &str) {
-        self.0.note(Note::Warn(line.to_string()));
-    }
 }

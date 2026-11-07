@@ -16,7 +16,8 @@ use bussard_model::change::{describe, render_text};
 use bussard_model::reconcile::{conflict_sentence, take_theirs};
 use bussard_model::{MergeReport, Model};
 
-use crate::setup::{self, Context as _, DownloadPrompt, Output, SetupError};
+use crate::observer::{Answer, Ask, ProgressSink, Prompt, Question};
+use crate::setup::{self, Context as _, SetupError};
 
 /// How an import settles hand-authored conflicts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,7 +29,7 @@ pub enum ConflictChoice {
     Mine,
     /// Take the incoming value for every conflict (`--theirs`).
     Theirs,
-    /// Ask per conflict ([`ConflictPrompt`], `--interactive`).
+    /// Ask per conflict (a [`Prompt`]'s [`Ask::Conflict`], `--interactive`).
     Interactive,
 }
 
@@ -43,33 +44,6 @@ impl ConflictChoice {
         }
     }
 }
-
-/// The per-conflict question of [`ConflictChoice::Interactive`]. The
-/// defaults are those of a caller that cannot ask.
-pub trait ConflictPrompt {
-    /// Whether [`ConflictPrompt::take_theirs`] can ask (a terminal is
-    /// attached).
-    fn can_ask(&self) -> bool {
-        false
-    }
-
-    /// Shows one hand-edited conflict and asks whether to take the incoming
-    /// value. The default keeps the local one.
-    ///
-    /// # Errors
-    ///
-    /// The answer could not be read.
-    fn take_theirs(&mut self, sentence: &str) -> Result<bool, SetupError> {
-        let _ = sentence;
-        Ok(false)
-    }
-}
-
-/// A [`ConflictPrompt`] that never asks.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoPrompt;
-
-impl ConflictPrompt for NoPrompt {}
 
 /// What an import did.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -98,8 +72,8 @@ pub fn import_bundle(
     path: &Path,
     dir: &Path,
     choice: ConflictChoice,
-    ask: &mut dyn ConflictPrompt,
-    out: &mut dyn Output,
+    ask: &mut dyn Prompt,
+    out: &mut dyn ProgressSink,
 ) -> Result<ImportOutcome, SetupError> {
     let bundle = Bundle::read(path).ctx(|| format!("reading bundle {}", path.display()))?;
     let m = &bundle.manifest;
@@ -180,10 +154,10 @@ pub fn write_model(
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
-    fetch: Option<&mut dyn DownloadPrompt>,
+    fetch: Option<&mut dyn Prompt>,
     project: Option<&Path>,
-    ask: &mut dyn ConflictPrompt,
-    out: &mut dyn Output,
+    ask: &mut dyn Prompt,
+    out: &mut dyn ProgressSink,
 ) -> Result<ImportOutcome, SetupError> {
     if dir.is_dir() {
         super::products::prepare(dir, out);
@@ -288,7 +262,7 @@ fn outcome(
     report: &MergeReport,
     kept: usize,
     choice: ConflictChoice,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> ImportOutcome {
     if report.groups_added + report.devices_added > 0 {
         out.say(&format!(
@@ -337,8 +311,8 @@ pub fn resolve_conflicts(
     report: &MergeReport,
     choice: ConflictChoice,
     source: &str,
-    ask: &mut dyn ConflictPrompt,
-    out: &mut dyn Output,
+    ask: &mut dyn Prompt,
+    out: &mut dyn ProgressSink,
 ) -> Result<usize, SetupError> {
     if report.conflicts.is_empty() {
         return Ok(0);
@@ -359,7 +333,15 @@ pub fn resolve_conflicts(
         let take = match choice {
             ConflictChoice::Report | ConflictChoice::Mine => false,
             ConflictChoice::Theirs => true,
-            ConflictChoice::Interactive => ask.take_theirs(&sentence)?,
+            ConflictChoice::Interactive => match ask.ask(&Question {
+                kind: Ask::Conflict,
+                prompt: sentence.clone(),
+                action: format!("settle a conflict with the {source}"),
+            }) {
+                Answer::Yes => true,
+                Answer::No => false,
+                Answer::Refused(why) => return Err(SetupError::Message(why)),
+            },
         };
         let applied = take && take_theirs(merged, theirs, conflict);
         let outcome = if applied {
@@ -378,7 +360,7 @@ pub fn resolve_conflicts(
 }
 
 /// Says what the import changes in the local model, as sentences.
-pub fn report_changes(ours: &Model, merged: &Model, out: &mut dyn Output) {
+pub fn report_changes(ours: &Model, merged: &Model, out: &mut dyn ProgressSink) {
     let changes = describe(ours, merged);
     if changes.is_empty() {
         out.say("\nThe import changes nothing in your project.");

@@ -15,8 +15,9 @@ use std::path::{Path, PathBuf};
 use bussard_model::schema::ProductOrigin;
 use bussard_prod::{DownloadConsent, ProductData};
 
+use crate::observer::{Answer, Ask, ProgressSink, Prompt, Question};
 use crate::setup::products::{self as store, PRODUCTS_DIR};
-use crate::setup::{Context as _, DownloadAnswer, DownloadPrompt, Output, SetupError};
+use crate::setup::{Context as _, SetupError};
 
 /// The directory earlier versions cached vendor archives in; its archives
 /// move to [`PRODUCTS_DIR`] on the first command after the upgrade.
@@ -67,7 +68,7 @@ fn same_dir(a: &Path, b: &Path) -> bool {
 ///   application.
 ///
 /// Failures are warnings: the command itself reports what it cannot do.
-pub fn prepare(dir: &Path, out: &mut dyn Output) {
+pub fn prepare(dir: &Path, out: &mut dyn ProgressSink) {
     if let Err(err) = migrate_vendor(dir, out) {
         out.warn(&format!(
             "warning: moving vendor/ into products/: {}",
@@ -80,7 +81,7 @@ pub fn prepare(dir: &Path, out: &mut dyn Output) {
 }
 
 /// Moves `vendor/*.knxprod` into `products/` and pins each one.
-fn migrate_vendor(dir: &Path, out: &mut dyn Output) -> Result<(), SetupError> {
+fn migrate_vendor(dir: &Path, out: &mut dyn ProgressSink) -> Result<(), SetupError> {
     let vendor = dir.join(LEGACY_VENDOR_DIR);
     let Ok(read) = std::fs::read_dir(&vendor) else {
         return Ok(());
@@ -188,7 +189,7 @@ pub fn import_product_file(
     file: &Path,
     dir: &Path,
     inner: Option<&str>,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<ProductImport, SetupError> {
     if !file.exists() {
         return Err(SetupError::Message(format!(
@@ -211,8 +212,8 @@ pub fn import_product_order(
     order: &str,
     dir: &Path,
     inner: Option<&str>,
-    prompt: &mut dyn DownloadPrompt,
-    out: &mut dyn Output,
+    prompt: &mut dyn Prompt,
+    out: &mut dyn ProgressSink,
 ) -> Result<OrderImport, SetupError> {
     let index = store::load_index()?;
     let entry = index.lookup(order).ok_or_else(|| {
@@ -241,13 +242,18 @@ pub fn import_product_order(
         dir.display()
     ));
 
-    match prompt.download("Download this file?", 1)? {
-        DownloadAnswer::Yes => {}
-        DownloadAnswer::No => {
+    let question = Question {
+        kind: Ask::Download,
+        prompt: "Download this file?".to_string(),
+        action: "this file".to_string(),
+    };
+    match prompt.ask(&question) {
+        Answer::Yes => {}
+        Answer::No => {
             out.say("Aborted; nothing downloaded.");
             return Ok(OrderImport::Declined);
         }
-        DownloadAnswer::Refused(line) => return Err(SetupError::Message(line)),
+        Answer::Refused(line) => return Err(SetupError::Message(line)),
     }
 
     out.say("Downloading…");
@@ -299,7 +305,7 @@ fn import_from_file(
     dir: &Path,
     inner: Option<&str>,
     note: DownloadNote,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<ProductImport, SetupError> {
     let product = store::read_in_model_language(file, dir, inner)?;
 
