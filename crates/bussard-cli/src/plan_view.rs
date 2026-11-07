@@ -1,9 +1,9 @@
 //! How `plan` and `apply` show a device plan (issue #792): the sentences of
-//! [`bussard_download::DevicePlan`], laid out as its `render_text`, with the
+//! `bussard_download::DevicePlan`, laid out as its `render_text`, with the
 //! marks coloured (`+` green, `-` red, `~` yellow), the heading bold and the
 //! bookkeeping lines dim. Wording follows `dev/glossary.md`.
 
-use bussard_download::{ChangeMark, DevicePlan};
+use bussard_service::download::{ChangeMark, DevicePlan};
 
 use crate::style::Style;
 
@@ -83,7 +83,7 @@ pub(crate) fn render(plan: &DevicePlan, style: Style) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_download::{ChangeSubject, PlanChange};
+    use bussard_service::download::{ChangeSubject, PlanChange};
 
     fn plan() -> DevicePlan {
         DevicePlan {

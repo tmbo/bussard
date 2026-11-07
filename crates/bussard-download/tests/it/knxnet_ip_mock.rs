@@ -8,7 +8,7 @@ use bussard_download::flash::write_knxnet_ip;
 use bussard_download::{PropObject, knxnet_ip_program};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::knxnet::KnxnetConfig;
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 use bussard_testkit::{MockDevice, MockGateway, MockKnxnet, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 

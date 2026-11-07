@@ -33,8 +33,8 @@ use bussard_download::model_params::parameter_overrides;
 
 use bussard_model::dynamic::evaluate_dynamic;
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
-use bussard_prod::image::dynamic_parameter_slots;
-use bussard_prod::{
+use bussard_product::image::dynamic_parameter_slots;
+use bussard_product::{
     ApplicationProgram, ProductData, compute_parameter_image, parse_application_program,
 };
 
@@ -266,7 +266,7 @@ struct Tally {
 /// and [`RANDOM_SETS`] random value sets, adding what it compared to
 /// `tally` (nothing for an application without pages).
 fn check(app: &ApplicationProgram, product: &ProductData, tally: &mut Tally) -> Result<(), String> {
-    let model = bussard_prod::product_model::product_model(app, product);
+    let model = bussard_product::product_model::product_model(app, product);
     if model.blocks().is_empty() {
         return Ok(());
     }
@@ -327,7 +327,7 @@ fn test_view_shows_what_the_download_writes_on_the_corpus() -> TestResult {
                     let name = file.file_name().map(|n| n.to_string_lossy().into_owned());
                     let name = name.unwrap_or_default();
                     let outcome: Vec<(String, Option<String>, Result<Tally, String>)> =
-                        match bussard_prod::read_knxprod(file) {
+                        match bussard_product::read_knxprod(file) {
                             Err(_) => vec![(name, None, Ok(Tally::default()))],
                             Ok(product) => product
                                 .applications
@@ -429,11 +429,11 @@ fn test_parameter_image_is_the_same_under_hidden_and_visible_keys() -> TestResul
             // (issue #380: the lock's index alone is not reachability); the
             // unreached ones stay hidden, and the save writes the moved ones
             // into the device file.
-            let product = bussard_prod::ProductData {
+            let product = bussard_product::ProductData {
                 applications: vec![app.clone()],
                 ..ProductData::default()
             };
-            let product = bussard_prod::product_model::product_model(&app, &product);
+            let product = bussard_product::product_model::product_model(&app, &product);
             let mut products = ProductModels::default();
             products.insert(app.id.clone(), product.clone());
             let visibility =

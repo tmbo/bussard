@@ -87,7 +87,7 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                bussard_secure::SequenceHighWater::new(),
+                bussard_service::secure::SequenceHighWater::new(),
             )
             .with_factory_key(factory_key)
             .with_authorize(authorize);

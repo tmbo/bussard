@@ -29,7 +29,7 @@ use std::collections::BTreeMap;
 use bussard_download::backup::ParameterBackup;
 use bussard_download::{FlashPlan, PartialPlanError, attribute_octets, device_managed_octets};
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::ApplicationProgram;
+use bussard_product::ApplicationProgram;
 
 use crate::params::{OctetAttribution, ParamDetail, TargetLabel, model_images, octet_ranges};
 
@@ -273,7 +273,7 @@ pub fn build_restore_plan(
             &current,
             &model_images(&partial, changed),
             changed,
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         )
     };
     let written = attribute(&partial.changed_bits());

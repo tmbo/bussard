@@ -13,20 +13,15 @@ name = "bussard"
 path = "src/main.rs"
 
 [dependencies]
+# The layering rule (issue #916): a surface depends on bussard-service and
+# bussard-model (and bussard-product for import and product data) only; the
+# domain crates reach it through bussard-service. Tests may name them.
 bussard-model = { workspace = true }
 # The service layer (issue #86): gated bus access, management sessions, the
 # checked group write and the live model handle.
 bussard-service = { workspace = true }
-bussard-project = { workspace = true }
-bussard-prod = { workspace = true }
-bussard-transport = { workspace = true }
-bussard-monitor = { workspace = true }
-bussard-bus = { workspace = true }
+bussard-product = { workspace = true }
 bussard-mcp = { workspace = true }
-bussard-mgmt = { workspace = true }
-bussard-download = { workspace = true }
-# KNX Secure (issue #71): the Data Secure tool key / session for the flash seam.
-bussard-secure = { workspace = true }
 bussard-ha = { workspace = true }
 bussard-viz = { workspace = true }
 # axum: drives the `bussard viz` HTTP server (serve + graceful shutdown). MIT.
@@ -52,6 +47,13 @@ rpassword = "=7.3.1"
 qrcode = { workspace = true }
 
 [dev-dependencies]
+# The domain crates the integration tests drive directly (frames, tables,
+# keys); the binary reaches them through bussard-service only.
+bussard-download = { workspace = true }
+bussard-mgmt = { workspace = true }
+bussard-project = { workspace = true }
+bussard-secure = { workspace = true }
+bussard-transport = { workspace = true }
 # The loopback mock gateway for the secured group read/write/monitor tests.
 bussard-testkit = { workspace = true }
 # Builds the synthetic `.knxprod` / `.knxproj` fixtures for the import-product tests.

@@ -33,6 +33,6 @@ mod sys7_theben_0701_plan;
 mod verify_mode_system_b;
 // The fixture applications and the random value sets of bussard-prod's
 // evaluator conformance test, shared with the view acceptance test.
-#[path = "../../../bussard-prod/tests/it/value_sets.rs"]
+#[path = "../../../bussard-product/tests/it/value_sets.rs"]
 mod value_sets;
 mod view_acceptance;

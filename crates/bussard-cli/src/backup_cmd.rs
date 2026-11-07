@@ -39,12 +39,12 @@ use std::process::ExitCode;
 use std::time::SystemTime;
 
 use anyhow::{Context, bail};
-use bussard_download::backup::{BackupManifest, ManifestEntry};
 use bussard_model::IndividualAddress;
 use bussard_service::WritePolicy;
 use bussard_service::backup::{
     BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
+use bussard_service::download::backup::{BackupManifest, ManifestEntry};
 use bussard_service::line::WalkEvent;
 
 use crate::cli::{Resolved, Run, Spec};
@@ -138,7 +138,7 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             .and_then(|d| d.device.product.as_ref())
             .and_then(|p| p.application_ref.as_deref())
             .and_then(|app| crate::product_store::pinned_application(dir, app));
-        bussard_download::uses_user_memory(app.as_ref())
+        bussard_service::download::uses_user_memory(app.as_ref())
     };
     let mut progress = |event: WalkEvent<'_, ManifestEntry>| match event {
         WalkEvent::Probing {

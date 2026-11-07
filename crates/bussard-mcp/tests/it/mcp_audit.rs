@@ -242,7 +242,7 @@ async fn test_knx_audit_live_probes_secure_devices() -> TestResult {
         .start()
         .await?;
     let config = bussard_transport::ConnectionConfig::tunnel(gw.addr());
-    let (handle, _task) = bussard_bus::Bus::connect(config.clone());
+    let (handle, _task) = bussard_transport::bus::Bus::connect(config.clone());
     let service = bussard_service::BusService::from_handle(
         config,
         handle.clone(),

@@ -58,8 +58,8 @@
 
 use std::time::Duration;
 
-use bussard_bus::{BusError, BusLease, FrameSubscription};
 use bussard_model::IndividualAddress;
+use bussard_transport::bus::{BusLease, FrameSubscription};
 use bussard_transport::cemi::{Apdu, CemiFrame, Priority, Tpci};
 use bussard_transport::tpci::{self, TpciKind};
 use bussard_transport::{BusConnection, TimestampedFrame, TransportError};
@@ -204,17 +204,17 @@ impl LeaseChannel {
     }
 }
 
-/// Folds a [`BusError`] into the management error type: a transport failure
-/// passes through, a gone actor means the connection is unusable, and a stale
+/// Folds a bus-actor send error into the management error type: a transport
+/// failure passes through, a gone actor means the connection is unusable, and a stale
 /// drop (the bus was reconnecting) is a timeout, which callers treat as a
 /// recoverable link loss (issue #177).
-pub(crate) fn map_bus_error(err: BusError) -> MgmtError {
+pub(crate) fn map_bus_error(err: TransportError) -> MgmtError {
     match err {
-        BusError::Transport(e) => MgmtError::Transport(e),
-        BusError::Stale => MgmtError::Transport(TransportError::Timeout(
+        TransportError::Stale => MgmtError::Transport(TransportError::Timeout(
             "a connected gateway (the bus is reconnecting)",
         )),
-        BusError::ActorGone => MgmtError::Transport(TransportError::Closed),
+        TransportError::ActorGone => MgmtError::Transport(TransportError::Closed),
+        e => MgmtError::Transport(e),
     }
 }
 

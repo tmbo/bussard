@@ -17,10 +17,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
-use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::admission::Admission;
+use bussard_service::monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
     DptOverridePolicy, ServiceError, WriteCheck, WriteRefusal, WriteValue, prepare_group_write,
@@ -835,8 +834,10 @@ impl BussardMcp {
             model: Some(model.as_ref()),
             dir: None,
             keys,
-            source: ops::group_source(service.handle()).into(),
-            authorize: bussard_service::Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
+            source: service.handle().group_source().into(),
+            authorize: bussard_service::Authorize::BestEffort(
+                bussard_service::mgmt::apci::FREE_ACCESS_KEY,
+            ),
             walk: describe::Walk::Objects,
         };
         let mut warm = self.warm.lock().await;
@@ -1084,7 +1085,7 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
 type TelegramKey = (SystemTime, String, String, Vec<u8>);
 
 /// Builds the dedup key for a decoded telegram.
-fn telegram_key(t: &bussard_monitor::DecodedTelegram) -> TelegramKey {
+fn telegram_key(t: &bussard_service::monitor::DecodedTelegram) -> TelegramKey {
     (
         t.timestamp,
         t.source.to_string(),
@@ -1117,7 +1118,7 @@ fn query_capture(
     exact_source: Option<IndividualAddress>,
     since: Option<SystemTime>,
     limit: usize,
-) -> Option<Vec<bussard_monitor::DecodedTelegram>> {
+) -> Option<Vec<bussard_service::monitor::DecodedTelegram>> {
     let store = CaptureStore::open(db).ok()?;
     let model = state.model.current();
     let qf = QueryFilter {
@@ -1138,10 +1139,10 @@ fn query_capture(
     let mut keyring = crate::secure_group::key_store(state.keyring.as_deref())
         .ok()
         .flatten()
-        .map(bussard_monitor::GroupKeyring::new);
+        .map(bussard_service::monitor::GroupKeyring::new);
     // Re-decode against the current model, drop undecodable rows, and re-apply
     // the requested filter (this is what makes a GA prefix like "3/" correct).
-    let mut out: Vec<bussard_monitor::DecodedTelegram> = rows
+    let mut out: Vec<bussard_service::monitor::DecodedTelegram> = rows
         .iter()
         .filter_map(|r| r.redecode_secured(Some(&model), keyring.as_mut()).ok())
         .filter(|t| filter.matches(t))
@@ -1157,7 +1158,7 @@ fn query_capture(
 /// `timefmt::from_rfc3339` is lenient (it returns the epoch on a bad string), so
 /// we reject an epoch result that did not come from an actual `1970` timestamp.
 fn parse_rfc3339(s: &str) -> Result<SystemTime, ErrorData> {
-    let ts = bussard_monitor::timefmt::from_rfc3339(s);
+    let ts = bussard_service::monitor::timefmt::from_rfc3339(s);
     if ts == SystemTime::UNIX_EPOCH && !s.starts_with("1970") {
         return Err(invalid(format!(
             "invalid RFC3339 timestamp {s:?} (expected e.g. 2026-09-15T10:00:00Z)"

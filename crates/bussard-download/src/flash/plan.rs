@@ -10,7 +10,7 @@ use super::plan_sys7::{Sys7PlanTables, plan_flash_sys7};
 use super::{
     AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, SegmentFill,
 };
-use bussard_prod::application::{
+use bussard_product::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -30,10 +30,10 @@ pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanEr
 /// on first use and kept in `cache` (issue #669), from the parameter values
 /// the plan resolved once (issue #945).
 fn composed_property_values<'a>(
-    cache: &'a mut Option<bussard_prod::PropertyValues>,
-    params: &bussard_prod::PropertyParameters<'_>,
+    cache: &'a mut Option<bussard_product::PropertyValues>,
+    params: &bussard_product::PropertyParameters<'_>,
     step: usize,
-) -> Result<&'a bussard_prod::PropertyValues, PlanError> {
+) -> Result<&'a bussard_product::PropertyValues, PlanError> {
     match cache {
         Some(values) => Ok(values),
         None => Ok(cache.insert(
@@ -277,7 +277,7 @@ pub fn plan_flash(
     template_ops: Option<&[LoadOp]>,
     table_images: &BTreeMap<u32, Vec<u8>>,
     object_flags: &BTreeMap<u16, bussard_model::Flags>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
@@ -369,7 +369,7 @@ pub fn plan_flash(
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
     let (param_images, mut placed) =
-        bussard_prod::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
+        bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
                 reason: format!("computing the parameter image: {e}"),
@@ -468,10 +468,10 @@ pub fn plan_flash(
     let mut error_maps: BTreeMap<u32, u32> = BTreeMap::new();
     // The values of the properties the program's parameters live in, composed
     // on the first `LdCtrlWriteProp` without `InlineData` (issue #669).
-    let mut property_values: Option<bussard_prod::PropertyValues> = None;
+    let mut property_values: Option<bussard_product::PropertyValues> = None;
     // The property-located parameters' values, resolved once for every
     // property write of the plan, declared or not (issue #945).
-    let property_params = bussard_prod::PropertyParameters::resolve(app, &config);
+    let property_params = bussard_product::PropertyParameters::resolve(app, &config);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
 
@@ -1493,7 +1493,7 @@ pub(super) fn plan_segments(
 pub(super) fn assemble_ops(
     app: &ApplicationProgram,
     template_ops: Option<&[LoadOp]>,
-    config: &bussard_prod::dynamic::DynamicConfig,
+    config: &bussard_product::dynamic::DynamicConfig,
 ) -> std::result::Result<AssembledOps, PlanError> {
     use super::plan_props::taken_ops;
     let non_empty: Vec<&LoadProcedure> = app
@@ -1654,7 +1654,7 @@ fn kept_from(
 pub fn kept_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<KeptOctets> {
     let Some(profile) = app
         .mask_version
@@ -1926,10 +1926,10 @@ mod tests {
     use super::*;
     use crate::flash::test_support::plan_flash_default;
     use crate::flash::test_support::{fabricated_app, no_overrides};
-    use bussard_prod::application::parse_application_program;
+    use bussard_product::application::parse_application_program;
 
     use crate::flash::labels::trace;
-    use bussard_prod::application::ApplicationProgram;
+    use bussard_product::application::ApplicationProgram;
     use std::collections::BTreeMap;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -2647,14 +2647,14 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-2_A-2", xml.as_bytes())?;
-        let template = bussard_prod::MasterTemplate::builtin_for_mask("07B0")
+        let template = bussard_product::MasterTemplate::builtin_for_mask("07B0")
             .ok_or("a built-in 07B0 template")?;
         let tables = crate::build_table_images(
             None,
             "1.1.1".parse()?,
             &app,
             &no_overrides(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert_eq!(tables.get(&3), Some(&vec![0, 0]));
         let plan = plan_flash_default(
@@ -3072,7 +3072,7 @@ mod tests {
             },
             LoadOp::Disconnect,
         ];
-        let memo = bussard_prod::dynamic::DynamicMemo::new(&app);
+        let memo = bussard_product::dynamic::DynamicMemo::new(&app);
         let overrides = BTreeMap::from([("P-579_R-1032".to_string(), "1".to_string())]);
         let (ops, spliced, _) =
             assemble_ops(&app, Some(&template), &memo.evaluate_for(&app, &overrides))?;
@@ -3730,7 +3730,8 @@ mod tests {
 
     /// The fabricated Siemens-shaped product procedure (issue #614).
     fn map_error_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
-        let xml = include_bytes!("../../../bussard-ets/tests/fixtures/ldctrl_map_error.app.xml");
+        let xml =
+            include_bytes!("../../../bussard-product/tests/fixtures/ldctrl_map_error.app.xml");
         Ok(parse_application_program("M-00FA_A-0614-01-ABCD", xml)?)
     }
 
@@ -3740,7 +3741,7 @@ mod tests {
             bussard_model::IndividualAddress::from_raw(0x1101),
             app,
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         );
         plan_flash_default(
             app,

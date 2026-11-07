@@ -24,7 +24,7 @@ use bussard_mgmt::{MaskProfile, MgmtError};
 use bussard_model::facts::{AuthorizeVerdict, DeviceFactsRecord};
 use bussard_model::identity::IdentityCheck;
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::bus::{Authorize, BusService, L4Options, Management};
@@ -326,7 +326,7 @@ pub async fn probe<P>(
             };
         // A loss still being re-established counts too (issue #192).
         let link_lost = handle.link_losses() != losses_before
-            || handle.status() == bussard_bus::BusState::Reconnecting;
+            || handle.status() == bussard_transport::bus::BusState::Reconnecting;
         if attempt >= PREFLIGHT_ATTEMPTS
             || !preflight_interrupted(&descriptor, resident.as_ref(), link_lost)
         {

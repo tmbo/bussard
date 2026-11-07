@@ -5,9 +5,9 @@
 //! secure diag [--clear]` calls, and the question is the CLI prompt's.
 
 use bussard_model::IndividualAddress;
-use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
 use bussard_service::program::plan::Fingerprint;
+use bussard_service::secure::SequenceHighWater;
 use bussard_service::secure::ToolKeySource;
 use serde_json::{Value, json};
 

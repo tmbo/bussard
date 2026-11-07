@@ -50,7 +50,7 @@ impl<P: Clone> Store<P> {
 
     /// When a plan handed out at `now` expires, as RFC 3339.
     pub fn expires_at(&self, now: SystemTime) -> String {
-        bussard_monitor::timefmt::to_rfc3339(now + self.ttl)
+        bussard_service::monitor::timefmt::to_rfc3339(now + self.ttl)
     }
 
     /// The entries with the expired ones dropped, recovering from a

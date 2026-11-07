@@ -11,7 +11,7 @@
 //! branch that is not taken is left out.
 //!
 //! The evaluator reads its input through the [`DynamicSource`] trait, so the
-//! same walk serves the product XML (`bussard_ets::ApplicationProgram`) and,
+//! same walk serves the product XML (`bussard_product::ApplicationProgram`) and,
 //! later, the product model (issue #345). [`evaluate_dynamic`] performs the
 //! walk and returns a [`DynamicConfig`]: the reached module instances,
 //! parameter refs and com-object refs, the reached containers, and the
@@ -227,7 +227,7 @@ pub struct ComputedArg {
 /// A `<Channel>` as a location in the Dynamic section: the channel an active
 /// parameter or com-object sits in (see
 /// [`Placement::channel`]), and the richer record kept for every
-/// channel in `bussard_ets::ApplicationProgram::channel_refs`.
+/// channel in `bussard_product::ApplicationProgram::channel_refs`.
 ///
 /// All ids are app-relative. For a channel of a module definition the id is the
 /// definition's (`MD-1_CH-1`); the module instance is recorded next to it.
@@ -398,7 +398,7 @@ impl WhenTest {
     /// Whether this branch applies to a parameter value.
     ///
     /// [`WhenTest::Default`] and [`WhenTest::Unknown`] never match directly; the
-    /// default branch is chosen by `bussard_ets::application::ConditionalGroup::members_for` when nothing
+    /// default branch is chosen by `bussard_product::application::ConditionalGroup::members_for` when nothing
     /// else matched.
     pub fn matches(&self, value: i64) -> bool {
         match self {
@@ -665,7 +665,7 @@ pub struct EnumValue {
     /// The numeric `Value`.
     pub value: i64,
     /// The display `Text` (translation applied): the label in the language
-    /// the program was parsed in (see `bussard_ets::parse_application_program_in`).
+    /// the program was parsed in (see `bussard_product::parse_application_program_in`).
     pub text: String,
     /// The untranslated `Text`: the label in the program's
     /// `DefaultLanguage`.
@@ -768,7 +768,7 @@ pub struct Memory {
 /// **relative within the union block** (not segment offsets). All members share
 /// the same underlying bytes; ETS writes the value of the member marked
 /// `DefaultUnionParameter` (falling back to the first member when none is
-/// marked). See [`UnionMember`] and `bussard_prod`'s image computation, which
+/// marked). See [`UnionMember`] and `bussard_product`'s image computation, which
 /// lays the default member down at `union_base + member_offset`.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct Union {
@@ -785,7 +785,7 @@ pub struct Union {
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct UnionMember {
     /// The member parameter's full XML `Id` (also present in
-    /// `bussard_ets::ApplicationProgram::parameters`, so its type/default resolve normally).
+    /// `bussard_product::ApplicationProgram::parameters`, so its type/default resolve normally).
     pub parameter: String,
     /// Byte offset **relative to the union base**, from the member's `Offset`.
     pub offset: Option<u32>,

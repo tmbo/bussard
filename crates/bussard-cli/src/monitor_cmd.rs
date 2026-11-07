@@ -4,11 +4,11 @@ use std::io::{IsTerminal, Write};
 use std::process::ExitCode;
 use std::time::Duration;
 
-use bussard_monitor::stream::{Flow, TelegramSink};
-use bussard_monitor::{
+use bussard_service::monitor::stream::{Flow, TelegramSink};
+use bussard_service::monitor::{
     CancelToken, DecodedTelegram, Filter, StreamOptions, json_line, pretty_line, run_stream,
 };
-use bussard_transport::{TimestampedFrame, TransportError};
+use bussard_service::transport::{TimestampedFrame, TransportError};
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{load_model_optional, resolve_config};

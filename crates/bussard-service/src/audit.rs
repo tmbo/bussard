@@ -19,12 +19,13 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use bussard_bus::BusHandle;
 use bussard_mgmt::MaskProfile;
 use bussard_model::identity::IdentityCheck;
 use bussard_model::{GroupAddress, IndividualAddress, Model, ModelAnalysis};
+use bussard_transport::bus::BusHandle;
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::knxnet::GatewayDescription;
+use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportError};
 use serde::Serialize;
 
 use crate::identity::{self, HIDDEN_MASK};
@@ -429,6 +430,20 @@ pub struct SampledTelegram {
     pub repeat_flag: bool,
 }
 
+/// Opens one tunnel connection to the gateway of `config` and closes it
+/// again, so a full interface fails loudly with
+/// [`TransportError::NoMoreConnections`] instead of a silent reconnect loop
+/// (issue #105).
+///
+/// # Errors
+///
+/// The connect error.
+pub async fn probe_tunnel(config: &ConnectionConfig) -> Result<(), TransportError> {
+    let conn = Transport::connect(config).await?;
+    let _ = conn.close().await;
+    Ok(())
+}
+
 /// Collects the group telegrams indicated on the bus for `window`.
 ///
 /// Only `L_Data.ind` frames count: the gateway's `L_Data.con` echo of our own
@@ -783,7 +798,7 @@ impl SecureLiveReport {
 /// The options of the MCP server's Secure probe: the bus's group source,
 /// discovery timeouts, no authorize.
 pub fn secure_probe_options(service: &BusService) -> L4Options {
-    L4Options::read_only(bussard_bus::ops::group_source(service.handle()))
+    L4Options::read_only(service.handle().group_source())
         .with_timeouts(bussard_mgmt::Timeouts::discovery())
         .with_authorize(Authorize::Skip)
 }

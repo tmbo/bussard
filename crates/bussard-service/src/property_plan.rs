@@ -10,7 +10,7 @@ use bussard_download::{FlashPlan, FlashStep, PropObject, parameter_overrides, pl
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::text::hex_upper;
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::ApplicationProgram;
+use bussard_product::ApplicationProgram;
 
 /// The property-only download of `app` for `target` under the model's
 /// parameters, or `None` when `app` is not a property-only procedure bussard
@@ -34,7 +34,7 @@ pub fn property_plan(
         None,
         &BTreeMap::new(),
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
     .ok()?;
     plan.is_property_only().then_some(plan)

@@ -160,7 +160,7 @@ p. 31]`, and the Jung 0705 devices answer it. A zero answer therefore means
 Every corpus segment is an `AbsoluteSegment` (`SegmentKind::Absolute`) with a
 fixed `Address`; the parser already carries `AbsSegment{lsm_idx, address, size}`
 plus the decoded `<Data>` and `<Mask>` payloads (see
-`crates/bussard-ets/src/application.rs`, `CodeSegment` / `LoadOp::AbsSegment`).
+`crates/bussard-product/src/application.rs`, `CodeSegment` / `LoadOp::AbsSegment`).
 The segment **`<Data>` IS the payload** to stream to `Address`; there is no
 separate write op (section 4.2). Address families `[corpus §3]`:
 

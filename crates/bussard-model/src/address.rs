@@ -220,7 +220,7 @@ impl IndividualAddress {
     }
 
     /// Constructs an individual address from its raw 16-bit representation.
-    pub fn from_raw(raw: u16) -> Self {
+    pub const fn from_raw(raw: u16) -> Self {
         Self(raw)
     }
 

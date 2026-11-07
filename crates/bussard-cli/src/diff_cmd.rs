@@ -187,9 +187,9 @@ pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
             files: texts(bundle.model_files)?,
         });
     }
-    let model = match bussard_project::import(path, password) {
+    let model = match bussard_product::import(path, password) {
         Ok(model) => model,
-        Err(bussard_project::ImportError::PasswordRequired) => anyhow::bail!(
+        Err(bussard_product::ProductError::PasswordRequired) => anyhow::bail!(
             "{} is password-protected; pass --password (or --password-b for the second \
              side) or set BUSSARD_PROJECT_PASSWORD",
             path.display()

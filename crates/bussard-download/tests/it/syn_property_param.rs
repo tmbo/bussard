@@ -14,7 +14,7 @@ use bussard_download::{
     read_property_value, template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 use bussard_testkit::consts::{
     OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
     OT_GROUP_OBJECT_TABLE,
@@ -30,17 +30,17 @@ use crate::support::plan_flash_default;
 const TERRITORY_REF: &str = "P-3_R-3";
 
 /// The product and its application, read from the zipped synthetic XML.
-fn product() -> TestResult<(bussard_prod::ProductData, tempfile::TempDir)> {
+fn product() -> TestResult<(bussard_product::ProductData, tempfile::TempDir)> {
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("syn-property-param.knxprod");
     zip_synthetic("syn-property-param", &path).map_err(|e| e.to_string())?;
-    Ok((bussard_prod::read_knxprod(&path)?, tmp))
+    Ok((bussard_product::read_knxprod(&path)?, tmp))
 }
 
 /// The System B plan of `app` for 1.1.1 under `overrides`, spliced into the
 /// built-in 07B0 template the stub master leaves bussard with.
 fn plan_of(
-    product: &bussard_prod::ProductData,
+    product: &bussard_product::ProductData,
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
 ) -> Result<bussard_download::FlashPlan, Box<dyn std::error::Error>> {
@@ -50,7 +50,7 @@ fn plan_of(
         "1.1.1".parse()?,
         app,
         overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     Ok(plan_flash_default(
         app,
@@ -351,7 +351,7 @@ fn with_declaration(
     max: u32,
     count: Option<u32>,
 ) -> TestResult<ApplicationProgram> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let mut app = app.clone();
     let mut found = false;
     for lp in &mut app.load_procedures {
@@ -601,7 +601,7 @@ const OT_SIEMENS_VENDOR: u16 = 50215;
 /// [`OT_SIEMENS_VENDOR`] and carrying `InlineData` `5A`: the Siemens
 /// `LdCtrlWriteProp ObjType="50215" PropId="205" InlineData="5A"` shape.
 fn with_typed_write(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let mut app = app.clone();
     let mut found = false;
     for op in app
@@ -769,7 +769,7 @@ async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> T
 /// completed by `LdCtrlWriteProp ObjIdx="8" PropId="5"`, each followed by the
 /// `LdCtrlCompareProp` of the state it leaves.
 fn with_load_state_writes(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let control = |event: u8| {
         let mut value = vec![0u8; 10];
         value[0] = event;

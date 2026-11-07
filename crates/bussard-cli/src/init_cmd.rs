@@ -33,7 +33,7 @@ use bussard_service::setup::gateway::describe_gateway;
 use bussard_service::setup::{
     self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
-use bussard_transport::knxnet::GatewayInfo;
+use bussard_service::transport::knxnet::GatewayInfo;
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::console::Console;

@@ -2,9 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 
-use bussard_prod::application::parse_application_program;
+use bussard_product::application::parse_application_program;
 
 /// A minimal single-application System B app: two relative segments (code +
 /// parameters) with a straightforward relative-segment procedure.
@@ -114,7 +114,7 @@ pub(crate) fn plan_flash_default(
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
-    template_ops: Option<&[bussard_prod::application::LoadOp]>,
+    template_ops: Option<&[bussard_product::application::LoadOp]>,
     table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> Result<super::FlashPlan, super::PlanError> {
     super::plan_flash(
@@ -126,6 +126,6 @@ pub(crate) fn plan_flash_default(
         template_ops,
         table_images,
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
 }

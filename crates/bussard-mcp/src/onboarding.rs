@@ -26,15 +26,15 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use bussard_bus::BusHandle;
 use bussard_model::Model;
 use bussard_service::BusService;
 use bussard_service::observer::{Answer, Collected, ProgressSink, Prompt, Question};
 use bussard_service::setup::{
     self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
-use bussard_transport::ConnectionConfig;
-use bussard_transport::knxnet::GatewayInfo;
+use bussard_service::transport::ConnectionConfig;
+use bussard_service::transport::bus::BusHandle;
+use bussard_service::transport::knxnet::GatewayInfo;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{
@@ -121,7 +121,7 @@ struct Running {
     /// The ring feeder, aborted when the server exits.
     feeder: tokio::task::JoinHandle<()>,
     /// This process's instance marker for the model directory (issue #287).
-    _instance: Option<bussard_transport::host_lock::HostLock>,
+    _instance: Option<bussard_service::transport::host_lock::HostLock>,
 }
 
 /// The shared part of every clone of [`SetupMcp`].
@@ -596,7 +596,7 @@ impl SetupMcp {
         let state = crate::build_state(&config).map_err(|e| format!("{e:#}"))?;
         let instance = crate::instances::register(&dir);
         let service = BusService::open(config.connection.clone(), config.write_policy())?;
-        if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
+        if service.gate() == Some(bussard_service::transport::write_gate::WriteGate::OptedIn) {
             tracing::warn!(
                 "{}",
                 bussard_service::guidance::opt_in_warning(&service.gateway_display())

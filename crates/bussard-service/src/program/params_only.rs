@@ -28,7 +28,7 @@ use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::IndividualAddress;
 use bussard_model::facts::DeviceFactsRecord;
-use bussard_prod::ApplicationProgram;
+use bussard_product::ApplicationProgram;
 use bussard_secure::{Key16, SequenceHighWater};
 
 use super::apply::BackupError;
@@ -102,7 +102,7 @@ pub async fn read_parameters(
 ) -> Result<ParamsRead, ServiceError> {
     // Best-effort: a denial or a device without authorize still reads.
     let options = L4Options::secured(
-        bussard_bus::ops::group_source(session.service.handle()),
+        session.service.handle().group_source(),
         session.tool_key.clone(),
         session.high_water.clone(),
     )
@@ -263,7 +263,7 @@ pub fn plan_parameters_only(
     // table, which this download does not rewrite. The device's values come
     // from the decoder the read-back uses (issue #142).
     let current = bussard_download::regions_memory(&regions);
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     let decoded = bussard_download::decode_parameters(
         app,
         inputs.overrides(),
@@ -478,7 +478,7 @@ mod tests {
     use super::*;
     use bussard_download::{ResidentObject, plan_flash};
     use bussard_mgmt::load::LoadState;
-    use bussard_prod::application::parse_application_program;
+    use bussard_product::application::parse_application_program;
     use std::collections::BTreeMap;
 
     /// A System B application with a known identity (manufacturer 1, number 1,
@@ -521,7 +521,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app()?),
+            &bussard_product::dynamic::DynamicMemo::new(&app()?),
         )?)
     }
 
@@ -620,7 +620,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )?)
     }
 

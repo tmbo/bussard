@@ -24,8 +24,8 @@ use bussard_service::knxnet::{
     apply_interface, write_interface_backup,
 };
 use bussard_service::property_plan::PropertyRow;
+use bussard_service::transport::ConnectionConfig;
 use bussard_service::{L4Options, WritePolicy};
-use bussard_transport::ConnectionConfig;
 
 use crate::conn_cmd::{BusSession, ConnOverrides, enforce_write_gate, gateway_display};
 
@@ -65,7 +65,7 @@ pub(crate) struct Procedure<'a> {
     /// The application program id.
     pub app_id: Option<&'a str>,
     /// The property-only download of the application.
-    pub plan: Option<&'a bussard_download::FlashPlan>,
+    pub plan: Option<&'a bussard_service::download::FlashPlan>,
 }
 
 /// The JSON shape of an interface plan: the device plan every `plan --json`
@@ -73,7 +73,7 @@ pub(crate) struct Procedure<'a> {
 #[derive(Debug, serde::Serialize)]
 struct InterfacePlanJson {
     #[serde(flatten)]
-    plan: bussard_download::DevicePlan,
+    plan: bussard_service::download::DevicePlan,
     /// The one question `apply` asks, `None` for an empty plan.
     question: Option<String>,
     /// Whether nothing would be written.
@@ -113,7 +113,7 @@ impl Session<'_> {
         Ok(L4Options::secured(
             source,
             tool_key,
-            bussard_secure::SequenceHighWater::new(),
+            bussard_service::secure::SequenceHighWater::new(),
         ))
     }
 
@@ -136,7 +136,7 @@ fn read_and_plan(
     session: &Session<'_>,
     options: &L4Options,
     link: &SessionLink,
-    procedure: Option<&bussard_download::FlashPlan>,
+    procedure: Option<&bussard_service::download::FlashPlan>,
 ) -> anyhow::Result<(InterfaceRead, InterfacePlan, Option<Vec<PropertyRow>>)> {
     let target = session.target;
     let facts = crate::conn_cmd::facts_cache(session.dir, true, session.overrides.refresh_facts);
@@ -160,7 +160,11 @@ fn read_and_plan(
 }
 
 /// Prints the plan as text, with the writes on the wire under `-v`.
-fn print_plan(plan: &InterfacePlan, device_plan: &bussard_download::DevicePlan, verbose: bool) {
+fn print_plan(
+    plan: &InterfacePlan,
+    device_plan: &bussard_service::download::DevicePlan,
+    verbose: bool,
+) {
     print!(
         "{}",
         crate::plan_view::render(device_plan, crate::style::Style::stdout())
@@ -229,7 +233,7 @@ pub(crate) fn plan(
         procedure.plan,
     )?;
     drop(bus);
-    let backup_dir = bussard_download::backup::backups_root(dir)
+    let backup_dir = bussard_service::download::backup::backups_root(dir)
         .display()
         .to_string();
     let mut device_plan = plan.device_plan(target, &session.name(), &gateway, backup_dir);
@@ -348,7 +352,7 @@ pub(crate) fn apply(
         eprintln!("{err}");
         return Ok(ExitCode::FAILURE);
     }
-    let backup_root = bussard_download::backup::backups_root(dir);
+    let backup_root = bussard_service::download::backup::backups_root(dir);
     let device_plan = plan.device_plan(
         target,
         &session.name(),

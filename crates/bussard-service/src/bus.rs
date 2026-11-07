@@ -9,13 +9,13 @@
 
 use std::time::Duration;
 
-use bussard_bus::{Bus, BusHandle};
 use bussard_mgmt::{
     ConnectOptions, Layer4Connection, LeaseChannel, MgmtError, ProbeMemo, Timeouts,
 };
 use bussard_model::IndividualAddress;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_transport::ConnectionConfig;
+use bussard_transport::bus::{Bus, BusHandle};
 use bussard_transport::write_gate::{WriteGate, gateway_display};
 
 use crate::error::ServiceError;
@@ -240,7 +240,7 @@ impl BusService {
     }
 
     /// The underlying bus actor handle, for reads, subscriptions and the domain
-    /// operations in [`bussard_bus::ops`].
+    /// flows in [`group`](crate::group).
     pub fn handle(&self) -> &BusHandle {
         &self.handle
     }

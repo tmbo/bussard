@@ -207,7 +207,9 @@ impl BussardMcp {
             };
             let user_memory = |target: IndividualAddress| {
                 let product = crate::tools_program::product_for(&dir, &model, target);
-                bussard_download::uses_user_memory(product.source.as_ref().and_then(|p| p.app()))
+                bussard_service::download::uses_user_memory(
+                    product.source.as_ref().and_then(|p| p.app()),
+                )
             };
             let inputs = BackupInputs {
                 model: &model,

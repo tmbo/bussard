@@ -8,7 +8,7 @@
 //!
 //! * the **desired** value of every parameter, from the device file's
 //!   `parameters:` block resolved through the application program (the same
-//!   override chain [`bussard_prod::compute_parameter_image`] encodes), and
+//!   override chain [`bussard_product::compute_parameter_image`] encodes), and
 //! * the **current** value, decoded out of the bytes the device holds today.
 //!
 //! The current bytes are read back by the caller, per code segment, and passed
@@ -19,7 +19,7 @@
 //!
 //! Decoding reuses the product data's own parameter type tables
 //! ([`ParameterType`]): there is no second parser here, only the inverse of the
-//! placement [`bussard_prod`] performs (MSB-first bit fields, big-endian
+//! placement [`bussard_product`] performs (MSB-first bit fields, big-endian
 //! integers, the three declared float encodings).
 //!
 //! # System 7
@@ -35,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_mgmt::load::read_table_reference;
 use bussard_mgmt::memory::read_memory_range;
 use bussard_mgmt::{L4Channel, Layer4Connection};
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 
 use crate::param_decode::decode_parameters;
 
@@ -207,7 +207,7 @@ pub fn param_plan(
         overrides,
         base_offsets,
         current,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     // Nothing was read: every override that lands in memory is a change to an
     // unknown current value, unless the download keeps its octets (issue
@@ -272,7 +272,7 @@ pub fn non_default_parameters(
         overrides,
         base_offsets,
         current,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
     .non_default
 }
@@ -312,7 +312,7 @@ pub fn group_object_change(
     app: &ApplicationProgram,
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> GroupObjectChange {
     let linked = BTreeMap::new();
     let asaps = |values: &BTreeMap<String, String>| -> BTreeSet<u16> {
@@ -687,7 +687,7 @@ pub async fn read_parameter_regions<Ch: L4Channel>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bussard_prod::application::parse_application_program;
+    use bussard_product::application::parse_application_program;
 
     /// A two-parameter System B application: an 8-bit setback temperature in °C
     /// and a 2-bit enumeration, both in one parameter segment.
@@ -862,7 +862,7 @@ mod tests {
             &BTreeMap::new(),
             &BTreeMap::new(),
             &current,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )
         .values;
         assert_eq!(values.get("P-0_R-1").map(String::as_str), Some("9"));
@@ -878,7 +878,7 @@ mod tests {
             &app,
             &off,
             &on,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         assert_eq!(change.shown, vec![2]);
         assert!(change.hidden.is_empty());
@@ -888,7 +888,7 @@ mod tests {
                 &app,
                 &on,
                 &off,
-                &bussard_prod::dynamic::DynamicMemo::new(&app)
+                &bussard_product::dynamic::DynamicMemo::new(&app)
             )
             .hidden,
             vec![2]
@@ -900,7 +900,7 @@ mod tests {
                 &app,
                 &off,
                 &thr,
-                &bussard_prod::dynamic::DynamicMemo::new(&app)
+                &bussard_product::dynamic::DynamicMemo::new(&app)
             )
             .is_empty()
         );

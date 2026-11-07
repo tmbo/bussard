@@ -36,7 +36,7 @@ use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
 use bussard_model::facts::DeviceFactsRecord;
-use bussard_prod::application::{ApplicationProgram, parse_application_program};
+use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{Inbound, MockDevice, MockGateway, Reaction, Verdict};
 use bussard_transport::cemi::Destination;
 use bussard_transport::knxnet::ServiceType;
@@ -1215,11 +1215,11 @@ async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn 
     let ops = &mut app.load_procedures[0].ops;
     let restart = ops
         .iter()
-        .position(|op| matches!(op, bussard_prod::application::LoadOp::Restart))
+        .position(|op| matches!(op, bussard_product::application::LoadOp::Restart))
         .ok_or("the procedure restarts")?;
     ops.insert(
         restart,
-        bussard_prod::application::LoadOp::Delay {
+        bussard_product::application::LoadOp::Delay {
             milliseconds: Some(200),
         },
     );
@@ -1339,7 +1339,7 @@ async fn flash_system7_resumes_across_a_connection_drop() -> Result<(), Box<dyn 
         s.deaths_remaining = 1;
     }
     let gw = start_gateway(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
         ConnectionConfig::tunnel(gw.addr())
             // These tests abort the mock gateway before the final T_Disconnect; with
             // the issue #177 re-establish on, that send would ride out the full budget.
@@ -1409,7 +1409,7 @@ async fn run_flash_with_reboot(
         s.revert_on_reboot = revert;
     }
     let gw = start_gateway(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
         ConnectionConfig::tunnel(gw.addr())
             // These tests abort the mock gateway before the final T_Disconnect; with
             // the issue #177 re-establish on, that send would ride out the full budget.
@@ -1546,7 +1546,7 @@ async fn sys7_preflight_then_flash(
     let state = fresh_device(LsmMode::MemoryMapped, Fault::None);
     lock(&state).reboot_on_restart = true;
     let gw = start_gateway_with_delay(&state, delay).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
         ConnectionConfig::tunnel(gw.addr())
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
     );
@@ -1675,7 +1675,7 @@ async fn measure_flash_system7_handover() -> Result<(), Box<dyn std::error::Erro
 /// A [`bussard_download::Connector`] that leases the bus actor to (re)open an L4
 /// connection (the reconnecting-session shape).
 struct LeaseConnector {
-    handle: bussard_bus::BusHandle,
+    handle: bussard_transport::bus::BusHandle,
     target: bussard_model::IndividualAddress,
     source: bussard_model::IndividualAddress,
     /// The L4 timeout budget each opened connection uses. `None` keeps the
@@ -3876,7 +3876,7 @@ async fn run_parity_flash_with(
         configure(&mut s);
     }
     let gw = start_gateway(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
         ConnectionConfig::tunnel(gw.addr())
             .with_reconnect(bussard_transport::TunnelReconnect::disabled()),
     );
@@ -4148,8 +4148,9 @@ async fn run_flash_across_restart_outage(
         attempt_timeout: Duration::from_millis(300),
         ..bussard_transport::TunnelReconnect::default()
     };
-    let (handle, _actor) =
-        bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect));
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
+        ConnectionConfig::tunnel(gw.addr()).with_reconnect(reconnect),
+    );
     handle.wait_connected(Duration::from_secs(5)).await;
     let connector = LeaseConnector {
         handle: handle.clone(),

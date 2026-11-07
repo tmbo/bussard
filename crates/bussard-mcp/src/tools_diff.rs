@@ -136,9 +136,9 @@ fn load_other(path: &Path) -> Result<(Model, Value), String> {
     let password = bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
-    match bussard_project::import(path, password.as_deref()) {
+    match bussard_product::import(path, password.as_deref()) {
         Ok(model) => Ok((model, json!({ "kind": "knxproj" }))),
-        Err(bussard_project::ImportError::PasswordRequired) => Err(format!(
+        Err(bussard_product::ProductError::PasswordRequired) => Err(format!(
             "{} is password-protected; the server needs BUSSARD_PROJECT_PASSWORD set (ask the \
              human; never guess a password)",
             path.display()

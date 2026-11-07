@@ -16,10 +16,10 @@
 //! 1. **The write gate.** A non-loopback gateway needs the operator's opt-in
 //!    (`BUSSARD_ALLOW_REAL_GATEWAY=1` or `--allow-remote-gateway`), checked at
 //!    server start by the CLI and again on every tool call here, through the
-//!    one shared policy in [`bussard_transport::write_gate`].
+//!    one shared policy in `bussard_transport::write_gate`.
 //! 2. **The source-address probe.** Both tools refuse when a device already
 //!    answers at the tunnel's own individual address
-//!    ([`bussard_mgmt::checked_source`]), exactly like the CLI device commands.
+//!    (`bussard_mgmt::checked_source`), exactly like the CLI device commands.
 //!    The probe runs once per tunnel instance (issue #341): a passed probe is
 //!    reused until the bus reconnects, a refusal is never remembered.
 //! 3. **The plan digest.** `knx_plan_device` reads the live tables, computes the
@@ -35,7 +35,7 @@
 //! The plan is the one `bussard plan --json` prints for the tables: changes in
 //! the model's words (`+ langzeitbetrieb now listens on 0/1/3 (…)`), what stays,
 //! what is written, the one question, and a `state_hash` of the device state
-//! read ([`bussard_download::state_hash`], the same fingerprint the CLI's
+//! read (`bussard_download::state_hash`, the same fingerprint the CLI's
 //! `apply --plan <hash>` checks). `knx_apply_device` also accepts that hash as
 //! `plan_hash` and refuses when a fresh read no longer produces it; the digest
 //! stays required.
@@ -78,7 +78,7 @@
 //! `bussard plan --keyring` do; a device the keyring does not list is read in
 //! the clear. For such a device `knx_apply_device` does what `bussard apply
 //! --keyring` does: every APDU rides `A_SecureData`, and a System B write also
-//! reprograms the security object through [`bussard_download`] (the security
+//! reprograms the security object through `bussard_download` (the security
 //! individual address table, PID 54; the group key table, PID 53; the
 //! group-object security flags, PID 61), in the ETS order. The plan says what
 //! the security object receives (addresses and object numbers, never a key),
@@ -92,10 +92,9 @@ use bussard_service::program::chain;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::args::Parameters;
-use bussard_download::{DesiredTables, LiveTables, PlanReport, SecurityInputs};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
-use bussard_secure::{Key16, SequenceHighWater};
+use bussard_service::download::{DesiredTables, LiveTables, PlanReport, SecurityInputs};
 use bussard_service::params::{
     BuiltPlan, MissingProduct, ProductSource, Selection, resolve_product,
 };
@@ -104,10 +103,11 @@ use bussard_service::program::flash::{FlashFor, FlashImage, FlashNeed};
 use bussard_service::program::plan::{PlanInputs, Planned};
 use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
 use bussard_service::program::{self as program};
+use bussard_service::secure::{Key16, SequenceHighWater};
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
+use bussard_service::transport::ConnectionConfig;
+use bussard_service::transport::write_gate::{check_write_gate, gateway_display};
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
-use bussard_transport::ConnectionConfig;
-use bussard_transport::write_gate::{check_write_gate, gateway_display};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
@@ -156,7 +156,7 @@ pub struct ProgrammingTier {
     /// Restore plans produced in this session, by digest (issue #290).
     restore_plans: Store<()>,
     /// Restart questions asked in this session, by digest (issue #717).
-    restarts: Store<bussard_download::RestartForm>,
+    restarts: Store<bussard_service::download::RestartForm>,
     /// Table-restore plans produced in this session, by digest (issue #717).
     table_restores: Store<()>,
     /// Line plans produced in this session, by digest (issue #748).
@@ -801,7 +801,7 @@ impl BussardMcp {
                 "address": target.to_string(),
                 "gateway": gateway,
                 "mask": format!("{:04X}", props.device_mask),
-                "system_type": bussard_mgmt::system_type(props.device_mask),
+                "system_type": bussard_service::mgmt::system_type(props.device_mask),
                 "secured": tool_key.is_some(),
                 "noop": noop,
                 "plan": bussard_service::property_plan::render_text(target, &app.id, &rows),
@@ -932,12 +932,13 @@ impl BussardMcp {
                         .notes
                         .insert(0, load_note(target, why, &f.plan, f.links_after));
                     if device_plan.writes.full_image.is_none() {
-                        device_plan.writes.full_image = Some(bussard_download::FullImage {
-                            segments: Vec::new(),
-                            address_table: report.resulting_address_count,
-                            association_table: report.resulting_association_count,
-                            tables_change: !report.is_noop(),
-                        });
+                        device_plan.writes.full_image =
+                            Some(bussard_service::download::FullImage {
+                                segments: Vec::new(),
+                                address_table: report.resulting_address_count,
+                                association_table: report.resulting_association_count,
+                                tables_change: !report.is_noop(),
+                            });
                     }
                 }
                 None => {
@@ -954,9 +955,9 @@ impl BussardMcp {
         }
         let plan_text = match device_plan.writes.full_image.as_ref() {
             Some(full) if flash.is_some() => {
-                bussard_download::render_full_image_plan_text(target, tables, report, full)
+                bussard_service::download::render_full_image_plan_text(target, tables, report, full)
             }
-            _ => bussard_download::render_plan_text(target, tables, report),
+            _ => bussard_service::download::render_plan_text(target, tables, report),
         };
         let digest = (!noop).then(|| {
             tier.remember_plan(
@@ -968,7 +969,7 @@ impl BussardMcp {
             )
         });
         let now = SystemTime::now();
-        let pairs = |list: &[bussard_download::ObjectGa]| -> Vec<Value> {
+        let pairs = |list: &[bussard_service::download::ObjectGa]| -> Vec<Value> {
             list.iter()
                 .map(|p| json!({"object": p.object, "ga": p.ga.to_string()}))
                 .collect()
@@ -1025,7 +1026,7 @@ impl BussardMcp {
             "address": target.to_string(),
             "gateway": gateway,
             "mask": format!("{:04X}", tables.mask),
-            "system_type": bussard_mgmt::system_type(tables.mask),
+            "system_type": bussard_service::mgmt::system_type(tables.mask),
             "secured": tool_key.is_some(),
             "identity": read.check().map(|c| bussard_service::identity_line(target, c)),
             "security_object": security_json(security.as_ref(), &desired, tables_noop),
@@ -1053,7 +1054,7 @@ impl BussardMcp {
             "load_steps": report.load_steps.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
             "backup_dir": device_plan.backup_dir,
             "plan_digest": digest,
-            "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
+            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
             "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
             "next_step": if noop {
                 match &built.parameters_skipped {
@@ -2046,7 +2047,7 @@ struct Prepared {
     /// The security-object inputs, on the secured System B path.
     security: Option<SecurityInputs>,
     /// The System 7 table images, when a System 7 device's links change.
-    images: Option<bussard_download::Sys7TableImages>,
+    images: Option<bussard_service::download::Sys7TableImages>,
     /// The audit snapshot's id.
     snapshot: Option<String>,
     /// The table backup.
@@ -2404,8 +2405,8 @@ async fn read_device(
         Err((address, mask)) => Err(format!(
             "{address} reports mask {mask:04X} ({}); programming supports the System B (x7B0) \
              and System 7 (0705 / 0701) families; on this mask bussard can: {}",
-            bussard_mgmt::system_type(mask),
-            bussard_mgmt::MaskProfile::from_mask(mask)
+            bussard_service::mgmt::system_type(mask),
+            bussard_service::mgmt::MaskProfile::from_mask(mask)
                 .capabilities()
                 .summary()
         )),
@@ -2456,7 +2457,7 @@ async fn read_property_rows(
     service: &BusService,
     target: IndividualAddress,
     tool_key: &Option<Key16>,
-    plan: &bussard_download::FlashPlan,
+    plan: &bussard_service::download::FlashPlan,
 ) -> Result<Vec<bussard_service::property_plan::PropertyRow>, String> {
     let source = service.checked_source(false).await?;
     let options = L4Options::secured(source, tool_key.clone(), SequenceHighWater::new());
@@ -2580,7 +2581,7 @@ fn security_for(
     }
     program::plan::security_inputs(Some(model), target, desired, material, &[], tunnel, dir)
         .map_err(|e| match e {
-            bussard_download::SecurityPlanError::OverCapacity { .. } => {
+            bussard_service::download::SecurityPlanError::OverCapacity { .. } => {
                 format!("{target}'s security object cannot be programmed: {e}")
             }
             e => format!(
@@ -2641,7 +2642,7 @@ fn refuse_drift(target: IndividualAddress, read: &DeviceRead) -> Result<(), Stri
     {
         return Err(refusal);
     }
-    if let Some(bussard_download::Sys7Identity::Resident { reason }) =
+    if let Some(bussard_service::download::Sys7Identity::Resident { reason }) =
         read.params.as_ref().and_then(|p| p.sys7_identity.as_ref())
     {
         return Err(format!(
@@ -2683,7 +2684,7 @@ fn flash_question(target: IndividualAddress, gateway: &str, changes: usize) -> S
 fn load_note(
     target: IndividualAddress,
     why: &str,
-    plan: &bussard_download::FlashPlan,
+    plan: &bussard_service::download::FlashPlan,
     links_after: bool,
 ) -> String {
     let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
@@ -2713,7 +2714,10 @@ fn load_note(
 
 /// The plan note of a download that writes no link table while the links
 /// differ (issue #779): the table write that follows it.
-fn links_after_note(target: IndividualAddress, plan: &bussard_download::FlashPlan) -> String {
+fn links_after_note(
+    target: IndividualAddress,
+    plan: &bussard_service::download::FlashPlan,
+) -> String {
     format!(
         "The download of {} does not write the link tables, so once it verified the same job \
          writes {target}'s links as `bussard apply {target}` does and reads them back; the \
@@ -2726,7 +2730,7 @@ fn links_after_note(target: IndividualAddress, plan: &bussard_download::FlashPla
 fn load_question(
     target: IndividualAddress,
     gateway: &str,
-    plan: &bussard_download::FlashPlan,
+    plan: &bussard_service::download::FlashPlan,
     links_after: bool,
 ) -> String {
     let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;

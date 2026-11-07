@@ -505,7 +505,7 @@ fn readiness_summary(app_id: &str, readiness: &[bussard_download::RebootReadines
 mod tests {
     use super::*;
 
-    fn app(id: &str) -> Result<bussard_prod::ApplicationProgram, Box<dyn std::error::Error>> {
+    fn app(id: &str) -> Result<bussard_product::ApplicationProgram, Box<dyn std::error::Error>> {
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/23">
              <ApplicationProgram Id="{id}" ApplicationNumber="1" ApplicationVersion="1"
@@ -520,7 +520,10 @@ mod tests {
               </Static>
              </ApplicationProgram></KNX>"#
         );
-        Ok(bussard_prod::parse_application_program(id, xml.as_bytes())?)
+        Ok(bussard_product::parse_application_program(
+            id,
+            xml.as_bytes(),
+        )?)
     }
 
     #[test]
@@ -562,7 +565,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )?;
         let change = bussard_download::PlanChange {
             mark: bussard_download::ChangeMark::Removed,

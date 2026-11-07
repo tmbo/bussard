@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bussard_service::SecureGroupError;
-use bussard_service::secure::KeyStore;
+use bussard_service::keys::KeyStore;
 
 /// The error chain of `err` as one human reason (the file and the cause,
 /// never a key).

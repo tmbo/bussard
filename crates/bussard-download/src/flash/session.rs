@@ -268,7 +268,7 @@ pub trait Connector {
 
     /// How many times the gateway link under this connector has been lost so
     /// far (a monotonic count; the CLI reports the bus actor's
-    /// [`link_losses`](bussard_bus::BusHandle::link_losses)).
+    /// [`link_losses`](bussard_transport::bus::BusHandle::link_losses)).
     ///
     /// The session compares it before and after a reconnect attempt: a
     /// failure while the count moved was caused by the gateway, not the

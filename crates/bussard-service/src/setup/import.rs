@@ -41,13 +41,13 @@ pub fn load_project(
     mut ask: impl FnMut() -> Result<Option<String>, SetupError>,
 ) -> Result<Model, SetupError> {
     let password = resolve_password(password);
-    let options = bussard_project::ImportOptions::for_dir(dir);
-    match bussard_project::import_with(path, password.as_deref(), &options) {
+    let options = bussard_product::ImportOptions::for_dir(dir);
+    match bussard_product::import_with(path, password.as_deref(), &options) {
         Ok(model) => Ok(model),
-        Err(bussard_project::ImportError::PasswordRequired) => {
+        Err(bussard_product::ProductError::PasswordRequired) => {
             // If we have no password yet and the caller can ask, ask once.
             match password.is_none().then(&mut ask).transpose()?.flatten() {
-                Some(pw) => bussard_project::import_with(path, Some(&pw), &options)
+                Some(pw) => bussard_product::import_with(path, Some(&pw), &options)
                     .map_err(SetupError::source),
                 None => Err(SetupError::PasswordRequired),
             }
@@ -100,7 +100,7 @@ pub fn capture_external_edit(dir: &Path, out: &mut dyn ProgressSink) {
 /// archive lacks, an `external edit` snapshot of hand edits, and the
 /// `before writing the imported model` snapshot `bussard undo` returns to.
 pub fn prepare_write(dir: &Path, out: &mut dyn ProgressSink) {
-    if dir.is_dir() && bussard_prod::product_model::models_incomplete(dir) {
+    if dir.is_dir() && bussard_product::product_model::models_incomplete(dir) {
         products::complete_models(dir, None, out);
     }
     before_write(dir, out);
@@ -287,7 +287,7 @@ pub fn fetch_product_data(
     let missing: std::collections::BTreeSet<String> = outcome
         .missing()
         .iter()
-        .map(|o| bussard_prod::normalize_order_number(o))
+        .map(|o| bussard_product::normalize_order_number(o))
         .collect();
     let without = model
         .devices
@@ -299,7 +299,7 @@ pub fn fetch_product_data(
                 .as_ref()
                 .and_then(|p| p.order_number.as_deref())
             {
-                Some(order) => missing.contains(&bussard_prod::normalize_order_number(order)),
+                Some(order) => missing.contains(&bussard_product::normalize_order_number(order)),
                 None => true,
             }
         })

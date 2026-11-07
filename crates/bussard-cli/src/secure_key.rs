@@ -79,13 +79,13 @@ pub(crate) fn secure_hint(
     let factory = err.chain().any(|cause| {
         cause.is::<FactoryKeyAnswered>()
             || matches!(
-                cause.downcast_ref::<bussard_mgmt::MgmtError>(),
-                Some(bussard_mgmt::MgmtError::FactoryKeyActive { .. })
+                cause.downcast_ref::<bussard_service::mgmt::MgmtError>(),
+                Some(bussard_service::mgmt::MgmtError::FactoryKeyActive { .. })
             )
             || matches!(
                 cause.downcast_ref::<bussard_service::ServiceError>(),
                 Some(bussard_service::ServiceError::Mgmt(
-                    bussard_mgmt::MgmtError::FactoryKeyActive { .. }
+                    bussard_service::mgmt::MgmtError::FactoryKeyActive { .. }
                 ))
             )
     });
@@ -128,7 +128,7 @@ pub fn no_group_key_hint(ga: bussard_model::GroupAddress, keyring_given: bool) -
 /// A keyring that cannot be loaded.
 pub fn group_keyring(
     keyring: Option<&std::path::Path>,
-) -> anyhow::Result<Option<bussard_monitor::GroupKeyring>> {
+) -> anyhow::Result<Option<bussard_service::monitor::GroupKeyring>> {
     let Some(path) = keyring else {
         return Ok(None);
     };
@@ -138,5 +138,5 @@ pub fn group_keyring(
         "keyring: {} group key(s) for secured group telegrams",
         store.group_keys.len()
     );
-    Ok(Some(bussard_monitor::GroupKeyring::new(store)))
+    Ok(Some(bussard_service::monitor::GroupKeyring::new(store)))
 }

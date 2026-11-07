@@ -1,7 +1,7 @@
 //! The connect-and-consume adapter over the bus actor.
 //!
 //! Since issue #37 this is a thin adapter: the reconnecting connect loop moved
-//! into the [`bussard_bus`] actor (one `Transport` owner, fanning inbound frames
+//! into the [`bus`](bussard_transport::bus) actor (one `Transport` owner, fanning inbound frames
 //! out to every subscriber). [`run_stream`] spawns a [`Bus`] from a
 //! [`ConnectionConfig`], subscribes, decodes every inbound frame against an
 //! optional model, and hands each [`DecodedTelegram`] to a [`TelegramSink`] —
@@ -13,8 +13,8 @@
 
 use std::time::Duration;
 
-use bussard_bus::{Bus, BusState};
 use bussard_model::Model;
+use bussard_transport::bus::{Bus, BusState};
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{ConnectionConfig, TransportError};
 use tokio::sync::{mpsc, watch};

@@ -33,7 +33,7 @@ use std::path::Path;
 
 use bussard_mgmt::manufacturers;
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::normalize_order_number;
+use bussard_product::normalize_order_number;
 
 use crate::BusService;
 use crate::assign::{Occupant, Verified, VerifyKey, identify, probe_occupant};

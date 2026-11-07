@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_download::build_table_images;
 use bussard_model::text::hex;
-use bussard_prod::ProductData;
+use bussard_product::ProductData;
 use zip::write::SimpleFileOptions;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -47,7 +47,7 @@ fn product(dir: &Path) -> Result<ProductData, Box<dyn std::error::Error>> {
         zip.write_all(&std::fs::read(&path)?)?;
     }
     zip.finish()?;
-    Ok(bussard_prod::read_knxprod(&out)?)
+    Ok(bussard_product::read_knxprod(&out)?)
 }
 
 #[test]
@@ -61,7 +61,7 @@ fn test_build_table_images_flagless_object_keeps_type_octet() -> TestResult {
         target,
         app,
         &BTreeMap::new(),
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     let table = tables.get(&3).ok_or("a group-object table")?;
     // Object 2 sits at +0x4 (word 0 is the count).

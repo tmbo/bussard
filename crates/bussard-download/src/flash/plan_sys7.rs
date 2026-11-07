@@ -10,7 +10,7 @@
 use super::{
     AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, Sys7Context,
 };
-use bussard_prod::application::{ApplicationProgram, LoadOp, SegmentKind, TableLocation};
+use bussard_product::application::{ApplicationProgram, LoadOp, SegmentKind, TableLocation};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The largest System 7 memory address (and segment size) the 2-octet fields of
@@ -248,9 +248,9 @@ pub(super) fn plan_flash_sys7(
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
     profile: bussard_mgmt::MaskProfile,
-    hawk: Option<&bussard_prod::HawkConfig>,
+    hawk: Option<&bussard_product::HawkConfig>,
     tables: &Sys7PlanTables,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     let sys7_tables = &tables.tables;
     let linked_flags = &tables.linked_flags;
@@ -271,7 +271,7 @@ pub(super) fn plan_flash_sys7(
     ops.truncate(sys7_procedure_end(&ops));
     // The values the program's property-located parameters compose, for a
     // property write without `InlineData`.
-    let property_values = bussard_prod::compute_property_values(app, &config).map_err(|e| {
+    let property_values = bussard_product::compute_property_values(app, &config).map_err(|e| {
         PlanError::UnsupportedWriteProp {
             step: 0,
             reason: format!("composing the property values from the parameters: {e}"),
@@ -282,7 +282,7 @@ pub(super) fn plan_flash_sys7(
     // the vendor's template, and the image streamed for it is that template with
     // the parameters laid over it.
     let (param_images, mut placed) =
-        bussard_prod::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
+        bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
                 reason: format!("computing the parameter image: {e}"),
@@ -310,7 +310,7 @@ pub(super) fn plan_flash_sys7(
 
     // Index the app's absolute code segments by address so each AbsSegment op can
     // find its <Data>/<Mask> payload. System 7 segments are all absolute.
-    let mut seg_by_addr: BTreeMap<u32, &bussard_prod::CodeSegment> = BTreeMap::new();
+    let mut seg_by_addr: BTreeMap<u32, &bussard_product::CodeSegment> = BTreeMap::new();
     for seg in app.code_segments.values() {
         if seg.kind == SegmentKind::Absolute
             && let Some(addr) = seg.address_or_offset
@@ -336,7 +336,7 @@ pub(super) fn plan_flash_sys7(
             .or(seg.data.as_ref())
             .map_or(0, Vec::len)
     });
-    let mut part_at: BTreeMap<u32, (&bussard_prod::CodeSegment, usize, usize)> = BTreeMap::new();
+    let mut part_at: BTreeMap<u32, (&bussard_product::CodeSegment, usize, usize)> = BTreeMap::new();
     let mut gaps_of: BTreeMap<String, Vec<(usize, usize)>> = BTreeMap::new();
     for split in &splits {
         for &(addr, offset, part_len) in &split.parts.parts {
@@ -796,7 +796,7 @@ fn sys7_code_segments(
     images: &BTreeMap<String, Vec<u8>>,
     declared: Option<&TableLocation>,
     param_images: &BTreeMap<String, Vec<u8>>,
-    placed: &bussard_prod::PlacedOctets,
+    placed: &bussard_product::PlacedOctets,
 ) -> BTreeSet<String> {
     let object_table = sys7_object_table_location(steps, images, declared).map(|(id, _)| id);
     steps
@@ -887,7 +887,7 @@ pub(super) fn sys7_segment_parts(
 /// machine of its first part.
 pub(super) struct SegmentSplit<'a> {
     /// The segment.
-    seg: &'a bussard_prod::CodeSegment,
+    seg: &'a bussard_product::CodeSegment,
     /// Its absolute base address.
     base: u32,
     /// The octets of its image.
@@ -920,9 +920,9 @@ impl SegmentSplit<'_> {
 pub(super) fn sys7_segment_splits<'a>(
     app: &'a ApplicationProgram,
     ops: &[LoadOp],
-    image_len: impl Fn(&bussard_prod::CodeSegment) -> usize,
+    image_len: impl Fn(&bussard_product::CodeSegment) -> usize,
 ) -> Vec<SegmentSplit<'a>> {
-    let mut seg_by_addr: BTreeMap<u32, &bussard_prod::CodeSegment> = BTreeMap::new();
+    let mut seg_by_addr: BTreeMap<u32, &bussard_product::CodeSegment> = BTreeMap::new();
     for seg in app.code_segments.values() {
         if seg.kind == SegmentKind::Absolute
             && let Some(addr) = seg.address_or_offset
@@ -987,7 +987,7 @@ pub(super) fn sys7_segment_splits<'a>(
 pub(super) fn sys7_kept_octets(
     app: &ApplicationProgram,
     ops: &[LoadOp],
-    image_len: impl Fn(&bussard_prod::CodeSegment) -> usize,
+    image_len: impl Fn(&bussard_product::CodeSegment) -> usize,
 ) -> Vec<KeptOctets> {
     sys7_segment_splits(app, ops, image_len)
         .iter()
@@ -1001,7 +1001,7 @@ pub(super) fn sys7_kept_octets(
 fn sys7_allocation_records(
     app: &ApplicationProgram,
     values: &BTreeMap<String, String>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Option<BTreeSet<(u32, u32, u32)>> {
     let config = memo.evaluate_for(app, values);
     let mut ops = super::plan_props::guarded_ops(app, &config).ok()?;
@@ -1039,7 +1039,7 @@ pub fn allocation_change(
     app: &ApplicationProgram,
     before: &BTreeMap<String, String>,
     after: &BTreeMap<String, String>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Option<String> {
     let is_sys7 = app
         .mask_version
@@ -1081,11 +1081,11 @@ pub fn allocation_change(
 /// the gap.
 #[allow(clippy::too_many_arguments)] // the segment, its part, and the plan's image tables.
 fn bind_segment_part(
-    seg: &bussard_prod::CodeSegment,
+    seg: &bussard_product::CodeSegment,
     offset: usize,
     len: usize,
     param_images: &BTreeMap<String, Vec<u8>>,
-    placed: &bussard_prod::PlacedOctets,
+    placed: &bussard_product::PlacedOctets,
     gaps: &[(usize, usize)],
     images: &mut BTreeMap<String, Vec<u8>>,
     segment_masks: &mut BTreeMap<String, Vec<u8>>,
@@ -1163,7 +1163,7 @@ pub(super) struct Sys7ObjectDefault {
 /// default 0; ETS wrote `template & !C` on all 20 sweep rows).
 pub(super) fn sys7_object_defaults(
     app: &ApplicationProgram,
-    config: &bussard_prod::dynamic::DynamicConfig,
+    config: &bussard_product::dynamic::DynamicConfig,
 ) -> BTreeMap<u16, Sys7ObjectDefault> {
     if config.com_objects.is_empty() {
         if dynamic_declares_com_objects(app) {
@@ -1192,7 +1192,7 @@ pub(super) fn sys7_object_defaults(
         // A `BaseNumber` its instance has no value for (issue #449) gets no
         // entry here; the parameter image refuses the configuration.
         let offset = match base.base_number_ref.as_deref() {
-            Some(arg) => match bussard_prod::module_argument(app, config, active.module, arg) {
+            Some(arg) => match bussard_product::module_argument(app, config, active.module, arg) {
                 Some(v) => v,
                 None => continue,
             },
@@ -1478,7 +1478,7 @@ pub fn plan_flash_sys7_with_hawk(
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
     base_offsets: &BTreeMap<String, u32>,
-    hawk: Option<&bussard_prod::HawkConfig>,
+    hawk: Option<&bussard_product::HawkConfig>,
     table_images: &BTreeMap<u32, Vec<u8>>,
 ) -> std::result::Result<FlashPlan, PlanError> {
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
@@ -1509,7 +1509,7 @@ pub fn plan_flash_sys7_with_hawk(
         profile,
         hawk,
         &tables,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     )
 }
 
@@ -1817,7 +1817,7 @@ impl Sys7SegmentOp {
 /// for the data-driven memory-mapped conformance harness and for any 0705 silicon
 /// a future capture proves genuinely memory-mapped.
 pub fn sys7_profile_from_hawk(
-    hawk: &bussard_prod::HawkConfig,
+    hawk: &bussard_product::HawkConfig,
 ) -> Option<bussard_mgmt::Sys7Profile> {
     let control = hawk.resource("GroupAddressTableLoadControl")?;
     // Only the memory-mapped M112 LoadControl is data-driven here; a property
@@ -2122,11 +2122,11 @@ mod tests {
         Ok(())
     }
     use crate::flash::test_support::no_overrides;
-    use bussard_prod::application::parse_application_program;
+    use bussard_product::application::parse_application_program;
     use std::collections::BTreeMap;
     use std::collections::BTreeSet;
 
-    use bussard_prod::application::ApplicationProgram;
+    use bussard_product::application::ApplicationProgram;
 
     /// Issue #386, 1.1.44 (ABB 6119/20, `A-A002`, mask 0701): the program
     /// declares its descriptor table at `AS-43FE` + 0, the pointers are
@@ -2566,7 +2566,7 @@ mod tests {
         ];
         let run = |value: &str| {
             let overrides = BTreeMap::from([("P-1_R-1".to_string(), value.to_string())]);
-            let config = bussard_prod::dynamic::evaluate_dynamic(&app, &overrides);
+            let config = bussard_product::dynamic::evaluate_dynamic(&app, &overrides);
             let defaults = sys7_object_defaults(&app, &config);
             let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
             apply_sys7_group_object_links(
@@ -3958,7 +3958,7 @@ mod tests {
 
     #[test]
     fn sys7_profile_from_hawk_resolves_memory_mapped_addresses() {
-        use bussard_prod::{HawkConfig, HawkResource};
+        use bussard_product::{HawkConfig, HawkResource};
         let mut resources = std::collections::HashMap::new();
         resources.insert(
             "GroupAddressTableLoadControl".to_string(),
@@ -4303,7 +4303,7 @@ mod tests {
     /// `A-5015-13`) plans at its defaults with the gap kept (issue #657).
     #[test]
     fn test_sys7_segment_parts_on_the_corpus() -> Result<(), Box<dyn std::error::Error>> {
-        use bussard_prod::application::LoadProcedure;
+        use bussard_product::application::LoadProcedure;
         let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
             return Ok(());
         };
@@ -4339,7 +4339,7 @@ mod tests {
         let (mut sys7, mut sys_b, mut sys7_choose, mut sys_b_choose) = (0, 0, 0, 0);
         let mut default_splits = Vec::new();
         for path in crate::corpus::knxprod_files(&dir) {
-            let Ok(product) = bussard_prod::read_knxprod(&path) else {
+            let Ok(product) = bussard_product::read_knxprod(&path) else {
                 continue;
             };
             for app in &product.applications {

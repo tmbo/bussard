@@ -29,8 +29,8 @@ use zeroize::Zeroizing;
 
 use bussard_secure::{Key16, Password, aes_cbc_decrypt};
 
-use bussard_ets::attrs::{attr_value, attrs_map};
 use bussard_model::{GroupAddress, IndividualAddress};
+use bussard_product::attrs::{attr_value, attrs_map};
 
 /// The number of bytes of raw key material in a KNX Secure key.
 pub(crate) const KEY_LEN: usize = 16;
@@ -416,16 +416,18 @@ pub(crate) fn attr(e: &BytesStart, key: &[u8]) -> Result<Option<String>, Keyring
 }
 
 /// The context string handed to the shared attribute helpers; it only shows up
-/// inside [`bussard_ets::EtsError`], which [`xml_error`] unwraps again.
+/// inside [`bussard_product::ProductError`], which [`xml_error`] unwraps again.
 const KEYRING_CONTEXT: &str = ".knxkeys";
 
 /// Maps an attribute-helper error onto [`KeyringError::Xml`], carrying only the
 /// underlying quick-xml message so the text matches what the keyring reported
 /// before the helpers were shared.
-fn xml_error(e: bussard_ets::EtsError) -> KeyringError {
+fn xml_error(e: bussard_product::ProductError) -> KeyringError {
     match e {
-        bussard_ets::EtsError::XmlAttr { source, .. } => KeyringError::Xml(source.to_string()),
-        bussard_ets::EtsError::Xml { source, .. } => KeyringError::Xml(source.to_string()),
+        bussard_product::ProductError::XmlAttr { source, .. } => {
+            KeyringError::Xml(source.to_string())
+        }
+        bussard_product::ProductError::Xml { source, .. } => KeyringError::Xml(source.to_string()),
         other => KeyringError::Xml(other.to_string()),
     }
 }

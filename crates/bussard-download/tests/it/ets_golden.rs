@@ -25,7 +25,7 @@ use bussard_download::FlashStep;
 use bussard_download::compute::LinkedObject;
 use bussard_download::compute::dynamic_group_object_table;
 use bussard_download::flash::SegmentFill;
-use bussard_prod::{ApplicationProgram, compute_parameter_image, parse_application_program};
+use bussard_product::{ApplicationProgram, compute_parameter_image, parse_application_program};
 
 use crate::support::plan_flash_default;
 
@@ -187,7 +187,7 @@ fn test_f50_group_object_table_matches_ets() -> TestResult {
         &app,
         &overrides(),
         &linked,
-        &bussard_prod::dynamic::DynamicMemo::new(&app),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
     )
     .ok_or("no group-object table")?;
     let d = diff(&ours, &ets);
@@ -286,7 +286,7 @@ fn test_a3030_group_object_table_matches_ets() -> TestResult {
         &app,
         &BTreeMap::new(),
         &linked(&objects)?,
-        &bussard_prod::dynamic::DynamicMemo::new(&app),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
     )
     .ok_or("no group-object table")?;
     assert_image("A-3030 obj3", &ours, &fixture("a3030-obj3.hex")?);
@@ -331,7 +331,7 @@ fn test_a0ed_group_object_table_matches_ets() -> TestResult {
         &app,
         &overrides,
         &linked(&objects)?,
-        &bussard_prod::dynamic::DynamicMemo::new(&app),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
     )
     .ok_or("no group-object table")?;
     assert_image("A-A0ED obj3", &ours, &fixture("a0ed-obj3.hex")?);
@@ -366,7 +366,7 @@ fn test_helios_tables_match_ets() -> TestResult {
         &app,
         &BTreeMap::new(),
         &linked(&objects)?,
-        &bussard_prod::dynamic::DynamicMemo::new(&app),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
     )
     .ok_or("no group-object table")?;
     assert_image("Helios obj3", &ours, &fixture("helios-obj3.hex")?);
@@ -579,7 +579,7 @@ fn test_20de_plan_writes_program_version_only_to_loaded_objects() -> TestResult 
         .find(|p| p.is_file())
         .ok_or("the product `load` found is gone")?;
     let master_xml = zip_entry(std::fs::read(path)?, "knx_master.xml")?;
-    let master = bussard_prod::parse_master_template(&master_xml, "knx_master.xml")?;
+    let master = bussard_product::parse_master_template(&master_xml, "knx_master.xml")?;
     let mask = app.mask_version.as_deref().ok_or("no mask version")?;
     let template = master
         .full_load_procedure(mask)

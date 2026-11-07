@@ -190,7 +190,7 @@ fn identified_json(i: &Identified) -> Value {
         "current_address": i.current.to_string(),
         "serial": v.serial.as_deref().map(hex),
         "mask": v.mask.map(|m| format!("{m:04X}")),
-        "manufacturer": v.manufacturer_id.map(bussard_mgmt::manufacturers::display),
+        "manufacturer": v.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
         "order_number": v.order,
         "order_check": match i.check {
             OrderCheck::Matches => "matches",

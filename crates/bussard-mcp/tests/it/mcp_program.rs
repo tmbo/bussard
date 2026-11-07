@@ -1136,12 +1136,12 @@ async fn test_knx_plan_device_lists_a_value_on_an_unshown_ref_as_ignored() -> an
          </ParameterBlock></Dynamic></ApplicationProgram></ApplicationPrograms></Manufacturer>\
          </ManufacturerData></KNX>\n"
     );
-    let program = bussard_prod::parse_application_program(app, xml.as_bytes())?;
-    let product = bussard_prod::ProductData {
+    let program = bussard_product::parse_application_program(app, xml.as_bytes())?;
+    let product = bussard_product::ProductData {
         applications: vec![program.clone()],
-        ..bussard_prod::ProductData::default()
+        ..bussard_product::ProductData::default()
     };
-    bussard_prod::product_model::write_product_models(&product, dir)?;
+    bussard_product::product_model::write_product_models(&product, dir)?;
     std::fs::write(
         dir.join("bussard.lock"),
         format!(

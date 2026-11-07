@@ -5,7 +5,7 @@
 //!
 //! 1. loads the [`Model`](bussard_model::Model) and precomputes the `/api/model`
 //!    projection ([`project`]),
-//! 2. optionally spawns the [`Bus`](bussard_bus::Bus) actor and a feeder that
+//! 2. optionally spawns the `Bus` actor and a feeder that
 //!    fills the [`TrafficHub`](traffic::TrafficHub) from the live bus,
 //! 3. builds the axum [`router`] and serves it until the listener closes.
 //!
@@ -61,9 +61,9 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use bussard_model::Model;
+use bussard_service::transport::ConnectionConfig;
+use bussard_service::transport::write_gate::WriteGate;
 use bussard_service::{BusService, WritePolicy};
-use bussard_transport::ConnectionConfig;
-use bussard_transport::write_gate::WriteGate;
 
 use bussard_service::ModelHandle;
 
@@ -101,7 +101,7 @@ pub struct VizConfig {
     pub allowed_hosts: Vec<String>,
     /// The keyring or key store for KNX Data Secure group communication
     /// (`--keyring`, issue #172): secured writes and decrypted live traffic.
-    pub group_keys: Option<std::sync::Arc<bussard_service::secure::KeyStore>>,
+    pub group_keys: Option<std::sync::Arc<bussard_service::keys::KeyStore>>,
 }
 
 /// Errors surfaced while starting the viz server.
@@ -298,7 +298,7 @@ pub fn state_with_feed(
                 security
                     .group_keys
                     .clone()
-                    .map(bussard_monitor::GroupKeyring::new),
+                    .map(bussard_service::monitor::GroupKeyring::new),
             ));
             (bus, Some(feeder))
         }
@@ -880,8 +880,8 @@ mod tests {
         // frames: a `bus` event, then the replayed `telegram` events with ids.
         use bussard_model::IndividualAddress;
         use bussard_model::codec::TypedValue;
-        use bussard_monitor::DecodedTelegram;
-        use bussard_monitor::decode::{ApciKind, DestinationRef};
+        use bussard_service::monitor::DecodedTelegram;
+        use bussard_service::monitor::decode::{ApciKind, DestinationRef};
         use std::time::SystemTime;
 
         let state = empty_state();

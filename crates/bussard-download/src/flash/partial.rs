@@ -205,7 +205,7 @@ impl FlashPlan {
     pub fn restoring(
         &self,
         wanted: &BTreeMap<String, Vec<u8>>,
-        skip: &bussard_prod::PlacedOctets,
+        skip: &bussard_product::PlacedOctets,
     ) -> FlashPlan {
         let mut plan = self.clone();
         plan.unwritten = BTreeMap::new();
@@ -657,12 +657,12 @@ mod tests {
         let partial = full.parameters_only(&regions)?;
         let wanted = BTreeMap::from([(segment.to_string(), vec![9u8])]);
 
-        let restore = partial.restoring(&wanted, &bussard_prod::PlacedOctets::new());
+        let restore = partial.restoring(&wanted, &bussard_product::PlacedOctets::new());
         assert_eq!(restore.changed_octets(), 1);
         assert_eq!(restore.image_bytes(segment), Some(&[9u8][..]));
         assert!(restore.unwritten_bits().is_empty());
 
-        let skip = bussard_prod::PlacedOctets::from([(
+        let skip = bussard_product::PlacedOctets::from([(
             segment.to_string(),
             std::collections::BTreeSet::from([0usize]),
         )]);

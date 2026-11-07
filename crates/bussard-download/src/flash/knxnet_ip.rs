@@ -52,7 +52,7 @@ use bussard_mgmt::knxnet::{
 use bussard_mgmt::load::{WriteError, is_connection_death};
 use bussard_model::IndividualAddress;
 use bussard_model::knxnet::{IpAssignment, KnxnetConfig};
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 
 /// `PID_PROJECT_INSTALLATION_ID` as ETS writes it in every sweep capture: no
 /// project or installation number (11 captures, 2026-10-28).

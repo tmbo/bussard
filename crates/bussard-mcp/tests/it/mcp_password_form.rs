@@ -137,7 +137,7 @@ type Client = rmcp::service::RunningService<RoleClient, Human>;
 /// A minimal ETS 6 project export protected with [`PASSWORD`]: one group
 /// address 1/0/1.
 fn protected_knxproj(path: &Path) -> Result<(), BoxError> {
-    let derived = bussard_project::derive_zip_password(PASSWORD);
+    let derived = bussard_product::derive_zip_password(PASSWORD);
     let project = r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/21">
   <Project Id="P-0001">

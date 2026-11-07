@@ -204,7 +204,7 @@ fn test_device_toml_is_paste_ready() -> TestResult {
 /// channel 1 on, data lengths, a polarity, an `Access="None"` channel).
 const DEFAULTS_APP_ID: &str = "M-00FA_A-00D2-10-0001";
 const DEFAULTS_APP_XML: &[u8] =
-    include_bytes!("../../../bussard-project/tests/fixtures/default_params.app.xml");
+    include_bytes!("../../../bussard-product/tests/fixtures/default_params.app.xml");
 
 /// A project with one device on 1.1.9 running [`DEFAULTS_APP_XML`] and
 /// storing no parameter value at all.

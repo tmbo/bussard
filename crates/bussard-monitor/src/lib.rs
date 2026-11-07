@@ -5,7 +5,6 @@
 //!
 //! - [`decode`] — the pure decode pipeline: a cEMI frame plus an optional
 //!   [`Model`](bussard_model::Model) becomes a [`DecodedTelegram`].
-//! - [`acceptance`] — the scripted `tests.toml` runner behind `bussard test`.
 //! - [`infer`] — pure DPT inference and name proposal from observed payloads,
 //!   the engine behind `bussard learn` and the `knx_infer_group` MCP tool.
 //! - [`filter`] — a comma-separated address filter ([`Filter`]) shared by the
@@ -22,7 +21,6 @@
 
 #![warn(missing_docs)]
 
-pub mod acceptance;
 pub mod decode;
 pub mod filter;
 pub mod format;
@@ -33,9 +31,6 @@ pub mod store;
 pub mod stream;
 pub use bussard_model::timefmt;
 
-pub use acceptance::{
-    ManualDecision, ManualStep, Report, RunOptions, SkipManual, Status, TestOutcome, run_suite,
-};
 pub use decode::{ApciKind, DecodedTelegram, DestinationRef};
 pub use filter::{Filter, FilterParseError};
 pub use format::{json_line, json_value, pretty_line};

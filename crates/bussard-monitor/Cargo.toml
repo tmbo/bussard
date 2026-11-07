@@ -11,7 +11,6 @@ description = "Bus monitor and capture for bussard: decode pipeline, SQLite capt
 [dependencies]
 bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
-bussard-bus = { workspace = true }
 # KNX Data Secure group telegrams (`secure`): CCM verify/decrypt with group keys.
 bussard-secure = { workspace = true }
 # The key store the group keys of `GroupKeyring` are read from (issue #908).

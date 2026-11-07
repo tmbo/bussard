@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_download::flash::kept_octets;
 use bussard_download::{FlashPlan, FlashStep, build_table_images, template_ops_for};
-use bussard_prod::ProductData;
+use bussard_product::ProductData;
 use zip::write::SimpleFileOptions;
 
 use crate::support::plan_flash_default;
@@ -49,7 +49,7 @@ fn product(dir: &Path) -> Result<ProductData, Box<dyn std::error::Error>> {
         zip.write_all(&std::fs::read(&path)?)?;
     }
     zip.finish()?;
-    Ok(bussard_prod::read_knxprod(&out)?)
+    Ok(bussard_product::read_knxprod(&out)?)
 }
 
 /// The full download plan of the product under `overrides`.
@@ -65,7 +65,7 @@ fn plan(
         target,
         app,
         overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     Ok(plan_flash_default(
         app,
@@ -129,7 +129,7 @@ fn test_plan_flash_partial_segment_writes_the_taken_half() -> TestResult {
     assert_eq!(plan.total_write_bytes() - table_bytes(&plan), 128);
     // The read-back and the plan locate the same gap without a plan at hand.
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
     Ok(())
 }
@@ -143,7 +143,7 @@ fn test_plan_flash_partial_segment_other_branch_writes_the_whole_segment() -> Te
     assert_eq!(app_writes(&plan), vec![(0, 0, 256)]);
     assert!(plan.kept().is_empty());
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     assert!(kept_octets(app, &overrides, &memo).is_empty());
     Ok(())
 }

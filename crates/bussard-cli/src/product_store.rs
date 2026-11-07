@@ -63,7 +63,7 @@ pub(crate) fn resolve(
 pub(crate) fn pinned_application(
     dir: &Path,
     app_ref: &str,
-) -> Option<bussard_prod::ApplicationProgram> {
+) -> Option<bussard_product::ApplicationProgram> {
     let entry = bussard_model::lock_products::lock_entries(dir)
         .into_iter()
         .find(|e| e.file.is_some() && e.applications.iter().any(|a| a == app_ref))?;
@@ -74,7 +74,7 @@ pub(crate) fn pinned_application(
         None,
         dir,
         language.as_deref(),
-        |_| bussard_prod::AppSelection::Exact(vec![app_ref.to_string()]),
+        |_| bussard_product::AppSelection::Exact(vec![app_ref.to_string()]),
         Some(crate::timing::record_product_parse),
     )
     .ok()?;
@@ -178,7 +178,7 @@ mod tests {
 
     #[test]
     fn test_cache_dir_needs_a_model_directory() -> Result<(), Box<dyn std::error::Error>> {
-        use bussard_prod::product_model::{CACHE_ENV, cache_dir};
+        use bussard_product::product_model::{CACHE_ENV, cache_dir};
         let root =
             std::env::temp_dir().join(format!("bussard-product-cache-{}", std::process::id()));
         std::fs::create_dir_all(&root)?;

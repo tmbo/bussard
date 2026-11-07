@@ -44,8 +44,8 @@
 
 use std::sync::{Arc, Mutex};
 
-use bussard_bus::{BusHandle, BusState};
 use bussard_model::IndividualAddress;
+use bussard_transport::bus::{BusHandle, BusState};
 
 use crate::apci;
 use crate::connection::{L4Channel, Layer4Connection, LeaseChannel, Timeouts, map_bus_error};
@@ -114,7 +114,7 @@ pub enum SourceCheckError {
 /// The source individual address for a **connection-oriented** device
 /// operation, checked against the bus first.
 ///
-/// Resolves the source exactly as [`bussard_bus::ops::group_source`] does (the
+/// Resolves the source exactly as [`BusHandle::group_source`](bussard_transport::bus::BusHandle::group_source) does (the
 /// tunnel-assigned individual address, or the `0.0.255` fallback on routing),
 /// then, unless `skip` is set, probes the bus for a device answering at that
 /// very address and refuses if one does. The budget is
@@ -124,7 +124,7 @@ pub async fn checked_source(
     handle: &BusHandle,
     skip: bool,
 ) -> std::result::Result<IndividualAddress, SourceCheckError> {
-    let source = bussard_bus::ops::group_source(handle);
+    let source = handle.group_source();
     if skip {
         tracing::debug!(%source, "source-address check skipped");
         return Ok(source);
@@ -198,7 +198,7 @@ impl ProbeMemo {
         handle: &BusHandle,
         skip: bool,
     ) -> std::result::Result<IndividualAddress, SourceCheckError> {
-        let source = bussard_bus::ops::group_source(handle);
+        let source = handle.group_source();
         if skip {
             tracing::debug!(%source, "source-address check skipped");
             return Ok(source);

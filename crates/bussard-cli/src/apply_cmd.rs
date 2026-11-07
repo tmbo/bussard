@@ -18,7 +18,7 @@
 //! 6. **Back up** the pre-state tables to `<dir>/captures/backups/<ia>-<ts>.json`
 //!    and, when parameters change, the parameter memory.
 //! 7. Write the minimum: the tables when a link changes (see
-//!    [`bussard_download::apply`]), and only the parameter octets that differ
+//!    `bussard_download::apply`), and only the parameter octets that differ
 //!    (the `flash --parameters-only` download), each verified by reading back.
 //! 8. On any failure, print the backup path and recovery guidance loudly and
 //!    exit non-zero.
@@ -30,10 +30,10 @@
 //! # Two device families
 //!
 //! **System B** (mask `x7B0`) writes its tables into two loadable interface
-//! objects ([`bussard_download::apply`]). **System 7** (mask `0705` / `0701`) has
+//! objects (`bussard_download::apply`). **System 7** (mask `0705` / `0701`) has
 //! no such objects: its tables are absolute memory regions driven by two of the
 //! three parallel load-state machines, so the write runs
-//! [`bussard_download::apply_sys7`] instead — `Unload` the two table LSMs, then
+//! `bussard_download::apply_sys7` instead — `Unload` the two table LSMs, then
 //! load each in turn: allocate its region, stream it in 12-octet chunks with a
 //! read-back verify, `TaskSegment`, `LoadCompleted` (issue #91). The parameter
 //! image and the application are never rewritten, which is the whole point: a
@@ -44,7 +44,7 @@
 //! activates its content on `LoadCompleted`. A System 7 one ends with a basic
 //! restart, as ETS's table-only downloads do, and `apply` waits for the device
 //! to answer again before it goes on. See the ordering and restart rationale in
-//! [`bussard_download::apply_sys7`].
+//! `bussard_download::apply_sys7`.
 //!
 //! # Safety
 //!
@@ -57,14 +57,14 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::backup::{backups_root, has_installation_backup};
-use bussard_download::{DesiredTables, PlanReport};
 use bussard_model::IndividualAddress;
 use bussard_service::L4Options;
+use bussard_service::download::backup::{backups_root, has_installation_backup};
+use bussard_service::download::{DesiredTables, PlanReport};
 use bussard_service::program;
 use bussard_service::secure::ToolKeySource;
 
-use bussard_transport::ConnectionConfig;
+use bussard_service::transport::ConnectionConfig;
 
 use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
@@ -372,7 +372,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         bussard_service::secure::resolve_material(target, tool_key_source, activated)
     })?;
     let tool_key = material.tool_key.clone();
-    let secure_seq = bussard_secure::SequenceHighWater::new();
+    let secure_seq = bussard_service::secure::SequenceHighWater::new();
     // `[connection] admit_tunnel_senders` (issue #297): the key store's
     // tunnelling addresses join the security individual address table.
     let tunnel = crate::secure_key::admitted_tunnel(model, tool_key_source, tool_key.is_some())?;
@@ -450,7 +450,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
             if write
                 .product
                 .and_then(|p| p.app())
-                .is_some_and(bussard_download::has_no_group_objects)
+                .is_some_and(bussard_service::download::has_no_group_objects)
             {
                 eprintln!(
                     "{address}'s application has no group objects and no tables to apply; \

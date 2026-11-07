@@ -50,7 +50,7 @@ use bussard_mgmt::property_ext::{
 use bussard_mgmt::tables::DeviceTables;
 use bussard_mgmt::{ConnectionSeed, L4Channel, Layer4Connection};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 
 use crate::bus::{BusService, L4Options};
 use crate::params::FlashedParameters;
@@ -291,7 +291,7 @@ impl<'a> Expected<'a> {
             target,
             app,
             &overrides,
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         );
         let links: &[bussard_model::schema::Link] = model
             .and_then(|m| m.links.links.get(&target))
@@ -1145,11 +1145,11 @@ mod tests {
             "../../tests-support/synthetic-products/syn-property-param/xml/M-00FA/\
              M-00FA_A-271E-10-0000.xml",
         );
-        let app = bussard_prod::application::parse_application_program(
+        let app = bussard_product::application::parse_application_program(
             "M-00FA_A-271E-10-0000",
             &std::fs::read(path)?,
         )?;
-        let template = bussard_prod::MasterTemplate::builtin_for_mask("07B0")
+        let template = bussard_product::MasterTemplate::builtin_for_mask("07B0")
             .ok_or("a built-in 07B0 template")?
             .ops;
         let overrides = std::collections::BTreeMap::new();
@@ -1158,7 +1158,7 @@ mod tests {
             "1.1.1".parse()?,
             &app,
             &overrides,
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         );
         Ok(bussard_download::plan_flash(
             &app,
@@ -1169,7 +1169,7 @@ mod tests {
             Some(&template),
             &tables,
             &std::collections::BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )?)
     }
 

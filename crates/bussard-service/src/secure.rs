@@ -34,8 +34,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bussard_model::{GroupAddress, IndividualAddress};
-pub use bussard_project::KeyStore;
-use bussard_secure::{DataSecureSession, Key16, SecurityAlgorithm, SequenceHighWater};
+use bussard_secure::{DataSecureSession, SecurityAlgorithm};
+// The KNX Secure types the surfaces name (issue #916).
+pub use bussard_secure::{Key16, Password, SequenceHighWater};
 
 /// The environment variable carrying the `.knxkeys` password (spec §2.2).
 ///

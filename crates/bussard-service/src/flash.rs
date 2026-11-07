@@ -19,8 +19,8 @@ use bussard_download::{
     SecurityPlanError,
 };
 use bussard_model::{Flags, IndividualAddress, Model};
-use bussard_prod::application::LoadOp;
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::application::LoadOp;
+use bussard_product::{ApplicationProgram, ProductData};
 
 use crate::secure::SecureMaterial;
 
@@ -80,7 +80,7 @@ impl<'a> FlashInputs<'a> {
             target,
             app,
             &overrides,
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         );
         let object_flags = bussard_download::linked_object_flags(model, target);
         let knxnet = model
@@ -152,7 +152,7 @@ impl<'a> FlashInputs<'a> {
             self.template_ops.as_deref(),
             &self.table_images,
             &self.object_flags,
-            &bussard_prod::dynamic::DynamicMemo::new(self.app),
+            &bussard_product::dynamic::DynamicMemo::new(self.app),
         )?;
         // A property-only procedure (an IP interface, issue #390) writes the
         // object itself; `apply` keeps its `[knxnet]` table (issue #391).
@@ -307,7 +307,7 @@ pub fn visible_objects(
     app: &ApplicationProgram,
     values: &BTreeMap<String, String>,
 ) -> BTreeSet<u16> {
-    let config = bussard_prod::dynamic::evaluate_dynamic(app, values);
+    let config = bussard_product::dynamic::evaluate_dynamic(app, values);
     bussard_download::dynamic_group_object_descriptors(app, &config, &BTreeMap::new())
         .iter()
         .map(|d| d.asap)
@@ -514,7 +514,7 @@ mod tests {
     }
 
     fn product() -> Result<ProductData, Box<dyn std::error::Error>> {
-        let app = bussard_prod::parse_application_program("M-00FA_A-0002", APP_XML.as_bytes())?;
+        let app = bussard_product::parse_application_program("M-00FA_A-0002", APP_XML.as_bytes())?;
         Ok(ProductData {
             applications: vec![app],
             ..ProductData::default()
@@ -542,7 +542,7 @@ mod tests {
             target,
             app,
             &overrides,
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         );
         let flags = bussard_download::linked_object_flags(Some(model), target);
         let mut plan = bussard_download::plan_flash(
@@ -554,7 +554,7 @@ mod tests {
             template.as_deref(),
             &images,
             &flags,
-            &bussard_prod::dynamic::DynamicMemo::new(app),
+            &bussard_product::dynamic::DynamicMemo::new(app),
         )?;
         if matches!(
             freshness,
@@ -750,7 +750,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = bussard_prod::parse_application_program("M-0083_A-E", xml.as_bytes())?;
+        let app = bussard_product::parse_application_program("M-0083_A-E", xml.as_bytes())?;
         let planned = bussard_download::plan_flash(
             &app,
             "1.1.99",
@@ -760,7 +760,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )?;
         let prelude = |plan: &FlashPlan| {
             plan.steps.iter().any(|s| {

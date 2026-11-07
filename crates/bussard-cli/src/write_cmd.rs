@@ -20,9 +20,9 @@
 use std::process::ExitCode;
 
 use anyhow::anyhow;
-use bussard_bus::BusError;
 use bussard_model::{GroupAddress, Model};
 use bussard_service::admission::{self, Admission};
+use bussard_service::transport::TransportError;
 use bussard_service::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WritePolicy, WriteRefusal, WriteValue,
     prepare_group_write,
@@ -216,7 +216,7 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             }
             Ok(ExitCode::SUCCESS)
         }
-        Err(WriteRefusal::Bus(BusError::Stale)) => {
+        Err(WriteRefusal::Bus(TransportError::Stale)) => {
             eprintln!(
                 "error: could not write {ga}: bus not connected (dropped after staleness cutoff)"
             );
