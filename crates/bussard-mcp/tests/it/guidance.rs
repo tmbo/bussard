@@ -674,3 +674,62 @@ const PROGRAMMING_INSTRUCTIONS: &str = "bussard: KNX as code over MCP. The insta
     sentences say the application must be loaded, and one yes to its question loads it and \
     writes the project's values with it as one job. Still needs ETS: securing a fresh device \
     with KNX Secure, and any setting the device's product model does not expose.";
+
+/// Every file under `dir`, recursively.
+fn files_under(dir: &Path) -> anyhow::Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_dir() {
+            out.extend(files_under(&path)?);
+        } else {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// The guidance files (issue #915): every markdown file under `guidance/`
+/// but its README is compiled in by an `include_str!` in `src/` (no orphan
+/// that reads as the assistant's text but is not), and none ends in a
+/// newline or a space, which would become part of the text it carries.
+#[test]
+fn test_guidance_files_are_all_included() -> TestResult {
+    let crate_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let guidance = crate_dir.join("guidance");
+    let mut included = std::collections::BTreeSet::new();
+    for source in files_under(&crate_dir.join("src"))? {
+        if source.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&source)?;
+        let Some(dir) = source.parent() else { continue };
+        for rest in text.split("include_str!(\"").skip(1) {
+            let Some(end) = rest.find('"') else { continue };
+            if let Ok(path) = dir.join(&rest[..end]).canonicalize() {
+                included.insert(path);
+            }
+        }
+    }
+    let mut files = 0;
+    for file in files_under(&guidance)? {
+        if file.extension().is_none_or(|e| e != "md") || file == guidance.join("README.md") {
+            continue;
+        }
+        files += 1;
+        let path = file.canonicalize()?;
+        assert!(
+            included.contains(&path),
+            "{} is not included by any include_str! in src/",
+            file.display()
+        );
+        let text = std::fs::read_to_string(&file)?;
+        assert!(
+            !text.is_empty() && text.trim_end() == text,
+            "{} must not be empty or end in whitespace",
+            file.display()
+        );
+    }
+    assert!(files > 60, "found only {files} guidance files");
+    Ok(())
+}
