@@ -849,7 +849,12 @@ pub(crate) fn render_device(
     match parsed {
         None => desired.to_string(),
         Some((_, mut doc)) => {
-            merge_device(doc.as_table_mut(), desired.as_table(), &key_locks);
+            merge_table(
+                doc.as_table_mut(),
+                desired.as_table(),
+                &mut Vec::new(),
+                &key_locks,
+            );
             if order == KeyOrder::Fresh {
                 order_like(doc.as_table_mut(), desired.as_table());
                 number_tables(doc.as_table_mut(), &mut 0);
@@ -859,211 +864,39 @@ pub(crate) fn render_device(
     }
 }
 
-/// The top-level keys of a device file whose tables hold entries.
-const SCOPE_TABLES: [&str; 2] = ["parameters", "links"];
-
-/// Merges the desired device document into the existing one.
-fn merge_device(existing: &mut Table, desired: &Table, resolver: &KeyLocks) {
-    for (key, want) in desired.iter() {
-        match key {
-            "parameters" | "links" => merge_scope_slot(existing, key, want, None, resolver),
-            "channel" => {
-                let Some(want) = want.as_table() else {
-                    continue;
-                };
-                if existing
-                    .get("channel")
-                    .and_then(Item::as_table_like)
-                    .is_none()
-                {
-                    existing.insert("channel", Item::Table(want.clone()));
-                    continue;
-                }
-                if let Some(have) = existing
-                    .get_mut("channel")
-                    .and_then(Item::as_table_like_mut)
-                {
-                    for (handle, want_ch) in want.iter() {
-                        merge_scope_like(have, handle, want_ch, Some(handle), resolver);
-                    }
-                    let stale: Vec<String> = have
-                        .iter()
-                        .map(|(k, _)| k.to_string())
-                        .filter(|k| want.get(k).is_none())
-                        .collect();
-                    for handle in stale {
-                        prune_scope_like(have, &handle, Some(&handle), resolver);
-                    }
-                }
-            }
-            _ => merge_plain_slot(existing, key, want),
-        }
-    }
-    let stale: Vec<String> = existing
-        .iter()
-        .map(|(k, _)| k.to_string())
-        .filter(|k| desired.get(k).is_none())
-        .collect();
-    for key in stale {
-        if SCOPE_TABLES.contains(&key.as_str()) {
-            let scope_empty = Table::new();
-            merge_scope_slot(existing, &key, &Item::Table(scope_empty), None, resolver);
-            if existing
-                .get(&key)
-                .and_then(Item::as_table_like)
-                .is_some_and(TableLike::is_empty)
-            {
-                existing.remove(&key);
-            }
-        } else if key == "channel" {
-            if let Some(have) = existing
-                .get_mut("channel")
-                .and_then(Item::as_table_like_mut)
-            {
-                let handles: Vec<String> = have.iter().map(|(k, _)| k.to_string()).collect();
-                for handle in handles {
-                    prune_scope_like(have, &handle, Some(&handle), resolver);
-                }
-            }
-            if existing
-                .get("channel")
-                .and_then(Item::as_table_like)
-                .is_some_and(TableLike::is_empty)
-            {
-                existing.remove("channel");
-            }
-        } else {
-            existing.remove(&key);
-        }
-    }
-}
-
-/// Sets, keeps or replaces a plain key (or plain table such as `[location]`).
-fn merge_plain_slot(existing: &mut Table, key: &str, want: &Item) {
-    match existing.get_mut(key) {
-        None => {
-            existing.insert(key, want.clone());
-        }
-        Some(slot) => {
-            if same(slot, want) {
-                return;
-            }
-            if let (Some(have), Some(want_t)) = (slot.as_table_like_mut(), want.as_table_like()) {
-                for (k, v) in want_t.iter() {
-                    match have.get_mut(k) {
-                        Some(s) => {
-                            if !same(s, v) {
-                                replace_item(s, v);
-                            }
-                        }
-                        None => {
-                            have.insert(k, v.clone());
-                        }
-                    }
-                }
-                let stale: Vec<String> = have
-                    .iter()
-                    .map(|(k, _)| k.to_string())
-                    .filter(|k| want_t.get(k).is_none())
-                    .collect();
-                for k in stale {
-                    have.remove(&k);
-                }
-            } else {
-                replace_item(slot, want);
-            }
-        }
-    }
-}
-
-/// Merges one scope table held under `key` in a [`Table`].
-fn merge_scope_slot(
-    existing: &mut Table,
-    key: &str,
-    want: &Item,
-    scope: Option<&str>,
-    resolver: &KeyLocks,
-) {
-    let t: &mut dyn TableLike = existing;
-    merge_scope_like(t, key, want, scope, resolver);
-}
-
-/// Merges one scope table (a channel, `[parameters]` or `[links]`) held under
-/// `key` in `parent`.
-fn merge_scope_like(
-    parent: &mut dyn TableLike,
-    key: &str,
-    want: &Item,
-    scope: Option<&str>,
-    resolver: &KeyLocks,
-) {
-    let Some(want_t) = want.as_table_like() else {
-        return;
-    };
-    if parent.get(key).and_then(Item::as_table_like).is_none() {
-        parent.insert(key, want.clone());
-        return;
-    }
-    let Some(have) = parent.get_mut(key).and_then(Item::as_table_like_mut) else {
-        return;
-    };
-    merge_entries(have, want_t, scope, resolver, false);
-}
-
-/// Merges entries of a scope table or a page.
-fn merge_entries(
+/// Merges the desired document `want` into the existing `have` at `path`,
+/// keeping the bytes and comments of what did not change: a key `want`
+/// lacks is inserted, an unchanged one kept, a table on both sides merged
+/// key by key (an object entry only when the file writes it as a dotted or
+/// header table; an inline one is replaced whole), anything else replaced.
+/// A key only `have` holds goes: a table after its own keys went, when
+/// nothing is left; an object entry only when a lock resolves its key, so a
+/// key typed by hand stays for validation to report (E023).
+fn merge_table(
     have: &mut dyn TableLike,
     want: &dyn TableLike,
-    scope: Option<&str>,
-    resolver: &KeyLocks,
-    in_page: bool,
+    path: &mut Vec<String>,
+    locks: &KeyLocks,
 ) {
     for (k, v) in want.iter() {
         match have.get_mut(k) {
             None => {
                 have.insert(k, v.clone());
             }
-            Some(slot) => {
-                if same(slot, v) {
-                    continue;
-                }
-                let is_page = v.is_table() && !is_object_item(v);
-                if is_page
-                    && !in_page
-                    && let Some(have_page) = slot.as_table_like_mut()
-                    && let Some(want_page) = v.as_table_like()
-                {
-                    merge_entries(have_page, want_page, scope, resolver, true);
-                    continue;
-                }
-                if is_object_item(v)
-                    && slot.is_table()
-                    && let (Some(h), Some(w)) = (slot.as_table_like_mut(), v.as_table_like())
-                {
-                    for (f, fv) in w.iter() {
-                        match h.get_mut(f) {
-                            Some(s) => {
-                                if !same(s, fv) {
-                                    replace_item(s, fv);
-                                }
-                            }
-                            None => {
-                                h.insert(f, fv.clone());
-                            }
-                        }
+            Some(slot) if same(slot, v) => {}
+            Some(slot) => match (
+                slot.is_table() || !is_entry_object(path, v),
+                v.as_table_like(),
+            ) {
+                (true, Some(w)) if slot.is_table_like() => {
+                    if let Some(h) = slot.as_table_like_mut() {
+                        path.push(k.to_string());
+                        merge_table(h, w, path, locks);
+                        path.pop();
                     }
-                    let stale: Vec<String> = h
-                        .iter()
-                        .map(|(f, _)| f.to_string())
-                        .filter(|f| w.get(f).is_none())
-                        .collect();
-                    for f in stale {
-                        h.remove(&f);
-                    }
-                    continue;
                 }
-                replace_item(slot, v);
-            }
+                _ => replace_item(slot, v),
+            },
         }
     }
     let stale: Vec<String> = have
@@ -1071,57 +904,47 @@ fn merge_entries(
         .map(|(k, _)| k.to_string())
         .filter(|k| want.get(k).is_none())
         .collect();
+    let empty = Table::new();
     for k in stale {
-        let Some(item) = have.get(&k) else {
+        let Some(item) = have.get_mut(&k) else {
             continue;
         };
-        if item.is_table_like() && !is_object_item(item) && !in_page {
-            // A page: drop what it no longer holds, then the page if empty.
-            if let Some(page) = have.get_mut(&k).and_then(Item::as_table_like_mut) {
-                let empty = Table::new();
-                merge_entries(page, &empty, scope, resolver, true);
-            }
-            if have
-                .get(&k)
-                .and_then(Item::as_table_like)
-                .is_some_and(TableLike::is_empty)
-            {
+        if is_entry_object(path, item) {
+            // The channel a key sits in, for a channel table's entry.
+            let scope = (path.first().map(String::as_str) == Some("channel"))
+                .then(|| path.get(1).map(String::as_str))
+                .flatten();
+            if locks.known_object(scope, &k) {
                 have.remove(&k);
             }
             continue;
         }
-        let removable = if is_object_item(item) {
-            // An object key neither lock resolves was typed by hand: it stays
-            // for validation (E023) to report.
-            resolver.known_object(scope, &k)
-        } else {
-            true
-        };
-        if removable {
-            have.remove(&k);
+        if let Some(t) = item.as_table_like_mut() {
+            path.push(k.clone());
+            merge_table(t, &empty, path, locks);
+            path.pop();
+            if !have
+                .get(&k)
+                .and_then(Item::as_table_like)
+                .is_some_and(TableLike::is_empty)
+            {
+                continue;
+            }
         }
+        have.remove(&k);
     }
 }
 
-/// Drops a whole channel table's resolvable entries, keeping what validation
-/// must still see, and the table itself when nothing remains.
-fn prune_scope_like(
-    parent: &mut dyn TableLike,
-    key: &str,
-    scope: Option<&str>,
-    resolver: &KeyLocks,
-) {
-    if let Some(have) = parent.get_mut(key).and_then(Item::as_table_like_mut) {
-        let empty = Table::new();
-        merge_entries(have, &empty, scope, resolver, false);
-    }
-    if parent
-        .get(key)
-        .and_then(Item::as_table_like)
-        .is_some_and(TableLike::is_empty)
-    {
-        parent.remove(key);
-    }
+/// Whether `item`, held at `path`, is an object entry: an object-shaped
+/// table directly in `[parameters]`, `[links]` or a `[channel.<handle>]`, or
+/// in a page of one.
+fn is_entry_object(path: &[String], item: &Item) -> bool {
+    let depth = match path.first().map(String::as_str) {
+        Some("parameters" | "links") => path.len(),
+        Some("channel") => path.len().saturating_sub(1),
+        _ => return false,
+    };
+    (1..=2).contains(&depth) && is_object_item(item)
 }
 
 /// Puts the keys of `have` in the order `want` lists them, recursively, so an
