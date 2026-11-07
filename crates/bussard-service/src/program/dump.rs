@@ -170,8 +170,9 @@ fn placed_ranges(set: &BTreeSet<usize>) -> Vec<[usize; 2]> {
 }
 
 /// The `PID_MAX_APDU_LENGTH` the dump assumes when it splits the security
-/// object's element writes into telegrams: the reference device of issue #156
-/// (Jung 52911ST) advertises 233. The executor uses the negotiated value; the
+/// object's element writes, and a System B multi-element property write
+/// (issue #938), into telegrams: the reference device of issue #156 (Jung
+/// 52911ST) advertises 233. The executor uses the negotiated value; the
 /// dump has no device, and the offline oracle compares against that capture.
 const DUMP_NOMINAL_MAX_APDU: u16 = 233;
 
@@ -472,6 +473,40 @@ pub fn write_dump(
                 prop["verify"] = json!(verify);
                 prop["source"] = json!("load-procedure");
                 record["property"] = prop;
+            }
+            // A System B write of several elements (a declared property,
+            // issue #938), one record per plain request as the executor
+            // splits it: at most 15 elements each, within the nominal APDU.
+            FlashStep::WriteProp {
+                object: bussard_download::PropObject::Index(index),
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+                ..
+            } if *count > 1 => {
+                let elem = (value.len() / usize::from(*count)).max(1);
+                let per =
+                    bussard_download::flash::plain_write_elements(DUMP_NOMINAL_MAX_APDU, elem)
+                        * elem;
+                let records: Vec<Value> = value
+                    .chunks(per)
+                    .enumerate()
+                    .map(|(i, chunk)| {
+                        json!({
+                            "object": index,
+                            "pid": prop_id,
+                            "start_element": usize::from(*start_element) + i * per / elem,
+                            "count": chunk.len() / elem,
+                            "length": chunk.len(),
+                            "data": chunk.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                            "verify": verify,
+                            "source": "load-procedure",
+                        })
+                    })
+                    .collect();
+                record["properties"] = json!(records);
             }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),
             // one record per write as the executor sends them: plain at the

@@ -88,13 +88,18 @@ fn element_size(value: &[u8], count: u16) -> usize {
     (value.len() / usize::from(count.max(1))).max(1)
 }
 
+/// How many elements of `elem` octets one plain `A_PropertyValue_Write`
+/// carries under an APDU limit of `max_apdu`: what fits the budget, at most
+/// the 15 the 4-bit count field holds. The executor splits a multi-element
+/// write with it, and the dry-run dump lists the same requests.
+pub fn plain_write_elements(max_apdu: u16, elem: usize) -> usize {
+    let budget = usize::from(max_apdu.saturating_sub(PROPERTY_APDU_OVERHEAD));
+    (budget / elem.max(1)).clamp(1, MAX_PLAIN_ELEMENTS)
+}
+
 /// How many elements of `elem` octets one plain request carries on `l4`.
 fn plain_elements<Ch: L4Channel>(l4: &Layer4Connection<Ch>, elem: usize) -> usize {
-    let budget = usize::from(
-        l4.effective_max_apdu()
-            .saturating_sub(PROPERTY_APDU_OVERHEAD),
-    );
-    (budget / elem.max(1)).clamp(1, MAX_PLAIN_ELEMENTS)
+    plain_write_elements(l4.effective_max_apdu(), elem)
 }
 
 /// Writes `value` (`count` elements from `start`) to `index` with

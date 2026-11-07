@@ -2456,6 +2456,54 @@ pub fn compute_property_values(
     app: &ApplicationProgram,
     config: &bussard_ets::dynamic::DynamicConfig,
 ) -> Result<PropertyValues> {
+    compose_property_values(app, config, PropertyValues::new(), |_| true)
+}
+
+/// Composes the value of the one property `object`/`prop_id` over `base`,
+/// as [`compute_property_values`] composes it over nothing: each parameter
+/// placed in the property replaces the bits it covers, and every other octet
+/// keeps `base`'s value. ETS writes a declared property this way (issue #938):
+/// an `LdCtrlWriteProp`'s `InlineData` is the template the parameters are laid
+/// over, as a code segment is for a memory parameter (`M-0009_A-E802-13-7620`
+/// writes object 16 PID 208 elements 141 to 158 as its `InlineData`; the
+/// Hager placeholders are zeros the parameters replace).
+///
+/// `None` when no parameter is placed in the property.
+///
+/// # Errors
+///
+/// [`ProdError::ParameterImage`] when a value cannot be encoded for its type.
+pub fn compose_property_value(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    object: PropertyObjectRef,
+    prop_id: u32,
+    base: Vec<u8>,
+) -> Result<Option<Vec<u8>>> {
+    let key = (object, prop_id);
+    let placed = app.parameters.values().any(|p| {
+        p.property
+            .as_ref()
+            .and_then(|loc| PropertyObjectRef::of(loc).map(|o| (o, loc.property_id)))
+            == Some(key)
+    });
+    if !placed {
+        return Ok(None);
+    }
+    let mut out = compose_property_values(app, config, PropertyValues::from([(key, base)]), |k| {
+        *k == key
+    })?;
+    Ok(out.remove(&key))
+}
+
+/// The property values the parameters compose over `bases`, for the
+/// properties `wanted` accepts.
+fn compose_property_values(
+    app: &ApplicationProgram,
+    config: &bussard_ets::dynamic::DynamicConfig,
+    bases: PropertyValues,
+    wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
+) -> Result<PropertyValues> {
     let prefix = format!("{}_", app.id);
     // The reached application-level ref of each parameter, first in walk order.
     let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
@@ -2486,7 +2534,7 @@ pub fn compute_property_values(
         .filter(|p| p.property.is_some())
         .collect();
     params.sort_by(|a, b| a.id.cmp(&b.id));
-    let mut out = PropertyValues::new();
+    let mut out = bases;
     for param in params {
         let Some(loc) = param.property.as_ref() else {
             continue;
@@ -2494,6 +2542,9 @@ pub fn compute_property_values(
         let Some(object) = PropertyObjectRef::of(loc) else {
             continue;
         };
+        if !wanted(&(object, loc.property_id)) {
+            continue;
+        }
         let pname = param.name.as_deref().unwrap_or(&param.id);
         let (value, source) = match reached.get(param.id.as_str()) {
             Some(ref_id) => (

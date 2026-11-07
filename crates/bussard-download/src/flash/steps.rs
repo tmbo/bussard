@@ -212,6 +212,24 @@ pub(super) async fn run_shared_step<C: Connector>(
             super::execute::delay_step(*milliseconds).await;
             Ok(())
         }
+        // A property declaration (issue #938): the planner sized the write
+        // that follows from it; ETS sends nothing for it, and neither does
+        // bussard.
+        FlashStep::DeclareProp {
+            object,
+            prop_id,
+            prop_type,
+            max_elements,
+        } => {
+            tracing::debug!(
+                %object,
+                prop_id,
+                prop_type = prop_type.as_str(),
+                max_elements,
+                "LdCtrlDeclarePropDesc: declared, nothing sent"
+            );
+            Ok(())
+        }
         _ => return None,
     };
     Some(result)

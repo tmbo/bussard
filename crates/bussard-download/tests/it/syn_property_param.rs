@@ -342,3 +342,194 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
     assert_eq!(dev.property(4, 201), Some(&[0x07][..]));
     Ok(())
 }
+
+/// `app` with an `LdCtrlDeclarePropDesc` of object 4 PID 201
+/// (`PDT_UNSIGNED_CHAR`, `max` elements) right before its write, and the
+/// write's `Count` set to `count`: the Hager 07B0 shape of issue #938.
+fn with_declaration(
+    app: &ApplicationProgram,
+    max: u32,
+    count: u32,
+) -> TestResult<ApplicationProgram> {
+    use bussard_prod::application::LoadOp;
+    let mut app = app.clone();
+    let mut found = false;
+    for lp in &mut app.load_procedures {
+        let Some(at) = lp.ops.iter().position(|op| {
+            matches!(
+                op,
+                LoadOp::WriteProp {
+                    prop_id: Some(201),
+                    ..
+                }
+            )
+        }) else {
+            continue;
+        };
+        if let Some(LoadOp::WriteProp { count: c, .. }) = lp.ops.get_mut(at) {
+            *c = Some(count);
+        }
+        lp.ops.insert(
+            at,
+            LoadOp::DeclarePropDesc {
+                obj_idx: Some(4),
+                obj_type: None,
+                occurrence: None,
+                prop_id: Some(201),
+                prop_type: Some("PDT_UNSIGNED_CHAR".to_string()),
+                max_elements: Some(max),
+                writable: Some(true),
+                read_access: Some(0),
+                write_access: Some(0),
+            },
+        );
+        if !lp.applies_to.is_empty() {
+            let scope = lp.applies_to.get(at).cloned().flatten();
+            lp.applies_to.insert(at, scope);
+        }
+        if !lp.guards.is_empty() {
+            let guards = lp.guards.get(at).cloned().unwrap_or_default();
+            lp.guards.insert(at, guards);
+        }
+        found = true;
+    }
+    if !found {
+        return Err("the application writes object 4 PID 201".into());
+    }
+    Ok(app)
+}
+
+#[test]
+fn test_plan_flash_writes_a_declared_property_in_declared_elements() -> TestResult {
+    // Issue #938: the declaration sends nothing and sizes the write: Count 20
+    // one-octet elements, the parameter's 5A first, the rest zero.
+    let (product, _tmp) = product()?;
+    let app = with_declaration(
+        product.applications.first().ok_or("one application")?,
+        20,
+        20,
+    )?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let declared_at = plan
+        .steps
+        .iter()
+        .position(|s| {
+            matches!(
+                s,
+                FlashStep::DeclareProp {
+                    object: PropObject::Index(4),
+                    prop_id: 201,
+                    max_elements: 20,
+                    ..
+                }
+            )
+        })
+        .ok_or("the declaration step")?;
+    let mut value = vec![0u8; 20];
+    value[0] = 0x5A;
+    assert_eq!(
+        plan.steps.get(declared_at + 1),
+        Some(&FlashStep::WriteProp {
+            object: PropObject::Index(4),
+            prop_id: 201,
+            value,
+            start_element: 1,
+            count: 20,
+            verify: false,
+            from_parameters: true,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn test_plan_flash_refuses_a_declared_write_past_max_elements() -> TestResult {
+    let (product, _tmp) = product()?;
+    let app = with_declaration(product.applications.first().ok_or("one application")?, 4, 5)?;
+    match plan_of(&product, &app, &BTreeMap::new()) {
+        Err(e) => {
+            let text = e.to_string();
+            assert!(text.contains("MaxElements"), "{text}");
+        }
+        Ok(plan) => return Err(format!("expected a refusal, got {:?}", plan.steps).into()),
+    }
+    Ok(())
+}
+
+/// The connected-mode requests a mock device saw: APCI and payload.
+type RequestLog = std::sync::Arc<std::sync::Mutex<Vec<(u16, Vec<u8>)>>>;
+
+#[tokio::test]
+async fn test_flash_writes_a_declared_property_without_a_description_read() -> TestResult {
+    // Issue #938: no A_PropertyDescription_Read of the declared property, the
+    // value in plain writes of at most 15 elements, and the read-back finds it.
+    const PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+    const PROPERTY_DESCRIPTION_READ: u16 = 0x3D8;
+    let (product, _tmp) = product()?;
+    let app = with_declaration(
+        product.applications.first().ok_or("one application")?,
+        20,
+        20,
+    )?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+        ])
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(4, 201, 1, &[0xFF; 20])
+        .with_hook(move |_, apci, data| {
+            if let Ok(mut log) = log.lock() {
+                log.push((apci, data.to_vec()));
+            }
+            None
+        });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.1")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let held = read_property_value(session.l4(), PropObject::Index(4), 201, 1, 20, 1).await?;
+    let _ = session.into_disconnect().await;
+    let mut expected = vec![0u8; 20];
+    expected[0] = 0x5A;
+    assert_eq!(held, expected);
+    let seen = seen.lock().map_err(|e| e.to_string())?.clone();
+    let on_201 = |apci: u16| {
+        seen.iter()
+            .filter(|(a, d)| *a == apci && d.first() == Some(&4) && d.get(1) == Some(&201))
+            .map(|(_, d)| d.clone())
+            .collect::<Vec<_>>()
+    };
+    assert!(
+        on_201(PROPERTY_DESCRIPTION_READ).is_empty(),
+        "no description read"
+    );
+    let counts: Vec<u8> = on_201(PROPERTY_VALUE_WRITE)
+        .iter()
+        .filter_map(|d| d.get(2).map(|b| b >> 4))
+        .collect();
+    assert!(counts.len() >= 2, "a 20-element write is split: {counts:?}");
+    assert!(counts.iter().all(|c| *c <= 15), "{counts:?}");
+    assert_eq!(counts.iter().map(|c| u32::from(*c)).sum::<u32>(), 20);
+    Ok(())
+}

@@ -30,6 +30,7 @@
 //! | `WriteRelMem{off,sz}`| [`write_memory`]`(base+off, image)`                 | `image` is the code segment `.data` (`AppliesTo=full`) or the computed parameter image (`AppliesTo=par`) |
 //! | `WriteMem{addr,sz}` | [`write_memory`]`(addr, image)`                      | absolute placement (an absolute segment's data) |
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
+//! | `DeclarePropDesc{oi,pid}` | (nothing sent)                                 | element size and `MaxElements` for the next write to that property (issue #938) |
 //! | `CompareProp{oi,pid}`| [`compare_property`]                                | reads the property and byte-compares it (under `Mask`) against the op's `InlineData`; a mismatch fails the flash |
 //! | `CompareRelMem{oi,off}`| [`compare_rel_mem`]                              | reads relative memory at `base+off` and byte-compares it (under `Mask`, optionally `Invert`ed) against the op's `InlineData`; a mismatch fails the flash |
 //! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` one element per request and checks the device CRC over the stored segment against the written image |
@@ -98,6 +99,7 @@ use bussard_mgmt::load::LoadState;
 pub use bussard_prod::SegmentFill;
 use std::collections::BTreeMap;
 
+mod declare;
 mod execute;
 mod execute_props;
 mod execute_sys7;
@@ -136,7 +138,9 @@ pub use plan_sys7::{
     plan_flash_sys7_with_hawk, sys7_profile_from_hawk, sys7_table_bases, sys7_tables_from_system_b,
     sys7_task_identity,
 };
-pub use props::{compare_property_value, read_property_value, write_property_value};
+pub use props::{
+    compare_property_value, plain_write_elements, read_property_value, write_property_value,
+};
 pub use restart_form::{RestartForm, restart_form};
 pub use session::{
     Connector, RebootReadiness, RestartKind, Session, SingleConnector, VerifyEchoes,
@@ -427,6 +431,21 @@ pub enum FlashStep {
     Delay {
         /// The pause in milliseconds, the op's `MilliSeconds`.
         milliseconds: u32,
+    },
+    /// A property declaration (`LdCtrlDeclarePropDesc`, issue #938): the
+    /// planner took the element size and the maximum element count of the
+    /// next [`FlashStep::WriteProp`] to the same property from it. Nothing goes
+    /// on the wire, as with ETS, which reads no description of a declared
+    /// property; the step keeps the declaration visible in the plan.
+    DeclareProp {
+        /// The interface object the declaration names.
+        object: PropObject,
+        /// The property id.
+        prop_id: u32,
+        /// The declared property datatype (`PropType`, e.g. `PDT_UNSIGNED_CHAR`).
+        prop_type: String,
+        /// The most elements the property holds (`MaxElements`).
+        max_elements: u32,
     },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
@@ -787,7 +806,8 @@ pub enum PlanError {
         "load procedure contains the unsupported operation {op} — \
          `bussard flash` cannot execute it and refuses the procedure rather than \
          leaving the device partially flashed (supported: Unload/Load/LoadCompleted/\
-         RelSegment/WriteRelMem/WriteMem/WriteProp/CompareProp/CompareRelMem/LoadImageProp/Restart \
+         RelSegment/WriteRelMem/WriteMem/DeclarePropDesc/WriteProp/CompareProp/CompareRelMem/LoadImageProp/\
+         Delay/Restart \
          on a single-LSM System B device)"
     )]
     UnsupportedOp {

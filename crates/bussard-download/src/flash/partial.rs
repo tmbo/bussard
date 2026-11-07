@@ -334,6 +334,10 @@ impl FlashPlan {
                 FlashStep::WriteProp {
                     object: super::PropObject::Index(obj_idx),
                     ..
+                }
+                | FlashStep::DeclareProp {
+                    object: super::PropObject::Index(obj_idx),
+                    ..
                 } if objects.contains(obj_idx) => {
                     steps.push(step.clone());
                 }

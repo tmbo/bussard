@@ -26,6 +26,29 @@ pub(super) fn lower_delay(milliseconds: Option<u32>) -> Result<FlashStep, PlanEr
         })
 }
 
+/// The values the program's property-located parameters compose, computed
+/// on first use and kept in `cache` (issue #669).
+fn composed_property_values<'a>(
+    cache: &'a mut Option<bussard_prod::PropertyValues>,
+    app: &ApplicationProgram,
+    config: &bussard_prod::dynamic::DynamicConfig,
+    step: usize,
+) -> Result<&'a bussard_prod::PropertyValues, PlanError> {
+    match cache {
+        Some(values) => Ok(values),
+        None => {
+            Ok(cache.insert(
+                bussard_prod::compute_property_values(app, config).map_err(|e| {
+                    PlanError::UnsupportedWriteProp {
+                        step,
+                        reason: format!("composing the property values from the parameters: {e}"),
+                    }
+                })?,
+            ))
+        }
+    }
+}
+
 /// The standard System B table object indices a master template programs, and
 /// their human names. Used to refuse a spliced template that writes one of these
 /// objects without a supplied table image.
@@ -448,6 +471,8 @@ pub fn plan_flash(
     // The values of the properties the program's parameters live in, composed
     // on the first `LdCtrlWriteProp` without `InlineData` (issue #669).
     let mut property_values: Option<bussard_prod::PropertyValues> = None;
+    // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
+    let mut declared: Vec<super::declare::PropDecl> = Vec::new();
 
     // ETS switches verify mode on before the first `Verify="true"` relative
     // memory write it sends over the plain memory services (issue #705).
@@ -523,6 +548,13 @@ pub fn plan_flash(
             LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
+            // A declaration sends nothing; it sizes the writes to its property
+            // that follow (issue #938).
+            LoadOp::DeclarePropDesc { .. } => {
+                let decl = super::declare::lower_declare_prop(step_no, op)?;
+                steps.push(decl.step());
+                declared.push(decl);
+            }
             LoadOp::MasterReset {
                 erase_code,
                 channel_number,
@@ -888,6 +920,44 @@ pub fn plan_flash(
                 ..
             } if *prop_id == PID_PROGRAM_VERSION && skipped_objects.contains(idx) => {}
 
+            // A write to a declared property: `Count` elements of the declared
+            // type, the value the parameters compose (issue #938).
+            LoadOp::WriteProp { .. }
+                if super::declare::declaration_for(&declared, step_no, op).is_some() =>
+            {
+                let decl = super::declare::declaration_for(&declared, step_no, op)
+                    .cloned()
+                    .ok_or_else(|| PlanError::UnsupportedWriteProp {
+                        step: step_no,
+                        reason: "the declaration of the property was lost".to_string(),
+                    })?;
+                let compose = |base: Vec<u8>| {
+                    let object = match decl.object {
+                        super::PropObject::Index(index) => {
+                            bussard_prod::PropertyObjectRef::Index(index)
+                        }
+                        super::PropObject::Type {
+                            object_type,
+                            occurrence,
+                        } => bussard_prod::PropertyObjectRef::Type {
+                            object_type: u32::from(object_type),
+                            occurrence: u32::from(occurrence),
+                        },
+                    };
+                    bussard_prod::compose_property_value(app, &config, object, decl.prop_id, base)
+                        .map_err(|e| PlanError::UnsupportedWriteProp {
+                            step: step_no,
+                            reason: format!(
+                                "composing the value of {} PID {} from the parameters: {e}",
+                                decl.object, decl.prop_id
+                            ),
+                        })
+                };
+                steps.push(super::declare::lower_declared_write_prop(
+                    step_no, op, &decl, &compose, app,
+                )?);
+            }
+
             LoadOp::WriteProp {
                 obj_idx,
                 prop_id,
@@ -967,20 +1037,8 @@ pub fn plan_flash(
                         // property no parameter is stored in it is a description
                         // read and no write, as ETS (issue #841); a stored
                         // property without a composed value is refused.
-                        let values = match property_values {
-                            Some(ref values) => values,
-                            None => property_values.insert(
-                                bussard_prod::compute_property_values(app, &config).map_err(
-                                    |e| PlanError::UnsupportedWriteProp {
-                                        step: step_no,
-                                        reason: format!(
-                                            "composing the property values from the \
-                                             parameters: {e}"
-                                        ),
-                                    },
-                                )?,
-                            ),
-                        };
+                        let values =
+                            composed_property_values(&mut property_values, app, &config, step_no)?;
                         steps.push(super::plan_props::lower_write_prop(
                             step_no, op, values, app,
                         )?);
