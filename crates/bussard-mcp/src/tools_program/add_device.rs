@@ -286,10 +286,7 @@ impl BussardMcp {
         product_file: Option<&std::path::Path>,
     ) -> Result<(Identification, String), String> {
         let state = self.state();
-        let tier = state
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {
             service: &service,
@@ -425,10 +422,7 @@ impl BussardMcp {
     /// The write itself; `Err` is the reason it stopped.
     async fn add_write(&self, job: &str, p: &AddPlan) -> Result<Value, String> {
         let state = self.state();
-        let tier = state
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let dir = state.dir.clone();
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {

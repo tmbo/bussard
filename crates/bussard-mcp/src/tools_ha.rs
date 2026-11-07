@@ -42,7 +42,7 @@ use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::confirm::Store;
@@ -155,6 +155,56 @@ impl BussardMcp {
     }
 }
 
+/// `knx_ha_status`'s answer: Home Assistant's status, or why it could not be
+/// read, and the KNX YAML file at `config_path`.
+#[derive(Serialize)]
+struct StatusAnswer<'a> {
+    /// Home Assistant's status.
+    #[serde(flatten)]
+    status: Reach<'a>,
+    /// Whether the status could be read.
+    ok: bool,
+    /// The variable the token comes from (never the token).
+    token_env: &'a str,
+    /// The KNX YAML file.
+    #[serde(flatten)]
+    file: FileAnswer<'a>,
+    /// What bussard does not see: the UI-created entities.
+    ui_entities: &'static str,
+}
+
+/// Home Assistant's status, or why the client could not read it.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum Reach<'a> {
+    /// The status as read.
+    Read(&'a HaStatus),
+    /// No status: the reason in `errors`.
+    Unreachable {
+        url: &'a str,
+        reachable: bool,
+        errors: [&'a str; 1],
+    },
+}
+
+/// The KNX YAML file as `knx_ha_status` reports it.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum FileAnswer<'a> {
+    /// The file and the generated YAML compared.
+    Read {
+        config_path: String,
+        file: &'a FileState,
+        managed: &'static str,
+        generated_entities: usize,
+        file_entities: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        running: Option<Value>,
+    },
+    /// The file could not be read (`file.reason`).
+    Unknown { file: Value },
+}
+
 /// The generated text and its diff against the file, for one plan.
 struct Prepared {
     /// The resolved `config_path`.
@@ -184,45 +234,44 @@ impl BussardMcp {
     /// `knx_ha_status`'s body.
     async fn ha_status(&self) -> Result<Value, String> {
         let tier = self.ha_tier()?;
-        let dir = self.state().dir.clone();
         let model = self.state().model.reload();
-        let prepared = prepare(&dir, &model, &tier.config);
+        let prepared = prepare(&self.state().dir, &model, &tier.config);
         let status = fetch_status(&tier.config).await;
-        let mut out = match &status {
-            Ok(status) => serde_json::to_value(status).map_err(|e| e.to_string())?,
-            Err(reason) => json!({"url": tier.config.url, "reachable": false, "errors": [reason]}),
+        let file = match &prepared {
+            Ok(p) => FileAnswer::Read {
+                config_path: p.path.display().to_string(),
+                file: &p.file,
+                managed: if p.file.layout().is_some() {
+                    "yaml"
+                } else {
+                    "not_yaml"
+                },
+                generated_entities: p.diff.generated,
+                file_entities: p.diff.current,
+                running: status
+                    .as_ref()
+                    .ok()
+                    .map(|s| running_json(s, &p.desired, s.authorized)),
+            },
+            Err(reason) => FileAnswer::Unknown {
+                file: json!({"state": "unknown", "reason": reason}),
+            },
         };
-        if let Some(map) = out.as_object_mut() {
-            map.insert("ok".into(), json!(status.is_ok()));
-            map.insert("token_env".into(), json!(tier.config.token_env));
-            match &prepared {
-                Ok(p) => {
-                    map.insert("config_path".into(), json!(p.path.display().to_string()));
-                    map.insert("file".into(), json!(p.file));
-                    map.insert(
-                        "managed".into(),
-                        json!(if p.file.layout().is_some() {
-                            "yaml"
-                        } else {
-                            "not_yaml"
-                        }),
-                    );
-                    map.insert("generated_entities".into(), json!(p.diff.generated));
-                    map.insert("file_entities".into(), json!(p.diff.current));
-                    if let Ok(status) = &status {
-                        map.insert(
-                            "running".into(),
-                            running_json(status, &p.desired, status.authorized),
-                        );
-                    }
-                }
-                Err(reason) => {
-                    map.insert("file".into(), json!({"state": "unknown", "reason": reason}));
-                }
-            }
-            map.insert("ui_entities".into(), json!(UI_NOTE));
-        }
-        Ok(out)
+        let answer = StatusAnswer {
+            status: match &status {
+                Ok(status) => Reach::Read(status),
+                Err(reason) => Reach::Unreachable {
+                    url: &tier.config.url,
+                    reachable: false,
+                    errors: [reason],
+                },
+            },
+            ok: status.is_ok(),
+            token_env: &tier.config.token_env,
+            file,
+            ui_entities: UI_NOTE,
+        };
+        serde_json::to_value(answer).map_err(|e| e.to_string())
     }
 
     /// `knx_ha_plan`'s body.

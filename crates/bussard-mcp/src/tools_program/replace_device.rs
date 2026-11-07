@@ -258,11 +258,7 @@ impl BussardMcp {
 
     /// The bus half of the first job; `Err` is the reason it stopped.
     async fn replace_identify(&self, job: &str, r: &Replacement) -> Result<Pressed, String> {
-        let tier = self
-            .state()
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {
             service: &service,
@@ -488,10 +484,7 @@ impl BussardMcp {
     /// the download, the address and its read-back.
     async fn replace_assign(&self, job: &str, p: &ReplacePlan) -> Result<Swap, String> {
         let state = self.state();
-        let tier = state
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let dir = state.dir.clone();
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {

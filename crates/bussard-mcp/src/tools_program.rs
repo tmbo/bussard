@@ -913,16 +913,11 @@ impl BussardMcp {
     /// The tier, the write gate and the connected bus every programming call
     /// needs, or the refusal saying which is missing.
     fn programming_preflight(&self) -> Result<(&ProgrammingTier, BusService, String), String> {
-        let state = self.state();
-        let Some(tier) = state.programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         let gateway = gateway_display(&tier.connection);
         check_write_gate(&tier.connection, tier.allow_remote_gateway)
             .map_err(|refused| refused.to_string())?;
-        let service = state.live_service(Need::Manage)?.clone();
+        let service = self.state().live_service(Need::Manage)?.clone();
         Ok((tier, service, gateway))
     }
 
@@ -1432,11 +1427,10 @@ impl BussardMcp {
     }
 
     /// The programming tier, or the refusal that it is off.
-    fn tier(&self) -> Result<&ProgrammingTier, String> {
-        self.state()
-            .programming
-            .as_ref()
-            .ok_or_else(|| "the programming tier is off".to_string())
+    pub(super) fn tier(&self) -> Result<&ProgrammingTier, String> {
+        self.state().programming.as_ref().ok_or_else(|| {
+            "the programming tier is off; start the server with --allow-programming".into()
+        })
     }
 
     /// Runs one write as a job of the programming tier (issue #289): claims
@@ -2187,11 +2181,7 @@ impl BussardMcp {
 
     /// `knx_apply_status`'s body; `Err` is a refusal reason.
     fn apply_status(&self, job: &str) -> Result<Value, String> {
-        let Some(tier) = self.state().programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         let job = job.trim();
         tier.jobs.status(&self.state().dir, job).ok_or_else(|| {
             format!(
@@ -2204,11 +2194,7 @@ impl BussardMcp {
     /// `knx_last_apply`'s body; `Err` is a refusal reason.
     fn last_apply(&self, address: &str) -> Result<Value, String> {
         let target = parse_address(address)?;
-        let Some(tier) = self.state().programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         Ok(match tier.jobs.last(&self.state().dir, target) {
             Some(status) => {
                 let mut status = status;
