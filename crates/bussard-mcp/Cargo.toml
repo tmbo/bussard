@@ -15,6 +15,8 @@ bussard-model = { workspace = true }
 bussard-service = { workspace = true }
 # `.knxproj` import for `knx_diff_project` (issue #99), in memory only.
 bussard-project = { workspace = true }
+# `.knxproj` import and the lock keys (`knx_import_project`, `knx_diff`).
+bussard-product = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-mgmt = { workspace = true }
@@ -71,11 +73,8 @@ ureq = { workspace = true }
 base64 = { workspace = true }
 # The shared mock KNXnet/IP gateway and mock devices (issue #87).
 bussard-testkit = { workspace = true }
-# Writes the test product models from fixture XML through the importer
-# (issue #345). Already a transitive dependency via bussard-download. MIT.
-bussard-prod = { workspace = true }
 # Packs the synthetic `.knxprod` of the flash test (issue #303). Already in
-# the tree (bussard-prod, bussard-model). MIT.
+# the tree (bussard-product, bussard-model). MIT.
 zip = { workspace = true }
 
 # The tests hash product archives as the lock pins them. MIT OR Apache-2.0.

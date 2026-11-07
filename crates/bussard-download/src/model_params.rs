@@ -13,8 +13,8 @@ use std::path::Path;
 
 use bussard_mgmt::memory::read_memory_range;
 use bussard_model::IndividualAddress;
-use bussard_prod::dynamic::DynamicMemo;
-use bussard_prod::{ApplicationProgram, ProductData, normalize_order_number};
+use bussard_product::dynamic::DynamicMemo;
+use bussard_product::{ApplicationProgram, ProductData, normalize_order_number};
 
 use crate::backup::{
     ParameterBackup, ParameterMemory, encode_hex, parameter_backups_dir, rfc3339_utc, unix_seconds,
@@ -36,7 +36,7 @@ pub struct OrderNumberError(pub String);
 pub fn template_ops_for(
     product_data: &ProductData,
     app: &ApplicationProgram,
-) -> Option<Vec<bussard_prod::application::LoadOp>> {
+) -> Option<Vec<bussard_product::application::LoadOp>> {
     app.mask_version
         .as_deref()
         .and_then(|mask| {
@@ -274,7 +274,7 @@ pub fn build_table_images(
         }
         descriptors
     };
-    let obj3 = if bussard_prod::uses_dynamic_image(app) {
+    let obj3 = if bussard_product::uses_dynamic_image(app) {
         let model_objects = model
             .and_then(|m| m.devices.get(&target))
             .map(|d| &d.device.com_objects);

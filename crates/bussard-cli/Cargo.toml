@@ -18,7 +18,7 @@ bussard-model = { workspace = true }
 # checked group write and the live model handle.
 bussard-service = { workspace = true }
 bussard-project = { workspace = true }
-bussard-prod = { workspace = true }
+bussard-product = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
 bussard-mcp = { workspace = true }

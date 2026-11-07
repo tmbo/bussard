@@ -1,6 +1,6 @@
 //! `bussard device` on a System 7 application without channels of its own
 //! (issue #298), end to end: an ETS project running the fabricated program
-//! of `crates/bussard-prod/tests/fixtures/blocks_app.xml` (universal
+//! of `crates/bussard-product/tests/fixtures/blocks_app.xml` (universal
 //! channels A, B and C as parameter pages behind "enable" parameters) is
 //! imported, and the device view lists the pages in ETS order, marks B and C
 //! inactive with the parameter that enables each, and counts them.
@@ -11,7 +11,7 @@ use std::process::{Command, Output, Stdio};
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 const APP_ID: &str = "M-00FA_A-0298-10-0000";
-const APP_XML: &[u8] = include_bytes!("../../../bussard-prod/tests/fixtures/blocks_app.xml");
+const APP_XML: &[u8] = include_bytes!("../../../bussard-product/tests/fixtures/blocks_app.xml");
 
 /// One device on 1.1.30: channel A enabled with the temperature function.
 const PROJECT_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">

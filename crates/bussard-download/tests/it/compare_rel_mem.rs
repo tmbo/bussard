@@ -19,8 +19,9 @@ use crate::support::plan_flash_default;
 /// step preserving its offset, expected `InlineData`, mask, and inverted sense.
 #[test]
 fn test_plan_flash_compare_rel_mem_lowers_to_step() -> Result<(), Box<dyn std::error::Error>> {
-    let xml = include_bytes!("../../../bussard-ets/tests/fixtures/ldctrl_compare_rel_mem.app.xml");
-    let app = bussard_prod::parse_application_program("M-00FA_A-0001-11-ABCD-O000A", xml)?;
+    let xml =
+        include_bytes!("../../../bussard-product/tests/fixtures/ldctrl_compare_rel_mem.app.xml");
+    let app = bussard_product::parse_application_program("M-00FA_A-0001-11-ABCD-O000A", xml)?;
 
     // Plan against the app's own declared System B mask (07B0) so the System B
     // gate and the mask compare pass and the op lowering is exercised.

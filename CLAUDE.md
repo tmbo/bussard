@@ -24,16 +24,18 @@ reimplementation, so it is a hard constraint, not a preference.
 
 ## Workspace Layout
 
-This is a Cargo **workspace** of 15 crates under `crates/`, not a single crate.
+This is a Cargo **workspace** of 13 crates under `crates/`, not a single crate.
 Shared settings (version, edition, license, MSRV, dependency versions) are
 centralized in the root `Cargo.toml` under `[workspace.package]` and
 `[workspace.dependencies]`; individual crates inherit them with
 `x.workspace = true`.
 
-Crates: `bussard-model` (KNX types, DPT codecs, the TOML model files and lock), `bussard-project`,
+Crates: `bussard-model` (KNX types, DPT codecs, the TOML model files and lock),
+`bussard-product` (ETS XML parsers, `.knxprod` reading, parameter images,
+`.knxproj` import), `bussard-project` (the key store and `.knxkeys`),
 `bussard-transport` (KNXnet/IP and the bus actor), `bussard-monitor`, `bussard-mcp` (MCP
-server), `bussard-viz` (the `viz` web server), `bussard-mgmt`, `bussard-prod`,
-`bussard-ets` (`.knxproj`/`.knxprod` import), `bussard-secure` (KNX Secure),
+server), `bussard-viz` (the `viz` web server), `bussard-mgmt`,
+`bussard-secure` (KNX Secure),
 `bussard-ha` (Home Assistant), `bussard-download`, `bussard-service` (the layer
 between the surfaces and the domain: gated `BusService`, management sessions,
 the checked group write, the live `ModelHandle`), `bussard-testkit` (mock
@@ -130,7 +132,7 @@ to a device follows these rules, and the PR template asks for each one.
 - Every write command ends with an independent read-back compared against the
   model (#319, #349). "Verified" never means "the sequence completed".
 - Model-side code never re-implements ETS Dynamic semantics. It calls the shared
-  Dynamic evaluator in `bussard-ets` (#345).
+  Dynamic evaluator in `bussard-product` (#345).
 - A silent success is a P1 bug: a result that says ok while the device does not
   match the model.
 

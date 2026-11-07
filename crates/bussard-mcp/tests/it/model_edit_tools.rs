@@ -1065,14 +1065,14 @@ fn pack_synthetic_product(name: &str, out: &Path) -> TestResult {
 /// from the catalogue XML, and the application the plan builds its image
 /// from.
 fn param_calculation_dir()
--> Result<(PathBuf, bussard_prod::ApplicationProgram), Box<dyn std::error::Error>> {
+-> Result<(PathBuf, bussard_product::ApplicationProgram), Box<dyn std::error::Error>> {
     let dir = model_dir("calc")?;
     let knxprod = dir.join("syn-param-calculation.knxprod");
     pack_synthetic_product("syn-param-calculation", &knxprod)?;
-    let data = bussard_prod::read_knxprod(&knxprod)?;
+    let data = bussard_product::read_knxprod(&knxprod)?;
     std::fs::remove_file(&knxprod)?;
     let app = data.applications.first().ok_or("no application")?.clone();
-    bussard_prod::product_model::write_product_models(&data, &dir)?;
+    bussard_product::product_model::write_product_models(&data, &dir)?;
     std::fs::write(
         dir.join("bussard.lock"),
         format!(
@@ -1095,11 +1095,12 @@ fn param_calculation_dir()
 /// What the plan's parameter image holds for parameter `param` (app-relative
 /// id) with `overrides`, decoded the way a read-back decodes it.
 fn planned_value(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
     overrides: &std::collections::BTreeMap<String, String>,
     param: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let images = bussard_prod::image::compute_parameter_image(app, overrides, &Default::default())?;
+    let images =
+        bussard_product::image::compute_parameter_image(app, overrides, &Default::default())?;
     let param = app
         .parameters
         .get(&format!("{}_{param}", app.id))
@@ -1107,7 +1108,7 @@ fn planned_value(
     let memory = param.memory.as_ref().ok_or("no memory")?;
     let segment = memory.code_segment.as_deref().ok_or("no segment")?;
     let image = images.get(segment).ok_or("no image of the segment")?;
-    let value = bussard_prod::image::decode_parameter_value(
+    let value = bussard_product::image::decode_parameter_value(
         app,
         param,
         image,

@@ -67,10 +67,10 @@ fn knxprod_files(dir: &Path) -> Vec<PathBuf> {
 /// `"M-0083_A-000E"`) across every `.knxprod` in the corpus, returning
 /// `(product, application_index)` or `None` if absent (the corpus may not carry
 /// every vendor).
-fn find_app(app_prefix: &str) -> Option<(bussard_prod::ProductData, usize)> {
+fn find_app(app_prefix: &str) -> Option<(bussard_product::ProductData, usize)> {
     let dir = corpus_dir()?;
     for file in knxprod_files(&dir) {
-        let Ok(product) = bussard_prod::read_knxprod(&file) else {
+        let Ok(product) = bussard_product::read_knxprod(&file) else {
             continue;
         };
         if let Some(idx) = product
@@ -85,14 +85,14 @@ fn find_app(app_prefix: &str) -> Option<(bussard_prod::ProductData, usize)> {
 }
 
 /// The device mask of an app (its declared mask version as a `u16`).
-fn app_mask(app: &bussard_prod::ApplicationProgram) -> Option<u16> {
+fn app_mask(app: &bussard_product::ApplicationProgram) -> Option<u16> {
     u16::from_str_radix(app.mask_version.as_deref()?.trim(), 16).ok()
 }
 
 /// Plans a flash for an app against its own declared mask (so the family gate and
 /// mask-match pass and the op lowering itself is exercised).
 fn plan_for(
-    app: &bussard_prod::ApplicationProgram,
+    app: &bussard_product::ApplicationProgram,
 ) -> std::result::Result<bussard_download::FlashPlan, bussard_download::PlanError> {
     let mask = app_mask(app).expect("app declares a hex mask");
     plan_flash_default(
@@ -254,7 +254,7 @@ fn plan_lowers_jung_a_a011_with_load_image_prop() {
 
 /// The Theben Meteodata 140 S product (mask 0701) from the vendor cache, or
 /// `None` when the corpus is unset or does not carry it.
-fn meteodata_product() -> Option<bussard_prod::ProductData> {
+fn meteodata_product() -> Option<bussard_product::ProductData> {
     const ZIP: &str = "o5646v53_KNX_DB_Meteodata_140_S_KNX_KNXDatenbank.zip";
     const INNER: &str = "KNX_DB_D_GB_E_F_I_NL_METEODATA_140_S_V1_4_knxprod_2206.knxprod";
     let dir = corpus_dir()?;
@@ -265,7 +265,7 @@ fn meteodata_product() -> Option<bussard_prod::ProductData> {
     ]
     .iter()
     .find(|p| p.exists())
-    .and_then(|p| bussard_prod::read_knxprod_inner(p, Some(INNER)).ok())
+    .and_then(|p| bussard_product::read_knxprod_inner(p, Some(INNER)).ok())
 }
 
 /// Issue #133: the Meteodata `knx_master.xml` Hawk blocks decide blind vs
@@ -347,7 +347,7 @@ fn test_compute_parameter_image_placed_meteodata_c4_page_is_writable() {
         ("P-7305_R-7305".to_string(), "19".to_string()),
     ]);
     let (_, placed) =
-        bussard_prod::compute_parameter_image_placed(app, &overrides, &BTreeMap::new())
+        bussard_product::compute_parameter_image_placed(app, &overrides, &BTreeMap::new())
             .expect("Meteodata image");
     let as4800 = placed
         .iter()

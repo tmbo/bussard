@@ -1,0 +1,5417 @@
+//! The parameter memory image builder: turn an [`ApplicationProgram`]'s
+//! parameters (their declared defaults, `ParameterRef` overrides, and a
+//! caller-supplied override map) into the per-segment byte images ETS would
+//! download into a device.
+//!
+//! # What this computes
+//!
+//! Every [`Parameter`] with a `<Memory>` location contributes its value to a
+//! byte image keyed by the memory's `CodeSegment` id. [`compute_parameter_image`]
+//! resolves each parameter's effective value through the override chain, encodes
+//! it to bytes at the declared `Offset`/`BitOffset` with the width its
+//! `ParameterType` implies, and returns one `Vec<u8>` per segment that any
+//! parameter targets.
+//!
+//! # Bit-offset semantics (established from real ETS data)
+//!
+//! ETS lays parameter fields into a byte **most-significant-bit first**: a field
+//! of width `w` at `BitOffset b` occupies bits `[b, b+w)` counting from the MSB
+//! (bit 0 = the byte's high bit `0x80`, bit 7 = the low bit `0x01`). Evidence
+//! from `home_test.knxproj`:
+//!
+//! * Consecutive sub-byte fields pack left to right with `BitOffset` equal to
+//!   the cumulative width so far: four 2-bit fields sharing a byte carry
+//!   `BitOffset` 0, 2, 4, 6; four 1-bit fields carry 4, 5, 6, 7; a 1-bit field
+//!   at 0 is followed by a 3-bit field at 1.
+//! * Where a shipped `<Data>` image happened to hold a parameter's non-zero
+//!   default, decoding MSB-first reproduced the default (e.g. a 2-bit field with
+//!   default 3 at `BitOffset 6` sat in byte `0b0000_0111`).
+//!
+//! Multi-byte integers are stored **big-endian** (default 500 appeared as
+//! `01 F4`, 2000 as `07 D0`, 10 as `00 0A`), unless the program declares
+//! `<Options ParameterByteOrder="LittleEndian">`: then a byte-aligned integer
+//! field of two or more octets is stored least significant octet first (the
+//! ABB 6119/20's debounce 5633 as `01 16`, issue #386), and so is a float
+//! (DPT 9 21.5 as `33 0C`, IEEE-754 Single 21.5 as `00 00 AC 41` in the ETS
+//! download of the synthetic `syn-le-order`, issue #403).
+//!
+//! # Base image
+//!
+//! A parameter segment is usually a separate `RelativeSegment` whose `<Data>` is
+//! a mostly-zero placeholder that ETS overwrites with parameter values on
+//! download. If the target segment carries a `<Data>` payload bussard uses it as
+//! the base image and lays parameters over it (so bytes no parameter touches
+//! keep the vendor's bytes); otherwise the image starts as all-`0x00`, sized to
+//! hold every parameter that targets it (to the segment's `Size` on the Dynamic
+//! path). In a relative segment without `<Data>`, every octet no parameter
+//! writes is then set to the fill byte of the segment's full-download
+//! `LdCtrlRelSegment` when it pre-fills (issue #834), else to `0xFF`, the
+//! erased flash ETS writes there (issue #377, see `unplaced_fill`).
+
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::ops::Range;
+
+use crate::application::{
+    ApplicationProgram, CodeSegment, LabelMatch, LoadOp, Parameter, ParameterType, SegmentFill,
+    SegmentKind, enum_member_by_label,
+};
+use crate::dynamic::split_selector;
+use bussard_model::text_codec::TextCodec;
+
+use crate::error::{ProductError, Result};
+
+/// The largest parameter-memory image bussard will ever build for a single
+/// segment. A segment's image is a base image plus parameters placed by byte
+/// offset; the offset, the payload length and the segment's declared `Size` all
+/// originate in untrusted vendor XML (a `<Memory Offset>` and a `<Segment Size>`
+/// are raw `u32`s, so `0xFFFF_FFFF` would otherwise force a ~4 GiB `Vec`
+/// allocation at flash pre-flight). The cap therefore bounds the declared `Size`
+/// as well as the no-`Size` case: a segment declaring more than this is treated
+/// as corrupt/hostile input and refused rather than allocated.
+///
+/// 1 MiB clears real product data: the largest segment in the 495-product corpus
+/// (`tests-support/product-corpus`) declares `Size="1048575"` — the ABB i-bus
+/// application, one byte under the cap — and everything else is far smaller.
+const MAX_SEGMENT_IMAGE: u64 = 1024 * 1024;
+
+/// Records the octets `range` of segment `seg_id` as placed.
+fn mark(placed: &mut PlacedOctets, seg_id: &str, range: Range<usize>) {
+    if range.is_empty() {
+        return;
+    }
+    placed.entry(seg_id.to_string()).or_default().extend(range);
+}
+
+/// The octet ETS leaves in every unplaced octet of a relative segment that
+/// carries no `<Data>` when the full download's `LdCtrlRelSegment` does not
+/// ask the device to pre-fill it: erased flash (see [`unplaced_fill`]).
+///
+/// Evidence (issue #377): the ETS 6.4 full download of 1.1.201 (Jung IP
+/// interface additional function, `M-0004_A-0024-22-EA66`, capture
+/// `shared-with-windows/26-10-pcaps/ip-schnittstelle-zusatz-1-1-201.pcapng`)
+/// writes `RS-04-00000` (8178 octets, no `<Data>`, no `<Mask>`) as 8107 x
+/// `0xFF`. The 71 other octets are exactly the octets a parameter placement
+/// writes, and in those the bits outside the field are `0`: octet 69 holds a
+/// 1-bit field set to 1 and reads `0x80`, octet 198 a 3-bit field set to 3 and
+/// reads `0x60`. So the fill applies per octet after placement, not as the
+/// base the fields are laid over. A segment with `<Data>` keeps its data (and
+/// `0x00` past a short one), which every other System B capture matches.
+const ERASED_FILL: u8 = 0xFF;
+
+/// The octet ETS leaves in the unplaced octets of the relative segment `seg`
+/// (one without `<Data>`): the fill byte of the full download's
+/// `LdCtrlRelSegment` for the segment's load state machine when its `Mode`
+/// asks the device to pre-fill the allocation, [`ERASED_FILL`] otherwise.
+///
+/// Evidence (issue #834, defaults sweep 2026-11-04, ETS 6.4.1 into knx-sim):
+/// with `<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Mode="1" Fill="0">`
+/// ETS leaves those octets `00` (Enertex `M-00A6_A-0031-30-EE6B`, 9096
+/// octets; MDT `A-0153/0154/0155`; ekinex `A-DA22`), with `Mode="1"
+/// Fill="255"` `ff` (Enertex `A-0035-31`, Jung `A-0024-22` of #377). A
+/// `Mode="0"` allocation (19 programs in the corpus, none captured) and a
+/// segment whose procedure comes from the mask template keep #377's `0xFF`.
+fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
+    let Some(lsm) = seg.load_state_machine else {
+        return ERASED_FILL;
+    };
+    let full = |applies_to: &Option<String>| {
+        applies_to
+            .as_deref()
+            .is_none_or(|a| a.split(',').any(|part| part.trim() == "full"))
+    };
+    app.load_procedures
+        .iter()
+        .flat_map(|lp| lp.ops.iter())
+        .find_map(|op| match op {
+            LoadOp::RelSegment {
+                lsm_idx: Some(idx),
+                applies_to,
+                fill,
+                ..
+            } if *idx == lsm && full(applies_to) => Some(*fill),
+            _ => None,
+        })
+        .and_then(SegmentFill::prefill)
+        .unwrap_or(ERASED_FILL)
+}
+
+/// Sets every octet that no placement wrote ([`PlacedOctets`]) to the
+/// segment's [`unplaced_fill`] in the image of each relative segment without
+/// `<Data>`. The image length is unchanged.
+fn apply_erased_fill(
+    app: &ApplicationProgram,
+    images: &mut BTreeMap<String, Vec<u8>>,
+    placed: &PlacedOctets,
+) {
+    for (seg_id, image) in images.iter_mut() {
+        let Some(seg) = app
+            .code_segments
+            .get(seg_id)
+            .filter(|s| s.kind == SegmentKind::Relative && s.data.is_none())
+        else {
+            continue;
+        };
+        let fill = unplaced_fill(app, seg);
+        let written = placed.get(seg_id);
+        for (i, octet) in image.iter_mut().enumerate() {
+            if !written.is_some_and(|w| w.contains(&i)) {
+                *octet = fill;
+            }
+        }
+    }
+}
+
+/// Builds the per-segment parameter memory images for `app`, applying
+/// caller-supplied overrides keyed by **app-relative `ParameterRef` id** (the
+/// `#46` model-agent contract — see [`Device::parameters`]).
+///
+/// [`Device::parameters`]: bussard_model::schema::Device::parameters
+///
+/// For every parameter carrying a `<Memory>` location, the effective value is
+/// resolved through the override chain (lowest to highest precedence):
+///
+/// 1. the `ParameterType` default (`0`/empty when the parameter has no `Value`),
+/// 2. the parameter's own `Value`,
+/// 3. the value of the *first* `ParameterRef` pointing at the parameter that
+///    carries a `Value` (refs are the per-channel instances; a single-instance
+///    parameter has one ref),
+/// 4. `overrides[ref-id]`, the caller's explicit choice, keyed by the
+///    app-relative `ParameterRef` id (e.g. `MD-1_M-3_MI-1_P-3_R-45` or
+///    `P-1312_R-2140`) — **not** the parameter name, which is provably
+///    non-unique (module repetition and multi-ref parameters).
+///
+/// The resolved value is encoded MSB-first big-endian (little-endian for a
+/// multi-octet integer or a float of a `ParameterByteOrder="LittleEndian"`
+/// program) into
+/// the byte image keyed by the memory's `CodeSegment`. Returns a map from segment id to its image.
+///
+/// # Module-instance offsets
+///
+/// A module parameter (id `MD-<d>_..._P-<p>`, whose `<Memory>` carries a
+/// [`BaseOffset`](crate::application::Memory::base_offset)) is instantiated
+/// once per channel; each instance places its value at
+/// `declared_offset + instance_base`, where `instance_base` is the module
+/// instance's value for the argument the `BaseOffset` names. That per-instance
+/// value lives in the **project** (`ModuleInstance` data), not in the
+/// application program, so a caller that knows it passes it in `base_offsets`,
+/// keyed by the module-instance selector (`MD-<d>_M-<m>_MI-<n>`). A module
+/// override whose selector is absent from `base_offsets` **cannot be placed**
+/// without guessing its address, so it is refused (see Errors) rather than
+/// written to the wrong byte. Plain (non-module) parameters ignore `base_offsets`
+/// entirely — their declared offset is absolute within the segment.
+///
+/// # Errors
+///
+/// Returns [`ProductError::ParameterImage`] naming the offending parameter/key if a
+/// value cannot be parsed for its type, exceeds the field's declared width, its
+/// memory location is incomplete, or a module-instance override cannot be placed
+/// because its per-instance base offset was not supplied in `base_offsets`.
+pub fn compute_parameter_image(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    compute_parameter_image_placed(app, overrides, base_offsets).map(|(images, _)| images)
+}
+
+/// The octets of each code segment that a parameter placement writes (segment
+/// id to octet offsets), as [`compute_parameter_image_placed`] records them.
+///
+/// An octet is placed when the encoder lays any bit of a parameter value into
+/// it: a parameter the Dynamic section reaches under the configuration, a
+/// hidden parameter the application downloads at its default, every
+/// parameter's default and the default union member on the vendor-default
+/// path, and the overrides. Every other octet of the image holds the
+/// segment's `<Data>` or its fill, which ETS does not write in a download
+/// (issue #290).
+pub type PlacedOctets = BTreeMap<String, BTreeSet<usize>>;
+
+/// [`compute_parameter_image`], with the octets each placement wrote
+/// ([`PlacedOctets`]).
+///
+/// The images are the ones [`compute_parameter_image`] returns, byte for byte;
+/// the second half records where a parameter value landed, so a
+/// parameter-only download can leave every other octet as the device holds
+/// it, the way ETS's download does (issue #290).
+///
+/// # Errors
+///
+/// As [`compute_parameter_image`].
+pub fn compute_parameter_image_placed(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Result<(BTreeMap<String, Vec<u8>>, PlacedOctets)> {
+    compute_parameter_image_placed_with(
+        app,
+        overrides,
+        base_offsets,
+        &crate::dynamic::DynamicMemo::new(app),
+    )
+}
+
+/// [`compute_parameter_image_placed`], evaluating the Dynamic section through
+/// `memo` (issue #367), so a caller that evaluates the same values again
+/// shares the evaluation. The result is the same, byte for byte.
+///
+/// # Errors
+///
+/// As [`compute_parameter_image`].
+pub fn compute_parameter_image_placed_with(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    memo: &crate::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) -> Result<(BTreeMap<String, Vec<u8>>, PlacedOctets)> {
+    let mut placed = PlacedOctets::new();
+    if uses_dynamic_image(app) {
+        let config = memo.evaluate_for(app, overrides);
+        let images = dynamic_image(app, &config, &mut placed)?;
+        return Ok((images, placed));
+    }
+    // Calculations run inside the Dynamic evaluation, which this path does
+    // not do. ETS runs one only once an input leaves its vendor default (the
+    // trigger rule, issue #427), so at the defaults the outputs keep their
+    // defaults and this path writes what ETS writes; an override that would
+    // run a script is refused rather than leave its outputs stale.
+    if let Some(calc) = crate::dynamic::calculation_triggered_by(app, overrides) {
+        return Err(ProductError::ParameterImage {
+            parameter: calc.id.clone(),
+            reason: "is a parameter calculation whose input the model sets, which bussard \
+                     runs only for an application whose Dynamic section it evaluates; this \
+                     one it does not"
+                .to_string(),
+        });
+    }
+    validate_segments(app)?;
+    // Each targeted segment's image starts from its `<Data>` base (if any),
+    // else empty, and grows as parameters are placed.
+    let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    for slot in static_parameter_slots(app, overrides, base_offsets) {
+        let slot = slot?;
+        let source = if slot.is_override {
+            ValueSource::UserOverride
+        } else {
+            ValueSource::VendorDefault
+        };
+        let range = write_slot(app, &mut images, &slot.slot, slot.value.as_deref(), source)?;
+        mark(&mut placed, slot.slot.segment, range);
+    }
+
+    apply_erased_fill(app, &mut images, &placed);
+    Ok((images, placed))
+}
+
+/// One value the static image builder writes (an application without a
+/// Dynamic-built image, [`uses_dynamic_image`]): where, which value, and the
+/// vendor default of its ref.
+#[derive(Debug, Clone)]
+pub struct StaticSlot<'a> {
+    /// The parameter and where it lands. `param_ref_id` is the device-file key
+    /// the value belongs to: the parameter's first ref (by id) for a vendor
+    /// default, the override's key for an override, and `None` for a module
+    /// parameter's default, placed once per module instance under no key.
+    /// `module` is always `None`.
+    pub slot: ParameterSlot<'a>,
+    /// The value written.
+    pub value: Option<String>,
+    /// The vendor default of the key's ref: what the slot holds when the
+    /// model sets nothing.
+    pub default: Option<String>,
+    /// Whether `value` is the caller's override, encoded strictly, rather
+    /// than a vendor default.
+    pub is_override: bool,
+}
+
+/// The values the static image builder ([`compute_parameter_image`] for an
+/// application without a Dynamic-built image) writes, in write order: every
+/// parameter's vendor default (a module parameter once per module instance a
+/// channel references), the default member of every `<Union>`, then
+/// `overrides` (keyed like [`compute_parameter_image`] takes them), placed
+/// with the module-instance `base_offsets`. Where two slots cover the same
+/// bits, the later one is what the image holds.
+///
+/// Each entry is the slot or the refusal the image builder reports for it (a
+/// memory block without an offset, a key naming no parameter, a module
+/// parameter whose instance base is missing); the read-back decoder skips
+/// the refusals and reads the rest.
+pub fn static_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Vec<Result<StaticSlot<'a>>> {
+    // The first ref (by id) of each parameter, and the first `Value` a ref
+    // gives it: deterministic, so a fixed ref wins reproducibly.
+    let mut refs: Vec<_> = app.parameter_refs.values().collect();
+    refs.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+    let mut ref_value: BTreeMap<&str, &str> = BTreeMap::new();
+    for r in &refs {
+        first_ref.entry(r.ref_id.as_str()).or_insert(r.id.as_str());
+        if let Some(v) = r.value.as_deref() {
+            ref_value.entry(r.ref_id.as_str()).or_insert(v);
+        }
+    }
+    let default_of = |param: &Parameter| -> Option<String> {
+        param.initial_value.clone().or_else(|| {
+            ref_value
+                .get(param.id.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| param.default.clone())
+        })
+    };
+    let key_of = |param: &Parameter| {
+        let id = first_ref
+            .get(param.id.as_str())
+            .copied()
+            .unwrap_or(param.id.as_str());
+        id.strip_prefix(&format!("{}_", app.id))
+            .unwrap_or(id)
+            .to_string()
+    };
+    let slot = |param: &'a Parameter, key: Option<String>, segment: &'a str, offset, bit_offset| {
+        ParameterSlot {
+            module: None,
+            param_ref_id: key,
+            parameter: param,
+            segment,
+            offset,
+            bit_offset,
+        }
+    };
+    let default_slot = |param: &'a Parameter, key, segment, offset, bit_offset| {
+        let value = default_of(param);
+        StaticSlot {
+            slot: slot(param, key, segment, offset, bit_offset),
+            default: value.clone(),
+            value,
+            is_override: false,
+        }
+    };
+    let mut out = Vec::new();
+
+    // Every parameter's default at its declared position. A module parameter
+    // (its `<Memory>` carries a `BaseOffset`) is instantiated once per
+    // `<Module>` channel at `declared + instance[base_offset]`, and skipped
+    // when no channel references it (ETS never writes it, e.g. a `color`
+    // parameter on the DA.tp app).
+    let referenced_module_params = module_referenced_params(app);
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    for param in params {
+        let Some(mem) = param.memory.as_ref() else {
+            continue;
+        };
+        let Some(segment) = mem.code_segment.as_deref() else {
+            continue;
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+        let Some(offset) = mem.offset else {
+            out.push(Err(param_err(
+                app,
+                pname,
+                "memory block is missing its Offset",
+            )));
+            continue;
+        };
+        let bit_offset = mem.bit_offset.unwrap_or(0);
+        let (Some(base_arg), Some(referenced)) = (
+            mem.base_offset.as_deref(),
+            referenced_module_params.as_ref(),
+        ) else {
+            // A plain parameter, or a module parameter in a non-module app:
+            // once, at the declared offset.
+            let key = mem.base_offset.is_none().then(|| key_of(param));
+            out.push(Ok(default_slot(
+                param,
+                key,
+                segment,
+                offset as usize,
+                bit_offset,
+            )));
+            continue;
+        };
+        if !referenced.contains(&param.id) {
+            continue;
+        }
+        let rel_arg = base_arg
+            .strip_prefix(&format!("{}_", app.id))
+            .unwrap_or(base_arg);
+        for instance in &app.module_instances {
+            // An argument without a value (an allocator's) refuses rather
+            // than placing the parameter at base 0 (issue #449).
+            let Some(base) = instance.arg_values.get(rel_arg).copied() else {
+                out.push(Err(param_err(
+                    app,
+                    pname,
+                    &format!(
+                        "module instance {} has no value for the BaseOffset argument {rel_arg}",
+                        instance.id
+                    ),
+                )));
+                continue;
+            };
+            let effective = i64::from(offset)
+                .checked_add(base)
+                .and_then(|v| usize::try_from(v).ok());
+            out.push(match effective {
+                Some(at) => Ok(default_slot(param, None, segment, at, bit_offset)),
+                None => Err(param_err(
+                    app,
+                    pname,
+                    "module-instance base offset places the parameter at an out-of-range address",
+                )),
+            });
+        }
+    }
+
+    // A `<Union>` overlays its members on one memory region; ETS writes the
+    // member marked `DefaultUnionParameter` (else the first) at the union's
+    // location plus the member offset.
+    for union in &app.unions {
+        let Some(mem) = union.memory.as_ref() else {
+            continue;
+        };
+        let (Some(segment), Some(base)) = (mem.code_segment.as_deref(), mem.offset) else {
+            continue;
+        };
+        let Some(member) = union
+            .members
+            .iter()
+            .find(|m| m.is_default)
+            .or_else(|| union.members.first())
+        else {
+            continue;
+        };
+        let Some(param) = app.parameters.get(&member.parameter) else {
+            continue;
+        };
+        let (offset, bit_offset) = union_member_position(base, mem.bit_offset, member);
+        out.push(Ok(default_slot(
+            param,
+            Some(key_of(param)),
+            segment,
+            offset as usize,
+            bit_offset,
+        )));
+    }
+
+    // The overrides, each at its parameter's own memory or its union's plus
+    // the member offset; a module parameter's declared offset is
+    // instance-relative, so the instance's base is added. A display-only
+    // parameter (no memory, no union) only steers the Dynamic section.
+    for (key, raw_value) in overrides {
+        let (param, instance) = match resolve_parameter_key(app, key) {
+            Some(found) => found,
+            None => {
+                let reason = match split_selector(key).1.rsplit_once("_R-") {
+                    Some((param, _)) => {
+                        format!("names parameter {param}, which this application does not define")
+                    }
+                    None => "is not a valid parameter key (no _R-<r> ref suffix)".to_string(),
+                };
+                out.push(Err(param_err(app, key, &reason)));
+                continue;
+            }
+        };
+        let Some(mem) = override_memory(app, param) else {
+            continue;
+        };
+        let placed = override_offset(app, key, &mem, instance.as_deref(), base_offsets);
+        let pref = app
+            .parameter_refs
+            .get(&format!("{}_{}", app.id, split_selector(key).1));
+        let default = pref
+            .and_then(|r| r.value.clone())
+            .or_else(|| default_of(param));
+        out.push(placed.map(|(segment, offset)| StaticSlot {
+            slot: slot(param, Some(key.clone()), segment, offset, mem.bit_offset),
+            value: Some(raw_value.clone()),
+            default,
+            is_override: true,
+        }));
+    }
+    out
+}
+
+/// Where an override of a parameter is written: its own `<Memory>`, else
+/// that of the first `<Union>` listing it (with a location), the member
+/// offset added.
+struct OverrideMemory<'a> {
+    segment: Option<&'a str>,
+    offset: Option<u32>,
+    bit_offset: u8,
+    module_relative: bool,
+}
+
+/// The [`OverrideMemory`] of `param`, `None` for a display-only parameter.
+fn override_memory<'a>(
+    app: &'a ApplicationProgram,
+    param: &'a Parameter,
+) -> Option<OverrideMemory<'a>> {
+    if let Some(mem) = param.memory.as_ref() {
+        return Some(OverrideMemory {
+            segment: mem.code_segment.as_deref(),
+            offset: mem.offset,
+            bit_offset: mem.bit_offset.unwrap_or(0),
+            module_relative: mem.base_offset.is_some(),
+        });
+    }
+    app.unions.iter().find_map(|union| {
+        let member = union.members.iter().find(|m| m.parameter == param.id)?;
+        let mem = union.memory.as_ref()?;
+        let (offset, bit_offset) = union_member_position(mem.offset?, mem.bit_offset, member);
+        Some(OverrideMemory {
+            segment: mem.code_segment.as_deref(),
+            offset: Some(offset),
+            bit_offset,
+            module_relative: mem.base_offset.is_some(),
+        })
+    })
+}
+
+/// The segment and byte offset an override of `key` lands at, from its
+/// memory `mem`: the declared offset, plus the per-instance base the caller
+/// supplied for the module-instance selector `instance` when the parameter
+/// is module-relative. Refuses rather than misplace when the base is needed
+/// but absent.
+fn override_offset<'a>(
+    app: &ApplicationProgram,
+    key: &str,
+    mem: &OverrideMemory<'a>,
+    instance: Option<&str>,
+    base_offsets: &BTreeMap<String, u32>,
+) -> Result<(&'a str, usize)> {
+    let Some(segment) = mem.segment else {
+        return Err(param_err(app, key, "memory block names no CodeSegment"));
+    };
+    let Some(declared) = mem.offset else {
+        return Err(param_err(app, key, "memory block is missing its Offset"));
+    };
+    if !mem.module_relative {
+        return Ok((segment, declared as usize));
+    }
+    let Some(selector) = instance else {
+        // The parameter is module-relative but the key names no instance.
+        return Err(param_err(
+            app,
+            key,
+            "is a module parameter but its key carries no _M-<m>_MI-<n> instance selector; \
+             cannot determine its per-instance offset",
+        ));
+    };
+    let base = base_offsets.get(selector).copied().ok_or_else(|| {
+        param_err(
+            app,
+            key,
+            &format!(
+                "is a module-instance parameter whose per-instance base offset (selector \
+                 {selector}) was not supplied; cannot place it without guessing its address"
+            ),
+        )
+    })?;
+    // Both operands are untrusted vendor/project u32s; a wrapping add would
+    // silently place the parameter at a bogus address.
+    let offset = declared.checked_add(base).ok_or_else(|| {
+        param_err(
+            app,
+            key,
+            &format!(
+                "declared offset {declared} plus per-instance base {base} overflows a 32-bit \
+                 segment offset"
+            ),
+        )
+    })?;
+    Ok((segment, offset as usize))
+}
+
+/// Validates every segment's decoded `<Data>`/`<Mask>` against its declared
+/// `Size` (and the [`MAX_SEGMENT_IMAGE`] cap) before any image is built.
+fn validate_segments(app: &ApplicationProgram) -> Result<()> {
+    // Validate every segment's decoded `<Data>`/`<Mask>` against its declared
+    // `Size` before building any image. Both payloads are base64 decoded from
+    // vendor XML; a payload longer than the segment claims (or, when `Size` is
+    // absent, longer than the sane cap) means corrupt/hostile product data, and
+    // is refused rather than seeding an oversized base image.
+    let mut seg_ids: Vec<&String> = app.code_segments.keys().collect();
+    seg_ids.sort();
+    for seg_id in seg_ids {
+        let seg = &app.code_segments[seg_id];
+        // A declared `Size` is bounded by the same cap as an absent one: it is
+        // what every `image.resize` below is allowed to grow to, so a hostile
+        // `Size="4294967295"` must not become a 4 GiB allocation.
+        if let Some(sz) = seg.size
+            && u64::from(sz) > MAX_SEGMENT_IMAGE
+        {
+            return Err(param_err(
+                app,
+                seg_id,
+                &format!(
+                    "segment declares Size {sz}, above the {MAX_SEGMENT_IMAGE}-byte image cap \
+                         (refusing an over-sized segment image)"
+                ),
+            ));
+        }
+        let limit = match seg.size {
+            Some(sz) => u64::from(sz),
+            None => MAX_SEGMENT_IMAGE,
+        };
+        for (what, payload) in [("<Data>", &seg.data), ("<Mask>", &seg.mask)] {
+            if let Some(bytes) = payload
+                && bytes.len() as u64 > limit
+            {
+                return Err(param_err(
+                    app,
+                    seg_id,
+                    &format!(
+                        "segment {what} is {} bytes but the segment declares Size {} \
+                             (refusing an over-sized segment image)",
+                        bytes.len(),
+                        seg.size
+                            .map(|s| s.to_string())
+                            .unwrap_or_else(|| format!("absent, capped at {MAX_SEGMENT_IMAGE}")),
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `app`'s parameter image and group-object table are built by
+/// evaluating its Dynamic section ([`compute_dynamic_parameter_image`]), the
+/// way ETS does (issue #123): true for every application with a Dynamic
+/// section, except one that instantiates `<Module>`s without declaring their
+/// `<ModuleDef>`s (nothing to evaluate them against), which keeps the
+/// vendor-default path.
+pub fn uses_dynamic_image(app: &ApplicationProgram) -> bool {
+    !app.dynamic.is_empty() && (app.module_instances.is_empty() || !app.module_dynamics.is_empty())
+}
+
+/// Builds the per-segment parameter images the way ETS does: the segment's
+/// `<Data>` template, overlaid with the value of every parameter the device's
+/// configuration actually shows.
+///
+/// The Dynamic section is evaluated with `overrides`
+/// ([`crate::dynamic::evaluate_dynamic`]); each reached parameter ref
+/// (plus both ends of each reached `<Assign>`) is written at its location: a
+/// parameter's `<Memory>` offset, or for a `<Union>` member the union's base
+/// plus the member offset, in either case plus the module instance's value for
+/// the `BaseOffset` argument. A parameter behind a branch that is not taken is
+/// not written, so its bytes keep the template value (or the segment's fill),
+/// and so is one behind a `<choose>` whose controlling parameter is itself
+/// inactive, which selects no branch (issue #159), unless the application
+/// has ETS download hidden parameters too
+/// ([`ApplicationProgram::downloads_invisible_parameters`]): then every
+/// application parameter the walk did not reach carries its default first.
+/// Display-only parameters (no memory) only steer the evaluation.
+///
+/// This reproduces the ETS 6 image of a Jung 52921ST (F50, app A-D142-21)
+/// byte for byte, where the template-plus-every-default image differed in 240
+/// of 6152 octets (see the `f50_golden` test in `bussard-download`). Values an
+/// application computes with `<ParameterCalculation>` scripts (an Ekinex
+/// EK-E72's fan block, a Jung A-3030 LED dimmer's dimming curves) come from
+/// the Dynamic evaluation, which runs them; an output of a script bussard
+/// cannot run is refused rather than written.
+///
+/// # Errors
+///
+/// [`ProductError::ParameterImage`] when an override key names no parameter ref
+/// of the application, a value cannot be encoded for its type, or a location
+/// falls outside its segment.
+pub fn compute_dynamic_parameter_image(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    let config = crate::dynamic::evaluate_dynamic(app, overrides);
+    dynamic_image(app, &config, &mut PlacedOctets::new())
+}
+
+/// [`compute_dynamic_parameter_image`] from the evaluated configuration
+/// `config` (the Dynamic section under the overrides), recording the octets
+/// each slot writes into `placed`.
+fn dynamic_image(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    placed: &mut PlacedOctets,
+) -> Result<BTreeMap<String, Vec<u8>>> {
+    validate_segments(app)?;
+    if let Some(key) = config.unresolved_overrides.first() {
+        return Err(param_err(
+            app,
+            key,
+            "names a parameter ref this application does not define",
+        ));
+    }
+    // A calculated parameter is not the user's to set: an override the
+    // calculation replaced with another value would leave the model and the
+    // device disagreeing for good.
+    if let Some(o) = config.calculated_overrides.first() {
+        return Err(param_err(
+            app,
+            &o.param_ref,
+            &format!(
+                "is computed by calculation {} as {:?}, but the model sets {:?}: remove it from \
+                 the device file, or change the parameters the calculation reads",
+                o.calculation, o.computed, o.overridden
+            ),
+        ));
+    }
+    // A calculation that could not run leaves its outputs, and every value
+    // copied or computed from them, at a value ETS would not have. One that
+    // decides a `<choose>` or a `<Repeat>` steers the configuration even when
+    // nothing writes it; one only a display text reads does not matter.
+    let derived = crate::dynamic::refs_derived_from(app, &config.refused_calculations);
+    if !derived.is_empty() {
+        let decides = crate::dynamic::refs_read_by_dynamic(app);
+        let mut steering: Vec<(&String, &usize)> = derived
+            .iter()
+            .filter(|(r, _)| decides.contains(*r))
+            .collect();
+        steering.sort();
+        if let Some(&(output, &i)) = steering.first() {
+            let calc = &config.refused_calculations[i];
+            return Err(param_err(
+                app,
+                output,
+                &format!(
+                    "is computed by calculation {}, which bussard cannot run ({}), and decides \
+                     which parameters the configuration shows",
+                    calc.id, calc.reason
+                ),
+            ));
+        }
+    }
+
+    // Seed every segment a parameter can land in, so the image set matches the
+    // vendor-default path even where no reached parameter falls.
+    let mut images: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let segments = app
+        .parameters
+        .values()
+        .filter_map(|p| p.memory.as_ref())
+        .chain(app.unions.iter().filter_map(|u| u.memory.as_ref()))
+        .filter_map(|m| m.code_segment.as_deref());
+    for seg in segments {
+        images
+            .entry(seg.to_string())
+            .or_insert_with(|| base_image(app, seg));
+    }
+
+    // An output of a calculation that could not run, or a value copied from
+    // one, holds a value the script did not compute; writing it would be a
+    // silent wrong image.
+    for slot in dynamic_parameter_slots(app, config)? {
+        if let Some(ref_id) = slot.param_ref_id.as_deref()
+            && let Some(&i) = derived.get(ref_id)
+        {
+            let calc = &config.refused_calculations[i];
+            return Err(param_err(
+                app,
+                ref_id,
+                &format!(
+                    "is computed by calculation {}, which bussard cannot run: {}",
+                    calc.id, calc.reason
+                ),
+            ));
+        }
+        let (value, source) = match slot.param_ref_id.as_deref() {
+            Some(ref_id) => (
+                config.value(app, slot.module, ref_id),
+                if config.is_override(app, slot.module, ref_id) {
+                    ValueSource::UserOverride
+                } else if config.computed_by(app, slot.module, ref_id).is_some() {
+                    ValueSource::Computed
+                } else {
+                    ValueSource::VendorDefault
+                },
+            ),
+            None => (
+                hidden_slot_value(app, config, &slot),
+                ValueSource::VendorDefault,
+            ),
+        };
+        let range =
+            write_slot(app, &mut images, &slot, value.as_deref(), source).map_err(|err| {
+                // A computed value that does not fit its parameter (a fraction
+                // for an integer, say) names the calculation behind it.
+                match (
+                    &err,
+                    slot.param_ref_id
+                        .as_deref()
+                        .and_then(|r| config.computed_by(app, slot.module, r)),
+                ) {
+                    (ProductError::ParameterImage { parameter, reason }, Some(calc)) => {
+                        ProductError::ParameterImage {
+                            parameter: parameter.clone(),
+                            reason: format!("{reason} (the value computed by calculation {calc})"),
+                        }
+                    }
+                    _ => err,
+                }
+            })?;
+        mark(placed, slot.segment, range);
+    }
+
+    // A segment's image spans its declared size (the template may be shorter).
+    for (seg_id, image) in images.iter_mut() {
+        if let Some(size) = app.code_segments.get(seg_id).and_then(|s| s.size)
+            && image.len() < size as usize
+        {
+            image.resize(size as usize, 0);
+        }
+    }
+    apply_erased_fill(app, &mut images, placed);
+    Ok(images)
+}
+
+/// Where a parameter is written: a segment, a byte and bit offset, and the
+/// module argument (if any) whose instance value is added to the byte offset.
+#[derive(Clone, Copy)]
+struct Location<'a> {
+    segment: &'a str,
+    offset: i64,
+    bit_offset: u8,
+    base: Option<&'a str>,
+}
+
+/// Union membership: parameter id -> (union index, member index).
+type UnionIndex<'a> = std::collections::HashMap<&'a str, (usize, usize)>;
+
+/// Where `param` lands: its own `<Memory>`, else the `<Union>` it belongs to;
+/// `None` for a display-only parameter.
+fn location<'a>(
+    app: &'a ApplicationProgram,
+    union_of: &UnionIndex<'_>,
+    param: &'a crate::application::Parameter,
+) -> Option<Location<'a>> {
+    if let Some(mem) = param.memory.as_ref() {
+        let (Some(seg), Some(off)) = (mem.code_segment.as_deref(), mem.offset) else {
+            return None;
+        };
+        return Some(Location {
+            segment: seg,
+            offset: i64::from(off),
+            bit_offset: mem.bit_offset.unwrap_or(0),
+            base: mem.base_offset.as_deref(),
+        });
+    }
+    let &(ui, mi) = union_of.get(param.id.as_str())?;
+    let union = &app.unions[ui];
+    let mem = union.memory.as_ref()?;
+    let (Some(seg), Some(off)) = (mem.code_segment.as_deref(), mem.offset) else {
+        return None;
+    };
+    let (member_off, member_bit) = union_member_position(off, mem.bit_offset, &union.members[mi]);
+    Some(Location {
+        segment: seg,
+        offset: i64::from(member_off),
+        bit_offset: member_bit,
+        base: mem.base_offset.as_deref(),
+    })
+}
+
+/// One value the Dynamic image builder writes: the parameter, the ref (and
+/// module instance) whose value it carries, and where it lands.
+///
+/// [`dynamic_parameter_slots`] lists them in write order; where two slots
+/// cover the same bits, the later one is what the image holds. The read-back
+/// decoder walks the same list, so it reads every value exactly where the
+/// encoder put it.
+#[derive(Debug, Clone)]
+pub struct ParameterSlot<'a> {
+    /// Index into [`DynamicConfig::modules`] of the ref's module instance;
+    /// `None` for a parameter of the application itself.
+    ///
+    /// [`DynamicConfig::modules`]: crate::dynamic::DynamicConfig::modules
+    pub module: Option<usize>,
+    /// The app-relative `ParameterRef` id whose value is written; `None` for a
+    /// parameter the configuration does not show, written at its own default
+    /// because the application downloads hidden parameters
+    /// ([`ApplicationProgram::downloads_invisible_parameters`]).
+    pub param_ref_id: Option<String>,
+    /// The parameter written.
+    pub parameter: &'a crate::application::Parameter,
+    /// The code segment the value lands in.
+    pub segment: &'a str,
+    /// The byte offset within the segment, module base included.
+    pub offset: usize,
+    /// The MSB-first bit offset within the byte.
+    pub bit_offset: u8,
+}
+
+/// The values the Dynamic image builder ([`compute_dynamic_parameter_image`])
+/// writes for `config`, in write order: first the hidden parameters at their
+/// defaults (when the application downloads them), then every reached
+/// parameter ref that has a location.
+///
+/// # Errors
+///
+/// [`ProductError::ParameterImage`] when a module base places a parameter at a
+/// negative or out-of-range offset.
+pub fn dynamic_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+) -> Result<Vec<ParameterSlot<'a>>> {
+    let mut union_of = UnionIndex::new();
+    for (ui, union) in app.unions.iter().enumerate() {
+        for (mi, member) in union.members.iter().enumerate() {
+            union_of.insert(member.parameter.as_str(), (ui, mi));
+        }
+    }
+    dynamic_parameter_slots_with(app, config, &union_of)
+}
+
+/// [`dynamic_parameter_slots`] with a prebuilt union index.
+fn dynamic_parameter_slots_with<'a>(
+    app: &'a ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    union_of: &UnionIndex<'_>,
+) -> Result<Vec<ParameterSlot<'a>>> {
+    check_object_bases(app, config)?;
+    let mut slots = Vec::new();
+    if app.downloads_invisible_parameters() {
+        invisible_parameter_slots(app, config, union_of, &mut slots, |_| true)?;
+    } else {
+        // ETS writes a hidden `LegacyPatchAlways` parameter at its default
+        // regardless (issue #450).
+        invisible_parameter_slots(app, config, union_of, &mut slots, |p| p.legacy_patch_always)?;
+    }
+    for active in &config.parameters {
+        let full_ref = format!("{}_{}", app.id, active.param_ref_id);
+        let Some(pref) = app.parameter_refs.get(&full_ref) else {
+            continue;
+        };
+        let Some(param) = app.parameters.get(&pref.ref_id) else {
+            continue;
+        };
+        // Display-only parameters (no location) steer the evaluation only.
+        let Some(at) = location(app, union_of, param) else {
+            continue;
+        };
+        slots.push(slot_at(
+            app,
+            config,
+            param,
+            at,
+            active.module,
+            Some(active.param_ref_id.clone()),
+        )?);
+    }
+    Ok(slots)
+}
+
+/// The value of the module argument `arg` (a full or app-relative id) in the
+/// module instance `module` of `config`, `None` when the instance has none
+/// (or there is no instance).
+pub fn module_argument(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    module: Option<usize>,
+    arg: &str,
+) -> Option<i64> {
+    let rel = arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg);
+    config.module_args(module)?.get(rel).copied()
+}
+
+/// Refuses a configuration that reaches a module com-object whose
+/// `BaseNumber` argument has no value in its instance (issue #449): an
+/// allocator-fed argument past its allocator, or one ETS computes in a way
+/// bussard does not model. Placing the object at base 0 would give it
+/// another object's number.
+fn check_object_bases(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+) -> Result<()> {
+    for active in &config.com_objects {
+        let Some((base, _)) = app.resolve(&active.com_object_ref_id) else {
+            continue;
+        };
+        if let Some(arg) = base.base_number_ref.as_deref()
+            && module_argument(app, config, active.module, arg).is_none()
+        {
+            return Err(ProductError::ParameterImage {
+                parameter: format!("com-object {}", active.com_object_ref_id),
+                reason: format!(
+                    "its module instance has no value for the BaseNumber argument {}; \
+                     refusing rather than numbering the object from 0",
+                    arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg)
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Resolves `at` to a slot, the byte offset shifted by the module instance's
+/// `BaseOffset` argument. A `BaseOffset` the instance has no value for
+/// refuses (issue #449): resolving it to 0 laid an MDT logic module over the
+/// application's own parameters.
+fn slot_at<'a>(
+    app: &'a ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    param: &'a crate::application::Parameter,
+    at: Location<'a>,
+    module: Option<usize>,
+    param_ref_id: Option<String>,
+) -> Result<ParameterSlot<'a>> {
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let base = match at.base {
+        Some(arg) => module_argument(app, config, module, arg).ok_or_else(|| {
+            param_err(
+                app,
+                pname,
+                &format!(
+                    "its module instance has no value for the BaseOffset argument {}; \
+                     refusing rather than placing the parameter at base 0",
+                    arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg)
+                ),
+            )
+        })?,
+        None => 0,
+    };
+    let offset = usize::try_from(at.offset + base).map_err(|_| {
+        param_err(
+            app,
+            pname,
+            "module-instance base offset places the parameter at an out-of-range address",
+        )
+    })?;
+    Ok(ParameterSlot {
+        module,
+        param_ref_id,
+        parameter: param,
+        segment: at.segment,
+        offset,
+        bit_offset: at.bit_offset,
+    })
+}
+
+/// Encodes `value` for the slot's parameter and places it in its segment's
+/// image.
+fn write_slot(
+    app: &ApplicationProgram,
+    images: &mut BTreeMap<String, Vec<u8>>,
+    slot: &ParameterSlot<'_>,
+    value: Option<&str>,
+    source: ValueSource,
+) -> Result<Range<usize>> {
+    let param = slot.parameter;
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(app, pname, parameter_type_of(app, param), value, source)?;
+    let seg_size = app.code_segments.get(slot.segment).and_then(|s| s.size);
+    let image = images
+        .entry(slot.segment.to_string())
+        .or_insert_with(|| base_image(app, slot.segment));
+    place_checked(
+        app,
+        pname,
+        image,
+        slot.offset,
+        slot.bit_offset,
+        &placement,
+        seg_size,
+    )
+}
+
+/// The declared type of `param`.
+fn parameter_type_of<'a>(
+    app: &'a ApplicationProgram,
+    param: &crate::application::Parameter,
+) -> Option<&'a ParameterType> {
+    param
+        .parameter_type
+        .as_deref()
+        .and_then(|id| app.parameter_types.get(id))
+        .map(|d| &d.kind)
+}
+
+/// The slots of the parameters the configuration does not show, for an
+/// application whose download carries them
+/// ([`ApplicationProgram::downloads_invisible_parameters`]), or of those of
+/// them `include` picks (the `LegacyPatchAlways` ones ETS writes in any
+/// case, issue #450: the Zennio DALI-BOX v2's 128 hidden group limits, the
+/// ABB Data Logging's hidden thresholds).
+///
+/// Every application-level parameter with a location that the walk did not
+/// reach gets its default, the parameter's own `Value`: ETS does not write a
+/// value set while the parameter was shown (the Steinel ControlPro's hidden
+/// switch-off delay, set to 30 s in the project, is written as its default
+/// 300 s; issue #89). A `<Union>` none of whose members was
+/// reached carries its default member (`DefaultUnionParameter`); a union with
+/// a reached member is left to that member. The caller writes the reached
+/// parameters afterwards, so they win where they overlap.
+///
+/// The parameters of a module definition get the same treatment once per
+/// module instance the walk reached, at that instance's base (issue #835):
+/// ETS writes the hidden parameters of every instance of the MDT and ekinex
+/// DALI gateways' group and ECG modules (`A-DA22`, `A-0153/0154/0155`), so
+/// leaving them out left their octets at the segment's fill. A module
+/// parameter with a `BaseValue` argument carries its default plus the
+/// instance's value of the argument ([`hidden_slot_value`]). An instance the
+/// walk did not reach gets nothing.
+fn invisible_parameter_slots<'a>(
+    app: &'a ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    union_of: &UnionIndex<'_>,
+    slots: &mut Vec<ParameterSlot<'a>>,
+    include: impl Fn(&crate::application::Parameter) -> bool,
+) -> Result<()> {
+    let prefix = format!("{}_", app.id);
+    // The parameters the walk reached and the unions they occupy, per module
+    // instance (`None`: the application itself).
+    let mut reached: HashMap<Option<usize>, HashSet<&str>> = HashMap::new();
+    let mut occupied_unions: HashMap<Option<usize>, HashSet<usize>> = HashMap::new();
+    for active in &config.parameters {
+        if let Some(pref) = app
+            .parameter_refs
+            .get(&format!("{prefix}{}", active.param_ref_id))
+        {
+            reached
+                .entry(active.module)
+                .or_default()
+                .insert(pref.ref_id.as_str());
+            if let Some(&(ui, _)) = union_of.get(pref.ref_id.as_str()) {
+                occupied_unions.entry(active.module).or_default().insert(ui);
+            }
+        }
+    }
+    // The candidates by module definition (`None`: application-level), in
+    // id order.
+    let mut by_def: HashMap<Option<&str>, Vec<&crate::application::Parameter>> = HashMap::new();
+    for p in app.parameters.values().filter(|p| include(p)) {
+        let rel = p.id.strip_prefix(&prefix).unwrap_or(&p.id);
+        by_def.entry(module_def_of(rel)).or_default().push(p);
+    }
+    for params in by_def.values_mut() {
+        params.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    // A hidden calculation output is written with the value the calculation
+    // computed (and refused with it), not its default: give it its ref.
+    let calculated: BTreeMap<&str, &str> = app
+        .calculations
+        .iter()
+        .flat_map(|c| &c.outputs)
+        .filter_map(|o| {
+            let pref = app
+                .parameter_refs
+                .get(&format!("{prefix}{}", o.param_ref))?;
+            Some((pref.ref_id.as_str(), o.param_ref.as_str()))
+        })
+        .collect();
+    let empty_reached = HashSet::new();
+    let empty_unions = HashSet::new();
+    let instances = std::iter::once((None, None)).chain(
+        config
+            .modules
+            .iter()
+            .enumerate()
+            .map(|(i, m)| (Some(i), Some(m.module_def.as_str()))),
+    );
+    for (module, def) in instances {
+        let Some(params) = by_def.get(&def) else {
+            continue;
+        };
+        let reached = reached.get(&module).unwrap_or(&empty_reached);
+        let occupied = occupied_unions.get(&module).unwrap_or(&empty_unions);
+        for param in params {
+            if reached.contains(param.id.as_str()) {
+                continue;
+            }
+            if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
+                && (occupied.contains(&ui) || !app.unions[ui].members[mi].is_default)
+            {
+                continue;
+            }
+            let Some(at) = location(app, union_of, param) else {
+                continue;
+            };
+            let param_ref = calculated.get(param.id.as_str()).map(|r| (*r).to_string());
+            slots.push(slot_at(app, config, param, at, module, param_ref)?);
+        }
+    }
+    Ok(())
+}
+
+/// The module definition an app-relative parameter id belongs to: `MD-1` of
+/// `MD-1_P-7` or `MD-1_UP-3`, `MD-1_SM-2` of a submodule's `MD-1_SM-2_P-4`;
+/// `None` for an application-level parameter (`P-12`, `UP-3`).
+fn module_def_of(rel: &str) -> Option<&str> {
+    if !rel.starts_with("MD-") {
+        return None;
+    }
+    let cut = match (rel.rfind("_P-"), rel.rfind("_UP-")) {
+        (Some(a), Some(b)) => a.max(b),
+        (Some(a), None) | (None, Some(a)) => a,
+        (None, None) => return None,
+    };
+    Some(&rel[..cut])
+}
+
+/// The value a slot of a parameter the configuration does not show carries
+/// (`param_ref_id` `None`, see [`ParameterSlot::param_ref_id`]): the
+/// parameter's starting value, plus, for a module parameter with a
+/// `BaseValue` argument, the instance's value of that argument, as the
+/// Dynamic evaluator resolves a reached one (issue #126). The image builder
+/// and the read-back decoder both read it from here.
+pub fn hidden_slot_value(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    slot: &ParameterSlot<'_>,
+) -> Option<String> {
+    let own = slot.parameter.starting_value().map(str::to_string);
+    let Some(base) = slot
+        .parameter
+        .base_value
+        .as_deref()
+        .and_then(|arg| module_argument(app, config, slot.module, arg))
+    else {
+        return own;
+    };
+    let n = match own.as_deref().map(str::trim) {
+        None | Some("") => 0,
+        Some(v) => match v.parse::<i64>() {
+            Ok(n) => n,
+            // A non-integer default takes no base.
+            Err(_) => return own,
+        },
+    };
+    Some(n.saturating_add(base).to_string())
+}
+
+/// The byte and bit offset of a `<Union>` member: the union's `<Memory>`
+/// `Offset`/`BitOffset` plus the member's own `Offset`/`BitOffset`, with a bit
+/// offset of 8 or more carried into the byte offset.
+///
+/// The union's own `BitOffset` counts: the Jung 3361-1MWW declares a 2-bit
+/// union at `Offset="0" BitOffset="4"` whose members sit at `BitOffset="0"`, and
+/// ETS writes them at bits 4-5. Dropping the union's bit offset wrote them at
+/// bits 0-1, over the neighbouring 1-bit parameter (issue #117).
+fn union_member_position(
+    union_offset: u32,
+    union_bit_offset: Option<u8>,
+    member: &crate::application::UnionMember,
+) -> (u32, u8) {
+    let bits = u32::from(union_bit_offset.unwrap_or(0)) + u32::from(member.bit_offset.unwrap_or(0));
+    let offset = union_offset
+        .saturating_add(member.offset.unwrap_or(0))
+        .saturating_add(bits / 8);
+    (offset, (bits % 8) as u8)
+}
+
+/// The set of application `Parameter` ids a module application's channel
+/// parameter block references, or `None` when the application is not
+/// module-based (no module instances or no captured channel membership).
+///
+/// A module application instantiates its parameters once per `<Module>` channel;
+/// its channel `<ParameterBlock>` lists which parameter refs each channel shows
+/// (`<ParameterRefRef>`). ETS only writes the parameters a channel references, so
+/// this set drives which module parameters
+/// [`compute_parameter_image`] expands across instances (a module parameter
+/// absent from it — e.g. a `color` parameter with a `<Memory>` no channel
+/// references — is never written). The referenced ids are resolved from the
+/// membership's parameter-ref ids (app-relative) through
+/// [`ApplicationProgram::parameter_refs`] to the underlying `Parameter` id.
+fn module_referenced_params(
+    app: &ApplicationProgram,
+) -> Option<std::collections::BTreeSet<String>> {
+    if app.module_instances.is_empty() {
+        return None;
+    }
+    let membership = app.channel_membership.as_ref()?;
+    let mut out = std::collections::BTreeSet::new();
+    for rel_ref_id in &membership.parameter_refs {
+        let full_ref = format!("{}_{rel_ref_id}", app.id);
+        if let Some(pref) = app.parameter_refs.get(&full_ref) {
+            out.insert(pref.ref_id.clone());
+        }
+    }
+    Some(out)
+}
+
+/// Resolves a device-file parameter key (`P-3_R-3`,
+/// `MD-1_M-3_MI-1_P-3_R-45`) to the application `Parameter` its ref points at
+/// and, for a module ref, the `MD-<d>_M-<m>_MI-<n>` selector the
+/// module-instance base offsets are keyed by.
+///
+/// A key naming no declared ref resolves to the parameter it spells (its
+/// `_R-<r>` suffix dropped, app-relative or full id). `None` when neither
+/// exists.
+pub fn resolve_parameter_key<'a>(
+    app: &'a ApplicationProgram,
+    key: &str,
+) -> Option<(&'a Parameter, Option<String>)> {
+    let (instance, param_ref) = split_selector(key);
+    let param = match app.parameter_refs.get(&format!("{}_{param_ref}", app.id)) {
+        Some(pref) => app.parameters.get(&pref.ref_id)?,
+        None => {
+            let rel = param_ref.rsplit_once("_R-")?.0;
+            app.parameters
+                .get(&format!("{}_{rel}", app.id))
+                .or_else(|| app.parameters.get(rel))?
+        }
+    };
+    // The selector is the key up to the instance number.
+    let selector = instance.and_then(|inst| {
+        let rest = key.strip_prefix(&format!("{inst}_MI-"))?;
+        let n = rest.split('_').next()?;
+        Some(format!("{inst}_MI-{n}"))
+    });
+    Some((param, selector))
+}
+
+/// The base image for a segment: its decoded `<Data>` if present, else empty.
+fn base_image(app: &ApplicationProgram, seg_id: &str) -> Vec<u8> {
+    app.code_segments
+        .get(seg_id)
+        .and_then(|s| s.data.clone())
+        .unwrap_or_default()
+}
+
+/// Where a resolved parameter value came from, for the enum-membership and
+/// integer-range leniency rules in [`encode_value`] (the range rule is in
+/// `encode_int`, issue #405).
+///
+/// An enum parameter whose value is not one of its declared members is a
+/// data-quality trap. The rule depends on who chose the value:
+///
+/// - [`ValueSource::VendorDefault`] — the value is the vendor's own shipped
+///   default (the `ParameterType` default, the parameter's `Value`, or a
+///   `ParameterRef` value; chain steps 1-3). A default the vendor shipped is by
+///   definition what the device expects, so a non-member default is passed
+///   through verbatim with a warning rather than refusing the whole flash. Real
+///   cause: Zennio Z40/Z70 v2 ship a parameter whose default sits outside its own
+///   enum, which otherwise refused two otherwise-flashable panels.
+/// - [`ValueSource::UserOverride`] — the value is a caller-supplied override
+///   (chain step 4). A user asking to write a value outside the declared enum is a
+///   genuine mistake worth refusing, so the strict membership check stands.
+/// - [`ValueSource::Computed`] — a calculation computed the value; refused
+///   outside the enum or range like an override.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueSource {
+    /// The vendor's own default (chain steps 1-3): lenient on a non-member enum
+    /// and on an integer outside its type's range.
+    VendorDefault,
+    /// A caller-supplied override (chain step 4): strict on both.
+    UserOverride,
+    /// A value a `<ParameterCalculation>` computed (issue #427): strict on
+    /// both, as no capture shows what ETS writes for a computed value outside
+    /// its parameter's type (issue #718).
+    Computed,
+}
+
+/// An encoded parameter value ready to place.
+enum Placement {
+    /// One or more whole bytes, laid down starting at the byte offset. Used for
+    /// byte-aligned payloads (text, raw data, byte-multiple ints at bit offset 0).
+    Bytes(Vec<u8>),
+    /// The big-endian octets of a float (DPT 9, IEEE-754 Single or Double),
+    /// laid down like [`Placement::Bytes`] but reversed when the program
+    /// declares `ParameterByteOrder="LittleEndian"` (see
+    /// [`little_endian_field`], issue #403).
+    Float(Vec<u8>),
+    /// A bit field up to 64 bits wide, holding the unsigned `value`, placed
+    /// MSB-first from `bit_offset` and allowed to span byte boundaries.
+    Field { bits: u32, value: u64 },
+    /// A no-op (e.g. a `TypeNone` marker) that occupies no memory.
+    Empty,
+}
+
+/// Places an enumeration member's `BinaryValue` octets in a field of `bits`:
+/// whole octets as they are (cut or zero-padded on the right to the field), a
+/// narrower field as the big-endian number the octets spell.
+fn binary_value_placement(bits: u32, bytes: &[u8]) -> Placement {
+    if bits.is_multiple_of(8) {
+        let mut buf = bytes.to_vec();
+        buf.resize((bits / 8) as usize, 0);
+        return Placement::Bytes(buf);
+    }
+    let value = bytes
+        .iter()
+        .take(8)
+        .fold(0u64, |acc, b| (acc << 8) | u64::from(*b));
+    let mask = if bits >= 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    };
+    Placement::Field {
+        bits,
+        value: value & mask,
+    }
+}
+
+/// Resolves the width/encoding of a value from its parameter type.
+///
+/// `source` selects the enum-membership leniency (see [`ValueSource`]): a
+/// non-member enum value is refused when it is a [`ValueSource::UserOverride`] but
+/// passed through with a warning when it is the vendor's own
+/// [`ValueSource::VendorDefault`].
+fn encode_value(
+    app: &ApplicationProgram,
+    pname: &str,
+    ptype: Option<&ParameterType>,
+    value: Option<&str>,
+    source: ValueSource,
+) -> Result<Placement> {
+    match ptype {
+        Some(ParameterType::Int {
+            size_bits,
+            signed,
+            min,
+            max,
+        }) => encode_int(app, pname, *size_bits, *signed, *min, *max, value, source),
+        Some(ParameterType::Enum { size_bits, values }) => {
+            // Enum default is the raw numeric value; validate it is a declared
+            // member when it parses, but always encode the number. A device
+            // file may also name the member by its vendor label (`import`
+            // writes labels): an exact, unique `Text` match is that member.
+            let raw = value.unwrap_or("0");
+            let n: i64 = match raw.trim().parse() {
+                Ok(n) => n,
+                Err(_) => match enum_member_by_label(values, raw) {
+                    LabelMatch::Member(n) => n,
+                    found => {
+                        // The labels in the language the program was parsed
+                        // in: the lock's language on the model paths.
+                        let choices: Vec<&str> = values.iter().map(|e| e.text.as_str()).collect();
+                        let why = if found == LabelMatch::Ambiguous {
+                            "names more than one of its members"
+                        } else {
+                            "is neither an enum code nor exactly one of its labels"
+                        };
+                        return Err(param_err(
+                            app,
+                            pname,
+                            &format!("`{raw}` {why} ({})", choices.join(" | ")),
+                        ));
+                    }
+                },
+            };
+            if !values.is_empty() && !values.iter().any(|e| e.value == n) {
+                match source {
+                    // A user asking to write a value outside the declared enum is a
+                    // genuine mistake — refuse it.
+                    ValueSource::UserOverride | ValueSource::Computed => {
+                        return Err(param_err(
+                            app,
+                            pname,
+                            &format!("value `{n}` is not a declared enumeration member"),
+                        ));
+                    }
+                    // The vendor's OWN default sits outside its OWN enum (a real
+                    // Zennio Z40/Z70 v2 data-quality trap). A default the vendor
+                    // shipped is by definition what the device expects, so pass the
+                    // raw byte(s) through with a warning rather than refusing the
+                    // whole flash over the vendor's own metadata bug.
+                    ValueSource::VendorDefault => {
+                        tracing::warn!(
+                            parameter = pname,
+                            value = n,
+                            "vendor default value is not a declared enumeration member; \
+                             passing the raw value through (the shipped default is what the \
+                             device expects)"
+                        );
+                    }
+                }
+            }
+            // A `Base="BinaryValue"` member carries the octets ETS writes.
+            if let Some(bytes) = values
+                .iter()
+                .find(|e| e.value == n)
+                .and_then(|e| e.binary_value.as_deref())
+            {
+                return Ok(binary_value_placement(size_bits.unwrap_or(8), bytes));
+            }
+            encode_int_bits(app, pname, size_bits.unwrap_or(8), false, n)
+        }
+        Some(ParameterType::Text { size_bits }) => {
+            // The program's `TextParameterEncoding` (ISO 8859-1 when it
+            // declares none, as ETS writes it, #416), NUL-padded, refused when
+            // it does not fit (issue #401).
+            let len = (size_bits.unwrap_or(0) / 8) as usize;
+            TextCodec::from_declaration(app.text_parameter_encoding.as_deref())
+                .encode(value.unwrap_or(""), len)
+                .map(Placement::Bytes)
+                .map_err(|reason| param_err(app, pname, &reason))
+        }
+        Some(ParameterType::Float { encoding, max, .. }) => {
+            encode_float(app, pname, encoding.as_deref(), *max, value)
+        }
+        Some(ParameterType::None) | None => Ok(Placement::Empty),
+        Some(ParameterType::Color { space }) => {
+            // `#RRGGBB` (or `#HHSSVV`, `#RRGGBBWW`) as one octet per
+            // component in the written order (issue #616).
+            space
+                .encode(value.unwrap_or(""))
+                .map(Placement::Bytes)
+                .map_err(|reason| param_err(app, pname, &reason))
+        }
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => {
+            encode_raw_data(app, pname, value)
+        }
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeIPAddress" => {
+            encode_ip_address(app, pname, value)
+        }
+        Some(ParameterType::Other { kind, .. }) if kind == "TypeColor" => {
+            // A colour space bussard does not encode, declared as
+            // `<TypeColor Space>` or as a `TypeText` pattern marker (issue
+            // #833): refused rather than written with a guessed width.
+            Err(param_err(
+                app,
+                pname,
+                "a colour in a space bussard does not encode (only RGB, RGBW and HSV)",
+            ))
+        }
+        Some(ParameterType::Other {
+            kind,
+            size_bits: Some(24),
+            unit: Some(unit),
+        }) if kind == "TypeTime" && unit == "PackedDaysHoursMinutesAndSeconds" => {
+            encode_packed_hms(app, pname, value)
+        }
+        Some(ParameterType::Other {
+            size_bits, kind, ..
+        }) => {
+            // Unknown shape: if it declares a byte-multiple width and the value
+            // is a plain integer, place it big-endian; a value with no width
+            // refuses rather than leave the template in place unannounced (the
+            // `TypeIPAddress` DNS servers of issue #457 did).
+            match (size_bits, value) {
+                (Some(bits), Some(v)) if bits % 8 == 0 => {
+                    let n: i64 = v.trim().parse().map_err(|_| {
+                        param_err(app, pname, &format!("{kind} value `{v}` is not an integer"))
+                    })?;
+                    encode_int_bits(app, pname, *bits, false, n)
+                }
+                (None, Some(v)) if !v.trim().is_empty() => Err(param_err(
+                    app,
+                    pname,
+                    &format!(
+                        "{kind} declares no SizeInBit, so value `{}` has no width to be written with",
+                        v.trim()
+                    ),
+                )),
+                _ => Ok(Placement::Empty),
+            }
+        }
+    }
+}
+
+/// Encodes a 24-bit `<TypeTime Unit="PackedDaysHoursMinutesAndSeconds">`
+/// value (a duration in seconds) as three octets: seconds, minutes, hours.
+///
+/// Issue #89: the Steinel ControlPro (`M-008E_A-7188-31`) declares its send
+/// intervals and switch-off delays this way; ETS writes 30 s as `1E 00 00`,
+/// 10 s as `0A 00 00`, 60 s as `00 01 00`, 300 s as `00 05 00` and 900 s as
+/// `00 0F 00`. A duration of a day or more (whose days field no capture has
+/// shown) is refused.
+fn encode_packed_hms(
+    app: &ApplicationProgram,
+    pname: &str,
+    value: Option<&str>,
+) -> Result<Placement> {
+    let raw = value.map(str::trim).unwrap_or("0");
+    let secs: u32 = raw.parse().map_err(|_| {
+        param_err(
+            app,
+            pname,
+            &format!("duration `{raw}` is not a whole number of seconds"),
+        )
+    })?;
+    if secs >= 24 * 3600 {
+        return Err(param_err(
+            app,
+            pname,
+            &format!("duration {secs} s is a day or more; the packed days field is not supported"),
+        ));
+    }
+    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
+    Ok(Placement::Bytes(vec![s as u8, m as u8, h as u8]))
+}
+
+/// Encodes a `<TypeRawData>` value: the base64 `Value` decoded, behind its
+/// length as a 4-octet big-endian count, which is what ETS writes (the Jung
+/// 390041SR dimming curves: `MaxSize="516"`, a 512-octet curve written as
+/// `00 00 02 00` and the curve, issue #126). An empty value writes nothing.
+fn encode_raw_data(
+    app: &ApplicationProgram,
+    pname: &str,
+    value: Option<&str>,
+) -> Result<Placement> {
+    use base64::Engine as _;
+    let raw = value.map(str::trim).unwrap_or("");
+    if raw.is_empty() {
+        return Ok(Placement::Empty);
+    }
+    let data = base64::engine::general_purpose::STANDARD
+        .decode(raw)
+        .map_err(|e| param_err(app, pname, &format!("raw data value is not base64: {e}")))?;
+    let len = u32::try_from(data.len())
+        .map_err(|_| param_err(app, pname, "raw data value is too long"))?;
+    let mut bytes = len.to_be_bytes().to_vec();
+    bytes.extend_from_slice(&data);
+    Ok(Placement::Bytes(bytes))
+}
+
+/// Encodes a `<TypeFloat>` value at the width its `Encoding` attribute declares.
+///
+/// ETS product data uses exactly three float encodings (counted across the
+/// 495-product corpus in `tests-support/product-corpus`: 3011 `"DPT 9"`, 571
+/// `"IEEE-754 Single"`, 109 `"IEEE-754 Double"`, and no `TypeFloat` without an
+/// `Encoding`):
+///
+/// * `"DPT 9"`: the KNX 2-byte float, rounded like ETS by
+///   [`encode_dpt9_parameter`]; `max` is the type's `maxInclusive`, which
+///   decides whether the top raw pattern `7F FF` is a value;
+/// * `"IEEE-754 Single"` (and the equivalent `"DPT 14"` spelling) — a 4-byte
+///   big-endian `f32`;
+/// * `"IEEE-754 Double"` — an 8-byte big-endian `f64`.
+///
+/// The octets are returned big-endian as a [`Placement::Float`];
+/// [`little_endian_field`] reverses them for a `ParameterByteOrder="LittleEndian"`
+/// program (issue #403).
+///
+/// Before this existed every float was written as 2 bytes of DPT 9, so an
+/// IEEE-754 parameter went into the device image at the wrong width *and* with
+/// the wrong bytes. An `Encoding` this function does not know is refused rather
+/// than guessed at; an absent one falls back to DPT 9 (by far the most common)
+/// with a warning.
+fn encode_float(
+    app: &ApplicationProgram,
+    pname: &str,
+    encoding: Option<&str>,
+    max: Option<f64>,
+    value: Option<&str>,
+) -> Result<Placement> {
+    let raw = value.unwrap_or("0");
+    let norm = encoding.map(|e| e.trim().to_ascii_lowercase());
+    match norm.as_deref() {
+        Some("ieee-754 single") | Some("ieee 754 single") | Some("dpt 14") | Some("dpt14") => {
+            let f: f32 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            if !f.is_finite() {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("float value `{raw}` is not finite"),
+                ));
+            }
+            Ok(Placement::Float(f.to_be_bytes().to_vec()))
+        }
+        Some("ieee-754 double") | Some("ieee 754 double") => {
+            let f: f64 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            if !f.is_finite() {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("float value `{raw}` is not finite"),
+                ));
+            }
+            Ok(Placement::Float(f.to_be_bytes().to_vec()))
+        }
+        other => {
+            if let Some(unknown) = other {
+                if unknown != "dpt 9" && unknown != "dpt9" {
+                    return Err(param_err(
+                        app,
+                        pname,
+                        &format!(
+                            "unsupported float Encoding `{}` (known: DPT 9, IEEE-754 Single, \
+                             IEEE-754 Double)",
+                            encoding.unwrap_or_default()
+                        ),
+                    ));
+                }
+            } else {
+                tracing::warn!(
+                    parameter = pname,
+                    "TypeFloat declares no Encoding; assuming the KNX 2-byte float (DPT 9)"
+                );
+            }
+            let f: f64 = raw.trim().parse().map_err(|_| {
+                param_err(app, pname, &format!("float value `{raw}` is not a number"))
+            })?;
+            let enc = encode_dpt9_parameter(f, admits_dpt9_top(max)).ok_or_else(|| {
+                param_err(
+                    app,
+                    pname,
+                    &format!("float value `{f}` is out of DPT-9 range"),
+                )
+            })?;
+            Ok(Placement::Float(enc.to_vec()))
+        }
+    }
+}
+
+/// Encodes a `<TypeFloat Encoding="DPT 9">` parameter value the way ETS does:
+/// the smallest exponent whose mantissa fits, the mantissa `value * 100 / 2^e`
+/// rounded once, half to even (.NET's default rounding).
+///
+/// Issue #89: the Busch-Wächter PRO 280 (`M-0007_A-6179-82`) has a brightness
+/// threshold defaulting to 1000 lux; `100000 / 64 = 1562.5` and ETS writes
+/// `36 1A` (mantissa 1562), where the old group-value encoder's halving with
+/// rounding away from zero wrote `36 1B`. Its 65535 default is `66 40`
+/// (`6553500 / 4096 = 1599.98`, rounded to 1600). Both now share
+/// [`bussard_model::encode_float16_raw`] (issue #493).
+///
+/// `7F FF` (mantissa 2047, exponent 15, `670760.96`) is the "invalid data"
+/// marker of a DPT 9 group value, but a parameter is memory, not a group
+/// value: when the parameter type declares a `maxInclusive` that reaches it
+/// (`admits_top`), the pattern is the value and is written as ETS computes it.
+/// `None` when the value is not finite, out of range, or encodes to `7F FF`
+/// without `admits_top`.
+fn encode_dpt9_parameter(value: f64, admits_top: bool) -> Option<[u8; 2]> {
+    // The rounding rule is shared with the group-value encoder (issue #493).
+    let raw = bussard_model::encode_float16_raw(value)?;
+    (raw != 0x7FFF || admits_top).then_some(raw.to_be_bytes())
+}
+
+/// The largest DPT 9 raw value, `0.01 * 2047 * 2^15`: the pattern `7F FF`.
+const DPT9_RAW_TOP: f64 = 670_760.96;
+
+/// Whether a `<TypeFloat Encoding="DPT 9">` whose `maxInclusive` is `max`
+/// declares `7F FF` (`670760.96`) a value.
+///
+/// Issue #294: the Zennio Flat 55 Display (`M-0071_A-5261-10`) types its
+/// `ctrl[n].uCtrl.b2.float16.maxValue` parameters with
+/// `<ParameterType Name="float16_t (-671088.64, 670760.96)"><TypeFloat
+/// Encoding="DPT 9" minInclusive="-671088.64" maxInclusive="670760.96" />`,
+/// the full raw range of the two octets, and defaults them to
+/// `6.707609600000000E+005`. ETS accepts that default (it is inside the type's
+/// own range) and writes `7F FF`; refusing it refused the whole image. A type
+/// without a `maxInclusive`, or with a lower one, keeps the marker refused.
+fn admits_dpt9_top(max: Option<f64>) -> bool {
+    // The declared bound is parsed from decimal text, so compare with a
+    // tolerance far below the DPT 9 step at the top (327.68).
+    max.is_some_and(|m| m >= DPT9_RAW_TOP - 0.005)
+}
+
+/// Encodes a `<TypeNumber>` value, honouring declared min/max and signedness.
+///
+/// The declared range is checked against a [`ValueSource::UserOverride`]: a
+/// value the user set in the model (`bussard set`, MCP `knx_set_parameter`,
+/// a device file) outside its type is a mistake and is refused. A
+/// [`ValueSource::VendorDefault`] outside the range is encoded as declared,
+/// with a warning naming the parameter, because that is what ETS writes
+/// (issue #405): the synthetic product `syn-union-default-range` has a hidden
+/// (`Access="None"`) union member with default `1` and type 129..129, and
+/// ETS 6.4.1 wrote `01` (capture
+/// `captures/synthetic/syn-union-default-range/defaults/`, 2026-10-30). The
+/// real case is the ABB/Busch-Jaeger `A-A074`/`A-A075` "Vent Dummy Prio Ende".
+///
+/// The image builder knows which is which at this point: the vendor-default
+/// pass and the Dynamic slots without an override pass `VendorDefault`, the
+/// override pass and a slot whose ref the caller set pass `UserOverride`
+/// ([`crate::dynamic::DynamicConfig::is_override`]). The field width is
+/// checked for both: a default that does not fit its field cannot be written.
+#[allow(clippy::too_many_arguments)] // the type's four facets, the value and its source
+fn encode_int(
+    app: &ApplicationProgram,
+    pname: &str,
+    size_bits: Option<u32>,
+    signed: bool,
+    min: Option<i64>,
+    max: Option<i64>,
+    value: Option<&str>,
+    source: ValueSource,
+) -> Result<Placement> {
+    let raw = value.unwrap_or("0");
+    let n: i64 = raw.trim().parse().map_err(|_| {
+        param_err(
+            app,
+            pname,
+            &format!("integer value `{raw}` is not an integer"),
+        )
+    })?;
+    let out_of_range = match (min, max) {
+        (Some(lo), _) if n < lo => Some(format!("value {n} is below the declared minimum {lo}")),
+        (_, Some(hi)) if n > hi => Some(format!("value {n} is above the declared maximum {hi}")),
+        _ => None,
+    };
+    if let Some(why) = out_of_range {
+        match source {
+            ValueSource::UserOverride => return Err(param_err(app, pname, &why)),
+            // No capture shows what ETS writes for a computed value outside
+            // its type (issue #718): refused, not guessed.
+            ValueSource::Computed => {
+                return Err(param_err(
+                    app,
+                    pname,
+                    &format!("{why}; a computed value outside its type is not written"),
+                ));
+            }
+            ValueSource::VendorDefault => tracing::warn!(
+                parameter = pname,
+                value = n,
+                "vendor default lies outside its type's range ({why}); writing it as \
+                 declared, as ETS does (issue #405)"
+            ),
+        }
+    }
+    encode_int_bits(app, pname, size_bits.unwrap_or(8), signed, n)
+}
+
+/// Encodes an integer into a [`Placement`] of `bits` width, checking that the
+/// value fits. Signed values are two's-complement within the width.
+///
+/// `bits` comes straight from a vendor `SizeInBit`, so the wide-field case is
+/// settled **before** any bound arithmetic: a signed `SizeInBit="64"` used to
+/// compute `-(1i64 << 63)`, which overflows on negation (panic in debug, a wrong
+/// bound in release), and a signed width above 64 overflowed the shift itself.
+fn encode_int_bits(
+    app: &ApplicationProgram,
+    pname: &str,
+    bits: u32,
+    signed: bool,
+    n: i64,
+) -> Result<Placement> {
+    if bits == 0 {
+        return Ok(Placement::Empty);
+    }
+
+    if bits > 64 {
+        // Wide fields do occur: byte-aligned "object link" parameters (e.g. the
+        // Theben Meteodata's 472-bit `Objektlink`) are effectively fixed-size byte
+        // blobs whose default is a small value (usually 0). Lay the value down
+        // big-endian, sign-extended to the full width, matching the byte-multiple
+        // `Other` convention. A non-byte-aligned field this wide does not occur;
+        // refuse it rather than guess a bit placement.
+        if !bits.is_multiple_of(8) {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("unsupported integer field width of {bits} bits (not byte-aligned)"),
+            ));
+        }
+        if !signed && n < 0 {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("negative value {n} in an unsigned {bits}-bit field"),
+            ));
+        }
+        // Every `i64` fits a field wider than 64 bits; only the extension byte
+        // differs (0xFF for a negative two's-complement value, 0x00 otherwise).
+        let fill = if n < 0 { 0xFFu8 } else { 0x00 };
+        let mut buf = vec![fill; (bits / 8) as usize];
+        let v = n.to_be_bytes();
+        let at = buf.len() - v.len();
+        buf[at..].copy_from_slice(&v);
+        return Ok(Placement::Bytes(buf));
+    }
+
+    // Represent the value as an unsigned bit pattern of `bits` width. `bits` is
+    // 1..=64 here, so the `i128`/`u128` shifts below cannot overflow — including
+    // the 64-bit signed case, whose range is exactly `i64::MIN..=i64::MAX`.
+    let unsigned: u64 = if signed {
+        let lo = -(1i128 << (bits - 1));
+        let hi = (1i128 << (bits - 1)) - 1;
+        let n128 = i128::from(n);
+        if n128 < lo || n128 > hi {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("value {n} does not fit in {bits} signed bits ({lo}..={hi})"),
+            ));
+        }
+        // Two's-complement truncated to `bits`.
+        (n128 as u128 & ((1u128 << bits) - 1)) as u64
+    } else {
+        if n < 0 {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("negative value {n} in an unsigned {bits}-bit field"),
+            ));
+        }
+        let max = if bits >= 64 {
+            u64::MAX
+        } else {
+            (1u64 << bits) - 1
+        };
+        if (n as u64) > max {
+            return Err(param_err(
+                app,
+                pname,
+                &format!("value {n} does not fit in {bits} unsigned bits (max {max})"),
+            ));
+        }
+        n as u64
+    };
+
+    // A general MSB-first bit field: `place` writes it into the byte image at
+    // the parameter's `BitOffset`, spanning byte boundaries where needed (ETS
+    // uses e.g. 15-bit fields at bit offset 1).
+    Ok(Placement::Field {
+        bits,
+        value: unsigned,
+    })
+}
+
+/// Bounds a placement before it grows an image, then delegates to [`place`].
+///
+/// The parameter's byte `offset` and its payload length both originate in
+/// untrusted vendor XML, so their sum (the image end this placement forces) is
+/// checked against the segment's declared `Size` when present, and against
+/// [`MAX_SEGMENT_IMAGE`] when it is absent. A parameter whose end runs past that
+/// bound is refused by name rather than resizing the image to an absurd length
+/// (guarding the `image.resize(offset + bytes.len(), 0)` allocation in `place`).
+fn place_checked(
+    app: &ApplicationProgram,
+    pname: &str,
+    image: &mut Vec<u8>,
+    offset: usize,
+    bit_offset: u8,
+    placement: &Placement,
+    seg_size: Option<u32>,
+) -> Result<Range<usize>> {
+    let ordered = little_endian_field(app, bit_offset, placement);
+    let placement = ordered.as_ref().unwrap_or(placement);
+    // The exclusive byte end this placement writes up to (bit fields round up).
+    let end: u64 = match placement {
+        Placement::Empty => offset as u64,
+        Placement::Bytes(bytes) | Placement::Float(bytes) => {
+            (offset as u64).saturating_add(bytes.len() as u64)
+        }
+        Placement::Field { bits, .. } => {
+            let start_bit = (offset as u64)
+                .saturating_mul(8)
+                .saturating_add(u64::from(bit_offset));
+            start_bit.saturating_add(u64::from(*bits)).div_ceil(8)
+        }
+    };
+    // `compute_parameter_image` already refuses a segment whose declared `Size`
+    // exceeds the cap; clamp again here so this bound holds for any caller.
+    let limit = match seg_size {
+        Some(sz) => u64::from(sz).min(MAX_SEGMENT_IMAGE),
+        None => MAX_SEGMENT_IMAGE,
+    };
+    if end > limit {
+        return Err(param_err(
+            app,
+            pname,
+            &format!(
+                "places bytes ending at offset {end} but the segment {} — refusing to \
+                 grow the image past its bounds",
+                seg_size
+                    .map(|s| format!("declares Size {s}"))
+                    .unwrap_or_else(|| format!("declares no Size (capped at {MAX_SEGMENT_IMAGE})")),
+            ),
+        ));
+    }
+    place(image, offset, bit_offset, placement);
+    // The octets the placement wrote: from the one holding its first bit to
+    // the end computed above (within the limit just checked).
+    let first = match placement {
+        Placement::Field { .. } => offset + usize::from(bit_offset) / 8,
+        _ => offset,
+    };
+    Ok(first..usize::try_from(end).unwrap_or(first).max(first))
+}
+
+/// A byte-aligned integer field or a float of a program that declares
+/// `ParameterByteOrder="LittleEndian"`, as the octets it stores: least
+/// significant first. `None` when the placement keeps the default MSB-first
+/// order: a big-endian program, an integer field of one octet or less, one
+/// that is not a whole number of octets or does not start on an octet
+/// boundary, and any [`Placement::Bytes`] payload (text, raw data,
+/// `BinaryValue` members, packed times and integers wider than 64 bits).
+///
+/// Issue #386: the ABB 6119/20 (`M-0007_A-A002-13`, little-endian) holds its
+/// 16-bit debounce enumeration value 5633 (`0x1601`) as `01 16` at `0x6D01`
+/// in the ETS download of 1.1.44.
+///
+/// Issue #403: ETS reverses floats too. The ETS 6.4.1 download of the
+/// synthetic `syn-le-order` (`captures/synthetic/syn-le-order/defaults/`)
+/// holds DPT 9 21.5 (`0x0C33`) as `33 0C` and IEEE-754 Single 21.5
+/// (`0x41AC0000`) as `00 00 AC 41`.
+fn little_endian_field(
+    app: &ApplicationProgram,
+    bit_offset: u8,
+    placement: &Placement,
+) -> Option<Placement> {
+    match placement {
+        Placement::Field { bits, value }
+            if app.parameters_little_endian
+                && bit_offset == 0
+                && *bits > 8
+                && bits.is_multiple_of(8) =>
+        {
+            let len = (*bits / 8) as usize;
+            Some(Placement::Bytes(value.to_le_bytes()[..len].to_vec()))
+        }
+        Placement::Float(bytes) if app.parameters_little_endian => {
+            Some(Placement::Bytes(bytes.iter().rev().copied().collect()))
+        }
+        _ => None,
+    }
+}
+
+/// Reads an integer field the way [`little_endian_field`] and [`place`]
+/// write it: least significant octet first when `little_endian` applies to
+/// the field, else MSB-first ([`read_field`]).
+fn read_int_field(
+    image: &[u8],
+    offset: usize,
+    bit_offset: u8,
+    bits: u32,
+    little_endian: bool,
+) -> Option<u64> {
+    if little_endian && bit_offset == 0 && bits > 8 && bits <= 64 && bits.is_multiple_of(8) {
+        let held = image.get(offset..offset.checked_add((bits / 8) as usize)?)?;
+        return Some(
+            held.iter()
+                .rev()
+                .fold(0u64, |acc, b| (acc << 8) | u64::from(*b)),
+        );
+    }
+    read_field(image, offset, bit_offset, bits)
+}
+
+/// Places an encoded value into `image` at the byte offset (and bit offset for
+/// bit fields), growing the image with zeros as needed. MSB-first throughout.
+fn place(image: &mut Vec<u8>, offset: usize, bit_offset: u8, placement: &Placement) {
+    match placement {
+        Placement::Empty => {}
+        Placement::Bytes(bytes) | Placement::Float(bytes) => {
+            let end = offset + bytes.len();
+            if image.len() < end {
+                image.resize(end, 0);
+            }
+            image[offset..end].copy_from_slice(bytes);
+        }
+        Placement::Field { bits, value } => {
+            let bits = *bits;
+            // MSB-first bit stream: the field occupies bits
+            // [start, start+bits) where `start = offset*8 + bit_offset`,
+            // counting from the high bit of each byte. Fields may span byte
+            // boundaries (ETS uses 15-bit fields at bit offset 1). We write the
+            // value's bits from most to least significant, clearing then setting
+            // each target bit so adjacent fields compose over a base image.
+            let start = offset * 8 + bit_offset as usize;
+            let end_byte = (start + bits as usize).div_ceil(8);
+            if image.len() < end_byte {
+                image.resize(end_byte, 0);
+            }
+            for i in 0..bits as usize {
+                // Bit i of the field, MSB-first (i=0 is the value's high bit).
+                let bit_val = (*value >> (bits as usize - 1 - i)) & 1;
+                let pos = start + i;
+                let byte = pos / 8;
+                let shift = 7 - (pos % 8); // MSB-first within the byte.
+                image[byte] &= !(1u8 << shift);
+                image[byte] |= (bit_val as u8) << shift;
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Decoding: the inverse of `encode_value` + `place`
+// ---------------------------------------------------------------------------
+
+/// Decodes the value of `param` out of a segment image, at the byte `offset`
+/// and MSB-first `bit_offset` a [`ParameterSlot`] names: the exact inverse of
+/// what the image builder writes there (issue #142).
+///
+/// Integers and plain enumerations read their bit field (two's complement for
+/// a signed number), a `BinaryValue` enumeration the member whose octets sit
+/// there, text its octets up to the first trailing NUL, a DPT 9 float its
+/// value, an IEEE-754 float its bits, a packed `TypeTime` its seconds and
+/// `TypeRawData` the base64 of the octets behind its length word. Returns
+/// `None` when the field runs past `image` or the type carries no memory.
+///
+/// The string is canonical: two values that encode to the same octets decode
+/// to the same string, so a comparison against
+/// [`canonical_parameter_value`] is a comparison of what the device holds.
+pub fn decode_parameter_value(
+    app: &ApplicationProgram,
+    param: &crate::application::Parameter,
+    image: &[u8],
+    offset: usize,
+    bit_offset: u8,
+) -> Option<String> {
+    decode_value(
+        parameter_type_of(app, param),
+        image,
+        offset,
+        bit_offset,
+        app.parameters_little_endian,
+        TextCodec::from_declaration(app.text_parameter_encoding.as_deref()),
+    )
+}
+
+/// What `value` reads back as once written for `param`: the value encoded the
+/// way the image builder encodes it, then decoded by
+/// [`decode_parameter_value`]. `None` when the value cannot be encoded for the
+/// parameter's type.
+///
+/// This is how a desired value is compared with a decoded one: a DPT 9 value
+/// the encoder rounds (`999.7` is written as `999.68`), an integer written
+/// with a leading zero or a text shorter than its field all compare equal to
+/// what the device reads back.
+pub fn canonical_parameter_value(
+    app: &ApplicationProgram,
+    param: &crate::application::Parameter,
+    value: Option<&str>,
+) -> Option<String> {
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let ptype = parameter_type_of(app, param);
+    let placement = encode_value(app, pname, ptype, value, ValueSource::VendorDefault).ok()?;
+    if matches!(placement, Placement::Empty) {
+        // An empty raw-data value writes nothing; it reads back as empty.
+        return match ptype {
+            Some(ParameterType::Other { kind, .. }) if kind == "TypeRawData" => Some(String::new()),
+            _ => None,
+        };
+    }
+    let mut scratch = Vec::new();
+    // Placed MSB-first and read back the same way: the canonical form does
+    // not depend on the program's byte order.
+    place(&mut scratch, 0, 0, &placement);
+    decode_value(
+        ptype,
+        &scratch,
+        0,
+        0,
+        false,
+        TextCodec::from_declaration(app.text_parameter_encoding.as_deref()),
+    )
+}
+
+/// Encodes `value` for `param` and writes it into `image` at the byte
+/// `offset` and MSB-first `bit_offset`, exactly as the image builder places it
+/// (growing `image` with zeros where needed). Bits outside the field keep
+/// their value.
+///
+/// # Errors
+///
+/// [`ProductError::ParameterImage`] when the value cannot be encoded for the
+/// parameter's type or the field would end past the image size cap.
+pub fn write_parameter_value(
+    app: &ApplicationProgram,
+    param: &crate::application::Parameter,
+    value: Option<&str>,
+    image: &mut Vec<u8>,
+    offset: usize,
+    bit_offset: u8,
+) -> Result<()> {
+    let pname = param.name.as_deref().unwrap_or(&param.id);
+    let placement = encode_value(
+        app,
+        pname,
+        parameter_type_of(app, param),
+        value,
+        ValueSource::VendorDefault,
+    )?;
+    place_checked(app, pname, image, offset, bit_offset, &placement, None).map(|_| ())
+}
+
+/// [`decode_parameter_value`] on a resolved type; `little_endian` is the
+/// program's `ParameterByteOrder` (see [`little_endian_field`]).
+fn decode_value(
+    ptype: Option<&ParameterType>,
+    image: &[u8],
+    offset: usize,
+    bit_offset: u8,
+    little_endian: bool,
+    text: TextCodec,
+) -> Option<String> {
+    let bytes = |len: usize| image.get(offset..offset.checked_add(len)?);
+    match ptype? {
+        ParameterType::Int {
+            size_bits, signed, ..
+        } => {
+            let bits = size_bits.unwrap_or(8);
+            if bits > 64 {
+                return decode_wide_int(bytes((bits / 8) as usize)?, bits, *signed)
+                    .map(|n| n.to_string());
+            }
+            let raw = read_int_field(image, offset, bit_offset, bits, little_endian)?;
+            Some(if *signed {
+                sign_extend(raw, bits).to_string()
+            } else {
+                raw.to_string()
+            })
+        }
+        ParameterType::Enum { size_bits, values } => {
+            let bits = size_bits.unwrap_or(8);
+            if values.iter().any(|v| v.binary_value.is_some()) {
+                let member = values.iter().find(|v| {
+                    v.binary_value.as_deref().is_some_and(|bv| {
+                        field_matches(image, offset, bit_offset, &binary_value_placement(bits, bv))
+                    })
+                })?;
+                return Some(member.value.to_string());
+            }
+            read_int_field(image, offset, bit_offset, bits, little_endian)
+                .map(|raw| raw.to_string())
+        }
+        ParameterType::Text { size_bits } => {
+            Some(text.decode(bytes((size_bits.unwrap_or(0) / 8) as usize)?))
+        }
+        ParameterType::Float { encoding, .. } => {
+            match encoding
+                .as_deref()
+                .map(|e| e.trim().to_ascii_lowercase())
+                .as_deref()
+            {
+                Some("ieee-754 single")
+                | Some("ieee 754 single")
+                | Some("dpt 14")
+                | Some("dpt14") => {
+                    let mut arr = [0u8; 4];
+                    arr.copy_from_slice(bytes(4)?);
+                    Some(
+                        if little_endian {
+                            f32::from_le_bytes(arr)
+                        } else {
+                            f32::from_be_bytes(arr)
+                        }
+                        .to_string(),
+                    )
+                }
+                Some("ieee-754 double") | Some("ieee 754 double") => {
+                    let mut arr = [0u8; 8];
+                    arr.copy_from_slice(bytes(8)?);
+                    Some(
+                        if little_endian {
+                            f64::from_le_bytes(arr)
+                        } else {
+                            f64::from_be_bytes(arr)
+                        }
+                        .to_string(),
+                    )
+                }
+                _ => {
+                    let b = bytes(2)?;
+                    let be = if little_endian {
+                        [b[1], b[0]]
+                    } else {
+                        [b[0], b[1]]
+                    };
+                    Some(decode_dpt9_parameter(be).to_string())
+                }
+            }
+        }
+        ParameterType::None => None,
+        ParameterType::Color { space } => space.decode(bytes(space.octets())?),
+        ParameterType::Other { kind, .. } if kind == "TypeRawData" => {
+            use base64::Engine as _;
+            let len = bytes(4)?;
+            let len = u32::from_be_bytes([len[0], len[1], len[2], len[3]]) as usize;
+            let data =
+                image.get(offset.checked_add(4)?..offset.checked_add(4)?.checked_add(len)?)?;
+            Some(base64::engine::general_purpose::STANDARD.encode(data))
+        }
+        ParameterType::Other { kind, .. } if kind == "TypeIPAddress" => {
+            let b = bytes(4)?;
+            Some(std::net::Ipv4Addr::new(b[0], b[1], b[2], b[3]).to_string())
+        }
+        ParameterType::Other {
+            kind,
+            size_bits: Some(24),
+            unit: Some(unit),
+        } if kind == "TypeTime" && unit == "PackedDaysHoursMinutesAndSeconds" => {
+            let b = bytes(3)?;
+            let secs = u32::from(b[0]) + u32::from(b[1]) * 60 + u32::from(b[2]) * 3600;
+            Some(secs.to_string())
+        }
+        ParameterType::Other { size_bits, .. } => {
+            let bits = (*size_bits).filter(|b| *b > 0 && *b <= 64 && b % 8 == 0)?;
+            read_int_field(image, offset, bit_offset, bits, little_endian)
+                .map(|raw| raw.to_string())
+        }
+    }
+}
+
+/// The DPT 9 value of a parameter's two octets: `0.01 * M * 2^E`.
+fn decode_dpt9_parameter(b: [u8; 2]) -> f64 {
+    let raw = u16::from_be_bytes(b);
+    let exponent = (raw >> 11) & 0x0f;
+    let mut mantissa = i32::from(raw & 0x07ff);
+    if raw & 0x8000 != 0 {
+        mantissa -= 2048;
+    }
+    f64::from(mantissa) * f64::from(1u32 << exponent) / 100.0
+}
+
+/// An integer field wider than 64 bits, laid down big-endian and sign-extended
+/// by the encoder: the value its last eight octets hold, when the octets
+/// before them are the matching extension.
+fn decode_wide_int(bytes: &[u8], bits: u32, signed: bool) -> Option<i64> {
+    if !bits.is_multiple_of(8) || bytes.len() < 8 {
+        return None;
+    }
+    let (head, tail) = bytes.split_at(bytes.len() - 8);
+    let mut arr = [0u8; 8];
+    arr.copy_from_slice(tail);
+    let n = i64::from_be_bytes(arr);
+    let fill = if n < 0 { 0xFF } else { 0x00 };
+    (head.iter().all(|b| *b == fill) && (signed || n >= 0)).then_some(n)
+}
+
+/// Reads an MSB-first bit field of `bits` (1..=64) starting at
+/// `offset * 8 + bit_offset`: the inverse of [`place`] for a
+/// [`Placement::Field`]. `None` when the field runs past `image`.
+fn read_field(image: &[u8], offset: usize, bit_offset: u8, bits: u32) -> Option<u64> {
+    if bits == 0 || bits > 64 {
+        return None;
+    }
+    let start = offset
+        .checked_mul(8)?
+        .checked_add(usize::from(bit_offset))?;
+    let end = start.checked_add(bits as usize)?;
+    if end.div_ceil(8) > image.len() {
+        return None;
+    }
+    Some((start..end).fold(0u64, |acc, pos| {
+        (acc << 1) | u64::from((image[pos / 8] >> (7 - pos % 8)) & 1)
+    }))
+}
+
+/// Whether `placement` at `offset`/`bit_offset` would leave `image` unchanged,
+/// i.e. whether the image already holds exactly those bits.
+fn field_matches(image: &[u8], offset: usize, bit_offset: u8, placement: &Placement) -> bool {
+    match placement {
+        Placement::Empty => true,
+        Placement::Bytes(bytes) | Placement::Float(bytes) => offset
+            .checked_add(bytes.len())
+            .and_then(|end| image.get(offset..end))
+            .is_some_and(|held| held == bytes.as_slice()),
+        Placement::Field { bits, value } => {
+            read_field(image, offset, bit_offset, *bits) == Some(*value)
+        }
+    }
+}
+
+/// Interprets an unsigned bit pattern of `bits` width as two's complement.
+fn sign_extend(raw: u64, bits: u32) -> i64 {
+    if bits >= 64 {
+        return raw as i64;
+    }
+    let sign = 1u64 << (bits - 1);
+    if raw & sign != 0 {
+        (raw as i64) - (1i64 << bits)
+    } else {
+        raw as i64
+    }
+}
+
+/// The interface object a property-located parameter names (issue #390).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum PropertyObjectRef {
+    /// `ObjectIndex`.
+    Index(u32),
+    /// `ObjectType` and `Occurrence` (0 = the first object of the type).
+    Type {
+        /// The interface object type.
+        object_type: u32,
+        /// Which object of that type.
+        occurrence: u32,
+    },
+}
+
+impl PropertyObjectRef {
+    /// The object a [`PropertyLocation`](crate::application::PropertyLocation)
+    /// names; `None` when it names neither an index nor a type.
+    pub fn of(loc: &crate::application::PropertyLocation) -> Option<PropertyObjectRef> {
+        match (loc.object_index, loc.object_type) {
+            (Some(index), _) => Some(PropertyObjectRef::Index(index)),
+            (None, Some(object_type)) => Some(PropertyObjectRef::Type {
+                object_type,
+                occurrence: loc.occurrence.unwrap_or(0),
+            }),
+            (None, None) => None,
+        }
+    }
+}
+
+/// The property values a program's property-located parameters compose, by
+/// object and property id.
+pub type PropertyValues = BTreeMap<(PropertyObjectRef, u32), Vec<u8>>;
+
+/// Composes the value of every interface-object property the program's
+/// parameters live in (`<Parameter><Property …/></Parameter>`), the value an
+/// `LdCtrlWriteProp` without `InlineData` writes (issue #390: the IPS 300
+/// SREG's tunnelling timeout PID 204, its eight preferred tunnel addresses PID
+/// 205 and the Jung telegram-rate limit PID 211).
+///
+/// Each parameter is encoded for its type and placed at its byte and bit
+/// offset in the property value, as a memory parameter is placed in its
+/// segment. A parameter the evaluated configuration `config` reaches takes its
+/// effective value (an override, an `<Assign>` result, else the vendor
+/// default); one it does not reach takes its vendor default, since a property
+/// has no template to keep. Module parameters are not modelled here.
+///
+/// # Errors
+///
+/// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
+pub fn compute_property_values(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+) -> Result<PropertyValues> {
+    PropertyParameters::resolve(app, config).values()
+}
+
+/// Composes the value of the one property `object`/`prop_id` over `base`,
+/// as [`compute_property_values`] composes it over nothing: each parameter
+/// placed in the property replaces the bits it covers, and every other octet
+/// keeps `base`'s value. ETS writes a declared property this way (issue #938):
+/// an `LdCtrlWriteProp`'s `InlineData` is the template the parameters are laid
+/// over, as a code segment is for a memory parameter (`M-0009_A-E802-13-7620`
+/// writes object 16 PID 208 elements 141 to 158 as its `InlineData`; the
+/// Hager placeholders are zeros the parameters replace).
+///
+/// `None` when no parameter is placed in the property. A planner composing
+/// several properties resolves a [`PropertyParameters`] once instead.
+///
+/// # Errors
+///
+/// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
+pub fn compose_property_value(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+    object: PropertyObjectRef,
+    prop_id: u32,
+    base: Vec<u8>,
+) -> Result<Option<Vec<u8>>> {
+    PropertyParameters::resolve(app, config).compose(object, prop_id, base)
+}
+
+/// The property-located parameters of a program (`<Parameter><Property
+/// …/></Parameter>`) with the value one evaluated configuration gives each,
+/// resolved once so a plan composes every property from the same walk
+/// (issue #945).
+///
+/// A parameter the configuration reaches takes its effective value (an
+/// override, an `<Assign>` result, else the vendor default); one it does not
+/// reach takes its vendor default, since a property has no template to keep.
+/// Module parameters are not modelled here.
+#[derive(Debug, Clone)]
+pub struct PropertyParameters<'a> {
+    /// The program the parameters belong to.
+    app: &'a ApplicationProgram,
+    /// The parameters, in id order (the order they are placed in).
+    params: Vec<ResolvedPropertyParameter<'a>>,
+}
+
+/// One property-located parameter and its resolved value.
+#[derive(Debug, Clone)]
+struct ResolvedPropertyParameter<'a> {
+    /// The parameter.
+    param: &'a crate::application::Parameter,
+    /// The property it lives in.
+    key: (PropertyObjectRef, u32),
+    /// Its byte offset in the property value.
+    offset: usize,
+    /// Its bit offset in that byte, MSB first.
+    bit_offset: u8,
+    /// The value it takes under the configuration.
+    value: Option<String>,
+    /// Where that value comes from.
+    source: ValueSource,
+}
+
+impl<'a> PropertyParameters<'a> {
+    /// Resolves the value of every property-located parameter of `app` under
+    /// `config`.
+    pub fn resolve(
+        app: &'a ApplicationProgram,
+        config: &crate::dynamic::DynamicConfig,
+    ) -> PropertyParameters<'a> {
+        let prefix = format!("{}_", app.id);
+        // The reached application-level ref of each parameter, first in walk order.
+        let mut reached: BTreeMap<&str, &str> = BTreeMap::new();
+        for active in config.parameters.iter().filter(|a| a.module.is_none()) {
+            if let Some(pref) = app
+                .parameter_refs
+                .get(&format!("{prefix}{}", active.param_ref_id))
+            {
+                reached
+                    .entry(pref.ref_id.as_str())
+                    .or_insert(active.param_ref_id.as_str());
+            }
+        }
+        // The first ref of each parameter, by id, for an unreached parameter's
+        // vendor default (a ref may override the parameter's own `Value`).
+        let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+        for pref in app.parameter_refs.values() {
+            if let Some(rel) = pref.id.strip_prefix(&prefix) {
+                let entry = first_ref.entry(pref.ref_id.as_str()).or_insert(rel);
+                if rel < *entry {
+                    *entry = rel;
+                }
+            }
+        }
+        let mut params: Vec<ResolvedPropertyParameter<'a>> = app
+            .parameters
+            .values()
+            .filter_map(|param| {
+                let loc = param.property.as_ref()?;
+                let object = PropertyObjectRef::of(loc)?;
+                let (value, source) = match reached.get(param.id.as_str()) {
+                    Some(ref_id) => (
+                        config.value(app, None, ref_id),
+                        if config.is_override(app, None, ref_id) {
+                            ValueSource::UserOverride
+                        } else if config.computed_by(app, None, ref_id).is_some() {
+                            ValueSource::Computed
+                        } else {
+                            ValueSource::VendorDefault
+                        },
+                    ),
+                    None => (
+                        first_ref
+                            .get(param.id.as_str())
+                            .and_then(|ref_id| config.vendor_default(app, None, ref_id))
+                            .or_else(|| param.default.clone()),
+                        ValueSource::VendorDefault,
+                    ),
+                };
+                Some(ResolvedPropertyParameter {
+                    param,
+                    key: (object, loc.property_id),
+                    offset: loc.offset as usize,
+                    bit_offset: loc.bit_offset,
+                    value,
+                    source,
+                })
+            })
+            .collect();
+        params.sort_by(|a, b| a.param.id.cmp(&b.param.id));
+        PropertyParameters { app, params }
+    }
+
+    /// Whether a parameter is placed in `object`/`prop_id`, the object named
+    /// exactly as the parameter names it (an index is not a type).
+    pub fn places(&self, object: PropertyObjectRef, prop_id: u32) -> bool {
+        self.params.iter().any(|p| p.key == (object, prop_id))
+    }
+
+    /// The value of every property the parameters live in, composed over
+    /// nothing (see [`compute_property_values`]).
+    ///
+    /// # Errors
+    ///
+    /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
+    pub fn values(&self) -> Result<PropertyValues> {
+        self.compose_over(PropertyValues::new(), |_| true)
+    }
+
+    /// The value of `object`/`prop_id` composed over `base` (see
+    /// [`compose_property_value`]); `None` when no parameter is placed in it.
+    ///
+    /// # Errors
+    ///
+    /// [`ProductError::ParameterImage`] when a value cannot be encoded for its type.
+    pub fn compose(
+        &self,
+        object: PropertyObjectRef,
+        prop_id: u32,
+        base: Vec<u8>,
+    ) -> Result<Option<Vec<u8>>> {
+        let key = (object, prop_id);
+        if !self.places(object, prop_id) {
+            return Ok(None);
+        }
+        let mut out = self.compose_over(PropertyValues::from([(key, base)]), |k| *k == key)?;
+        Ok(out.remove(&key))
+    }
+
+    /// The property values the parameters compose over `bases`, for the
+    /// properties `wanted` accepts.
+    fn compose_over(
+        &self,
+        bases: PropertyValues,
+        wanted: impl Fn(&(PropertyObjectRef, u32)) -> bool,
+    ) -> Result<PropertyValues> {
+        let app = self.app;
+        let mut out = bases;
+        for p in self.params.iter().filter(|p| wanted(&p.key)) {
+            let pname = p.param.name.as_deref().unwrap_or(&p.param.id);
+            let placement = encode_value(
+                app,
+                pname,
+                parameter_type_of(app, p.param),
+                p.value.as_deref(),
+                p.source,
+            )?;
+            let image = out.entry(p.key).or_default();
+            place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
+        }
+        Ok(out)
+    }
+}
+
+/// Encodes a `<TypeIPAddress>` property value: an IPv4 address as its four
+/// octets, most significant first. ETS writes the dotted quad
+/// (`192.168.255.255`, the IPS 300 SREG) or the address as one number (`0`),
+/// into a property (issue #390) and into memory alike: the Zennio ALLinBOX DNS
+/// servers `192.168.1.1` / `192.168.1.2` as `c0 a8 01 01 c0 a8 01 02`
+/// (issue #457).
+fn encode_ip_address(
+    app: &ApplicationProgram,
+    pname: &str,
+    value: Option<&str>,
+) -> Result<Placement> {
+    let raw = value.unwrap_or("0").trim();
+    let addr = raw
+        .parse::<std::net::Ipv4Addr>()
+        .ok()
+        .or_else(|| raw.parse::<u32>().ok().map(std::net::Ipv4Addr::from))
+        .ok_or_else(|| {
+            param_err(
+                app,
+                pname,
+                &format!("`{raw}` is not an IPv4 address (a.b.c.d or one number)"),
+            )
+        })?;
+    Ok(Placement::Bytes(addr.octets().to_vec()))
+}
+
+/// Builds a [`ProductError::ParameterImage`] naming the parameter and reason.
+fn param_err(_app: &ApplicationProgram, pname: &str, reason: &str) -> ProductError {
+    ProductError::ParameterImage {
+        parameter: pname.to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::application::parse_application_program;
+    use bussard_model::color_codec::ColorSpace;
+
+    fn no_overrides() -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
+
+    fn no_bases() -> BTreeMap<String, u32> {
+        BTreeMap::new()
+    }
+
+    /// Builds a one-segment app whose parameters are described inline. `params`
+    /// is a list of `(name, type_xml, value_attr, offset, bit_offset)`; the type
+    /// xml is the `<Type…/>` element for a `<ParameterType>`.
+    fn app_with(
+        params: &[(&str, &str, Option<&str>, u32, u8)],
+    ) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let mut pts = String::new();
+        let mut ps = String::new();
+        for (i, (name, ty, val, off, bit)) in params.iter().enumerate() {
+            let ptid = format!("M-1_A-1_PT-{i}");
+            pts.push_str(&format!(
+                "<ParameterType Id=\"{ptid}\" Name=\"{name}t\">{ty}</ParameterType>"
+            ));
+            let value = val.map(|v| format!(" Value=\"{v}\"")).unwrap_or_default();
+            ps.push_str(&format!(
+                "<Parameter Id=\"M-1_A-1_P-{i}\" Name=\"{name}\" ParameterType=\"{ptid}\"{value}>\
+                 <Memory CodeSegment=\"M-1_A-1_RS-1\" Offset=\"{off}\" BitOffset=\"{bit}\" /></Parameter>"
+            ));
+        }
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="M-1_A-1" Name="t">
+              <Static>
+               <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="64" LoadStateMachine="4" Offset="0" /></Code>
+               <ParameterTypes>{pts}</ParameterTypes>
+               <Parameters>{ps}</Parameters>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("M-1_A-1", xml.as_bytes())?)
+    }
+
+    fn image_of(
+        app: &ApplicationProgram,
+    ) -> std::result::Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let m = compute_parameter_image(app, &no_overrides(), &no_bases())?;
+        Ok(m.get("M-1_A-1_RS-1").cloned().unwrap_or_default())
+    }
+
+    /// Issue #457 (Zennio ALLinBOX `dns.ipServer[0]`/`[1]`): a memory
+    /// parameter of `<TypeIPAddress>` is written as the dotted quad's four
+    /// octets, big-endian, and reads back as the dotted quad.
+    #[test]
+    fn test_compute_parameter_image_ip_address_in_memory()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ty = r#"<TypeIPAddress AddressType="HostAddress" />"#;
+        let app = app_with(&[
+            ("dns1", ty, Some("192.168.1.1"), 8, 0),
+            ("dns2", ty, Some("192.168.1.2"), 12, 0),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(
+            image.get(8..16),
+            Some(&[0xc0, 0xa8, 0x01, 0x01, 0xc0, 0xa8, 0x01, 0x02][..])
+        );
+        let param = app.parameters.get("M-1_A-1_P-1").ok_or("no dns2")?;
+        assert_eq!(
+            decode_parameter_value(&app, param, &image, 12, 0).as_deref(),
+            Some("192.168.1.2")
+        );
+        assert_eq!(
+            canonical_parameter_value(&app, param, Some("3232235778")).as_deref(),
+            Some("192.168.1.2")
+        );
+        Ok(())
+    }
+
+    /// An unknown parameter type with a value but no `SizeInBit` refuses
+    /// instead of leaving the template in place (issue #457).
+    #[test]
+    fn test_compute_parameter_image_widthless_value_refuses()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[("odd", r#"<TypeMystery />"#, Some("5"), 0, 0)])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases());
+        assert!(
+            matches!(&err, Err(ProductError::ParameterImage { reason, .. }) if reason.contains("no SizeInBit")),
+            "{err:?}"
+        );
+        // No value: nothing to write, as before.
+        let empty = app_with(&[("odd", r#"<TypeMystery />"#, None, 0, 0)])?;
+        assert!(compute_parameter_image(&empty, &no_overrides(), &no_bases()).is_ok());
+        Ok(())
+    }
+
+    /// Issue #616: an `RGB`/`RGBW` `<TypeColor>` value is placed as one octet
+    /// per component in the written order and decodes back to the same
+    /// string; an `HSV` value (RGB hex too) is placed as the hue, saturation
+    /// and value octets ETS writes (`#2A80C0` is `91 C7 C0`) and decodes to an
+    /// RGB value with the same octets; a value that is not a hex colour
+    /// refuses. Checked against the ETS captures of the synthetic
+    /// `syn-color-param` and `syn-color-param-hsv{,2}` products.
+    #[test]
+    fn test_compute_parameter_image_type_color()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[
+            ("on", r#"<TypeColor Space="RGB" />"#, Some("#FF8001"), 4, 0),
+            ("hsv", r#"<TypeColor Space="HSV" />"#, Some("#2A80C0"), 8, 0),
+            (
+                "w",
+                r#"<TypeColor Space="RGBW" />"#,
+                Some("#11223344"),
+                12,
+                0,
+            ),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(image.get(4..7), Some(&[0xFF, 0x80, 0x01][..]));
+        assert_eq!(image.get(8..11), Some(&[0x91, 0xC7, 0xC0][..]));
+        assert_eq!(image.get(12..16), Some(&[0x11, 0x22, 0x33, 0x44][..]));
+        let on = app.parameters.get("M-1_A-1_P-0").ok_or("no on")?;
+        assert_eq!(
+            decode_parameter_value(&app, on, &image, 4, 0).as_deref(),
+            Some("#FF8001")
+        );
+        assert_eq!(
+            canonical_parameter_value(&app, on, Some("#ff8001")).as_deref(),
+            Some("#FF8001")
+        );
+        let hsv = app.parameters.get("M-1_A-1_P-1").ok_or("no hsv")?;
+        let read = decode_parameter_value(&app, hsv, &image, 8, 0).ok_or("no hsv decode")?;
+        assert_eq!(
+            canonical_parameter_value(&app, hsv, Some("#2a80c0")).as_deref(),
+            Some(read.as_str())
+        );
+        let bad = app_with(&[("on", r#"<TypeColor Space="RGB" />"#, Some("red"), 0, 0)])?;
+        let err = compute_parameter_image(&bad, &no_overrides(), &no_bases());
+        assert!(
+            matches!(&err, Err(ProductError::ParameterImage { reason, .. }) if reason.contains("RGB colour")),
+            "{err:?}"
+        );
+        Ok(())
+    }
+
+    /// Issue #833 (ekinex `M-00B6_A-4534-03-4181`): a 56-bit `TypeText` whose
+    /// pattern ends in `(?# TypeColor:RGB)` is a colour. ETS writes `#FFFFFF`
+    /// as `ff ff ff` and leaves the template's fourth octet and the parameters
+    /// after it alone; the value reads back as the colour.
+    #[test]
+    fn test_compute_parameter_image_text_color_pattern()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let rgb = r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)" />"#;
+        let hsv = r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:HSV)" />"#;
+        let byte = r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#;
+        let app = app_with(&[
+            ("blink", rgb, Some("#FFFFFF"), 2, 0),
+            ("offset", byte, Some("1"), 6, 0),
+            ("hsv", hsv, Some("#2A80C0"), 8, 0),
+        ])?;
+        let image = image_of(&app)?;
+        assert_eq!(image.get(2..5), Some(&[0xFF, 0xFF, 0xFF][..]));
+        // Octet 5 is unplaced (erased, #377); octet 6 keeps its parameter.
+        assert_eq!(image.get(5..7), Some(&[0xFF, 0x01][..]));
+        // The HSV conversion of `TypeColor Space="HSV"` (#616).
+        assert_eq!(
+            image.get(8..11),
+            Some(&ColorSpace::Hsv.encode("#2A80C0")?[..])
+        );
+        let blink = app.parameters.get("M-1_A-1_P-0").ok_or("no blink")?;
+        assert_eq!(
+            decode_parameter_value(&app, blink, &image, 2, 0).as_deref(),
+            Some("#FFFFFF")
+        );
+        Ok(())
+    }
+
+    /// A `TypeColor` pattern marker naming a space bussard does not encode,
+    /// or a text too short for the colour, is refused rather than written as
+    /// text over the following parameters (issue #833).
+    #[test]
+    fn test_compute_parameter_image_text_color_pattern_unknown_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for ty in [
+            r#"<TypeText SizeInBit="56" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:XYZ)" />"#,
+            r#"<TypeText SizeInBit="16" Pattern="^#[0-9a-fA-F]{6}$(?# TypeColor:RGB)" />"#,
+        ] {
+            let app = app_with(&[("c", ty, Some("#FFFFFF"), 0, 0)])?;
+            let err = compute_parameter_image(&app, &no_overrides(), &no_bases());
+            assert!(
+                matches!(&err, Err(ProductError::ParameterImage { reason, .. }) if reason.contains("colour")),
+                "{ty}: {err:?}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn packs_full_byte_int() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" />"#,
+            Some("83"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?[0], 83);
+        Ok(())
+    }
+
+    #[test]
+    fn packs_big_endian_16bit() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Default 500 must appear as 0x01 0xF4 (big-endian), confirmed against
+        // real ETS segment images.
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="16" Type="unsignedInt" maxInclusive="65535" />"#,
+            Some("500"),
+            2,
+            0,
+        )])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[2..4], &[0x01, 0xF4]);
+        Ok(())
+    }
+
+    #[test]
+    fn packs_32bit_big_endian() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="32" Type="unsignedInt" />"#,
+            Some("66051"),
+            0,
+            0,
+        )])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[0..4], &[0x00, 0x01, 0x02, 0x03]);
+        Ok(())
+    }
+
+    #[test]
+    fn adjacent_sub_byte_fields_compose_msb_first()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Four 2-bit fields sharing byte 0 at bit offsets 0,2,4,6 with values
+        // 3,2,1,0 -> MSB-first that is 11 10 01 00 = 0b1110_0100 = 0xE4.
+        let ty = r#"<TypeNumber SizeInBit="2" Type="unsignedInt" maxInclusive="3" />"#;
+        let app = app_with(&[
+            ("a", ty, Some("3"), 0, 0),
+            ("b", ty, Some("2"), 0, 2),
+            ("c", ty, Some("1"), 0, 4),
+            ("d", ty, Some("0"), 0, 6),
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0b1110_0100);
+        Ok(())
+    }
+
+    #[test]
+    fn one_bit_fields_pack_high_to_low() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 1-bit fields at bit offsets 4,5,6,7 set to 1 -> 0b0000_1111 = 0x0F.
+        let ty = r#"<TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" />"#;
+        let app = app_with(&[
+            ("a", ty, Some("1"), 0, 4),
+            ("b", ty, Some("1"), 0, 5),
+            ("c", ty, Some("1"), 0, 6),
+            ("d", ty, Some("1"), 0, 7),
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0x0F);
+        Ok(())
+    }
+
+    #[test]
+    fn one_bit_then_three_bit_field() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 1-bit at offset 0 (=1) then 3-bit at offset 1 (=5=0b101).
+        // MSB-first: 1 101 0000 = 0b1101_0000 = 0xD0.
+        let app = app_with(&[
+            (
+                "a",
+                r#"<TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" />"#,
+                Some("1"),
+                0,
+                0,
+            ),
+            (
+                "b",
+                r#"<TypeNumber SizeInBit="3" Type="unsignedInt" maxInclusive="7" />"#,
+                Some("5"),
+                0,
+                1,
+            ),
+        ])?;
+        assert_eq!(image_of(&app)?[0], 0b1101_0000);
+        Ok(())
+    }
+
+    #[test]
+    fn enum_encodes_by_value() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/><Enumeration Text="On" Value="7" Id="e1"/></TypeRestriction>"#,
+            Some("7"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?[0], 7);
+        Ok(())
+    }
+
+    #[test]
+    fn test_enum_override_by_label_encodes_the_member_code()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // `import` writes enum values as vendor labels; the encoder takes an
+        // exact, unique label as that member.
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/><Enumeration Text="On" Value="7" Id="e1"/></TypeRestriction>"#,
+            Some("0"),
+            0,
+            0,
+        )])?;
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "On".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 7);
+        // A text that is no label is refused with the choices.
+        ov.insert("P-0_R-1".to_string(), "Maybe".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("Off | On"), "{err}");
+        Ok(())
+    }
+
+    /// A one-parameter program whose enum labels differ between its default
+    /// language (en-US) and its de-DE layer, as the `_RE_Betriebsart_RSM` of
+    /// issue #231. `Both` is the English label of member 2 and, in the de-DE
+    /// layer, of member 3 (a label two languages give different members);
+    /// `Commun` is the fr-FR label of two members.
+    const BILINGUAL_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-1_A-1" Name="t" DefaultLanguage="en-US">
+      <Static>
+       <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="8" LoadStateMachine="4" Offset="0" /></Code>
+       <ParameterTypes>
+        <ParameterType Id="M-1_A-1_PT-1" Name="mode"><TypeRestriction Base="Value" SizeInBit="8">
+         <Enumeration Text="Heating" Value="0" Id="M-1_A-1_PT-1_EN-0" />
+         <Enumeration Text="Cooling" Value="1" Id="M-1_A-1_PT-1_EN-1" />
+         <Enumeration Text="Both" Value="2" Id="M-1_A-1_PT-1_EN-2" />
+         <Enumeration Text="Auto" Value="3" Id="M-1_A-1_PT-1_EN-3" />
+         <Enumeration Text="Heating and cooling" Value="5" Id="M-1_A-1_PT-1_EN-5" />
+        </TypeRestriction></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="M-1_A-1_P-0" Name="_RE_Betriebsart_RSM" ParameterType="M-1_A-1_PT-1" Value="0">
+         <Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+       </Parameters>
+      </Static>
+      <Languages>
+       <Language Identifier="de-DE"><TranslationUnit RefId="M-1_A-1">
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-0"><Translation AttributeName="Text" Text="Heizen" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-1"><Translation AttributeName="Text" Text="K&#252;hlen" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-2"><Translation AttributeName="Text" Text="Beides alt" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-3"><Translation AttributeName="Text" Text="Both" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-5"><Translation AttributeName="Text" Text="Heizen und K&#252;hlen" /></TranslationElement>
+       </TranslationUnit></Language>
+       <Language Identifier="fr-FR"><TranslationUnit RefId="M-1_A-1">
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-1"><Translation AttributeName="Text" Text="Refroidissement" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-2"><Translation AttributeName="Text" Text="Commun" /></TranslationElement>
+        <TranslationElement RefId="M-1_A-1_PT-1_EN-5"><Translation AttributeName="Text" Text="Commun" /></TranslationElement>
+       </TranslationUnit></Language>
+      </Languages>
+     </ApplicationProgram>
+    </KNX>"#;
+
+    /// The byte [`BILINGUAL_XML`]'s parameter gets for `value`, the program
+    /// parsed in `language`.
+    fn bilingual_byte(language: &str, value: &str) -> Result<u8> {
+        let app = crate::application::parse_application_program_in(
+            "M-1_A-1",
+            BILINGUAL_XML.as_bytes(),
+            language,
+        )?;
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), value.to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        img.get("M-1_A-1_RS-1")
+            .and_then(|seg| seg.first().copied())
+            .ok_or_else(|| ProductError::ParameterImage {
+                parameter: "_RE_Betriebsart_RSM".to_string(),
+                reason: "no image".to_string(),
+            })
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_in_lock_language_resolves() -> Result<()> {
+        // Issue #231: the lock says de-DE, the device file carries the German
+        // label, the byte is the member's value.
+        assert_eq!(bilingual_byte("de-DE", "Heizen und Kühlen")?, 5);
+        assert_eq!(bilingual_byte("de-DE", "Kühlen")?, 1);
+        // The program's default-language (English) label still resolves.
+        assert_eq!(bilingual_byte("de-DE", "Heating and cooling")?, 5);
+        // A label from another layer resolves when it is unique there.
+        assert_eq!(bilingual_byte("de-DE", "Refroidissement")?, 1);
+        // Parsed in en-US (no lock language), the German label resolves too.
+        assert_eq!(bilingual_byte("en-US", "Heizen und Kühlen")?, 5);
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_lock_language_wins_over_default() -> Result<()> {
+        // `Both` is member 2 in English and member 3 in German: the lock's
+        // language is matched first, so a German model means member 3 and
+        // an English one member 2.
+        assert_eq!(bilingual_byte("de-DE", "Both")?, 3);
+        assert_eq!(bilingual_byte("en-US", "Both")?, 2);
+        // A label only the default language knows falls back to it.
+        assert_eq!(bilingual_byte("de-DE", "Auto")?, 3);
+        assert_eq!(bilingual_byte("de-DE", "Cooling")?, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_unknown_lists_lock_language_labels() {
+        let err = bilingual_byte("de-DE", "Lüften")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(
+            err.contains("Heizen | Kühlen | Beides alt | Both | Heizen und Kühlen"),
+            "{err}"
+        );
+        assert!(err.contains("neither an enum code"), "{err}");
+    }
+
+    #[test]
+    fn test_encode_value_enum_label_ambiguous_in_other_languages_is_refused() {
+        // `Commun` is two members' fr-FR label: ambiguity stays an error.
+        let err = bilingual_byte("de-DE", "Commun")
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("more than one of its members"), "{err}");
+    }
+
+    #[test]
+    fn enum_vendor_default_undeclared_value_passes_through()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A VENDOR DEFAULT (chain steps 1-3) whose value is not a declared enum
+        // member is a real data-quality trap (Zennio Z40/Z70 v2 ship exactly this).
+        // A default the vendor shipped is by definition what the device expects, so
+        // it is encoded verbatim (raw byte 9) with a warning — NOT refused.
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/></TypeRestriction>"#,
+            Some("9"),
+            0,
+            0,
+        )])?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(
+            img["M-1_A-1_RS-1"][0], 9,
+            "the raw default byte is passed through"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enum_user_override_undeclared_value_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A USER OVERRIDE (chain step 4) outside the declared enum is a genuine
+        // mistake worth refusing — the strict membership check stands for overrides.
+        let app = app_with(&[(
+            "mode",
+            r#"<TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="Off" Value="0" Id="e0"/></TypeRestriction>"#,
+            Some("0"),
+            0,
+            0,
+        )])?;
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "9".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        let s = err.to_string();
+        assert!(s.contains("mode"), "{s}");
+        assert!(s.contains("not a declared enumeration member"), "{s}");
+        Ok(())
+    }
+
+    #[test]
+    fn text_is_padded_with_zeros() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 6-byte (48-bit) text "Hi" -> "Hi\0\0\0\0".
+        let app = app_with(&[("label", r#"<TypeText SizeInBit="48" />"#, Some("Hi"), 0, 0)])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[0..6], b"Hi\0\0\0\0");
+        Ok(())
+    }
+
+    #[test]
+    fn text_too_long_errors() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "label",
+            r#"<TypeText SizeInBit="16" />"#,
+            Some("toolong"),
+            0,
+            0,
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        assert!(err.to_string().contains("label"), "{err}");
+        Ok(())
+    }
+
+    /// A text parameter takes the program's `TextParameterEncoding` (issue
+    /// #401): MDT's eight-octet `Scènario` in ISO 8859-15, refused in UTF-8
+    /// and in a code page bussard does not know, ISO 8859-1 when the program
+    /// declares none (#416); it reads back the same.
+    #[test]
+    fn test_compute_parameter_image_text_uses_the_declared_encoding()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut app = app_with(&[(
+            "label",
+            r#"<TypeText SizeInBit="64" />"#,
+            Some("Scènario"),
+            0,
+            0,
+        )])?;
+        assert_eq!(&image_of(&app)?[0..8], b"Sc\xE8nario");
+        app.text_parameter_encoding = Some("shift_jis".to_string());
+        assert!(compute_parameter_image(&app, &no_overrides(), &no_bases()).is_err());
+        app.text_parameter_encoding = Some("utf-8".to_string());
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("utf-8 fits")?;
+        assert!(err.to_string().contains("9 octets in UTF-8"), "{err}");
+        app.text_parameter_encoding = Some("iso-8859-15".to_string());
+        assert_eq!(&image_of(&app)?[0..8], b"Sc\xE8nario");
+        let param = app.parameters.values().next().ok_or("no parameter")?;
+        assert_eq!(
+            canonical_parameter_value(&app, param, Some("Scènario")).as_deref(),
+            Some("Scènario")
+        );
+        assert_eq!(
+            decode_parameter_value(&app, param, b"Sc\xE8nario", 0, 0).as_deref(),
+            Some("Scènario")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn signed_int_two_complement() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // -5 in an 8-bit signed field = 0xFB.
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="8" Type="signedInt" minInclusive="-128" maxInclusive="127" />"#,
+            Some("-5"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?[0], 0xFB);
+        Ok(())
+    }
+
+    /// Regression: the signed bound was computed as `-(1i64 << (bits - 1))`
+    /// *before* the `bits > 64` branch, so a vendor `SizeInBit="64"` with
+    /// `Type="signedInt"` overflowed the negation (panic in debug) and a wider
+    /// signed field overflowed the shift. The width is settled first now, and a
+    /// 64-bit signed field spans exactly `i64::MIN..=i64::MAX`.
+    #[test]
+    fn test_encode_int_bits_signed_64_bit_field()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // i64::MIN is representable: two's complement 0x8000_0000_0000_0000.
+        let app = app_with(&[(
+            "sixtyfour",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("-9223372036854775808"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0x80, 0, 0, 0, 0, 0, 0, 0]);
+
+        // -1 fills the whole field.
+        let app = app_with(&[(
+            "minusone",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("-1"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0xFF; 8]);
+
+        // i64::MAX is the top of the range.
+        let app = app_with(&[(
+            "maxi",
+            r#"<TypeNumber SizeInBit="64" Type="signedInt" />"#,
+            Some("9223372036854775807"),
+            0,
+            0,
+        )])?;
+        assert_eq!(
+            image_of(&app)?,
+            vec![0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+        );
+        Ok(())
+    }
+
+    /// A signed field wider than 64 bits takes the byte-blob path (as the
+    /// unsigned wide "object link" parameters do), sign-extended.
+    #[test]
+    fn test_encode_int_bits_signed_wide_field()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "wide",
+            r#"<TypeNumber SizeInBit="96" Type="signedInt" />"#,
+            Some("-2"),
+            0,
+            0,
+        )])?;
+        let mut expect = vec![0xFFu8; 12];
+        expect[11] = 0xFE;
+        assert_eq!(image_of(&app)?, expect);
+
+        // A positive value in the same field is zero-extended.
+        let app = app_with(&[(
+            "widepos",
+            r#"<TypeNumber SizeInBit="96" Type="signedInt" />"#,
+            Some("258"),
+            0,
+            0,
+        )])?;
+        let mut expect = vec![0x00u8; 12];
+        expect[10] = 0x01;
+        expect[11] = 0x02;
+        assert_eq!(image_of(&app)?, expect);
+
+        // Not byte-aligned: still refused rather than guessed at.
+        let app = app_with(&[(
+            "oddwide",
+            r#"<TypeNumber SizeInBit="65" Type="signedInt" />"#,
+            Some("-1"),
+            0,
+            0,
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("a 65-bit field is not byte-aligned")?;
+        assert!(err.to_string().contains("byte-aligned"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn value_exceeding_width_errors_naming_param()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "level",
+            r#"<TypeNumber SizeInBit="2" Type="unsignedInt" />"#,
+            Some("9"),
+            0,
+            0,
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        let s = err.to_string();
+        assert!(s.contains("level"), "{s}");
+        assert!(s.contains("fit") || s.contains("maximum"), "{s}");
+        Ok(())
+    }
+
+    /// A vendor default outside its type's range is written as declared; the
+    /// same value as a user override is refused (issue #405).
+    #[test]
+    fn test_encode_int_default_out_of_range_written_override_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "t",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="10" maxInclusive="20" />"#,
+            Some("5"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?.first(), Some(&0x05));
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-0_R-1".to_string(), "5".to_string());
+        let err = compute_parameter_image(&app, &overrides, &no_bases())
+            .err()
+            .ok_or("an override below the minimum is refused")?;
+        assert!(err.to_string().contains("minimum"), "{err}");
+        overrides.insert("P-0_R-1".to_string(), "21".to_string());
+        let err = compute_parameter_image(&app, &overrides, &no_bases())
+            .err()
+            .ok_or("an override above the maximum is refused")?;
+        assert!(err.to_string().contains("maximum"), "{err}");
+        overrides.insert("P-0_R-1".to_string(), "15".to_string());
+        let image = compute_parameter_image(&app, &overrides, &no_bases())?;
+        assert_eq!(image["M-1_A-1_RS-1"].first(), Some(&15));
+        Ok(())
+    }
+
+    /// The `syn-union-default-range` shape (issue #405, ABB/BJE `A-A074`/
+    /// `A-A075` "Vent Dummy Prio Ende"): a hidden union member, reached in the
+    /// parameter block, whose default 1 lies outside its type 129..129.
+    const UNION_RANGE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="stray">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>/////w==</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="marker"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="129" maxInclusive="129" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="mode"><TypeRestriction Base="Value" SizeInBit="8"><Enumeration Text="off" Value="0" Id="A_PT-2_EN-0" /><Enumeration Text="on" Value="1" Id="A_PT-2_EN-1" /></TypeRestriction></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Union SizeInBit="8">
+         <Memory CodeSegment="A_RS-1" Offset="3" BitOffset="0" />
+         <Parameter Id="A_UP-1" Name="stray_marker" ParameterType="A_PT-1" Value="1" Access="None" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+         <Parameter Id="A_UP-2" Name="stray_mode" ParameterType="A_PT-2" Value="0" Offset="0" BitOffset="0" />
+        </Union>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_UP-1_R-1" RefId="A_UP-1" />
+        <ParameterRef Id="A_UP-2_R-2" RefId="A_UP-2" />
+       </ParameterRefs>
+      </Static>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_UP-1_R-1" />
+       </ParameterBlock></ChannelIndependentBlock>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_union_default_outside_range_written_as_declared() -> Result<()>
+    {
+        let app = parse_application_program("A", UNION_RANGE_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // ETS writes the declared default `01` (capture of
+        // syn-union-default-range, 2026-10-30), not the type's only value `81`.
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"].get(3), Some(&0x01));
+        // A user value 1 for the same member is refused; 129 is written.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("UP-1_R-1".to_string(), "1".to_string());
+        let err = compute_parameter_image(&app, &overrides, &BTreeMap::new())
+            .err()
+            .ok_or(ProductError::ParameterImage {
+                parameter: "stray_marker".into(),
+                reason: "a user value 1 was accepted".into(),
+            })?;
+        assert!(
+            err.to_string().contains("below the declared minimum 129"),
+            "{err}"
+        );
+        overrides.insert("UP-1_R-1".to_string(), "129".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"].get(3), Some(&0x81));
+        Ok(())
+    }
+
+    #[test]
+    fn float_dpt9_encoding() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 21.0 -> DPT9: mantissa 2100 -> halve to 1050 (exp 1) -> 0x0C1A? verify
+        // by decoding is out of scope; just assert two bytes are written and the
+        // top bit region is sane (non-zero).
+        let app = app_with(&[(
+            "temp",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-273" maxInclusive="670760" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        let img = image_of(&app)?;
+        // 21.0: mantissa=2100 needs exp=1 (1050), raw = (1<<11)|1050 = 0x0C1A.
+        assert_eq!(&img[0..2], &[0x0C, 0x1A]);
+        Ok(())
+    }
+
+    /// Regression: every `<TypeFloat>` was written as two bytes of DPT 9 no
+    /// matter what its `Encoding` said, so an `"IEEE-754 Single"` parameter
+    /// (571 of them in the 495-product corpus) went into the device image at
+    /// half its width with entirely wrong bytes.
+    #[test]
+    fn test_encode_value_float_honours_declared_encoding()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // DPT 9: the KNX 2-byte float. 21.0 -> mantissa 2100, halved to 1050 at
+        // exponent 1 -> 0x0C1A.
+        let app = app_with(&[(
+            "dpt9",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-273" maxInclusive="670760" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, vec![0x0C, 0x1A]);
+
+        // IEEE-754 Single: 4 bytes, big-endian f32.
+        let app = app_with(&[(
+            "single",
+            r#"<TypeFloat Encoding="IEEE-754 Single" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f32.to_be_bytes().to_vec());
+
+        // "DPT 14" is the same 4-byte IEEE-754 single on the wire.
+        let app = app_with(&[(
+            "dpt14",
+            r#"<TypeFloat Encoding="DPT 14" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f32.to_be_bytes().to_vec());
+
+        // IEEE-754 Double: 8 bytes, big-endian f64.
+        let app = app_with(&[(
+            "double",
+            r#"<TypeFloat Encoding="IEEE-754 Double" minInclusive="0" maxInclusive="268435456" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?, 21.0f64.to_be_bytes().to_vec());
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_value_float_unknown_encoding_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "weird",
+            r#"<TypeFloat Encoding="Posit-16" minInclusive="0" maxInclusive="40" />"#,
+            Some("21"),
+            0,
+            0,
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("an unknown float encoding is refused, never guessed")?;
+        let s = err.to_string();
+        assert!(s.contains("Encoding"), "{s}");
+        assert!(s.contains("Posit-16"), "{s}");
+        Ok(())
+    }
+
+    /// Regression: `image.rs` carried its own copy of the DPT-9 encoder whose
+    /// `FLOAT16_MAX` used mantissa 2047 instead of 2046, so the top of its
+    /// accepted range rounded up onto the raw pattern `0x7FFF` — the DPT-9
+    /// "invalid data" marker the model encoder deliberately avoids (issue #62).
+    /// The copy is gone. The marker is refused unless the parameter type's own
+    /// `maxInclusive` reaches it (issue #294, see
+    /// `test_encode_value_float_dpt9_full_raw_range_type_writes_7fff`).
+    #[test]
+    fn test_encode_value_float_dpt9_never_emits_the_invalid_marker()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // 670433.28 (mantissa 2046, exponent 15) is the largest valid DPT-9
+        // value; it must encode to 0x7FFE, one step below the marker.
+        let app = app_with(&[(
+            "fmax",
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="670434" />"#,
+            Some("670433.28"),
+            0,
+            0,
+        )])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[0..2], &[0x7F, 0xFE]);
+
+        // Anything above it (the old copy's 2047-mantissa range) is refused
+        // rather than written as 0x7FFF when the type stops below the marker.
+        for max in ["670434", "670760"] {
+            let app = app_with(&[(
+                "fover",
+                &format!(
+                    r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088" maxInclusive="{max}" />"#
+                ),
+                Some("670760.96"),
+                0,
+                0,
+            )])?;
+            let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+                .err()
+                .ok_or("above the DPT-9 maximum")?;
+            assert!(err.to_string().contains("DPT-9 range"), "{max}: {err}");
+        }
+        Ok(())
+    }
+
+    /// Issue #294: the Zennio Flat 55 Display (`M-0071_A-5261-10`) declares
+    /// `float16_t (-671088.64, 670760.96)` as `<TypeFloat Encoding="DPT 9"
+    /// minInclusive="-671088.64" maxInclusive="670760.96" />` and defaults its
+    /// `ctrl[n].uCtrl.b2.float16.maxValue` to `6.707609600000000E+005`. That is
+    /// mantissa 2047 at exponent 15, the raw pattern `7F FF`, inside the type's
+    /// range; ETS writes it, so the image does too instead of refusing.
+    #[test]
+    fn test_encode_value_float_dpt9_full_raw_range_type_writes_7fff()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ty =
+            r#"<TypeFloat Encoding="DPT 9" minInclusive="-671088.64" maxInclusive="670760.96" />"#;
+        let app = app_with(&[
+            ("maxValue", ty, Some("6.707609600000000E+005"), 0, 0),
+            ("minValue", ty, Some("-6.710886400000000E+005"), 2, 0),
+        ])?;
+        let img = image_of(&app)?;
+        assert_eq!(&img[0..4], &[0x7F, 0xFF, 0xF8, 0x00]);
+        Ok(())
+    }
+
+    #[test]
+    fn user_override_beats_ref_and_default() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        // Default 50, ParameterRef Value 75, user override 90 -> 90 wins.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="8" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="thr" ParameterType="M-1_A-1_PT-0" Value="50"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
+          <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-1" RefId="M-1_A-1_P-0" Value="75" /></ParameterRefs>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+
+        // No override: ref Value 75 wins over default 50.
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 75);
+
+        // User override 90 beats the ref. The override is keyed by the
+        // app-relative ParameterRef id (P-0_R-1), NOT the parameter name.
+        let mut ov = BTreeMap::new();
+        ov.insert("P-0_R-1".to_string(), "90".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 90);
+
+        // The fully-qualified ref id (app-prefixed) resolves identically.
+        let mut ov = BTreeMap::new();
+        ov.insert("M-1_A-1_P-0_R-1".to_string(), "13".to_string());
+        let img = compute_parameter_image(&app, &ov, &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 13);
+        Ok(())
+    }
+
+    #[test]
+    fn override_by_name_no_longer_applies() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The old (broken) behaviour keyed overrides by parameter NAME. A name
+        // key must now be a no-op resolution failure — proving the contract flip
+        // to ref-id keying. A name is not a valid `..._R-<r>` ref id, so it is
+        // rejected with the key named.
+        let app = app_with(&[(
+            "thr",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("50"),
+            0,
+            0,
+        )])?;
+        let mut ov = BTreeMap::new();
+        ov.insert("thr".to_string(), "90".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        assert!(err.to_string().contains("thr"), "{err}");
+        assert!(err.to_string().contains("ref suffix"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn module_instances_land_at_distinct_offsets()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // One module parameter (MD-1_P-3, declared Offset 1, BaseOffset naming
+        // MDA_P_Base) instantiated as two channels. Two overrides, keyed by their
+        // distinct module-instance ref ids, must land at distinct effective
+        // offsets = declared 1 + the per-instance base the caller supplies.
+        // Evidence-anchored: the Jung MD-1 bases 310 (M-1_MI-1) and 442 (M-3_MI-1)
+        // put P-3 at 311 and 443.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
+          <Code><RelativeSegment Id="M-0004_A-1_RS-1" Size="512" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="_VA_Label" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
+
+        let mut ov = BTreeMap::new();
+        ov.insert("MD-1_M-1_MI-1_P-3_R-45".to_string(), "17".to_string());
+        ov.insert("MD-1_M-3_MI-1_P-3_R-45".to_string(), "42".to_string());
+
+        let mut bases = BTreeMap::new();
+        bases.insert("MD-1_M-1_MI-1".to_string(), 310u32);
+        bases.insert("MD-1_M-3_MI-1".to_string(), 442u32);
+
+        let img = compute_parameter_image(&app, &ov, &bases)?;
+        let seg = &img["M-0004_A-1_RS-1"];
+        // Instance 1 at 1 + 310 = 311 holds 17; instance 3 at 1 + 442 = 443 holds
+        // 42. The two values do NOT collide — the old name-keyed builder would
+        // have collapsed both onto the single declared offset 1.
+        assert_eq!(seg[311], 17, "instance M-1_MI-1 at offset 311");
+        assert_eq!(seg[443], 42, "instance M-3_MI-1 at offset 443");
+        // The declared offset 1 keeps the default (0), untouched by either.
+        assert_eq!(seg[1], 0);
+        Ok(())
+    }
+
+    #[test]
+    fn module_override_without_base_offset_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A module-instance override whose per-instance base offset was not
+        // supplied cannot be placed; it must error (never misplace a byte),
+        // naming the offending key.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-0004_A-1" Name="Jung"><Static>
+          <Code><RelativeSegment Id="M-0004_A-1_RS-1" Size="512" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-0004_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="M-0004_A-1_MD-1_P-3" Name="_VA_Label" ParameterType="M-0004_A-1_PT-0" Value="0">
+            <Memory CodeSegment="M-0004_A-1_RS-1" Offset="1" BitOffset="0" BaseOffset="M-0004_A-1_MD-1_A-1" />
+           </Parameter>
+          </Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-0004_A-1", xml.as_bytes())?;
+
+        let mut ov = BTreeMap::new();
+        ov.insert("MD-1_M-3_MI-1_P-3_R-45".to_string(), "42".to_string());
+
+        // No base offsets supplied: the module override cannot be placed.
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        let s = err.to_string();
+        assert!(s.contains("MD-1_M-3_MI-1_P-3_R-45"), "{s}");
+        assert!(s.contains("base offset") || s.contains("MI-1"), "{s}");
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_ref_id_override_is_refused() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // An override naming a parameter this application does not define is a
+        // pre-flight error naming the key.
+        let app = app_with(&[(
+            "thr",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("50"),
+            0,
+            0,
+        )])?;
+        let mut ov = BTreeMap::new();
+        ov.insert("P-999_R-1".to_string(), "1".to_string());
+        let err = compute_parameter_image(&app, &ov, &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        assert!(err.to_string().contains("P-999"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn param_value_beats_type_default_when_no_ref()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Parameter Value present, no ref -> parameter Value used.
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("42"),
+            0,
+            0,
+        )])?;
+        assert_eq!(image_of(&app)?[0], 42);
+        Ok(())
+    }
+
+    #[test]
+    fn params_laid_over_segment_base_data() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Segment carries a base <Data> image; a parameter overwrites its byte
+        // while bytes it does not touch keep the vendor's data.
+        // Base image = [0xAA, 0xBB, 0xCC, 0xDD] (base64 "qrvM3Q==").
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>qrvM3Q==</Data></RelativeSegment></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // Byte 2 overwritten to 1; the rest keep the base image.
+        assert_eq!(img["M-1_A-1_RS-1"], vec![0xAA, 0xBB, 0x01, 0xDD]);
+        Ok(())
+    }
+
+    #[test]
+    fn sub_byte_over_base_data_preserves_other_bits()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Base byte 0xFF; a 2-bit field at bit offset 0 set to 0b01 must clear
+        // only its two high bits: 0b01_111111 = 0x7F.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="1" LoadStateMachine="4" Offset="0"><Data>/w==</Data></RelativeSegment></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="2" Type="unsignedInt" maxInclusive="3" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(img["M-1_A-1_RS-1"][0], 0b0111_1111);
+        Ok(())
+    }
+
+    #[test]
+    fn type_none_occupies_no_memory() -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[("marker", r#"<TypeNone />"#, None, 0, 0)])?;
+        // No bytes placed -> empty image (segment had no base data).
+        let img = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert!(img["M-1_A-1_RS-1"].is_empty());
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Issue #53: bounds on parameter placement and segment payloads.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn parameter_offset_beyond_segment_size_errors_naming_it()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The `app_with` segment declares Size=64. A byte parameter placed at
+        // offset 100 ends at 101, past the segment; refuse and name the parameter
+        // rather than resizing the image to an arbitrary length.
+        let app = app_with(&[(
+            "toofar",
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" />"#,
+            Some("1"),
+            100,
+            0,
+        )])?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        match err {
+            ProductError::ParameterImage { parameter, reason } => {
+                assert_eq!(parameter, "toofar");
+                assert!(reason.contains("Size"), "reason names the bound: {reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn segment_data_longer_than_declared_size_errors()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // A <Data> payload longer than the segment's declared Size is corrupt
+        // product data; refuse rather than seeding an over-sized base image.
+        // Size=2 but the base64 `AAECAw==` decodes to 4 bytes.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="2" LoadStateMachine="4" Offset="0"><Data>AAECAw==</Data></RelativeSegment></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="x" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        match err {
+            ProductError::ParameterImage { reason, .. } => {
+                assert!(reason.contains("Size"), "reason names Size: {reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// Regression: the 1 MiB image cap only applied when the segment declared no
+    /// `Size`. A vendor `Size="4294967295"` was taken at face value, so a
+    /// parameter near that offset drove `image.resize` toward a 4 GiB
+    /// allocation. A declared `Size` above the cap is refused up front now.
+    #[test]
+    fn test_compute_parameter_image_declared_size_above_cap_is_refused()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4294967295" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="far" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="{}" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            4_000_000_000u32
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("a segment declaring 4 GiB is refused, not allocated")?;
+        match err {
+            ProductError::ParameterImage { parameter, reason } => {
+                assert_eq!(parameter, "M-1_A-1_RS-1");
+                assert!(reason.contains("Size 4294967295"), "{reason}");
+                assert!(reason.contains("cap"), "{reason}");
+            }
+            other => panic!("expected ParameterImage, got {other:?}"),
+        }
+        Ok(())
+    }
+
+    /// A declared `Size` at the cap still builds: real product data reaches
+    /// within a byte of it (ABB i-bus declares `Size="1048575"`).
+    #[test]
+    fn test_compute_parameter_image_declared_size_at_cap_is_accepted()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="{}" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="near" ParameterType="M-1_A-1_PT-0" Value="7"><Memory CodeSegment="M-1_A-1_RS-1" Offset="3" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            MAX_SEGMENT_IMAGE - 1
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // The segment has no `<Data>`: the unplaced octets are erased (#377).
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0xFF, 0xFF, 0xFF, 7]);
+        Ok(())
+    }
+
+    /// A relative segment with or without `<Data>`, a 4-octet `Size`, and a
+    /// 1-bit parameter set to 1 at octet 1, bit 0, on the Dynamic path.
+    fn fill_app(data: &str) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        fill_app_with_procedure(data, "")
+    }
+
+    /// [`fill_app`] with `ops` as the program's load procedure.
+    fn fill_app_with_procedure(
+        data: &str,
+        ops: &str,
+    ) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let procedures = if ops.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<LoadProcedures><LoadProcedure MergeId=\"2\">{ops}</LoadProcedure></LoadProcedures>"
+            )
+        };
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="4" LoadStateMachine="4" Offset="0">{data}</RelativeSegment></Code>
+          {procedures}
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="b"><TypeNumber SizeInBit="1" Type="unsignedInt" maxInclusive="1" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="on" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="1" BitOffset="0" /></Parameter></Parameters>
+          <ParameterRefs><ParameterRef Id="M-1_A-1_P-0_R-0" RefId="M-1_A-1_P-0" /></ParameterRefs>
+         </Static>
+         <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1"><ParameterRefRef RefId="M-1_A-1_P-0_R-0" /></ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("M-1_A-1", xml.as_bytes())?)
+    }
+
+    /// A relative segment without `<Data>` reads `0xFF` around the one placed
+    /// octet, whose bits outside the field stay `0` (1.1.201 capture, #377).
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_fills_erased()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app("")?;
+        assert!(uses_dynamic_image(&app));
+        let (images, placed) = compute_parameter_image_placed(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0xFF, 0x80, 0xFF, 0xFF]);
+        assert_eq!(placed.get("M-1_A-1_RS-1"), Some(&BTreeSet::from([1usize])));
+        assert_eq!(
+            compute_dynamic_parameter_image(&app, &no_overrides())?,
+            images
+        );
+        Ok(())
+    }
+
+    /// A data-less segment whose full `LdCtrlRelSegment` pre-fills with `00`
+    /// keeps `00` in the unplaced octets, as ETS leaves them (Enertex
+    /// `A-0031-30`, MDT `A-0153/0154/0155`, issue #834); the `par` op does not
+    /// count.
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_follows_full_fill_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />
+               <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="4" Mode="1" Fill="255" />"#,
+        )?;
+        let (images, _) = compute_parameter_image_placed(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0x00, 0x80, 0x00, 0x00]);
+        assert_eq!(
+            compute_dynamic_parameter_image(&app, &no_overrides())?,
+            images
+        );
+        Ok(())
+    }
+
+    /// `Mode="1" Fill="255"` keeps the erased `0xFF` (Enertex `A-0035-31`,
+    /// Jung `A-0024-22`, issues #377 and #834).
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_follows_full_fill_ff()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="255" />"#,
+        )?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0xFF, 0x80, 0xFF, 0xFF]);
+        Ok(())
+    }
+
+    /// A `Mode="0"` allocation does not pre-fill, so its `Fill` octet does not
+    /// apply and the unplaced octets stay `0xFF` (#377); so does an op for
+    /// another load state machine.
+    #[test]
+    fn test_compute_parameter_image_placed_without_data_mode_zero_stays_erased()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        for ops in [
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="0" Fill="0" />"#,
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="4" Mode="1" Fill="0" />"#,
+        ] {
+            let app = fill_app_with_procedure("", ops)?;
+            let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+            assert_eq!(
+                images["M-1_A-1_RS-1"],
+                vec![0xFF, 0x80, 0xFF, 0xFF],
+                "{ops}"
+            );
+        }
+        Ok(())
+    }
+
+    /// A segment with `<Data>` keeps its data whatever the procedure's fill.
+    #[test]
+    fn test_compute_parameter_image_placed_with_data_ignores_fill()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app_with_procedure(
+            "<Data>ESIzRA==</Data>",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />"#,
+        )?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0x11, 0xA2, 0x33, 0x44]);
+        Ok(())
+    }
+
+    /// A relative segment with `<Data>` keeps it around the placed octet.
+    #[test]
+    fn test_compute_parameter_image_placed_with_data_is_unchanged()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = fill_app("<Data>ESIzRA==</Data>")?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        assert_eq!(images["M-1_A-1_RS-1"], vec![0x11, 0xA2, 0x33, 0x44]);
+        Ok(())
+    }
+
+    /// The vendor-default path (no Dynamic section) erases the same way.
+    #[test]
+    fn test_compute_parameter_image_vendor_default_without_data_fills_erased()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = app_with(&[(
+            "x",
+            r#"<TypeNumber SizeInBit="3" Type="unsignedInt" maxInclusive="7" />"#,
+            Some("3"),
+            2,
+            0,
+        )])?;
+        assert!(!uses_dynamic_image(&app));
+        assert_eq!(image_of(&app)?, vec![0xFF, 0xFF, 0x60]);
+        Ok(())
+    }
+
+    #[test]
+    fn parameter_end_past_cap_errors_when_segment_declares_no_size()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // With no declared Size, a parameter whose end exceeds the 1 MiB cap is
+        // refused — no allocation of that size ever happens (a huge offset from
+        // untrusted vendor XML would otherwise force a multi-MiB resize).
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-1" Name="t"><Static>
+          <Code><RelativeSegment Id="M-1_A-1_RS-1" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="M-1_A-1_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-1_A-1_P-0" Name="huge" ParameterType="M-1_A-1_PT-0" Value="1"><Memory CodeSegment="M-1_A-1_RS-1" Offset="{}" BitOffset="0" /></Parameter></Parameters>
+         </Static></ApplicationProgram></KNX>"#,
+            MAX_SEGMENT_IMAGE + 10
+        );
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let err = compute_parameter_image(&app, &no_overrides(), &no_bases())
+            .err()
+            .ok_or("expected an error")?;
+        assert!(
+            matches!(err, ProductError::ParameterImage { .. }),
+            "expected ParameterImage, got {err:?}"
+        );
+        Ok(())
+    }
+
+    /// A self-contained ApplicationProgram XML reproducing the DA.tp module
+    /// parameter structure: a 256-byte `<Data>`-of-0xFF segment; three module
+    /// parameters (speed off0 default5, steps off1 default4, color off2 default1),
+    /// all with `BaseOffset=argPar`; 8 module instances (argPar 0,16,…,112); and a
+    /// channel parameter block that references only speed and steps (not color).
+    fn da_tp_param_app() -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        // base64 of 256 bytes of 0xFF (the segment's `<Data>` base image).
+        let ff256 = concat!(
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "////////////////////////////////////////////////////////////////////////////////",
+            "/////////////////////w==",
+        );
+        let bases = [
+            (1, 0),
+            (2, 16),
+            (3, 32),
+            (4, 48),
+            (5, 64),
+            (6, 80),
+            (7, 96),
+            (8, 112),
+        ];
+        let mut modules = String::new();
+        for (ch, par) in bases {
+            modules.push_str(&format!(
+                r#"<Module Id="APP_MD-1_M-{ch}" RefId="APP_MD-1">
+                     <Arguments>
+                       <NumericArg RefId="APP_MD-1_A-1" Value="{ch}" />
+                       <NumericArg RefId="APP_MD-1_A-3" Value="{par}" />
+                     </Arguments>
+                   </Module>"#
+            ));
+        }
+        let enum8 = |name: &str| {
+            format!(
+                "<ParameterType Id=\"APP_PT-{name}\" Name=\"{name}\">\
+                 <TypeRestriction Base=\"Value\" SizeInBit=\"8\">\
+                 <Enumeration Text=\"a\" Value=\"1\" />\
+                 <Enumeration Text=\"b\" Value=\"4\" />\
+                 <Enumeration Text=\"c\" Value=\"5\" /></TypeRestriction></ParameterType>"
+            )
+        };
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="APP" ApplicationNumber="9472" ApplicationVersion="16"
+                MaskVersion="MV-07B0" Name="Dimming" LoadProcedureStyle="MergedProcedure">
+              <Static>
+               <Code><RelativeSegment Id="APP_RS-04" Size="256" LoadStateMachine="4" Offset="0"><Data>{ff256}</Data></RelativeSegment></Code>
+               <ParameterTypes>{speed_ty}{steps_ty}{color_ty}</ParameterTypes>
+               <Parameters>
+                <Parameter Id="APP_MD-1_P-1" Name="speed" ParameterType="APP_PT-speed" Value="5"><Memory CodeSegment="APP_RS-04" Offset="0" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+                <Parameter Id="APP_MD-1_P-2" Name="steps" ParameterType="APP_PT-steps" Value="4"><Memory CodeSegment="APP_RS-04" Offset="1" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+                <Parameter Id="APP_MD-1_P-3" Name="color" ParameterType="APP_PT-color" Value="1"><Memory CodeSegment="APP_RS-04" Offset="2" BitOffset="0" BaseOffset="APP_MD-1_A-3" /></Parameter>
+               </Parameters>
+               <ParameterRefs>
+                <ParameterRef Id="APP_MD-1_P-1_R-1" RefId="APP_MD-1_P-1" />
+                <ParameterRef Id="APP_MD-1_P-2_R-2" RefId="APP_MD-1_P-2" />
+               </ParameterRefs>
+              </Static>
+              <Dynamic>
+               <Channel Id="APP_MD-1_CH-argCH" Number="argCH">
+                <ParameterBlock Id="APP_MD-1_PB-1" Name="config">
+                 <ParameterRefRef RefId="APP_MD-1_P-1_R-1" />
+                 <ParameterRefRef RefId="APP_MD-1_P-2_R-2" />
+                </ParameterBlock>
+               </Channel>
+               {modules}
+              </Dynamic>
+             </ApplicationProgram></KNX>"#,
+            speed_ty = enum8("speed"),
+            steps_ty = enum8("steps"),
+            color_ty = enum8("color"),
+        );
+        Ok(parse_application_program("APP", xml.as_bytes())?)
+    }
+
+    /// The default parameter image for the DA.tp module app: a 256-byte 0xFF base
+    /// with speed=5 and steps=4 written per channel at `argPar+0`/`argPar+1`.
+    /// `color` is never written (no channel references it), so its byte stays
+    /// 0xFF.
+    ///
+    /// This is the *pure product-default* image. The real ETS→KNX-Virtual capture
+    /// differs only in channel 1's `steps` byte (offset 1 = `05` instead of `04`),
+    /// which is that live **project**'s "16 steps" override — project data, not
+    /// product data. See [`obj4_matches_ets_capture_with_ch1_override`].
+    #[test]
+    fn obj4_default_expansion_writes_speed_and_steps_per_channel()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = da_tp_param_app()?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        let image = images.get("APP_RS-04").ok_or("segment image present")?;
+        assert_eq!(image.len(), 256);
+
+        // Every non-0xFF byte and its value.
+        let non_ff: Vec<(usize, u8)> = image
+            .iter()
+            .enumerate()
+            .filter(|&(_, &b)| b != 0xFF)
+            .map(|(i, &b)| (i, b))
+            .collect();
+        let expected: Vec<(usize, u8)> = (0..8)
+            .flat_map(|ch| {
+                let par = ch * 16;
+                [(par, 5u8), (par + 1, 4u8)]
+            })
+            .collect();
+        assert_eq!(non_ff, expected);
+        Ok(())
+    }
+
+    /// With channel 1's `steps` overridden to 5 ("16 steps"), the image matches
+    /// ETS's exact 256-byte obj4 capture byte-for-byte: `05 05` on channel 1 and
+    /// `05 04` on channels 2-8, everything else 0xFF.
+    #[test]
+    fn obj4_matches_ets_capture_with_ch1_override()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = da_tp_param_app()?;
+
+        // The channel-1 `steps` override (project "16 steps" = enum value 5),
+        // keyed by app-relative ParameterRef id with the module-instance selector
+        // the override contract expects. The per-instance base offset for channel
+        // 1 is argPar=0.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("MD-1_M-1_MI-1_P-2_R-2".to_string(), "5".to_string());
+        let mut base_offsets = BTreeMap::new();
+        base_offsets.insert("MD-1_M-1_MI-1".to_string(), 0u32);
+
+        let images = compute_parameter_image(&app, &overrides, &base_offsets)?;
+        let image = images.get("APP_RS-04").ok_or("segment image present")?;
+
+        // Reconstruct ETS's exact 256-byte obj4: 0xFF base, ch1 = 05 05, ch2-8 =
+        // 05 04, at argPar bases 0,16,…,112.
+        let mut ets = vec![0xFFu8; 256];
+        for ch in 0..8 {
+            let par = ch * 16;
+            ets[par] = 0x05; // speed = 5 (default) everywhere
+            ets[par + 1] = if ch == 0 { 0x05 } else { 0x04 }; // steps: ch1=5, else 4
+        }
+        assert_eq!(image, &ets);
+        Ok(())
+    }
+
+    /// A module-based app in the Jung F50 shape (issue #123): a display-only
+    /// selector picks which module instance the configuration shows; the module
+    /// has a plain parameter and a union member placed at the instance's
+    /// `BaseOffset`; an application parameter sits behind a branch. Like the
+    /// F50 it declares `DownloadInvisibleParameters="None"`.
+    const DYN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dyn">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="8" LoadStateMachine="4" Offset="0"><Data>SQAAAAAAAAA=</Data></RelativeSegment></Code>
+       <ParameterTypes><ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="concept" ParameterType="A_PT-1" Value="0" />
+        <Parameter Id="A_P-2" Name="hidden" ParameterType="A_PT-1" Value="7"><Memory CodeSegment="A_RS-1" Offset="7" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+       </ParameterRefs>
+       <Options DownloadInvisibleParameters="None" />
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="m">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="cmd" ParameterType="A_PT-1" Value="3"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Union SizeInBit="8">
+           <Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" />
+           <Parameter Id="A_MD-1_UP-2" Name="mode" ParameterType="A_PT-1" Value="0" Offset="0" BitOffset="0" />
+          </Union>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_UP-2_R-2" RefId="A_MD-1_UP-2" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
+         <ParameterRefRef RefId="A_MD-1_UP-2_R-2" />
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1"><ParameterRefRef RefId="A_P-1_R-1" /></ParameterBlock></ChannelIndependentBlock>
+       <choose ParamRefId="A_P-1_R-1">
+        <when test="0">
+         <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="2" /></Module>
+        </when>
+        <when test="1">
+         <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="4" /></Module>
+         <ParameterRefRef RefId="A_P-2_R-2" />
+        </when>
+       </choose>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    /// The ABB 6119/20 shape (issue #386): `ParameterByteOrder` set by
+    /// `{order}`, a 16-bit enumeration in a union at `0x6D01` (default 5633),
+    /// a 16-bit number and a two-octet text after it.
+    fn byte_order_xml(order: &str) -> String {
+        format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-0701" Name="le">
+      <Static>
+       <Code><AbsoluteSegment Id="A_AS-6D00" Size="8" Address="27904"><Data>AAEUAAAAAAA=</Data></AbsoluteSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="e"><TypeRestriction Base="Value" SizeInBit="16"><Enumeration Text="a" Value="5633" Id="A_PT-1_EN-1" /><Enumeration Text="b" Value="5634" Id="A_PT-1_EN-2" /></TypeRestriction></ParameterType>
+        <ParameterType Id="A_PT-2" Name="n"><TypeNumber SizeInBit="16" Type="unsignedInt" minInclusive="0" maxInclusive="65535" /></ParameterType>
+        <ParameterType Id="A_PT-3" Name="t"><TypeText SizeInBit="16" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Union SizeInBit="16">
+         <Memory CodeSegment="A_AS-6D00" Offset="1" BitOffset="0" />
+         <Parameter Id="A_UP-1" Name="debounce" ParameterType="A_PT-1" Value="5633" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+        </Union>
+        <Parameter Id="A_P-2" Name="count" ParameterType="A_PT-2" Value="258"><Memory CodeSegment="A_AS-6D00" Offset="3" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-3" Name="text" ParameterType="A_PT-3" Value="ab"><Memory CodeSegment="A_AS-6D00" Offset="5" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_UP-1_R-1" RefId="A_UP-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+       </ParameterRefs>
+       <Options {order} />
+      </Static>
+      <Dynamic><ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+       <ParameterRefRef RefId="A_UP-1_R-1" />
+       <ParameterRefRef RefId="A_P-2_R-2" />
+       <ParameterRefRef RefId="A_P-3_R-3" />
+      </ParameterBlock></ChannelIndependentBlock></Dynamic>
+     </ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// Issue #386: a little-endian program stores a multi-octet integer
+    /// least significant octet first (ETS wrote the ABB's debounce 5633 as
+    /// `01 16`), a text keeps its order, and the decoder reads the value back.
+    /// A big-endian or undeclared order stays MSB-first.
+    #[test]
+    fn test_compute_parameter_image_little_endian_parameters() -> Result<()> {
+        let le = parse_application_program(
+            "A",
+            byte_order_xml(r#"ParameterByteOrder="LittleEndian""#).as_bytes(),
+        )?;
+        assert!(le.parameters_little_endian);
+        let images = compute_parameter_image(&le, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(
+            images["A_AS-6D00"],
+            [0x00, 0x01, 0x16, 0x02, 0x01, b'a', b'b', 0]
+        );
+        let mut overrides = BTreeMap::new();
+        overrides.insert("UP-1_R-1".to_string(), "5634".to_string());
+        overrides.insert("P-2_R-2".to_string(), "4660".to_string());
+        let image = &compute_parameter_image(&le, &overrides, &BTreeMap::new())?["A_AS-6D00"];
+        assert_eq!(image[1..5], [0x02, 0x16, 0x34, 0x12]);
+        let decode = |id: &str, offset: usize| {
+            le.parameters
+                .get(id)
+                .and_then(|p| decode_parameter_value(&le, p, image, offset, 0))
+        };
+        assert_eq!(decode("A_UP-1", 1).as_deref(), Some("5634"));
+        assert_eq!(decode("A_P-2", 3).as_deref(), Some("4660"));
+        assert_eq!(decode("A_P-3", 5).as_deref(), Some("ab"));
+
+        for order in [r#"ParameterByteOrder="BigEndian""#, ""] {
+            let be = parse_application_program("A", byte_order_xml(order).as_bytes())?;
+            let images = compute_parameter_image(&be, &no_overrides(), &BTreeMap::new())?;
+            assert_eq!(
+                images["A_AS-6D00"],
+                [0x00, 0x16, 0x01, 0x01, 0x02, b'a', b'b', 0],
+                "{order}"
+            );
+        }
+        Ok(())
+    }
+
+    /// The `syn-le-order` floats (issue #403): `ParameterByteOrder` set by
+    /// `{order}`, a DPT 9 at offset 0, an IEEE-754 Single at 2 and an
+    /// IEEE-754 Double at 6, each with default 21.5.
+    fn float_order_xml(order: &str) -> String {
+        format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="le">
+      <Static>
+       <Code><AbsoluteSegment Id="A_AS-4000" Size="14" Address="16384"><Data>AAAAAAAAAAAAAAAAAAA=</Data></AbsoluteSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="d9"><TypeFloat Encoding="DPT 9" minInclusive="-273" maxInclusive="670760" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="f32"><TypeFloat Encoding="IEEE-754 Single" minInclusive="-100" maxInclusive="100" /></ParameterType>
+        <ParameterType Id="A_PT-3" Name="f64"><TypeFloat Encoding="IEEE-754 Double" minInclusive="-100" maxInclusive="100" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="nest" ParameterType="A_PT-1" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-2" Name="egg" ParameterType="A_PT-2" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="2" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-3" Name="air" ParameterType="A_PT-3" Value="21.5"><Memory CodeSegment="A_AS-4000" Offset="6" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+       </ParameterRefs>
+       <Options {order} />
+      </Static>
+      <Dynamic><ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+       <ParameterRefRef RefId="A_P-1_R-1" />
+       <ParameterRefRef RefId="A_P-2_R-2" />
+       <ParameterRefRef RefId="A_P-3_R-3" />
+      </ParameterBlock></ChannelIndependentBlock></Dynamic>
+     </ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// Issue #403: a little-endian program stores its floats least
+    /// significant octet first, as ETS 6.4.1 wrote `syn-le-order`
+    /// (`captures/synthetic/syn-le-order/defaults/`: DPT 9 21.5 as `33 0C`,
+    /// IEEE-754 Single 21.5 as `00 00 AC 41`); the Double follows the same
+    /// rule (no capture yet). The decoder reads each back in the program's
+    /// order, and a big-endian or undeclared order stays MSB-first.
+    #[test]
+    fn test_compute_parameter_image_little_endian_floats()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let le_double = 21.5f64.to_le_bytes();
+        let be_double = 21.5f64.to_be_bytes();
+        let cases: [(&str, [u8; 6], [u8; 8]); 3] = [
+            (
+                r#"ParameterByteOrder="LittleEndian""#,
+                [0x33, 0x0C, 0x00, 0x00, 0xAC, 0x41],
+                le_double,
+            ),
+            (
+                r#"ParameterByteOrder="BigEndian""#,
+                [0x0C, 0x33, 0x41, 0xAC, 0x00, 0x00],
+                be_double,
+            ),
+            ("", [0x0C, 0x33, 0x41, 0xAC, 0x00, 0x00], be_double),
+        ];
+        for (order, head, double) in cases {
+            let app = parse_application_program("A", float_order_xml(order).as_bytes())?;
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            let image = &images["A_AS-4000"];
+            assert_eq!(image[..6], head, "{order}");
+            assert_eq!(image[6..14], double, "{order}");
+
+            // An override takes the same order, and every float decodes back.
+            let mut overrides = BTreeMap::new();
+            overrides.insert("P-1_R-1".to_string(), "-3".to_string());
+            overrides.insert("P-2_R-2".to_string(), "-3.25".to_string());
+            overrides.insert("P-3_R-3".to_string(), "0.1".to_string());
+            let image = &compute_parameter_image(&app, &overrides, &BTreeMap::new())?["A_AS-4000"];
+            let decode = |id: &str, offset: usize| {
+                app.parameters
+                    .get(id)
+                    .and_then(|p| decode_parameter_value(&app, p, image, offset, 0))
+            };
+            assert_eq!(decode("A_P-1", 0).as_deref(), Some("-3"), "{order}");
+            assert_eq!(decode("A_P-2", 2).as_deref(), Some("-3.25"), "{order}");
+            assert_eq!(decode("A_P-3", 6).as_deref(), Some("0.1"), "{order}");
+            // The canonical form does not depend on the order.
+            for (id, value) in [("A_P-1", "-3"), ("A_P-2", "-3.25"), ("A_P-3", "0.1")] {
+                let param = app.parameters.get(id).ok_or("missing parameter")?;
+                assert_eq!(
+                    canonical_parameter_value(&app, param, Some(value)).as_deref(),
+                    Some(value),
+                    "{order} {id}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_only_shown_parameters() -> Result<()> {
+        let app = parse_application_program("A", DYN_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // Defaults: instance M-1 (base 2) is shown; the template's `49` stays.
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x49, 0, 3, 0, 0, 0, 0, 0]);
+        // The display-only concept switches to instance M-2 (base 4) and the
+        // hidden parameter; the union member of that instance is overridden.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("MD-1_M-2_MI-1_UP-2_R-2".to_string(), "9".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x49, 0, 0, 0, 3, 9, 0, 7]);
+        // An override naming no ref of the application is refused.
+        overrides.insert("P-99_R-1".to_string(), "1".to_string());
+        assert!(compute_parameter_image(&app, &overrides, &BTreeMap::new()).is_err());
+        Ok(())
+    }
+
+    /// A `<ParameterCalculation>` derives `fan` from `mode` (the Ekinex EK-E72
+    /// shape: its fan block switch comes from a VBScript), and `fan` decides
+    /// whether `extra` is shown. `{script}` is the calculation's script.
+    fn calc_xml(script: &str) -> String {
+        CalcApp::new(script).xml()
+    }
+
+    /// The variants of [`calc_xml`] the calculation tests need.
+    struct CalcApp<'a> {
+        script: &'a str,
+        language: &'a str,
+        /// Whether the walk reaches `fan` (else it is a hidden parameter).
+        fan_shown: bool,
+        /// Whether `fan` has memory (else it is display-only).
+        fan_memory: bool,
+        /// The `<Options>` element, or nothing for ETS's defaults (which
+        /// download hidden parameters).
+        options: &'a str,
+        /// More calculations, after `PC-1`.
+        more_calcs: &'a str,
+        /// More Dynamic nodes, after the choose.
+        more_dynamic: &'a str,
+        /// Whether the application has a Dynamic section at all.
+        dynamic: bool,
+    }
+
+    impl<'a> CalcApp<'a> {
+        fn new(script: &'a str) -> Self {
+            Self {
+                script,
+                language: "VBScript",
+                fan_shown: true,
+                fan_memory: true,
+                options: r#"<Options DownloadInvisibleParameters="None" />"#,
+                more_calcs: "",
+                more_dynamic: "",
+                dynamic: true,
+            }
+        }
+
+        fn xml(&self) -> String {
+            let fan_memory = if self.fan_memory {
+                r#"<Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" />"#
+            } else {
+                ""
+            };
+            let fan_ref = if self.fan_shown {
+                r#"<ParameterRefRef RefId="A_P-2_R-2" />"#
+            } else {
+                ""
+            };
+            let dynamic = if self.dynamic {
+                format!(
+                    r#"<Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        {fan_ref}
+        <choose ParamRefId="A_P-2_R-2"><when test="4"><ParameterRefRef RefId="A_P-3_R-3" /></when></choose>
+        {more}
+       </ParameterBlock></ChannelIndependentBlock>
+      </Dynamic>"#,
+                    more = self.more_dynamic
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="calc" MinEtsVersion="5.0">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="5" LoadStateMachine="4" Offset="0"><Data>AAAAAAA=</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="t"><TypeText SizeInBit="16" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="mode" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-2" Name="fan" ParameterType="A_PT-1" Value="0">{fan_memory}</Parameter>
+        <Parameter Id="A_P-3" Name="extra" ParameterType="A_PT-1" Value="9"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" /></Parameter>
+        <Parameter Id="A_P-4" Name="label" ParameterType="A_PT-2" Value="1"><Memory CodeSegment="A_RS-1" Offset="3" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+        <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+       </ParameterRefs>
+       <ParameterCalculations>
+        <ParameterCalculation Id="A_PC-1" Name="Fan" Language="{language}">
+         <LParameters><ParameterRefRef RefId="A_P-1_R-1" AliasName="Mode" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-2_R-2" /></RParameters>
+         <LRTransformation>{script}</LRTransformation>
+        </ParameterCalculation>
+        {more_calcs}
+       </ParameterCalculations>
+       {options}
+      </Static>
+      {dynamic}
+     </ApplicationProgram></KNX>"#,
+                language = self.language,
+                script = self.script,
+                more_calcs = self.more_calcs,
+                options = self.options,
+            )
+        }
+
+        fn image(&self, overrides: &[(&str, &str)]) -> Result<Vec<u8>> {
+            let app = parse_application_program("A", self.xml().as_bytes())?;
+            let overrides = overrides
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect();
+            Ok(compute_parameter_image(&app, &overrides, &BTreeMap::new())?["A_RS-1"].clone())
+        }
+
+        fn refusal(&self, overrides: &[(&str, &str)]) -> String {
+            self.image(overrides)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default()
+        }
+    }
+
+    /// A calculated value is written, steers the Dynamic section like any
+    /// other value, and wins over an override of the computed parameter.
+    #[test]
+    fn test_compute_parameter_image_runs_parameter_calculations() -> Result<()> {
+        let xml = calc_xml("If Mode = 1 Then fan = 4 Else fan = 0");
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][..3], [0, 0, 0]);
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        // fan = 4 shows extra, written with its default.
+        assert_eq!(images["A_RS-1"][..3], [1, 4, 9]);
+        // An override that agrees with the calculation is harmless.
+        overrides.insert("P-2_R-2".to_string(), "4".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][..3], [1, 4, 9]);
+        Ok(())
+    }
+
+    /// An override of a calculated parameter that the calculation replaces
+    /// with another value is refused, not dropped: the model would otherwise
+    /// disagree with the device for good.
+    #[test]
+    fn test_compute_parameter_image_refuses_an_override_the_calculation_replaces() {
+        let app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        let err = app.refusal(&[("P-1_R-1", "1"), ("P-2_R-2", "7")]);
+        assert!(
+            err.contains("computed by calculation PC-1 as \"4\"") && err.contains("\"7\""),
+            "{err}"
+        );
+    }
+
+    /// With ETS's default `DownloadInvisibleParameters`, a calculation output
+    /// the walk never reaches is still written with the computed value, and
+    /// refused when the calculation cannot run.
+    #[test]
+    fn test_compute_parameter_image_writes_a_hidden_calculation_output() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.fan_shown = false;
+        app.options = "";
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[..3], [1, 4, 9]);
+        app.script = "fan = Abs(-4)";
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("calculation PC-1"), "{err}");
+        Ok(())
+    }
+
+    /// A calculation that cannot run whose display-only output decides a
+    /// `<choose>` is refused, though nothing writes the output itself.
+    #[test]
+    fn test_compute_parameter_image_refuses_a_branch_steered_by_an_unrunnable_calculation() {
+        let mut app = CalcApp::new("fan = Abs(-4)");
+        app.fan_memory = false;
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("decides which parameters"), "{err}");
+    }
+
+    /// The vendor-default path (no Dynamic section) cannot run calculations.
+    /// At the defaults ETS runs none either, so it writes the defaults; an
+    /// override of an input, which would run one, is refused.
+    #[test]
+    fn test_compute_parameter_image_refuses_calculations_without_dynamic() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
+        app.dynamic = false;
+        assert_eq!(app.image(&[])?[..2], [0, 0]);
+        assert_eq!(app.image(&[("P-1_R-1", "0")])?[..2], [0, 0]);
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("PC-1") && err.contains("Dynamic"), "{err}");
+        Ok(())
+    }
+
+    /// At the vendor defaults no calculation runs, as in ETS (the `defaults`
+    /// run of the syn-param-calculation capture): its output keeps its
+    /// default, and a script bussard cannot run is not refused.
+    #[test]
+    fn test_compute_parameter_image_runs_no_calculation_at_defaults() -> Result<()> {
+        let app = CalcApp::new("If Mode = 0 Then fan = 4 Else fan = 0");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        let app = CalcApp::new("fan = Abs(-4)");
+        assert_eq!(app.image(&[])?[..3], [0, 0, 0]);
+        Ok(())
+    }
+
+    /// A script that reads its own output runs once per input change, as in
+    /// ETS, and does not drift with the evaluation's passes.
+    #[test]
+    fn test_compute_parameter_image_runs_a_calculation_once_per_input_change() -> Result<()> {
+        let app = CalcApp::new("fan = fan + 1 + Mode");
+        assert_eq!(app.image(&[])?[1], 0);
+        assert_eq!(app.image(&[("P-1_R-1", "2")])?[1], 3);
+        Ok(())
+    }
+
+    /// A computed value the parameter cannot hold is refused naming the
+    /// calculation.
+    #[test]
+    fn test_compute_parameter_image_names_the_calculation_of_an_unencodable_value() {
+        let app = CalcApp::new("fan = Mode + 0.5");
+        let err = app.refusal(&[("P-1_R-1", "1")]);
+        assert!(err.contains("calculation PC-1"), "{err}");
+    }
+
+    /// A computed value outside its parameter's declared range is refused
+    /// as computed, not warned about as a vendor default.
+    #[test]
+    fn test_compute_parameter_image_refuses_a_computed_value_out_of_range() {
+        let app = CalcApp::new("fan = Mode * 100");
+        let err = app.refusal(&[("P-1_R-1", "3")]);
+        assert!(
+            err.contains("above the declared maximum 255")
+                && err.contains("computed value outside its type")
+                && err.contains("calculation PC-1"),
+            "{err}"
+        );
+    }
+
+    /// Two calculations feeding each other never settle: refused.
+    #[test]
+    fn test_compute_parameter_image_refuses_calculations_that_never_settle() {
+        let mut app = CalcApp::new("fan = Mode + 1");
+        // `extra` set off its default starts PC-2, which feeds PC-1 and back.
+        app.more_calcs = r#"<ParameterCalculation Id="A_PC-2" Name="Back" Language="VBScript">
+         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /><ParameterRefRef RefId="A_P-3_R-3" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-1_R-1" AliasName="Mode" /></RParameters>
+         <LRTransformation>Mode = (fan + extra) Mod 200</LRTransformation>
+        </ParameterCalculation>"#;
+        let err = app.refusal(&[("P-3_R-3", "1")]);
+        assert!(err.contains("did not settle"), "{err}");
+    }
+
+    /// One calculation reading another's output sees the computed value,
+    /// whichever comes first in the document.
+    #[test]
+    fn test_compute_parameter_image_chains_calculations() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.more_calcs = r#"<ParameterCalculation Id="A_PC-2" Name="Extra" Language="VBScript">
+         <LParameters><ParameterRefRef RefId="A_P-2_R-2" /></LParameters>
+         <RParameters><ParameterRefRef RefId="A_P-3_R-3" /></RParameters>
+         <LRTransformation>extra = fan * 2</LRTransformation>
+        </ParameterCalculation>"#;
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[..3], [1, 4, 8]);
+        Ok(())
+    }
+
+    /// An `<Assign>` to a calculation output wins over the calculation; one to
+    /// a calculation input makes the calculation run with the assigned value.
+    #[test]
+    fn test_compute_parameter_image_assigns_and_calculations() -> Result<()> {
+        let mut app = CalcApp::new("If Mode = 1 Then fan = 4 Else fan = 0");
+        app.more_dynamic = r#"<Assign TargetParamRefRef="A_P-2_R-2" Value="7" />"#;
+        assert_eq!(app.image(&[("P-1_R-1", "1")])?[1], 7);
+        app.more_dynamic = r#"<Assign TargetParamRefRef="A_P-1_R-1" Value="1" />"#;
+        assert_eq!(app.image(&[])?[..3], [1, 4, 9]);
+        Ok(())
+    }
+
+    /// A text parameter reaches a JavaScript script as a string, so `+`
+    /// concatenates though the text looks like a number.
+    #[test]
+    fn test_compute_parameter_image_passes_text_parameters_as_strings() -> Result<()> {
+        let mut app = CalcApp::new("label = label + Mode;");
+        app.language = "JavaScript";
+        app.more_dynamic = r#"<ParameterRefRef RefId="A_P-4_R-4" />"#;
+        // PC-1 writes `fan` from the script; rewire it to read `label` too.
+        let xml = app.xml().replace(
+            r#"<RParameters><ParameterRefRef RefId="A_P-2_R-2" /></RParameters>"#,
+            r#"<RParameters><ParameterRefRef RefId="A_P-4_R-4" /></RParameters>"#,
+        );
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "3".to_string())]);
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"][3..5], *b"13");
+        Ok(())
+    }
+
+    /// A calculation bussard cannot run makes the image refuse to write its
+    /// output, naming the calculation, rather than write a stale value.
+    #[test]
+    fn test_compute_parameter_image_refuses_output_of_unrunnable_calculation() -> Result<()> {
+        let xml = calc_xml("fan = Abs(-4)");
+        let app = parse_application_program("A", xml.as_bytes())?;
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
+        let err = compute_parameter_image(&app, &overrides, &BTreeMap::new())
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_default();
+        assert!(err.contains("calculation PC-1"), "{err}");
+        assert!(err.contains("abs()"), "{err}");
+        Ok(())
+    }
+
+    /// The Busch-Wächter PRO 280 shape (issue #89): `<Options>` without
+    /// `DownloadInvisibleParameters`. A display-only selector hides a 16-bit
+    /// sending cycle (default 600, as in `M-0007_A-6179-82` at +0x2A) and one
+    /// member of a union; a plain parameter is always shown.
+    const HIDDEN_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="bm" MinEtsVersion="5.0">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAAAAA==</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="n8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="A_PT-2" Name="n16"><TypeNumber SizeInBit="16" Type="unsignedInt" minInclusive="0" maxInclusive="65535" /></ParameterType>
+       </ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="enable" ParameterType="A_PT-1" Value="0" />
+        <Parameter Id="A_P-2" Name="cycle" ParameterType="A_PT-2" Value="600"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+        <Union SizeInBit="8">
+         <Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" />
+         <Parameter Id="A_UP-3" Name="percent" ParameterType="A_PT-1" Value="5" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+         <Parameter Id="A_UP-4" Name="raw" ParameterType="A_PT-1" Value="9" Offset="0" BitOffset="0" />
+        </Union>
+        <Parameter Id="A_P-5" Name="shown" ParameterType="A_PT-1" Value="1"><Memory CodeSegment="A_RS-1" Offset="3" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_UP-3_R-3" RefId="A_UP-3" />
+        <ParameterRef Id="A_UP-4_R-4" RefId="A_UP-4" />
+        <ParameterRef Id="A_P-5_R-5" RefId="A_P-5" />
+       </ParameterRefs>
+       <Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />
+      </Static>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        <ParameterRefRef RefId="A_P-5_R-5" />
+        <choose ParamRefId="A_P-1_R-1">
+         <when test="!=0"><ParameterRefRef RefId="A_P-2_R-2" /><ParameterRefRef RefId="A_UP-4_R-4" /></when>
+        </choose>
+       </ParameterBlock></ChannelIndependentBlock>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_hidden_defaults_without_option() -> Result<()> {
+        let app = parse_application_program("A", HIDDEN_XML.as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
+        // Hidden: the cycle carries its default 600 and the union its default
+        // member; the shown parameter its own default.
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1]);
+        // A value set for a hidden parameter is not written: ETS writes the
+        // default (the Steinel ControlPro's hidden 30 s switch-off delay).
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-2_R-2".to_string(), "100".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x02, 0x58, 5, 1]);
+        // Shown, the cycle takes its value and the union its shown member.
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0x00, 0x64, 9, 1]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_hidden_keep_template_with_option() -> Result<()> {
+        let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
+        for replacement in [
+            r#"<Options DownloadInvisibleParameters="None" />"#,
+            r#"<Options DownloadInvisibleParameters="Background" />"#,
+        ] {
+            let xml = HIDDEN_XML.replace(options, replacement);
+            let app = parse_application_program("A", xml.as_bytes())?;
+            assert!(!app.downloads_invisible_parameters(), "{replacement}");
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            assert_eq!(images["A_RS-1"], [0, 0, 0, 1], "{replacement}");
+        }
+        Ok(())
+    }
+
+    /// Issue #450: a hidden `LegacyPatchAlways` parameter is written at its
+    /// default even when the application keeps hidden parameters at the
+    /// template (`Background`, `None`, or `MinEtsVersion` below 5 on either
+    /// system); a hidden parameter without the flag keeps the template. The
+    /// read-back decoder walks the same slots.
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_hidden_legacy_patch_always() -> Result<()> {
+        let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
+        let cycle = r#"Name="cycle" ParameterType="A_PT-2" Value="600""#;
+        for (mask, replacement) in [
+            (
+                "MV-07B0",
+                r#"<Options DownloadInvisibleParameters="Background" />"#,
+            ),
+            (
+                "MV-07B0",
+                r#"<Options DownloadInvisibleParameters="None" />"#,
+            ),
+            ("MV-0705", options),
+            ("MV-07B0", options),
+        ] {
+            let xml = HIDDEN_XML
+                .replace(options, replacement)
+                .replace("MV-07B0", mask)
+                .replace(r#"MinEtsVersion="5.0""#, r#"MinEtsVersion="4.0""#)
+                .replace(cycle, &format!("{cycle} LegacyPatchAlways=\"true\""));
+            let app = parse_application_program("A", xml.as_bytes())?;
+            assert!(
+                !app.downloads_invisible_parameters(),
+                "{mask} {replacement}"
+            );
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            // The hidden cycle carries its default 600; the hidden union
+            // keeps the template.
+            assert_eq!(images["A_RS-1"], [0x02, 0x58, 0, 1], "{mask} {replacement}");
+            let config = crate::dynamic::evaluate_dynamic(&app, &no_overrides());
+            let slots = dynamic_parameter_slots(&app, &config)?;
+            assert!(
+                slots
+                    .iter()
+                    .any(|s| s.param_ref_id.is_none()
+                        && s.parameter.name.as_deref() == Some("cycle")),
+                "{mask} {replacement}"
+            );
+        }
+        Ok(())
+    }
+
+    /// Issues #448 and #838: a program without `DownloadInvisibleParameters`
+    /// keeps the template for hidden parameters when its `MinEtsVersion` is
+    /// below 5 or absent (Steinel HPD 2, Busch-Jaeger `A-FF11-15`,
+    /// `syn-s7-hidden-default-ets4` on System 7; Elsner, ekinex and MDT
+    /// `A-0133` on System B) and writes their defaults from 5 on
+    /// (`syn-s7-hidden-default`, Busch-Wächter `A-6179-82`), on both systems
+    /// and whether or not it prefers a partial download (ABB / Busch-Jaeger
+    /// `A-FF40` with 5.0 writes, Zennio DALI-BOX `A-3311` with 4.0 keeps).
+    #[test]
+    fn test_compute_parameter_image_dynamic_hidden_defaults_follow_min_ets_version() -> Result<()> {
+        let options = r#"<Options TextParameterEncoding="utf-8" Comparable="false" Reconstructable="false" />"#;
+        let declared = r#"MinEtsVersion="5.0""#;
+        for mask in ["MV-07B0", "MV-0705", "MV-0701"] {
+            for partial in [false, true] {
+                for (min_ets, writes) in [
+                    (None, false),
+                    (Some("3.0f"), false),
+                    (Some("4.0"), false),
+                    (Some("5.0"), true),
+                    (Some("6.0"), true),
+                ] {
+                    let mut xml = HIDDEN_XML.replace("MV-07B0", mask).replace(
+                        declared,
+                        &min_ets.map_or(String::new(), |v| format!(r#"MinEtsVersion="{v}""#)),
+                    );
+                    if partial {
+                        xml = xml.replace(
+                            options,
+                            r#"<Options PreferPartialDownloadIfApplicationLoaded="true" />"#,
+                        );
+                    }
+                    let app = parse_application_program("A", xml.as_bytes())?;
+                    assert_eq!(
+                        app.downloads_invisible_parameters(),
+                        writes,
+                        "{mask} {partial} {min_ets:?}"
+                    );
+                    let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+                    let expected = if writes {
+                        [0x02, 0x58, 5, 1]
+                    } else {
+                        [0, 0, 0, 1]
+                    };
+                    assert_eq!(images["A_RS-1"], expected, "{mask} {partial} {min_ets:?}");
+                }
+            }
+        }
+        // The schema does not decide: an older one with 5.0 writes too.
+        let older = HIDDEN_XML.replace("project/20", "project/11");
+        let app = parse_application_program("A", older.as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
+        Ok(())
+    }
+
+    /// Issue #835: two instances of a module (bases 0 and 3, the MDT /
+    /// ekinex DALI gateway shape). `mode` (bits 7-4) is shown, `level` (default 0x80)
+    /// sits behind `mode` = 1, `night` (default 1) shares the octet in
+    /// bits 3-0 and is never shown, `base` takes the instance's `BaseValue`
+    /// argument (5 and 7). `{options}` is the `<Options>` element.
+    fn module_hidden_xml(options: &str) -> String {
+        format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="dali" MinEtsVersion="5.0">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAAAAAAA</Data></RelativeSegment></Code>
+       <ParameterTypes>
+        <ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+        <ParameterType Id="A_PT-4" Name="q"><TypeNumber SizeInBit="4" Type="unsignedInt" minInclusive="0" maxInclusive="15" /></ParameterType>
+       </ParameterTypes>
+       {options}
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="group">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /><Argument Id="A_MD-1_A-2" Name="val" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="mode" ParameterType="A_PT-4" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-2" Name="night" ParameterType="A_PT-4" Value="1"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="4" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-3" Name="level" ParameterType="A_PT-1" Value="128"><Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-4" Name="base" ParameterType="A_PT-1" Value="0" BaseValue="A_MD-1_A-2"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_P-2_R-2" RefId="A_MD-1_P-2" />
+          <ParameterRef Id="A_MD-1_P-3_R-3" RefId="A_MD-1_P-3" />
+          <ParameterRef Id="A_MD-1_P-4_R-4" RefId="A_MD-1_P-4" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
+         <choose ParamRefId="A_MD-1_P-1_R-1">
+          <when test="1"><ParameterRefRef RefId="A_MD-1_P-3_R-3" /><ParameterRefRef RefId="A_MD-1_P-4_R-4" /></when>
+         </choose>
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="0" /><NumericArg RefId="A_MD-1_A-2" Value="5" /></Module>
+       <Module Id="A_MD-1_M-2" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="3" /><NumericArg RefId="A_MD-1_A-2" Value="7" /></Module>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#
+        )
+    }
+
+    /// Issue #835: a program that downloads hidden parameters writes the
+    /// hidden parameters of every module instance at its base, a
+    /// `BaseValue` one with the instance's argument added; one that keeps the
+    /// template leaves them. The read-back slots are the same.
+    #[test]
+    fn test_compute_parameter_image_dynamic_writes_hidden_module_parameters_per_instance()
+    -> Result<()> {
+        let app = parse_application_program("A", module_hidden_xml("").as_bytes())?;
+        assert!(app.downloads_invisible_parameters());
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        // Per instance: `mode` 0 in bits 4-7 over `night` 1, `level` 0x80,
+        // `base` 0 + the instance's 5 or 7.
+        assert_eq!(images["A_RS-1"], [0x01, 0x80, 5, 0x01, 0x80, 7]);
+        let config = crate::dynamic::evaluate_dynamic(&app, &no_overrides());
+        let slots = dynamic_parameter_slots(&app, &config)?;
+        let hidden: Vec<(Option<usize>, usize)> = slots
+            .iter()
+            .filter(|s| s.param_ref_id.is_none())
+            .map(|s| (s.module, s.offset))
+            .collect();
+        assert_eq!(
+            hidden,
+            [
+                (Some(0), 0),
+                (Some(0), 1),
+                (Some(0), 2),
+                (Some(1), 3),
+                (Some(1), 4),
+                (Some(1), 5)
+            ]
+        );
+        let kept = module_hidden_xml(r#"<Options DownloadInvisibleParameters="None" />"#);
+        let app = parse_application_program("A", kept.as_bytes())?;
+        let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+        assert_eq!(images["A_RS-1"], [0; 6]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_module_def_of_splits_module_parameter_ids() {
+        assert_eq!(module_def_of("MD-1_P-7"), Some("MD-1"));
+        assert_eq!(module_def_of("MD-12_UP-3"), Some("MD-12"));
+        assert_eq!(module_def_of("MD-1_SM-2_P-4"), Some("MD-1_SM-2"));
+        assert_eq!(module_def_of("P-12"), None);
+        assert_eq!(module_def_of("UP-3"), None);
+    }
+
+    /// ETS rounds a DPT 9 parameter's mantissa once, half to even (issue #89:
+    /// the Busch-Wächter PRO 280's 1000 lux threshold is `36 1A`, not `36 1B`).
+    #[test]
+    fn test_encode_dpt9_parameter_rounds_like_ets() {
+        assert_eq!(encode_dpt9_parameter(1000.0, false), Some([0x36, 0x1A]));
+        assert_eq!(encode_dpt9_parameter(65535.0, false), Some([0x66, 0x40]));
+        assert_eq!(encode_dpt9_parameter(20.0, false), Some([0x07, 0xD0]));
+        assert_eq!(encode_dpt9_parameter(21.0, false), Some([0x0C, 0x1A]));
+        assert_eq!(encode_dpt9_parameter(1.0, false), Some([0x00, 0x64]));
+        assert_eq!(encode_dpt9_parameter(0.0, false), Some([0x00, 0x00]));
+        assert_eq!(encode_dpt9_parameter(-1.0, false), Some([0x87, 0x9C]));
+        assert_eq!(encode_dpt9_parameter(670_760.96, false), None);
+        assert_eq!(encode_dpt9_parameter(670_760.96, true), Some([0x7F, 0xFF]));
+        assert_eq!(encode_dpt9_parameter(1e9, false), None);
+        assert_eq!(encode_dpt9_parameter(1e9, true), None);
+        assert_eq!(encode_dpt9_parameter(f64::NAN, true), None);
+    }
+
+    /// The Steinel ControlPro's packed durations (issue #89): seconds, minutes,
+    /// hours, as ETS wrote them.
+    #[test]
+    fn test_encode_value_packed_days_hours_minutes_seconds()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ty = r#"<TypeTime SizeInBit="24" Unit="PackedDaysHoursMinutesAndSeconds" minInclusive="10" maxInclusive="65535" UIHint="Duration_hhmmss" />"#;
+        for (value, bytes) in [
+            ("30", [0x1E, 0x00, 0x00]),
+            ("10", [0x0A, 0x00, 0x00]),
+            ("60", [0x00, 0x01, 0x00]),
+            ("300", [0x00, 0x05, 0x00]),
+            ("900", [0x00, 0x0F, 0x00]),
+            ("65535", [0x0F, 0x0C, 0x12]),
+        ] {
+            let app = app_with(&[("delay", ty, Some(value), 0, 0)])?;
+            let images = compute_parameter_image(&app, &no_overrides(), &BTreeMap::new())?;
+            assert_eq!(&images["M-1_A-1_RS-1"][0..3], &bytes, "{value} s");
+        }
+        let app = app_with(&[("delay", ty, Some("86400"), 0, 0)])?;
+        assert!(compute_parameter_image(&app, &no_overrides(), &BTreeMap::new()).is_err());
+        Ok(())
+    }
+
+    /// The Jung 230021SU shape (issue #126). The module's "internal group
+    /// communication" parameter (shown, `Access="Read"` in the product) has
+    /// no memory and takes its default from the
+    /// instance argument (`BaseValue`); it picks which ref of the App-ID
+    /// parameter is written (66 or 68). The module body also chooses on the
+    /// application's "safety release" and assigns the application's alarm
+    /// parameter (two refs at one location) to its own copy.
+    const BASE_VALUE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="act">
+      <Static>
+       <Code><RelativeSegment Id="A_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAAAAAAA</Data></RelativeSegment></Code>
+       <ParameterTypes><ParameterType Id="A_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+       <Parameters>
+        <Parameter Id="A_P-1" Name="release" ParameterType="A_PT-1" Value="0" />
+        <Parameter Id="A_P-2" Name="alarm" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="0" BitOffset="0" /></Parameter>
+       </Parameters>
+       <ParameterRefs>
+        <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
+        <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-2_R-3" RefId="A_P-2" />
+       </ParameterRefs>
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="input">
+        <Arguments><Argument Id="A_MD-1_A-1" Name="par" /><Argument Id="A_MD-1_A-2" Name="intcomm" /></Arguments>
+        <Static>
+         <Parameters>
+          <Parameter Id="A_MD-1_P-1" Name="intcomm" ParameterType="A_PT-1" Value="0" BaseValue="A_MD-1_A-2" />
+          <Parameter Id="A_MD-1_P-2" Name="appid" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="1" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+          <Parameter Id="A_MD-1_P-3" Name="alarm copy" ParameterType="A_PT-1" Value="0"><Memory CodeSegment="A_RS-1" Offset="2" BitOffset="0" BaseOffset="A_MD-1_A-1" /></Parameter>
+         </Parameters>
+         <ParameterRefs>
+          <ParameterRef Id="A_MD-1_P-1_R-1" RefId="A_MD-1_P-1" />
+          <ParameterRef Id="A_MD-1_P-2_R-4" RefId="A_MD-1_P-2" Value="66" />
+          <ParameterRef Id="A_MD-1_P-2_R-5" RefId="A_MD-1_P-2" Value="68" />
+          <ParameterRef Id="A_MD-1_P-3_R-6" RefId="A_MD-1_P-3" />
+         </ParameterRefs>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1">
+         <ParameterRefRef RefId="A_MD-1_P-1_R-1" />
+         <choose ParamRefId="A_MD-1_P-1_R-1">
+          <when test="0"><ParameterRefRef RefId="A_MD-1_P-2_R-4" /></when>
+          <when test="4 5"><ParameterRefRef RefId="A_MD-1_P-2_R-5" /></when>
+         </choose>
+         <ParameterRefRef RefId="A_MD-1_P-3_R-6" />
+         <choose ParamRefId="A_P-1_R-1">
+          <when test="0"><Assign TargetParamRefRef="A_MD-1_P-3_R-6" SourceParamRefRef="A_P-2_R-2" /></when>
+          <when test="1"><Assign TargetParamRefRef="A_MD-1_P-3_R-6" SourceParamRefRef="A_P-2_R-3" /></when>
+         </choose>
+        </ParameterBlock></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+        <ParameterRefRef RefId="A_P-1_R-1" />
+        <choose ParamRefId="A_P-1_R-1">
+         <when test="0"><ParameterRefRef RefId="A_P-2_R-2" /></when>
+         <when test="1"><ParameterRefRef RefId="A_P-2_R-3" /></when>
+        </choose>
+       </ParameterBlock></ChannelIndependentBlock>
+       <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="2" /><NumericArg RefId="A_MD-1_A-2" Value="4" /></Module>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#;
+
+    #[test]
+    fn test_compute_parameter_image_dynamic_base_value_and_application_refs_in_module() -> Result<()>
+    {
+        let app = parse_application_program("A", BASE_VALUE_XML.as_bytes())?;
+        assert!(uses_dynamic_image(&app));
+        // The alarm released and set, as in the project.
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("P-2_R-3".to_string(), "1".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        // Octet 0: the application's alarm (R-3), not overwritten by the
+        // other ref's default. Octet 3: App-ID 68 (intcomm = 0 + argument 4).
+        // Octet 4: the module's copy of the alarm, assigned from R-3.
+        assert_eq!(images["A_RS-1"], [1, 0, 0, 0x44, 1, 0]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_parameter_image_skips_display_only_and_places_union_overrides() -> Result<()> {
+        // The vendor-default path (a non-module app): a display-only override is
+        // not written and does not fail the image; a union member override lands
+        // at the union's location plus its member offset.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="B" MaskVersion="MV-07B0" Name="flat"><Static>
+          <Code><RelativeSegment Id="B_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
+          <ParameterTypes><ParameterType Id="B_PT-1" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType></ParameterTypes>
+          <Parameters>
+           <Parameter Id="B_P-1" Name="ui" ParameterType="B_PT-1" Value="0" />
+           <Union SizeInBit="16">
+            <Memory CodeSegment="B_RS-1" Offset="2" BitOffset="0" />
+            <Parameter Id="B_UP-2" Name="u" ParameterType="B_PT-1" Value="0" Offset="1" BitOffset="0" DefaultUnionParameter="true" />
+           </Union>
+          </Parameters>
+          <ParameterRefs>
+           <ParameterRef Id="B_P-1_R-1" RefId="B_P-1" />
+           <ParameterRef Id="B_UP-2_R-2" RefId="B_UP-2" />
+          </ParameterRefs>
+         </Static></ApplicationProgram></KNX>"#;
+        let app = parse_application_program("B", xml.as_bytes())?;
+        assert!(!uses_dynamic_image(&app));
+        let mut overrides = BTreeMap::new();
+        overrides.insert("P-1_R-1".to_string(), "1".to_string());
+        overrides.insert("UP-2_R-2".to_string(), "5".to_string());
+        let images = compute_parameter_image(&app, &overrides, &BTreeMap::new())?;
+        assert_eq!(images["B_RS-1"][3], 5);
+        Ok(())
+    }
+
+    /// The 3361-1MWW shape (issue #117): a 1-bit parameter at bit 0 of an
+    /// octet, and a 2-bit `<Union>` at `Offset="0" BitOffset="4"` whose member
+    /// sits at `BitOffset="0"`. The member lands at bits 4-5, not over bit 0.
+    #[test]
+    fn test_compute_parameter_image_union_bit_offset_adds_to_member_bit_offset() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-0705"><Static>
+    <Code><AbsoluteSegment Id="M-1_A-1_AS-1" Address="18243" Size="2"><Data>AAA=</Data></AbsoluteSegment></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeNumber SizeInBit="1" Type="unsignedInt" minInclusive="0" maxInclusive="1" /></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeNumber SizeInBit="2" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="enable" ParameterType="M-1_A-1_PT-1" Value="1"><Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="4" />
+        <Parameter Id="M-1_A-1_UP-2" Name="type" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_AS-1" Offset="0" BitOffset="7" />
+        <Parameter Id="M-1_A-1_UP-3" Name="carry" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="2" Value="2" />
+      </Union>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_P-1_R-1" RefId="M-1_A-1_P-1" />
+      <ParameterRef Id="M-1_A-1_UP-2_R-2" RefId="M-1_A-1_UP-2" />
+      <ParameterRef Id="M-1_A-1_UP-3_R-3" RefId="M-1_A-1_UP-3" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <ParameterRefRef RefId="M-1_A-1_P-1_R-1" />
+    <ParameterRefRef RefId="M-1_A-1_UP-2_R-2" />
+    <ParameterRefRef RefId="M-1_A-1_UP-3_R-3" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())
+            .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // Byte 0: P-1 at bit 0 (0x80), UP-2 = 3 at bits 4-5 (0x0C). UP-3 = 2
+        // at union bit 7 + member bit 2 = bit 9, i.e. byte 1 bits 1-2 (0x40).
+        assert_eq!(images.get("M-1_A-1_AS-1"), Some(&vec![0x8C, 0x40]));
+        Ok(())
+    }
+
+    fn fixture_app(xml: &str) -> Result<ApplicationProgram> {
+        parse_application_program("M-1_A-1", xml.as_bytes())
+            .map_err(|e| param_err(&ApplicationProgram::default(), "fixture", &e.to_string()))
+    }
+
+    /// Issue #126, ABB BE/S16 (A-A0ED-10): a `<TypeRestriction
+    /// Base="BinaryValue">` member is written as its `BinaryValue` octets,
+    /// not its `Value` (`Value="0" BinaryValue="4AY="` is `e0 06`), and a
+    /// `TypeRawData` value as its length (4 octets, big-endian) and its octets
+    /// (Jung 390041SR dimming curve: `00 00 02 00` and 512 octets).
+    #[test]
+    fn test_compute_parameter_image_binary_value_enum_and_raw_data() -> Result<()> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="12" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-1"><TypeRestriction Base="BinaryValue" SizeInBit="16">
+        <Enumeration Text="Device" Value="0" Id="M-1_A-1_PT-1_EN-0" BinaryValue="4AY=" />
+        <Enumeration Text="Off" Value="8" Id="M-1_A-1_PT-1_EN-8" BinaryValue="//8=" />
+      </TypeRestriction></ParameterType>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeRawData MaxSize="8" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Parameter Id="M-1_A-1_P-1" Name="central" ParameterType="M-1_A-1_PT-1" Value="0"><Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-2" Name="select" ParameterType="M-1_A-1_PT-1" Value="0"><Memory CodeSegment="M-1_A-1_RS-1" Offset="2" BitOffset="0" /></Parameter>
+      <Parameter Id="M-1_A-1_P-3" Name="curve" ParameterType="M-1_A-1_PT-2" Value="ABAAIA=="><Memory CodeSegment="M-1_A-1_RS-1" Offset="4" BitOffset="0" /></Parameter>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_P-1_R-1" RefId="M-1_A-1_P-1" />
+      <ParameterRef Id="M-1_A-1_P-2_R-2" RefId="M-1_A-1_P-2" />
+      <ParameterRef Id="M-1_A-1_P-3_R-3" RefId="M-1_A-1_P-3" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <ParameterRefRef RefId="M-1_A-1_P-1_R-1" />
+    <ParameterRefRef RefId="M-1_A-1_P-2_R-2" />
+    <ParameterRefRef RefId="M-1_A-1_P-3_R-3" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let overrides = BTreeMap::from([("P-2_R-2".to_string(), "8".to_string())]);
+        let images = compute_parameter_image(&app, &overrides, &no_bases())?;
+        assert_eq!(
+            images.get("M-1_A-1_RS-1"),
+            Some(&vec![
+                0xE0, 0x06, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x04, 0x00, 0x10, 0x00, 0x20
+            ])
+        );
+        Ok(())
+    }
+
+    /// Issue #126, ABB BE/S16 template channel: a `<choose>` on a union member
+    /// the Dynamic section does not show reads the union's shared memory,
+    /// which the shown sibling set (`Par_Operation_2` = 2), not the member's
+    /// own default (`Par_Operation_11` = 3). So the `when test="3"` member of
+    /// the second union is not shown and its sibling's 0 is written, as ETS
+    /// does.
+    #[test]
+    fn test_compute_parameter_image_choose_on_hidden_union_member_reads_shared_bits() -> Result<()>
+    {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20"><ManufacturerData><Manufacturer RefId="M-1"><ApplicationPrograms>
+  <ApplicationProgram Id="M-1_A-1" MaskVersion="MV-07B0"><Static>
+    <Code><RelativeSegment Id="M-1_A-1_RS-1" Size="2" LoadStateMachine="4" Offset="0" /></Code>
+    <ParameterTypes>
+      <ParameterType Id="M-1_A-1_PT-2"><TypeNumber SizeInBit="2" Type="unsignedInt" minInclusive="0" maxInclusive="3" /></ParameterType>
+    </ParameterTypes>
+    <Parameters>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_RS-1" Offset="0" BitOffset="5" />
+        <Parameter Id="M-1_A-1_UP-1" Name="op2" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="2" />
+        <Parameter Id="M-1_A-1_UP-2" Name="op11" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+      <Union SizeInBit="2">
+        <Memory CodeSegment="M-1_A-1_RS-1" Offset="1" BitOffset="6" />
+        <Parameter Id="M-1_A-1_UP-4" Name="op4" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="0" />
+        <Parameter Id="M-1_A-1_UP-5" Name="op5" ParameterType="M-1_A-1_PT-2" Offset="0" BitOffset="0" Value="3" />
+      </Union>
+    </Parameters>
+    <ParameterRefs>
+      <ParameterRef Id="M-1_A-1_UP-1_R-1" RefId="M-1_A-1_UP-1" />
+      <ParameterRef Id="M-1_A-1_UP-2_R-2" RefId="M-1_A-1_UP-2" />
+      <ParameterRef Id="M-1_A-1_UP-4_R-4" RefId="M-1_A-1_UP-4" />
+      <ParameterRef Id="M-1_A-1_UP-5_R-5" RefId="M-1_A-1_UP-5" />
+    </ParameterRefs>
+  </Static><Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-1_A-1_PB-1">
+    <choose ParamRefId="M-1_A-1_UP-2_R-2">
+      <when test="3"><ParameterRefRef RefId="M-1_A-1_UP-5_R-5" /></when>
+      <when default="true"><ParameterRefRef RefId="M-1_A-1_UP-4_R-4" /></when>
+    </choose>
+    <ParameterRefRef RefId="M-1_A-1_UP-1_R-1" />
+  </ParameterBlock></ChannelIndependentBlock></Dynamic></ApplicationProgram>
+</ApplicationPrograms></Manufacturer></ManufacturerData></KNX>"#;
+        let app = fixture_app(xml)?;
+        let images = compute_parameter_image(&app, &no_overrides(), &no_bases())?;
+        // Byte 0: op2 = 2 at bits 5-6 (0x04). Byte 1: op4 = 0 (op5's 3 would be 0x03).
+        assert_eq!(images.get("M-1_A-1_RS-1"), Some(&vec![0x04, 0x00]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_compute_property_values_composes_the_property()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-0021" Name="IP">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-ip" Name="ip"><TypeIPAddress AddressType="HostAddress" /></ParameterType>
+            <ParameterType Id="M-4_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-1" Name="a" ParameterType="M-4_A-1_PT-ip" Value="192.168.1.2">
+             <Property ObjectType="11" PropertyId="205" Offset="0" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-2" Name="b" ParameterType="M-4_A-1_PT-ip" Value="0">
+             <Property ObjectType="11" PropertyId="205" Offset="4" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-3" Name="c" ParameterType="M-4_A-1_PT-u8" Value="7">
+             <Property ObjectIndex="3" PropertyId="204" Offset="0" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" />
+            <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" />
+            <ParameterRef Id="M-4_A-1_P-3_R-3" RefId="M-4_A-1_P-3" Value="9" />
+           </ParameterRefs>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let values = compute_property_values(&app, &config)?;
+        let ip = PropertyObjectRef::Type {
+            object_type: 11,
+            occurrence: 0,
+        };
+        assert_eq!(
+            values.get(&(ip, 205)),
+            Some(&vec![192, 168, 1, 2, 0, 0, 0, 0])
+        );
+        // An unreached parameter takes its ref's vendor default.
+        assert_eq!(
+            values.get(&(PropertyObjectRef::Index(3), 204)),
+            Some(&vec![9])
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_encode_ip_address_takes_a_dotted_quad_or_a_number()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = ApplicationProgram::default();
+        let bytes = |v: &str| match encode_ip_address(&app, "p", Some(v)) {
+            Ok(Placement::Bytes(b)) => Ok(b),
+            _ => Err("not a byte placement".to_string()),
+        };
+        assert_eq!(bytes("10.0.0.1")?, vec![10, 0, 0, 1]);
+        assert_eq!(bytes("3232235521")?, vec![192, 168, 0, 1]);
+        assert!(encode_ip_address(&app, "p", Some("fe80::1")).is_err());
+        Ok(())
+    }
+}

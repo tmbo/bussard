@@ -44,7 +44,7 @@ use bussard_download::{FlashStep, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::{LoadState, WriteError};
 use bussard_model::facts::{AuthorizeVerdict, DeviceFactsRecord};
-use bussard_prod::application::{ApplicationProgram, parse_application_program};
+use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{Inbound, MockDevice, MockGateway, Step, TestResult, Verdict, ia};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination};
 use bussard_transport::knxnet::ServiceType;
@@ -2203,11 +2203,11 @@ async fn test_flash_delay_pauses_before_restart() -> TestResult {
     let ops = &mut app.load_procedures[0].ops;
     let restart = ops
         .iter()
-        .position(|op| matches!(op, bussard_prod::application::LoadOp::Restart))
+        .position(|op| matches!(op, bussard_product::application::LoadOp::Restart))
         .ok_or("the procedure restarts")?;
     ops.insert(
         restart,
-        bussard_prod::application::LoadOp::Delay {
+        bussard_product::application::LoadOp::Delay {
             milliseconds: Some(200),
         },
     );
@@ -5113,7 +5113,7 @@ async fn flash_targets_the_obj_idx_object_not_the_type_object() -> TestResult {
 /// The MV-07B0 `Load/all` master-template op list, verbatim from the real
 /// `knx_master.xml` (parsed so the fixture cannot drift from the parser). This is
 /// the skeleton the DA.tp app's MergeId 2/4 blocks splice into.
-fn master_template_all_ops() -> TestResult<Vec<bussard_prod::LoadOp>> {
+fn master_template_all_ops() -> TestResult<Vec<bussard_product::LoadOp>> {
     let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
      <MaskVersion Id="MV-07B0" Name="System B">
       <Procedures>
@@ -5153,7 +5153,7 @@ fn master_template_all_ops() -> TestResult<Vec<bussard_prod::LoadOp>> {
        </Procedure>
       </Procedures>
      </MaskVersion></KNX>"#;
-    let t = bussard_prod::parse_master_template(xml.as_bytes(), "test")?;
+    let t = bussard_product::parse_master_template(xml.as_bytes(), "test")?;
     Ok(t.full_load_procedure("07B0")
         .ok_or("the template has a 07B0 procedure")?
         .ops
@@ -7196,15 +7196,15 @@ fn test_plan_flash_streams_a_companion_pei_program() -> TestResult {
 
 /// The 07B0 template with an extra `LdCtrlLoadImageProp` for object 4 after
 /// the MergeId 7 marker, to tell template checks apart from the app's own.
-fn master_template_with_image_check() -> TestResult<Vec<bussard_prod::LoadOp>> {
+fn master_template_with_image_check() -> TestResult<Vec<bussard_product::LoadOp>> {
     let mut ops = master_template_all_ops()?;
     let at = ops
         .iter()
-        .position(|op| matches!(op, bussard_prod::LoadOp::Restart))
+        .position(|op| matches!(op, bussard_product::LoadOp::Restart))
         .ok_or("template has no restart")?;
     ops.insert(
         at,
-        bussard_prod::LoadOp::LoadImageProp {
+        bussard_product::LoadOp::LoadImageProp {
             obj_idx: Some(4),
             obj_type: None,
             occurrence: None,
@@ -7234,10 +7234,10 @@ fn image_checks(plan: &bussard_download::FlashPlan) -> Vec<(u32, bool)> {
 #[test]
 fn test_plan_flash_image_checks_follow_the_app_procedure() -> TestResult {
     let mut app = app_da_tp()?;
-    app.load_procedures.push(bussard_prod::LoadProcedure {
+    app.load_procedures.push(bussard_product::LoadProcedure {
         merge_id: Some("7".to_string()),
         ops: (1..=3)
-            .map(|obj| bussard_prod::LoadOp::LoadImageProp {
+            .map(|obj| bussard_product::LoadOp::LoadImageProp {
                 obj_idx: Some(obj),
                 obj_type: None,
                 occurrence: None,
@@ -7245,7 +7245,7 @@ fn test_plan_flash_image_checks_follow_the_app_procedure() -> TestResult {
                 count: None,
             })
             .collect(),
-        ..bussard_prod::LoadProcedure::default()
+        ..bussard_product::LoadProcedure::default()
     });
     let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
     let template = master_template_with_image_check()?;

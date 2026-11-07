@@ -346,7 +346,7 @@ fn test_mcp_show_device_sees_product_data_with_an_empty_models_directory() -> Te
 /// object 2.
 const DEFAULTS_APP_ID: &str = "M-00FA_A-00D2-10-0001";
 const DEFAULTS_APP_XML: &[u8] =
-    include_bytes!("../../../bussard-project/tests/fixtures/default_params.app.xml");
+    include_bytes!("../../../bussard-product/tests/fixtures/default_params.app.xml");
 
 /// Imports a project with device 1.1.9 running [`DEFAULTS_APP_XML`] (no
 /// stored parameter) into `knx`, and pins the extracted archive for it.

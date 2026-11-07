@@ -49,7 +49,7 @@ fn jung_knxprod_path() -> PathBuf {
 #[test]
 fn test_bussard_property_plan_matches_m2_jung_shape() {
     let path = jung_knxprod_path();
-    let Ok(product) = bussard_prod::read_knxprod(&path) else {
+    let Ok(product) = bussard_product::read_knxprod(&path) else {
         eprintln!(
             "SKIP: Jung 3361-1M .knxprod not in the product-corpus cache at {}; \
              run tests-support/product-corpus/fetch.sh to enable this test",
@@ -193,7 +193,7 @@ fn test_bussard_property_plan_matches_m2_jung_shape() {
 #[test]
 fn test_parameters_only_jung_plan_writes_in_place() -> Result<(), Box<dyn std::error::Error>> {
     let path = jung_knxprod_path();
-    let Ok(product) = bussard_prod::read_knxprod(&path) else {
+    let Ok(product) = bussard_product::read_knxprod(&path) else {
         eprintln!("SKIP: Jung 3361-1M .knxprod not in the product-corpus cache");
         return Ok(());
     };

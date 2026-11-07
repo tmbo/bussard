@@ -24,7 +24,7 @@ use bussard_mgmt::{MaskProfile, MgmtError};
 use bussard_model::facts::{AuthorizeVerdict, DeviceFactsRecord};
 use bussard_model::identity::IdentityCheck;
 use bussard_model::{IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::bus::{Authorize, BusService, L4Options, Management};

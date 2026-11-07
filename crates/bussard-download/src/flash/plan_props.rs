@@ -6,16 +6,16 @@
 //!
 //! The value an `LdCtrlWriteProp` writes is its `InlineData` when it carries
 //! one, else the value the program's property-located parameters compose
-//! ([`bussard_prod::compute_property_values`]), as ETS resolves it from the
+//! ([`bussard_product::compute_property_values`]), as ETS resolves it from the
 //! project. A write without `InlineData` on a property no parameter of the
 //! program is stored in reads the property's description and writes nothing,
 //! as ETS does (issue #841). Any other write whose value neither source
 //! supplies is refused; nothing is guessed.
 
 use super::{AppIdentity, FlashPlan, FlashStep, PlanError, PropObject};
-use bussard_prod::application::{ApplicationProgram, LoadGuard, LoadOp, LoadProcedure};
-use bussard_prod::dynamic::{DynamicConfig, WhenTest, taken_branches};
-use bussard_prod::{PropertyObjectRef, PropertyValues};
+use bussard_product::application::{ApplicationProgram, LoadGuard, LoadOp, LoadProcedure};
+use bussard_product::dynamic::{DynamicConfig, WhenTest, taken_branches};
+use bussard_product::{PropertyObjectRef, PropertyValues};
 use std::collections::BTreeMap;
 
 /// The mask whose property-only procedures bussard plans although it does
@@ -328,7 +328,7 @@ pub(super) fn prop_object(
 }
 
 /// The parameter-composed value of the property `object`/`prop_id` names,
-/// from `values` ([`bussard_prod::compute_property_values`]).
+/// from `values` ([`bussard_product::compute_property_values`]).
 fn parameter_value(
     values: &PropertyValues,
     obj_idx: Option<u32>,
@@ -355,7 +355,7 @@ fn parameter_value(
 /// unplaceable: both count as the same object, so the caller refuses rather
 /// than skips.
 pub(super) fn may_hold(
-    loc: &bussard_prod::application::PropertyLocation,
+    loc: &bussard_product::application::PropertyLocation,
     object: PropObject,
     prop_id: u32,
 ) -> bool {
@@ -571,7 +571,7 @@ pub(super) fn plan_flash_properties(
     app: &ApplicationProgram,
     device_mask: u16,
     overrides: &BTreeMap<String, String>,
-    memo: &bussard_prod::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<FlashPlan, PlanError> {
     let app_mask = app
         .mask_version
@@ -582,7 +582,7 @@ pub(super) fn plan_flash_properties(
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
-    let values = bussard_prod::compute_property_values(app, &config).map_err(|e| {
+    let values = bussard_product::compute_property_values(app, &config).map_err(|e| {
         PlanError::UnsupportedWriteProp {
             step: 0,
             reason: format!("composing the property values from the parameters: {e}"),
@@ -635,9 +635,9 @@ pub(super) fn plan_flash_properties(
 mod tests {
     use super::*;
     use crate::flash::test_support::plan_flash_default;
-    use bussard_prod::application::LoadGuard;
-    use bussard_prod::application::parse_application_program;
-    use bussard_prod::dynamic::DynamicMemo;
+    use bussard_product::application::LoadGuard;
+    use bussard_product::application::parse_application_program;
+    use bussard_product::dynamic::DynamicMemo;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -743,7 +743,7 @@ mod tests {
         let app = guarded_app()?;
         let memo = DynamicMemo::new(&app);
         let config = memo.evaluate_for(&app, &BTreeMap::new());
-        let values = bussard_prod::compute_property_values(&app, &config)?;
+        let values = bussard_product::compute_property_values(&app, &config)?;
         let ops = ops_for(&app, "3")?;
         let label = ops
             .iter()
@@ -1039,7 +1039,7 @@ mod tests {
         let mut failures = Vec::new();
         let (mut with_choose, mut nested, mut changed) = (0, 0, 0);
         for path in crate::corpus::knxprod_files(&dir) {
-            let Ok(product) = bussard_prod::read_knxprod(&path) else {
+            let Ok(product) = bussard_product::read_knxprod(&path) else {
                 continue;
             };
             for app in &product.applications {

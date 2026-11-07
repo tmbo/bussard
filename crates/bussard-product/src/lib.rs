@@ -1,0 +1,568 @@
+//! ETS product and project data for bussard (MIT clean-room — never depends
+//! on GPL implementations): the streaming ETS-XML parsers, `.knxprod` reading,
+//! the parameter image, the product cache and `.knxproj` import.
+//!
+//! ETS data is XML packaged in ZIP containers. Application-program files reach
+//! ~28 MB, so parsing is streaming (no DOM is ever built) and every zip read is
+//! capped against zip bombs ([`zip_util`], issue #39).
+//!
+//! # Modules
+//!
+//! * [`application`] — the one streaming ApplicationProgram parser.
+//! * [`hardware`] — the `Hardware.xml` parser, keyed both by
+//!   `Hardware2Program` id (for `.knxproj`) and by order number (for
+//!   `.knxprod`).
+//! * [`attrs`], [`dpt`], [`flags`], [`translation`], [`zip_util`] — the
+//!   shared XML primitives.
+//! * [`dynamic`], [`master`] — Dynamic-section evaluation and the mask
+//!   load-procedure templates.
+//! * [`image`], [`product_model`], [`cache`], [`index`], [`fetch`],
+//!   [`extract`] — the parameter image, the product model cache and the
+//!   product-data catalogue.
+//! * [`import`] — `.knxproj` import into a [`Model`]; [`lock_keys`] derives
+//!   the lock keys of an imported project.
+//!
+//! # Entry points
+//!
+//! * [`read_knxprod`] opens a `.knxprod` file and returns [`ProductData`].
+//! * [`import()`] reads a `.knxproj` into a [`Model`].
+//!
+//! A `.knxprod` is a plain ZIP holding `knx_master.xml`, one or more `M-XXXX/`
+//! manufacturer folders (each with `Hardware.xml`, `Catalog.xml`, and the
+//! ApplicationProgram XML files), and — for ETS-produced files — RSA signature
+//! entries that bussard ignores.
+
+#![warn(missing_docs)]
+
+pub mod application;
+pub mod attrs;
+pub mod cache;
+mod container;
+pub mod dpt;
+pub mod dynamic;
+mod error;
+pub mod extract;
+pub mod fetch;
+pub mod flags;
+pub mod hardware;
+pub mod image;
+pub mod import;
+pub mod index;
+pub mod label;
+pub mod lock_keys;
+pub mod master;
+pub mod product_model;
+mod serde_bits;
+pub mod translation;
+pub mod zip_util;
+
+use std::collections::HashMap;
+use std::path::Path;
+
+pub use application::{
+    ApplicationProgram, BlockRef, ChannelDef, ChannelRef, CodeSegment, ComObject, ComObjectRef,
+    EnumValue, LoadOp, LoadProcedure, Memory, Parameter, ParameterRef, ParameterType,
+    ParameterTypeDecl, ProgramLanguages, ResolvedComObject, ResolvedParameter, SecurityCapacity,
+    SegmentFill, SegmentKind, TableLocation, parse_application_program,
+    parse_application_program_in, program_languages,
+};
+pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom, strip_bom_bytes};
+pub use bussard_model::loader::Model;
+pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE, inner_knxprod_bytes, inner_knxprod_entries};
+pub use dpt::{dpt_from_object_size, parse_ets_dpt};
+pub use error::{ProductError, Result};
+pub use extract::{Extracted, extract_from_project};
+pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, Verified, fetch_entry};
+pub use flags::{FlagSet, parse_flag_value};
+pub use hardware::{Hardware, HardwareCatalog, ProductInfo, parse_hardware};
+pub use image::{
+    ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyParameters, PropertyValues, StaticSlot,
+    canonical_parameter_value, compose_property_value, compute_dynamic_parameter_image,
+    compute_parameter_image, compute_parameter_image_placed, compute_parameter_image_placed_with,
+    compute_property_values, decode_parameter_value, dynamic_parameter_slots, hidden_slot_value,
+    module_argument, resolve_parameter_key, static_parameter_slots, uses_dynamic_image,
+    write_parameter_value,
+};
+pub use import::{ImportOptions, derive_zip_password, import, import_with};
+pub use index::{IndexEntry, ProductIndex, normalize_order_number};
+pub use master::{
+    BUILTIN_TEMPLATE_MASKS, HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate,
+    parse_master_template,
+};
+pub use translation::TranslationCollector;
+pub use zip_util::{
+    CappedReadError, MAX_ENTRY_SIZE, ZipOpenError, open_zip, read_capped, read_capped_with,
+    read_entry_opt, read_to_cap,
+};
+
+/// The parsed contents of a `.knxprod`.
+#[derive(Debug, Default)]
+pub struct ProductData {
+    /// Manufacturer ids present in the archive, e.g. `["M-0004"]`.
+    pub manufacturers: Vec<String>,
+    /// Order number → application-program refs, joined across all manufacturers.
+    pub hardware: HardwareCatalog,
+    /// Every ApplicationProgram in the archive, sorted by id.
+    pub applications: Vec<ApplicationProgram>,
+    /// The mask load-procedure templates: the archive's `knx_master.xml`, with
+    /// bussard's built-in template filled in for every System B mask the
+    /// archive declares none for ([`MasterTemplate::fill_builtin`], issue
+    /// #607). A product without master data (or with a `<KNX/>` stub) still
+    /// plans the full download of a merged application. Always `Some` from
+    /// [`read_knxprod`] and its siblings.
+    pub master: Option<MasterTemplate>,
+    /// Whether the archive is an ETS project export (`.knxproj`) rather than
+    /// vendor product data: it carries a top-level `P-XXXX` project folder or
+    /// `P-XXXX.zip` project archive next to the `M-XXXX/` product folders.
+    pub is_project_export: bool,
+}
+
+impl ProductData {
+    /// Looks up the application programs a given order number maps to, resolving
+    /// each ref to its parsed [`ApplicationProgram`].
+    ///
+    /// Returns them in the order the hardware declared (primary first), skipping
+    /// refs whose application program is not present in the archive.
+    pub fn application_for_order_number(&self, order_number: &str) -> Vec<&ApplicationProgram> {
+        let Some(refs) = self.hardware.order_to_apps.get(order_number) else {
+            return Vec::new();
+        };
+        let by_id: HashMap<&str, &ApplicationProgram> = self
+            .applications
+            .iter()
+            .map(|a| (a.id.as_str(), a))
+            .collect();
+        refs.iter()
+            .filter_map(|r| by_id.get(r.as_str()).copied())
+            .collect()
+    }
+
+    /// The application program with the given id, if present.
+    pub fn application_by_id(&self, id: &str) -> Option<&ApplicationProgram> {
+        self.applications.iter().find(|a| a.id == id)
+    }
+}
+
+/// Reads a `.knxprod` file into [`ProductData`].
+///
+/// Streams every ApplicationProgram XML with bounded memory. Signature entries
+/// and binary baggage are ignored. Errors if the archive cannot be opened or an
+/// application-program XML is malformed.
+///
+/// # ZIP-served wrappers
+///
+/// Many vendors ship their product data as a ZIP that *contains* a `.knxprod`
+/// (a `.knxprod` is itself a ZIP, so a wrapper otherwise looks like a `.knxprod`
+/// with the wrong entries). This transparently unwraps exactly one level: a file
+/// with no `M-XXXX/` manufacturer folders but a single inner `*.knxprod` entry
+/// is read through to that inner file. A wrapper holding several inner
+/// `.knxprod`s errors with the list ([`ProductError::AmbiguousWrapper`]); use
+/// [`read_knxprod_inner`] to pick one. A doubly wrapped archive is rejected
+/// ([`ProductError::NestedWrapper`]), and the inner payload is size-capped
+/// ([`MAX_INNER_KNXPROD_SIZE`]) against zip bombs.
+pub fn read_knxprod(path: &Path) -> Result<ProductData> {
+    read_product(container::Container::open(path)?)
+}
+
+/// Reads a `.knxprod`, selecting a specific inner `.knxprod` when `path` is a
+/// ZIP-served wrapper holding several (see [`read_knxprod`] for the wrapper
+/// rules).
+///
+/// `inner` matches an inner entry by its full entry name or bare file name; it
+/// is ignored for a plain `.knxprod` or a single-inner wrapper.
+pub fn read_knxprod_inner(path: &Path, inner: Option<&str>) -> Result<ProductData> {
+    read_product(container::Container::open_with_inner(path, inner)?)
+}
+
+/// Attaches to every application the `PeiProgram`s its `Hardware2Program`
+/// lists next to it (see [`ApplicationProgram::companion_programs`]).
+///
+/// The ABB BE/S16.230.3.2 pairs `A-A0ED-10` (object 4) with the PEI program
+/// `A-A0ED-20` (object 5, 75,662 octets); ETS downloads both in one session.
+fn attach_companion_programs(hardware: &HardwareCatalog, applications: &mut [ApplicationProgram]) {
+    let peis: HashMap<String, ApplicationProgram> = applications
+        .iter()
+        .filter(|a| a.is_pei_program())
+        .map(|a| (a.id.clone(), a.clone()))
+        .collect();
+    if peis.is_empty() {
+        return;
+    }
+    let mut groups: Vec<&Vec<String>> = hardware.hardware2program.values().collect();
+    groups.sort();
+    for app in applications.iter_mut().filter(|a| !a.is_pei_program()) {
+        for group in groups.iter().filter(|g| g.contains(&app.id)) {
+            for id in group.iter() {
+                let known = app.companion_programs.iter().any(|c| &c.id == id);
+                if let (Some(pei), false) = (peis.get(id), known) {
+                    app.companion_programs.push(pei.clone());
+                }
+            }
+        }
+    }
+}
+
+/// Reads product data from an already-opened (and already-unwrapped) container.
+fn read_product(mut container: container::Container) -> Result<ProductData> {
+    let catalog = read_catalog(&mut container)?;
+    let ids = catalog.application_ids.clone();
+    let mut source = Source {
+        path: Path::new(""),
+        inner: None,
+        opened: Some(container),
+    };
+    assemble(
+        &mut source,
+        None,
+        catalog,
+        &ids,
+        crate::translation::DEFAULT_LANGUAGE,
+    )
+}
+
+/// The archive's table of contents: everything [`read_knxprod_selected`]
+/// needs to choose an application program, read without parsing any.
+///
+/// The application ids come from the entry names
+/// (`M-XXXX/M-XXXX_A-….xml`), the hardware catalogue from every
+/// `Hardware.xml`. The master template rides along so a cached catalogue
+/// spares the `knx_master.xml` parse too.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ProductCatalog {
+    /// Manufacturer ids present in the archive, e.g. `["M-0004"]`.
+    pub manufacturers: Vec<String>,
+    /// Order number → application-program refs, joined across all manufacturers.
+    pub hardware: HardwareCatalog,
+    /// Every ApplicationProgram id in the archive, sorted.
+    pub application_ids: Vec<String>,
+    /// The parsed `knx_master.xml`, when the archive carries one.
+    pub master: Option<MasterTemplate>,
+    /// Whether the archive is an ETS project export (see
+    /// [`ProductData::is_project_export`]).
+    pub is_project_export: bool,
+}
+
+/// Which application programs [`read_knxprod_selected`] parses.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppSelection {
+    /// Every program in the archive: the behaviour of [`read_knxprod`].
+    All,
+    /// Only these ids (plus the programs their `Hardware2Program` lists next
+    /// to them, see [`ApplicationProgram::companion_programs`]). Ids the
+    /// archive does not hold are ignored; when none is held, every program is
+    /// parsed, so a selection that misses reads exactly like [`read_knxprod`].
+    Only(Vec<String>),
+    /// Exactly these ids (plus their companion candidates), with no
+    /// fallback: ids the archive does not hold are skipped, and an empty list
+    /// parses no program at all (the catalogue alone, e.g. to match an order
+    /// number against a vendor cache).
+    Exact(Vec<String>),
+}
+
+/// Reads the manufacturer list of the `knx_master.xml` in the archive at
+/// `path` (a `.knxprod`, an archive extracted from an export, or a `.knxproj`):
+/// ETS reference (`M-0004`) to name. Empty when the archive carries no master
+/// file (issue #788).
+///
+/// # Errors
+///
+/// The archive does not open or its master file does not parse.
+pub fn read_manufacturer_names(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut container = container::Container::open(path)?;
+    match container.master_xml()? {
+        Some(xml) => Ok(crate::master::parse_manufacturer_names(
+            xml.as_bytes(),
+            "knx_master.xml",
+        )?),
+        None => Ok(std::collections::BTreeMap::new()),
+    }
+}
+
+/// Reads a `.knxprod` (or a `.knxproj` project export) but parses only the
+/// application programs `select` picks from the archive's [`ProductCatalog`]
+/// (issue #214).
+///
+/// A `.knxproj` carries the program of every device in the project and a
+/// multi-application `.knxprod` a whole product family; a flash or a
+/// read-back needs one. `select` sees the application ids (from the entry
+/// names) and the hardware catalogue, so a selection by `--application` or by
+/// order number costs no program parse. Each parsed program is byte-identical
+/// to what [`read_knxprod`] returns for it: the same entry through the same
+/// parser, and its companion programs attached the same way. The returned
+/// [`ProductData::applications`] holds the selection only.
+///
+/// `cache`, when given, is the parsed-product cache directory (see
+/// [`cache`]): the catalogue and every parsed program are stored there keyed
+/// by the archive's SHA-256, and read back instead of parsed while the archive
+/// and the bussard build are unchanged. A cache that cannot be read or written
+/// is skipped, never an error.
+///
+/// `inner` selects the inner `.knxprod` of a ZIP-served wrapper, as for
+/// [`read_knxprod_inner`].
+///
+/// # Errors
+///
+/// As [`read_knxprod`].
+pub fn read_knxprod_selected(
+    path: &Path,
+    inner: Option<&str>,
+    cache: Option<&Path>,
+    select: impl FnOnce(&ProductCatalog) -> AppSelection,
+) -> Result<ProductData> {
+    read_knxprod_selected_in(path, inner, cache, None, select)
+}
+
+/// [`read_knxprod_selected`] with the programs' texts in `language` (an ETS
+/// identifier such as `de-DE`, the `language` a model's `bussard.lock`
+/// records), as [`crate::application::parse_application_program_in`]
+/// parses them. `None` parses in the default language (en-US).
+///
+/// The texts include the enumeration labels, so a device file that names an
+/// enum member by its label in the lock's language resolves when the
+/// parameter image is computed from this product, and a refused label is
+/// reported with the labels in that language.
+///
+/// # Errors
+///
+/// As [`read_knxprod`].
+pub fn read_knxprod_selected_in(
+    path: &Path,
+    inner: Option<&str>,
+    cache: Option<&Path>,
+    language: Option<&str>,
+    select: impl FnOnce(&ProductCatalog) -> AppSelection,
+) -> Result<ProductData> {
+    let language = language.unwrap_or(crate::translation::DEFAULT_LANGUAGE);
+    let store = cache.and_then(|dir| cache::Store::open(dir, path, inner));
+    let mut source = Source::closed(path, inner);
+    let catalog = match store.as_ref().and_then(cache::Store::catalog) {
+        Some(catalog) => catalog,
+        None => {
+            let catalog = read_catalog(source.container()?)?;
+            if let Some(store) = &store {
+                store.put_catalog(&catalog);
+            }
+            catalog
+        }
+    };
+    let ids = match select(&catalog) {
+        AppSelection::All => catalog.application_ids.clone(),
+        AppSelection::Only(wanted) => {
+            let held: Vec<String> = wanted
+                .into_iter()
+                .filter(|id| catalog.application_ids.contains(id))
+                .collect();
+            if held.is_empty() {
+                catalog.application_ids.clone()
+            } else {
+                with_companion_candidates(&catalog, held)
+            }
+        }
+        AppSelection::Exact(wanted) => {
+            let held: Vec<String> = wanted
+                .into_iter()
+                .filter(|id| catalog.application_ids.contains(id))
+                .collect();
+            with_companion_candidates(&catalog, held)
+        }
+    };
+    assemble(&mut source, store.as_ref(), catalog, &ids, language)
+}
+
+/// `ids` plus every program a `Hardware2Program` lists next to one of them,
+/// in the catalogue's (sorted) order: the candidates
+/// [`attach_companion_programs`] may attach.
+fn with_companion_candidates(catalog: &ProductCatalog, ids: Vec<String>) -> Vec<String> {
+    let mut wanted: std::collections::BTreeSet<String> = ids.into_iter().collect();
+    let groups: Vec<&Vec<String>> = catalog
+        .hardware
+        .hardware2program
+        .values()
+        .filter(|g| g.iter().any(|id| wanted.contains(id)))
+        .collect();
+    for group in groups {
+        wanted.extend(group.iter().cloned());
+    }
+    catalog
+        .application_ids
+        .iter()
+        .filter(|id| wanted.contains(*id))
+        .cloned()
+        .collect()
+}
+
+/// The archive, opened on first use: a fully cached read never inflates it.
+struct Source<'a> {
+    /// The archive path.
+    path: &'a Path,
+    /// The inner `.knxprod` of a wrapper.
+    inner: Option<&'a str>,
+    /// The container once opened.
+    opened: Option<container::Container>,
+}
+
+impl<'a> Source<'a> {
+    /// A source not opened yet.
+    fn closed(path: &'a Path, inner: Option<&'a str>) -> Self {
+        Source {
+            path,
+            inner,
+            opened: None,
+        }
+    }
+
+    /// The opened container.
+    fn container(&mut self) -> Result<&mut container::Container> {
+        match &mut self.opened {
+            Some(container) => Ok(container),
+            slot @ None => Ok(slot.insert(container::Container::open_with_inner(
+                self.path, self.inner,
+            )?)),
+        }
+    }
+}
+
+/// Reads the catalogue: manufacturers, every `Hardware.xml`, the application
+/// ids and the master template. No ApplicationProgram is parsed.
+fn read_catalog(container: &mut container::Container) -> Result<ProductCatalog> {
+    let manufacturers = container.manufacturer_ids();
+    let is_project_export = container.has_project_folder();
+
+    // Join every manufacturer's Hardware.xml into one order-number catalogue.
+    let mut hardware = HardwareCatalog::default();
+    for m in &manufacturers {
+        if let Some(xml) = container.hardware_xml(m)? {
+            hardware.extend(hardware::parse_hardware(&xml)?);
+        }
+    }
+    let mut application_ids: Vec<String> = container
+        .application_entries()
+        .into_iter()
+        .map(|e| e.application_id)
+        .collect();
+    application_ids.sort();
+
+    // The master template is optional; a `.knxprod` without `knx_master.xml`
+    // (or produced without one) parses fine and stays on the single-object path.
+    let master = container
+        .master_xml()?
+        .map(|xml| parse_master_template(xml.as_bytes(), "knx_master.xml"))
+        .transpose()?;
+    Ok(ProductCatalog {
+        manufacturers,
+        hardware,
+        application_ids,
+        master,
+        is_project_export,
+    })
+}
+
+/// Parses (or reads from the cache) the programs `ids` with their texts in
+/// `language`, attaches companions and assembles the [`ProductData`].
+fn assemble(
+    source: &mut Source<'_>,
+    store: Option<&cache::Store>,
+    catalog: ProductCatalog,
+    ids: &[String],
+    language: &str,
+) -> Result<ProductData> {
+    let mut applications = Vec::with_capacity(ids.len());
+    let mut entries: Option<Vec<AppEntry>> = None;
+    for id in ids {
+        if let Some(app) = store.and_then(|s| s.application(id, language)) {
+            applications.push(app);
+            continue;
+        }
+        let container = source.container()?;
+        let entries = entries.get_or_insert_with(|| container.application_entries());
+        // Parse each ApplicationProgram, one at a time (bounded memory).
+        for entry in entries.iter().filter(|e| &e.application_id == id) {
+            // Raw bytes straight from the inflater: no `String` copy of the
+            // (up to ~28 MB) entry; the parser decodes UTF-8 event by event.
+            let xml = container.read_raw(&entry.entry)?;
+            let app = crate::application::parse_application_program_in(
+                &entry.application_id,
+                &xml,
+                language,
+            )?;
+            if let Some(store) = store {
+                store.put_application(id, language, &app);
+            }
+            applications.push(app);
+        }
+    }
+    applications.sort_by(|a, b| a.id.cmp(&b.id));
+    attach_companion_programs(&catalog.hardware, &mut applications);
+    Ok(ProductData {
+        manufacturers: catalog.manufacturers,
+        hardware: catalog.hardware,
+        applications,
+        master: Some(with_builtin_templates(catalog.master)),
+        is_project_export: catalog.is_project_export,
+    })
+}
+
+/// The archive's master template with the built-in mask templates filled in
+/// where it declares none (issue #607). The one place a product's templates
+/// are attached, so `flash`, `plan` and the MCP tools all see the same ones.
+/// An archive's own template for a mask always wins.
+fn with_builtin_templates(master: Option<MasterTemplate>) -> MasterTemplate {
+    let from_archive = master.is_some();
+    let mut master = master.unwrap_or_default();
+    let filled = master.fill_builtin();
+    if !filled.is_empty() {
+        tracing::debug!(
+            masks = ?filled,
+            from_archive,
+            "using the built-in load-procedure template for masks the product's knx_master.xml does not declare"
+        );
+    }
+    master
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn program(id: &str, program_type: Option<&str>) -> ApplicationProgram {
+        ApplicationProgram {
+            id: id.to_string(),
+            program_type: program_type.map(str::to_string),
+            ..ApplicationProgram::default()
+        }
+    }
+
+    /// Issue #126, ABB BE/S16.230.3.2: the `Hardware2Program` that lists
+    /// `A-A0ED-10` also lists the PEI program `A-A0ED-20`, which the
+    /// application then carries; an application of another hardware does not.
+    #[test]
+    fn test_attach_companion_programs_pairs_the_pei_program() {
+        let mut hardware = HardwareCatalog::default();
+        hardware.hardware2program.insert(
+            "M-0002_H-1_HP-1".to_string(),
+            vec![
+                "M-0002_A-A0ED-10".to_string(),
+                "M-0002_A-A0ED-20".to_string(),
+            ],
+        );
+        hardware.hardware2program.insert(
+            "M-0002_H-2_HP-2".to_string(),
+            vec!["M-0002_A-1111-10".to_string()],
+        );
+        let mut apps = vec![
+            program("M-0002_A-1111-10", None),
+            program("M-0002_A-A0ED-10", None),
+            program("M-0002_A-A0ED-20", Some("PeiProgram")),
+        ];
+        attach_companion_programs(&hardware, &mut apps);
+        let ids = |a: &ApplicationProgram| -> Vec<String> {
+            a.companion_programs.iter().map(|c| c.id.clone()).collect()
+        };
+        assert!(ids(&apps[0]).is_empty());
+        assert_eq!(ids(&apps[1]), vec!["M-0002_A-A0ED-20".to_string()]);
+        assert!(
+            ids(&apps[2]).is_empty(),
+            "a PEI program carries no companion"
+        );
+    }
+}

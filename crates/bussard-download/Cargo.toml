@@ -9,7 +9,7 @@ license.workspace = true
 
 [dependencies]
 bussard-model = { workspace = true }
-bussard-prod = { path = "../bussard-prod" }
+bussard-product = { workspace = true }
 bussard-mgmt = { path = "../bussard-mgmt" }
 bussard-transport = { workspace = true }
 # Group keys for the KNX Data Secure security-object program (issue #156),

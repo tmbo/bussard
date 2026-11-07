@@ -18,8 +18,8 @@ use crate::support::plan_flash_default;
 fn test_plan_flash_vendor_enum_default_no_longer_refused() -> Result<(), Box<dyn std::error::Error>>
 {
     let xml =
-        include_bytes!("../../../bussard-prod/tests/fixtures/enum_default_not_a_member.app.xml");
-    let app = bussard_prod::parse_application_program("M-00FA_A-0006-11-ABCD-O000A", xml)?;
+        include_bytes!("../../../bussard-product/tests/fixtures/enum_default_not_a_member.app.xml");
+    let app = bussard_product::parse_application_program("M-00FA_A-0006-11-ABCD-O000A", xml)?;
 
     plan_flash_default(
         &app,

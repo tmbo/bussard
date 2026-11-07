@@ -29,8 +29,8 @@
 
 use super::plan_props::{may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
-use bussard_prod::application::{ApplicationProgram, LoadOp};
-use bussard_prod::{PropertyObjectRef, PropertyParameters};
+use bussard_product::application::{ApplicationProgram, LoadOp};
+use bussard_product::{PropertyObjectRef, PropertyParameters};
 
 /// The highest element index the plain property services address (a 12-bit
 /// start index).
@@ -386,7 +386,7 @@ mod tests {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
          <ApplicationProgram Id="M-1_A-1" ApplicationNumber="1" ApplicationVersion="1"
             MaskVersion="MV-07B0" Name="D"><Static /></ApplicationProgram></KNX>"#;
-        Ok(bussard_prod::application::parse_application_program(
+        Ok(bussard_product::application::parse_application_program(
             "M-1_A-1",
             xml.as_bytes(),
         )?)
@@ -491,7 +491,7 @@ mod tests {
            </Parameters>
           </Static>
          </ApplicationProgram></KNX>"#;
-        Ok(bussard_prod::application::parse_application_program(
+        Ok(bussard_product::application::parse_application_program(
             "M-1_A-1",
             xml.as_bytes(),
         )?)
@@ -707,8 +707,10 @@ mod tests {
     }
 
     /// The evaluated configuration of `app` with no overrides.
-    fn config_of(app: &ApplicationProgram) -> std::sync::Arc<bussard_prod::dynamic::DynamicConfig> {
-        bussard_prod::dynamic::DynamicMemo::new(app)
+    fn config_of(
+        app: &ApplicationProgram,
+    ) -> std::sync::Arc<bussard_product::dynamic::DynamicConfig> {
+        bussard_product::dynamic::DynamicMemo::new(app)
             .evaluate_for(app, &std::collections::BTreeMap::new())
     }
 
@@ -747,7 +749,8 @@ mod tests {
            </Parameters>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = bussard_prod::application::parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let app =
+            bussard_product::application::parse_application_program("M-1_A-1", xml.as_bytes())?;
         let config = config_of(&app);
         let values = PropertyParameters::resolve(&app, &config);
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;

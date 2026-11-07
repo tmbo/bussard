@@ -60,7 +60,7 @@
 //!   in ETS or in bussard. No answer: the reboot poll decides.
 
 use bussard_mgmt::MaskProfile;
-use bussard_prod::ApplicationProgram;
+use bussard_product::ApplicationProgram;
 
 /// The form of the restart ETS sends a device (see the module docs).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

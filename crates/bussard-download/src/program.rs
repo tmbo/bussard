@@ -165,7 +165,7 @@ pub(crate) fn desired_tables_for(
 pub fn desired_tables_for_app(
     model: &Model,
     target: IndividualAddress,
-    app: Option<&bussard_prod::ApplicationProgram>,
+    app: Option<&bussard_product::ApplicationProgram>,
 ) -> Result<DesiredTables, NoLinks> {
     match desired_tables_for(model, target) {
         Err(NoLinks(_)) if app.is_some_and(has_no_group_objects) => Ok(compute_tables(&[])),
@@ -174,7 +174,7 @@ pub fn desired_tables_for_app(
 }
 
 /// Whether `app` declares no group object at all.
-pub fn has_no_group_objects(app: &bussard_prod::ApplicationProgram) -> bool {
+pub fn has_no_group_objects(app: &bussard_product::ApplicationProgram) -> bool {
     app.com_objects.is_empty() && app.resolved_com_objects().is_empty()
 }
 

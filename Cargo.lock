@@ -279,7 +279,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
- "bussard-prod",
+ "bussard-product",
  "bussard-project",
  "bussard-secure",
  "bussard-service",
@@ -307,7 +307,7 @@ version = "0.10.0"
 dependencies = [
  "bussard-mgmt",
  "bussard-model",
- "bussard-prod",
+ "bussard-product",
  "bussard-secure",
  "bussard-testkit",
  "bussard-transport",
@@ -318,18 +318,6 @@ dependencies = [
  "thiserror",
  "tokio",
  "tracing",
- "zip",
-]
-
-[[package]]
-name = "bussard-ets"
-version = "0.10.0"
-dependencies = [
- "base64 0.22.1",
- "bussard-model",
- "quick-xml",
- "serde",
- "thiserror",
  "zip",
 ]
 
@@ -359,7 +347,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
- "bussard-prod",
+ "bussard-product",
  "bussard-project",
  "bussard-secure",
  "bussard-service",
@@ -431,29 +419,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "bussard-prod"
-version = "0.10.0"
-dependencies = [
- "base64 0.22.1",
- "bussard-ets",
- "bussard-model",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tracing",
- "ureq",
- "zip",
-]
-
-[[package]]
-name = "bussard-project"
+name = "bussard-product"
 version = "0.10.0"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
- "bussard-ets",
  "bussard-model",
  "bussard-secure",
  "quick-xml",
@@ -464,8 +434,26 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tracing",
+ "ureq",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "bussard-project"
+version = "0.10.0"
+dependencies = [
+ "base64 0.22.1",
+ "bussard-model",
+ "bussard-product",
+ "bussard-secure",
+ "quick-xml",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror",
+ "tracing",
+ "zeroize",
 ]
 
 [[package]]
@@ -496,7 +484,7 @@ dependencies = [
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
- "bussard-prod",
+ "bussard-product",
  "bussard-project",
  "bussard-secure",
  "bussard-testkit",

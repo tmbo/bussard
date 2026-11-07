@@ -25,7 +25,7 @@ use bussard_download::{
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::schema::{Link, Links};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
-use bussard_prod::application::{ApplicationProgram, parse_application_program};
+use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{BoxError, MockDevice, MockGateway, TestResult};
 use bussard_transport::{ConnectionConfig, Transport};
 
@@ -136,7 +136,7 @@ fn flash_plan(app: &ApplicationProgram, model: &Model) -> TestResult<FlashPlan> 
         target()?,
         app,
         &overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     Ok(plan_flash_default(
         app,

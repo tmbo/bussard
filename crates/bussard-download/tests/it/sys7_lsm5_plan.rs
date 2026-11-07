@@ -64,7 +64,7 @@ fn plan_synthetic(
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join(format!("{product}.knxprod"));
     zip_synthetic(product, &path)?;
-    let product_data = bussard_prod::read_knxprod(&path)?;
+    let product_data = bussard_product::read_knxprod(&path)?;
     let app = product_data
         .application_by_id(app_id)
         .ok_or_else(|| format!("the {product} application"))?;

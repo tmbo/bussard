@@ -26,7 +26,7 @@ use bussard_download::{
     FlashPlan, FlashStep, allocation_change, decode_parameters, planned_parameter_regions,
     regions_memory,
 };
-use bussard_prod::ProductData;
+use bussard_product::ProductData;
 use zip::write::SimpleFileOptions;
 
 use crate::support::plan_flash_default;
@@ -73,7 +73,7 @@ fn synthetic(dir: &Path, name: &str) -> Result<ProductData, Box<dyn std::error::
         zip.write_all(&std::fs::read(&path)?)?;
     }
     zip.finish()?;
-    Ok(bussard_prod::read_knxprod(&out)?)
+    Ok(bussard_product::read_knxprod(&out)?)
 }
 
 /// The full download plan of the product under `overrides`.
@@ -150,7 +150,7 @@ fn test_plan_flash_sys7_split_segment_writes_the_two_parts() -> TestResult {
     );
     // The read-back and the plan locate the same gap without a plan at hand.
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
     // A device that holds something else in the gap: `delay` is reported as
     // kept with the device's value, never as a difference.
@@ -163,7 +163,7 @@ fn test_plan_flash_sys7_split_segment_writes_the_two_parts() -> TestResult {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &current,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
     let names: Vec<String> = decoded.kept.iter().map(|k| k.kept_line()).collect();
@@ -189,7 +189,7 @@ fn test_plan_flash_sys7_split_segment_other_branch_allocates_the_whole_segment()
         "delay is written with the whole segment"
     );
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     assert!(kept_octets(app, &overrides, &memo).is_empty());
     Ok(())
 }
@@ -202,7 +202,7 @@ fn test_allocation_change_names_a_new_layout() -> TestResult {
     let tmp = tempfile::tempdir()?;
     let product = product(tmp.path())?;
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     let split = BTreeMap::from([(MODE.to_string(), "1".to_string())]);
     let whole = BTreeMap::from([(MODE.to_string(), "2".to_string())]);
     let why = allocation_change(app, &split, &whole, &memo).ok_or("a layout change")?;
@@ -267,7 +267,7 @@ fn test_plan_flash_sys7_static_split_keeps_the_gap() -> TestResult {
         "no kept octet counts as placed"
     );
     let app = product.applications.first().ok_or("one application")?;
-    let memo = bussard_prod::dynamic::DynamicMemo::new(app);
+    let memo = bussard_product::dynamic::DynamicMemo::new(app);
     assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
     // A changed `delay` is reported as kept, never as a difference.
     let mut current = regions_memory(&planned_parameter_regions(&plan));
@@ -281,7 +281,7 @@ fn test_plan_flash_sys7_static_split_keeps_the_gap() -> TestResult {
         &BTreeMap::new(),
         &BTreeMap::new(),
         &current,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     assert!(decoded.differences.is_empty(), "{:?}", decoded.differences);
     assert_eq!(decoded.kept.len(), 1, "{:?}", decoded.kept);

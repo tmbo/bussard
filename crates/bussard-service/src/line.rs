@@ -866,7 +866,7 @@ async fn read_device_and_object_table(
                             Some(model),
                             target,
                             live.tables().mask,
-                            &bussard_prod::dynamic::DynamicMemo::new(app),
+                            &bussard_product::dynamic::DynamicMemo::new(app),
                         )
                     }) {
                         Some(Ok(plan)) => bussard_download::check_object_table(l4, &plan).await,

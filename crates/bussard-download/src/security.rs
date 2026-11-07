@@ -379,7 +379,7 @@ pub struct TableCapacity {
 
 impl TableCapacity {
     /// The capacities the application's product data declares.
-    pub fn from_product(capacity: &bussard_prod::SecurityCapacity) -> Self {
+    pub fn from_product(capacity: &bussard_product::SecurityCapacity) -> Self {
         let product = |entries: Option<u32>| {
             entries.map(|entries| Capacity {
                 entries,
@@ -394,7 +394,7 @@ impl TableCapacity {
 
     /// The capacities a product model carries (`data_secure:`, format 9).
     pub fn from_model(capacity: &bussard_model::param_model::DataSecureCapacity) -> Self {
-        Self::from_product(&bussard_prod::SecurityCapacity {
+        Self::from_product(&bussard_product::SecurityCapacity {
             group_key_table_entries: capacity.group_key_table_entries,
             individual_address_entries: capacity.individual_address_entries,
             p2p_key_table_entries: capacity.p2p_key_table_entries,
@@ -416,7 +416,7 @@ impl TableCapacity {
             return Self::default();
         };
         // A pinned archive whose model is missing or outdated gets it now.
-        bussard_prod::product_model::complete_models(dir, Some(&app));
+        bussard_product::product_model::complete_models(dir, Some(&app));
         bussard_model::param_model::ProductModels::load_apps(dir, [app.as_str()])
             .get(&app)
             .and_then(|p| p.data_secure.as_ref())
@@ -1258,7 +1258,7 @@ mod tests {
             inputs.group_keys.insert(*a, Key16::new([0x11; 16]));
         }
         check_planned_capacity(device, &addresses, &inputs)?;
-        inputs.capacity = TableCapacity::from_product(&bussard_prod::SecurityCapacity {
+        inputs.capacity = TableCapacity::from_product(&bussard_product::SecurityCapacity {
             group_key_table_entries: Some(1),
             individual_address_entries: Some(5000),
             p2p_key_table_entries: None,

@@ -7,13 +7,13 @@
 //! An ETS project export (`.knxproj`) also carries the product data of every
 //! device in the project. Each application program is extracted from it once
 //! into its own archive under `products/` (`<application-id>.knxprod`, see
-//! [`bussard_prod::extract_from_project`]); the export itself is never
+//! [`bussard_product::extract_from_project`]); the export itself is never
 //! copied.
 
 use std::path::{Path, PathBuf};
 
 use bussard_model::schema::ProductOrigin;
-use bussard_prod::{DownloadConsent, ProductData};
+use bussard_product::{DownloadConsent, ProductData};
 
 use crate::observer::{Answer, Ask, ProgressSink, Prompt, Question};
 use crate::setup::products::{self as store, PRODUCTS_DIR};
@@ -75,7 +75,7 @@ pub fn prepare(dir: &Path, out: &mut dyn ProgressSink) {
             crate::util::chain(&err)
         ));
     }
-    if bussard_prod::product_model::models_incomplete(dir) {
+    if bussard_product::product_model::models_incomplete(dir) {
         store::complete_models(dir, None, out);
     }
 }
@@ -105,7 +105,7 @@ fn migrate_vendor(dir: &Path, out: &mut dyn ProgressSink) -> Result<(), SetupErr
             old.display(),
             moved.display()
         ));
-        let product = bussard_prod::read_knxprod(&moved)
+        let product = bussard_product::read_knxprod(&moved)
             .ctx(|| format!("reading product data from {}", moved.display()))?;
         let (sha, _) = bussard_model::sha256_file(&moved).map_err(SetupError::source)?;
         let known = index.as_ref().and_then(|i| {
@@ -259,10 +259,10 @@ pub fn import_product_order(
     out.say("Downloading…");
     let verified = store::fetch(entry, DownloadConsent::granted())?;
     match &verified {
-        bussard_prod::Verified::Download(bytes) => {
+        bussard_product::Verified::Download(bytes) => {
             out.say(&format!("Downloaded and verified {} bytes.", bytes.len()));
         }
-        bussard_prod::Verified::Inner { name, bytes } => out.say(&format!(
+        bussard_product::Verified::Inner { name, bytes } => out.say(&format!(
             "Downloaded a ZIP of several products; verified {name} ({} bytes) inside it.",
             bytes.len()
         )),

@@ -14,7 +14,7 @@
 
 use std::collections::BTreeMap;
 
-use bussard_prod::{compute_parameter_image, parse_application_program};
+use bussard_product::{compute_parameter_image, parse_application_program};
 
 /// Computes the single-segment image for a fabricated fixture app and returns it.
 fn fixture_image(file: &str, id: &str, seg: &str) -> Vec<u8> {

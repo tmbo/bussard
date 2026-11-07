@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
 use bussard_model::schema::{ProductEntry, ProductOrigin};
-use bussard_prod::{DownloadConsent, ProductData, ProductIndex, normalize_order_number};
+use bussard_product::{DownloadConsent, ProductData, ProductIndex, normalize_order_number};
 
 use super::{Context as _, SetupError};
 use crate::observer::{Answer, Ask, ProgressSink, Prompt, Question};
@@ -94,7 +94,7 @@ pub fn store_bytes(dir: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, Setu
 /// does not read is logged and skipped. The archive itself is checked by the
 /// command that stores or reads it.
 pub fn record_manufacturers(dir: &Path, archive: &Path) {
-    let names = match bussard_prod::read_manufacturer_names(archive) {
+    let names = match bussard_product::read_manufacturer_names(archive) {
         Ok(names) => names,
         Err(err) => {
             tracing::warn!(
@@ -128,17 +128,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
 ///
 /// The download or the verification failed.
 pub fn fetch(
-    entry: &bussard_prod::IndexEntry,
+    entry: &bussard_product::IndexEntry,
     consent: DownloadConsent,
-) -> Result<bussard_prod::Verified, SetupError> {
+) -> Result<bussard_product::Verified, SetupError> {
     match entry.url.strip_prefix("file://") {
         Some(local) => {
             let bytes = std::fs::read(local).ctx(|| format!("reading {}", entry.url))?;
-            bussard_prod::fetch::verify(entry, bytes).map_err(SetupError::source)
+            bussard_product::fetch::verify(entry, bytes).map_err(SetupError::source)
         }
-        None => {
-            bussard_prod::fetch_entry(entry, consent).ctx(|| format!("downloading {}", entry.url))
-        }
+        None => bussard_product::fetch_entry(entry, consent)
+            .ctx(|| format!("downloading {}", entry.url)),
     }
 }
 
@@ -149,7 +148,7 @@ pub fn fetch(
 ///
 /// The download, the verification or the store failed.
 pub fn fetch_to_store(
-    entry: &bussard_prod::IndexEntry,
+    entry: &bussard_product::IndexEntry,
     dir: &Path,
     consent: DownloadConsent,
 ) -> Result<PathBuf, SetupError> {
@@ -159,25 +158,26 @@ pub fn fetch_to_store(
 /// Stores a verified download under `<dir>/products/` and returns the path.
 ///
 /// An entry that names an inner `.knxprod` of a ZIP-served download
-/// ([`bussard_prod::IndexEntry::inner`]) stores that file under its own name
+/// ([`bussard_product::IndexEntry::inner`]) stores that file under its own name
 /// instead of the wrapper: the download's SHA-256 covers it, and the store
 /// then holds a plain archive every later command reads without a selection.
 /// A download verified by one of its inner `.knxprod` files
-/// ([`bussard_prod::Verified::Inner`], a bundle of several products, #711) is
+/// ([`bussard_product::Verified::Inner`], a bundle of several products, #711) is
 /// stored the same way, as that inner file under its own name.
 pub fn store_download(
-    entry: &bussard_prod::IndexEntry,
+    entry: &bussard_product::IndexEntry,
     dir: &Path,
-    verified: bussard_prod::Verified,
+    verified: bussard_product::Verified,
 ) -> Result<PathBuf, SetupError> {
     let (name, inner) = match verified {
-        bussard_prod::Verified::Inner { name, bytes } => (name, bytes),
-        bussard_prod::Verified::Download(bytes) => {
+        bussard_product::Verified::Inner { name, bytes } => (name, bytes),
+        bussard_product::Verified::Download(bytes) => {
             let Some(name) = &entry.inner else {
                 return store_bytes(dir, &entry.filename, &bytes);
             };
-            let inner = bussard_prod::inner_knxprod_bytes(&bytes, name, Path::new(&entry.filename))
-                .ctx(|| format!("extracting {name} from {}", entry.filename))?;
+            let inner =
+                bussard_product::inner_knxprod_bytes(&bytes, name, Path::new(&entry.filename))
+                    .ctx(|| format!("extracting {name} from {}", entry.filename))?;
             (name.clone(), inner)
         }
     };
@@ -232,20 +232,20 @@ pub fn read_in_model_language(
     inner: Option<&str>,
 ) -> Result<ProductData, SetupError> {
     let language = crate::params::model_language(None, dir);
-    bussard_prod::read_knxprod_selected_in(file, inner, None, language.as_deref(), |_| {
-        bussard_prod::AppSelection::All
+    bussard_product::read_knxprod_selected_in(file, inner, None, language.as_deref(), |_| {
+        bussard_product::AppSelection::All
     })
     .ctx(|| format!("reading product data from {}", file.display()))
 }
 
 /// Writes one model file per application program under
-/// `<dir>/.bussard/model-cache/` (see [`bussard_prod::product_model`]).
+/// `<dir>/.bussard/model-cache/` (see [`bussard_product::product_model`]).
 ///
 /// # Errors
 ///
 /// A model file cannot be written.
 pub fn write_product_models(product: &ProductData, dir: &Path) -> Result<Vec<String>, SetupError> {
-    bussard_prod::product_model::write_product_models(product, dir).map_err(SetupError::source)
+    bussard_product::product_model::write_product_models(product, dir).map_err(SetupError::source)
 }
 
 /// The `[[product]]` entry for an archive `import-product` or a download
@@ -317,10 +317,10 @@ pub fn extract_and_entries(
         bussard_model::sha256_file(project).ctx(|| format!("hashing {}", project.display()))?;
     let mut entries = Vec::new();
     for app in applications {
-        let extracted = match bussard_prod::extract_from_project(project, app) {
+        let extracted = match bussard_product::extract_from_project(project, app) {
             Ok(extracted) => extracted,
             // An application the export does not carry stays unpinned.
-            Err(bussard_prod::ProdError::MissingEntry { .. }) => {
+            Err(bussard_product::ProductError::MissingEntry { .. }) => {
                 out.warn(&format!(
                     "warning: {} carries no program {app}",
                     project.display()
@@ -471,8 +471,8 @@ pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut d
             .filter(|app| !served.contains(app))
             .collect();
         if !missing.is_empty() {
-            let catalog = bussard_prod::read_knxprod_selected(project, None, None, |_| {
-                bussard_prod::AppSelection::Exact(Vec::new())
+            let catalog = bussard_product::read_knxprod_selected(project, None, None, |_| {
+                bussard_product::AppSelection::Exact(Vec::new())
             });
             match catalog.map_err(SetupError::source).and_then(|catalog| {
                 let apps: Vec<String> = missing.into_iter().collect();
@@ -512,17 +512,23 @@ fn pinned_archives(dir: &Path) -> Vec<ProductEntry> {
 
 /// Writes the product model of every application a device in the lock pins
 /// that `.bussard/model-cache/` lacks, or only of `only` when given (see
-/// [`bussard_prod::product_model::complete_models`]). Failures are warnings.
+/// [`bussard_product::product_model::complete_models`]). Failures are warnings.
 pub fn complete_models(dir: &Path, only: Option<&str>, out: &mut dyn ProgressSink) {
-    warn_models(bussard_prod::product_model::complete_models(dir, only), out);
+    warn_models(
+        bussard_product::product_model::complete_models(dir, only),
+        out,
+    );
 }
 
 /// Writes the product model of every application of every archive the lock
 /// pins that `.bussard/model-cache/` lacks, pinned by a device or not (see
-/// [`bussard_prod::product_model::complete_all_models`]): what `import` has
+/// [`bussard_product::product_model::complete_all_models`]): what `import` has
 /// always written. Failures are warnings.
 pub fn complete_all_models(dir: &Path, out: &mut dyn ProgressSink) {
-    warn_models(bussard_prod::product_model::complete_all_models(dir), out);
+    warn_models(
+        bussard_product::product_model::complete_all_models(dir),
+        out,
+    );
 }
 
 /// Says the warnings of a model completion.
@@ -611,7 +617,7 @@ pub fn fetch_missing(
     let index = load_index()?;
     // Group the order numbers by the archive that serves them: one download
     // often covers a whole product family.
-    let mut downloads: Vec<(&bussard_prod::IndexEntry, Vec<String>)> = Vec::new();
+    let mut downloads: Vec<(&bussard_product::IndexEntry, Vec<String>)> = Vec::new();
     for order in &missing {
         match index.lookup(order) {
             Some(entry) => match downloads.iter_mut().find(|(e, _)| e.url == entry.url) {
@@ -857,7 +863,7 @@ mod tests {
         size: usize,
         filename: &str,
         inner: Option<&str>,
-    ) -> Result<bussard_prod::IndexEntry, Box<dyn std::error::Error>> {
+    ) -> Result<bussard_product::IndexEntry, Box<dyn std::error::Error>> {
         Ok(serde_json::from_value(serde_json::json!({
             "manufacturer": "Test Manufacturer",
             "manufacturer_id": "M-9999",

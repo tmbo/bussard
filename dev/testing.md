@@ -76,7 +76,7 @@ be captured.
 
 The products live in `tests-support/synthetic-products/`: one TOML spec per
 product, rendered by `generate.py` into committed product XML, which
-`bussard-prod` and knx-sim read in an ungated test each. Its README holds the
+`bussard-product` and knx-sim read in an ungated test each. Its README holds the
 spec schema, the id and master-data rules, the render, sign and capture flow
 and the catalogue table.
 
@@ -141,7 +141,7 @@ directory itself. Every gated test resolves all three to the vendor directory.
 ```console
 $ export BUSSARD_PRODUCT_CORPUS="$PWD/tests-support/product-corpus"
 $ cargo nextest run --profile corpus \
-    -p bussard-download -p bussard-prod -p bussard-cli \
+    -p bussard-download -p bussard-product -p bussard-cli \
     -E 'binary(it) & test(/^(builtin_templates|flash_corpus|flash_dryrun_system7|ets_golden|sys7_jung_m2_plan|param_readback_roundtrip|parameter_image|sys7_visible_parameters|selected|evaluator_conformance|flash_dry_run|offline_oracle)::/)'
 ```
 
@@ -160,10 +160,10 @@ The gated tests:
 | bussard-download | `sys7_jung_m2_plan.rs` | the Jung 3361-1M (0705) full plan against the M2 capture, and its parameter-only plan against `bad-eg-pm-1-1-18.pcapng` (1.1.32) |
 | bussard-download | `ets_golden.rs` | group-object tables, parameter image and allocation of the F50 (`A-D142-21`), Jung `A-3030`, ABB `A-A0ED`, Helios `A-0003`, Jung `A-20DE` byte for byte against ETS |
 | bussard-download | `param_readback_roundtrip.rs` | parameter read-back decodes what the image builder wrote, for a set of real products |
-| bussard-prod | `parameter_image.rs` | the Zennio FIX2 union default byte, the ABB IEEE-754 single width |
-| bussard-prod | `sys7_visible_parameters.rs` | Jung System 7 parameter images (3361, 2116, 3181) against ETS |
-| bussard-prod | `selected.rs` | a selective archive read equals the full read, on the first archives of the corpus (`BUSSARD_SELECTED_CORPUS_LIMIT`, default 6) |
-| bussard-prod | `evaluator_conformance.rs` | the Dynamic evaluator over each program's product model gives the same modules, placements, containers and values as over its XML, at the vendor defaults and under 50 seeded random value sets (#345) |
+| bussard-product | `parameter_image.rs` | the Zennio FIX2 union default byte, the ABB IEEE-754 single width |
+| bussard-product | `sys7_visible_parameters.rs` | Jung System 7 parameter images (3361, 2116, 3181) against ETS |
+| bussard-product | `selected.rs` | a selective archive read equals the full read, on the first archives of the corpus (`BUSSARD_SELECTED_CORPUS_LIMIT`, default 6) |
+| bussard-product | `evaluator_conformance.rs` | the Dynamic evaluator over each program's product model gives the same modules, placements, containers and values as over its XML, at the vendor defaults and under 50 seeded random value sets (#345) |
 | bussard-cli | `flash_dry_run.rs` | `flash --dry-run --dump-images` of the Jung 3361-1M |
 | bussard-cli | `offline_oracle.rs` | the offline-oracle rows pass `--check` (needs `BUSSARD_ORACLE_ROWS`, see below) |
 
@@ -287,7 +287,7 @@ temporary directory and never write to the snapshot.
 
 | Crate | Test file (`tests/it/`) | What it checks |
 |---|---|---|
-| bussard-prod | `evaluator_conformance.rs` | the page evaluator and the download's Dynamic evaluator reach the same refs for the device's values, and every "ignored" value is one the image leaves out (#326) |
+| bussard-product | `evaluator_conformance.rs` | the page evaluator and the download's Dynamic evaluator reach the same refs for the device's values, and every "ignored" value is one the image leaves out (#326) |
 | bussard-mcp | `capabilities.rs` | `knx_set_parameter helligkeitsschwelle@P-7305_R-7305` is taken once C4's function is Helligkeitssensor, without "Wenn Temperatur" being set (#326) |
 
 ## Offline oracle coverage
@@ -316,7 +316,7 @@ pull request, with no environment variable and no vendor data:
 | bussard vs sim: the flash-then-plan loop with seeded configurations over every synthetic product (`sim_catalog_loop.rs`, `test_sim_catalog_loop_synthetic_catalogue_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
 | bussard's own request streams: each product's flash (and apply, for a product captured with a `links` or `partial` variant) against knx-sim, normalized by `knxtrace ops`, equals the committed `requests/*.txt` (`synthetic_streams.rs`, `test_synthetic_streams_golden_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`); the file check (`test_synthetic_streams_goldens_cover_the_catalogue`) in the `test` job |
 | CLI vs MCP: the same apply (and, where a switch shows or hides a com-object, the same flash) through `bussard plan`/`apply`/`flash` and through `knx_plan_device`/`knx_apply_device` writes the same requests (`synthetic_streams.rs`, `test_synthetic_streams_cli_mcp_shard_<k>`) | `sim-conformance` job (`BUSSARD_KNX_SIM_BIN`) |
-| every product's XML reads in `bussard-prod` and knx-sim (`synthetic_products.rs`) | `test` job, `knx-sim` job |
+| every product's XML reads in `bussard-product` and knx-sim (`synthetic_products.rs`) | `test` job, `knx-sim` job |
 | the generator's unit tests (`test_generate.py`) and `generate.py --check`: a committed `xml/` or `signed.toml` that no longer matches its `product.toml` fails | `lint` job |
 
 The catalogue grows to about forty products, so a test that covers all of

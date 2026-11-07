@@ -79,16 +79,16 @@ form of 3/5/3 §3.5.2, and `plan_flash` splices the application's blocks in
 at its `LdCtrlMerge` markers.
 
 - The product file's `knx_master.xml`, when it declares the mask: parsed by
-  `crates/bussard-ets/src/master.rs` (`parse_master_template`).
+  `crates/bussard-product/src/master.rs` (`parse_master_template`).
 - Otherwise bussard's built-in template (`MasterTemplate::builtin_for_mask`,
-  same file, #607) for 07B0, 27B0 and 57B0. `bussard-prod` fills it in where
+  same file, #607) for 07B0, 27B0 and 57B0. `bussard-product` fills it in where
   it attaches the product's templates, so `flash`, `plan` and the MCP tools
   see the same ops. A product without master data (the synthetic catalogue's
   `<KNX/>` stub) therefore plans the same download as one with it.
 
 The built-in ops are those of every master-data version in the corpus
 (schemas 10 to 23; the three masks are identical).
-`test_builtin_for_mask_matches_corpus_master` (bussard-prod, gated on
+`test_builtin_for_mask_matches_corpus_master` (bussard-product, gated on
 `BUSSARD_PRODUCT_CORPUS`) compares them with each corpus file's master. The
 System 7 masks declare no `Load` procedure in the master data and their
 lowering takes nothing from a template; the PL110 mask 17B0 has a template

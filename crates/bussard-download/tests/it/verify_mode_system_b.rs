@@ -14,7 +14,7 @@ use bussard_download::{
     template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
-use bussard_prod::application::ApplicationProgram;
+use bussard_product::application::ApplicationProgram;
 use bussard_testkit::consts::{
     A_MEMORY_RESPONSE, A_MEMORY_WRITE, A_PROPERTY_VALUE_WRITE, OT_ADDRESS_TABLE,
     OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
@@ -27,17 +27,17 @@ use crate::builtin_template::zip_synthetic;
 use crate::support::plan_flash_default;
 
 /// The product and its application, read from the zipped synthetic XML.
-fn product() -> TestResult<(bussard_prod::ProductData, tempfile::TempDir)> {
+fn product() -> TestResult<(bussard_product::ProductData, tempfile::TempDir)> {
     let tmp = tempfile::tempdir()?;
     let path = tmp.path().join("syn-minimal.knxprod");
     zip_synthetic("syn-minimal", &path).map_err(|e| e.to_string())?;
-    Ok((bussard_prod::read_knxprod(&path)?, tmp))
+    Ok((bussard_product::read_knxprod(&path)?, tmp))
 }
 
 /// The System B plan of `app` for 1.1.1, spliced into the built-in 07B0
 /// template the stub master leaves bussard with.
 fn plan_of(
-    product: &bussard_prod::ProductData,
+    product: &bussard_product::ProductData,
     app: &ApplicationProgram,
 ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
     let template = template_ops_for(product, app).ok_or("a template for 07B0")?;
@@ -47,7 +47,7 @@ fn plan_of(
         "1.1.1".parse()?,
         app,
         &overrides,
-        &bussard_prod::dynamic::DynamicMemo::new(app),
+        &bussard_product::dynamic::DynamicMemo::new(app),
     );
     Ok(plan_flash_default(
         app,

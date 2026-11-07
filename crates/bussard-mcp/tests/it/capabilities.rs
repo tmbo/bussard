@@ -4,7 +4,7 @@
 //! page through the parameter and choice texts of the product model.
 //!
 //! The product model is the importer's output for the fabricated System 7
-//! application in `crates/bussard-prod/tests/fixtures/blocks_app.xml`.
+//! application in `crates/bussard-product/tests/fixtures/blocks_app.xml`.
 //! No bus is opened: the connection points at a loopback port nothing
 //! listens on, and these tools read files only.
 
@@ -436,12 +436,12 @@ fn meteo_xml() -> String {
 /// does, from [`meteo_xml`] (issue #345: one source of pages in tests as in
 /// production).
 fn write_meteo_product(dir: &Path) -> anyhow::Result<()> {
-    let app = bussard_prod::parse_application_program(METEO_APP, meteo_xml().as_bytes())?;
-    let product = bussard_prod::ProductData {
+    let app = bussard_product::parse_application_program(METEO_APP, meteo_xml().as_bytes())?;
+    let product = bussard_product::ProductData {
         applications: vec![app],
-        ..bussard_prod::ProductData::default()
+        ..bussard_product::ProductData::default()
     };
-    bussard_prod::product_model::write_product_models(&product, dir)?;
+    bussard_product::product_model::write_product_models(&product, dir)?;
     Ok(())
 }
 

@@ -36,7 +36,7 @@ use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::LoadState;
 use bussard_model::facts::DeviceFactsRecord;
-use bussard_prod::application::{ApplicationProgram, parse_application_program};
+use bussard_product::application::{ApplicationProgram, parse_application_program};
 use bussard_testkit::{Inbound, MockDevice, MockGateway, Reaction, Verdict};
 use bussard_transport::cemi::Destination;
 use bussard_transport::knxnet::ServiceType;
@@ -1215,11 +1215,11 @@ async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn 
     let ops = &mut app.load_procedures[0].ops;
     let restart = ops
         .iter()
-        .position(|op| matches!(op, bussard_prod::application::LoadOp::Restart))
+        .position(|op| matches!(op, bussard_product::application::LoadOp::Restart))
         .ok_or("the procedure restarts")?;
     ops.insert(
         restart,
-        bussard_prod::application::LoadOp::Delay {
+        bussard_product::application::LoadOp::Delay {
             milliseconds: Some(200),
         },
     );

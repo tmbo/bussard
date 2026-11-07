@@ -155,7 +155,7 @@ fn assert_project_export_not_cached(name: &str, file_name: &str) -> TestResult {
     assert!(!dir.join("vendor").exists());
     assert_manufacturer_list(&dir)?;
     // The extracted archive reads as a plain product archive.
-    let product = bussard_prod::read_knxprod(&extracted)?;
+    let product = bussard_product::read_knxprod(&extracted)?;
     assert!(!product.is_project_export);
     assert!(product.application_by_id(APP_ID).is_some());
     std::fs::remove_dir_all(&tmp)?;

@@ -55,7 +55,7 @@ use anyhow::{Context, anyhow, bail};
 use bussard_mgmt::system_type;
 use bussard_model::history::SnapshotReason;
 use bussard_model::{Flags, GroupAddress, IndividualAddress, Model};
-use bussard_prod::{ApplicationProgram, ProductData};
+use bussard_product::{ApplicationProgram, ProductData};
 use bussard_service::WritePolicy;
 use bussard_service::adopt::flow::{SecureSummary, SelectedProduct, shape_selected};
 use bussard_service::identity::SecureStatus;
