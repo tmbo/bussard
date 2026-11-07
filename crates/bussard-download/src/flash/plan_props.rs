@@ -336,7 +336,7 @@ pub(super) fn prop_object(
 
 /// The parameter-composed value of the property `object`/`prop_id` names,
 /// from `values` ([`bussard_product::compute_property_values`]).
-fn parameter_value(
+pub(super) fn parameter_value(
     values: &PropertyValues,
     obj_idx: Option<u32>,
     obj_type: Option<u32>,
@@ -393,17 +393,21 @@ pub(super) fn may_hold(
 /// in lowers to [`FlashStep::DescribeProp`]: ETS reads the property's
 /// description and writes nothing (issue #841, `M-00A6_A-0033-20-BFA6`).
 ///
+/// `typed_by_list` is the plan's [`FlashPlan::typed_objects_by_list`]: an
+/// object named by type is then written at a listed index on the plain
+/// services, so its PID is held to 8 bits ([`check_addressable`]).
+///
 /// # Errors
 ///
 /// [`PlanError::UnsupportedWriteProp`] when a parameter is stored in the
-/// property but its value has no source, the value does not split into
-/// `Count` whole elements, or the object or property id does not fit the
-/// services that address it.
+/// property but its value has no source, and the refusals of
+/// [`write_prop_step`].
 pub(super) fn lower_write_prop(
     step: usize,
     op: &LoadOp,
     values: &PropertyValues,
     app: &ApplicationProgram,
+    typed_by_list: bool,
 ) -> Result<FlashStep, PlanError> {
     let LoadOp::WriteProp {
         obj_idx,
@@ -463,6 +467,89 @@ pub(super) fn lower_write_prop(
             }
         },
     };
+    write_prop_step(
+        step,
+        object,
+        prop_id,
+        value,
+        from_parameters,
+        (*start_element, *count, *verify),
+        typed_by_list,
+    )
+}
+
+/// Whether the services reach `object`/`prop_id`: an index and its PID go
+/// out on the plain services (8 bits each); an object named by type on the
+/// extended ones (a 12-bit PID), unless `typed_by_list`, where the System B
+/// executor writes it at the index the device's object list gives it on the
+/// plain services (issue #948), so the PID is held to 8 bits at plan time
+/// rather than refused at execute time after the unload (issue #964).
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedWriteProp`] naming the index or PID out of reach.
+pub(super) fn check_addressable(
+    step: usize,
+    object: PropObject,
+    prop_id: u32,
+    typed_by_list: bool,
+) -> Result<(), PlanError> {
+    if let PropObject::Index(index) = object
+        && index > u32::from(u8::MAX)
+    {
+        return Err(PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!("object index {index} exceeds the 8-bit index the services address"),
+        });
+    }
+    let (pid_limit, services) = match object {
+        PropObject::Index(_) => (u32::from(u8::MAX), "the plain property services"),
+        PropObject::Type { .. } if typed_by_list => (
+            u32::from(u8::MAX),
+            "the plain property services, which write an object named by type at the index \
+             the device's object list gives it on a program that is not Data Secure enabled",
+        ),
+        PropObject::Type { .. } => (u32::from(MAX_12_BIT), "the extended property services"),
+    };
+    if prop_id > pid_limit {
+        return Err(PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!(
+                "property id {prop_id} of {object} exceeds the {}-bit PID {services} address",
+                if pid_limit == u32::from(u8::MAX) {
+                    8
+                } else {
+                    12
+                }
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The [`FlashStep::WriteProp`] of `value` to `object`/`prop_id` an
+/// undeclared `LdCtrlWriteProp` lowers to, from the op's `StartElement`,
+/// `Count` and `Verify` (`extent`): the one rule of the System B planner's
+/// writes with and without `InlineData` and of the System 7 and
+/// property-only planners (issues #957, #964).
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedWriteProp`] when the write reaches past the
+/// 12-bit start index, the value does not split into `Count` whole elements,
+/// or the object or property id does not fit the services that address it
+/// ([`check_addressable`]).
+pub(super) fn write_prop_step(
+    step: usize,
+    object: PropObject,
+    prop_id: u32,
+    value: Vec<u8>,
+    from_parameters: bool,
+    extent: (Option<u32>, Option<u32>, Option<bool>),
+    typed_by_list: bool,
+) -> Result<FlashStep, PlanError> {
+    let (start_element, count, verify) = extent;
+    let name = format!("{object} PID {prop_id}");
     let start_element = start_element.unwrap_or(1).max(1);
     // `Count` is a 16-bit element count in the procedure; only the per-request
     // count is a nibble, and the executor splits the write into requests of at
@@ -471,8 +558,7 @@ pub(super) fn lower_write_prop(
     // issue #947). What bounds the write is the 12-bit start index of its last
     // request: element 4095.
     // The one Count rule of both System B planners (issue #957).
-    let count = super::declare::element_count(&name, *count, start_element, None)
-        .map_err(|reason| PlanError::UnsupportedWriteProp { step, reason })?;
+    let count = super::declare::undeclared_element_count(count);
     let last_element = u64::from(start_element) + u64::from(count) - 1;
     if last_element > u64::from(MAX_12_BIT) {
         return Err(PlanError::UnsupportedWriteProp {
@@ -494,24 +580,7 @@ pub(super) fn lower_write_prop(
             ),
         });
     }
-    if let PropObject::Index(index) = object
-        && index > u32::from(u8::MAX)
-    {
-        return Err(PlanError::UnsupportedWriteProp {
-            step,
-            reason: format!("object index {index} exceeds the 8-bit index the services address"),
-        });
-    }
-    let pid_limit = match object {
-        PropObject::Index(_) => u32::from(u8::MAX),
-        PropObject::Type { .. } => u32::from(MAX_12_BIT),
-    };
-    if prop_id > pid_limit {
-        return Err(PlanError::UnsupportedWriteProp {
-            step,
-            reason: format!("property id {prop_id} exceeds what the property services address"),
-        });
-    }
+    check_addressable(step, object, prop_id, typed_by_list)?;
     Ok(FlashStep::WriteProp {
         object,
         prop_id,
@@ -611,7 +680,9 @@ pub(super) fn plan_flash_properties(
         match op {
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
-            LoadOp::WriteProp { .. } => steps.push(lower_write_prop(step, op, &values, app)?),
+            LoadOp::WriteProp { .. } => {
+                steps.push(lower_write_prop(step, op, &values, app, false)?)
+            }
             LoadOp::CompareProp { .. } => steps.push(lower_compare_prop(step, op)?),
             other => {
                 return Err(PlanError::UnsupportedOp {
@@ -776,7 +847,7 @@ mod tests {
             })
             .ok_or("the label write is taken")?;
         assert_eq!(
-            lower_write_prop(2, label, &values, &app)?,
+            lower_write_prop(2, label, &values, &app, false)?,
             FlashStep::WriteProp {
                 object: PropObject::Index(6),
                 prop_id: 60,
@@ -799,7 +870,7 @@ mod tests {
                 )
             })
             .ok_or("the inline write is unguarded")?;
-        match lower_write_prop(3, inline, &values, &app)? {
+        match lower_write_prop(3, inline, &values, &app, false)? {
             FlashStep::WriteProp {
                 count,
                 value,
@@ -828,7 +899,7 @@ mod tests {
             occurrence: None,
         };
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &guarded_app()?),
+            lower_write_prop(1, &op, &PropertyValues::new(), &guarded_app()?, false),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         Ok(())
@@ -856,7 +927,7 @@ mod tests {
         let app = guarded_app()?;
         let op = dataless_write(None, Some(50001), 211);
         assert_eq!(
-            lower_write_prop(21, &op, &PropertyValues::new(), &app)?,
+            lower_write_prop(21, &op, &PropertyValues::new(), &app, false)?,
             FlashStep::DescribeProp {
                 object: PropObject::Type {
                     object_type: 50001,
@@ -867,7 +938,7 @@ mod tests {
         );
         let op = dataless_write(Some(6), None, 61);
         assert_eq!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app)?,
+            lower_write_prop(1, &op, &PropertyValues::new(), &app, false)?,
             FlashStep::DescribeProp {
                 object: PropObject::Index(6),
                 prop_id: 61,
@@ -883,13 +954,13 @@ mod tests {
         let app = guarded_app()?;
         let op = dataless_write(Some(6), None, 60);
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app),
+            lower_write_prop(1, &op, &PropertyValues::new(), &app, false),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         // Named by type, the object cannot be told apart from index 6: refused.
         let op = dataless_write(None, Some(17), 60);
         assert!(matches!(
-            lower_write_prop(1, &op, &PropertyValues::new(), &app),
+            lower_write_prop(1, &op, &PropertyValues::new(), &app, false),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
         Ok(())
@@ -919,7 +990,7 @@ mod tests {
         let value: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), value.clone())]);
         assert_eq!(
-            lower_write_prop(32, &count_write(64, 500), &values, &app)?,
+            lower_write_prop(32, &count_write(64, 500), &values, &app, false)?,
             FlashStep::WriteProp {
                 object: PropObject::Index(8),
                 prop_id: 64,
@@ -938,7 +1009,7 @@ mod tests {
         // Element 4096 is past the 12-bit start index of the last request.
         let app = guarded_app()?;
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4096])]);
-        match lower_write_prop(7, &count_write(64, 4096), &values, &app) {
+        match lower_write_prop(7, &count_write(64, 4096), &values, &app, false) {
             Err(PlanError::UnsupportedWriteProp { step: 7, reason }) => {
                 assert!(reason.contains("Count 4096"), "{reason}");
             }
@@ -947,7 +1018,7 @@ mod tests {
         // 4095 elements end on the last addressable element.
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4095])]);
         assert!(matches!(
-            lower_write_prop(7, &count_write(64, 4095), &values, &app)?,
+            lower_write_prop(7, &count_write(64, 4095), &values, &app, false)?,
             FlashStep::WriteProp { count: 4095, .. }
         ));
         Ok(())
@@ -961,7 +1032,7 @@ mod tests {
         let app = guarded_app()?;
         let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![7; 948])]);
         assert!(matches!(
-            lower_write_prop(28, &count_write(64, 237), &values, &app)?,
+            lower_write_prop(28, &count_write(64, 237), &values, &app, false)?,
             FlashStep::WriteProp {
                 count: 237,
                 from_parameters: true,
@@ -972,7 +1043,7 @@ mod tests {
         // ETS reads the description and writes nothing
         // (`M-007C_A-000E-20-E64D` op 130, `M-007C_A-0010-20-5E04` op 130).
         assert_eq!(
-            lower_write_prop(30, &count_write(68, 64), &values, &app)?,
+            lower_write_prop(30, &count_write(68, 64), &values, &app, false)?,
             FlashStep::DescribeProp {
                 object: PropObject::Index(8),
                 prop_id: 68,

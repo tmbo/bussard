@@ -8,7 +8,8 @@
 
 use super::plan_sys7::{Sys7PlanTables, plan_flash_sys7};
 use super::{
-    AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, SegmentFill,
+    AppIdentity, FlashPlan, FlashStep, ImageKind, ImageRef, KeptOctets, PlanError, PropObject,
+    SegmentFill,
 };
 use bussard_product::application::{
     ApplicationProgram, CodeSegment, LoadOp, LoadProcedure, SegmentKind,
@@ -130,25 +131,65 @@ pub(super) fn app_program_version_value(app: &ApplicationProgram) -> Option<[u8;
     ))
 }
 
-/// Replaces the master template's all-zero PID-13 placeholder with the
-/// synthesized app-id, leaving every other property write (and any non-zero
-/// PID-13 value) unchanged.
+/// The application id the `PID_PROGRAM_VERSION` of `object` takes: a
+/// companion program's own id for an object its segments load (by index),
+/// else the main program's (`app_id`) for an object named by index or for the
+/// first application-program object named by type. An object named by any
+/// other type is one the plan cannot tie to an index, so it takes none
+/// (issue #964: the object is resolved before the id is picked, never taken
+/// for object 0).
+pub(super) fn app_id_for<'a>(
+    object: PropObject,
+    companion_ids: &'a BTreeMap<u32, [u8; 5]>,
+    app_id: Option<&'a [u8; 5]>,
+) -> Option<&'a [u8; 5]> {
+    match object {
+        PropObject::Index(index) => companion_ids.get(&index).or(app_id),
+        PropObject::Type {
+            object_type,
+            occurrence: 0,
+        } if object_type == bussard_mgmt::tables::OT_APPLICATION_PROGRAM => app_id,
+        PropObject::Type { .. } => None,
+    }
+}
+
+/// The value a property write sends in place of its `InlineData`, by the one
+/// rule for the master template's all-zero PID 13 placeholder (issues #945,
+/// #957, #964).
 ///
-/// Substitutes only when the op targets `PID_PROGRAM_VERSION`, an app-id value is
-/// available, and the op's inline data is the exact 5-octet zero placeholder — so
-/// a template that already carries a concrete PID-13 value is honoured verbatim.
+/// Only the exact 5-octet zero placeholder of a `PID_PROGRAM_VERSION` write
+/// is replaced; any other write (and any non-zero PID 13 value) is honoured
+/// verbatim. The placeholder takes the application id (`app_id_value`, see
+/// [`app_id_for`]); without one, the value the parameters placed in the
+/// property compose over it (`from_parameters`, `None` when none is). With
+/// neither it is refused: zeros name no program, and the read-back would
+/// compare them.
+///
+/// # Errors
+///
+/// The refusal reason, naming `name`, for a placeholder nothing supplies,
+/// and the reason `from_parameters` gives.
 pub(super) fn maybe_substitute_app_id(
+    name: &str,
     prop_id: u32,
     inline_data: Option<&[u8]>,
     app_id_value: Option<&[u8; 5]>,
-) -> Option<Vec<u8>> {
-    if prop_id == PID_PROGRAM_VERSION
-        && inline_data == Some(&APP_ID_PLACEHOLDER[..])
-        && let Some(app_id) = app_id_value
-    {
-        return Some(app_id.to_vec());
+    from_parameters: impl FnOnce(&[u8]) -> Result<Option<Vec<u8>>, String>,
+) -> Result<Option<Vec<u8>>, String> {
+    if prop_id != PID_PROGRAM_VERSION || inline_data != Some(&APP_ID_PLACEHOLDER[..]) {
+        return Ok(inline_data.map(<[u8]>::to_vec));
     }
-    inline_data.map(<[u8]>::to_vec)
+    if let Some(app_id) = app_id_value {
+        return Ok(Some(app_id.to_vec()));
+    }
+    match from_parameters(&APP_ID_PLACEHOLDER)? {
+        Some(value) => Ok(Some(value)),
+        None => Err(format!(
+            "the write to {name} is the all-zero application-id placeholder, and neither an \
+             application number and version of the program nor a parameter placed in the \
+             property supplies the value to put in its place"
+        )),
+    }
 }
 
 /// The largest byte length or u32 component a single flash write step may carry.
@@ -381,6 +422,11 @@ pub fn plan_flash(
     // incomplete (no application number/version), in which case a placeholder
     // PID-13 write is left as-is. Computed once, applied in the WriteProp branch.
     let app_id_value: Option<[u8; 5]> = app_program_version_value(app);
+    // A program that is not Data Secure enabled has its objects named by
+    // type written at the index the device's object list gives them, on the
+    // plain services (issue #948); the plan holds their PID to 8 bits (issue
+    // #964).
+    let typed_objects_by_list = !app.is_secure_enabled;
     // A companion program (a PeiProgram, see
     // `ApplicationProgram::companion_programs`) owns the objects its segments
     // load into; its own id replaces the PID-13 placeholder on those (ETS wrote
@@ -932,39 +978,36 @@ pub fn plan_flash(
 
             // A write to a declared property: `Count` elements of the declared
             // type, the value the parameters compose (issue #938), the
-            // template's application-id placeholder substituted as on any
-            // other PID 13 write (issue #945), by the one substitution rule
-            // (issue #957).
+            // template's application-id placeholder replaced by the one rule
+            // for it (issues #945, #957, #964).
             LoadOp::WriteProp {
-                obj_idx,
                 prop_id,
                 inline_data,
                 ..
             } if declared_write.is_some() => {
                 let Some(decl) = declared_write else { continue };
                 let prop = prop_id.unwrap_or(decl.prop_id);
-                let app_id = companion_ids
-                    .get(&obj_idx.unwrap_or(0))
-                    .or(app_id_value.as_ref());
-                let substituted = maybe_substitute_app_id(prop, inline_data.as_deref(), app_id);
-                // Without an application id the placeholder would go out as
-                // zeros, which name no program, and the read-back would
-                // compare them (issue #957): refused, as nothing else
-                // supplies the value.
-                if prop == PID_PROGRAM_VERSION
-                    && app_id.is_none()
-                    && substituted.as_deref() == Some(&APP_ID_PLACEHOLDER[..])
-                {
-                    return Err(PlanError::UnsupportedWriteProp {
-                        step: step_no,
-                        reason: format!(
-                            "the write to the declared {} PID {prop} is the all-zero \
-                             application-id placeholder, and the program has no application \
-                             number and version to put in its place",
-                            decl.object
-                        ),
-                    });
-                }
+                let name = format!("the declared {} PID {prop}", decl.object);
+                let substituted = maybe_substitute_app_id(
+                    &name,
+                    prop,
+                    inline_data.as_deref(),
+                    app_id_for(decl.object, &companion_ids, app_id_value.as_ref()),
+                    |template| {
+                        super::declare::placed_value(
+                            &name,
+                            decl.object,
+                            prop,
+                            &property_params,
+                            app,
+                            template,
+                        )
+                    },
+                )
+                .map_err(|reason| PlanError::UnsupportedWriteProp {
+                    step: step_no,
+                    reason,
+                })?;
                 steps.extend(super::declare::lower_declared_write_prop(
                     step_no,
                     op,
@@ -972,6 +1015,7 @@ pub fn plan_flash(
                     substituted.as_deref(),
                     &property_params,
                     app,
+                    typed_objects_by_list,
                 )?);
             }
 
@@ -982,12 +1026,9 @@ pub fn plan_flash(
                 prop_id,
                 inline_data,
                 start_element,
+                count,
                 ..
             } => {
-                let start_element = start_element
-                    .and_then(|e| u16::try_from(e).ok())
-                    .unwrap_or(1)
-                    .max(1);
                 let prop_id = prop_id.unwrap_or(0);
                 // The object the write names: `ObjIdx`, else `ObjType` (the
                 // device object for type 0), else the device object, as the
@@ -1002,57 +1043,53 @@ pub fn plan_flash(
                 // for the application object's PID_PROGRAM_VERSION (the app-id /
                 // run-state). ETS replaces the zeros with the real 5-octet app id
                 // (manufacturer + application number + version); a device left
-                // with zeros does not record which program it runs. Substitute the
-                // synthesized value here (see `app_id_value`) so the flash writes
-                // the same bytes ETS does. Only the all-zero placeholder of the
-                // right width is substituted — a template that already carries a
-                // concrete value is written verbatim.
+                // with zeros does not record which program it runs. The one rule
+                // for it (`maybe_substitute_app_id`) writes the same bytes ETS
+                // does; a template that already carries a concrete value is
+                // written verbatim.
+                let name = format!("{object} PID {prop_id}");
                 let inline_data = maybe_substitute_app_id(
+                    &name,
                     prop_id,
                     inline_data.as_deref(),
-                    companion_ids
-                        .get(&object.index().unwrap_or(0))
-                        .or(app_id_value.as_ref()),
-                );
-
-                match &inline_data {
-                    Some(value) if !value.is_empty() => {
-                        // A value-carrying WriteProp must be executable to keep the
-                        // "only a fully-executable FlashPlan reaches flash" invariant.
-                        // Refuse a shape the write primitive cannot address rather
-                        // than dropping the value at execute time.
-                        if let Some(obj_idx) = object.index()
-                            && obj_idx > u32::from(u8::MAX)
-                        {
-                            return Err(PlanError::UnsupportedWriteProp {
-                                step: step_no,
-                                reason: format!(
-                                    "object index {obj_idx} exceeds the 8-bit object-index space \
-                                     the property-write primitive addresses"
-                                ),
-                            });
-                        }
-                        if prop_id > u32::from(u8::MAX) {
-                            return Err(PlanError::UnsupportedWriteProp {
-                                step: step_no,
-                                reason: format!(
-                                    "property id {prop_id} exceeds the 8-bit PID space the \
-                                     property-write primitive addresses"
-                                ),
-                            });
-                        }
-                        // System B keeps its historical shape (issue #390 leaves
-                        // it as the offline oracle confirms it): the value is one
-                        // element, the write echo-validated, no extra read-back.
-                        steps.push(FlashStep::WriteProp {
+                    app_id_for(object, &companion_ids, app_id_value.as_ref()),
+                    |template| {
+                        super::declare::placed_value(
+                            &name,
                             object,
                             prop_id,
-                            value: value.clone(),
-                            start_element,
-                            count: 1,
-                            verify: false,
-                            from_parameters: false,
-                        });
+                            &property_params,
+                            app,
+                            template,
+                        )
+                    },
+                )
+                .map_err(|reason| PlanError::UnsupportedWriteProp {
+                    step: step_no,
+                    reason,
+                })?;
+
+                match inline_data {
+                    Some(value) if !value.is_empty() => {
+                        // A value-carrying WriteProp must be executable to keep the
+                        // "only a fully-executable FlashPlan reaches flash" invariant:
+                        // the one rule of an undeclared write (its `Count`, the
+                        // services' reach, issue #964) refuses a shape the executor
+                        // cannot address rather than dropping the value at execute
+                        // time. Without `Count` it is one element. `Verify` is not
+                        // honoured here: the master template's PID 13 writes carry
+                        // `Verify="true"` and ETS echo-validates them with no extra
+                        // read-back, the historical System B shape the offline
+                        // oracle confirms (issue #390).
+                        steps.push(super::plan_props::write_prop_step(
+                            step_no,
+                            object,
+                            prop_id,
+                            value,
+                            false,
+                            (*start_element, *count, Some(false)),
+                            typed_objects_by_list,
+                        )?);
                     }
                     _ => {
                         // A write without `InlineData` writes the value the
@@ -1068,7 +1105,11 @@ pub fn plan_flash(
                             step_no,
                         )?;
                         steps.push(super::plan_props::lower_write_prop(
-                            step_no, op, values, app,
+                            step_no,
+                            op,
+                            values,
+                            app,
+                            typed_objects_by_list,
                         )?);
                     }
                 }
@@ -1282,7 +1323,7 @@ pub fn plan_flash(
         baseline_address: BTreeMap::new(),
         security_capacity: Default::default(),
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
-        typed_objects_by_list: !app.is_secure_enabled,
+        typed_objects_by_list,
         par_allocations,
         par_procedure: false,
         kept,
@@ -2631,11 +2672,11 @@ mod tests {
     fn test_plan_flash_program_without_group_objects_writes_no_table()
     -> Result<(), Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
-         <ApplicationProgram Id="M-2_A-2" ApplicationNumber="2" ApplicationVersion="16"
+         <ApplicationProgram Id="M-0002_A-2" ApplicationNumber="2" ApplicationVersion="16"
             MaskVersion="MV-07B0" Name="IP" LoadProcedureStyle="MergedProcedure">
           <Static>
            <Code>
-            <RelativeSegment Id="M-2_A-2_RS-04-00000" Size="4" LoadStateMachine="4" Offset="0"><Data>AQIDBA==</Data></RelativeSegment>
+            <RelativeSegment Id="M-0002_A-2_RS-04-00000" Size="4" LoadStateMachine="4" Offset="0"><Data>AQIDBA==</Data></RelativeSegment>
            </Code>
            <AddressTable MaxEntries="200" />
            <AssociationTable MaxEntries="200" />
@@ -2652,7 +2693,7 @@ mod tests {
            </LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
-        let app = parse_application_program("M-2_A-2", xml.as_bytes())?;
+        let app = parse_application_program("M-0002_A-2", xml.as_bytes())?;
         let template = bussard_product::MasterTemplate::builtin_for_mask("07B0")
             .ok_or("a built-in 07B0 template")?;
         let tables = crate::build_table_images(
@@ -3712,26 +3753,252 @@ mod tests {
     #[test]
     fn test_maybe_substitute_app_id_replaces_only_the_placeholder() {
         let app_id = [0x00u8, 0xFA, 0x25, 0x00, 0x10];
+        let none = |_: &[u8]| Ok(None);
         // PID 13 + the all-zero placeholder → substituted with the app id.
         assert_eq!(
-            maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), Some(&app_id)),
-            Some(app_id.to_vec())
+            maybe_substitute_app_id("x", 13, Some(&[0, 0, 0, 0, 0]), Some(&app_id), none),
+            Ok(Some(app_id.to_vec()))
         );
         // PID 13 but a concrete (non-placeholder) value → left verbatim.
         assert_eq!(
-            maybe_substitute_app_id(13, Some(&[1, 2, 3, 4, 5]), Some(&app_id)),
-            Some(vec![1, 2, 3, 4, 5])
+            maybe_substitute_app_id("x", 13, Some(&[1, 2, 3, 4, 5]), Some(&app_id), none),
+            Ok(Some(vec![1, 2, 3, 4, 5]))
         );
         // A different PID → never substituted, even for a zero value.
         assert_eq!(
-            maybe_substitute_app_id(5, Some(&[0, 0, 0, 0, 0]), Some(&app_id)),
-            Some(vec![0, 0, 0, 0, 0])
+            maybe_substitute_app_id("x", 5, Some(&[0, 0, 0, 0, 0]), None, none),
+            Ok(Some(vec![0, 0, 0, 0, 0]))
         );
-        // No app id available → placeholder left as-is (a partly-zero id is worse).
+    }
+
+    #[test]
+    fn test_maybe_substitute_app_id_lets_a_parameter_supply_the_placeholder() {
+        // Issue #964: without an application id a parameter placed in PID 13
+        // supplies the value; with neither the placeholder is refused, never
+        // written as zeros.
+        let placed = |template: &[u8]| {
+            let mut v = template.to_vec();
+            v[4] = 7;
+            Ok(Some(v))
+        };
         assert_eq!(
-            maybe_substitute_app_id(13, Some(&[0, 0, 0, 0, 0]), None),
-            Some(vec![0, 0, 0, 0, 0])
+            maybe_substitute_app_id("x", 13, Some(&[0; 5]), None, placed),
+            Ok(Some(vec![0, 0, 0, 0, 7]))
         );
+        let refused =
+            maybe_substitute_app_id("object 4 PID 13", 13, Some(&[0; 5]), None, |_| Ok(None));
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|r| r.contains("object 4 PID 13") && r.contains("placeholder")),
+            "{refused:?}"
+        );
+    }
+
+    #[test]
+    fn test_app_id_for_resolves_the_object_before_the_id() {
+        // Issue #964: a PID 13 write naming its object by type never takes
+        // object 0's companion id.
+        let main = [1u8, 2, 3, 4, 5];
+        let companion = [9u8, 9, 9, 9, 9];
+        let companions = BTreeMap::from([(0u32, companion), (5u32, companion)]);
+        assert_eq!(
+            app_id_for(PropObject::Index(5), &companions, Some(&main)),
+            Some(&companion)
+        );
+        assert_eq!(
+            app_id_for(PropObject::Index(4), &companions, Some(&main)),
+            Some(&main)
+        );
+        let app_object = PropObject::Type {
+            object_type: bussard_mgmt::tables::OT_APPLICATION_PROGRAM,
+            occurrence: 0,
+        };
+        assert_eq!(
+            app_id_for(app_object, &companions, Some(&main)),
+            Some(&main)
+        );
+        let other = PropObject::Type {
+            object_type: 11,
+            occurrence: 0,
+        };
+        assert_eq!(app_id_for(other, &companions, Some(&main)), None);
+    }
+
+    /// A non-secure 07B0 program running `ops` in its one load procedure,
+    /// with `params` (`<Parameter>` elements over the `u8` type) and, with
+    /// `identity`, an application number and version.
+    fn ops_app(
+        ops: &str,
+        params: &str,
+        identity: bool,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let identity = if identity {
+            r#"ApplicationNumber="9472" ApplicationVersion="16""#
+        } else {
+            ""
+        };
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-00FA_A-2500-10-51CB" {identity} MaskVersion="MV-07B0" Name="Ops">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-00FA_A-2500-10-51CB_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>{params}</Parameters>
+           <LoadProcedures><LoadProcedure>{ops}</LoadProcedure></LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program(
+            "M-00FA_A-2500-10-51CB",
+            xml.as_bytes(),
+        )?)
+    }
+
+    /// The plan of [`ops_app`].
+    fn plan_ops(app: &ApplicationProgram) -> Result<FlashPlan, PlanError> {
+        plan_flash_default(
+            app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// The `UnsupportedWriteProp` reason of `result`.
+    fn write_refusal(
+        result: Result<FlashPlan, PlanError>,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        match result {
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => Ok(reason),
+            other => Err(format!("expected a refusal, got {other:?}").into()),
+        }
+    }
+
+    /// The `WriteProp` steps of `plan` to `prop_id`.
+    fn writes_to(plan: &FlashPlan, prop_id: u32) -> Vec<FlashStep> {
+        plan.steps
+            .iter()
+            .filter(|s| matches!(s, FlashStep::WriteProp { prop_id: p, .. } if *p == prop_id))
+            .cloned()
+            .collect()
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_an_undeclared_pid_13_placeholder_without_an_app_id() -> TestResult {
+        // Issue #964: the undeclared arm wrote the zeros; the one rule
+        // refuses them as the declared arm does.
+        let app = ops_app(
+            r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" InlineData="0000000000" />"#,
+            "",
+            false,
+        )?;
+        let reason = write_refusal(plan_ops(&app))?;
+        assert!(reason.contains("application-id placeholder"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_takes_a_pid_13_placeholder_value_from_a_parameter() -> TestResult {
+        // Issue #964: a parameter placed in PID 13 supplies the value the
+        // missing application id cannot, on both arms.
+        let param = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="v" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="7"><Property ObjectIndex="4" PropertyId="13" Offset="4" BitOffset="0" /></Parameter>"#;
+        for ops in [
+            r#"<LdCtrlWriteProp ObjIdx="4" PropId="13" InlineData="0000000000" />"#,
+            r#"<LdCtrlDeclarePropDesc ObjIdx="4" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
+               <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" />"#,
+        ] {
+            let plan = plan_ops(&ops_app(ops, param, false)?)?;
+            let values: Vec<Vec<u8>> = writes_to(&plan, 13)
+                .into_iter()
+                .filter_map(|s| match s {
+                    FlashStep::WriteProp { value, .. } => Some(value),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(values, vec![vec![0, 0, 0, 0, 7]], "{ops}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_picks_the_app_id_of_a_typed_pid_13_write_by_its_object() -> TestResult {
+        // Issue #964: a declared PID 13 placeholder naming the application
+        // object by type takes the main id; one naming another type has no
+        // id to take and is refused, never given object 0's.
+        let typed = |object_type: u32| {
+            format!(
+                r#"<LdCtrlDeclarePropDesc ObjType="{object_type}" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
+                   <LdCtrlWriteProp ObjType="{object_type}" PropId="13" Count="1" InlineData="0000000000" />"#
+            )
+        };
+        let plan = plan_ops(&ops_app(&typed(3), "", true)?)?;
+        assert!(matches!(
+            writes_to(&plan, 13).as_slice(),
+            [FlashStep::WriteProp { value, .. }] if value == &[0x00, 0xFA, 0x25, 0x00, 0x10]
+        ));
+        let reason = write_refusal(plan_ops(&ops_app(&typed(60001), "", true)?))?;
+        assert!(reason.contains("application-id placeholder"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_refuses_a_typed_write_past_an_8_bit_pid_by_list() -> TestResult {
+        // Issue #964: on a program that is not Data Secure enabled an
+        // object named by type is written on the plain services at its
+        // listed index, so a PID past 8 bits is refused at plan time, before
+        // the unload, on the InlineData, declared and parameter arms.
+        let param = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="v" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="7"><Property ObjectType="60001" PropertyId="300" Offset="0" BitOffset="0" /></Parameter>"#;
+        for (ops, params) in [
+            (
+                r#"<LdCtrlWriteProp ObjType="60001" PropId="300" InlineData="5A" />"#,
+                "",
+            ),
+            (
+                r#"<LdCtrlDeclarePropDesc ObjType="60001" PropId="300" PropType="PDT_UNSIGNED_CHAR" MaxElements="1" Writable="true" />
+                   <LdCtrlWriteProp ObjType="60001" PropId="300" Count="1" InlineData="5A" />"#,
+                "",
+            ),
+            (r#"<LdCtrlWriteProp ObjType="60001" PropId="300" />"#, param),
+        ] {
+            let reason = write_refusal(plan_ops(&ops_app(ops, params, true)?))?;
+            assert!(reason.contains("8-bit PID"), "{ops}: {reason}");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_takes_the_count_of_an_inline_data_write() -> TestResult {
+        // Issue #964: the one Count rule holds on the System B InlineData
+        // arm: `ObjType="50215" PropId="205" Count="2" InlineData="5A5A"` is
+        // two one-octet elements, not one two-octet element. `Verify` stays
+        // the echo validation ETS does on that arm (issue #390).
+        let app = ops_app(
+            r#"<LdCtrlWriteProp ObjType="50215" PropId="205" Count="2" Verify="true" InlineData="5A5A" />"#,
+            "",
+            true,
+        )?;
+        let plan = plan_ops(&app)?;
+        assert_eq!(
+            writes_to(&plan, 205),
+            vec![FlashStep::WriteProp {
+                object: PropObject::Type {
+                    object_type: 50215,
+                    occurrence: 0,
+                },
+                prop_id: 205,
+                value: vec![0x5A, 0x5A],
+                start_element: 1,
+                count: 2,
+                verify: false,
+                from_parameters: false,
+            }]
+        );
+        Ok(())
     }
 
     /// The fabricated Siemens-shaped product procedure (issue #614).

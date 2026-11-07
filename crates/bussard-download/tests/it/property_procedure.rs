@@ -546,7 +546,7 @@ async fn test_write_property_value_writes_500_elements_past_element_255() -> Tes
     assert_eq!(writes, expected);
     // The dry run lists the same requests.
     let planned: Vec<(usize, u16)> =
-        bussard_download::property_write_requests(PropObject::Index(8), 1, 500, 2000, 65)
+        bussard_download::property_write_requests(PropObject::Index(8), 1, 500, 2000, 65, false)
             .into_iter()
             .map(|r| (r.count, r.start))
             .collect();

@@ -680,6 +680,7 @@ pub(super) fn plan_flash_sys7(
                         inline,
                         &property_params,
                         app,
+                        false,
                     )?);
                 } else {
                     // A property write with its Count and Verify (issue #390):
@@ -690,6 +691,7 @@ pub(super) fn plan_flash_sys7(
                         op,
                         &property_values,
                         app,
+                        false,
                     )?);
                 }
             }

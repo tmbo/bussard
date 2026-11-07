@@ -483,8 +483,14 @@ pub fn write_dump(
             // ([`bussard_download::flash::property_write_requests`]: at most
             // 15 elements per plain request, 255 per extended one, within the
             // APDU the dump assumes for the system, [`dump_max_apdu`]). A
-            // System B write of one element keeps the label-only record the
-            // oracle rows were recorded with.
+            // System B write to an object named by type (issue #948) goes out
+            // at the index the device's object list gives it, plain, on a
+            // program that is not Data Secure enabled (`typed_objects_by_list`,
+            // the split the executor follows, issue #964); the dump has no
+            // device, so its records name the type the executor looks up, and
+            // list them under `properties`. A System B write of one element to
+            // an index keeps the label-only record the oracle rows were
+            // recorded with.
             FlashStep::WriteProp {
                 object,
                 prop_id,
@@ -493,13 +499,19 @@ pub fn write_dump(
                 count,
                 verify,
                 ..
-            } if plan.is_sys7() || plan.is_property_only() || *count > 1 => {
+            } if plan.is_sys7()
+                || plan.is_property_only()
+                || *count > 1
+                || matches!(object, bussard_download::PropObject::Type { .. }) =>
+            {
+                let system_b = !plan.is_sys7() && !plan.is_property_only();
                 let requests = bussard_download::flash::property_write_requests(
                     *object,
                     *start_element,
                     *count,
                     value.len(),
                     dump_max_apdu(plan),
+                    plan.typed_objects_by_list(),
                 );
                 let records: Vec<Value> = requests
                     .into_iter()
@@ -517,8 +529,10 @@ pub fn write_dump(
                         prop
                     })
                     .collect();
+                let typed = matches!(object, bussard_download::PropObject::Type { .. });
                 match <[Value; 1]>::try_from(records) {
-                    Ok([one]) => record["property"] = one,
+                    Ok([one]) if !(system_b && typed) => record["property"] = one,
+                    Ok([one]) => record["properties"] = json!([one]),
                     Err(records) => record["properties"] = json!(records),
                 }
             }
@@ -537,59 +551,6 @@ pub fn write_dump(
                 call["length"] = json!(data.len());
                 call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
                 record["function_property"] = call;
-            }
-            // A System B write to an object named by type (issue #948), one
-            // record per request as the executor splits it: on the extended
-            // services by type for a Data Secure enabled program, within the
-            // nominal APDU; at the index the device's object list gives it
-            // otherwise, at most 15 elements each. The dump has no device, so
-            // that record names the type the executor looks up.
-            FlashStep::WriteProp {
-                object:
-                    bussard_download::PropObject::Type {
-                        object_type,
-                        occurrence,
-                    },
-                prop_id,
-                value,
-                start_element,
-                count,
-                verify,
-                ..
-            } => {
-                let elem = (value.len() / usize::from((*count).max(1))).max(1);
-                let per_elements = if plan.typed_objects_by_list() {
-                    bussard_download::flash::plain_write_elements(DUMP_NOMINAL_MAX_APDU, elem)
-                } else {
-                    (usize::from(
-                        DUMP_NOMINAL_MAX_APDU
-                            - bussard_mgmt::property_ext::PROPERTY_EXT_WRITE_OVERHEAD,
-                    ) / elem)
-                        .clamp(1, usize::from(u8::MAX))
-                };
-                let per = if *count > 1 {
-                    per_elements * elem
-                } else {
-                    value.len().max(1)
-                };
-                let records: Vec<Value> = value
-                    .chunks(per)
-                    .enumerate()
-                    .map(|(i, chunk)| {
-                        json!({
-                            "object_type": object_type,
-                            "instance": u32::from(*occurrence) + 1,
-                            "pid": prop_id,
-                            "start_element": usize::from(*start_element) + i * per / elem,
-                            "count": if *count > 1 { chunk.len() / elem } else { 1 },
-                            "length": chunk.len(),
-                            "data": chunk.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-                            "verify": verify,
-                            "source": "load-procedure",
-                        })
-                    })
-                    .collect();
-                record["properties"] = json!(records);
             }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),
             // one record per write as the executor sends them: plain at the
@@ -783,11 +744,21 @@ mod tests {
         let text = std::fs::read_to_string(dir.join("plan.json"))?;
         let _ = std::fs::remove_dir_all(&dir);
         let dump: Value = serde_json::from_str(&text)?;
-        let step = dump["steps"].get(0).ok_or("one step")?;
-        let records = match step.get("properties") {
+        let records_of = |step: &Value| match step.get("properties") {
             Some(Value::Array(records)) => records.clone(),
-            _ => vec![step.get("property").ok_or("a property record")?.clone()],
+            _ => step.get("property").into_iter().cloned().collect(),
         };
+        let records = dump["steps"]
+            .as_array()
+            .ok_or("steps")?
+            .iter()
+            .map(records_of)
+            .find(|records| {
+                records
+                    .iter()
+                    .any(|r| r["pid"] == json!(205) || r["pid"] == json!(69))
+            })
+            .ok_or("a property record")?;
         Ok(records
             .iter()
             .map(|r| {
@@ -809,6 +780,49 @@ mod tests {
         assert_eq!(dumped_requests(&plain, "plain")?, vec![(1, 15), (16, 5)]);
         let typed = property_only_plan(r#"ObjType="11""#, 300)?;
         assert_eq!(dumped_requests(&typed, "typed")?, vec![(1, 224), (225, 76)]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_dump_splits_a_typed_system_b_write_as_the_executor_does()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #964: on a System B program that is not Data Secure enabled
+        // the executor writes an object named by type at its listed index,
+        // plain, at most 15 elements per request; the C02A shape
+        // (`ObjType="40960" PropId="69" Count="25"`) is two requests, not one
+        // extended one.
+        let data: String = (0..25).map(|i| format!("{i:02X}")).collect();
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+             <ApplicationProgram Id="M-0008_A-1" ApplicationNumber="22" ApplicationVersion="16"
+                MaskVersion="MV-07B0" Name="Typed">
+              <Static>
+               <LoadProcedures>
+                <LoadProcedure>
+                 <LdCtrlWriteProp ObjType="40960" PropId="69" Count="25" InlineData="{data}" />
+                </LoadProcedure>
+               </LoadProcedures>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        let app =
+            bussard_product::application::parse_application_program("M-0008_A-1", xml.as_bytes())?;
+        let plan = bussard_download::plan_flash(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
+        )?;
+        assert!(plan.typed_objects_by_list());
+        assert_eq!(
+            dumped_requests(&plan, "typed-sysb")?,
+            vec![(1, 15), (16, 10)]
+        );
         Ok(())
     }
 

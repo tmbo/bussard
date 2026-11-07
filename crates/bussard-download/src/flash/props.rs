@@ -44,49 +44,91 @@ fn ext_address(object_type: u16, occurrence: u16, prop_id: u32) -> PropertyExtAd
     }
 }
 
-/// The index of the `occurrence`-th object of `object_type`: from the device
-/// object's `PID_IO_LIST` when the device offers it, else from the
-/// `PID_OBJECT_TYPE` walk. The IPS 300 SREG's walk stops before its
-/// KNXnet/IP parameter object (object 7 on 1.1.200, issue #393); its own
-/// writes go out on the extended services, so this is the fallback for a
-/// device that refuses those.
+/// The index of the `occurrence`-th object of `object_type`, the one
+/// resolver of an object named by type for the write and the read-back
+/// (issue #964): from `known`, the interface-object list the caller already
+/// holds (the System B executor's walk before the first step), else from the
+/// device object's `PID_IO_LIST` when the device offers it, else from the
+/// `PID_OBJECT_TYPE` walk (or the table the connection was seeded with). The
+/// IPS 300 SREG's walk stops before its KNXnet/IP parameter object (object 7
+/// on 1.1.200, issue #393), so a type `known` misses is looked up again
+/// rather than refused. Every table is read by the index it records
+/// ([`listed_index`]), never by position, so a list with a gap names the
+/// same object for the write and the read-back.
+///
+/// `None` when no list holds the type.
+///
+/// # Errors
+///
+/// A transport failure.
+pub(super) async fn resolve_type_index<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    known: &[(u8, u16)],
+    object_type: u16,
+    occurrence: u16,
+) -> Result<Option<u8>, WriteError> {
+    if let Some(index) = listed_index(known, object_type, occurrence) {
+        return Ok(Some(index));
+    }
+    if let Some(types) = bussard_mgmt::read_io_list(l4).await? {
+        let table: Vec<(u8, u16)> = types
+            .iter()
+            .enumerate()
+            .filter_map(|(i, ot)| u8::try_from(i).ok().map(|i| (i, *ot)))
+            .collect();
+        if let Some(index) = listed_index(&table, object_type, occurrence) {
+            return Ok(Some(index));
+        }
+    }
+    let table = bussard_mgmt::probe_object_types(l4).await?;
+    Ok(listed_index(&table, object_type, occurrence))
+}
+
+/// [`resolve_type_index`] with no list in hand, a type no list holds an
+/// error: the fallback of the extended services for a device that refuses
+/// them.
 pub(super) async fn index_of_type<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object_type: u16,
     occurrence: u16,
 ) -> Result<u8, WriteError> {
-    let nth = |types: &[u16]| {
-        types
-            .iter()
-            .enumerate()
-            .filter(|(_, ot)| **ot == object_type)
-            .nth(usize::from(occurrence))
-            .and_then(|(index, _)| u8::try_from(index).ok())
-    };
-    if let Some(types) = bussard_mgmt::read_io_list(l4).await?
-        && let Some(index) = nth(&types)
-    {
-        return Ok(index);
-    }
-    let table = bussard_mgmt::probe_object_types(l4).await?;
-    let types: Vec<u16> = table.iter().map(|(_, ot)| *ot).collect();
-    // The walk lists objects from index 0 without gaps.
-    nth(&types).ok_or_else(|| {
+    resolve_type_index(l4, &[], object_type, occurrence)
+        .await?
+        .ok_or_else(|| {
+            WriteError::Mgmt(MgmtError::MalformedResponse {
+                address: l4.target(),
+                reason: format!(
+                    "the device has no interface object of type {object_type} (occurrence \
+                     {occurrence}) in its object list or walk, and declined the extended \
+                     property services"
+                ),
+            })
+        })
+}
+
+/// The 8-bit PID of a property addressed on the plain services at the index
+/// an object named by type resolved to; a PID past 8 bits is an error, never
+/// a write to PID 255.
+fn plain_pid<Ch: L4Channel>(
+    l4: &Layer4Connection<Ch>,
+    object_type: u16,
+    prop_id: u32,
+) -> Result<u8, WriteError> {
+    u8::try_from(prop_id).map_err(|_| {
         WriteError::Mgmt(MgmtError::MalformedResponse {
             address: l4.target(),
             reason: format!(
-                "the device has no interface object of type {object_type} (occurrence \
-                 {occurrence}) in its object list or walk {table:?}, and declined the \
-                 extended property services"
+                "PID {prop_id} of object type {object_type} exceeds the 8-bit PID the plain \
+                 property services address, and the device declined the extended ones"
             ),
         })
     })
 }
 
 /// The index of the `occurrence`-th object of `object_type` in the
-/// interface-object list `table` (`index`, `PID_OBJECT_TYPE`), as the System B
-/// executor walked it before the first step: where ETS writes an object a
-/// program that is not Data Secure enabled names by type (issue #948).
+/// interface-object list `table` (`index`, `PID_OBJECT_TYPE`): where ETS
+/// writes an object a program that is not Data Secure enabled names by type
+/// (issue #948).
 pub(super) fn listed_index(table: &[(u8, u16)], object_type: u16, occurrence: u16) -> Option<u8> {
     table
         .iter()
@@ -132,28 +174,32 @@ pub struct PropertyWriteRequest {
 /// service a single element is written whole and more are split into requests
 /// of at most 15 elements ([`plain_write_elements`]); an object named by type
 /// goes out on the extended service in requests of at most 255
-/// ([`bussard_mgmt::property_ext::write_elements_for_apdu`]). The dry-run dump
-/// lists the same requests.
+/// ([`bussard_mgmt::property_ext::write_elements_for_apdu`]), unless
+/// `typed_by_list`: the System B executor writes an object a program that is
+/// not Data Secure enabled names by type at the index the device's object
+/// list gives it, on the plain service (issue #948), so it splits as an
+/// index. The executor, the dry-run dump and (through the dump) `knxtrace`
+/// list the same requests (issue #964).
 pub fn property_write_requests(
     object: PropObject,
     start: u16,
     count: u16,
     value_len: usize,
     max_apdu: u16,
+    typed_by_list: bool,
 ) -> Vec<PropertyWriteRequest> {
     let elem = (value_len / usize::from(count.max(1))).max(1);
+    let plain = matches!(object, PropObject::Index(_)) || typed_by_list;
     let per = match object {
-        PropObject::Index(_) if count <= 1 => {
+        _ if plain && count <= 1 => {
             return vec![PropertyWriteRequest {
                 start,
                 count: 1,
                 octets: 0..value_len,
             }];
         }
-        PropObject::Index(_) => plain_write_elements(max_apdu, elem),
-        PropObject::Type { .. } => {
-            bussard_mgmt::property_ext::write_elements_for_apdu(max_apdu, elem)
-        }
+        _ if plain => plain_write_elements(max_apdu, elem),
+        _ => bussard_mgmt::property_ext::write_elements_for_apdu(max_apdu, elem),
     };
     let mut out = Vec::new();
     let mut at = 0usize;
@@ -189,6 +235,7 @@ async fn write_plain<Ch: L4Channel>(
         count,
         value.len(),
         l4.effective_max_apdu(),
+        false,
     );
     for request in requests {
         let n = u8::try_from(request.count).unwrap_or(u8::MAX);
@@ -281,7 +328,7 @@ pub async fn read_property_value<Ch: L4Channel>(
                 Some(data) => Ok(data),
                 None => {
                     let index = index_of_type(l4, object_type, occurrence).await?;
-                    let pid = u8::try_from(prop_id).unwrap_or(u8::MAX);
+                    let pid = plain_pid(l4, object_type, prop_id)?;
                     read_plain(l4, index, pid, start, count, elem).await
                 }
             }
@@ -326,7 +373,7 @@ pub async fn write_property_value<Ch: L4Channel>(
                 Some(()) => object,
                 None => {
                     let index = index_of_type(l4, object_type, occurrence).await?;
-                    let pid = u8::try_from(prop_id).unwrap_or(u8::MAX);
+                    let pid = plain_pid(l4, object_type, prop_id)?;
                     write_plain(l4, index, pid, start, count, value).await?;
                     PropObject::Index(u32::from(index))
                 }
