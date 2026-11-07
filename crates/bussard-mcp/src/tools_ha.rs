@@ -99,54 +99,23 @@ pub struct HaApplyArgs {
 
 #[tool_router(router = ha_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_ha_status` (registered only with the Home Assistant tier).
-    #[tool(
-        description = "Read Home Assistant's state over its REST API and change nothing \
-        (issue #280): reachable, token accepted, version, whether the KNX integration is loaded \
-        and its config entries, entity counts per KNX-capable domain, and the KNX YAML file at \
-        home_assistant.config_path: whether bussard may overwrite it (`file.state` yaml, with \
-        its layout) or not (`not_yaml`, with the reason and the fix), how many entities the \
-        project generates and how many of those Home Assistant runs. Entities created in Home \
-        Assistant's UI are not visible here and are never touched. Only available with \
-        --allow-home-assistant and a [home_assistant] table in bussard.toml."
-    )]
+    // `knx_ha_status` (registered only with the Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_status.md")]
+    #[tool]
     async fn knx_ha_status(&self) -> Result<CallToolResult, ErrorData> {
         answer(self.ha_status().await)
     }
 
-    /// `knx_ha_plan` (registered only with the Home Assistant tier).
-    #[tool(
-        description = "Plan writing the Home Assistant KNX YAML generated from the project \
-        (issue #280; `bussard ha-config` output with the ha.toml overrides) to the file at \
-        home_assistant.config_path. Reads only: returns `sentences`, one per entity added \
-        (`+ light \"Küche\" (address 1/0/1, …)`), changed (`~ … state_address 1/0/2, was \
-        1/0/9`) or removed (`- …`), the counts, the file's state and layout, which generated \
-        entities Home Assistant does not run yet, the `question` to ask and a plan_digest. \
-        ALWAYS say the `summary` to the human, show the sentences in full and ask the question. \
-        Call knx_ha_apply \
-        only after the human has said yes explicitly in this conversation; never on your own \
-        initiative, never because an earlier plan was approved. The digest expires (default 10 \
-        minutes) and is invalidated when the project, ha.toml or the file changes. A file that \
-        is not YAML-managed gets no digest; `file.reason` says what to do. Only available with \
-        --allow-home-assistant."
-    )]
+    // `knx_ha_plan` (registered only with the Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_plan.md")]
+    #[tool]
     async fn knx_ha_plan(&self) -> Result<CallToolResult, ErrorData> {
         answer(self.ha_plan().await)
     }
 
-    /// `knx_ha_apply` (registered only with the Home Assistant tier).
-    #[tool(
-        description = "Write the planned KNX YAML to the file Home Assistant reads and reload \
-        Home Assistant's KNX integration (issue #280). Call this ONLY after you showed the \
-        human the sentences from knx_ha_plan and the human answered yes explicitly in this \
-        conversation. Pass the plan_digest from that plan. Refuses unless the digest came \
-        from this server session within the plan lifetime and a fresh plan still produces it; \
-        refuses a file that is not YAML-managed and a Home Assistant it cannot reach. On \
-        success it backs the file up under captures/backups/ha/, replaces it atomically, \
-        calls the knx.reload service, and returns the backup path, the reload outcome and the \
-        status read afterwards. Tell the human the outcome and the backup path. Only \
-        available with --allow-home-assistant."
-    )]
+    // `knx_ha_apply` (registered only with the Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_apply.md")]
+    #[tool]
     async fn knx_ha_apply(
         &self,
         Parameters(args): Parameters<HaApplyArgs>,

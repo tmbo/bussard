@@ -67,19 +67,9 @@ fn parse_scheme(raw: &str) -> Result<Scheme, ErrorData> {
 #[allow(missing_docs)]
 #[tool_router(router = groups_router, vis = "pub")]
 impl BussardMcp {
-    /// `knx_scaffold_groups`.
-    #[tool(
-        description = "Draft or extend the project's group-address plan from a list of rooms and \
-                       the functions each room needs, writing groups.toml. Reserves the \
-                       conventional block per function (five addresses for a light, ten for a \
-                       blind or heating zone), names every address `<Floor> <Room> <Function> \
-                       <Role>`, fills the DPTs, and leaves the remaining slots free for growth. \
-                       Re-running with more rooms adds addresses and never renumbers or renames \
-                       existing ones. ALWAYS confirm the floor and room list, and the functions \
-                       per room, with the human before calling this: it writes a file that the \
-                       whole installation is then addressed against. Returns the addresses added \
-                       and the project's validation counts."
-    )]
+    // `knx_scaffold_groups`.
+    #[doc = include_str!("../guidance/tools/knx_scaffold_groups.md")]
+    #[tool]
     async fn knx_scaffold_groups(
         &self,
         Parameters(args): Parameters<ScaffoldGroupsArgs>,
@@ -91,18 +81,9 @@ impl BussardMcp {
         self.reserve(plan, scheme, "knx_scaffold_groups")
     }
 
-    /// `knx_reserve_groups`.
-    #[tool(
-        description = "Reserve the conventional group addresses for ONE room in groups.toml, the \
-                       MCP face of `bussard groups reserve \"<Floor> <Room>\" <function>...`. \
-                       `room` is floor first, e.g. \"EG Küche\"; `functions` are light, \
-                       light-dim, blind, heating, socket. Uses the project's scheme \
-                       (`[lint.groups] scheme` in bussard.toml, written on first use). Existing \
-                       addresses are never renumbered or renamed; a room and function that \
-                       already have their block add nothing. Confirm the room and functions \
-                       with the human first. Returns the addresses added and the project's \
-                       validation counts. Edits files only, never the bus."
-    )]
+    // `knx_reserve_groups`.
+    #[doc = include_str!("../guidance/tools/knx_reserve_groups.md")]
+    #[tool]
     async fn knx_reserve_groups(
         &self,
         Parameters(args): Parameters<ReserveGroupsArgs>,

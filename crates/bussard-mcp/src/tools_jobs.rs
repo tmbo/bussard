@@ -33,18 +33,9 @@ pub struct JobStatusArgs {
 // `pub(crate)`: the router is combined in `BussardMcp::new`.
 #[tool_router(router = jobs_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_job_status`.
-    #[tool(
-        description = "Report ONE job of this server, of any tier: a tool that may run longer \
-        than a client allows answers `started: true` with a `job` id, and this reads it. \
-        Returns `job`, `kind`, `state` (running, done, or interrupted when the server stopped \
-        mid-job), `done`, the current `step`, `question` (what the human must do or answer \
-        before the job goes on, such as pressing a device's programming button; null when \
-        none: relay it word for word, then keep polling), `progress` and, once done, `result`: \
-        exactly what the starting tool would have returned inline. Follow `next_step`. Reads \
-        only the server's job table and the job records under .bussard/history; never touches \
-        the bus. Poll every few seconds while `done` is false."
-    )]
+    // `knx_job_status`.
+    #[doc = include_str!("../guidance/tools/knx_job_status.md")]
+    #[tool]
     async fn knx_job_status(
         &self,
         Parameters(args): Parameters<JobStatusArgs>,

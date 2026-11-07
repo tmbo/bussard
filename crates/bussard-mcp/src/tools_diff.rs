@@ -54,16 +54,9 @@ pub struct DiffProjectArgs {
 // requires).
 #[tool_router(router = diff_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_export_bundle`.
-    #[tool(
-        description = "The bundle form of knx_export, under its earlier name. Write the whole \
-        project (bussard.toml, groups.toml, bussard.lock, devices/) \
-        and its history snapshots as ONE .bussard file: the handover file for an integrator, or \
-        the owner's backup. It never contains vendor product data (models/, vendor/), captures, \
-        keyrings, .knxproj/.knxprod files or .env. Returns the path and the manifest (counts, \
-        SHA-256, what was excluded). Reads the project, writes only the bundle; touches no device. \
-        Suggest it after the first working weekend and after changes the human wants to keep."
-    )]
+    // `knx_export_bundle`.
+    #[doc = include_str!("../guidance/tools/knx_export_bundle.md")]
+    #[tool]
     async fn knx_export_bundle(
         &self,
         Parameters(args): Parameters<ExportBundleArgs>,
@@ -82,17 +75,9 @@ impl BussardMcp {
         }
     }
 
-    /// `knx_diff_project`.
-    #[tool(
-        description = "Explain what a received ETS export (.knxproj) or bussard bundle (.bussard) \
-        would change compared with the working project, as plain sentences such as \"Group address \
-        1/0/1 is now called \\\"Kitchen ceiling\\\" (was \\\"Light Kitchen\\\").\" A renamed \
-        group address is one rename, not a removal and an addition. QUOTE THESE SENTENCES TO THE \
-        HUMAN BEFORE SHE IMPORTS the file (knx_import_file, or `bussard import <file>`); a change marked \
-        touches_protected concerns a safety-critical group address and needs her explicit word. \
-        At import, hand-edited names, rooms and descriptions that differ stay local unless she \
-        chooses --theirs. Read-only: writes nothing, touches no device."
-    )]
+    // `knx_diff_project`.
+    #[doc = include_str!("../guidance/tools/knx_diff_project.md")]
+    #[tool]
     async fn knx_diff_project(
         &self,
         Parameters(args): Parameters<DiffProjectArgs>,

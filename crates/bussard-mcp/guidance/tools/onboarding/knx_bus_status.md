@@ -1,0 +1,1 @@
+The bus connection. Before knx_setup has written the project there is none: the result says so.

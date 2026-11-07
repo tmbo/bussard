@@ -1,0 +1,1 @@
+Summarize the loaded KNX project: name, counts of devices/group-addresses/links, floors and rooms with device counts, group-address main-range names, live bus connection status, and validation error/warning counts, plus `server` (the active tiers: passive, writes, programming) and `capabilities` (what this server may do, in one paragraph). Call this first to orient yourself.

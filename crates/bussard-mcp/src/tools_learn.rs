@@ -69,20 +69,9 @@ const NEXT_STEP: &str = "Tell the human what you think this group address is \
 
 #[tool_router(router = learn_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_infer_group` (read tier; available in `--passive` too).
-    #[tool(
-        description = "Infer what a group address IS from the traffic already seen on it: ranked \
-        DPT candidates with the reasoning for each, the sending device (address, name, location), \
-        its channel and com object (index, name, declared DPT, flags), the project's current entry \
-        for the GA, and a proposed human name built from location, channel and com-object \
-        function. This is the second half of the learn loop: ask the human to press the button, \
-        call knx_wait_for_telegram, then call this. It reads the telegram buffer and the project \
-        only and NEVER transmits, so it works in --passive mode. Confidence is never 'high' \
-        unless the sending com object declares the DPT. Pass payload_hex to ask about a specific \
-        payload instead of the buffered ones. Secured (KNX Data Secure) telegrams count only when \
-        the server's --keyring decrypted them (`secured`: true); `undecrypted_secured` counts the \
-        ones left out."
-    )]
+    // `knx_infer_group` (read tier; available in `--passive` too).
+    #[doc = include_str!("../guidance/tools/knx_infer_group.md")]
+    #[tool]
     async fn knx_infer_group(
         &self,
         Parameters(args): Parameters<InferArgs>,
@@ -192,17 +181,9 @@ impl BussardMcp {
         }))
     }
 
-    /// `knx_run_tests` (registered only with `--allow-writes`).
-    #[tool(
-        description = "Run the acceptance tests in the project folder's tests.toml against the \
-        PHYSICAL bus and return a pass/fail report. Each test writes a group value and waits for \
-        the telegram that proves the installation reacted, so actuators MOVE. Only available when \
-        the server was started with --allow-writes. A test that writes to a protected group \
-        address (a wind alarm, a central function) is REFUSED and not run, whatever the file's \
-        allow_protected flag says. There is no MCP override; a human must run `bussard test \
-        --force` from a terminal. Tests with a `manual:` step are skipped here, since nobody is \
-        at the server's terminal to carry them out. Use `only` to run named tests."
-    )]
+    // `knx_run_tests` (registered only with `--allow-writes`).
+    #[doc = include_str!("../guidance/tools/knx_run_tests.md")]
+    #[tool]
     async fn knx_run_tests(
         &self,
         Parameters(args): Parameters<RunTestsArgs>,

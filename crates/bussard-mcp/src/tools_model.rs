@@ -220,17 +220,9 @@ pub struct UndoArgs {
 // requires).
 #[tool_router(router = model_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_describe_change`.
-    #[tool(
-        description = "Describe a change to the project in plain sentences a homeowner can judge, e.g. \
-        \"Rocker 1 on Hallway push button now switches Porch light.\" With no arguments it \
-        describes the PENDING changes: the project files as they are now against the last history \
-        snapshot, i.e. everything edited but not yet pushed to any device. Pass `from` and `to` \
-        snapshot ids (from knx_history) to describe the change between two snapshots instead. \
-        SAY THE `summary` (the change in rooms and names), THEN QUOTE THESE SENTENCES TO THE \
-        HUMAN before she confirms anything; a change marked \
-        touches_protected concerns a safety-critical group address and needs her explicit word."
-    )]
+    // `knx_describe_change`.
+    #[doc = include_str!("../guidance/tools/knx_describe_change.md")]
+    #[tool]
     async fn knx_describe_change(
         &self,
         Parameters(args): Parameters<DescribeChangeArgs>,
@@ -289,13 +281,9 @@ impl BussardMcp {
         ok(result)
     }
 
-    /// `knx_history`.
-    #[tool(
-        description = "List the project's history snapshots, oldest first: id, time, the command \
-        that caused it, the gateway it wrote to (if any) and a one-line plain-language summary of \
-        what it changed. Use it to answer \"what did we change, and when?\", and to get a snapshot \
-        id for knx_describe_change or knx_undo."
-    )]
+    // `knx_history`.
+    #[doc = include_str!("../guidance/tools/knx_history.md")]
+    #[tool]
     async fn knx_history(
         &self,
         Parameters(args): Parameters<HistoryArgs>,
@@ -308,22 +296,9 @@ impl BussardMcp {
         ok(json!({ "ok": true, "count": rows.len(), "snapshots": rows }))
     }
 
-    /// `knx_set_group`.
-    #[tool(
-        description = "Create or update a group address in groups.toml: its name, datapoint type \
-        and free-text note. Creating one needs a name. This edits FILES ONLY: no telegram is sent, \
-        and no device stores a group address's name or type; links that use it are pushed per \
-        device with knx_plan_device and knx_apply_device. A group \
-        address marked protected (safety-critical, e.g. a wind alarm) cannot be renamed or retyped \
-        here, and there is deliberately no way to set or clear that flag over MCP. `secure` \
-        switches KNX Data Secure for the group address: false removes its group key from the key \
-        store (bussard.keys) and clears the secure flag of the group and of every linked \
-        com-object on every device, true sets them and generates a group key when the store has \
-        none; one change, undone with knx_undo. The Secure devices linked to it then need \
-        knx_plan_device and knx_apply_device (their security object changes), and Home Assistant \
-        and every other user of an exported keyring need a new `bussard keys export`. Returns the change as \
-        sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_set_group`.
+    #[doc = include_str!("../guidance/tools/knx_set_group.md")]
+    #[tool]
     async fn knx_set_group(
         &self,
         Parameters(args): Parameters<SetGroupArgs>,
@@ -361,15 +336,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_remove_group`.
-    #[tool(
-        description = "Remove a group address from groups.toml. Refused while any com object \
-        still sends or listens to it: the refusal lists those links, and knx_remove_link unbinds \
-        each one first. A protected group address (safety-critical, e.g. a wind alarm) is \
-        refused outright. This edits FILES ONLY: no telegram is sent and no device stores a \
-        group address's name; knx_undo puts it back. Returns the change as sentences: quote \
-        them to the human."
-    )]
+    // `knx_remove_group`.
+    #[doc = include_str!("../guidance/tools/knx_remove_group.md")]
+    #[tool]
     async fn knx_remove_group(
         &self,
         Parameters(args): Parameters<RemoveGroupArgs>,
@@ -410,19 +379,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_add_link`.
-    #[tool(
-        description = "Bind a device's com object to a group address in its device file (devices/<address>.toml). The device's address goes in `address` (e.g. \"1.1.4\"). Role \"send\" \
-        makes the com object transmit on that GA (a com object has at most one, so an existing one \
-        is replaced), role \"listen\" makes it react to the GA. A GA that groups.toml does not \
-        define yet is added there, named `<channel or device name> <object function>` with the \
-        object's DPT, and reported in groups_declared. This edits FILES ONLY: the device \
-        keeps its current wiring until knx_plan_device and knx_apply_device push it (the \
-        result's next_step says how at this server's tier). Protected group addresses are refused outright. \
-        A link that puts a device without KNX Data Secure on a group address the other side runs \
-        secured (validation E035/E036) is refused with the ways out. Returns the change as sentences: quote \
-        them to the human before she confirms."
-    )]
+    // `knx_add_link`.
+    #[doc = include_str!("../guidance/tools/knx_add_link.md")]
+    #[tool]
     async fn knx_add_link(
         &self,
         Parameters(args): Parameters<LinkArgs>,
@@ -496,14 +455,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_remove_link`.
-    #[tool(
-        description = "Unbind a device's com object from a group address in its device file (devices/<address>.toml) (role \
-        \"send\" or \"listen\"). The device's address goes in `address` (e.g. \"1.1.4\"). This edits FILES ONLY: the device keeps its current wiring until \
-        knx_plan_device and knx_apply_device push it (the result's next_step says how at this \
-        server's tier). Protected group addresses are \
-        refused outright. Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_remove_link`.
+    #[doc = include_str!("../guidance/tools/knx_remove_link.md")]
+    #[tool]
     async fn knx_remove_link(
         &self,
         Parameters(args): Parameters<LinkArgs>,
@@ -551,13 +505,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_set_device`.
-    #[tool(
-        description = "Rename a device or change where it lives (floor and room) in its \
-        devices/*.toml file. Names and locations are what every other sentence is built from, so \
-        good ones make the whole project readable. This edits FILES ONLY and never touches the bus. \
-        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_set_device`.
+    #[doc = include_str!("../guidance/tools/knx_set_device.md")]
+    #[tool]
     async fn knx_set_device(
         &self,
         Parameters(args): Parameters<SetDeviceArgs>,
@@ -602,38 +552,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_set_parameter`.
-    #[tool(
-        description = "Change one device parameter value in its device file, devices/<address>.toml \
-        (e.g. a night setback temperature). `parameter` is the key knx_show_device lists \
-        (`helligkeitsschwelle`, page-qualified `sollwerte.komfort`, or `key@reference`); the \
-        same key prefixed with its page or channel handle \
-        (`universalkanal-c4-funktion.helligkeitsschwelle`) and the bare reference \
-        (`P-7305_R-7305`) work too, and `channel` takes a channel handle, `device` or a page \
-        handle, as knx_show_device does, when the key repeats. An unknown key is refused with \
-        the three closest keys on the device. Any \
-        parameter the lock knows for the device, or the product model's pages hold (one on a \
-        page that was inactive at import), can be set, and the value (an enum label or \
-        code, a number) is checked against the vendor's product model first; without a product \
-        model the edit is refused rather than guessed. This edits FILES ONLY: the device keeps \
-        its current settings until the change is pushed with knx_plan_device and \
-        knx_apply_device (the plan lists the parameter by name); the result's next_step says how \
-        it reaches the device at this server's tier. Parameters at their vendor default are set \
-        the same way. A parameter that shows or hides com-objects (an enable flag, a data \
-        length) changes the group-object table, which only a full download writes: the \
-        result's `note` names the objects and how that download is pushed at this server's \
-        tier (with --allow-programming, knx_plan_device plans it as `method: flash`), and \
-        knx_show_device lists the parameters and objects it reveals right away. A parameter \
-        the configuration does not show under the device's current values (its page is \
-        inactive, or it belongs to another branch of a choice) is refused with the condition \
-        that shows it and the ref that is shown instead, because the device would never get \
-        the value; `force: true` stores it anyway to prepare a branch before switching to it. \
-        A bare parameter id (`P-7305`) or the vendor text names the ref the configuration \
-        shows. An output of a <ParameterCalculation> is refused, also with `force`: ETS shows it \
-        read-only and a download writes what the calculation computes, so set the inputs the \
-        refusal names; the change then lists the output's new computed value. \
-        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_set_parameter`.
+    #[doc = include_str!("../guidance/tools/knx_set_parameter.md")]
+    #[tool]
     async fn knx_set_parameter(
         &self,
         Parameters(args): Parameters<SetParameterArgs>,
@@ -686,24 +607,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_set_interface`.
-    #[tool(
-        description = "Edit the [knxnet] table of a KNX IP interface's device file \
-        (devices/<address>.toml): how it gets its IP address (assignment `dhcp` or `static`, \
-        with ip_address, netmask and default_gateway for static), its friendly name, and its \
-        tunnelling addresses (tunnels replaces the list; add_tunnels and remove_tunnels change \
-        it). Pass only what changes. The table is validated before it is saved: a static \
-        assignment needs an address and a netmask, static settings under dhcp, a friendly name \
-        over 30 ISO 8859-1 characters, a tunnel address listed twice, off the interface's line \
-        or used by a device of the project are refused (E043 to E046), and the result's \
-        `warnings` carry W047 when the tunnels differ from the ones the server's keys list \
-        for the interface. The device must already have a [knxnet] table (import and adopt \
-        write it). This edits FILES ONLY: knx_plan_device shows the property writes and \
-        knx_apply_device writes them to the interface's KNXnet/IP parameter object; a change of \
-        the IP assignment, address or tunnel addresses of the interface this server tunnels \
-        through is refused there (the owner applies it with `bussard apply <address> --allow-self-reconfigure`). \
-        Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_set_interface`.
+    #[doc = include_str!("../guidance/tools/knx_set_interface.md")]
+    #[tool]
     async fn knx_set_interface(
         &self,
         Parameters(args): Parameters<SetInterfaceArgs>,
@@ -771,15 +677,9 @@ impl BussardMcp {
         })
     }
 
-    /// `knx_undo`.
-    #[tool(
-        description = "Put the project files back to a history snapshot (default: the newest \
-        snapshot that differs from the current files, i.e. undo the last change). This changes FILES ONLY: devices keep whatever is in their tables until \
-        knx_plan_device and knx_apply_device push them (the result's next_step names the \
-        devices and says how at this server's tier). The state before the undo is \
-        itself snapshotted, so an undo can be undone. Returns what the undo reverted, as \
-        sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_undo`.
+    #[doc = include_str!("../guidance/tools/knx_undo.md")]
+    #[tool]
     async fn knx_undo(
         &self,
         Parameters(args): Parameters<UndoArgs>,
@@ -840,20 +740,9 @@ impl BussardMcp {
         ok(result)
     }
 
-    /// `knx_discard_edits`.
-    #[tool(
-        description = "Abandon this session's unapplied edits of ONE subject and leave every \
-        other edit alone: `address` (a device: its link and parameter edits since it last \
-        matched the project) or `group` (a group address: its groups.toml edits). The subject's \
-        part of the files goes back to the snapshot before its first such edit. Use it to \
-        revert one device while edits on other devices stay; knx_undo instead rolls the whole \
-        project back to a snapshot. A group created this session that a link still uses cannot \
-        be discarded (the refusal lists the links; knx_remove_link first). A group whose Data \
-        Secure state the discard flips gets its group key back in the key store, or loses it, \
-        as knx_undo does (`key_store`). This edits FILES \
-        ONLY and snapshots first, so knx_undo brings the edits back. Returns the dropped edits \
-        as sentences and a `summary`: say the summary to the human, then quote the sentences."
-    )]
+    // `knx_discard_edits`.
+    #[doc = include_str!("../guidance/tools/knx_discard_edits.md")]
+    #[tool]
     async fn knx_discard_edits(
         &self,
         Parameters(args): Parameters<DiscardEditsArgs>,

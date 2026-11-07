@@ -1,0 +1,1 @@
+Rename a device or change where it lives (floor and room) in its devices/*.toml file. Names and locations are what every other sentence is built from, so good ones make the whole project readable. This edits FILES ONLY and never touches the bus. Returns the change as sentences and a `summary`: say the summary to the human, then quote the sentences.
