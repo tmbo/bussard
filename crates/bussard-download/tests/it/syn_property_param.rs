@@ -583,3 +583,54 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
     assert_eq!(counts.iter().map(|c| u32::from(*c)).sum::<u32>(), 20);
     Ok(())
 }
+
+#[test]
+fn test_plan_flash_system_b_lowers_a_function_call() -> TestResult {
+    // Issue #946: the Hager 07B0 programs call object 6 PID 52 inside the
+    // merged download; the call lowers to a step, not a refusal.
+    use bussard_prod::application::LoadOp;
+    let (product, _tmp) = product()?;
+    let mut app = product
+        .applications
+        .first()
+        .ok_or("one application")?
+        .clone();
+    let lp = app
+        .load_procedures
+        .iter_mut()
+        .find(|lp| {
+            lp.ops.iter().any(|op| {
+                matches!(
+                    op,
+                    LoadOp::WriteProp {
+                        prop_id: Some(201),
+                        ..
+                    }
+                )
+            })
+        })
+        .ok_or("the procedure that writes PID 201")?;
+    lp.ops.insert(
+        0,
+        LoadOp::InvokeFunctionProp {
+            obj_idx: Some(6),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(52),
+            inline_data: Some(vec![0x04]),
+        },
+    );
+    if !lp.applies_to.is_empty() {
+        lp.applies_to.insert(0, None);
+    }
+    if !lp.guards.is_empty() {
+        lp.guards.insert(0, Vec::new());
+    }
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert!(plan.steps.contains(&FlashStep::InvokeFunctionProp {
+        object: PropObject::Index(6),
+        prop_id: 52,
+        data: vec![0x04],
+    }));
+    Ok(())
+}

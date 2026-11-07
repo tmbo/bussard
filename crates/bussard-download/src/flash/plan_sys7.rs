@@ -367,6 +367,9 @@ pub(super) fn plan_flash_sys7(
     // ([`sys7_task_identity`]). A product that lacks one refuses at the first
     // TaskSegment op rather than writing a guessed identity.
     let task_identity = sys7_task_identity(app);
+    // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #946,
+    // as on System B since #938).
+    let mut declared: Vec<super::declare::PropDecl> = Vec::new();
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -641,16 +644,38 @@ pub(super) fn plan_flash_sys7(
                 // which is identical on System 7 (`[system7-spec §4.6]`).
                 steps.push(super::plan_props::lower_compare_prop(step_no, op)?);
             }
-            LoadOp::WriteProp { .. } => {
-                // A property write with its Count and Verify (issue #390): the
-                // 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the MDT 0705
-                // label properties their parameters compose.
-                steps.push(super::plan_props::lower_write_prop(
-                    step_no,
-                    op,
-                    &property_values,
-                    app,
+            // A function property call, its return code checked (issue #946):
+            // the Berker/Hager 0701 programs call object 5 PID 52 before the
+            // unloads.
+            LoadOp::InvokeFunctionProp { .. } => {
+                steps.push(super::function_prop::lower_invoke_function_prop(
+                    step_no, op,
                 )?);
+            }
+            // A declaration sends nothing; it sizes the writes to its property
+            // that follow, as on System B (issue #946, #938). The Hager 0701
+            // programs declare object 6 to 8's parameter properties.
+            LoadOp::DeclarePropDesc { .. } => {
+                let decl = super::declare::lower_declare_prop(step_no, op)?;
+                steps.push(decl.step());
+                declared.push(decl);
+            }
+            LoadOp::WriteProp { .. } => {
+                // A write to a declared property: `Count` elements of the
+                // declared type (issue #946).
+                if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
+                    steps.extend(sys7_declared_write_prop(step_no, op, decl, app, &config)?);
+                } else {
+                    // A property write with its Count and Verify (issue #390):
+                    // the 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the
+                    // MDT 0705 label properties their parameters compose.
+                    steps.push(super::plan_props::lower_write_prop(
+                        step_no,
+                        op,
+                        &property_values,
+                        app,
+                    )?);
+                }
             }
             LoadOp::LoadImageProp {
                 obj_idx,
@@ -1837,6 +1862,62 @@ pub fn sys7_profile_from_hawk(
     };
     profile.verify_mode = hawk.verify_mode();
     Some(profile)
+}
+
+/// Lowers an `LdCtrlWriteProp` to a property an earlier
+/// `LdCtrlDeclarePropDesc` declared (issue #946): `Count` elements of the
+/// declared type, the value the parameters compose over the op's
+/// `InlineData`, as the System B planner lowers it (issue #938). ETS writes
+/// the Hager 0701 declared properties without a description read, ten
+/// one-octet elements per request on the 15-octet APDU
+/// (`captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults/ops.txt`,
+/// ops 85 to 129).
+///
+/// A write that carries no `InlineData` to a property no parameter is placed
+/// in sends nothing (`None`): ETS writes nothing to the Hager STXE530's
+/// object 6 PID 52 (`captures/ets-sweep/M-0009_A-20BB-10-0991/plain-defaults`,
+/// `ops.txt`: writes to objects 7 and 8 only), and has no value to write.
+fn sys7_declared_write_prop(
+    step_no: usize,
+    op: &LoadOp,
+    decl: &super::declare::PropDecl,
+    app: &ApplicationProgram,
+    config: &bussard_prod::dynamic::DynamicConfig,
+) -> std::result::Result<Option<FlashStep>, PlanError> {
+    let no_inline = matches!(
+        op,
+        LoadOp::WriteProp { inline_data, .. } if inline_data.as_deref().is_none_or(<[u8]>::is_empty)
+    );
+    let placed = app.parameters.values().any(|p| {
+        p.property
+            .as_ref()
+            .is_some_and(|loc| super::plan_props::may_hold(loc, decl.object, decl.prop_id))
+    });
+    if no_inline && !placed {
+        return Ok(None);
+    }
+    let object = match decl.object {
+        super::PropObject::Index(index) => bussard_prod::PropertyObjectRef::Index(index),
+        super::PropObject::Type {
+            object_type,
+            occurrence,
+        } => bussard_prod::PropertyObjectRef::Type {
+            object_type: u32::from(object_type),
+            occurrence: u32::from(occurrence),
+        },
+    };
+    let compose = |base: Vec<u8>| {
+        bussard_prod::compose_property_value(app, config, object, decl.prop_id, base).map_err(|e| {
+            PlanError::UnsupportedWriteProp {
+                step: step_no,
+                reason: format!(
+                    "composing the value of {} PID {} from the parameters: {e}",
+                    decl.object, decl.prop_id
+                ),
+            }
+        })
+    };
+    super::declare::lower_declared_write_prop(step_no, op, decl, &compose, app).map(Some)
 }
 
 /// The mem-type for a System 7 absolute-segment allocation at `addr`: RAM (`2`)

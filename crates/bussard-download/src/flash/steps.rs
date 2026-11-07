@@ -212,6 +212,16 @@ pub(super) async fn run_shared_step<C: Connector>(
             super::execute::delay_step(*milliseconds).await;
             Ok(())
         }
+        // A function property call (issue #946): the state response must
+        // carry return code 00h.
+        FlashStep::InvokeFunctionProp {
+            object,
+            prop_id,
+            data,
+        } => {
+            super::function_prop::invoke_function_property(session.l4(), *object, *prop_id, data)
+                .await
+        }
         // A property declaration (issue #938): the planner sized the write
         // that follows from it; ETS sends nothing for it, and neither does
         // bussard.

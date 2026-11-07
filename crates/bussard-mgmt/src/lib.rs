@@ -54,6 +54,7 @@ pub mod broadcast;
 pub mod connection;
 pub mod device;
 pub mod error;
+pub mod function_property;
 pub mod io_list;
 pub mod ip_secure;
 pub mod knxnet;

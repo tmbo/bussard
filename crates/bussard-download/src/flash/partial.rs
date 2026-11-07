@@ -64,6 +64,19 @@ pub enum PartialPlanError {
         /// The code-segment id.
         segment: String,
     },
+    /// The procedure carries a step whose parameter-only form no capture
+    /// shows (issue #946): a function property call, of which the full
+    /// procedure makes one per `AppliesTo`, or on System 7 a declared
+    /// property, which holds parameters the System 7 parameter-only download
+    /// does not write.
+    #[error(
+        "the application's load procedure has {what}, and no ETS capture shows what a \
+         parameter-only download sends for it; use a full `bussard flash`"
+    )]
+    UncapturedStep {
+        /// The step in words.
+        what: String,
+    },
 }
 
 impl FlashPlan {
@@ -75,6 +88,23 @@ impl FlashPlan {
     /// procedure writes no parameter image, or when a parameter segment was not
     /// read back.
     pub fn parameters_only(&self, regions: &ParamRegions) -> Result<FlashPlan, PartialPlanError> {
+        for step in &self.steps {
+            let what = match step {
+                FlashStep::InvokeFunctionProp {
+                    object, prop_id, ..
+                } => format!(
+                    "a function property call on {object} PID {prop_id} (LdCtrlInvokeFunctionProp)"
+                ),
+                FlashStep::DeclareProp {
+                    object, prop_id, ..
+                } if self.is_sys7() => format!(
+                    "a declared property {object} PID {prop_id} (LdCtrlDeclarePropDesc) on \
+                     System 7"
+                ),
+                _ => continue,
+            };
+            return Err(PartialPlanError::UncapturedStep { what });
+        }
         let steps = if self.is_sys7() {
             self.sys7_parameter_steps(regions)?
         } else {

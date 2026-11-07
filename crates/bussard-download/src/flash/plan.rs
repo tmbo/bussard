@@ -552,6 +552,12 @@ pub fn plan_flash(
             LoadOp::LoadCompleted { .. } => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
+            // A function property call, its return code checked (issue #946).
+            LoadOp::InvokeFunctionProp { .. } => {
+                steps.push(super::function_prop::lower_invoke_function_prop(
+                    step_no, op,
+                )?);
+            }
             // A declaration sends nothing; it sizes the writes to its property
             // that follow (issue #938).
             LoadOp::DeclarePropDesc { .. } => {
