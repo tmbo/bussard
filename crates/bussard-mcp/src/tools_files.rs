@@ -158,25 +158,9 @@ impl std::fmt::Debug for ExportArgs {
 // requires).
 #[tool_router(router = files_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_import_file`.
-    #[tool(
-        description = "Import a file from ETS or a vendor into the project, as `bussard import`, \
-        `bussard import-product` and `bussard keys import` do, chosen by the file type: a \
-        .knxproj (ETS project export) or .bussard bundle is written into the project (a re-import keeps hand-edited names, rooms and descriptions and lists \
-        each one that differs; pass theirs: true to take the incoming values); a .knxprod is \
-        stored as product data and its product models generated; a .knxkeys is merged into the \
-        key store bussard.keys. Vendor product data by order number: {order_number, download: \
-        true}. Downloading copyrighted vendor data needs the human's consent: ask, then pass \
-        download: true (never `yes`); without it nothing is downloaded and the result says what \
-        would be. A protected .knxproj the server has no password for: when the chat app \
-        shows links, bussard shows the human its own password form on this computer, stores \
-        the password in .env and imports; never ask for it in chat. Otherwise the result asks \
-        for `password`. A .knxkeys needs `password` (ask the human; it is never echoed or \
-        stored) unless the server's environment has it. Run knx_diff_project \
-        first and quote its sentences before importing a project or bundle. Snapshots the \
-        project first (knx_undo puts it back); touches no device. Returns sentences: quote the \
-        summary."
-    )]
+    // `knx_import_file`.
+    #[doc = include_str!("../guidance/tools/knx_import_file.md")]
+    #[tool]
     async fn knx_import_file(
         &self,
         Parameters(args): Parameters<ImportFileArgs>,
@@ -238,19 +222,9 @@ impl BussardMcp {
         ok(run.into_value()).map(Into::into)
     }
 
-    /// `knx_export`.
-    #[tool(
-        description = "Write an export of the project, as `bussard export`, `bussard \
-        export-groups`, `bussard keys export` and `bussard doc` do. what: `bundle` writes the \
-        project and its history as one .bussard file (the handover file for an integrator, or the \
-        owner's backup; never vendor product data, keyrings or passwords; `out` optional); \
-        `groups` writes the group-address plan for ETS's Group Addresses -> Import (format \
-        ets-csv or ets-xml); `keyring` writes the key store as a signed .knxkeys ETS accepts, \
-        reads it back and says whether it carries every key (needs the keyring `password` \
-        unless the server's environment has it; force: true to overwrite); `doc` renders the \
-        handover documentation folder as Markdown. Returns the written path and one \
-        summary sentence; never key material. Touches no device and no project file."
-    )]
+    // `knx_export`.
+    #[doc = include_str!("../guidance/tools/knx_export.md")]
+    #[tool]
     async fn knx_export(
         &self,
         Parameters(args): Parameters<ExportArgs>,

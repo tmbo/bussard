@@ -348,10 +348,9 @@ fn build_filter(ga: Option<&str>, source: Option<&str>) -> Result<Filter, ErrorD
 
 #[tool_router]
 impl BussardMcp {
-    /// `knx_project_summary`.
-    #[tool(
-        description = "Summarize the loaded KNX project: name, counts of devices/group-addresses/links, floors and rooms with device counts, group-address main-range names, live bus connection status, and validation error/warning counts, plus `server` (the active tiers: passive, writes, programming) and `capabilities` (what this server may do, in one paragraph). Call this first to orient yourself."
-    )]
+    // `knx_project_summary`.
+    #[doc = include_str!("../guidance/tools/knx_project_summary.md")]
+    #[tool]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
         let mut summary = tools::project_summary(&self.state.model.current(), &self.state.bus);
         let tiers = crate::guidance::Tiers::of(&self.state);
@@ -365,10 +364,9 @@ impl BussardMcp {
         ok(summary)
     }
 
-    /// `knx_model_lookup`.
-    #[tool(
-        description = "Search the KNX project by a case-insensitive substring. Matches group-address names and addresses, device names and addresses, room names, com objects (the name the device file gives a linked object, and for every object the device has, linked or not, the vendor text, function and key) and channels (vendor text, name, handle). Returns matches grouped by kind (groups, devices, objects, channels); an object or channel names its device (`device_ia`), channel handle and object numbers, ready for knx_show_device and knx_add_link. `capabilities` searches what the installed devices could do: the parameter texts and enum choice texts of their product models (every word of the query must appear; umlauts may be spelled out). Each names the device, the ETS page or channel (`block_or_channel`, `handle`), the parameter, the matching choice and whether that page is active; `provides` matches come first, then `could provide` ones on inactive pages and channels (spare capacity, with `enable`: the parameters to set, and `needs`), then other choices of active pages; within each, a device whose com-objects send the measured value the query names (9.004 for \"Helligkeit\") leads and its first entry lists them in `sends`. An entry repeated on several channels of a device is one entry with `channels`, and one repeated on devices of one application one entry with `also_on`. Read knx_show_device with the `handle` for the candidates. Empty fields and the ETS references a key already names are left out; `technical: true` keeps them."
-    )]
+    // `knx_model_lookup`.
+    #[doc = include_str!("../guidance/tools/knx_model_lookup.md")]
+    #[tool]
     async fn knx_model_lookup(
         &self,
         Parameters(args): Parameters<LookupArgs>,
@@ -384,10 +382,9 @@ impl BussardMcp {
         ok(value)
     }
 
-    /// `knx_get_group`.
-    #[tool(
-        description = "Look up a single group address: its definition (name, DPT, description), every link that sends to or listens on it (device address/name, com-object number/name, send|listen, and by default the device's `room` and `what` the object is in words), and the last telegram seen on it from the live buffer, if any. `technical: true` returns the raw shape (the telegram's wire detail, no `room`/`what`)."
-    )]
+    // `knx_get_group`.
+    #[doc = include_str!("../guidance/tools/knx_get_group.md")]
+    #[tool]
     async fn knx_get_group(
         &self,
         Parameters(args): Parameters<GetGroupArgs>,
@@ -404,10 +401,9 @@ impl BussardMcp {
         ok(value)
     }
 
-    /// `knx_get_device`.
-    #[tool(
-        description = "Get the full definition of one device by its address: identity, product, location, channels, its parameters (by the keys the device file uses) and generated com-object table, plus every link (com-object -> group addresses) on it. ETS-internal values the user cannot set are left out and counted in `hidden_parameters`; `technical: true` includes them. Outputs of a <ParameterCalculation> that the configuration computes are listed in `computed_parameters` (key, the value a download writes, `computed_by`: the calculation id); they are not set in the file. This is the configured state; for what the device can do (inactive channels and pages, functions, choices) use knx_show_device."
-    )]
+    // `knx_get_device`.
+    #[doc = include_str!("../guidance/tools/knx_get_device.md")]
+    #[tool]
     async fn knx_get_device(
         &self,
         Parameters(args): Parameters<DeviceArgs>,
@@ -429,42 +425,9 @@ impl BussardMcp {
         ok(tools::get_device(&model, &products, ia, args.technical))
     }
 
-    /// `knx_show_device`.
-    #[tool(
-        description = "Show what one device can do, in its device file's words, from the lock and \
-        the product model under .bussard/model-cache/ (no bus access): its channels (handle, vendor text, the \
-        user's name, counts); for an application without channels of its own, its ETS parameter \
-        pages (`blocks`, in ETS order); inactive pages and channels marked `inactive` with the \
-        parameters that enable them and the objects they would show, and a `summary` counting \
-        them. With `channel` (a handle like \"a-1\", a page handle, or \"device\" for the \
-        device level), that scope's parameters (key, current value, enum choices or range, \
-        whether at the vendor default) and objects (key, number, text/function, DPT, flags, \
-        what it sends and listens on); for an inactive page, the ones it would show and its \
-        full enable chain. A scoped call lists the other pages one line each (handle, text, \
-        state, counts); `inactive: true` adds their enable detail as `inactive_pages`. Without \
-        a scope, a page whose enable chain repeats an earlier page's lists only its own switch \
-        plus `also_needs` (the earlier pages to enable first). This is what the device can do; \
-        knx_get_device is the configured state. With `toml: true` also the paste-ready TOML for \
-        devices/<address>.toml. Use it before editing a device file: the keys it prints are the \
-        ones the file accepts and knx_set_parameter takes (also as `<page or channel \
-        handle>.<key>`, `key@reference` or the bare reference), and the unscoped response's \
-        `how_to_change` says how to edit and push them (parameters with knx_set_parameter; \
-        push with knx_plan_device then knx_apply_device). Without product data it says so, \
-        says what to run, and lists what the lock has. For a KNX IP interface, `knxnet` holds \
-        its [knxnet] table (`model`: IP assignment, static settings, friendly name, tunnel \
-        addresses), what the device last reported (`device`: address in use, MAC, tunnels, \
-        state) and where they differ (`drift`). With `live: true` it also reads the device \
-        over the bus, as `bussard status <address>` does, and adds `live`: `sentences` (names \
-        first; quote them), `mask`, `system_type`, `identity` against bussard.lock, and for a \
-        KNX IP interface `knxnet` (IP address in use and how it was assigned, MAC, friendly \
-        name, tunnelling addresses, device state), `knxnet_lines`, `model_knxnet` and \
-        `knxnet_drift`; `security` on a Data Secure device read with its tool key. The live \
-        read is read-only and refused in passive mode; it works for a device the project does \
-        not have too (a `knx_find_devices` responder). \
-        The ETS ids (`reference` where a key names the \
-        parameter, page `id`s, `application`, `computed_by`) and object `flags` are left out; \
-        `technical: true` returns them."
-    )]
+    // `knx_show_device`.
+    #[doc = include_str!("../guidance/tools/knx_show_device.md")]
+    #[tool]
     async fn knx_show_device(
         &self,
         Parameters(args): Parameters<ShowDeviceArgs>,
@@ -526,10 +489,9 @@ impl BussardMcp {
         ok(value)
     }
 
-    /// `knx_recent_telegrams`.
-    #[tool(
-        description = "Return recent decoded telegrams from the live buffer, oldest first and newest last. Optionally filter by group address (or GA prefix), source address, and an RFC3339 `since` cutoff. If a capture database is configured and the requested window predates the in-memory buffer, older telegrams are read from it too."
-    )]
+    // `knx_recent_telegrams`.
+    #[doc = include_str!("../guidance/tools/knx_recent_telegrams.md")]
+    #[tool]
     async fn knx_recent_telegrams(
         &self,
         Parameters(args): Parameters<RecentArgs>,
@@ -594,10 +556,9 @@ impl BussardMcp {
         }))
     }
 
-    /// `knx_wait_for_telegram`.
-    #[tool(
-        description = "Block until the next telegram matching the given group address and/or source arrives, or the timeout elapses. This is the 'ask the human to press the button now, then call this' workflow: tell the user which switch to press, then call this and read the resulting telegram. A timeout is a normal result (not an error). With the server's --keyring, a secured (KNX Data Secure) group telegram arrives decrypted and carries secured: true; one the server has no group key for keeps its ciphertext with secure_status no_key."
-    )]
+    // `knx_wait_for_telegram`.
+    #[doc = include_str!("../guidance/tools/knx_wait_for_telegram.md")]
+    #[tool]
     async fn knx_wait_for_telegram(
         &self,
         Parameters(args): Parameters<WaitArgs>,
@@ -618,10 +579,9 @@ impl BussardMcp {
         }
     }
 
-    /// `knx_bus_status` (issue #287).
-    #[tool(
-        description = "The live bus connection in detail, read-only: state, interface, tunnelling user (while connected), the exact last transport error and when it happened (last_error, last_error_at), failed connect attempts since the bus was last connected, seconds until the next attempt (retry_in_seconds), and other bussard mcp processes serving this project folder on this host. Call it when a bus tool says the bus is not connected, instead of guessing; knx_bus_reconnect connects afresh. A last_error saying the operating system refused access to the local network is a permission the user grants on their computer (macOS: Local Network); reconnecting cannot fix it until they do."
-    )]
+    // `knx_bus_status` (issue #287).
+    #[doc = include_str!("../guidance/tools/knx_bus_status.md")]
+    #[tool]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
         let mut out = self.state.bus.to_json();
         if let Some(map) = out.as_object_mut() {
@@ -637,10 +597,9 @@ impl BussardMcp {
         ok(out)
     }
 
-    /// `knx_bus_reconnect` (issue #287; omitted in passive mode).
-    #[tool(
-        description = "Drop the bus connection and connect afresh now: a new socket, a new KNXnet/IP Secure session and the reconnect backoff reset. A connected bus closes its tunnel cleanly first. Not a write: nothing is sent on the KNX bus, only the connection to the interface is rebuilt. Returns the bus status after the attempt (knx_bus_status's fields). Use it when knx_bus_status shows the bus stuck reconnecting."
-    )]
+    // `knx_bus_reconnect` (issue #287; omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_bus_reconnect.md")]
+    #[tool]
     async fn knx_bus_reconnect(&self) -> Result<CallToolResult, ErrorData> {
         if self.state.passive {
             return ok(json!({
@@ -685,10 +644,9 @@ impl BussardMcp {
         ok(out)
     }
 
-    /// `knx_validate`.
-    #[tool(
-        description = "Run the bussard validator and return its diagnostics as JSON (code, severity, message, location). By default only errors and warnings; `severity: \"info\"` adds the infos (unlinked objects and similar notes), `severity: \"error\"` keeps errors only, and `address` (\"1.1.4\", or \"1.1.\" for a line) or `group` (\"3/2/0\", or \"3/\" for a range) narrow it to one device or group. `counts` always counts every error, warning and info in the project, and `note` says what the filter left out. Use this to check whether the project (bussard.toml, groups.toml, devices/*.toml, bussard.lock) is internally consistent, and, with the server's keys, whether secured devices have a tool key and the groups' secure flags match the group keys (addresses only, never a key)."
-    )]
+    // `knx_validate`.
+    #[doc = include_str!("../guidance/tools/knx_validate.md")]
+    #[tool]
     async fn knx_validate(
         &self,
         Parameters(args): Parameters<ValidateArgs>,
@@ -734,12 +692,9 @@ impl BussardMcp {
         ok(tools::validate_filtered(&model, extra, &filter))
     }
 
-    /// `knx_read_group` (omitted in passive mode).
-    #[tool(
-        description = "Transmit a GroupValueRead on the bus for a group address and return the decoded response value. Rate-limited (minimum 250ms between reads). Only available when the server is NOT in passive mode. Use sparingly: this actively sends on the KNX bus. On a secured (KNX Data Secure) GA \
-        the read is refused when the responder is known not to admit the tunnel address, and a \
-        timeout usually means it does not admit it (see `reason` and `note`)."
-    )]
+    // `knx_read_group` (omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_read_group.md")]
+    #[tool]
     async fn knx_read_group(
         &self,
         Parameters(args): Parameters<GaArgs>,
@@ -824,23 +779,9 @@ impl BussardMcp {
         }
     }
 
-    /// `knx_describe_device` (omitted in passive mode).
-    #[tool(
-        description = "Introspect a physical device over the KNX bus (issue #72): enumerate its \
-        interface objects and, for each, every property's DESCRIPTION — PID (with a name when \
-        known), data type, element count and read/write access levels. This is READ-ONLY on the \
-        bus (it sends A_DeviceDescriptor_Read, A_PropertyValue_Read for object discovery, and \
-        A_PropertyDescription_Read; it never writes). Use it to describe an unknown device's \
-        property set. On a KNX Data Secure device addressed with its tool key it also returns \
-        `security_diagnostics`: the security failures log (sequence, cryptographic and access \
-        error counts, the latest failure), the security report and whether the device \
-        broadcasts it; read it after a secured write that did nothing. A device without a \
-        tool key that refuses the plain walk and answers a secured read under its factory key \
-        from the key store is reported `ok: false, factory_key: true` with the reason, as \
-        `bussard describe` does: tell the human it needs commissioning in ETS. Rate-limited and only \
-        available when the server is NOT in passive mode, since it actively transmits \
-        management traffic on the bus."
-    )]
+    // `knx_describe_device` (omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_describe_device.md")]
+    #[tool]
     async fn knx_describe_device(
         &self,
         Parameters(args): Parameters<DescribeArgs>,
@@ -936,32 +877,10 @@ impl BussardMcp {
         }))
     }
 
-    /// `knx_write_group` (registered only with `--allow-writes`, never in passive
-    /// mode).
-    #[tool(
-        description = "Write a value to a KNX group address (GroupValueWrite) on the PHYSICAL bus. \
-        This has real-world effects: lights toggle, blinds and actuators MOVE, setpoints change. \
-        Only available when the server was started with --allow-writes. The value is human-typed \
-        (e.g. on/off, up/down, 75%, 21.5, a scene number, or an HVAC mode name) and is interpreted \
-        against the group address's DPT (override with `dpt`). Scene numbers (17.001, 18.001, \
-        1.022) count from 1 as ETS and Home Assistant show them (KNX 03_07_02 §3.19 NOTE 9): \
-        `scene 3` sends the field 2, `raw 2` sends the field directly; reads show both, \
-        `scene 3 (raw 2)`. Relative dimming/blind steps (3.007, 3.008) take a direction and a \
-        step size: `increase 25%`, `down 50%`, `up`, `break`. Forced operation (2.x) takes \
-        `control on` (the 1.x word, e.g. `control down` on 2.008) or `release`. Scaled sub-types take the scaled \
-        value, never the raw count: 8.010 `50 %`, 7.003/7.004/8.003/8.004 `1.5 s`, 13.002 `1.5 m3/h`. Rate-limited (minimum 250ms between \
-        bus operations). Protected group addresses (safety-critical objects such as a wind alarm or \
-        central functions) are REFUSED outright — there is no override via MCP. When you are \
-        uncertain whether a write is safe or intended, ASK THE HUMAN before calling this tool. \
-        ok: true means only that the interface acknowledged the telegram (L_Data.con, the \
-        `result` field): KNX reports no application-level result, so never tell the human the \
-        device confirmed or executed it. On a secured (KNX Data Secure) GA the devices accept \
-        the telegram only if their security individual address table admits the tunnel \
-        address: a write the evidence says they would discard is refused (`refused: true`, \
-        with a `hint` on admitting the tunnel addresses). Without evidence the server first \
-        reads the devices' table (PID 54) once and records it; a write still sent without \
-        evidence carries `admission: unknown` and a `note` to pass on."
-    )]
+    // `knx_write_group` (registered only with `--allow-writes`, never in passive
+    // mode).
+    #[doc = include_str!("../guidance/tools/knx_write_group.md")]
+    #[tool]
     async fn knx_write_group(
         &self,
         Parameters(args): Parameters<WriteArgs>,

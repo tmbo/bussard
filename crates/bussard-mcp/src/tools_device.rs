@@ -95,22 +95,9 @@ pub struct FindDevicesArgs {
 
 #[tool_router(router = device_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_backup_device` (omitted in passive mode).
-    #[tool(
-        description = "Back up ONE device (`address`) or every device in the project (`all: \
-        true`) over the bus, as `bussard backup` does (issue #717): reads each device's \
-        group-address and association tables and, on System B, the parameter memory the device \
-        bounds itself (PID_TABLE_REFERENCE + PID_MCB_TABLE), and writes one JSON file per \
-        device plus manifest.json under captures/backups/<timestamp>/. READ-ONLY on the bus \
-        (descriptor, authorize, property and memory reads; never a write). Returns `out_dir`, \
-        `backup` (the directory name knx_restore_tables takes), `manifest`, `devices` (per \
-        device: `status` backed_up, skipped, unreachable or failed, `file`, `mask`, \
-        `application`, `parameters` with what was captured or why not, `detail`, \
-        `identity`) and `totals`. A device that is switched off is `unreachable`, not a \
-        failure; `ok` is false only when a device answered and its read failed. Suggest it \
-        before a change the human may want to undo. Backing up every device takes a few \
-        seconds per device. Only available when the server is NOT in passive mode."
-    )]
+    // `knx_backup_device` (omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_backup_device.md")]
+    #[tool]
     async fn knx_backup_device(
         &self,
         Parameters(args): Parameters<BackupDeviceArgs>,
@@ -119,30 +106,9 @@ impl BussardMcp {
         answer_on("address", &label, self.backup_devices(args).await)
     }
 
-    /// `knx_reconstruct_device` (omitted in passive mode).
-    #[tool(
-        description = "Read ONE device's group-address and association tables back over the bus \
-        and compare them with its device file, as `bussard reconstruct <address>` does (issue \
-        #717). READ-ONLY on the bus. Returns `mask`, `system_type`, `addresses` (the address \
-        table), `associations`, `objects` (com-object -> group addresses as resolved from the \
-        tables), `table_source`, `notes`, `identity` (the device against bussard.lock), \
-        `parameters` (the parameter read-back when bussard.lock pins the product data) and \
-        `diff` in the shape knx_diff_project returns: `from`, `to`, `count`, `summary`, \
-        `touches_protected`, `sentences` (one per object/group-address pair the device and the \
-        project disagree on), `changes`, plus `matches` and `note`. The tables do not say \
-        whether an object sends or listens, so the diff compares group-address sets per \
-        object. Quote the sentences to the human. Use it after an apply or a restore, or to \
-        see what ETS or another tool left on a device. LINE FORM: pass `line` (e.g. \"1.1\") \
-        instead of `address` to sweep the line (device numbers `from` to `to`, default 0 to \
-        255) and synthesize a fresh project from the tables, as `bussard reconstruct --line` \
-        does: written to `out` (a fresh directory relative to the project folder; default \
-        captures/reconstructed/line-<line>-<time>), never into the project this server serves. \
-        Group names and DPTs are placeholders and every group address is recorded as listen. \
-        It runs as a job (about 3 s per address; `started: true` with a `job`: poll \
-        knx_job_status) and returns `out`, `devices_found`, `devices_read`, \
-        `devices_skipped`, `group_addresses`, `links` and `device_details`. Only available \
-        when the server is NOT in passive mode."
-    )]
+    // `knx_reconstruct_device` (omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_reconstruct_device.md")]
+    #[tool]
     async fn knx_reconstruct_device(
         &self,
         Parameters(args): Parameters<ReconstructDeviceArgs>,
@@ -173,24 +139,9 @@ impl BussardMcp {
         }
     }
 
-    /// `knx_find_devices` (omitted in passive mode).
-    #[tool(
-        description = "Find the devices on ONE line (`line`, e.g. \"1.1\") over the bus, as \
-        `bussard scan` does (issue #747): probes each address one at a time and reads each \
-        responder's mask, manufacturer, order number and serial, over KNX Data Secure when \
-        the server's --keyring holds the device's tool key. READ-ONLY on the bus. `from` and \
-        `to` narrow the device numbers (default 0 to 255); an absent address costs tens of \
-        milliseconds to about 3 s depending on the interface, so a full line can take \
-        minutes. Runs as a job: when it ends within a few seconds the call returns the \
-        result, otherwise `started: true` and a `job` id for knx_job_status, whose \
-        `progress` counts the addresses `probed` and the devices `found` so far. The result \
-        has `summary` (one sentence, names first), `devices` (per responder: `name` from the \
-        project or null, `address`, `known` (in the project), `mask`, `system_type`, \
-        `manufacturer`, `order_number`, `serial`, `secure` for a Data Secure device, \
-        `identity_line` against bussard.lock), `not_in_model`, `missing_from_bus` (the project's \
-        devices in the scanned range that did not answer) and `timing`. Tell the human the \
-        summary. Only available when the server is NOT in passive mode."
-    )]
+    // `knx_find_devices` (omitted in passive mode).
+    #[doc = include_str!("../guidance/tools/knx_find_devices.md")]
+    #[tool]
     async fn knx_find_devices(
         &self,
         Parameters(args): Parameters<FindDevicesArgs>,

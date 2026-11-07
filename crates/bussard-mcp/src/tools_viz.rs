@@ -174,15 +174,9 @@ pub fn page_url(addr: SocketAddr) -> String {
 // `pub(crate)`: the router is combined in `BussardMcp::new`.
 #[tool_router(router = viz_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_viz`.
-    #[tool(
-        description = "Open the project in a web browser: starts the page `bussard viz` serves \
-        (devices, group addresses, links and live telegrams) inside this server and returns \
-        its `url`. Give the human the url to open; it works only in a browser on this \
-        computer. The page is read-only: it never writes to the bus, and its live telegrams \
-        are the ones this server already receives, without a second bus connection. A second \
-        call returns the same url; the page stops when the server stops."
-    )]
+    // `knx_viz`.
+    #[doc = include_str!("../guidance/tools/knx_viz.md")]
+    #[tool]
     async fn knx_viz(&self) -> Result<CallToolResult, ErrorData> {
         let state = self.state();
         let value = match state.viz.start(state).await {

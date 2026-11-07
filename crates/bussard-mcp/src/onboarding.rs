@@ -275,10 +275,9 @@ impl SetupHooks for Chat {
 
 #[tool_router]
 impl SetupMcp {
-    /// `knx_setup` (issue #745).
-    #[tool(
-        description = "Set the house up: there is no project yet. Finds the KNXnet/IP gateway (or uses `gateway`), writes the project folder, and imports the ETS project export (`project_file`, or the one .knxproj next to the directory) with its product data and keyring, as `bussard init` does. Ask the human first whether they have an ETS export and where it is. A password-protected export the server has no password for: bussard shows the human its own password form (a page on this computer, through the chat app), stores the password in .env and goes on; never ask for the password in chat. `download: true` also fetches vendor product data the export lacks; pass it only after the human agreed. A `question` in the result means nothing was written: relay it and call again. On success the server registers its full tool set (the tool list changes); continue with knx_project_summary."
-    )]
+    // `knx_setup` (issue #745).
+    #[doc = include_str!("../guidance/tools/onboarding/knx_setup.md")]
+    #[tool]
     async fn knx_setup(
         &self,
         Parameters(args): Parameters<SetupArgs>,
@@ -342,10 +341,9 @@ impl SetupMcp {
         Ok(self.finish_setup(outcome, question, log, None).await.into())
     }
 
-    /// `knx_bus_status` before the model exists.
-    #[tool(
-        description = "The bus connection. Before knx_setup has written the project there is none: the result says so."
-    )]
+    // `knx_bus_status` before the model exists.
+    #[doc = include_str!("../guidance/tools/onboarding/knx_bus_status.md")]
+    #[tool]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::structured(json!({
             "state": "no_model",

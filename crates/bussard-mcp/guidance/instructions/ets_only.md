@@ -1,0 +1,1 @@
+Still needs ETS: securing a fresh device with KNX Secure, and any setting the device's product model does not expose.

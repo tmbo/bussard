@@ -30,42 +30,70 @@ use serde_json::{Value, json};
 use crate::state::SharedState;
 
 /// What still needs ETS, named once in the instructions.
-const ETS_ONLY: &str = "Still needs ETS: securing a fresh device with KNX Secure, and any \
-    setting the device's product model does not expose.";
+const ETS_ONLY: &str = include_str!("../guidance/instructions/ets_only.md");
 
 /// How to talk to the human (issue #306), named once in the instructions.
-pub const HOW_TO_TALK: &str = "How to talk: the human is a homeowner unless she says \
-    otherwise. Name things the way the project names them: rooms, device names, channel names \
-    and group names. Group addresses, device addresses, com-object numbers, parameter keys \
-    and ETS references are for tool calls, not for the reply: use ids only in tool calls, \
-    unless the human asks for the technical detail or a thing has no name. A result that \
-    changes something, or asks for her yes, carries a `summary` written for her, and a device \
-    plan carries `what_you_will_notice`. Before asking for a yes, say what will change for the \
-    household and what she will notice, then quote the `sentences`: after the summary, never \
-    instead of it. The server writes English; answer in the human's language. \
-    knx_show_device, knx_get_device, knx_get_group and knx_model_lookup take `technical: \
-    true` for the ids and ETS detail an integrator wants.";
+pub const HOW_TO_TALK: &str = include_str!("../guidance/instructions/how_to_talk.md");
 
 /// The Home Assistant tier in the capabilities paragraph.
-const HA_CAPABILITY: &str = "It reads Home Assistant (knx_ha_status) and, after the human \
-    said yes to a knx_ha_plan, writes the KNX YAML Home Assistant reads and reloads its KNX \
-    integration (knx_ha_apply). It creates, updates and removes bussard-managed Home \
-    Assistant automations for logic the bus cannot do alone (knx_ha_automation_plan, \
-    knx_ha_automation_apply, knx_ha_automation_remove), each after the human's yes.";
+const HA_CAPABILITY: &str = include_str!("../guidance/capabilities/home_assistant.md");
 
 /// The Home Assistant tier in the instructions.
-const HA_INSTRUCTIONS: &str = "Home Assistant tier: knx_ha_status reads Home Assistant \
-    (version, KNX integration, entity counts, the KNX YAML file) and changes nothing. \
-    knx_ha_plan says per entity what writing the KNX YAML generated from the project would add, \
-    change or remove; say its summary, show those sentences in full and call knx_ha_apply \
-    only after an explicit yes in this conversation. It writes only that one file, keeps a \
-    backup and reloads the KNX integration. For logic the bus cannot do alone (when the guest \
-    mode switch turns on, turn the hallway light off), propose a rule to \
-    knx_ha_automation_plan, say its summary and show its sentence, and call \
-    knx_ha_automation_apply only after an explicit yes; \
-    knx_ha_automation_remove removes one the same way. These touch only automations whose id \
-    starts with bussard_ and that carry bussard's marker. Change Home Assistant in no other \
-    way.";
+const HA_INSTRUCTIONS: &str = include_str!("../guidance/instructions/home_assistant.md");
+
+/// What a `--passive` server does.
+const CAP_PASSIVE: &str = include_str!("../guidance/capabilities/passive.md");
+
+/// What a server that may transmit reads and observes.
+const CAP_BUS: &str = include_str!("../guidance/capabilities/bus.md");
+
+/// The model edits.
+const CAP_EDITS: &str = include_str!("../guidance/capabilities/edits.md");
+
+/// The model edits are off (`--no-model-edits`).
+const CAP_EDITS_OFF: &str = include_str!("../guidance/capabilities/edits_off.md");
+
+/// The group writes (`--allow-writes`).
+const CAP_WRITES: &str = include_str!("../guidance/capabilities/writes.md");
+
+/// The group writes are off.
+const CAP_WRITES_OFF: &str = include_str!("../guidance/capabilities/writes_off.md");
+
+/// The closing sentence on summaries.
+const CAP_SUMMARY: &str = include_str!("../guidance/capabilities/summary.md");
+
+/// How an edit reaches a device with `--allow-programming`.
+const PUSH_PROGRAMMING: &str = include_str!("../guidance/capabilities/push_programming.md");
+
+/// How an edit reaches a device without `--allow-programming`.
+const PUSH_CLI: &str = include_str!("../guidance/capabilities/push_cli.md");
+
+/// The opening paragraph; `{tiers}` is replaced by the active tiers.
+const INTRO: &str = include_str!("../guidance/instructions/intro.md");
+
+/// Observing in `--passive` mode.
+const OBSERVE_PASSIVE: &str = include_str!("../guidance/instructions/observe_passive.md");
+
+/// Observing and reading when the server may transmit.
+const OBSERVE_BUS: &str = include_str!("../guidance/instructions/observe_bus.md");
+
+/// The model edits and the certificate enrolment.
+const EDITS: &str = include_str!("../guidance/instructions/edits.md");
+
+/// The model edits are off (`--no-model-edits`).
+const EDITS_OFF: &str = include_str!("../guidance/instructions/edits_off.md");
+
+/// The group writes (`--allow-writes`).
+const WRITES: &str = include_str!("../guidance/instructions/writes.md");
+
+/// The group writes are off.
+const WRITES_OFF: &str = include_str!("../guidance/instructions/writes_off.md");
+
+/// The programming tier (`--allow-programming`).
+const PROGRAMMING: &str = include_str!("../guidance/instructions/programming.md");
+
+/// The programming tier is off: the CLI commands.
+const PROGRAMMING_OFF: &str = include_str!("../guidance/instructions/programming_off.md");
 
 /// The `next_step` after a model edit on this server: [`Tiers::next_step`],
 /// plus the Home Assistant line when that tier is on and the edit touched a
@@ -160,46 +188,27 @@ impl Tiers {
     pub fn capabilities(&self) -> String {
         let mut parts = Vec::new();
         parts.push(if self.passive {
-            "This server observes the bus without transmitting and reads the project files. It \
-             reports the bus connection (knx_bus_status)."
-                .to_string()
+            CAP_PASSIVE.to_string()
         } else {
-            "This server reads the project files, observes the bus, reads group values \
-             (knx_read_group), introspects devices (knx_describe_device), backs devices up \
-             (knx_backup_device), reads a device's tables back against the project \
-             (knx_reconstruct_device), finds the devices on a line (knx_find_devices) and \
-             reads one device's live status (knx_show_device with live: true). It reports the \
-             bus connection (knx_bus_status) and rebuilds it on request (knx_bus_reconnect)."
-                .to_string()
+            CAP_BUS.to_string()
         });
         parts.push(if self.model_edits {
-            "It edits the project files: group addresses (knx_set_group, knx_remove_group), links \
-             (knx_add_link, knx_remove_link), names and rooms (knx_set_device) and parameter \
-             values (knx_set_parameter, with the keys knx_show_device lists). It takes KNX \
-             Secure device certificates from a phone into the key store \
-             (knx_enroll_certificates, knx_enroll_status)."
-                .to_string()
+            CAP_EDITS.to_string()
         } else {
-            "Edits to the project are off (--no-model-edits).".to_string()
+            CAP_EDITS_OFF.to_string()
         });
         if !self.passive {
             parts.push(if self.writes {
-                "It writes group values to the bus (knx_write_group) and runs the acceptance \
-                 suite (knx_run_tests)."
-                    .to_string()
+                CAP_WRITES.to_string()
             } else {
-                "Group writes are off (no --allow-writes).".to_string()
+                CAP_WRITES_OFF.to_string()
             });
         }
         parts.push(self.push_paragraph());
         if self.home_assistant {
             parts.push(HA_CAPABILITY.to_string());
         }
-        parts.push(
-            "Results that change something carry a plain-language `summary` for a homeowner; \
-             ids belong in tool calls."
-                .to_string(),
-        );
+        parts.push(CAP_SUMMARY.to_string());
         parts.join(" ")
     }
 
@@ -207,17 +216,9 @@ impl Tiers {
     /// and the capabilities sentence.
     fn push_paragraph(&self) -> String {
         if self.programming {
-            "It pushes a device's links and parameter values: knx_plan_device reads the \
-             device and returns the plan, and knx_apply_device writes the group-address and \
-             association tables and the parameter values that differ after the human said yes \
-             to that plan, over KNX Data Secure when the server holds the device's tool key."
-                .to_string()
+            PUSH_PROGRAMMING.to_string()
         } else {
-            "Nothing it edits reaches a device from here: this server runs without \
-             --allow-programming. Restarted with that flag, knx_plan_device and \
-             knx_apply_device push a device's links and parameter values; without it, the \
-             push is `bussard plan <ia>` and `bussard apply <ia>` at the CLI."
-                .to_string()
+            PUSH_CLI.to_string()
         }
     }
 
@@ -286,115 +287,29 @@ impl Tiers {
 
     /// The server instructions (`initialize` result) for this tier.
     pub fn instructions(&self) -> String {
-        let mut out = vec![format!(
-            "bussard: KNX as code over MCP. The installation lives as TOML files \
-             (groups.toml, devices/*.toml, bussard.lock); this server reads and edits them and \
-             works with the live bus. Active tiers: {}. Start with knx_project_summary (its \
-             `server` and `capabilities` fields say what this server may do), then \
-             knx_model_lookup, knx_get_group, knx_get_device and knx_show_device to explore, \
-             and knx_validate and knx_audit to check the project. To find a device that can \
-             provide a function, use knx_model_lookup with the function's words and read \
-             knx_show_device for the candidates.",
-            self.names().join(", ")
-        )];
+        let mut out = vec![INTRO.replace("{tiers}", &self.names().join(", "))];
         out.push(HOW_TO_TALK.to_string());
         out.push(if self.passive {
-            "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
-             'press the button now' debugging). Passive mode: nothing is transmitted, so \
-             knx_read_group, knx_describe_device, knx_backup_device, knx_reconstruct_device \
-             and knx_find_devices are not available, nor knx_show_device's live read. \
-             knx_bus_status says \
-             why the bus is not connected (the last transport error, the attempts, the next \
-             retry)."
-                .to_string()
+            OBSERVE_PASSIVE.to_string()
         } else {
-            "Observe with knx_recent_telegrams and knx_wait_for_telegram (the latter enables \
-             'press the button now' debugging); knx_read_group reads a value and \
-             knx_describe_device introspects a device's interface objects over the bus. \
-             knx_backup_device backs one device or all of them up (tables, and the parameter \
-             memory a System B device bounds) under captures/backups, and \
-             knx_reconstruct_device reads a device's tables back and diffs them against the \
-             project; both are read-only on the bus. To find what is on the bus, \
-             knx_find_devices scans a line as a job (mask, manufacturer and order number per \
-             device) and knx_show_device with live: true reads one device's identity and, for \
-             an IP interface, its IP settings and tunnels; both only read. When a bus tool says the bus is not connected, knx_bus_status says why (the last \
-             transport error, the attempts, the next retry) and knx_bus_reconnect connects \
-             afresh now; neither writes to the bus."
-                .to_string()
+            OBSERVE_BUS.to_string()
         });
         out.push(if self.model_edits {
-            "Change the project with the edit tools, never by writing files: knx_set_group, \
-             knx_remove_group, knx_add_link, knx_remove_link, knx_set_device, \
-             knx_set_parameter, knx_discard_edits and knx_undo. To abandon a change on one \
-             device, knx_discard_edits; knx_undo rolls the whole project back to a snapshot. \
-             Parameters are edited with knx_set_parameter using the keys knx_show_device lists \
-             (the device needs its product model). Every edit snapshots the files first and \
-             returns a `summary` and the change as sentences: say the summary, then quote the \
-             sentences, and follow the result's next_step. KNX Secure device certificates (the \
-             codes that carry each device's factory key) enter the key store through knx_enroll_certificates and \
-             knx_enroll_status: bussard opens a pairing page in the human's browser that shows the steps, the phone link, its session code and the certificates as they arrive. Say in one line that the page opens in their browser and to follow it there, then wait for the call: it stays open until the session ends (Finish on the phone, a stop or a timeout) and returns the summary, so the chat continues by itself; do not poll and do not repeat the page's steps or its list. When it ends, summarise it in one or two lines and suggest the first of its next_steps (for example `bussard scan` for certificates with no device yet). Never write, repeat or guess an enrolment link or session code yourself, and never ask for a certificate in chat; when bussard cannot open the page, point the human to `bussard keys enroll` in a terminal."
-                .to_string()
+            EDITS.to_string()
         } else {
-            "Edits to the project are off (--no-model-edits): the project is read-only here.".to_string()
+            EDITS_OFF.to_string()
         });
         if !self.passive {
             out.push(if self.writes {
-                "knx_write_group writes a group value to the physical bus (actuators move) and \
-                 knx_run_tests runs the acceptance suite; both refuse protected group addresses. \
-                 Ask the human when a write's intent or safety is unclear."
-                    .to_string()
+                WRITES.to_string()
             } else {
-                "Group writes are off: restart with --allow-writes for knx_write_group.".to_string()
+                WRITES_OFF.to_string()
             });
         }
         if self.programming {
-            out.push(
-                "Push a device with knx_plan_device: say its summary and what_you_will_notice, \
-                 show its sentences in full, and call knx_apply_device only after an explicit \
-                 yes in this conversation. It \
-                 writes the device's links (group-address and association tables) and the \
-                 parameter values that differ from your project (one plan sentence each), over KNX \
-                 Data Secure when the server holds the device's tool key. A plan without the \
-                 device's product data writes the links only and says why. knx_apply_device \
-                 runs the write as a job: when it answers `started` with a job id, call \
-                 knx_apply_status with that job until `done` is true and report its result; \
-                 a plan whose device read is slow answers `started` the same way, and the \
-                 finished job's result is the plan to show. knx_last_apply recovers a device's latest result when a reply is lost. \
-                 knx_restore_parameters replays a parameter backup an apply kept, and \
-                 knx_restore_tables writes a backup's link tables back (a knx_backup_device run \
-                 or the pre-write backup an apply kept), with the same plan, explicit yes and \
-                 job flow; knx_restart_device restarts a device in the form ETS uses, after the \
-                 human's yes to its question. knx_add_device adds a new device: relay its \
-                 question (press the programming button), poll knx_job_status until the device \
-                 is identified, show its sentences and ask its question; after an explicit yes \
-                 it assigns the address, fetches the product data (download: true is the \
-                 human's separate yes to the download), writes the device file and reads the \
-                 device back. knx_commission_line commissions a line: show its plan's sentences \
-                 and ask its question; one explicit yes starts a job that names each device to \
-                 press (relay knx_job_status's question), checks the pressed device's order \
-                 number against the project and assigns its address with a read-back, and waits \
-                 for the human's retry, skip or stop when they differ; read out its labels at \
-                 the end. \
-                 knx_replace_device replaces a dead device with the same product \
-                 in the same flow: it keeps a backup of the device file and lock record, relays \
-                 the press-the-button question, and after one explicit yes assigns the address, \
-                 loads the application, writes the project's parameters and links, reads them \
-                 back and records the replacement."
-                    .to_string(),
-            );
+            out.push(PROGRAMMING.to_string());
         } else {
-            out.push(
-                "This server runs without --allow-programming, so edits stay in the files. \
-                 Restarted with that flag, knx_plan_device and knx_apply_device push a \
-                 device's links and parameter values, knx_add_device adds a new device, \
-                 knx_commission_line commissions a line, knx_replace_device replaces a dead \
-                 one, knx_restore_tables writes a backup's link tables back and \
-                 knx_restart_device restarts a device; without it, they are `bussard plan \
-                 <ia>`, `bussard apply <ia>`, `bussard adopt`, `bussard commission --line \
-                 <line>`, `bussard replace <ia>`, `bussard restore <backup> <ia>` and \
-                 `bussard restart <ia>` at the CLI."
-                    .to_string(),
-            );
+            out.push(PROGRAMMING_OFF.to_string());
         }
         if self.home_assistant {
             out.push(HA_INSTRUCTIONS.to_string());

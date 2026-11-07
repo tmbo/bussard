@@ -150,23 +150,9 @@ impl AutomationPlanArgs {
 
 #[tool_router(router = ha_automation_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_ha_automation_plan` (Home Assistant tier).
-    #[tool(
-        description = "Plan a bussard-managed Home Assistant automation from a small rule \
-        (issue #280): `when` a group address receives a value (optional; any value without \
-        it), `then` send group values (each `{send: {ga, value, dpt?}}`). Use it for the logic \
-        the bus cannot do alone, e.g. when 4/3/2 receives 1, send 0 to 4/3/10. Reads only: \
-        checks every address and DPT against groups.toml, renders the automation (the KNX \
-        integration's knx.telegram trigger, a payload condition, knx.send actions with the \
-        raw payload), reads the automation Home Assistant stores under `id`, and returns \
-        `sentence`, `sentences`, `op` (create or update), `automation` (the JSON written) and \
-        `yaml`, `previous`, the `question` and a plan_digest. The id must start with \
-        bussard_; an existing automation without bussard's marker line is refused. ALWAYS \
-        show the sentences and the automation to the human and ask the question; call \
-        knx_ha_automation_apply only after an explicit yes in this conversation. Refuses \
-        addresses groups.toml does not list, DPTs that contradict it and sends to protected \
-        addresses. Only available with --allow-home-assistant."
-    )]
+    // `knx_ha_automation_plan` (Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_automation_plan.md")]
+    #[tool]
     async fn knx_ha_automation_plan(
         &self,
         Parameters(args): Parameters<AutomationPlanArgs>,
@@ -179,17 +165,9 @@ impl BussardMcp {
         ok(self.automation_plan(op).await)
     }
 
-    /// `knx_ha_automation_apply` (Home Assistant tier).
-    #[tool(
-        description = "Write the planned bussard-managed automation to Home Assistant and \
-        reload automations (issue #280). Call this ONLY after you showed the human the plan \
-        from knx_ha_automation_plan and the human answered yes explicitly in this \
-        conversation. Pass its plan_digest. Refuses a digest this session did not produce, an \
-        expired or used one, and one a fresh plan no longer reproduces (the project or the \
-        automation in Home Assistant changed). Keeps the previous automation's JSON under \
-        captures/backups/ha/, writes through the config API, calls automation.reload and \
-        returns the backup path and the outcome. Only available with --allow-home-assistant."
-    )]
+    // `knx_ha_automation_apply` (Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_automation_apply.md")]
+    #[tool]
     async fn knx_ha_automation_apply(
         &self,
         Parameters(args): Parameters<AutomationApplyArgs>,
@@ -197,16 +175,9 @@ impl BussardMcp {
         ok(self.automation_apply(args.plan_digest.trim(), None).await)
     }
 
-    /// `knx_ha_automation_remove` (Home Assistant tier).
-    #[tool(
-        description = "Remove a bussard-managed Home Assistant automation (issue #280), in two \
-        calls. Without plan_digest: reads the automation and returns what would be removed, \
-        the question and a plan_digest; nothing changes. Show it to the human. With the \
-        plan_digest, and ONLY after the human said yes explicitly in this conversation: keeps \
-        its JSON under captures/backups/ha/, deletes it through the config API and reloads \
-        automations. Refuses ids that do not start with bussard_ and automations without \
-        bussard's marker line. Only available with --allow-home-assistant."
-    )]
+    // `knx_ha_automation_remove` (Home Assistant tier).
+    #[doc = include_str!("../guidance/tools/knx_ha_automation_remove.md")]
+    #[tool]
     async fn knx_ha_automation_remove(
         &self,
         Parameters(args): Parameters<AutomationRemoveArgs>,

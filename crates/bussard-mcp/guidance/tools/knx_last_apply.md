@@ -1,0 +1,1 @@
+The latest apply job for ONE device (issue #289), in the shape of knx_apply_status: this session's, else the newest record under .bussard/history, so a result whose reply was lost (a client timeout, a server restart) is recoverable. `found: false` when no apply of the device is recorded. Never touches the bus. Only available with --allow-programming.

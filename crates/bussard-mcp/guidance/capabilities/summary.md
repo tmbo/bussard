@@ -1,0 +1,1 @@
+Results that change something carry a plain-language `summary` for a homeowner; ids belong in tool calls.

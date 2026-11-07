@@ -372,35 +372,9 @@ fn run_session(
 
 #[tool_router(router = enroll_router, vis = "pub(crate)")]
 impl BussardMcp {
-    /// `knx_enroll_certificates`: start a certificate enrolment session.
-    #[tool(
-        description = "Start a session that takes KNX Secure device certificates (the \
-        36-character codes printed on Secure devices) from a phone camera into the key store, \
-        without them passing through this chat. bussard opens its pairing page in the human's \
-        browser on this computer: it shows the steps, a QR code for the phone, the session \
-        code and the certificates as they arrive. Before calling, tell the human in one line \
-        that the pairing page opens in their browser and to follow it there; do not repeat its \
-        steps or its list in the chat. The call stays open until the session ends (your chat \
-        app may move it to the background) and then returns the summary: wait for it, do not \
-        poll. The link and the session code never reach you. NEVER \
-        write, repeat or guess a link or a session code for this: one coming from you proves \
-        nothing. The human scans the QR code, checks the session code on the phone and scans \
-        the certificates. Each one is matched to a device by its serial number and stored, \
-        end to end encrypted on the way; this tool and knx_enroll_status never return a \
-        certificate or a key. NEVER ask the human to paste a certificate into the chat. When \
-        bussard cannot open a page here (an SSH session, no display), the tool refuses: tell \
-        the human to run `bussard keys enroll` in a terminal. When the result says `session: \
-        running` (the call stopped waiting first), wait with knx_enroll_status (until_end: \
-        true). `local: true` serves the certificate page from this server on \
-        127.0.0.1 too, for a browser on the same computer (a webcam or typed codes); without \
-        it the hosted page and relay (or the [enroll] table of bussard.toml) are used. One \
-        session at a time; it ends when the human finishes on the phone, on \
-        knx_enroll_status with stop: true, when no phone joins within 10 minutes, after 15 \
-        minutes without a certificate or the page open, or after 4 hours. One phone per \
-        session: another phone that opens the link is refused, and knx_enroll_status reports \
-        it in `refused_phones` and `warning`. Writes the key store only \
-        (needs BUSSARD_KEYRING_PASSWORD on the server), never the project or the bus."
-    )]
+    // `knx_enroll_certificates`: start a certificate enrolment session.
+    #[doc = include_str!("../guidance/tools/knx_enroll_certificates.md")]
+    #[tool]
     async fn knx_enroll_certificates(
         &self,
         Parameters(args): Parameters<EnrollArgs>,
@@ -450,26 +424,9 @@ impl BussardMcp {
         )
     }
 
-    /// `knx_enroll_status`: the results of the enrolment session so far.
-    #[tool(
-        description = "The certificate enrolment session started by knx_enroll_certificates: \
-        `session` (`running`, `ended` or `none`), `end` (`phone_done`, `stopped`, \
-        `connect_timeout`, `idle_timeout`, `max_duration`, `expired` or `error`), `phones`, \
-        `refused_phones` and `warning` (another phone tried to join: tell the human first), \
-        `certificates` and `stored` (counts), and `results` once the session ended or with \
-        `details: true` (only when the human asks; the pairing page lists them), one entry \
-        per certificate in arrival order with `serial`, `address` and `name` of the matched device, `status` \
-        (`stored`: saved on that device; `unassigned`: saved under its serial until a device \
-        reports it; `already_stored`; `conflict`: the store holds another key for the serial, \
-        nothing written; `invalid`; `error`) and `message`. Never a certificate's code or a key. \
-        `tally` counts the statuses (`stored`, `waiting`, `already_known`, `conflicts`, \
-        `invalid`, `errors`); `summary` says it in one line, and once the session has ended \
-        `next_steps` lists the CLI commands that apply (`command`, `why`). \
-        `wait_seconds` (at most 120) waits for the next certificate or the end first; \
-        `until_end: true` waits for the end of the session instead, as long as the chat app \
-        allows (`wait_seconds` caps it); `stop: true` ends the session. Reads nothing from the \
-        bus."
-    )]
+    // `knx_enroll_status`: the results of the enrolment session so far.
+    #[doc = include_str!("../guidance/tools/knx_enroll_status.md")]
+    #[tool]
     async fn knx_enroll_status(
         &self,
         Parameters(args): Parameters<EnrollStatusArgs>,

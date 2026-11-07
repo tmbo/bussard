@@ -1,0 +1,1 @@
+List the project's history snapshots, oldest first: id, time, the command that caused it, the gateway it wrote to (if any) and a one-line plain-language summary of what it changed. Use it to answer "what did we change, and when?", and to get a snapshot id for knx_describe_change or knx_undo.

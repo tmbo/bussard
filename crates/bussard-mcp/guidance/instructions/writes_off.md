@@ -1,0 +1,1 @@
+Group writes are off: restart with --allow-writes for knx_write_group.
