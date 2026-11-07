@@ -41,6 +41,14 @@ between the surfaces and the domain: gated `BusService`, management sessions,
 the checked group write, the live `ModelHandle`), `bussard-testkit` (mock
 gateways and devices for tests), `bussard-cli` (the `bussard` binary).
 
+Layering, enforced by the `[dependencies]` of the surfaces (#916): `bussard-cli`,
+`bussard-mcp` and `bussard-viz` depend on `bussard-service`, `bussard-model` and
+`bussard-product` only (plus `bussard-ha`, and the CLI hosts the MCP and viz
+servers). A domain type a surface names comes through a `bussard_service`
+re-export (`transport`, `mgmt`, `monitor`, `keys`, `download`, `secure`); a new
+flow goes into `bussard-service`, never into a surface. Tests may name the
+domain crates as dev-dependencies.
+
 `knx-sim/` is a separate workspace, excluded from this one on purpose; it must
 never gain a path dependency on a `crates/` member.
 

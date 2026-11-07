@@ -36,10 +36,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, anyhow, bail};
-use bussard_download::backup::rfc3339_utc;
-use bussard_mgmt::system_type;
 use bussard_model::IndividualAddress;
 use bussard_service::WritePolicy;
+use bussard_service::download::backup::rfc3339_utc;
+use bussard_service::mgmt::system_type;
 use bussard_service::program::Question;
 use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::replace::{self, Pressed, Replacement};

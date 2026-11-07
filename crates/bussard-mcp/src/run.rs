@@ -13,9 +13,9 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use bussard_monitor::{DecodedTelegram, GroupKeyring};
 use bussard_service::BusService;
-use bussard_transport::bus::BusHandle;
+use bussard_service::monitor::{DecodedTelegram, GroupKeyring};
+use bussard_service::transport::bus::BusHandle;
 use rmcp::ServiceExt;
 use rmcp::transport::io::stdio;
 

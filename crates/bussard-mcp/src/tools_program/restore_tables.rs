@@ -3,7 +3,7 @@
 //!
 //! The CLI's restore is `apply` with the desired tables taken from a backup
 //! file instead of the device file's links
-//! ([`bussard_download::backup::DeviceBackup::desired_tables`]). This tool is
+//! (`bussard_download::backup::DeviceBackup::desired_tables`). This tool is
 //! the same over the programming tier: the plan, the digest, the audit
 //! snapshot, the pre-write backup, the table write and the independent
 //! read-back are `knx_apply_device`'s ([`BussardMcp::apply_write`]), fed with
@@ -17,20 +17,20 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use bussard_download::backup::{
+use bussard_model::history::SnapshotReason;
+use bussard_model::{IndividualAddress, Model};
+use bussard_service::download::backup::{
     DeviceBackup, backups_root, find_device_backup, read_device_backup,
 };
-use bussard_download::{
+use bussard_service::download::{
     DesiredTables, DevicePlan, PlanReport, PlanWrites, SecurityInputs, Sys7TableImages,
     render_plan_text, state_hash,
 };
-use bussard_mgmt::{MaskProfile, system_type};
-use bussard_model::history::SnapshotReason;
-use bussard_model::{IndividualAddress, Model};
-use bussard_secure::{Key16, SequenceHighWater};
+use bussard_service::mgmt::{MaskProfile, system_type};
 use bussard_service::params::BuiltPlan;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
+use bussard_service::secure::{Key16, SequenceHighWater};
 use serde_json::{Value, json};
 
 use super::{
@@ -328,7 +328,7 @@ impl BussardMcp {
         }
         let tables = planned.read.live.tables();
         let report = &planned.report;
-        let pairs = |list: &[bussard_download::ObjectGa]| -> Vec<Value> {
+        let pairs = |list: &[bussard_service::download::ObjectGa]| -> Vec<Value> {
             list.iter()
                 .map(|p| json!({"object": p.object, "ga": p.ga.to_string()}))
                 .collect()

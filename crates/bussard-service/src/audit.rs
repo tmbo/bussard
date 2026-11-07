@@ -25,6 +25,7 @@ use bussard_model::{GroupAddress, IndividualAddress, Model, ModelAnalysis};
 use bussard_transport::bus::BusHandle;
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::knxnet::GatewayDescription;
+use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportError};
 use serde::Serialize;
 
 use crate::identity::{self, HIDDEN_MASK};
@@ -427,6 +428,20 @@ pub struct SampledTelegram {
     /// The cEMI control field marked the frame as a repetition. `false` when
     /// the source does not carry the flag (the MCP ring).
     pub repeat_flag: bool,
+}
+
+/// Opens one tunnel connection to the gateway of `config` and closes it
+/// again, so a full interface fails loudly with
+/// [`TransportError::NoMoreConnections`] instead of a silent reconnect loop
+/// (issue #105).
+///
+/// # Errors
+///
+/// The connect error.
+pub async fn probe_tunnel(config: &ConnectionConfig) -> Result<(), TransportError> {
+    let conn = Transport::connect(config).await?;
+    let _ = conn.close().await;
+    Ok(())
 }
 
 /// Collects the group telegrams indicated on the bus for `window`.

@@ -12,12 +12,12 @@
 //! and returns the question and a digest, nothing sent; the second, after the
 //! human's yes, restarts as a job (`knx_apply_status` reports it).
 
-use bussard_download::RestartForm;
 use bussard_model::IndividualAddress;
-use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
+use bussard_service::download::RestartForm;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::restart::{RestartWait, restart_choice, restart_device};
+use bussard_service::secure::SequenceHighWater;
 use serde_json::{Value, json};
 
 use super::{BussardMcp, ProgrammingTier, Subject, chain, merge};

@@ -174,6 +174,11 @@ copy of each safety rule:
   bussard-transport  bussard-mgmt  bussard-model  bussard-secure    domain
 ```
 
+- Cargo enforces the picture above (issue #916): the surfaces' `[dependencies]` list
+  `bussard-service`, `bussard-model` and `bussard-product` (plus `bussard-ha`), never
+  `bussard-transport`, `bussard-mgmt`, `bussard-download`, `bussard-monitor`,
+  `bussard-secure` or `bussard-project`. The types they render come through named
+  re-exports in `bussard_service::{transport, mgmt, monitor, keys, download, secure}`.
 - `BusService::open(config, WritePolicy)` applies the non-loopback write gate (§8,
   issue #74) before the bus actor is spawned. A transmitting surface cannot obtain a bus
   without it, so a new surface inherits the gate by construction.

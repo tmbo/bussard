@@ -330,7 +330,7 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         material: &secure_material,
         extra_senders: &extra_senders,
         // One send-sequence high-water mark for the whole command (§5.9).
-        high_water: bussard_secure::SequenceHighWater::new(),
+        high_water: bussard_service::secure::SequenceHighWater::new(),
         bcu_key,
         facts: crate::conn_cmd::facts_cache(dir, model.is_some(), overrides.refresh_facts),
         choices,

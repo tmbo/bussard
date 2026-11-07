@@ -66,9 +66,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use bussard_download::Progress;
 use bussard_model::IndividualAddress;
 use bussard_model::history::HISTORY_DIR;
+use bussard_service::download::Progress;
 use bussard_service::observer::{Answer, Event, ProgressSink, Prompt, Question, Step};
 use serde_json::{Map, Value, json};
 use tokio::sync::oneshot;
@@ -832,8 +832,8 @@ impl Job {
             "address": self.address.map(|a| a.to_string()),
             "state": state,
             "done": self.state == JobState::Done,
-            "started_at": bussard_monitor::timefmt::to_rfc3339(self.started_at),
-            "finished_at": self.finished_at.map(bussard_monitor::timefmt::to_rfc3339),
+            "started_at": bussard_service::monitor::timefmt::to_rfc3339(self.started_at),
+            "finished_at": self.finished_at.map(bussard_service::monitor::timefmt::to_rfc3339),
             "elapsed_s": (elapsed * 10.0).round() / 10.0,
             "step": self.step,
             "progress": Value::Object(self.progress.clone()),

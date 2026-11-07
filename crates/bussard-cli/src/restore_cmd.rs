@@ -39,8 +39,8 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::backup::{find_device_backup, read_device_backup};
 use bussard_model::IndividualAddress;
+use bussard_service::download::backup::{find_device_backup, read_device_backup};
 use bussard_service::secure::ToolKeySource;
 
 use crate::apply_cmd::{self, DesiredSource};
@@ -169,7 +169,7 @@ fn run_parameters(
     let target: IndividualAddress = address
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
-    let backup = bussard_download::backup::read_parameter_backup(backup_path)?;
+    let backup = bussard_service::download::backup::read_parameter_backup(backup_path)?;
     let Some(model) = load_model_required(dir)? else {
         bail!(
             "{}",
@@ -207,7 +207,7 @@ fn run_parameters(
         bussard_service::secure::resolve_material(target, tool_key_source, activated)
     })?;
     let tool_key = material.tool_key.clone();
-    let secure_seq = bussard_secure::SequenceHighWater::new();
+    let secure_seq = bussard_service::secure::SequenceHighWater::new();
     crate::conn_cmd::enforce_write_gate(&config, allow_remote_gateway)?;
     let gateway = crate::conn_cmd::gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;

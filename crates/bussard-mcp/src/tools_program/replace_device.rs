@@ -452,7 +452,7 @@ impl BussardMcp {
 
         // The record: `replaced` in the device file, the serial in the lock.
         tier.jobs.step(job, "recording the replacement");
-        let when = bussard_download::backup::rfc3339_utc(std::time::SystemTime::now());
+        let when = bussard_service::download::backup::rfc3339_utc(std::time::SystemTime::now());
         let recorded =
             replace::record(&state.dir, &p.replacement, pressed.serial.as_deref(), &when);
         let _ = state.model.reload();
@@ -759,7 +759,7 @@ fn identified_detail(
 ) -> Value {
     let target = r.target;
     let mask = p.mask.map(|m| format!("{m:04X}"));
-    let system = p.mask.map(bussard_mgmt::system_type);
+    let system = p.mask.map(bussard_service::mgmt::system_type);
     let check = r.identity_check(p);
     let running = p.application.as_deref().map_or_else(
         || ", running no readable application".to_string(),

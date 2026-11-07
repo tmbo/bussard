@@ -23,8 +23,8 @@ use bussard_service::audit::{
     TrafficReport,
 };
 use bussard_service::secure::ToolKeys;
+use bussard_service::transport::{ConnectionConfig, TransportKind};
 use bussard_service::{BusService, WritePolicy};
-use bussard_transport::{BusConnection, ConnectionConfig, Transport, TransportKind};
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{
@@ -120,11 +120,9 @@ async fn live_report(
     // 2. A full interface must fail loudly with its own exit code, not as a
     //    silent reconnect loop: probe one tunnel connect first (issue #105).
     if is_tunnel {
-        match Transport::connect(&config).await {
-            Ok(conn) => {
-                let _ = conn.close().await;
-            }
-            Err(err @ bussard_transport::TransportError::NoMoreConnections) => {
+        match bussard_service::audit::probe_tunnel(&config).await {
+            Ok(()) => {}
+            Err(err @ bussard_service::transport::TransportError::NoMoreConnections) => {
                 return Err(anyhow::Error::new(err));
             }
             Err(err) => {

@@ -28,9 +28,9 @@ use std::time::Duration;
 use anyhow::bail;
 use bussard_model::Model;
 use bussard_model::tests_schema::{self, TestSuite};
-use bussard_monitor::{DecodedTelegram, TelegramRing};
 use bussard_service::acceptance;
 use bussard_service::acceptance::{ManualDecision, ManualStep, RunOptions};
+use bussard_service::monitor::{DecodedTelegram, TelegramRing};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::cli::{Consent, Resolved, Run, Spec};
@@ -172,7 +172,7 @@ fn run_secure_idle(
         idle.as_secs()
     );
     let runtime = tokio::runtime::Runtime::new()?;
-    let report = runtime.block_on(bussard_transport::probe_secure_idle(&config, idle))?;
+    let report = runtime.block_on(bussard_service::transport::probe_secure_idle(&config, idle))?;
     if json {
         crate::output::print(crate::output::schema::TEST_SECURE_IDLE, &idle_json(&report))?;
     } else {
@@ -182,8 +182,8 @@ fn run_secure_idle(
 }
 
 /// The one-line text report of an idle probe.
-fn idle_text(report: &bussard_transport::SecureIdleReport) -> String {
-    use bussard_transport::SecureIdleOutcome;
+fn idle_text(report: &bussard_service::transport::SecureIdleReport) -> String {
+    use bussard_service::transport::SecureIdleOutcome;
     let head = format!(
         "secure session with {} (user {}, {}) idle {} s:",
         report.gateway,
@@ -207,8 +207,8 @@ fn idle_text(report: &bussard_transport::SecureIdleReport) -> String {
 }
 
 /// The JSON report of an idle probe.
-fn idle_json(report: &bussard_transport::SecureIdleReport) -> serde_json::Value {
-    use bussard_transport::SecureIdleOutcome;
+fn idle_json(report: &bussard_service::transport::SecureIdleReport) -> serde_json::Value {
+    use bussard_service::transport::SecureIdleOutcome;
     let mut out = serde_json::json!({
         "gateway": report.gateway.to_string(),
         "user_id": report.user_id,
@@ -240,7 +240,7 @@ fn execute(
     options: &TestArgs,
     allow_protected: bool,
     allow_remote_gateway: bool,
-    config: bussard_transport::ConnectionConfig,
+    config: bussard_service::transport::ConnectionConfig,
 ) -> anyhow::Result<acceptance::Report> {
     let run_options = RunOptions {
         only: if options.only.is_empty() {
@@ -514,7 +514,7 @@ mod tests {
 
     #[test]
     fn test_idle_report_text_and_json() -> Result<(), Box<dyn Error>> {
-        use bussard_transport::{SecureIdleOutcome, SecureIdleReport, SecureTransport};
+        use bussard_service::transport::{SecureIdleOutcome, SecureIdleReport, SecureTransport};
         let mut report = SecureIdleReport {
             gateway: "127.0.0.1:3671".parse()?,
             user_id: 2,

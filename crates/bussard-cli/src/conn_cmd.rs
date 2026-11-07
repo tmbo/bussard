@@ -13,10 +13,12 @@ use anyhow::{Context, anyhow};
 use bussard_model::IndividualAddress;
 use bussard_model::Model;
 use bussard_model::schema::Transport as ModelTransport;
+use bussard_service::transport::config::{DEFAULT_MULTICAST, DEFAULT_MULTICAST_TTL, DEFAULT_PORT};
+use bussard_service::transport::write_gate::WriteGate;
+use bussard_service::transport::{
+    ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect,
+};
 use bussard_service::{BusService, ServiceError, WritePolicy};
-use bussard_transport::config::{DEFAULT_MULTICAST, DEFAULT_MULTICAST_TTL, DEFAULT_PORT};
-use bussard_transport::write_gate::WriteGate;
-use bussard_transport::{ConnectionConfig, SecureTunnelConfig, TransportKind, TunnelReconnect};
 
 /// Connection overrides from the global options, shared by every bus command.
 #[derive(Debug, Clone, Default)]
@@ -189,7 +191,7 @@ pub(crate) fn facts_cache(
 /// The source individual address for a **connection-oriented** device command,
 /// checked against the bus first.
 ///
-/// Resolves the source exactly as [`BusHandle::group_source`](bussard_transport::bus::BusHandle::group_source) does (the tunnel-assigned
+/// Resolves the source exactly as `BusHandle::group_source` does (the tunnel-assigned
 /// individual address, or the `0.0.255` fallback on routing), then — unless
 /// `--skip-address-check` was passed — probes the bus for a device answering at
 /// that very address and refuses to continue if one does.
@@ -652,17 +654,17 @@ fn parse_reconnect_secs(value: Option<&str>) -> TunnelReconnect {
 
 // The write-gate policy (issue #74) lives in `bussard_transport::write_gate` so
 // the MCP programming tier applies the same rule; the CLI re-exports it.
-pub use bussard_transport::write_gate::gateway_display;
+pub use bussard_service::transport::write_gate::gateway_display;
 
 /// Enforces the non-loopback write gate (issue #74).
 ///
 /// A write command whose resolved gateway is **not** loopback refuses to run
 /// unless the operator has explicitly opted in, either by passing
 /// `--allow-remote-gateway` (`allow_flag = true`) or by setting
-/// [`bussard_transport::write_gate::ALLOW_REAL_GATEWAY_ENV`] to `1`. Loopback gateways (the local simulator,
+/// `bussard_transport::write_gate::ALLOW_REAL_GATEWAY_ENV` to `1`. Loopback gateways (the local simulator,
 /// the test suite) are always permitted. On refusal this returns a loud error
 /// naming the host and both ways to proceed. The policy itself is
-/// [`bussard_transport::write_gate::check_write_gate`]; this adds the CLI's
+/// `bussard_transport::write_gate::check_write_gate`; this adds the CLI's
 /// stderr warning on an acknowledged opt-in.
 pub fn enforce_write_gate(config: &ConnectionConfig, allow_flag: bool) -> anyhow::Result<()> {
     match BusService::check(config, WritePolicy::transmit(allow_flag))? {
@@ -759,7 +761,7 @@ mod tests {
         let base = TunnelReconnect::default();
         assert_eq!(
             base.tcp_read_deadline,
-            bussard_transport::config::TCP_READ_DEADLINE
+            bussard_service::transport::config::TCP_READ_DEADLINE
         );
         assert_eq!(apply_tcp_read_deadline(base, None), base);
         assert_eq!(apply_tcp_read_deadline(base, Some("junk")), base);
@@ -776,8 +778,8 @@ mod tests {
 
     #[test]
     fn test_apply_secure_keepalive_maps_env_values() {
-        use bussard_transport::SecureSource;
-        use bussard_transport::config::SECURE_KEEPALIVE_INTERVAL;
+        use bussard_service::transport::SecureSource;
+        use bussard_service::transport::config::SECURE_KEEPALIVE_INTERVAL;
         let base = SecureTunnelConfig::new(Vec::new(), SecureSource::Explicit);
         assert_eq!(base.keepalive, SECURE_KEEPALIVE_INTERVAL);
         assert_eq!(apply_secure_keepalive(base.clone(), None), base);
@@ -789,7 +791,7 @@ mod tests {
         assert!(apply_secure_keepalive(base, Some("0")).keepalive.is_zero());
     }
 
-    use bussard_transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
+    use bussard_service::transport::write_gate::{ALLOW_REAL_GATEWAY_ENV, is_loopback_gateway};
 
     /// Builds a tunnel [`ConnectionConfig`] pointed at `host` for gate tests.
     fn tunnel_to(host: &str) -> ConnectionConfig {

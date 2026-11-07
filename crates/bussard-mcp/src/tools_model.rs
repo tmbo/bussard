@@ -1114,7 +1114,7 @@ impl BussardMcp {
             return refusal("this server was started with --no-model-edits");
         }
         let dir = self.state().dir.clone();
-        let store_path = bussard_project::KeyStore::path(&dir);
+        let store_path = bussard_service::keys::KeyStore::path(&dir);
         // The key store is the only key source this edit changes: a server
         // reading another keyring would keep securing the group address.
         if let Some(keyring) = &self.state().keyring

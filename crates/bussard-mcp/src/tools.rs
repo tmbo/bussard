@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use bussard_model::codec::TypedValue;
 use bussard_model::param_model::ProductModels;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
-use bussard_monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
+use bussard_service::monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
 use serde_json::{Value, json};
 
 use crate::state::BusStatus;
@@ -731,7 +731,7 @@ pub(crate) mod test_fixtures {
         BussardConfig, Channel, Device, Group, Groups, Link, Links, Location, Range,
     };
     use bussard_model::{LoadedDevice, Model};
-    use bussard_monitor::{ApciKind, DecodedTelegram, DestinationRef, TelegramRing};
+    use bussard_service::monitor::{ApciKind, DecodedTelegram, DestinationRef, TelegramRing};
 
     pub use bussard_testkit::{TestResult, ga, ia};
 
@@ -898,7 +898,7 @@ mod tests {
     use super::test_fixtures::*;
     use super::*;
     use crate::state::BusStatus;
-    use bussard_transport::TransportKind;
+    use bussard_service::transport::TransportKind;
 
     #[test]
     fn summary_counts_and_ranges() -> TestResult {

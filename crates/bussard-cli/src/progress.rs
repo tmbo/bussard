@@ -18,7 +18,7 @@ use std::io::{IsTerminal, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use bussard_download::{FlashPlan, FlashStep, Progress};
+use bussard_service::download::{FlashPlan, FlashStep, Progress};
 use bussard_service::observer::{Answer, Ask, Event, ProgressSink, Prompt, Question, Step, Wait};
 use bussard_service::program::assign::Assigned;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};

@@ -73,7 +73,7 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
     };
 
     // Password, store and write access are checked before the link is shown.
-    let password = bussard_secure::Password::new(crate::keys_cmd::password()?);
+    let password = bussard_service::secure::Password::new(crate::keys_cmd::password()?);
     let mut store = bussard_service::CertificateEnrolment::open(dir, password.expose())?;
     drop(password);
 

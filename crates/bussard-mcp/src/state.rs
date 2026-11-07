@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use bussard_monitor::TelegramRing;
 use bussard_service::BusService;
-use bussard_transport::TransportKind;
-use bussard_transport::bus::{BusDiagnostics, BusHandle, BusState};
+use bussard_service::monitor::TelegramRing;
+use bussard_service::transport::TransportKind;
+use bussard_service::transport::bus::{BusDiagnostics, BusHandle, BusState};
 use serde_json::{Value, json};
 
 use crate::model_handle::ModelHandle;
@@ -174,7 +174,7 @@ impl BusStatus {
             json!(
                 diag.as_ref()
                     .and_then(|d| d.last_error_at)
-                    .map(bussard_monitor::timefmt::to_rfc3339)
+                    .map(bussard_service::monitor::timefmt::to_rfc3339)
             ),
         );
         map.insert(
@@ -194,7 +194,7 @@ impl BusStatus {
             json!(
                 diag.as_ref()
                     .and_then(|d| d.connected_since)
-                    .map(bussard_monitor::timefmt::to_rfc3339)
+                    .map(bussard_service::monitor::timefmt::to_rfc3339)
             ),
         );
         if let Some(fatal) = fatal {
@@ -227,7 +227,10 @@ impl BusStatus {
         if let Some(err) = &diag.last_error {
             out.push_str(&format!(": {err}"));
             if let Some(at) = diag.last_error_at {
-                out.push_str(&format!(" at {}", bussard_monitor::timefmt::to_rfc3339(at)));
+                out.push_str(&format!(
+                    " at {}",
+                    bussard_service::monitor::timefmt::to_rfc3339(at)
+                ));
             }
         }
         if diag.attempts > 0 {
@@ -338,7 +341,7 @@ mod tests {
 
     #[test]
     fn conn_state_maps_from_bus_state() {
-        use bussard_transport::bus::BusState;
+        use bussard_service::transport::bus::BusState;
         assert_eq!(
             ConnState::from_bus(BusState::Connecting),
             ConnState::Connecting

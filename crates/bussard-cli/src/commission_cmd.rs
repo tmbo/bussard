@@ -309,7 +309,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
 /// optional flash / apply and the label.
 fn commission_one(
     runtime: &tokio::runtime::Runtime,
-    config: &bussard_transport::ConnectionConfig,
+    config: &bussard_service::transport::ConnectionConfig,
     target: &Target,
     product: Option<PathBuf>,
     options: &CommissionArgs,

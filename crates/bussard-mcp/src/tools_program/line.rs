@@ -25,13 +25,13 @@ use crate::reply::refused_on;
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
-use bussard_mgmt::system_type;
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::{
     DeviceStatus, LineMode, LineOutcome, LineTarget, LineVisit, parse_line, targets_digest,
     targets_on_line, visit_device,
 };
+use bussard_service::mgmt::system_type;
 use bussard_service::program::plan::Fingerprint;
 use serde_json::{Value, json};
 
@@ -311,7 +311,7 @@ impl BussardMcp {
             "sentences": all_sentences,
             "question": question,
             "plan_digest": digest,
-            "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
+            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
             "expires_at": digest.as_ref().map(|_| tier.line_plans.expires_at(now)),
             "next_step": match &digest {
                 None => format!(

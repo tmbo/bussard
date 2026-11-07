@@ -193,11 +193,11 @@ enum SecureTransportArg {
     Tcp,
 }
 
-impl From<SecureTransportArg> for bussard_transport::SecureTransport {
+impl From<SecureTransportArg> for bussard_service::transport::SecureTransport {
     fn from(arg: SecureTransportArg) -> Self {
         match arg {
-            SecureTransportArg::Auto => bussard_transport::SecureTransport::Auto,
-            SecureTransportArg::Tcp => bussard_transport::SecureTransport::Tcp,
+            SecureTransportArg::Auto => bussard_service::transport::SecureTransport::Auto,
+            SecureTransportArg::Tcp => bussard_service::transport::SecureTransport::Tcp,
         }
     }
 }
@@ -682,7 +682,7 @@ fn cli_main() -> ExitCode {
     // A connect error that retrying cannot fix (a secure-only interface
     // without credentials, a refused KNXnet/IP Secure password; issue #182) is
     // the real cause of whatever the command reported next; name it alone.
-    if let Some(fatal) = bussard_transport::bus::fatal_connect_error() {
+    if let Some(fatal) = bussard_service::transport::bus::fatal_connect_error() {
         eprintln!("error: {fatal}");
         if cli.global.timing {
             print_timing(started);
@@ -722,7 +722,7 @@ fn print_timing(started: std::time::Instant) {
 /// gateway refuse every connect with `E_NO_MORE_CONNECTIONS` (the actor retries
 /// such refusals, so the command itself only sees a bus that never came up).
 fn no_free_tunnel_or(code: ExitCode) -> ExitCode {
-    if bussard_transport::bus::no_free_tunnel_seen() {
+    if bussard_service::transport::bus::no_free_tunnel_seen() {
         eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
         ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
     } else {
@@ -734,8 +734,8 @@ fn no_free_tunnel_or(code: ExitCode) -> ExitCode {
 fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
     err.chain().any(|cause| {
         matches!(
-            cause.downcast_ref::<bussard_transport::TransportError>(),
-            Some(bussard_transport::TransportError::NoMoreConnections)
+            cause.downcast_ref::<bussard_service::transport::TransportError>(),
+            Some(bussard_service::transport::TransportError::NoMoreConnections)
         )
     })
 }
@@ -744,6 +744,6 @@ fn is_no_free_tunnel(err: &anyhow::Error) -> bool {
 fn run(command: Command, g: &Resolved) -> anyhow::Result<ExitCode> {
     // One manufacturer lookup for every command (issue #788): the model's
     // list from the imported ETS master data, then the built-in table.
-    bussard_mgmt::manufacturers::load_model_dir(g.dir());
+    bussard_service::mgmt::manufacturers::load_model_dir(g.dir());
     command.run(g)
 }

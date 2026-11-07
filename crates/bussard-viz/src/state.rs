@@ -15,10 +15,10 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use bussard_service::transport::TransportKind;
+use bussard_service::transport::bus::{BusHandle, BusState};
+use bussard_service::transport::write_gate::is_loopback_gateway;
 use bussard_service::{BusService, ModelHandle};
-use bussard_transport::TransportKind;
-use bussard_transport::bus::{BusHandle, BusState};
-use bussard_transport::write_gate::is_loopback_gateway;
 use serde_json::{Value, json};
 
 use crate::project;

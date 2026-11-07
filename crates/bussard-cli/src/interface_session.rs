@@ -5,7 +5,7 @@
 //! # Selection rule
 //!
 //! The tunnel stays the default. A KNXnet/IP device management connection
-//! (connection type 03h, [`bussard_transport::DeviceManagement`]) is used
+//! (connection type 03h, `bussard_transport::DeviceManagement`) is used
 //!
 //! 1. when `--device-management` is given (the only way for a factory-fresh
 //!    interface, which names itself 15.15.255 rather than the model's
@@ -33,10 +33,10 @@ use std::path::Path;
 use std::time::Duration;
 
 use anyhow::bail;
-use bussard_mgmt::SourceCheckError;
 use bussard_model::IndividualAddress;
+use bussard_service::mgmt::SourceCheckError;
+use bussard_service::transport::{ConnectionConfig, TransportKind};
 use bussard_service::{BusService, ServiceError, WritePolicy};
-use bussard_transport::{ConnectionConfig, TransportKind};
 
 use crate::conn_cmd::BusSession;
 
@@ -103,11 +103,11 @@ pub(crate) fn open(
             runtime.block_on(service.close());
             bail!("{fatal}");
         }
-        if bussard_transport::bus::no_free_tunnel_seen()
+        if bussard_service::transport::bus::no_free_tunnel_seen()
             && runtime.block_on(gateway_is(&config, target))
         {
             runtime.block_on(service.close());
-            bussard_transport::bus::clear_no_free_tunnel_seen();
+            bussard_service::transport::bus::clear_no_free_tunnel_seen();
             return open_device_management(
                 runtime,
                 config,
@@ -159,7 +159,8 @@ async fn wait_for_tunnel(service: &BusService) -> bool {
         if service.wait_connected((deadline - now).min(POLL)).await {
             return true;
         }
-        if service.handle().fatal_error().is_some() || bussard_transport::bus::no_free_tunnel_seen()
+        if service.handle().fatal_error().is_some()
+            || bussard_service::transport::bus::no_free_tunnel_seen()
         {
             return false;
         }
@@ -169,7 +170,7 @@ async fn wait_for_tunnel(service: &BusService) -> bool {
 /// Whether the gateway of `config` describes itself as `target`.
 async fn gateway_is(config: &ConnectionConfig, target: IndividualAddress) -> bool {
     match config.gateway {
-        Some(gateway) => bussard_transport::describe_gateway(gateway, DESCRIBE_TIMEOUT)
+        Some(gateway) => bussard_service::transport::describe_gateway(gateway, DESCRIBE_TIMEOUT)
             .await
             .is_ok_and(|d| d.individual_address == Some(target.raw())),
         None => false,
@@ -236,7 +237,7 @@ pub(crate) fn device_management_config(
         bail!("a device management connection needs --gateway host[:port]");
     };
     let description = runtime
-        .block_on(bussard_transport::describe_gateway(
+        .block_on(bussard_service::transport::describe_gateway(
             gateway,
             DESCRIBE_TIMEOUT,
         ))
@@ -266,7 +267,7 @@ pub(crate) async fn tunnel_slots_full(config: &ConnectionConfig) -> bool {
     let Some(gateway) = config.gateway else {
         return false;
     };
-    bussard_transport::describe_gateway_extended(gateway, DESCRIBE_TIMEOUT)
+    bussard_service::transport::describe_gateway_extended(gateway, DESCRIBE_TIMEOUT)
         .await
         .ok()
         .and_then(|d| d.tunnel_slots)

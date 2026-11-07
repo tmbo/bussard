@@ -22,11 +22,11 @@ use std::process::ExitCode;
 use anyhow::anyhow;
 use bussard_model::{GroupAddress, Model};
 use bussard_service::admission::{self, Admission};
+use bussard_service::transport::TransportError;
 use bussard_service::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WritePolicy, WriteRefusal, WriteValue,
     prepare_group_write,
 };
-use bussard_transport::TransportError;
 
 use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{

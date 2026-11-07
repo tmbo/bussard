@@ -9,22 +9,15 @@ license.workspace = true
 description = "MCP server for bussard (stdio or streamable HTTP): KNX model and bus tools"
 
 [dependencies]
+# The layering rule (issue #916): a surface depends on bussard-service and
+# bussard-model (and bussard-product for import and product data) only; the
+# domain crates reach it through bussard-service. Tests may name them.
 bussard-model = { workspace = true }
 # The service layer (issue #86): gated bus access, management sessions, the
 # checked group write and the live model handle.
 bussard-service = { workspace = true }
-# `.knxproj` import for `knx_diff_project` (issue #99), in memory only.
-bussard-project = { workspace = true }
-# `.knxproj` import and the lock keys (`knx_import_project`, `knx_diff`).
+# `.knxproj` import for `knx_diff_project` (issue #99) and the lock keys.
 bussard-product = { workspace = true }
-bussard-transport = { workspace = true }
-bussard-monitor = { workspace = true }
-bussard-mgmt = { workspace = true }
-# The table plan / backup / write flow behind the programming tier (issue #118),
-# shared with `bussard plan` and `bussard apply`.
-bussard-download = { workspace = true }
-# The Data Secure send-sequence high-water mark for a secured plan read (#170).
-bussard-secure = { workspace = true }
 # The Home Assistant tier (issue #280): the KNX YAML generator, its diff and
 # write, and the REST client.
 bussard-ha = { workspace = true }
@@ -58,6 +51,10 @@ getrandom = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+bussard-download = { workspace = true }
+bussard-mgmt = { workspace = true }
+bussard-project = { workspace = true }
+bussard-secure = { workspace = true }
 serde_json = { workspace = true }
 tempfile = "3"
 bussard-model = { workspace = true }

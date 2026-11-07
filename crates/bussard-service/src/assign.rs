@@ -26,10 +26,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_mgmt::{MgmtError, broadcast, manufacturers, system_type};
+use bussard_mgmt::{LeaseChannel, MgmtError, broadcast, manufacturers, system_type};
 use bussard_model::schema::{Device, Product};
 use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
+use bussard_transport::bus::BusHandle;
 
 use crate::identity::{Identity, SecureStatus, read_identity, read_manufacturer, read_order};
 use crate::observer::{Event, ProgressSink, Wait};
@@ -338,6 +339,24 @@ pub async fn in_programming_mode(
 ) -> Result<Vec<IndividualAddress>, ServiceError> {
     let channel = service.lease_channel().await?;
     Ok(broadcast::devices_in_programming_mode(channel, source, collection_window()).await?)
+}
+
+/// The devices in programming mode now, on a lease of `handle` taken without
+/// waiting for a connection, over a `window` the caller chooses: the probe
+/// the viz programming-mode watch repeats.
+///
+/// # Errors
+///
+/// [`ServiceError::Lease`] when the bus actor is gone; another error when the
+/// broadcast failed.
+pub async fn probe_programming_mode(
+    handle: &BusHandle,
+    window: Duration,
+) -> Result<Vec<IndividualAddress>, ServiceError> {
+    let source = handle.group_source();
+    let lease = handle.lease().await.map_err(ServiceError::Lease)?;
+    let channel = LeaseChannel::new(lease);
+    Ok(broadcast::devices_in_programming_mode(channel, source, window).await?)
 }
 
 // ---------------------------------------------------------------------------

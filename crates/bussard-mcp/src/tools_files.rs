@@ -20,12 +20,12 @@ use crate::reply::{ok, refusal};
 use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
-use bussard_project::keystore::SaveOutcome;
 use bussard_service::chain;
 use bussard_service::files::export::GroupFormat;
 use bussard_service::files::import::{ConflictChoice, ImportOutcome};
 use bussard_service::files::products::OrderImport;
 use bussard_service::files::{FileKind, export, import, keyring, products};
+use bussard_service::keys::keystore::SaveOutcome;
 use bussard_service::observer::{Answer, Collected, Prompt, Question};
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::setup::{self, SetupError};
@@ -595,7 +595,7 @@ fn import_keyring(
         "ok": true,
         "kind": "keyring",
         "path": path.display().to_string(),
-        "store": bussard_project::KeyStore::path(dir).display().to_string(),
+        "store": bussard_service::keys::KeyStore::path(dir).display().to_string(),
         "summary": summary,
         "changed": report.changed(),
         "report": report,

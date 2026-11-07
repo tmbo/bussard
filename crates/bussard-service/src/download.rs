@@ -7,7 +7,7 @@
 //! through it. [`write_parameters`] is the parameter half of an apply: the
 //! parameter-only plan, then a read-back of every octet it meant to change.
 
-use bussard_download::{FlashOptions, FlashOutcome, FlashPlan, Session};
+use bussard_download::{FlashOptions, FlashOutcome, Session};
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::{Layer4Connection, LeaseChannel, MgmtError, Timeouts};
 use bussard_model::IndividualAddress;
@@ -18,6 +18,26 @@ use crate::bus::{Authorize, BusService, L4Options, Management};
 use crate::error::ServiceError;
 use crate::observer::{Event, ProgressSink};
 use crate::params::ParamDetail;
+
+// The download types and renderers the surfaces name, re-exported so they
+// depend on `bussard-service` and `bussard-model` only (issue #916). The
+// download flows are the functions of this module and of `crate::program`.
+pub use bussard_download::{
+    ChangeMark, ChangeSubject, DesiredTables, DevicePlan, FlashPlan, FlashStep, FullImage,
+    LiveTables, ObjectGa, PlanChange, PlanReport, PlanWrites, Progress, RestartForm,
+    SecurityDiagnostics, SecurityInputs, SecurityPlanError, Sys7Identity, Sys7TableImages,
+    has_no_group_objects, render_full_image_plan_text, render_plan_text, state_hash,
+    uses_user_memory, write_parameter_memory_backup,
+};
+
+/// The backup files under `.bussard/backups/`.
+pub mod backup {
+    pub use bussard_download::backup::{
+        BackupManifest, DeviceBackup, ManifestEntry, ParameterBackup, backups_root,
+        find_device_backup, has_installation_backup, parameter_backups_dir, read_device_backup,
+        read_parameter_backup, rfc3339_utc,
+    };
+}
 
 /// Environment variable that overrides the flash's per-attempt L4 ACK/response
 /// timeout (in milliseconds). Unset in normal use, so the standard 3 s budget

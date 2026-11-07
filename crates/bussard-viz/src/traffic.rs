@@ -15,13 +15,11 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use bussard_mgmt::LeaseChannel;
-use bussard_mgmt::broadcast::devices_in_programming_mode;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_monitor::decode::{ApciKind, DestinationRef};
-use bussard_monitor::{DecodedTelegram, GroupKeyring, json_value};
-use bussard_transport::bus::{BusHandle, BusState};
-use bussard_transport::cemi::MessageCode;
+use bussard_service::monitor::decode::{ApciKind, DestinationRef};
+use bussard_service::monitor::{DecodedTelegram, GroupKeyring, json_value};
+use bussard_service::transport::bus::{BusHandle, BusState};
+use bussard_service::transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
 
@@ -352,7 +350,7 @@ impl TrafficHub {
             payload: payload_hex,
             dpt: t.dpt.map(|d| d.to_string()),
             apci: t.apci.tag(),
-            ts_utc: bussard_monitor::timefmt::to_rfc3339(t.timestamp),
+            ts_utc: bussard_service::monitor::timefmt::to_rfc3339(t.timestamp),
             source: t.source.to_string(),
             source_name: t.source_name.clone(),
             seq,
@@ -472,14 +470,10 @@ pub async fn watch_prog(hub: TrafficHub, handle: BusHandle) {
             continue;
         }
 
-        let source = handle.group_source();
-        let lease = match handle.lease().await {
-            Ok(lease) => lease,
+        match bussard_service::assign::probe_programming_mode(&handle, PROG_COLLECTION_WINDOW).await
+        {
             // The actor is gone; stop watching.
-            Err(_) => break,
-        };
-        let channel = LeaseChannel::new(lease);
-        match devices_in_programming_mode(channel, source, PROG_COLLECTION_WINDOW).await {
+            Err(bussard_service::ServiceError::Lease(_)) => break,
             Ok(found) => {
                 let set: BTreeSet<IndividualAddress> = found.into_iter().collect();
                 hub.set_prog_if_changed(set);
@@ -778,7 +772,7 @@ mod tests {
         use std::net::{Ipv4Addr, SocketAddrV4};
 
         use bussard_model::Model;
-        use bussard_transport::ConnectionConfig;
+        use bussard_service::transport::ConnectionConfig;
         use bussard_transport::bus::Bus;
 
         use crate::state::BusStatus;

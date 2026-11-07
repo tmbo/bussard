@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_project::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
 use bussard_service::enroll_session::{CertificateOutcome, EnrollTally};
 use bussard_service::files::keyring;
+use bussard_service::keys::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
 use bussard_service::setup;
 
 use crate::cli::{Resolved, Run, Spec};
@@ -267,7 +267,7 @@ fn print_report(store: &Path, file: &Path, r: &ImportReport, outcome: SaveOutcom
     match outcome {
         SaveOutcome::Written { backup: true } => println!(
             "  previous store kept as {}",
-            bussard_project::keystore::KEYSTORE_BACKUP_FILE
+            bussard_service::keys::keystore::KEYSTORE_BACKUP_FILE
         ),
         SaveOutcome::Written { backup: false } => println!("  created the key store"),
         SaveOutcome::Unchanged => {}
@@ -392,7 +392,7 @@ fn run_show(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
 /// flags and counts, never a key.
 fn render_show(
     path: &Path,
-    s: &bussard_project::keystore::KeyStoreSummary,
+    s: &bussard_service::keys::keystore::KeyStoreSummary,
     without_fdsk: &[(String, String)],
     name_of: &dyn Fn(&str) -> String,
     style: Style,
@@ -565,7 +565,7 @@ fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Resu
     use std::io::{BufRead, IsTerminal};
 
     // Held and dropped like a key (zeroized); the labels too.
-    let password = bussard_secure::Password::new(password()?);
+    let password = bussard_service::secure::Password::new(password()?);
     let mut session = bussard_service::CertificateEnrolment::open(dir, password.expose())?;
     let interactive = !from_stdin;
     if interactive && !std::io::stdin().is_terminal() {
@@ -590,7 +590,7 @@ fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Resu
             "Type or scan one certificate per line (the input is not shown); an empty line ends."
         );
         loop {
-            let line = bussard_secure::Password::new(
+            let line = bussard_service::secure::Password::new(
                 rpassword::prompt_password("certificate: ").context("reading a certificate")?,
             );
             if line.expose().trim().is_empty() {
@@ -600,7 +600,8 @@ fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Resu
         }
     } else {
         for line in std::io::stdin().lock().lines() {
-            let line = bussard_secure::Password::new(line.context("reading standard input")?);
+            let line =
+                bussard_service::secure::Password::new(line.context("reading standard input")?);
             if line.expose().trim().is_empty() {
                 continue;
             }
@@ -723,7 +724,7 @@ pub(crate) fn attach_learned_serials(
     dir: &Path,
     serials: &[(bussard_model::IndividualAddress, Vec<u8>)],
 ) -> SerialNews {
-    use bussard_project::keystore::{AttachOutcome, SerialNumber};
+    use bussard_service::keys::keystore::{AttachOutcome, SerialNumber};
     let mut news = SerialNews::default();
     let serials: Vec<(bussard_model::IndividualAddress, SerialNumber)> = serials
         .iter()
@@ -736,7 +737,7 @@ pub(crate) fn attach_learned_serials(
     if serials.is_empty() || !KeyStore::path(dir).exists() {
         return news;
     }
-    let Ok(password) = password().map(bussard_secure::Password::new) else {
+    let Ok(password) = password().map(bussard_service::secure::Password::new) else {
         return news;
     };
     let outcomes = match bussard_service::attach_serials(dir, password.expose(), &serials) {
@@ -777,7 +778,7 @@ pub(crate) fn learn_serials(
     )],
 ) -> SerialNews {
     use bussard_model::identity::IdentityVerdict;
-    use bussard_project::keystore::SerialNumber;
+    use bussard_service::keys::keystore::SerialNumber;
     let mut news = SerialNews::default();
     let Some(model) = model else {
         return news;

@@ -30,13 +30,13 @@ use std::process::ExitCode;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, bail};
-use bussard_mgmt::system_type;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::resume::{LineState, Opened};
 use bussard_service::line::{
     DeviceStatus, LineMode as Mode, LineOutcome as Outcome, LineTarget as Target, LineVisit,
     targets_on_line, visit_device,
 };
+use bussard_service::mgmt::system_type;
 use bussard_service::observer::{Event, Note};
 use bussard_service::{BusService, WritePolicy};
 

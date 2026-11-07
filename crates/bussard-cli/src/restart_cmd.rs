@@ -121,7 +121,7 @@ fn run(args: &RestartArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
                     skip: overrides.skip_address_check,
                 },
                 tool_key,
-                bussard_secure::SequenceHighWater::new(),
+                bussard_service::secure::SequenceHighWater::new(),
             );
             let outcome = restart_device(&service, target, &options, choice.form, wait).await;
             service.close().await;

@@ -83,7 +83,7 @@ fn join(addresses: &[IndividualAddress]) -> String {
 pub(super) fn who(identified: &Verified) -> String {
     let manufacturer = identified
         .manufacturer_id
-        .map(bussard_mgmt::manufacturers::display);
+        .map(bussard_service::mgmt::manufacturers::display);
     match (&identified.order, manufacturer) {
         (Some(order), Some(m))
             if order
@@ -110,7 +110,10 @@ pub(super) fn found_sentence(v: &Verified, current: IndividualAddress, rest: &st
             .map(|s| format!(", serial {}", hex(s)))
             .unwrap_or_default(),
         match v.mask {
-            Some(mask) => format!(", mask {mask:04X} ({})", bussard_mgmt::system_type(mask)),
+            Some(mask) => format!(
+                ", mask {mask:04X} ({})",
+                bussard_service::mgmt::system_type(mask)
+            ),
             None => String::new(),
         }
     )

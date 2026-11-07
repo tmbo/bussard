@@ -9,11 +9,11 @@
 //! session the server runs on. The owner runs it in a terminal instead.
 
 use bussard_model::IndividualAddress;
-use bussard_project::KeyStore;
 use bussard_service::ip_secure::{
     Switch, SwitchContext, SwitchPlan, interface_digest_text, plan_off, plan_on, probe_gateway,
     run_switch, secured_through,
 };
+use bussard_service::keys::KeyStore;
 use bussard_service::observer::Event;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;

@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use anyhow::{Context, anyhow};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
-use bussard_monitor::{ApciKind, DecodedTelegram, Filter, TelegramRing};
+use bussard_service::monitor::{ApciKind, DecodedTelegram, Filter, TelegramRing};
 use bussard_service::{BusService, WritePolicy, learn};
 
 use crate::cli::{Resolved, Run, Spec};
@@ -313,7 +313,7 @@ async fn learn_loop(
 /// is usable: a plain telegram, or a secured one whose MAC verified (its
 /// payload is then the decrypted inner APDU's).
 fn secure_block(telegram: &DecodedTelegram) -> Option<String> {
-    use bussard_monitor::SecureStatus;
+    use bussard_service::monitor::SecureStatus;
     match &telegram.secure {
         Some(info) => match info.status {
             SecureStatus::Verified => None,

@@ -2,14 +2,14 @@
 //!
 //! Reads the device's group-address and association tables over the bus,
 //! computes the desired tables from the links in the model's device file for that device (via
-//! [`bussard_download`]), and shows what `apply` would change: additions,
+//! `bussard_download`), and shows what `apply` would change: additions,
 //! removals, unchanged links, resulting table sizes, and the load-op sequence.
 //!
 //! Two device families are read here, behind one seam ([`bussard_service::program::read`]):
 //! **System B** (mask `x7B0`) serves its tables as interface-object property
-//! arrays ([`bussard_mgmt::tables`]); **System 7** (mask `0705` / `0701`) keeps
+//! arrays (`bussard_mgmt::tables`); **System 7** (mask `0705` / `0701`) keeps
 //! them in absolute memory at `0x4000` / `0x4201`
-//! ([`bussard_download::tables_sys7`], issue #91). Both decode into the same
+//! (`bussard_download::tables_sys7`, issue #91). Both decode into the same
 //! [`DeviceTables`] shape, so the diff and the report below are family-agnostic.
 //!
 //! This command is **read-only on the bus** — it never writes a load control or
@@ -20,13 +20,13 @@
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_download::{DesiredTables, PlanReport};
-use bussard_mgmt::tables::DeviceTables;
-use bussard_mgmt::{MaskProfile, system_type};
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::download::{DesiredTables, PlanReport};
+use bussard_service::mgmt::tables::DeviceTables;
+use bussard_service::mgmt::{MaskProfile, system_type};
 use bussard_service::program;
+use bussard_service::transport::ConnectionConfig;
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
-use bussard_transport::ConnectionConfig;
 
 use crate::cli::{ProductSelection, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
@@ -46,7 +46,7 @@ struct ObjectGaJson {
 #[derive(Debug, serde::Serialize)]
 struct PlanJson {
     #[serde(flatten)]
-    plan: bussard_download::DevicePlan,
+    plan: bussard_service::download::DevicePlan,
     /// The one question `apply` asks, `None` for an empty plan.
     question: Option<String>,
     mask: String,
@@ -106,7 +106,7 @@ pub(crate) struct Reading<'a> {
     /// The PID 61 cache.
     pub flags_cache: program::read::FlagsCache<'a>,
     /// A property-only load procedure whose properties are read.
-    pub properties: Option<&'a bussard_download::FlashPlan>,
+    pub properties: Option<&'a bussard_service::download::FlashPlan>,
 }
 
 /// Opens a read-only bus service and reads `target` in one management
@@ -139,7 +139,7 @@ pub(crate) fn read_device(
             skip: overrides.skip_address_check,
         },
         tool_key,
-        bussard_secure::SequenceHighWater::new(),
+        bussard_service::secure::SequenceHighWater::new(),
     )
     .with_factory_key(factory_key)
     .with_authorize(bussard_service::status::read_only_authorize(
@@ -399,7 +399,7 @@ fn run(
             println!();
             print!(
                 "{}",
-                bussard_download::render_plan_text(target, live, report)
+                bussard_service::download::render_plan_text(target, live, report)
             );
             if let Some(params) = params {
                 crate::param_readback::print_text(&params.readback, target);
@@ -466,9 +466,9 @@ fn print_property_plan(
 fn to_json(
     live: &DeviceTables,
     report: &PlanReport,
-    device_plan: bussard_download::DevicePlan,
+    device_plan: bussard_service::download::DevicePlan,
 ) -> PlanJson {
-    let map = |pairs: &[bussard_download::ObjectGa]| {
+    let map = |pairs: &[bussard_service::download::ObjectGa]| {
         pairs
             .iter()
             .map(|p| ObjectGaJson {
@@ -506,7 +506,7 @@ fn to_json(
 pub(crate) fn print_text(target: IndividualAddress, live: &DeviceTables, report: &PlanReport) {
     print!(
         "{}",
-        bussard_download::render_plan_text(target, live, report)
+        bussard_service::download::render_plan_text(target, live, report)
     );
     if !report.is_noop() {
         let apply = format!("bussard apply {target}");

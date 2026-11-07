@@ -278,7 +278,6 @@ dependencies = [
  "bussard-mcp",
  "bussard-mgmt",
  "bussard-model",
- "bussard-monitor",
  "bussard-product",
  "bussard-project",
  "bussard-secure",
@@ -533,9 +532,7 @@ version = "0.10.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
- "bussard-mgmt",
  "bussard-model",
- "bussard-monitor",
  "bussard-secure",
  "bussard-service",
  "bussard-transport",
