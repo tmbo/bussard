@@ -64,8 +64,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bussard_download::Progress;
 use bussard_model::IndividualAddress;
 use bussard_model::history::HISTORY_DIR;
+use bussard_service::observer::{Answer, Event, ProgressSink, Prompt, Question, Step};
 use serde_json::{Map, Value, json};
 
 /// How long `knx_apply_device` waits for the write to finish, counted from
@@ -991,6 +993,187 @@ fn commission_next_step(status: &Value, job: &str) -> String {
         _ => "Done: tell the human result.summary and read out result.labels so they can label \
               each device; follow result.next_step."
             .to_string(),
+    }
+}
+
+/// What [`JobSink::what`] names for a parameter-only write.
+pub const PARAMETER_DOWNLOAD: &str = "parameter download";
+
+/// A flow's [`ProgressSink`] and [`Prompt`] in the job table: its steps as
+/// the job's `step`, its download as `progress`, the programming button as
+/// `question`. Every flow of the server reports through it (the apply, the
+/// flash, the restore, and the addressing flows of add, replace and
+/// commission).
+///
+/// Its questions are answered yes: the human's yes is the plan digest with
+/// `yes: true` the tool was called with (the three-step chat contract,
+/// `dev/chat-parity.md`), checked before any flow runs.
+pub struct JobSink<'a> {
+    /// The job table.
+    pub jobs: &'a JobTable,
+    /// The job.
+    pub job: &'a str,
+    /// What downloads: [`PARAMETER_DOWNLOAD`] for a parameter-only write,
+    /// `"download"` for a flash (issue #303).
+    pub what: &'static str,
+    /// The device a programming flow writes.
+    pub target: Option<IndividualAddress>,
+    /// What the read-back compares with.
+    pub truth: &'static str,
+    /// The parameter octets a parameter write streams.
+    pub parameter_octets: usize,
+    /// The question while the job waits for the programming button.
+    pub press: String,
+    /// Name the occupant check as the check that the dead device is gone
+    /// (`knx_replace_device`).
+    pub check_gone: bool,
+}
+
+impl<'a> JobSink<'a> {
+    /// The sink of `job`, with the defaults of a download that names no
+    /// plan, compared with the model.
+    pub fn new(jobs: &'a JobTable, job: &'a str) -> Self {
+        JobSink {
+            jobs,
+            job,
+            what: "download",
+            target: None,
+            truth: "the model",
+            parameter_octets: 0,
+            press: String::new(),
+            check_gone: false,
+        }
+    }
+
+    /// A download (`what`) of `target`.
+    pub fn download(mut self, what: &'static str, target: IndividualAddress) -> Self {
+        self.what = what;
+        self.target = Some(target);
+        self
+    }
+
+    /// The question while the job waits for the programming button.
+    pub fn press(mut self, question: String) -> Self {
+        self.press = question;
+        self
+    }
+
+    /// The device, in a step text.
+    fn device(&self) -> String {
+        self.target
+            .map_or_else(|| "the device".to_string(), |t| t.to_string())
+    }
+
+    /// The `step` text of a flow step, or `None` for a step the job does not
+    /// name.
+    fn step_text(&self, step: &Step<'_>) -> Option<String> {
+        Some(match step {
+            Step::WriteTables => {
+                "writing the group-address and association tables, then reading them back"
+                    .to_string()
+            }
+            Step::WaitRestart => "waiting for the device to restart".to_string(),
+            Step::WriteParameters { .. } => {
+                format!("writing {} parameter octet(s)", self.parameter_octets)
+            }
+            Step::Download { .. } => format!(
+                "flashing {}: the full application download, then the restart (the device is \
+                 offline for {} to {} s) and the read-back",
+                self.device(),
+                bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
+                bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
+            ),
+            Step::ReadBack => format!(
+                "reading {} back (tables, parameters, security object) to compare it with {}",
+                self.device(),
+                self.truth
+            ),
+            Step::PressButton => "press_button".to_string(),
+            Step::CheckFree { target } if self.check_gone => {
+                format!("check_gone: checking that {target} no longer answers")
+            }
+            Step::Identify { at } => format!("identifying the device at {at}"),
+            Step::WriteAddress { target } => format!("writing the address {target}"),
+            Step::ReadAddress { target } => format!("reading the device back at {target}"),
+            Step::DeviceFile => "writing the device file".to_string(),
+            _ => return None,
+        })
+    }
+
+    /// One download progress event.
+    fn progress(&self, event: Progress) {
+        let (jobs, job) = (self.jobs, self.job);
+        match event {
+            Progress::Step {
+                index,
+                total,
+                label,
+            } => {
+                jobs.step(
+                    job,
+                    format!("{} step {index} of {total}: {label}", self.what),
+                );
+                jobs.progress(job, "download_step", json!(format!("{index}/{total}")));
+            }
+            // How far the segment walk got (a read-compare compares most
+            // chunks and writes few): not the octets written.
+            Progress::Bytes { written, total } => {
+                jobs.progress(job, "segment", json!({"position": written, "total": total}));
+            }
+            // The octets the last System 7 segment stream wrote (issue #320).
+            Progress::Written { written, writable } => {
+                jobs.progress(
+                    job,
+                    "octets",
+                    json!({"written": written, "writable": writable}),
+                );
+            }
+        }
+    }
+}
+
+impl ProgressSink for JobSink<'_> {
+    fn event(&mut self, event: Event<'_>) {
+        let (jobs, job) = (self.jobs, self.job);
+        match event {
+            Event::Step(step) => {
+                if let Some(text) = self.step_text(&step) {
+                    jobs.step(job, text);
+                }
+                match step {
+                    Step::PressButton => jobs.ask(job, Some(self.press.clone())),
+                    Step::Found { .. } => jobs.ask(job, None),
+                    _ => {}
+                }
+            }
+            Event::Phase(text) => jobs.step(job, text),
+            Event::Done {
+                step: Step::WriteTables,
+                verified,
+            } => jobs.progress(
+                job,
+                "tables",
+                json!(if verified { "verified" } else { "failed" }),
+            ),
+            Event::Progress(progress) => self.progress(progress),
+            Event::Finished { verified } => {
+                jobs.progress(
+                    job,
+                    "download",
+                    json!(if verified { "verified" } else { "failed" }),
+                );
+                if verified && self.what == PARAMETER_DOWNLOAD {
+                    jobs.step(job, "reading the parameter memory back to verify");
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Prompt for JobSink<'_> {
+    fn ask(&mut self, _question: &Question) -> Answer {
+        Answer::Yes
     }
 }
 

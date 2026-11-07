@@ -29,8 +29,8 @@ use bussard_model::history::{History, SnapshotReason};
 use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::{
-    DeviceStatus, LineMode, LineNote, LineOutcome, LineTarget, LineVisit, parse_line,
-    targets_digest, targets_on_line, visit_device,
+    DeviceStatus, LineMode, LineOutcome, LineTarget, LineVisit, parse_line, targets_digest,
+    targets_on_line, visit_device,
 };
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -276,10 +276,9 @@ impl BussardMcp {
                 // them again instead of a cache (issue #336).
                 bussard_service::security_change::forget_flags(&dir, target.address);
             }
-            let mut notes = Vec::new();
-            let mut collect = |note: LineNote| notes.push(note.text().to_string());
-            let outcome = visit_device(&visit, target, &mut collect).await;
-            outcomes.push((outcome, notes));
+            let mut notes = bussard_service::observer::Collected::default();
+            let outcome = visit_device(&visit, target, &mut notes).await;
+            outcomes.push((outcome, notes.lines));
         }
         Ok(outcomes)
     }

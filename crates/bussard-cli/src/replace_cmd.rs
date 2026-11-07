@@ -44,7 +44,7 @@ use bussard_service::program::Question;
 use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::replace::{self, Pressed, Replacement};
 
-use crate::addressing::{Bench, stopped};
+use crate::addressing::stopped;
 use crate::apply_cmd::ApplyArgs;
 use crate::assign_cmd::hex;
 use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec, ToolKey};
@@ -52,6 +52,7 @@ use crate::conn_cmd::{
     enforce_write_gate, gateway_display, load_model_required, open_checked, resolve_config,
 };
 use crate::flash_cmd::FlashArgs;
+use crate::progress::Terminal;
 
 /// `bussard replace`.
 #[derive(Debug, clap::Args)]
@@ -271,7 +272,7 @@ async fn swap_flow(
     force: bool,
 ) -> anyhow::Result<Option<Pressed>> {
     let target = replacement.target;
-    let bench = &mut Bench::new(yes).press(format!(
+    let bench = &mut Terminal::new(yes, false).press(format!(
         "\nPress the programming button on the replacement device for {target}."
     ));
     let refused = |stop| stopped(stop, "replace").map(|_| None);
@@ -322,6 +323,7 @@ async fn swap_flow(
     //    `assign` writes it.
     let current = located.pressed.address;
     let question = Question {
+        kind: bussard_service::observer::Ask::Write,
         prompt: format!(
             "replace {target}: address {current} → {target}, flash the application and apply \
              the model's tables, via {gateway}?"

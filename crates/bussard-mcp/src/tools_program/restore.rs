@@ -14,6 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+use crate::jobs::{JobSink, PARAMETER_DOWNLOAD};
 use bussard_download::backup::{ParameterBackup, parameter_backups_dir, read_parameter_backup};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
@@ -25,8 +26,8 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{
-    BussardMcp, DeviceRead, JobObserver, PARAMETER_DOWNLOAD, ProgrammingTier, Read, chain,
-    product_for, put, read_device, refuse_drift,
+    BussardMcp, DeviceRead, ProgrammingTier, Read, chain, product_for, put, read_device,
+    refuse_drift,
 };
 
 /// One restore plan this session produced, remembered until written, refused
@@ -422,7 +423,7 @@ impl BussardMcp {
             planned.tool_key.clone(),
             planned.high_water.clone(),
         );
-        let mut observer = JobObserver::download(&tier.jobs, job, PARAMETER_DOWNLOAD, target);
+        let mut observer = JobSink::new(&tier.jobs, job).download(PARAMETER_DOWNLOAD, target);
         let outcome = bussard_service::download::write_parameters(
             bussard_service::download::ParamWrite {
                 service,

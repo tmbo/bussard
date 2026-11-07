@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use bussard_model::history::SnapshotReason;
 use bussard_model::{DeclaredGroup, Model};
 
-use crate::setup::Output;
+use crate::observer::ProgressSink;
 
 /// Why [`declare_used`] could not write `groups.toml`.
 #[derive(Debug, thiserror::Error)]
@@ -41,7 +41,7 @@ pub fn declare_used(
     dir: &Path,
     model: &mut Model,
     verb: &str,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<Vec<DeclaredGroup>, DeclareError> {
     let mut edited = model.clone();
     let added = bussard_model::declare_used_groups(&mut edited);

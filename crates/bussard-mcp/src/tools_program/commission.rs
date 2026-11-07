@@ -37,13 +37,14 @@ use bussard_service::commission::{
     identify_pressed, probe_line,
 };
 use bussard_service::line::WalkEvent;
+use bussard_service::observer::Collected;
 use bussard_service::program::assign::{AssignFlow, Stop as FlowStop};
-use bussard_service::setup::Collected;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::addressing::{AddressJob, assigned_notes};
+use super::addressing::assigned_notes;
 use super::{BussardMcp, ProgrammingTier, chain, put};
+use crate::jobs::JobSink;
 
 /// The answers a paused job takes.
 const ANSWERS: [&str; 4] = ["retry", "skip", "stop", "assign"];
@@ -707,18 +708,13 @@ impl BussardMcp {
                     "device": device_json(target),
                 }),
             );
-            let mut observer = AddressJob {
-                jobs: &tier.jobs,
-                job,
-                press: format!(
-                    "Device {} of {}: press the programming button on {} (its LED usually \
-                     lights up), then say done.",
-                    cur.position,
-                    cur.total,
-                    who(target)
-                ),
-                check_gone: false,
-            };
+            let mut observer = JobSink::new(&tier.jobs, job).press(format!(
+                "Device {} of {}: press the programming button on {} (its LED usually lights \
+                 up), then say done.",
+                cur.position,
+                cur.total,
+                who(target)
+            ));
             let waited = tokio::select! {
                 waited = flow.wait_for_one(&mut observer) => waited,
                 () = stop.wait() => return Segment::Done(final_result(&run, true, None)),

@@ -46,8 +46,9 @@ use bussard_service::replace::{self, Pressed, Replacement};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::addressing::{AddressJob, Wording, Yes, assigned_notes, found_sentence, refused};
+use super::addressing::{Wording, Yes, assigned_notes, found_sentence, refused};
 use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for, put};
+use crate::jobs::JobSink;
 
 /// The question of the `press_button` step.
 const PRESS_BUTTON: &str = "Press the programming button on the replacement device (its LED \
@@ -543,8 +544,8 @@ impl BussardMcp {
             bussard_service::setup::products::fetch_missing(
                 &dir,
                 &[order],
-                &mut super::addressing::Consented,
-                &mut bussard_service::setup::Collected::default(),
+                &mut bussard_service::observer::Consented,
+                &mut bussard_service::observer::Collected::default(),
             )
             .map_err(|e| {
                 format!(
@@ -616,12 +617,10 @@ impl BussardMcp {
 }
 
 /// The observer of a replace job.
-fn replace_observer<'a>(tier: &'a ProgrammingTier, job: &'a str) -> AddressJob<'a> {
-    AddressJob {
-        jobs: &tier.jobs,
-        job,
-        press: PRESS_BUTTON.to_string(),
+fn replace_observer<'a>(tier: &'a ProgrammingTier, job: &'a str) -> JobSink<'a> {
+    JobSink {
         check_gone: true,
+        ..JobSink::new(&tier.jobs, job).press(PRESS_BUTTON.to_string())
     }
 }
 

@@ -28,10 +28,10 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use bussard_model::Model;
+use bussard_service::observer::{Answer, Ask, ProgressSink, Prompt, Question};
 use bussard_service::setup::gateway::describe_gateway;
 use bussard_service::setup::{
-    self, DownloadAnswer, DownloadPrompt, Output, SetupError, SetupHooks, SetupOutcome,
-    SetupRequest, TargetState,
+    self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
 use bussard_transport::knxnet::GatewayInfo;
 
@@ -116,16 +116,20 @@ struct Terminal {
     /// `--yes`.
     yes: bool,
     /// The product-data download answer.
-    consent: crate::confirm::DownloadConsent,
+    consent: crate::confirm::Answers,
 }
 
-impl DownloadPrompt for Terminal {
-    fn skip_downloads(&self) -> Option<String> {
-        self.consent.skip_downloads()
+impl Prompt for Terminal {
+    fn ask(&mut self, question: &Question) -> Answer {
+        self.consent.ask(question)
     }
 
-    fn download(&mut self, question: &str, files: usize) -> Result<DownloadAnswer, SetupError> {
-        self.consent.download(question, files)
+    fn can_ask(&self) -> bool {
+        self.consent.can_ask()
+    }
+
+    fn skips(&self, kind: Ask) -> Option<String> {
+        self.consent.skips(kind)
     }
 }
 
@@ -134,7 +138,7 @@ impl SetupHooks for Terminal {
         (self.discover)().map_err(SetupError::source)
     }
 
-    fn probe(&mut self, endpoint: SocketAddrV4, _out: &mut dyn Output) {
+    fn probe(&mut self, endpoint: SocketAddrV4, _out: &mut dyn ProgressSink) {
         (self.probe)(endpoint);
     }
 
@@ -147,7 +151,7 @@ impl SetupHooks for Terminal {
         Ok(confirmed)
     }
 
-    fn no_gateway(&mut self, out: &mut dyn Output) -> bool {
+    fn no_gateway(&mut self, out: &mut dyn ProgressSink) -> bool {
         out.warn("No KNXnet/IP gateways responded to discovery.");
         out.warn("Likely causes:");
         out.warn("  - This machine is on a different subnet than the gateway ");
@@ -162,7 +166,7 @@ impl SetupHooks for Terminal {
     fn choose_gateway(
         &mut self,
         found: &[GatewayInfo],
-        out: &mut dyn Output,
+        out: &mut dyn ProgressSink,
     ) -> Result<Option<usize>, SetupError> {
         if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
             let chosen = prompt_choice(found).map_err(SetupError::source)?;
@@ -187,7 +191,12 @@ impl SetupHooks for Terminal {
         ))
     }
 
-    fn several_projects(&mut self, dir: &Path, found: &[PathBuf], out: &mut dyn Output) -> bool {
+    fn several_projects(
+        &mut self,
+        dir: &Path,
+        found: &[PathBuf],
+        out: &mut dyn ProgressSink,
+    ) -> bool {
         out.say("Found several ETS projects; name the one to import:");
         for p in found {
             out.say(&format!(
@@ -208,7 +217,7 @@ impl SetupHooks for Terminal {
         model: Model,
         dir: &Path,
         project: Option<&Path>,
-        _out: &mut dyn Output,
+        _out: &mut dyn ProgressSink,
     ) -> Result<u8, SetupError> {
         let choice = crate::import_bundle::ConflictChoice::from_flags(false, false, false);
         let code = crate::import_cmd::write_model(
@@ -251,9 +260,10 @@ fn run_setup(
         discover,
         probe,
         yes: first.yes,
-        consent: crate::confirm::DownloadConsent {
+        consent: crate::confirm::Answers {
             yes_download: first.yes_download,
             no_download: first.no_download,
+            ..Default::default()
         },
     };
     let outcome = setup::run(&request, &mut hooks, &mut Console)?;

@@ -6,8 +6,8 @@
 //! the one found next to the directory: product data from the export,
 //! vendor downloads only with the caller's consent, the keyring next to the
 //! project into the key store, and a validation summary. It never prints and
-//! never asks: every line goes to an [`Output`], every question to a
-//! [`SetupHooks`] method. The CLI answers them on the terminal; the MCP tool
+//! never asks: every line goes to a [`ProgressSink`], every question to the
+//! [`Prompt`] or a [`SetupHooks`] method. The CLI answers them on the terminal; the MCP tool
 //! answers them from its arguments and turns a question it cannot answer
 //! into a question for the assistant.
 //!
@@ -26,35 +26,10 @@ use std::path::{Path, PathBuf};
 use bussard_model::Model;
 use bussard_transport::knxnet::GatewayInfo;
 
+use crate::observer::{ProgressSink, Prompt};
+
 pub use gateway::Resolution;
 pub use skeleton::TargetState;
-
-/// Where the lines of a setup step go. The CLI prints them (`say` on stdout,
-/// `warn` on stderr, exactly as the commands always did); the MCP tool
-/// collects them for its result.
-pub trait Output {
-    /// A line of normal output.
-    fn say(&mut self, line: &str);
-    /// A warning or error line.
-    fn warn(&mut self, line: &str);
-}
-
-/// An [`Output`] that keeps every line, in order.
-#[derive(Debug, Default, Clone)]
-pub struct Collected {
-    /// The lines said and warned, in order.
-    pub lines: Vec<String>,
-}
-
-impl Output for Collected {
-    fn say(&mut self, line: &str) {
-        self.lines.push(line.to_string());
-    }
-
-    fn warn(&mut self, line: &str) {
-        self.lines.push(line.to_string());
-    }
-}
 
 /// Why a setup step failed.
 #[derive(Debug, thiserror::Error)]
@@ -124,39 +99,11 @@ impl<T, E: std::error::Error + Send + Sync + 'static> Context<T> for Result<T, E
     }
 }
 
-/// How the caller answers the product-data download question.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum DownloadAnswer {
-    /// Download.
-    Yes,
-    /// Do not download (declined).
-    No,
-    /// Not asked: nobody to ask. The line says how to consent; it is said
-    /// and the files are not downloaded.
-    Refused(String),
-}
-
-/// The product-data download question (the `import` and `adopt` download
-/// step, and the import of a setup).
-pub trait DownloadPrompt {
-    /// Why downloads are skipped without asking (`--no-download`), or `None`
-    /// to ask [`SetupHooks::download`].
-    fn skip_downloads(&self) -> Option<String> {
-        None
-    }
-
-    /// The one download question for the whole list of `files` archives.
-    ///
-    /// # Errors
-    ///
-    /// The answer could not be read.
-    fn download(&mut self, question: &str, files: usize) -> Result<DownloadAnswer, SetupError>;
-}
-
 /// The questions a setup asks and the effects a surface supplies. Every
 /// method has the answer of a caller that cannot ask: the MCP tool overrides
-/// what its arguments settle, the CLI asks on the terminal.
-pub trait SetupHooks: DownloadPrompt {
+/// what its arguments settle, the CLI asks on the terminal. The product-data
+/// download question goes to the [`Prompt`] ([`crate::observer::Ask::Download`]).
+pub trait SetupHooks: Prompt {
     /// The KNXnet/IP gateways discovery finds on the local network.
     ///
     /// # Errors
@@ -167,7 +114,7 @@ pub trait SetupHooks: DownloadPrompt {
     }
 
     /// The best-effort reachability check of a gateway that was given.
-    fn probe(&mut self, endpoint: std::net::SocketAddrV4, out: &mut dyn Output) {
+    fn probe(&mut self, endpoint: std::net::SocketAddrV4, out: &mut dyn ProgressSink) {
         gateway::probe_reachability(endpoint, out);
     }
 
@@ -181,7 +128,7 @@ pub trait SetupHooks: DownloadPrompt {
 
     /// Discovery found no gateway: `true` writes a skeleton with a placeholder
     /// gateway, `false` stops before anything is written.
-    fn no_gateway(&mut self, out: &mut dyn Output) -> bool;
+    fn no_gateway(&mut self, out: &mut dyn ProgressSink) -> bool;
 
     /// Several gateways answered: the index of the one to use, or `None` to
     /// stop before anything is written.
@@ -192,12 +139,17 @@ pub trait SetupHooks: DownloadPrompt {
     fn choose_gateway(
         &mut self,
         found: &[GatewayInfo],
-        out: &mut dyn Output,
+        out: &mut dyn ProgressSink,
     ) -> Result<Option<usize>, SetupError>;
 
     /// Several ETS projects lie next to `dir` and none was named: `true`
     /// goes on without one, `false` stops before anything is written.
-    fn several_projects(&mut self, dir: &Path, found: &[PathBuf], out: &mut dyn Output) -> bool;
+    fn several_projects(
+        &mut self,
+        dir: &Path,
+        found: &[PathBuf],
+        out: &mut dyn ProgressSink,
+    ) -> bool;
 
     /// The project is password-protected and no password was given: the
     /// password to try once, or `None` to fail.
@@ -222,7 +174,7 @@ pub trait SetupHooks: DownloadPrompt {
         model: Model,
         dir: &Path,
         project: Option<&Path>,
-        out: &mut dyn Output,
+        out: &mut dyn ProgressSink,
     ) -> Result<u8, SetupError>
     where
         Self: Sized,
@@ -294,7 +246,7 @@ pub enum SetupOutcome {
 pub fn run<H: SetupHooks>(
     request: &SetupRequest,
     hooks: &mut H,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<SetupOutcome, SetupError> {
     let dir = request.dir.as_path();
     let mut project = request.project.clone();
@@ -387,6 +339,7 @@ pub fn run<H: SetupHooks>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::observer::Collected;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -397,31 +350,27 @@ mod tests {
         confirmed: bool,
     }
 
-    impl DownloadPrompt for Quiet {
-        fn download(&mut self, _q: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-            Ok(DownloadAnswer::No)
-        }
-    }
+    impl Prompt for Quiet {}
 
     impl SetupHooks for Quiet {
         fn discover(&mut self) -> Result<Vec<GatewayInfo>, SetupError> {
             Ok(Vec::new())
         }
 
-        fn probe(&mut self, _endpoint: std::net::SocketAddrV4, _out: &mut dyn Output) {}
+        fn probe(&mut self, _endpoint: std::net::SocketAddrV4, _out: &mut dyn ProgressSink) {}
 
         fn confirm_target(&mut self, _dir: &Path, _state: TargetState) -> Result<bool, SetupError> {
             Ok(self.confirmed)
         }
 
-        fn no_gateway(&mut self, _out: &mut dyn Output) -> bool {
+        fn no_gateway(&mut self, _out: &mut dyn ProgressSink) -> bool {
             false
         }
 
         fn choose_gateway(
             &mut self,
             _found: &[GatewayInfo],
-            _out: &mut dyn Output,
+            _out: &mut dyn ProgressSink,
         ) -> Result<Option<usize>, SetupError> {
             Ok(None)
         }
@@ -430,7 +379,7 @@ mod tests {
             &mut self,
             _dir: &Path,
             _found: &[PathBuf],
-            _out: &mut dyn Output,
+            _out: &mut dyn ProgressSink,
         ) -> bool {
             false
         }

@@ -26,23 +26,22 @@
 
 use std::time::Instant;
 
+use crate::jobs::JobSink;
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{
     ProductPlan, SelectedProduct, product_plan, selected_from_archive, useful_objects,
 };
 use bussard_service::assign::{AssignError, hex};
+use bussard_service::observer::Collected;
 use bussard_service::program::Question;
 use bussard_service::program::adopt::{self, Adopted, Keys, PlanRequest, Planned, RunRequest};
 use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
-use bussard_service::setup::Collected;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use super::addressing::{
-    AddressJob, Wording, Yes, assigned_notes, found_sentence, readback_json, refused,
-};
+use super::addressing::{Wording, Yes, assigned_notes, found_sentence, readback_json, refused};
 use super::{BussardMcp, ProgrammingTier, chain, put};
 
 /// The question of the `press_button` step.
@@ -316,13 +315,8 @@ impl BussardMcp {
     }
 
     /// The observer of an add job.
-    fn add_observer<'a>(&self, tier: &'a ProgrammingTier, job: &'a str) -> AddressJob<'a> {
-        AddressJob {
-            jobs: &tier.jobs,
-            job,
-            press: PRESS_BUTTON.to_string(),
-            check_gone: false,
-        }
+    fn add_observer<'a>(&self, tier: &'a ProgrammingTier, job: &'a str) -> JobSink<'a> {
+        JobSink::new(&tier.jobs, job).press(PRESS_BUTTON.to_string())
     }
 
     /// The keyring's tool keys.
@@ -344,7 +338,7 @@ impl BussardMcp {
         address: Option<&str>,
         order_arg: Option<&str>,
         product_file: Option<&std::path::Path>,
-        observer: &mut AddressJob<'_>,
+        observer: &mut JobSink<'_>,
     ) -> Result<Identification, String> {
         let state = self.state();
         let keys = self.add_keys()?;
@@ -494,6 +488,7 @@ impl BussardMcp {
                 keyring: state.keyring.as_deref(),
             },
             question: &Question {
+                kind: bussard_service::observer::Ask::Write,
                 prompt: add_question(&p.id),
                 action: format!("knx_add_device job {job}"),
             },

@@ -34,9 +34,10 @@ use bussard_mgmt::system_type;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::resume::{LineState, Opened};
 use bussard_service::line::{
-    DeviceStatus, LineMode as Mode, LineNote, LineOutcome as Outcome, LineTarget as Target,
-    LineVisit, targets_on_line, visit_device,
+    DeviceStatus, LineMode as Mode, LineOutcome as Outcome, LineTarget as Target, LineVisit,
+    targets_on_line, visit_device,
 };
+use bussard_service::observer::{Event, Note};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::cli::Resolved;
@@ -347,9 +348,11 @@ async fn visit_all(
         on_parse: Some(crate::timing::record_product_parse),
         expected: None,
     };
-    let mut print_note = |note: LineNote| match note {
-        LineNote::Detail(line) => eprintln!("  {line}"),
-        LineNote::Warning(line) => eprintln!("{line}"),
+    // A line about the device goes under it, a warning as is.
+    let mut print_note = |event: Event<'_>| match event {
+        Event::Note(Note::Say(line)) => eprintln!("  {line}"),
+        Event::Note(Note::Warn(line)) => eprintln!("{line}"),
+        _ => {}
     };
     let total = targets.len();
     for (index, target) in targets.iter().enumerate() {

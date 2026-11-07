@@ -19,6 +19,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use bussard_download::{FlashPlan, FlashStep, Progress};
+use bussard_service::observer::{Answer, Ask, Event, ProgressSink, Prompt, Question, Step, Wait};
+use bussard_service::program::assign::Assigned;
 use indicatif::{ProgressBar, ProgressDrawTarget, ProgressState, ProgressStyle};
 
 /// The environment switch that turns on the raw wire trace; the live view stays
@@ -610,14 +612,15 @@ impl Drop for Display {
     }
 }
 
-/// The terminal's side of a programming flow (issue #901): the progress
-/// display of each download and table write, the flow's lines on stdout and
-/// stderr, the confirmation prompt, and the history snapshot recorded once
-/// the human said yes.
+/// The terminal's side of every flow (issues #901, #910): the progress
+/// display of each download and table write, the addressing steps and the
+/// wait for the programming button, the flow's lines on stdout and stderr,
+/// the questions ([`crate::confirm::Answers`]), and the history snapshot
+/// recorded once the human said yes.
 pub(crate) struct Terminal<'a> {
-    /// `--yes`.
-    yes: bool,
-    /// `--json`: the download's live view stays off.
+    /// The answers: `--yes` and the download flags.
+    consent: crate::confirm::Answers,
+    /// `--json`: the download's live view and the phase lines stay off.
     json: bool,
     /// The display of the step running.
     display: Option<Display>,
@@ -625,17 +628,33 @@ pub(crate) struct Terminal<'a> {
     tables: String,
     /// The history snapshot to record on a yes.
     snapshot: Option<(&'a std::path::Path, bussard_model::history::SnapshotReason)>,
+    /// The indent of the addressing lines (`commission` nests them under
+    /// the device).
+    indent: &'static str,
+    /// The line printed when the wait for the programming button starts.
+    press: Option<String>,
+    /// `adopt`'s wizard: the step heading before the device file.
+    wizard: bool,
+    /// The address was broadcast in this run.
+    wrote: bool,
 }
 
 impl<'a> Terminal<'a> {
     /// A terminal that asks unless `yes`.
     pub(crate) fn new(yes: bool, json: bool) -> Self {
         Terminal {
-            yes,
+            consent: crate::confirm::Answers {
+                yes,
+                ..Default::default()
+            },
             json,
             display: None,
             tables: String::new(),
             snapshot: None,
+            indent: "",
+            press: None,
+            wizard: false,
+            wrote: false,
         }
     }
 
@@ -655,63 +674,136 @@ impl<'a> Terminal<'a> {
         self
     }
 
+    /// Indents the addressing lines.
+    pub(crate) fn indent(mut self, indent: &'static str) -> Self {
+        self.indent = indent;
+        self
+    }
+
+    /// Prints `line` when the wait for the programming button starts.
+    pub(crate) fn press(mut self, line: String) -> Self {
+        self.press = Some(line);
+        self
+    }
+
+    /// Prints `adopt`'s step headings.
+    pub(crate) fn wizard(mut self) -> Self {
+        self.wizard = true;
+        self
+    }
+
     /// Finishes the display on screen.
     fn finish(&mut self, verified: bool) {
         if let Some(mut display) = self.display.take() {
             display.finish(verified);
         }
     }
+
+    /// Starts `step`: a display for a download or a table write, a line for
+    /// an addressing step.
+    fn step(&mut self, step: Step<'_>) {
+        let indent = self.indent;
+        match step {
+            Step::Download { plan } => self.display = Some(Display::flash(plan, self.json)),
+            Step::WriteParameters { plan } => self.display = Some(Display::flash(plan, false)),
+            Step::WriteTables => self.display = Some(Display::task(self.tables.clone(), false)),
+            Step::PressButton => {
+                if let Some(line) = &self.press {
+                    eprintln!("{line}");
+                }
+            }
+            Step::Found { current } => {
+                eprintln!("{indent}device in programming mode: {current} (its current address)");
+            }
+            Step::WriteAddress { .. } => self.wrote = true,
+            Step::ReadAddress { target } if !self.wrote => {
+                eprintln!(
+                    "{indent}{target} already has the address {target}; no address write; verifying…"
+                );
+            }
+            Step::Assigned(assigned) => assigned_lines(assigned, indent),
+            Step::ReadSecured { .. } => println!(
+                "  reading the secured device over A_SecureData (tables, security object, \
+                 parameters)"
+            ),
+            Step::DeviceFile if self.wizard => crate::adopt_cmd::step(3, "write the device file"),
+            _ => {}
+        }
+    }
 }
 
-impl bussard_service::program::Observer for Terminal<'_> {
-    fn step(&mut self, step: bussard_service::program::Step<'_>) {
-        use bussard_service::program::Step;
-        self.display = match step {
-            Step::Download { plan } => Some(Display::flash(plan, self.json)),
-            Step::WriteParameters { plan } => Some(Display::flash(plan, false)),
-            Step::WriteTables => Some(Display::task(self.tables.clone(), false)),
-            // The addressing steps print through `addressing::Bench`.
-            _ => return,
-        };
+/// What the read-back of an address write said.
+fn assigned_lines(assigned: &Assigned, indent: &str) {
+    let target = assigned.target;
+    for warning in &assigned.verified.warnings {
+        eprintln!("{warning}");
     }
-
-    fn done(&mut self, _step: bussard_service::program::Step<'_>, verified: bool) {
-        self.finish(verified);
+    if assigned.verified.programming_mode_cleared {
+        eprintln!("{indent}cleared programming mode on {target} (PID_PROGMODE = 0), as ETS does.");
     }
-
-    fn note(&mut self, note: bussard_service::program::Note) {
-        match note {
-            bussard_service::program::Note::Say(line) => println!("{line}"),
-            bussard_service::program::Note::Warn(line) => eprintln!("{line}"),
+    if assigned.still_in_programming_mode {
+        eprintln!();
+        for line in bussard_service::assign::still_in_programming_mode_warning(target) {
+            eprintln!("{line}");
         }
     }
+    if !assigned.written {
+        eprintln!(
+            "note: {target} stays in programming mode (nothing was written to it); press its \
+             programming button to leave it"
+        );
+    }
+}
 
-    fn progress(&mut self, event: Progress) {
-        if let Some(display) = &mut self.display {
-            display.on_progress(event);
+impl ProgressSink for Terminal<'_> {
+    fn event(&mut self, event: Event<'_>) {
+        match event {
+            Event::Step(step) => self.step(step),
+            Event::Done {
+                step: Step::WriteAddress { target },
+                ..
+            } => eprintln!("{}wrote {target}; verifying…", self.indent),
+            Event::Done { verified, .. } => self.finish(verified),
+            Event::Wait(Wait::Remind) => eprintln!(
+                "no device in programming mode yet — press the programming button on the \
+                 device, then keep waiting (or re-run)."
+            ),
+            Event::Wait(Wait::Left(remaining)) => {
+                eprint!("\rwaiting for a device… {}s left   ", remaining.as_secs());
+                let _ = std::io::stderr().flush();
+            }
+            Event::Phase(text) => {
+                if !self.json {
+                    println!("  -> {text}");
+                }
+            }
+            Event::Note(note) => crate::console::print_note(note),
+            Event::Progress(event) => {
+                if let Some(display) = &mut self.display {
+                    display.on_progress(event);
+                }
+            }
+            Event::Finished { verified } => self.finish(verified),
+            Event::Approved => {
+                if let Some((dir, reason)) = self.snapshot.take() {
+                    crate::history_cmd::snapshot(dir, reason);
+                }
+            }
         }
     }
+}
 
-    fn finished(&mut self, verified: bool) {
-        self.finish(verified);
+impl Prompt for Terminal<'_> {
+    fn ask(&mut self, question: &Question) -> Answer {
+        self.consent.ask(question)
     }
 
-    fn confirm(
-        &mut self,
-        question: &bussard_service::program::Question,
-    ) -> bussard_service::program::Answer {
-        use bussard_service::program::Answer;
-        match crate::confirm::confirm(self.yes, &question.prompt, &question.action) {
-            Ok(true) => Answer::Yes,
-            Ok(false) => Answer::No,
-            Err(err) => Answer::Refused(format!("{err:#}")),
-        }
+    fn can_ask(&self) -> bool {
+        self.consent.can_ask()
     }
 
-    fn approved(&mut self) {
-        if let Some((dir, reason)) = self.snapshot.take() {
-            crate::history_cmd::snapshot(dir, reason);
-        }
+    fn skips(&self, kind: Ask) -> Option<String> {
+        self.consent.skips(kind)
     }
 }
 

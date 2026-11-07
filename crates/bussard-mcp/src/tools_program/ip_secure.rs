@@ -14,6 +14,7 @@ use bussard_service::ip_secure::{
     Switch, SwitchContext, SwitchPlan, interface_digest_text, plan_off, plan_on, probe_gateway,
     run_switch, secured_through,
 };
+use bussard_service::observer::Event;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -118,7 +119,11 @@ impl BussardMcp {
             connect_wait: std::time::Duration::from_secs(10),
         };
         let mut steps_done = Vec::new();
-        let mut progress = |line: &str| steps_done.push(line.to_string());
+        let mut progress = |event: Event<'_>| {
+            if let Event::Phase(line) = event {
+                steps_done.push(line);
+            }
+        };
         match run_switch(&ctx, &mut plan, &store, &mut progress).await {
             Ok(outcome) => Ok(json!({
                 "ok": outcome.verified(switch),

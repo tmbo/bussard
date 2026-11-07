@@ -14,9 +14,9 @@ use bussard_mgmt::ConnectionSeed;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 
-use super::observer::{Observer, Step};
 use crate::download::ParamWriteOutcome;
 use crate::flash_flow::LockRecord;
+use crate::observer::{Event, Observer, Step};
 use crate::params::{ParamDetail, ProductSource};
 use crate::verify::WriteReadback;
 use crate::verify::{Expected, ExpectedParameters, ExpectedProperty, ExpectedSecurity};
@@ -276,7 +276,7 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
     // Then the parameter octets that differ (issue #274): the parameter-only
     // download, verified by reading the memory back.
     if let Some((partial, detail)) = req.parameters {
-        observer.step(Step::WriteParameters { plan: partial });
+        observer.event(Event::Step(Step::WriteParameters { plan: partial }));
         let outcome = crate::download::write_parameters(
             crate::download::ParamWrite {
                 service: req.service,
@@ -309,7 +309,7 @@ pub async fn write_tables(
     wait_restart: bool,
     observer: &mut impl Observer,
 ) -> (TablesWritten, Option<Result<Duration, String>>) {
-    observer.step(Step::WriteTables);
+    observer.event(Event::Step(Step::WriteTables));
     let written = match req.service.lease_channel().await {
         Err(err) => TablesWritten::Lease(err),
         Ok(channel) => match bussard_download::write_tables(
@@ -336,12 +336,15 @@ pub async fn write_tables(
             Err(err) => TablesWritten::Failed(err),
         },
     };
-    observer.done(Step::WriteTables, written.verified());
+    observer.event(Event::Done {
+        step: Step::WriteTables,
+        verified: written.verified(),
+    });
     let restart = matches!(&written, TablesWritten::Ran(s) if s.ok && s.restarted);
     if !(restart && wait_restart) {
         return (written, None);
     }
-    observer.step(Step::WaitRestart);
+    observer.event(Event::Step(Step::WaitRestart));
     let back = crate::restart::wait_until_back(
         req.service,
         req.target,
@@ -366,7 +369,7 @@ async fn read_back(
     if out.stopped() {
         return None;
     }
-    observer.step(Step::ReadBack);
+    observer.event(Event::Step(Step::ReadBack));
     Some(
         crate::verify::read_back_on(req.service, req.target, options, req.seed.clone(), expected)
             .await,

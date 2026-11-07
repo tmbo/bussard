@@ -103,6 +103,7 @@ pub mod learn;
 pub mod limit;
 pub mod line;
 pub mod model_handle;
+pub mod observer;
 pub mod params;
 pub mod policy;
 pub mod program;

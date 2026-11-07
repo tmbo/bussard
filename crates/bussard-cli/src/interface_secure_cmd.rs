@@ -241,11 +241,7 @@ fn run(inputs: &SecureArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         keystore_loaded: &keystore_loaded,
         connect_wait: crate::conn_cmd::connect_wait(),
     };
-    let mut progress = |line: &str| {
-        if !json {
-            println!("  -> {line}");
-        }
-    };
+    let mut progress = crate::progress::Terminal::new(true, json);
     let outcome = runtime.block_on(run_switch(&ctx, &mut plan, &store, &mut progress));
     let outcome = match outcome {
         Ok(outcome) => outcome,

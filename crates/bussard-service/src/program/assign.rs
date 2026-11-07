@@ -14,11 +14,11 @@ use std::time::Duration;
 
 use bussard_model::IndividualAddress;
 
-use super::{Declined, Observer, Question, Step, ask};
+use super::{Declined, Event, Observer, Question, Step, ask};
 use crate::assign::{
-    AssignError, Occupant, ProgrammingWait, Verified, VerifyError, VerifyKey, WaitEvent,
-    in_programming_mode, probe_occupant, still_in_programming_mode, verify_assignment_with,
-    wait_for_programming_mode, write_address,
+    AssignError, Occupant, ProgrammingWait, Verified, VerifyError, VerifyKey, in_programming_mode,
+    probe_occupant, still_in_programming_mode, verify_assignment_with, wait_for_programming_mode,
+    write_address,
 };
 use crate::identity::SecureStatus;
 use crate::{BusService, ServiceError};
@@ -171,17 +171,11 @@ impl AssignFlow<'_> {
         &self,
         observer: &mut O,
     ) -> Result<IndividualAddress, Stop> {
-        observer.step(Step::PressButton);
-        let mut on_event = |event: WaitEvent| {
-            observer.step(match event {
-                WaitEvent::Remind => Step::Remind,
-                WaitEvent::Waiting { remaining } => Step::Waiting { remaining },
-            });
-        };
-        let found = wait_for_programming_mode(self.service, self.source, &mut on_event).await?;
+        observer.event(Event::Step(Step::PressButton));
+        let found = wait_for_programming_mode(self.service, self.source, observer).await?;
         match found {
             ProgrammingWait::One(current) => {
-                observer.step(Step::Found { current });
+                observer.event(Event::Step(Step::Found { current }));
                 Ok(current)
             }
             ProgrammingWait::Several(found) => Err(Stop::Several(found)),
@@ -217,9 +211,12 @@ impl AssignFlow<'_> {
         force: bool,
         observer: &mut O,
     ) -> Result<Option<Occupant>, Stop> {
-        observer.step(Step::CheckFree { target });
+        observer.event(Event::Step(Step::CheckFree { target }));
         let occupant = probe_occupant(self.service, self.source, target).await;
-        observer.done(Step::CheckFree { target }, occupant.is_none());
+        observer.event(Event::Done {
+            step: Step::CheckFree { target },
+            verified: occupant.is_none(),
+        });
         match occupant {
             Some(occupant) if !force => Err(Stop::Occupied { target, occupant }),
             other => Ok(other),
@@ -245,13 +242,16 @@ impl AssignFlow<'_> {
         }
         let written = target != current;
         if written {
-            observer.step(Step::WriteAddress { target });
+            observer.event(Event::Step(Step::WriteAddress { target }));
             write_address(self.service, self.source, target)
                 .await
                 .map_err(Stop::Write)?;
-            observer.done(Step::WriteAddress { target }, true);
+            observer.event(Event::Done {
+                step: Step::WriteAddress { target },
+                verified: true,
+            });
         }
-        observer.step(Step::ReadAddress { target });
+        observer.event(Event::Step(Step::ReadAddress { target }));
         let verified = verify_assignment_with(
             self.service,
             self.source,
@@ -285,7 +285,7 @@ impl AssignFlow<'_> {
             still_in_programming_mode,
             matches_identified,
         };
-        observer.step(Step::Assigned(&assigned));
+        observer.event(Event::Step(Step::Assigned(&assigned)));
         Ok(assigned)
     }
 }

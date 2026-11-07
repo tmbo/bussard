@@ -27,7 +27,6 @@ use bussard_prod::{ApplicationProgram, ProductData};
 use bussard_secure::{Key16, SequenceHighWater};
 use sha2::{Digest, Sha256};
 
-use super::observer::{Declined, Note, Observer, Question, Step};
 use super::params_only::ParamsRead;
 use super::plan::put;
 use super::read::DeviceRead;
@@ -36,6 +35,7 @@ use crate::flash_flow::{
     Flashed, FreshnessDecision, LockRecord, ReadbackInputs, decide_freshness, freshness_line,
     freshness_refusal, names_replacement,
 };
+use crate::observer::{Declined, Event, Note, Observer, Question, Step};
 use crate::params::{BuiltPlan, ProductSource};
 use crate::secure::SecureMaterial;
 use crate::{BusService, FactsCache, Management, ServiceError};
@@ -264,6 +264,7 @@ impl FlashPlanned {
             self.plan.identity.id
         );
         Question {
+            kind: crate::observer::Ask::Write,
             prompt: match &self.decision.prompt_note {
                 Some(note) => format!("{note}\n{question}"),
                 None => question,
@@ -438,22 +439,22 @@ pub async fn execute(
     exec: FlashExecution<'_>,
     observer: &mut impl Observer,
 ) -> Result<FlashWritten, Declined> {
-    super::observer::ask(observer, &exec.question)?;
+    crate::observer::ask(observer, &exec.question)?;
     let plan = exec.plan;
     if plan.has_factory_reset() {
-        observer.note(Note::Warn(
+        observer.event(Event::Note(Note::Warn(
             "factory reset: the device's application, parameters and links are erased before the \
              download (its individual address is kept); every object is streamed in full. Pass \
              --no-factory-reset only when the device is known to hold no stale image."
                 .to_string(),
-        ));
+        )));
     }
     if exec.differential {
-        observer.note(Note::Warn(
+        observer.event(Event::Note(Note::Warn(
             "differential download: objects whose resident image already matches are skipped \
              (pass --full to re-stream everything)"
                 .to_string(),
-        ));
+        )));
     }
     let (target, dir, senders) = (exec.target, exec.dir, exec.senders);
     let run = crate::download::FlashRun {
@@ -466,7 +467,7 @@ pub async fn execute(
         high_water: exec.high_water,
         handover: exec.handover,
     };
-    observer.step(Step::Download { plan });
+    observer.event(Event::Step(Step::Download { plan }));
     let download_started = Instant::now();
     let mut timed = Timed {
         inner: observer,
@@ -493,18 +494,14 @@ struct Timed<'o, O: Observer> {
     restart_started: Option<Instant>,
 }
 
-impl<O: Observer> Observer for Timed<'_, O> {
-    fn progress(&mut self, event: bussard_download::Progress) {
-        if let bussard_download::Progress::Step { index, total, .. } = &event
+impl<O: Observer> crate::observer::ProgressSink for Timed<'_, O> {
+    fn event(&mut self, event: Event<'_>) {
+        if let Event::Progress(bussard_download::Progress::Step { index, total, .. }) = &event
             && index == total
         {
             self.restart_started = Some(Instant::now());
         }
-        self.inner.progress(event);
-    }
-
-    fn finished(&mut self, verified: bool) {
-        self.inner.finished(verified);
+        self.inner.event(event);
     }
 }
 

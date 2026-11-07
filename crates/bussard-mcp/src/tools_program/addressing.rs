@@ -1,7 +1,7 @@
 //! The chat side of the addressing flows (issue #902): `knx_add_device`,
 //! `knx_replace_device` and `knx_commission_line` run
-//! [`bussard_service::program::assign`] through [`AddressJob`], the observer
-//! that reports their steps into the job table, and share the yes call, the
+//! [`bussard_service::program::assign`] through the job table's
+//! [`crate::jobs::JobSink`], and share the yes call, the
 //! download consent and the sentences about the pressed device.
 
 use std::future::Future;
@@ -10,56 +10,11 @@ use std::time::Instant;
 use bussard_model::IndividualAddress;
 use bussard_service::BusService;
 use bussard_service::assign::{Verified, hex};
+use bussard_service::observer::{Collected, Consented};
 use bussard_service::program::assign::{Assigned, Stop};
-use bussard_service::program::{Answer, Observer, Question, Step};
-use bussard_service::setup::{Collected, DownloadAnswer, DownloadPrompt, SetupError};
 use serde_json::{Value, json};
 
 use super::{BussardMcp, ProgrammingTier, chain};
-
-/// Reports an addressing flow into its job: the button question, the steps
-/// and the human's yes, which the plan digest already carried.
-pub(super) struct AddressJob<'a> {
-    /// The job table.
-    pub jobs: &'a crate::jobs::JobTable,
-    /// The job.
-    pub job: &'a str,
-    /// The question while the job waits for the programming button.
-    pub press: String,
-    /// Name the occupant check as the check that the dead device is gone
-    /// (`knx_replace_device`).
-    pub check_gone: bool,
-}
-
-impl Observer for AddressJob<'_> {
-    fn step(&mut self, step: Step<'_>) {
-        let (jobs, job) = (self.jobs, self.job);
-        match step {
-            Step::PressButton => {
-                jobs.step(job, "press_button");
-                jobs.ask(job, Some(self.press.clone()));
-            }
-            Step::Found { .. } => jobs.ask(job, None),
-            Step::CheckFree { target } if self.check_gone => jobs.step(
-                job,
-                format!("check_gone: checking that {target} no longer answers"),
-            ),
-            Step::Identify { at } => jobs.step(job, format!("identifying the device at {at}")),
-            Step::WriteAddress { target } => {
-                jobs.step(job, format!("writing the address {target}"));
-            }
-            Step::ReadAddress { target } => {
-                jobs.step(job, format!("reading the device back at {target}"));
-            }
-            Step::DeviceFile => jobs.step(job, "writing the device file"),
-            _ => {}
-        }
-    }
-
-    fn confirm(&mut self, _question: &Question) -> Answer {
-        Answer::Yes
-    }
-}
 
 /// How a tool names the device and itself in its refusals.
 pub(super) struct Wording {
@@ -193,15 +148,6 @@ pub(super) fn readback_json(v: &Verified) -> Value {
         "order_number": v.order,
         "secure": v.secure.as_str(),
     })
-}
-
-/// Answers the download question with the human's `download: true`.
-pub(super) struct Consented;
-
-impl DownloadPrompt for Consented {
-    fn download(&mut self, _question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(DownloadAnswer::Yes)
-    }
 }
 
 /// Downloads the product data for `order` (the human agreed): the archive

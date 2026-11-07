@@ -16,6 +16,7 @@ use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::bus::{Authorize, BusService, L4Options, Management};
 use crate::error::ServiceError;
+use crate::observer::{Event, ProgressSink};
 use crate::params::ParamDetail;
 
 /// Environment variable that overrides the flash's per-attempt L4 ACK/response
@@ -94,10 +95,6 @@ impl bussard_download::Connector for ServiceConnector<'_> {
     }
 }
 
-/// Watches a download: each progress event, and the end. The one observer
-/// of every programming flow ([`crate::program::Observer`], issue #901).
-pub use crate::program::Observer as FlashObserver;
-
 /// What [`flash_session`] needs besides the plan.
 pub struct FlashRun<'a> {
     /// The service the connections are leased from.
@@ -130,7 +127,7 @@ pub struct FlashRun<'a> {
 pub async fn flash_session<R>(
     run: FlashRun<'_>,
     plan: &FlashPlan,
-    observer: &mut impl FlashObserver,
+    observer: &mut impl ProgressSink,
     after: impl AsyncFnOnce(&mut Layer4Connection<LeaseChannel>) -> R,
 ) -> (Result<FlashOutcome, WriteError>, Option<R>) {
     let connector = ServiceConnector {
@@ -154,11 +151,11 @@ pub async fn flash_session<R>(
         Err(err) => return (Err(err), None),
     };
     let result = bussard_download::flash(&mut session, plan, run.options, |p| {
-        observer.progress(p);
+        observer.event(Event::Progress(p));
     })
     .await;
     let verified = result.as_ref().is_ok_and(|outcome| outcome.ok());
-    observer.finished(verified);
+    observer.event(Event::Finished { verified });
     let extra = if result.is_ok() {
         Some(after(session.l4()).await)
     } else {
@@ -240,7 +237,7 @@ pub struct ParamWrite<'a> {
 /// The read-back session could not be opened.
 pub async fn write_parameters(
     write: ParamWrite<'_>,
-    observer: &mut impl FlashObserver,
+    observer: &mut impl ProgressSink,
 ) -> Result<ParamWriteOutcome, ServiceError> {
     let ParamWrite {
         service,

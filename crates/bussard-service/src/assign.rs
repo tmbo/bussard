@@ -32,6 +32,7 @@ use bussard_model::{IndividualAddress, LoadedDevice, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 
 use crate::identity::{Identity, SecureStatus, read_identity, read_manufacturer, read_order};
+use crate::observer::{Event, ProgressSink, Wait};
 use crate::secure::ToolKeys;
 use crate::{Authorize, BusService, L4Options, Management, ServiceError};
 
@@ -312,23 +313,9 @@ pub enum ProgrammingWait {
     },
 }
 
-/// What happens while [`wait_for_programming_mode`] waits, for the surface
-/// to tell the human.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WaitEvent {
-    /// The first polls found nothing: time to remind the human to press the
-    /// programming button (sent once).
-    Remind,
-    /// Still waiting after the reminder, with this much budget left.
-    Waiting {
-        /// The budget left.
-        remaining: Duration,
-    },
-}
-
 /// Polls for devices in programming mode until exactly one answers, several
-/// answer, or the budget ([`wait_budgets`]) is spent. `on_event` hears the
-/// reminder and the countdown.
+/// answer, or the budget ([`wait_budgets`]) is spent. `sink` hears the
+/// reminder and the countdown ([`Event::Wait`]).
 ///
 /// # Errors
 ///
@@ -336,7 +323,7 @@ pub enum WaitEvent {
 pub async fn wait_for_programming_mode(
     service: &BusService,
     source: IndividualAddress,
-    on_event: &mut (dyn FnMut(WaitEvent) + Send),
+    sink: &mut (dyn ProgressSink + Send),
 ) -> Result<ProgrammingWait, AssignError> {
     let (initial, total) = wait_budgets();
     let start = tokio::time::Instant::now();
@@ -356,13 +343,11 @@ pub async fn wait_for_programming_mode(
             return Ok(ProgrammingWait::Nothing { waited: total });
         }
         if elapsed >= initial && !reminded {
-            on_event(WaitEvent::Remind);
+            sink.event(Event::Wait(Wait::Remind));
             reminded = true;
         }
         if reminded {
-            on_event(WaitEvent::Waiting {
-                remaining: total.saturating_sub(elapsed),
-            });
+            sink.event(Event::Wait(Wait::Left(total.saturating_sub(elapsed))));
         }
     }
 }

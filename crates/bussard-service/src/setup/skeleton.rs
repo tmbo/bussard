@@ -9,7 +9,8 @@
 use std::path::{Path, PathBuf};
 
 use super::gateway::Resolution;
-use super::{Context as _, Output, SetupError};
+use super::{Context as _, SetupError};
+use crate::observer::ProgressSink;
 
 pub use crate::secure::KEYRING_PASSWORD_ENV;
 
@@ -179,7 +180,7 @@ pub fn write_skeleton(
     resolution: &Resolution,
     groups: bool,
     keyring: Option<&str>,
-    out: &mut dyn Output,
+    out: &mut dyn ProgressSink,
 ) -> Result<(), SetupError> {
     std::fs::create_dir_all(dir).ctx(|| format!("creating {}", dir.display()))?;
 
@@ -231,7 +232,7 @@ pub fn toml_basic_string(value: &str) -> String {
 
 /// Writes `content` to `path` unless a file is already there (`init` in a
 /// non-empty directory keeps the repository's own `README.md` and the like).
-fn write_new(path: &Path, content: &str, out: &mut dyn Output) -> Result<(), SetupError> {
+fn write_new(path: &Path, content: &str, out: &mut dyn ProgressSink) -> Result<(), SetupError> {
     if path.exists() {
         out.say(&format!("Kept the existing {}.", path.display()));
         return Ok(());
@@ -246,7 +247,7 @@ fn write_new(path: &Path, content: &str, out: &mut dyn Output) -> Result<(), Set
 /// # Errors
 ///
 /// The file cannot be written.
-pub fn merge_gitignore(path: &Path, out: &mut dyn Output) -> Result<(), SetupError> {
+pub fn merge_gitignore(path: &Path, out: &mut dyn ProgressSink) -> Result<(), SetupError> {
     let Ok(existing) = std::fs::read_to_string(path) else {
         return write_file(path, GITIGNORE);
     };

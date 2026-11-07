@@ -25,7 +25,8 @@ use bussard_service::program::assign::{Assign, AssignFlow};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::{BusService, WritePolicy};
 
-use crate::addressing::{Bench, question, stopped, warn_forced};
+use crate::addressing::{question, stopped, warn_forced};
+use crate::progress::Terminal;
 
 /// Formats a byte slice as lowercase hex.
 pub(crate) use bussard_service::assign::hex;
@@ -177,7 +178,7 @@ async fn assign_flow(
     keys: &ToolKeys,
 ) -> anyhow::Result<ExitCode> {
     let (dir, json) = (g.dir(), g.json);
-    let bench = &mut Bench::new(args.consent.yes);
+    let bench = &mut Terminal::new(args.consent.yes, false);
     // The model says the target is free; the bus has the last word
     // (NM_IndividualAddress_Write step 1, issue #530).
     let target = bussard_service::assign::target_address(
