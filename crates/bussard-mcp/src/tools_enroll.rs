@@ -62,6 +62,7 @@
 //! withheld with `--no-model-edits` like the model edits and registered in
 //! every bus tier, `--passive` included.
 
+use crate::reply::ok;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -90,10 +91,6 @@ use serde_json::{Value, json};
 use tokio::sync::watch;
 
 use crate::server::BussardMcp;
-
-/// The enrolment tools, withheld with `--no-model-edits` (they write the
-/// key store).
-pub const ENROLL_TOOLS: [&str; 2] = ["knx_enroll_certificates", "knx_enroll_status"];
 
 /// The longest `wait_seconds` of `knx_enroll_status` for the next
 /// certificate; `until_end` waits up to the session's lifetime.
@@ -224,11 +221,6 @@ impl CertificateSink for FreshKeyStore {
             Err(err) => CertificateOutcome::error(err.to_string()),
         }
     }
-}
-
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
 }
 
 /// A refusal: `ok: false` and the reason, as a normal result.

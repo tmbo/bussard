@@ -21,30 +21,26 @@
 //! result lists per device what was written and whether its read-back
 //! verified; `ok` is true only when no device failed.
 
+use crate::reply::refused_on;
 use std::collections::BTreeMap;
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use bussard_mgmt::system_type;
-use bussard_model::history::{History, SnapshotReason};
-use bussard_model::text::hex;
+use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::{
     DeviceStatus, LineMode, LineOutcome, LineTarget, LineVisit, parse_line, targets_digest,
     targets_on_line, visit_device,
 };
+use bussard_service::program::plan::Fingerprint;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
-use super::{BussardMcp, ProgrammingTier, merge, put, refuse_insecure_links, refuse_protected};
+use super::{BussardMcp, ProgrammingTier, Subject, merge, refuse_insecure_links, refuse_protected};
 
-/// One line plan this session produced, remembered until applied, refused
-/// or expired.
+/// What a line plan this session produced binds, remembered until applied,
+/// refused or expired.
 #[derive(Debug, Clone)]
-pub(super) struct PendingLinePlan {
-    /// The line, `area.line`.
-    line: (u8, u8),
-    /// When the plan was produced.
-    created: Instant,
+pub(super) struct LinePlan {
     /// The model side of the line ([`model_digest`]).
     model: String,
     /// Each device's fingerprint as the plan read it.
@@ -60,30 +56,24 @@ fn line_address((area, line_no): (u8, u8)) -> Result<IndividualAddress, String> 
 /// ([`targets_digest`]) and the protected group addresses, which the plan's
 /// refusal depends on.
 fn model_digest(model: &Model, targets: &[LineTarget]) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-line-model-v1");
-    put(&mut h, targets_digest(targets).as_bytes());
-    for (ga, group) in &model.groups.groups {
-        if group.protected {
-            put(&mut h, &ga.raw().to_be_bytes());
-        }
+    let mut h = Fingerprint::new(b"bussard-line-model-v1").put(targets_digest(targets));
+    for (ga, _) in model.groups.groups.iter().filter(|(_, g)| g.protected) {
+        h = h.put(ga.raw().to_be_bytes());
     }
-    hex(&h.finalize())
+    h.hex()
 }
 
 /// The digest the human's yes binds: the line, its model side and every
 /// device's outcome and fingerprint.
 fn line_digest(line: (u8, u8), model: &str, outcomes: &[LineOutcome]) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-line-plan-v1");
-    put(&mut h, &[line.0, line.1]);
-    put(&mut h, model.as_bytes());
+    let mut h = Fingerprint::new(b"bussard-line-plan-v1")
+        .put([line.0, line.1])
+        .put(model);
     for o in outcomes {
-        put(&mut h, &o.address.raw().to_be_bytes());
-        put(&mut h, o.status.key().as_bytes());
-        put(&mut h, o.fingerprint.as_deref().unwrap_or("-").as_bytes());
+        let fingerprint = o.fingerprint.as_deref().unwrap_or("-");
+        h = h.address(o.address).put(o.status.key()).put(fingerprint);
     }
-    hex(&h.finalize())
+    h.hex()
 }
 
 /// A group address in the model's words: `1/2/2 (Blind position)`.
@@ -148,56 +138,21 @@ fn totals(outcomes: &[LineOutcome]) -> Value {
 }
 
 impl BussardMcp {
-    /// `knx_plan_device` with `line`; `Err` is a refusal reason.
-    ///
-    /// Runs as a plan job, as the device form does (issue #332): answers
-    /// with the plan when every device is read within the read wait, else
-    /// with `started: true` and the job id.
+    /// `knx_plan_device` with `line`; `Err` is a refusal reason. Runs as a
+    /// plan job, as the device form does (issue #332).
     pub(super) async fn plan_line(&self, line: &str) -> Result<Value, String> {
-        let began = Instant::now();
         let parsed = parse_line(line).map_err(|e| e.to_string())?;
         let at = line_address(parsed)?;
         self.line_targets(parsed)?;
-        let (tier, _, _) = self.programming_preflight()?;
-        let (job, fresh) = match tier.jobs.claim_plan(at)? {
-            crate::jobs::PlanClaim::New(job) => (job, true),
-            crate::jobs::PlanClaim::Running(job) => (job, false),
-        };
-        let line_text = format!("{}.{}", parsed.0, parsed.1);
-        if fresh {
-            let me = self.clone();
-            let id = job.clone();
-            let worker = tokio::spawn(async move {
-                let plan = match me.plan_line_body(&id, parsed).await {
-                    Ok(plan) => plan,
-                    Err(reason) => line_refusal(&format!("{}.{}", parsed.0, parsed.1), reason),
-                };
-                if let Some(tier) = me.state().programming.as_ref() {
-                    tier.jobs.finish(&id, plan);
-                }
-            });
-            self.watch_job(job.clone(), "plan", worker);
-        }
-        let wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(&job, wait).await {
-            return Ok(tier.jobs.result(&job).unwrap_or_else(|| json!({})));
-        }
-        Ok(json!({
-            "started": true,
-            "done": false,
-            "kind": "plan",
-            "job": job,
-            "line": line_text,
-            "step": "reading the devices on the line",
-            "next_step": format!(
-                "Reading every device on line {line_text} takes longer than this call may wait; \
-                 the plan is computed in the server as job {job}, and nothing is written. Tell \
-                 the human the read is running, then call knx_job_status with job {job} every \
-                 few seconds until `done` is true. Its `result` is the line plan: show it to \
-                 the human and follow result.next_step. Do not call knx_apply_device before you \
-                 have shown that plan."
-            ),
-        }))
+        let text = format!("{}.{}", parsed.0, parsed.1);
+        let subject = Subject::Line(text.clone(), at);
+        self.run_plan(subject, move |me, job| async move {
+            Ok(me
+                .plan_line_body(&job, parsed)
+                .await
+                .unwrap_or_else(|reason| refused_on("line", &text, reason)))
+        })
+        .await
     }
 
     /// The model's devices on `line`, refused when there are none or one of
@@ -316,17 +271,12 @@ impl BussardMcp {
                 .iter()
                 .filter_map(|o| o.fingerprint.clone().map(|f| (o.address, f)))
                 .collect();
-            let mut plans = tier.line_plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.insert(
-                digest.clone(),
-                PendingLinePlan {
-                    line,
-                    created: Instant::now(),
-                    model: model_side.clone(),
-                    devices,
-                },
-            );
+            let plan = LinePlan {
+                model: model_side.clone(),
+                devices,
+            };
+            tier.line_plans
+                .insert(digest.clone(), format!("line {line_text}"), plan);
             digest
         });
         let devices: Vec<Value> = visited
@@ -365,7 +315,7 @@ impl BussardMcp {
             "question": question,
             "plan_digest": digest,
             "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl)),
+            "expires_at": digest.as_ref().map(|_| tier.line_plans.expires_at(now)),
             "next_step": match &digest {
                 None => format!(
                     "nothing to write on line {line_text}: every device that answered already \
@@ -385,182 +335,76 @@ impl BussardMcp {
 
     /// `knx_apply_device` with `line`; `Err` is a refusal reason.
     ///
-    /// One job for the line: the pre-flight (the digest, the model, the
-    /// validation gate, the audit snapshot) answers in the call; the device
-    /// writes continue in the server, as the device form's write does.
+    /// One job for the line ([`BussardMcp::run_write`]): the pre-flight (the
+    /// digest, the model, the validation gate, the audit snapshot) answers in
+    /// the call; the device writes continue in the server, holding the bus
+    /// lock and the warm slot throughout, as the device form's write does.
     pub(super) async fn apply_line(&self, line: &str, digest: &str) -> Result<Value, String> {
-        let began = Instant::now();
         let parsed = parse_line(line).map_err(|e| e.to_string())?;
         let at = line_address(parsed)?;
-        let line_text = format!("{}.{}", parsed.0, parsed.1);
-        let (tier, _, _) = self.programming_preflight()?;
-        let job = tier.jobs.claim(at)?;
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let me = self.clone();
-        let (id, digest_owned) = (job.clone(), digest.to_string());
-        let worker = tokio::spawn(async move {
-            me.apply_line_job(&id, parsed, &digest_owned, started_tx)
-                .await;
-        });
-        self.watch_job(job.clone(), "apply", worker);
-        let read_wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
-        match tokio::time::timeout(read_wait, started_rx).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(reason))) => {
-                tier.jobs.abandon(&job);
-                return Err(reason);
-            }
-            Ok(Err(_)) => {
-                return Err(format!(
-                    "the apply of line {line_text} stopped before its pre-flight ended; call \
-                     knx_job_status with job {job}"
-                ));
-            }
-            Err(_) => return Ok(self.line_job_started(tier, &job, &line_text)),
-        }
-        let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(&job, wait).await {
-            let mut result = tier.jobs.result(&job).unwrap_or_else(|| json!({}));
-            let next_step = format!(
-                "The write finished within this call (job {job}). Tell the human, per device, \
-                 what was written and verified, and name every failed device with its detail \
-                 and backup; knx_job_status with job {job} returns this result again.{}",
-                super::declared_step(&result)
-            );
-            merge(
-                &mut result,
-                json!({"started": false, "done": true, "job": job, "next_step": next_step}),
-            );
-            return Ok(result);
-        }
-        Ok(self.line_job_started(tier, &job, &line_text))
-    }
-
-    /// The `started: true` answer of a line write still running.
-    fn line_job_started(&self, tier: &ProgrammingTier, job: &str, line: &str) -> Value {
-        let mut status = tier
-            .jobs
-            .status(&self.state().dir, job)
-            .unwrap_or_else(|| json!({}));
-        merge(
-            &mut status,
-            json!({
-                "started": true,
-                "done": false,
-                "job": job,
-                "line": line,
-                "next_step": format!(
-                    "The write to line {line} continues in the server as job {job}, one device \
-                     after the other; it is not done yet. Tell the human it is running, then \
-                     call knx_job_status with job {job} every few seconds until `done` is true \
-                     and report its `result` per device (what was written, whether it \
-                     verified, the backups; or, when result.refused is true, the pre-flight's \
-                     reason: nothing was written)."
-                ),
-            }),
-        );
-        if let Some(map) = status.as_object_mut() {
-            map.remove("result");
-            map.remove("state");
-        }
-        status
-    }
-
-    /// One line apply job: the pre-flight, then every device's write and
-    /// read-back, holding the bus lock and the warm slot throughout.
-    async fn apply_line_job(
-        &self,
-        job: &str,
-        line: (u8, u8),
-        digest: &str,
-        started: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        let state = std::sync::Arc::clone(self.state());
-        let Some(tier) = state.programming.as_ref() else {
-            let _ = started.send(Err("the programming tier is off".into()));
-            return;
-        };
-        let _guard = tier.bus_lock.lock().await;
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
-        let prepared = match self.apply_line_preflight(tier, line, digest) {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                tier.jobs.refuse(job, &reason);
-                let _ = started.send(Err(reason));
-                return;
-            }
-        };
-        let (model, targets, planned, gateway, snapshot, declared) = prepared;
-        let line_text = format!("{}.{}", line.0, line.1);
-        let record = snapshot.as_ref().map(|id| {
-            History::open(&self.state().dir)
-                .history_dir()
-                .join(id)
-                .join(crate::jobs::RECORD_FILE)
-        });
-        tier.jobs.started(
-            job,
-            json!({
-                "line": line_text,
-                "gateway": gateway,
-                "snapshot": snapshot,
-                "declared": declared,
-            }),
-            record,
-        );
-        let _ = started.send(Ok(()));
-        let visited = self
-            .visit_line(
-                tier,
-                job,
-                &model,
-                &targets,
-                LineMode::Apply,
-                Some(&planned.devices),
-            )
-            .await;
-        drop(warm);
-        let result = match visited {
-            Err(reason) => json!({
-                "ok": false,
-                "verified": false,
-                "line": line_text,
-                "gateway": gateway,
-                "reason": reason,
-                "snapshot": snapshot,
-                "declared": declared,
-            }),
-            Ok(visited) => {
-                for (o, _) in &visited {
-                    if matches!(o.status, DeviceStatus::Applied(_) | DeviceStatus::Unchanged) {
-                        // The device now holds the model's links; its
-                        // parameter edits stay pending (not written here).
-                        self.session_edits().applied(o.address, false);
-                    }
-                }
-                let outcomes: Vec<LineOutcome> = visited.iter().map(|(o, _)| o.clone()).collect();
-                let failed = outcomes
-                    .iter()
-                    .filter(|o| matches!(o.status, DeviceStatus::Failed(_)))
-                    .count();
-                json!({
-                    "ok": failed == 0,
-                    "verified": failed == 0,
-                    "line": line_text,
-                    "mode": "apply",
+        let text = format!("{}.{}", parsed.0, parsed.1);
+        let digest = digest.to_string();
+        let subject = Subject::Line(text.clone(), at);
+        self.run_write(subject, "apply", move |me, job, gate| async move {
+            let tier = me.tier()?;
+            me.on_bus(tier, async {
+                let (model, targets, planned, gateway, snapshot, declared) =
+                    me.apply_line_preflight(tier, parsed, &digest)?;
+                let context = json!({
+                    "line": text,
                     "gateway": gateway,
                     "snapshot": snapshot,
                     "declared": declared,
-                    "devices": visited
-                        .iter()
-                        .map(|(o, notes)| device_json(&model, o, notes))
-                        .collect::<Vec<_>>(),
-                    "totals": totals(&outcomes),
-                })
-            }
-        };
-        tier.jobs.finish(job, result);
+                });
+                let record = crate::jobs::record_file(&me.state().dir, snapshot.as_deref());
+                gate.pass(context.clone(), record);
+                let mode = LineMode::Apply;
+                let expected = Some(&planned.devices);
+                let visited = me.visit_line(tier, &job, &model, &targets, mode, expected);
+                let mut result = context;
+                match visited.await {
+                    Err(reason) => merge(
+                        &mut result,
+                        json!({"ok": false, "verified": false, "reason": reason}),
+                    ),
+                    Ok(visited) => {
+                        for (o, _) in &visited {
+                            if matches!(
+                                o.status,
+                                DeviceStatus::Applied(_) | DeviceStatus::Unchanged
+                            ) {
+                                // The device now holds the model's links; its
+                                // parameter edits stay pending (not written here).
+                                me.session_edits().applied(o.address, false);
+                            }
+                        }
+                        let outcomes: Vec<LineOutcome> =
+                            visited.iter().map(|(o, _)| o.clone()).collect();
+                        let failed = outcomes
+                            .iter()
+                            .filter(|o| matches!(o.status, DeviceStatus::Failed(_)))
+                            .count();
+                        let devices: Vec<Value> = visited
+                            .iter()
+                            .map(|(o, notes)| device_json(&model, o, notes))
+                            .collect();
+                        merge(
+                            &mut result,
+                            json!({
+                                "ok": failed == 0,
+                                "verified": failed == 0,
+                                "mode": "apply",
+                                "devices": devices,
+                                "totals": totals(&outcomes),
+                            }),
+                        );
+                    }
+                }
+                Ok(result)
+            })
+            .await
+        })
+        .await
     }
 
     /// The pre-flight of a line write: the digest names a fresh line plan of
@@ -577,7 +421,7 @@ impl BussardMcp {
         (
             std::sync::Arc<Model>,
             Vec<LineTarget>,
-            PendingLinePlan,
+            LinePlan,
             String,
             Option<String>,
             Vec<String>,
@@ -586,28 +430,14 @@ impl BussardMcp {
     > {
         let (_, _, gateway) = self.programming_preflight()?;
         let line_text = format!("{}.{}", line.0, line.1);
-        let planned = {
-            let mut plans = tier.line_plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.get(digest).cloned()
-        };
-        let Some(planned) = planned else {
-            return Err(format!(
-                "no fresh line plan with digest {digest:?} in this session (plans expire after \
-                 {} minute(s) and are single use); call knx_plan_device with line {line_text}, \
-                 show the plan to the human and ask again",
-                tier.plan_ttl.as_secs().div_ceil(60)
-            ));
-        };
-        if planned.line != line {
-            return Err(format!(
-                "plan {digest} is for line {}.{}, not {line_text}",
-                planned.line.0, planned.line.1
-            ));
-        }
+        let again = format!(
+            "call knx_plan_device with line {line_text}, show the plan to the human and ask again"
+        );
+        let subject = format!("line {line_text}");
+        let planned = tier.line_plans.fresh(digest, subject, "line plan", again)?;
         let (model, targets) = self.line_targets(line)?;
         if model_digest(&model, &targets) != planned.model {
-            tier.line_plans().remove(digest);
+            tier.line_plans.retire(digest);
             return Err(format!(
                 "refusing to write line {line_text}: the model's devices or links on the line \
                  (or its protected group addresses) changed since the plan was made. Plan again \
@@ -636,42 +466,19 @@ impl BussardMcp {
             ));
         }
         // The plan is consumed from here on: one digest, one write.
-        tier.line_plans().remove(digest);
+        tier.line_plans.retire(digest);
         // The audit line: one history snapshot for the whole run, before the
         // first bus write, naming the line, the plan and the gateway.
-        let history = History::open(&dir);
-        let snapshot = if history.has_model_files() {
-            let reason = SnapshotReason::new("mcp knx_apply_device")
-                .with_args(["--line".to_string(), line_text.clone(), digest.to_string()])
-                .with_gateway(Some(gateway.clone()))
-                .with_result(super::with_declared(
-                    "before writing the line's device tables",
-                    &declared,
-                ));
-            match history.snapshot(reason) {
-                Ok(id) => Some(id.to_string()),
-                Err(err) => {
-                    return Err(format!(
-                        "refusing to write line {line_text}: the audit snapshot could not be \
-                         recorded ({err})"
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        let reason = SnapshotReason::new("mcp knx_apply_device")
+            .with_args(["--line".to_string(), line_text.clone(), digest.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result(super::with_declared(
+                "before writing the line's device tables",
+                &declared,
+            ));
+        let snapshot = super::audit_snapshot(&dir, reason, format!("line {line_text}"))?;
         Ok((model, targets, planned, gateway, snapshot, declared))
     }
-}
-
-/// A refusal of a line call, in the shape of the device form's.
-pub(super) fn line_refusal(line: &str, reason: String) -> Value {
-    json!({
-        "line": line,
-        "ok": false,
-        "refused": true,
-        "reason": reason,
-    })
 }
 
 #[cfg(test)]

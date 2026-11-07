@@ -11,6 +11,7 @@
 //! touches the bus, so both are available in every tier, `--passive` and
 //! `--no-model-edits` included.
 
+use crate::reply::{ok, refusal};
 use std::path::{Path, PathBuf};
 
 use crate::args::Parameters;
@@ -26,9 +27,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::server::BussardMcp;
-
-/// The tools this module registers, present in every tier.
-pub const DIFF_TOOLS: [&str; 2] = ["knx_export_bundle", "knx_diff_project"];
 
 /// Arguments for `knx_export_bundle`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
@@ -162,18 +160,4 @@ fn load_other(path: &Path) -> Result<(Model, Value), String> {
         )),
         Err(err) => Err(format!("{} could not be read: {err}", path.display())),
     }
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(reason: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    ok(json!({
-        "ok": false,
-        "refused": true,
-        "reason": reason.into(),
-    }))
 }

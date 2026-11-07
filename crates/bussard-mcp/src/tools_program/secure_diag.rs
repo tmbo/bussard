@@ -7,20 +7,21 @@
 use bussard_model::IndividualAddress;
 use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::ToolKeySource;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::{BussardMcp, chain};
 
 /// The digest of a clear plan: the device and the log as read, so a log that
 /// moves between the two calls retires the plan.
 fn digest(target: IndividualAddress, diagnostics: &Value) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(target.to_string().as_bytes());
-    hasher.update(diagnostics.to_string().as_bytes());
-    let full: [u8; 32] = hasher.finalize().into();
-    full.iter().take(8).map(|b| format!("{b:02x}")).collect()
+    let mut digest = Fingerprint::new(b"bussard-clear-security-log-v1")
+        .address(target)
+        .put(diagnostics.to_string())
+        .hex();
+    digest.truncate(16);
+    digest
 }
 
 impl BussardMcp {

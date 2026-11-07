@@ -265,18 +265,9 @@ impl BussardMcp {
         work: impl Future<Output = Value> + Send + 'static,
         next_step: String,
     ) -> Result<Value, String> {
-        let me = self.clone();
-        let id = job.to_string();
-        let worker = tokio::spawn(async move {
-            let result = work.await;
-            if let Some(tier) = me.state().programming.as_ref() {
-                tier.jobs.finish(&id, result);
-            }
-        });
-        self.watch_job(job.to_string(), verb, worker);
+        tier.jobs.spawn(job, verb, async move { Ok(work.await) });
         let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(job, wait).await {
-            let mut result = tier.jobs.result(job).unwrap_or_else(|| json!({}));
+        if let Some(mut result) = tier.jobs.outcome(job, wait).await {
             super::merge(
                 &mut result,
                 json!({ "started": false, "done": true, "job": job }),

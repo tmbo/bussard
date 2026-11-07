@@ -87,8 +87,8 @@
 //! flag that moves between plan and apply retires the plan. The gates above
 //! are unchanged.
 
-use std::collections::HashMap;
-use std::error::Error as StdError;
+use crate::reply::{answer_on, merge, ok, refused_on};
+use bussard_service::program::chain;
 use std::time::{Duration, Instant, SystemTime};
 
 use crate::args::Parameters;
@@ -101,7 +101,6 @@ use bussard_service::params::{
 };
 use bussard_service::program::apply::{ApplyRequest, TablesWritten};
 use bussard_service::program::flash::{FlashFor, FlashImage, FlashNeed};
-use bussard_service::program::plan::put;
 use bussard_service::program::plan::{PlanInputs, Planned};
 use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
 use bussard_service::program::{self as program};
@@ -116,9 +115,10 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::jobs::{JobSink, PARAMETER_DOWNLOAD};
+use crate::confirm::Store;
+use crate::jobs::{Gate, JobKind, JobSink, PARAMETER_DOWNLOAD, Subject as On};
 use crate::server::BussardMcp;
-use crate::state::ConnState;
+use crate::state::Need;
 
 mod add_device;
 mod addressing;
@@ -133,22 +133,6 @@ mod restore;
 mod restore_tables;
 mod secure_diag;
 
-/// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 12] = [
-    "knx_plan_device",
-    "knx_apply_device",
-    "knx_add_device",
-    "knx_commission_line",
-    "knx_replace_device",
-    "knx_interface_secure",
-    "knx_clear_security_log",
-    "knx_apply_status",
-    "knx_last_apply",
-    "knx_restore_parameters",
-    "knx_restart_device",
-    "knx_restore_tables",
-];
-
 /// How long a plan stays valid for `knx_apply_device` unless configured.
 pub const DEFAULT_PLAN_TTL: Duration = Duration::from_secs(10 * 60);
 
@@ -161,10 +145,8 @@ pub struct ProgrammingTier {
     connection: ConnectionConfig,
     /// Whether the operator passed `--allow-remote-gateway`.
     allow_remote_gateway: bool,
-    /// How long a plan stays valid.
-    plan_ttl: Duration,
-    /// Plans produced in this session, by digest.
-    plans: std::sync::Mutex<HashMap<String, PendingPlan>>,
+    /// Device plans produced in this session, by digest.
+    plans: Store<PlanSides>,
     /// Serialises programming: one plan or apply on the bus at a time.
     bus_lock: tokio::sync::Mutex<()>,
     /// The server's job table (issues #289, #746), shared with
@@ -172,21 +154,23 @@ pub struct ProgrammingTier {
     /// and record.
     jobs: std::sync::Arc<crate::jobs::JobTable>,
     /// Restore plans produced in this session, by digest (issue #290).
-    restore_plans: std::sync::Mutex<HashMap<String, restore::PendingRestore>>,
+    restore_plans: Store<()>,
     /// Restart questions asked in this session, by digest (issue #717).
-    restarts: std::sync::Mutex<HashMap<String, restart::PendingRestart>>,
+    restarts: Store<bussard_download::RestartForm>,
     /// Table-restore plans produced in this session, by digest (issue #717).
-    table_restores: std::sync::Mutex<HashMap<String, restore_tables::PendingTables>>,
+    table_restores: Store<()>,
     /// Line plans produced in this session, by digest (issue #748).
-    line_plans: std::sync::Mutex<HashMap<String, line::PendingLinePlan>>,
+    line_plans: Store<line::LinePlan>,
     /// Devices `knx_add_device` identified, waiting for the human's yes, by
     /// job id (issue #749).
-    adds: std::sync::Mutex<HashMap<String, add_device::PendingAdd>>,
-    /// `knx_commission_line`'s plans and jobs (issue #753).
+    adds: Store<add_device::AddPlan>,
+    /// `knx_commission_line`'s plans, by digest (issue #753).
+    commission_plans: Store<()>,
+    /// `knx_commission_line`'s jobs (issue #753).
     commissions: std::sync::Mutex<commission::Commissions>,
     /// Replacements `knx_replace_device` identified, waiting for the human's
     /// yes, by job id (issue #751).
-    replaces: std::sync::Mutex<HashMap<String, replace_device::PendingReplace>>,
+    replaces: Store<replace_device::ReplacePlan>,
 }
 
 impl ProgrammingTier {
@@ -201,17 +185,17 @@ impl ProgrammingTier {
         ProgrammingTier {
             connection,
             allow_remote_gateway,
-            plan_ttl,
-            plans: std::sync::Mutex::new(HashMap::new()),
+            plans: Store::new(plan_ttl),
             bus_lock: tokio::sync::Mutex::new(()),
             jobs,
-            restore_plans: std::sync::Mutex::new(HashMap::new()),
-            restarts: std::sync::Mutex::new(HashMap::new()),
-            table_restores: std::sync::Mutex::new(HashMap::new()),
-            line_plans: std::sync::Mutex::new(HashMap::new()),
-            adds: std::sync::Mutex::new(HashMap::new()),
+            restore_plans: Store::new(plan_ttl),
+            restarts: Store::new(plan_ttl),
+            table_restores: Store::new(plan_ttl),
+            line_plans: Store::new(plan_ttl),
+            adds: Store::new(plan_ttl),
+            commission_plans: Store::new(plan_ttl),
             commissions: std::sync::Mutex::new(commission::Commissions::default()),
-            replaces: std::sync::Mutex::new(HashMap::new()),
+            replaces: Store::new(plan_ttl),
         }
     }
 
@@ -233,55 +217,14 @@ impl ProgrammingTier {
 
     /// How long a plan stays valid.
     pub fn plan_ttl(&self) -> Duration {
-        self.plan_ttl
-    }
-
-    /// The plan table, recovering from a poisoned lock (a panic elsewhere must
-    /// not wedge the tier; the map holds plain data).
-    fn plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, PendingPlan>> {
-        self.plans
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The restore plan table, recovering from a poisoned lock.
-    fn restore_plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, restore::PendingRestore>> {
-        self.restore_plans
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The restart question table, recovering from a poisoned lock.
-    fn restarts(&self) -> std::sync::MutexGuard<'_, HashMap<String, restart::PendingRestart>> {
-        self.restarts
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The line plan table, recovering from a poisoned lock.
-    fn line_plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, line::PendingLinePlan>> {
-        self.line_plans
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
-    /// The table-restore plan table, recovering from a poisoned lock.
-    fn table_restores(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, restore_tables::PendingTables>> {
-        self.table_restores
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+        self.plans.ttl()
     }
 }
 
-/// One plan this session produced, remembered until applied, refused or expired.
+/// The two sides of a device plan this session produced, remembered until
+/// applied, refused or expired: what the write re-derives from a fresh read.
 #[derive(Debug, Clone)]
-struct PendingPlan {
-    /// The device the plan is for.
-    target: IndividualAddress,
-    /// When the plan was produced.
-    created: Instant,
+struct PlanSides {
     /// SHA-256 over the live tables the plan read.
     live: [u8; 32],
     /// SHA-256 over the model's links for the device and the desired tables.
@@ -546,15 +489,11 @@ impl BussardMcp {
         Parameters(args): Parameters<PlanDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => refusal("", reason),
-            Ok(Target::Line(line)) => match self.plan_line(line).await {
-                Ok(value) => ok(value),
-                Err(reason) => ok(line::line_refusal(line, reason)),
-            },
-            Ok(Target::Device(address)) => match self.plan_device(address).await {
-                Ok(value) => ok(value),
-                Err(reason) => refusal(address, reason),
-            },
+            Err(reason) => ok(refused_on("address", "", reason)),
+            Ok(Target::Line(line)) => answer_on("line", line, self.plan_line(line).await),
+            Ok(Target::Device(address)) => {
+                answer_on("address", address, self.plan_device(address).await)
+            }
         }
     }
 
@@ -603,22 +542,22 @@ impl BussardMcp {
         Parameters(args): Parameters<ApplyDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => refusal("", reason),
-            Ok(Target::Line(line)) => match self.apply_line(line, args.plan_digest.trim()).await {
-                Ok(value) => ok(value),
-                Err(reason) => ok(line::line_refusal(line, reason)),
-            },
-            Ok(Target::Device(address)) => match self
-                .apply_device(
+            Err(reason) => ok(refused_on("address", "", reason)),
+            Ok(Target::Line(line)) => answer_on(
+                "line",
+                line,
+                self.apply_line(line, args.plan_digest.trim()).await,
+            ),
+            Ok(Target::Device(address)) => answer_on(
+                "address",
+                address,
+                self.apply_device(
                     address,
                     args.plan_digest.trim(),
                     args.plan_hash.as_deref().map(str::trim),
                 )
-                .await
-            {
-                Ok(value) => ok(value),
-                Err(reason) => refusal(address, reason),
-            },
+                .await,
+            ),
         }
     }
 
@@ -652,10 +591,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.add_device_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&address, reason),
-        }
+        answer_on("address", &address, self.add_device_tool(args).await)
     }
 
     /// `knx_commission_line` (registered only with `--allow-programming`).
@@ -696,10 +632,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.commission_line_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&subject, reason),
-        }
+        answer_on("address", &subject, self.commission_line_tool(args).await)
     }
 
     /// `knx_replace_device` (registered only with `--allow-programming`).
@@ -740,10 +673,7 @@ impl BussardMcp {
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        match self.replace_device_tool(args).await {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&address, reason),
-        }
+        answer_on("address", &address, self.replace_device_tool(args).await)
     }
 
     /// `knx_restore_parameters` (registered only with `--allow-programming`).
@@ -769,17 +699,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreParametersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restore_parameters(
+        answer_on(
+            "address",
+            &args.address,
+            self.restore_parameters(
                 &args.address,
                 &args.backup,
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_restart_device` (registered only with `--allow-programming`).
@@ -801,13 +730,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestartDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on(
+            "address",
+            &args.address,
+            self.restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
+                .await,
+        )
     }
 
     /// `knx_restore_tables` (registered only with `--allow-programming`).
@@ -833,17 +761,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreTablesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .restore_tables(
+        answer_on(
+            "address",
+            &args.address,
+            self.restore_tables(
                 &args.address,
                 args.backup.as_deref(),
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_interface_secure` (registered only with `--allow-programming`).
@@ -866,17 +793,16 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<InterfaceSecureArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .interface_secure(
+        answer_on(
+            "address",
+            &args.address,
+            self.interface_secure(
                 &args.address,
                 &args.state,
                 args.plan_digest.as_deref().map(str::trim),
             )
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+            .await,
+        )
     }
 
     /// `knx_clear_security_log` (registered only with `--allow-programming`).
@@ -899,13 +825,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ClearSecurityLogArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self
-            .clear_security_log(&args.address, args.plan_digest.as_deref().map(str::trim))
-            .await
-        {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on(
+            "address",
+            &args.address,
+            self.clear_security_log(&args.address, args.plan_digest.as_deref().map(str::trim))
+                .await,
+        )
     }
 
     /// `knx_apply_status` (registered only with `--allow-programming`).
@@ -927,10 +852,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ApplyStatusArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.apply_status(&args.job) {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.job, reason),
-        }
+        answer_on("address", &args.job, self.apply_status(&args.job))
     }
 
     /// `knx_last_apply` (registered only with `--allow-programming`).
@@ -945,10 +867,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<LastApplyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        match self.last_apply(&args.address) {
-            Ok(value) => ok(value),
-            Err(reason) => refusal(&args.address, reason),
-        }
+        answer_on("address", &args.address, self.last_apply(&args.address))
     }
 }
 
@@ -994,22 +913,12 @@ impl BussardMcp {
     /// The tier, the write gate and the connected bus every programming call
     /// needs, or the refusal saying which is missing.
     fn programming_preflight(&self) -> Result<(&ProgrammingTier, BusService, String), String> {
-        let state = self.state();
-        let Some(tier) = state.programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         let gateway = gateway_display(&tier.connection);
         check_write_gate(&tier.connection, tier.allow_remote_gateway)
             .map_err(|refused| refused.to_string())?;
-        let Some(service) = state.bus.service() else {
-            return Err("the bus is not wired".into());
-        };
-        if state.bus.state() != ConnState::Connected {
-            return Err(state.bus.not_connected_reason());
-        }
-        Ok((tier, service.clone(), gateway))
+        let service = self.state().live_service(Need::Manage)?.clone();
+        Ok((tier, service, gateway))
     }
 
     /// The Data Secure material for `target` from the server's keyring: its
@@ -1049,83 +958,51 @@ impl BussardMcp {
         Ok(evidence.tunnel_addresses())
     }
 
-    /// `knx_plan_device`'s body; `Err` is a refusal reason.
-    ///
-    /// Runs the plan as a job (issue #332): claims the one slot (or joins the
-    /// running plan job of the same device), computes the plan in a server
-    /// task, and answers with the plan when it is done within the read wait,
-    /// else with `started: true` and the job id. The bus is the running
-    /// apply's until it ends (issue #289), so a plan is refused while one
-    /// runs: waiting for it here could outlast the client's call budget.
+    /// `knx_plan_device`'s body; `Err` is a refusal reason. Runs the plan
+    /// as a job ([`BussardMcp::run_plan`], issue #332).
     async fn plan_device(&self, address: &str) -> Result<Value, String> {
-        let began = Instant::now();
         let target = parse_address(address)?;
         // A link the model itself shows cannot work refuses before the bus is
         // touched or a job is claimed (issue #330); `plan_body` checks again
         // on the model it plans with.
         refuse_insecure_links(&self.state().model.reload(), target)?;
-        let (tier, _, _) = self.programming_preflight()?;
-        let (job, fresh) = match tier.jobs.claim_plan(target)? {
-            crate::jobs::PlanClaim::New(job) => (job, true),
-            crate::jobs::PlanClaim::Running(job) => (job, false),
-        };
-        if fresh {
-            let me = self.clone();
-            let (id, address) = (job.clone(), address.to_string());
-            let worker = tokio::spawn(async move {
-                let plan = match me.plan_body(&address).await {
-                    Ok(plan) => plan,
-                    Err(reason) => refusal_json(&address, reason),
-                };
-                if let Some(tier) = me.state().programming.as_ref() {
-                    tier.jobs.finish(&id, plan);
-                }
-            });
-            self.watch_job(job.clone(), "plan", worker);
-        }
-        let wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(&job, wait).await {
-            // Answered inline, as before issue #332. The finished job stays
-            // in the table until the next plan of the device supersedes it,
-            // so a second caller that joined it reads the same plan.
-            return Ok(tier.jobs.result(&job).unwrap_or_else(|| json!({})));
-        }
-        Ok(json!({
-            "started": true,
-            "done": false,
-            "kind": "plan",
-            "job": job,
-            "address": target.to_string(),
-            "step": "reading the device",
-            "next_step": format!(
-                "Reading {target} takes longer than this call may wait (a Data Secure device \
-                 reads its whole parameter memory); the plan is computed in the server as job \
-                 {job}, and nothing is written. Tell the human the read is running, then call \
-                 knx_apply_status with job {job} every few seconds until `done` is true. Its \
-                 `result` is the plan: show it to the human and follow result.next_step. Do not \
-                 call knx_apply_device before you have shown that plan."
-            ),
-        }))
+        let address = address.to_string();
+        self.run_plan(Subject::Device(target), |me, _| async move {
+            Ok(me
+                .plan_body(&address)
+                .await
+                .unwrap_or_else(|reason| refused_on("address", &address, reason)))
+        })
+        .await
     }
 
-    /// Finishes `job` with a failure when its task panics, so a panic never
-    /// leaves the slot claimed for good. `verb` names the job in the reason.
-    fn watch_job(&self, job: String, verb: &'static str, worker: tokio::task::JoinHandle<()>) {
-        let state = std::sync::Arc::clone(self.state());
-        tokio::spawn(async move {
-            if let Err(err) = worker.await
-                && let Some(tier) = state.programming.as_ref()
-            {
-                tier.jobs.finish(
-                    &job,
-                    json!({
-                        "ok": false,
-                        "verified": false,
-                        "reason": format!("the {verb} task stopped unexpectedly: {err}"),
-                    }),
-                );
-            }
-        });
+    /// Runs a plan as a job (issue #332): claims the one slot (or joins the
+    /// running plan job of the same subject), computes the plan in a server
+    /// task, and answers with the plan when it is done within the read wait,
+    /// else with `started: true` and the job id. The bus is the running
+    /// apply's until it ends (issue #289), so a plan is refused while one
+    /// runs: waiting for it here could outlast the client's call budget.
+    async fn run_plan<F, Fut>(&self, subject: Subject, work: F) -> Result<Value, String>
+    where
+        F: FnOnce(BussardMcp, String) -> Fut,
+        Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        let began = Instant::now();
+        let (tier, _, _) = self.programming_preflight()?;
+        let claim = tier.jobs.claim(JobKind::Plan, On::Device(subject.at()))?;
+        let job = claim.id;
+        if !claim.joined {
+            tier.jobs
+                .spawn(&job, "plan", work(self.clone(), job.clone()));
+        }
+        // Answered inline, as before issue #332. The finished job stays in
+        // the table until the next plan of the subject supersedes it, so a
+        // second caller that joined it reads the same plan.
+        let wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
+        match tier.jobs.outcome(&job, wait).await {
+            Some(plan) => Ok(plan),
+            None => Ok(subject.plan_started(&job)),
+        }
     }
 
     /// The plan itself, run inside the plan job; `Err` is a refusal reason.
@@ -1328,21 +1205,15 @@ impl BussardMcp {
             }
             _ => bussard_download::render_plan_text(target, tables, report),
         };
-        let digest = if noop {
-            None
-        } else {
-            let pending_plan = PendingPlan {
+        let digest = (!noop).then(|| {
+            tier.remember_plan(
                 target,
-                created: Instant::now(),
-                live: program::plan::live_fingerprint(&read),
-                model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
-            };
-            let digest = plan_digest(&pending_plan);
-            let mut plans = tier.plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.insert(digest.clone(), pending_plan);
-            Some(digest)
-        };
+                PlanSides {
+                    live: program::plan::live_fingerprint(&read),
+                    model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
+                },
+            )
+        });
         let now = SystemTime::now();
         let pairs = |list: &[bussard_download::ObjectGa]| -> Vec<Value> {
             list.iter()
@@ -1430,7 +1301,7 @@ impl BussardMcp {
             "backup_dir": device_plan.backup_dir,
             "plan_digest": digest,
             "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl)),
+            "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
             "next_step": if noop {
                 match &built.parameters_skipped {
                     Some(why) => format!(
@@ -1499,13 +1370,12 @@ impl BussardMcp {
         }))
     }
 
-    /// `knx_apply_device`'s body; `Err` is a refusal reason.
-    ///
-    /// Claims the one apply slot, runs the pre-flight and the write in a
-    /// server task ([`BussardMcp::apply_job`]), and answers once the
-    /// pre-flight is through: with the full result when the write also ends
-    /// within the reply wait, else with `started: true` and the job id
-    /// (issue #289).
+    /// `knx_apply_device`'s body; `Err` is a refusal reason. One job
+    /// ([`BussardMcp::run_write`]): the pre-flight, then the write, holding
+    /// the bus lock and the warm slot throughout (management calls are
+    /// sequential and the write leases the bus itself, issue #215); the
+    /// table write after a download that writes no link table takes them
+    /// again itself.
     async fn apply_device(
         &self,
         address: &str,
@@ -1514,42 +1384,91 @@ impl BussardMcp {
     ) -> Result<Value, String> {
         let target = parse_address(address)?;
         let (digest, plan_hash) = (digest.to_string(), plan_hash.map(str::to_string));
-        self.run_job(target, "apply", move |me, job, started| async move {
-            me.apply_job(&job, target, &digest, plan_hash.as_deref(), started)
-                .await;
-        })
+        self.run_write(
+            Subject::Device(target),
+            "apply",
+            move |me, job, gate| async move {
+                let tier = me.tier()?;
+                let (result, links_after) = me
+                    .on_bus(tier, async {
+                        // A KNX IP interface: the plan was its KNXnet/IP
+                        // parameter object (issue #391), and so is the write.
+                        let model = me.state().model.reload();
+                        if bussard_service::knxnet::interface_config(&model, target).is_some() {
+                            let result = me
+                                .apply_interface(
+                                    tier,
+                                    &job,
+                                    target,
+                                    &digest,
+                                    plan_hash.as_deref(),
+                                    &gate,
+                                )
+                                .await?;
+                            return Ok((result, None));
+                        }
+                        let prepared = me
+                            .apply_preflight(tier, target, &digest, plan_hash.as_deref())
+                            .await?;
+                        let record =
+                            crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
+                        gate.pass(prepared.result.clone(), record);
+                        let links_after = LinksAfter::of(&prepared);
+                        Ok::<_, String>((me.apply_write(tier, &job, prepared).await, links_after))
+                    })
+                    .await?;
+                Ok(match links_after {
+                    Some(consent) => me.links_after_download(tier, &job, consent, result).await,
+                    None => result,
+                })
+            },
+        )
         .await
     }
 
-    /// Runs one write as a job of the programming tier (issue #289):
-    /// claims the one slot, runs `work` (the pre-flight, which answers on its
-    /// `started` sender, then the write) in a server task, and answers once
-    /// the pre-flight is through: with the full result when the write also
-    /// ends within the reply wait, else with `started: true` and the job id.
+    /// The programming tier, or the refusal that it is off.
+    pub(super) fn tier(&self) -> Result<&ProgrammingTier, String> {
+        self.state().programming.as_ref().ok_or_else(|| {
+            "the programming tier is off; start the server with --allow-programming".into()
+        })
+    }
+
+    /// Runs one write as a job of the programming tier (issue #289): claims
+    /// the one slot for `subject`, runs `work` (the pre-flight, which passes
+    /// the [`Gate`] or refuses with `Err`, then the write) in a server task,
+    /// and answers once the pre-flight is through: with the full result when
+    /// the write also ends within the reply wait, else with `started: true`
+    /// and the job id. The pre-flight reads the device, which can outlast the
+    /// bridge on a Data Secure device (issue #332): past the read wait the
+    /// call answers `started` and a later refusal ends the job instead.
     /// `verb` names the write in a refusal.
-    async fn run_job<F, Fut>(
+    async fn run_write<F, Fut>(
         &self,
-        target: IndividualAddress,
+        subject: Subject,
         verb: &'static str,
         work: F,
     ) -> Result<Value, String>
     where
-        F: FnOnce(BussardMcp, String, tokio::sync::oneshot::Sender<Result<(), String>>) -> Fut,
-        Fut: std::future::Future<Output = ()> + Send + 'static,
+        F: FnOnce(BussardMcp, String, Gate) -> Fut,
+        Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
     {
         let began = Instant::now();
         let (tier, _, _) = self.programming_preflight()?;
-        let job = tier.jobs.claim(target)?;
-        let reply_wait = tier.jobs.reply_wait();
-        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
-        let worker = tokio::spawn(work(self.clone(), job.clone(), started_tx));
-        // A panic in the job must not leave the slot claimed for good.
-        self.watch_job(job.clone(), verb, worker);
-        // The pre-flight reads the device, which can outlast the bridge on a
-        // Data Secure device (issue #332): past the read wait the call
-        // answers `started` and a later refusal ends the job instead.
+        let job = tier
+            .jobs
+            .claim(JobKind::Apply, On::Device(subject.at()))?
+            .id;
+        let (gate, started) = Gate::new(&tier.jobs, &job);
+        let fut = work(self.clone(), job.clone(), gate.clone());
+        tier.jobs.spawn(&job, verb, async move {
+            let result = fut.await;
+            if let Err(reason) = &result {
+                gate.refuse(reason);
+            }
+            result
+        });
         let read_wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
-        match tokio::time::timeout(read_wait, started_rx).await {
+        match tokio::time::timeout(read_wait, started).await {
             Ok(Ok(Ok(()))) => {}
             Ok(Ok(Err(reason))) => {
                 tier.jobs.abandon(&job);
@@ -1557,120 +1476,83 @@ impl BussardMcp {
             }
             Ok(Err(_)) => {
                 return Err(format!(
-                    "the {verb} of {target} stopped before its pre-flight ended; call \
-                     knx_apply_status with job {job}"
+                    "the {verb} of {subject} stopped before its pre-flight ended; call {} with \
+                     job {job}",
+                    subject.poll()
                 ));
             }
-            Err(_) => return Ok(self.job_started(tier, &job, target)),
+            Err(_) => return Ok(self.write_started(tier, &job, &subject)),
         }
-        let wait = reply_wait.saturating_sub(began.elapsed());
-        if tier.jobs.wait(&job, wait).await {
-            let mut result = tier.jobs.result(&job).unwrap_or_else(|| json!({}));
-            let status = tier.jobs.status(&self.state().dir, &job);
-            let record = status.as_ref().map(|s| s["record"].clone());
-            let next_step = inline_next_step(&job, target, &result);
-            merge(
-                &mut result,
-                json!({
-                    "started": false,
-                    "done": true,
-                    "job": job,
-                    "record": record,
-                    "next_step": next_step,
-                }),
-            );
-            return Ok(result);
-        }
-        Ok(self.job_started(tier, &job, target))
+        let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
+        let Some(mut result) = tier.jobs.outcome(&job, wait).await else {
+            return Ok(self.write_started(tier, &job, &subject));
+        };
+        let extra = match &subject {
+            Subject::Device(target) => json!({
+                "record": tier.jobs.status(&self.state().dir, &job).map(|s| s["record"].clone()),
+                "next_step": inline_next_step(&job, *target, &result),
+            }),
+            Subject::Line(..) => json!({
+                "next_step": format!(
+                    "The write finished within this call (job {job}). Tell the human, per \
+                     device, what was written and verified, and name every failed device with \
+                     its detail and backup; knx_job_status with job {job} returns this result \
+                     again.{}",
+                    declared_step(&result)
+                ),
+            }),
+        };
+        merge(
+            &mut result,
+            json!({"started": false, "done": true, "job": job}),
+        );
+        merge(&mut result, extra);
+        Ok(result)
     }
 
     /// The `started: true` answer of a write job still running.
-    fn job_started(&self, tier: &ProgrammingTier, job: &str, target: IndividualAddress) -> Value {
+    fn write_started(&self, tier: &ProgrammingTier, job: &str, subject: &Subject) -> Value {
         let mut status = tier
             .jobs
             .status(&self.state().dir, job)
             .unwrap_or_else(|| json!({}));
         merge(
             &mut status,
-            json!({
-                "started": true,
-                "done": false,
-                "job": job,
-                "address": target.to_string(),
-                "next_step": format!(
-                    "The write to {target} continues in the server as job {job}; it is not done \
-                     yet. Tell the human it is running, then call knx_apply_status with job \
-                     {job} every few seconds until `done` is true and report its `result` (the \
-                     verify outcome, the parameters written, the backup paths; or, when \
-                     result.refused is true, the pre-flight's reason: nothing was written). If \
-                     the reply is lost, knx_last_apply with address {target} returns the same \
-                     job."
-                ),
-            }),
+            json!({"started": true, "done": false, "job": job}),
+        );
+        merge(
+            &mut status,
+            match subject {
+                Subject::Device(target) => json!({
+                    "address": target.to_string(),
+                    "next_step": format!(
+                        "The write to {target} continues in the server as job {job}; it is not done \
+                         yet. Tell the human it is running, then call knx_apply_status with job \
+                         {job} every few seconds until `done` is true and report its `result` (the \
+                         verify outcome, the parameters written, the backup paths; or, when \
+                         result.refused is true, the pre-flight's reason: nothing was written). If \
+                         the reply is lost, knx_last_apply with address {target} returns the same \
+                         job."
+                    ),
+                }),
+                Subject::Line(line, _) => json!({
+                    "line": line,
+                    "next_step": format!(
+                        "The write to line {line} continues in the server as job {job}, one device \
+                         after the other; it is not done yet. Tell the human it is running, then \
+                         call knx_job_status with job {job} every few seconds until `done` is true \
+                         and report its `result` per device (what was written, whether it \
+                         verified, the backups; or, when result.refused is true, the pre-flight's \
+                         reason: nothing was written)."
+                    ),
+                }),
+            },
         );
         if let Some(map) = status.as_object_mut() {
             map.remove("result");
             map.remove("state");
         }
         status
-    }
-
-    /// One apply job: the pre-flight, then the write, holding the bus lock
-    /// and the warm slot throughout. `started` gets the pre-flight's verdict;
-    /// a refusal abandons the job, a pass is followed by the write and the
-    /// final result in the job table.
-    async fn apply_job(
-        &self,
-        job: &str,
-        target: IndividualAddress,
-        digest: &str,
-        plan_hash: Option<&str>,
-        started: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        let state = std::sync::Arc::clone(self.state());
-        let Some(tier) = state.programming.as_ref() else {
-            let _ = started.send(Err("the programming tier is off".into()));
-            return;
-        };
-        let _guard = tier.bus_lock.lock().await;
-        // Held until the write is done: management calls are sequential and
-        // this one leases the bus itself (issue #215).
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
-        // A KNX IP interface: the plan was its KNXnet/IP parameter object
-        // (issue #391), and so is the write.
-        if bussard_service::knxnet::interface_config(&self.state().model.reload(), target).is_some()
-        {
-            self.apply_interface_job(tier, job, target, digest, plan_hash, started)
-                .await;
-            drop(warm);
-            return;
-        }
-        let prepared = match self.apply_preflight(tier, target, digest, plan_hash).await {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                tier.jobs.refuse(job, &reason);
-                let _ = started.send(Err(reason));
-                return;
-            }
-        };
-        let record = prepared.snapshot.as_ref().map(|id| {
-            History::open(&prepared.dir)
-                .history_dir()
-                .join(id)
-                .join(crate::jobs::RECORD_FILE)
-        });
-        tier.jobs.started(job, prepared.result.clone(), record);
-        let _ = started.send(Ok(()));
-        let links_after = LinksAfter::of(&prepared);
-        let result = self.apply_write(tier, job, prepared).await;
-        drop(warm);
-        drop(_guard);
-        let result = match links_after {
-            Some(consent) => self.links_after_download(tier, job, consent, result).await,
-            None => result,
-        };
-        tier.jobs.finish(job, result);
     }
 
     /// The table write after a download that writes no link table (issue
@@ -1814,26 +1696,7 @@ impl BussardMcp {
 
         // The digest must name a plan this session produced, for this device,
         // within the plan lifetime.
-        let planned = {
-            let mut plans = tier.plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.get(digest).cloned()
-        };
-        let Some(planned) = planned else {
-            return Err(format!(
-                "no fresh plan with digest {digest:?} in this session (plans expire after {} \
-                 minute(s) and are single use); call knx_plan_device for {target}, show the plan \
-                 to the human and ask again",
-                tier.plan_ttl.as_secs().div_ceil(60)
-            ));
-        };
-        if planned.target != target {
-            return Err(format!(
-                "plan {digest} is for {}, not {target}",
-                planned.target
-            ));
-        }
-
+        let planned = tier.plans.fresh(digest, target, "plan", again(target))?;
         let model = self.state().model.reload();
         // The model may have changed since the plan (issue #330).
         refuse_insecure_links(&model, target)?;
@@ -1887,7 +1750,7 @@ impl BussardMcp {
             }) {
             Ok(found) => found,
             Err(reason) => {
-                tier.plans().remove(digest);
+                tier.plans.retire(digest);
                 return Err(reason);
             }
         };
@@ -1895,9 +1758,7 @@ impl BussardMcp {
 
         // Re-derive the digest from what is true now; anything that moved since
         // the plan retires it.
-        let now = PendingPlan {
-            target,
-            created: planned.created,
+        let now = PlanSides {
             live: program::plan::live_fingerprint(&read),
             model: model_fingerprint(&ctx, security.as_ref(), &built, flash.as_ref()),
         };
@@ -1913,7 +1774,7 @@ impl BussardMcp {
         let hash_moved = plan_hash.is_some_and(|h| !h.eq_ignore_ascii_case(&built.plan.state_hash));
         let moved = moved.or(hash_moved.then_some("the device state no longer matches plan_hash"));
         if let Some(what) = moved {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(format!(
                 "refusing to write {target}: {what} since the plan was made. Plan again with \
                  knx_plan_device and show the new plan to the human."
@@ -1925,21 +1786,21 @@ impl BussardMcp {
         if load.is_none()
             && let Err(refusal) = refuse_drift(target, &read)
         {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(refusal);
         }
         refuse_protected(&model, &report)?;
         if flash.is_none()
             && let Some(refusal) = &built.refusal
         {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(refusal.clone());
         }
         if let Some(refusal) = program::plan::family_refusal(target, tables.mask) {
             return Err(refusal);
         }
         // The plan is consumed from here on: one digest, one write.
-        tier.plans().remove(digest);
+        tier.plans.retire(digest);
         let tables_change = !report.is_noop()
             || built.plan.writes.security_object
             || !built.plan.writes.communication_flags.is_empty();
@@ -1962,33 +1823,20 @@ impl BussardMcp {
 
         // The audit line: a history snapshot naming the device, the plan and the
         // gateway, recorded before the bus write (as `bussard apply` does).
-        let history = History::open(&dir);
-        let snapshot = if history.has_model_files() {
-            let reason = SnapshotReason::new("mcp knx_apply_device")
-                .with_args([target.to_string(), digest.to_string()])
-                .with_gateway(Some(gateway.clone()))
-                .with_result(with_declared(
-                    match (tables_change, param_write) {
-                        _ if load.is_some() => "before loading the application program",
-                        _ if flash.is_some() => "before flashing the application program",
-                        (true, true) => "before writing the device tables and parameters",
-                        (false, true) => "before writing the device parameters",
-                        _ => "before writing the device tables",
-                    },
-                    &declared,
-                ));
-            match history.snapshot(reason) {
-                Ok(id) => Some(id.to_string()),
-                Err(err) => {
-                    return Err(format!(
-                        "refusing to write {target}: the audit snapshot could not be recorded \
-                         ({err})"
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        let reason = SnapshotReason::new("mcp knx_apply_device")
+            .with_args([target.to_string(), digest.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result(with_declared(
+                match (tables_change, param_write) {
+                    _ if load.is_some() => "before loading the application program",
+                    _ if flash.is_some() => "before flashing the application program",
+                    (true, true) => "before writing the device tables and parameters",
+                    (false, true) => "before writing the device parameters",
+                    _ => "before writing the device tables",
+                },
+                &declared,
+            ));
+        let snapshot = audit_snapshot(&dir, reason, target)?;
 
         // Both backups before the first write, as `bussard apply` takes them.
         // A flash rewrites the whole parameter memory: it is backed up first,
@@ -2333,11 +2181,7 @@ impl BussardMcp {
 
     /// `knx_apply_status`'s body; `Err` is a refusal reason.
     fn apply_status(&self, job: &str) -> Result<Value, String> {
-        let Some(tier) = self.state().programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         let job = job.trim();
         tier.jobs.status(&self.state().dir, job).ok_or_else(|| {
             format!(
@@ -2350,11 +2194,7 @@ impl BussardMcp {
     /// `knx_last_apply`'s body; `Err` is a refusal reason.
     fn last_apply(&self, address: &str) -> Result<Value, String> {
         let target = parse_address(address)?;
-        let Some(tier) = self.state().programming.as_ref() else {
-            return Err(
-                "the programming tier is off; start the server with --allow-programming".into(),
-            );
-        };
+        let tier = self.tier()?;
         Ok(match tier.jobs.last(&self.state().dir, target) {
             Some(status) => {
                 let mut status = status;
@@ -2579,6 +2419,84 @@ enum Target<'a> {
     Device(&'a str),
     /// `line`.
     Line(&'a str),
+}
+
+/// What a job of the tier plans or writes: one device, or every device on
+/// a line.
+#[derive(Debug, Clone)]
+enum Subject {
+    /// One device.
+    Device(IndividualAddress),
+    /// A line (`"1.1"`) and its coupler's address, the job's address.
+    Line(String, IndividualAddress),
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::Device(target) => write!(f, "{target}"),
+            Subject::Line(line, _) => write!(f, "line {line}"),
+        }
+    }
+}
+
+impl Subject {
+    /// The address the job is claimed for.
+    fn at(&self) -> IndividualAddress {
+        match self {
+            Subject::Device(at) | Subject::Line(_, at) => *at,
+        }
+    }
+
+    /// The tool that reports the job.
+    fn poll(&self) -> &'static str {
+        match self {
+            Subject::Device(_) => "knx_apply_status",
+            Subject::Line(..) => "knx_job_status",
+        }
+    }
+
+    /// The `started: true` answer of a plan job still reading.
+    fn plan_started(&self, job: &str) -> Value {
+        let (key, value, step, read, poll) = match self {
+            Subject::Device(target) => (
+                "address",
+                target.to_string(),
+                "reading the device",
+                format!(
+                    "Reading {target} takes longer than this call may wait (a Data Secure \
+                     device reads its whole parameter memory)"
+                ),
+                "knx_apply_status",
+            ),
+            Subject::Line(line, _) => (
+                "line",
+                line.clone(),
+                "reading the devices on the line",
+                format!("Reading every device on line {line} takes longer than this call may wait"),
+                "knx_job_status",
+            ),
+        };
+        let what = match self {
+            Subject::Device(_) => "plan",
+            Subject::Line(..) => "line plan",
+        };
+        json!({
+            "started": true,
+            "done": false,
+            "kind": "plan",
+            "job": job,
+            key: value,
+            "step": step,
+            "next_step": format!(
+                "{read}; the plan is computed in the server as job {job}, and nothing is \
+                 written. Tell the human the read is running, then call {poll} with job {job} \
+                 every few seconds until `done` is true. Its `result` is the {what}: show it to \
+                 the human and follow result.next_step. Do not call knx_apply_device before you \
+                 have shown that plan."
+            ),
+        })
+    }
 }
 
 /// The one target of a call that takes `address` or `line`; `Err` when it
@@ -3084,50 +3002,39 @@ fn parameters_json(built: &BuiltPlan) -> Value {
     })
 }
 
-/// Copies every field of `extra` into `into` (both objects).
-fn merge(into: &mut Value, extra: Value) {
-    if let (Some(into), Value::Object(extra)) = (into.as_object_mut(), extra) {
-        into.extend(extra);
+/// The audit line, as `bussard apply` records it: a history snapshot before
+/// the bus write (`None` without model files); `Err` refuses the write of
+/// `what`.
+fn audit_snapshot(
+    dir: &std::path::Path,
+    reason: SnapshotReason,
+    what: impl std::fmt::Display,
+) -> Result<Option<String>, String> {
+    let history = History::open(dir);
+    if !history.has_model_files() {
+        return Ok(None);
     }
+    history
+        .snapshot(reason)
+        .map(|id| Some(id.to_string()))
+        .map_err(|err| {
+            format!("refusing to write {what}: the audit snapshot could not be recorded ({err})")
+        })
 }
 
-/// An error and its sources, joined with `": "`.
-fn chain(err: &dyn StdError) -> String {
-    let mut out = err.to_string();
-    let mut next = err.source();
-    while let Some(cause) = next {
-        out.push_str(": ");
-        out.push_str(&cause.to_string());
-        next = cause.source();
+/// How a refusal of a device plan says to get a new one.
+fn again(target: IndividualAddress) -> String {
+    format!("call knx_plan_device for {target}, show the plan to the human and ask again")
+}
+
+impl ProgrammingTier {
+    /// Remembers the plan of `target` with `sides` and returns its digest
+    /// ([`program::plan::plan_digest`]).
+    fn remember_plan(&self, target: IndividualAddress, sides: PlanSides) -> String {
+        let digest = program::plan::plan_digest(target, &sides.model, &sides.live);
+        self.plans.insert(digest.clone(), target, sides);
+        digest
     }
-    out
-}
-
-/// The plan digest ([`program::plan::plan_digest`]): SHA-256 over the
-/// device address, the model part and the live part, as lowercase hex.
-fn plan_digest(plan: &PendingPlan) -> String {
-    program::plan::plan_digest(plan.target, &plan.model, &plan.live)
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(address: &str, reason: String) -> Result<CallToolResult, ErrorData> {
-    ok(refusal_json(address, reason))
-}
-
-/// The JSON of a refusal: what [`refusal`] returns, and a refused plan
-/// job's result (issue #332).
-fn refusal_json(address: &str, reason: String) -> Value {
-    json!({
-        "ok": false,
-        "refused": true,
-        "address": address,
-        "reason": reason,
-    })
 }
 
 /// `text`, followed by the group addresses the apply declared in
@@ -3145,18 +3052,15 @@ mod tests {
 
     #[test]
     fn test_plan_digest_binds_the_device() -> Result<(), String> {
-        let a = PendingPlan {
-            target: parse_address("1.1.4")?,
-            created: Instant::now(),
-            live: [1; 32],
-            model: [2; 32],
+        let digest = |a: &str| -> Result<String, String> {
+            Ok(program::plan::plan_digest(
+                parse_address(a)?,
+                &[2; 32],
+                &[1; 32],
+            ))
         };
-        let b = PendingPlan {
-            target: parse_address("1.1.5")?,
-            ..a.clone()
-        };
-        assert_ne!(plan_digest(&a), plan_digest(&b));
-        assert_eq!(plan_digest(&a).len(), 64);
+        assert_ne!(digest("1.1.4")?, digest("1.1.5")?);
+        assert_eq!(digest("1.1.4")?.len(), 64);
         Ok(())
     }
 }

@@ -159,10 +159,7 @@ impl BussardMcp {
         keys: &bussard_service::secure::ToolKeys,
     ) -> Option<SecureLiveReport> {
         let state = self.state();
-        let service = state.bus.service()?;
-        if state.bus.state() != crate::state::ConnState::Connected {
-            return None;
-        }
+        let service = state.live_service(crate::state::Need::Manage).ok()?;
         let options = bussard_service::audit::secure_probe_options(service);
         let mut probes = Vec::new();
         for (addr, loaded) in &model.devices {

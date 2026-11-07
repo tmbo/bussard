@@ -12,35 +12,22 @@
 //! backup directory.
 
 use std::path::{Path, PathBuf};
-use std::time::Instant;
 
 use crate::jobs::{JobSink, PARAMETER_DOWNLOAD};
 use bussard_download::backup::{ParameterBackup, parameter_backups_dir, read_parameter_backup};
-use bussard_model::history::{History, SnapshotReason};
+use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::SequenceHighWater;
 use bussard_service::L4Options;
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
 use bussard_service::restore::{RestorePlan, build_restore_plan};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::{
-    BussardMcp, DeviceRead, ProgrammingTier, Read, chain, product_for, put, read_device,
+    BussardMcp, DeviceRead, ProgrammingTier, Read, Subject, chain, merge, product_for, read_device,
     refuse_drift,
 };
-
-/// One restore plan this session produced, remembered until written, refused
-/// or expired.
-#[derive(Debug, Clone)]
-pub(super) struct PendingRestore {
-    /// The device.
-    target: IndividualAddress,
-    /// The backup file.
-    backup: PathBuf,
-    /// When the plan was produced.
-    created: Instant,
-}
 
 /// What a restore read and planned.
 struct Planned {
@@ -100,32 +87,24 @@ fn restore_digest(
     read: &DeviceRead,
     plan: &RestorePlan,
 ) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-restore-v1");
-    put(&mut h, &target.raw().to_be_bytes());
-    put(&mut h, backup_bytes);
-    put(
-        &mut h,
-        format!(
-            "{:?}",
-            model.devices.get(&target).map(|d| &d.device.parameters)
-        )
-        .as_bytes(),
-    );
-    put(&mut h, &program::plan::live_fingerprint(read));
-    match &plan.partial {
-        Some(partial) => {
-            for (segment, octets) in partial.changed_bits() {
-                put(&mut h, segment.as_bytes());
-                for (i, _) in octets {
-                    put(&mut h, &(i as u64).to_be_bytes());
-                }
-                put(&mut h, partial.image_bytes(&segment).unwrap_or_default());
-            }
+    let parameters = model.devices.get(&target).map(|d| &d.device.parameters);
+    let h = Fingerprint::new(b"bussard-restore-v1")
+        .address(target)
+        .put(backup_bytes)
+        .put(format!("{parameters:?}"))
+        .put(program::plan::live_fingerprint(read));
+    let Some(partial) = &plan.partial else {
+        return h.put(b"nothing").hex();
+    };
+    let mut h = h;
+    for (segment, octets) in partial.changed_bits() {
+        h = h.put(segment.as_bytes());
+        for (i, _) in octets {
+            h = h.put((i as u64).to_be_bytes());
         }
-        None => put(&mut h, b"nothing"),
+        h = h.put(partial.image_bytes(&segment).unwrap_or_default());
     }
-    bussard_model::text::hex(&h.finalize())
+    h.hex()
 }
 
 impl BussardMcp {
@@ -144,18 +123,28 @@ impl BussardMcp {
             if let Some(refusal) = tier.jobs.busy(crate::jobs::JobKind::Plan) {
                 return Err(refusal);
             }
-            let _guard = tier.bus_lock.lock().await;
-            let mut warm = self.warm().lock().await;
-            warm.release().await;
-            let planned = self.plan_restore(target, &file).await;
-            drop(warm);
-            let planned = planned?;
+            let planned = self.on_bus(tier, self.plan_restore(target, &file)).await?;
             return Ok(self.restore_plan_json(tier, target, &file, &gateway, &planned));
         };
         let digest = digest.to_string();
-        self.run_job(target, "restore", move |me, job, started| async move {
-            me.restore_job(&job, target, &file, &digest, started).await;
-        })
+        self.run_write(
+            Subject::Device(target),
+            "restore",
+            move |me, job, gate| async move {
+                let tier = me.tier()?;
+                me.on_bus(tier, async {
+                    let (planned, mut result, record) =
+                        me.restore_preflight(tier, target, &file, &digest).await?;
+                    gate.pass(result.clone(), record);
+                    merge(
+                        &mut result,
+                        me.restore_write(tier, &job, target, &planned).await,
+                    );
+                    Ok(result)
+                })
+                .await
+            },
+        )
         .await
     }
 
@@ -237,16 +226,9 @@ impl BussardMcp {
         let plan = &planned.plan;
         let noop = plan.partial.is_none();
         if !noop {
-            let mut plans = tier.restore_plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.insert(
-                planned.digest.clone(),
-                PendingRestore {
-                    target,
-                    backup: file.to_path_buf(),
-                    created: Instant::now(),
-                },
-            );
+            let subject = format!("{target} from {}", file.display());
+            tier.restore_plans
+                .insert(planned.digest.clone(), subject, ());
         }
         let now = std::time::SystemTime::now();
         json!({
@@ -262,7 +244,7 @@ impl BussardMcp {
             "notes": plan.notes,
             "question": (!noop).then(|| plan.question(target, gateway)),
             "plan_digest": (!noop).then(|| planned.digest.clone()),
-            "expires_at": (!noop).then(|| bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl)),
+            "expires_at": (!noop).then(|| tier.restore_plans.expires_at(now)),
             "next_step": if noop {
                 format!("nothing to write: {target} already holds the backup's parameter octets")
             } else {
@@ -272,41 +254,6 @@ impl BussardMcp {
                     .to_string()
             },
         })
-    }
-
-    /// One restore job: the pre-flight (digest, fresh read, gates, snapshot,
-    /// backup), then the write, holding the bus lock and the warm slot.
-    async fn restore_job(
-        &self,
-        job: &str,
-        target: IndividualAddress,
-        file: &Path,
-        digest: &str,
-        started: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        let state = std::sync::Arc::clone(self.state());
-        let Some(tier) = state.programming.as_ref() else {
-            let _ = started.send(Err("the programming tier is off".into()));
-            return;
-        };
-        let _guard = tier.bus_lock.lock().await;
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
-        let prepared = self.restore_preflight(tier, target, file, digest).await;
-        let (planned, mut result, record) = match prepared {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                tier.jobs.refuse(job, &reason);
-                let _ = started.send(Err(reason));
-                return;
-            }
-        };
-        tier.jobs.started(job, result.clone(), record);
-        let _ = started.send(Ok(()));
-        let outcome = self.restore_write(tier, job, target, &planned).await;
-        drop(warm);
-        merge_into(&mut result, outcome);
-        tier.jobs.finish(job, result);
     }
 
     /// The pre-flight of a restore. `Err` is a refusal; nothing was written.
@@ -319,30 +266,13 @@ impl BussardMcp {
     ) -> Result<(Planned, Value, Option<PathBuf>), String> {
         let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
-        let pending = {
-            let mut plans = tier.restore_plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.get(digest).cloned()
-        };
-        let Some(pending) = pending else {
-            return Err(format!(
-                "no fresh restore plan with digest {digest:?} in this session (plans expire after \
-                 {} minute(s) and are single use); call knx_restore_parameters without \
-                 plan_digest, show the plan to the human and ask again",
-                tier.plan_ttl.as_secs().div_ceil(60)
-            ));
-        };
-        if pending.target != target || pending.backup != file {
-            return Err(format!(
-                "restore plan {digest} is for {} from {}, not {target} from {}",
-                pending.target,
-                pending.backup.display(),
-                file.display()
-            ));
-        }
-        let planned = self.plan_restore(target, file).await;
+        let subject = format!("{target} from {}", file.display());
+        let again = "call knx_restore_parameters without plan_digest, show the plan to the human \
+                     and ask again";
         // One digest, one write: consumed whatever the fresh read says.
-        tier.restore_plans().remove(digest);
+        tier.restore_plans
+            .take(digest, subject, "restore plan", again)?;
+        let planned = self.plan_restore(target, file).await;
         let planned = planned?;
         if planned.digest != digest {
             return Err(format!(
@@ -354,24 +284,11 @@ impl BussardMcp {
         let Some(detail) = planned.read.params.as_ref().and_then(|p| p.detail.as_ref()) else {
             return Err("the parameter memory was not read".into());
         };
-        let history = History::open(&dir);
-        let snapshot = if history.has_model_files() {
-            let reason = SnapshotReason::new("mcp knx_restore_parameters")
-                .with_args([target.to_string(), file.display().to_string()])
-                .with_gateway(Some(gateway.clone()))
-                .with_result("before restoring the parameter memory");
-            match history.snapshot(reason) {
-                Ok(id) => Some(id.to_string()),
-                Err(err) => {
-                    return Err(format!(
-                        "refusing to write {target}: the audit snapshot could not be recorded \
-                         ({err})"
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        let reason = SnapshotReason::new("mcp knx_restore_parameters")
+            .with_args([target.to_string(), file.display().to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before restoring the parameter memory");
+        let snapshot = super::audit_snapshot(&dir, reason, target)?;
         let backup = bussard_download::write_parameter_memory_backup(
             &dir,
             target,
@@ -379,12 +296,7 @@ impl BussardMcp {
             &detail.regions,
         )
         .map_err(|e| format!("refusing to write {target} without a parameter backup: {e}"))?;
-        let record = snapshot.as_ref().map(|id| {
-            History::open(&dir)
-                .history_dir()
-                .join(id)
-                .join(crate::jobs::RECORD_FILE)
-        });
+        let record = crate::jobs::record_file(&dir, snapshot.as_deref());
         let result = json!({
             "address": target.to_string(),
             "gateway": gateway,
@@ -470,13 +382,6 @@ impl BussardMcp {
             );
         }
         result
-    }
-}
-
-/// Copies every field of `extra` into `into` (both objects).
-fn merge_into(into: &mut Value, extra: Value) {
-    if let (Some(into), Value::Object(extra)) = (into.as_object_mut(), extra) {
-        into.extend(extra);
     }
 }
 

@@ -27,7 +27,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
 
 use bussard_model::Model;
 use bussard_model::history::SnapshotReason;
@@ -39,32 +38,21 @@ use bussard_service::commission::{
 use bussard_service::line::WalkEvent;
 use bussard_service::observer::Collected;
 use bussard_service::program::assign::{AssignFlow, Stop as FlowStop};
+use bussard_service::program::plan::Fingerprint;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::addressing::assigned_notes;
-use super::{BussardMcp, ProgrammingTier, chain, put};
-use crate::jobs::JobSink;
+use super::{BussardMcp, ProgrammingTier, chain};
+use crate::jobs::{JobKind, JobSink, Subject};
 
 /// The answers a paused job takes.
 const ANSWERS: [&str; 4] = ["retry", "skip", "stop", "assign"];
 
-/// The session state of `knx_commission_line`: the plans handed out and
-/// the jobs running or waiting.
+/// The session state of `knx_commission_line`: the jobs running or waiting.
 #[derive(Default)]
 pub(super) struct Commissions {
-    /// Plans produced in this session, by digest.
-    plans: HashMap<String, PlanEntry>,
     /// Jobs of this session, by id.
     jobs: HashMap<String, JobEntry>,
-}
-
-/// A plan handed out.
-struct PlanEntry {
-    /// The line it covers.
-    line: String,
-    /// When it was produced.
-    created: Instant,
 }
 
 /// A job of this session.
@@ -215,20 +203,16 @@ fn identified_json(i: &Identified) -> Value {
 /// The plan digest: the line, the gateway and every model device on it
 /// (address, name, product, place).
 fn plan_digest(line: &str, gateway: &str, targets: &[Target]) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-commission-line-v1");
-    put(&mut h, line.as_bytes());
-    put(&mut h, gateway.as_bytes());
+    let mut h = Fingerprint::new(b"bussard-commission-line-v1")
+        .put(line)
+        .put(gateway);
     for t in targets {
-        put(&mut h, &t.address.raw().to_be_bytes());
-        put(&mut h, t.name.as_bytes());
+        h = h.address(t.address).put(&t.name);
         for field in [&t.order_number, &t.manufacturer, &t.floor, &t.room] {
-            put(&mut h, field.as_deref().unwrap_or("").as_bytes());
+            h = h.put(field.as_deref().unwrap_or(""));
         }
     }
-    let bytes: [u8; 32] = h.finalize().into();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256:{hex}")
+    format!("sha256:{}", h.hex())
 }
 
 /// The line's run over `model`, or the refusal for an empty line.
@@ -300,17 +284,8 @@ impl BussardMcp {
     ) -> Value {
         let line = walk.line();
         let targets = walk.targets();
-        {
-            let mut c = tier.commissions();
-            c.plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            c.plans.insert(
-                digest.clone(),
-                PlanEntry {
-                    line: line.to_string(),
-                    created: Instant::now(),
-                },
-            );
-        }
+        tier.commission_plans
+            .insert(digest.clone(), format!("line {line}"), ());
         let names: Vec<String> = targets.iter().map(who).collect();
         let n = targets.len();
         let sentences = vec![
@@ -349,7 +324,7 @@ impl BussardMcp {
                  device that turns out to be the product the model expects. Say yes."
             ),
             "plan_digest": digest,
-            "expires_at": bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl),
+            "expires_at": tier.commission_plans.expires_at(now),
             "next_step": "Say the summary, show the human the sentences in full and ask the \
                 question. Only after an explicit yes call knx_commission_line with line, \
                 plan_digest and yes: true. Nothing is written before that.",
@@ -367,27 +342,11 @@ impl BussardMcp {
         yes: Option<bool>,
     ) -> Result<Value, String> {
         let line = walk.line().to_string();
-        let known = {
-            let mut c = tier.commissions();
-            c.plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            c.plans.get(given).map(|p| p.line.clone())
-        };
-        match known {
-            None => {
-                return Err(format!(
-                    "no plan with this plan_digest in this session (unknown, used, or older than \
-                     the plan lifetime). Call knx_commission_line with line {line} for a new one. \
-                     Nothing was written."
-                ));
-            }
-            Some(planned) if planned != line => {
-                return Err(format!(
-                    "the plan_digest is the plan of line {planned}, not {line}. Nothing was \
-                     written."
-                ));
-            }
-            Some(_) => {}
-        }
+        let again = format!(
+            "call knx_commission_line with line {line} for a new one. Nothing was written."
+        );
+        tier.commission_plans
+            .fresh(given, format!("line {line}"), "plan", again)?;
         if given != fresh {
             return Err(format!(
                 "the model's devices on line {line} or the gateway changed since the plan. Call \
@@ -401,11 +360,14 @@ impl BussardMcp {
                     .into(),
             );
         }
-        let job = tier.jobs.claim_commission(&line)?;
+        let job = tier
+            .jobs
+            .claim(JobKind::Commission, Subject::Line(&line))?
+            .id;
         let stop = Arc::new(Stop::default());
+        tier.commission_plans.retire(given);
         {
             let mut c = tier.commissions();
-            c.plans.remove(given);
             c.jobs.insert(
                 job.clone(),
                 JobEntry {
@@ -606,7 +568,9 @@ impl BussardMcp {
                 }
             }
         });
-        self.watch_job(job, "commission", worker);
+        if let Some(tier) = self.state().programming.as_ref() {
+            tier.jobs.watch(&job, "commission", worker);
+        }
     }
 
     /// One stretch of the run, on the bus: the pre-pass, then device after

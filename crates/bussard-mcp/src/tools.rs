@@ -94,7 +94,19 @@ pub fn project_summary(model: &Model, bus: &BusStatus) -> Value {
 /// device file gives, the vendor text and function, the key) and channels
 /// (the vendor text, the user's name, the handle). An object or channel hit
 /// names its device, channel handle and object number (issue #276).
-pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
+///
+/// With `capabilities` (the model directory and the server's tiers, issue
+/// #298) it adds `capabilities`: the parameter texts and enum choice texts
+/// of the installed devices' product models that match, each with its
+/// device, page or channel, whether that is active, and what enables it
+/// when it is not ([`bussard_model::capabilities::capability_lookup`]), each
+/// `needs` with how the tiers run that push.
+pub fn model_lookup(
+    model: &Model,
+    query: &str,
+    limit: usize,
+    capabilities: Option<(&std::path::Path, crate::guidance::Tiers)>,
+) -> Value {
     let q = query.to_lowercase();
     let hit = |s: &str| s.to_lowercase().contains(&q);
     let hit_opt = |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && hit(s));
@@ -232,40 +244,21 @@ pub fn model_lookup(model: &Model, query: &str, limit: usize) -> Value {
         }
     }
 
-    json!({
+    let mut out = json!({
         "query": query,
         "groups": groups,
         "devices": devices,
         "objects": objects,
         "channels": channels,
-    })
-}
-
-/// `knx_model_lookup` with the capabilities (issue #298): [`model_lookup`]
-/// plus `capabilities`, the parameter texts and enum choice texts of the
-/// installed devices' product models that match, each with its device, page
-/// or channel, whether that is active, and what enables it when it is not
-/// ([`bussard_model::capabilities::capability_lookup`]), each `needs` with
-/// how `tiers` runs that push.
-pub fn model_lookup_with_capabilities(
-    model: &Model,
-    dir: &std::path::Path,
-    query: &str,
-    limit: usize,
-    tiers: crate::guidance::Tiers,
-) -> Value {
-    let mut out = model_lookup(model, query, limit);
-    let mut capabilities = bussard_model::capabilities::capability_lookup(model, dir, query, limit);
-    for c in &mut capabilities {
-        if let Some(needs) = c.needs.take() {
-            c.needs = Some(tiers.needs_how(&needs, c.device_ia.parse().ok()));
+    });
+    if let Some((dir, tiers)) = capabilities {
+        let mut found = bussard_model::capabilities::capability_lookup(model, dir, query, limit);
+        for c in &mut found {
+            if let Some(needs) = c.needs.take() {
+                c.needs = Some(tiers.needs_how(&needs, c.device_ia.parse().ok()));
+            }
         }
-    }
-    if let Some(map) = out.as_object_mut() {
-        map.insert(
-            "capabilities".to_string(),
-            serde_json::to_value(capabilities).unwrap_or_else(|_| json!([])),
-        );
+        out["capabilities"] = serde_json::to_value(found).unwrap_or_else(|_| json!([]));
     }
     out
 }
@@ -591,51 +584,6 @@ fn rank(s: bussard_model::Severity) -> u8 {
     }
 }
 
-/// The address-like tokens of `text`: runs of digits and `sep`, trimmed of
-/// `sep`, that hold `sep` exactly `parts - 1` times.
-fn address_tokens(text: &str, sep: char, parts: usize) -> Vec<&str> {
-    text.split(|c: char| !(c.is_ascii_digit() || c == sep))
-        .map(|t| t.trim_matches(sep))
-        .filter(|t| t.matches(sep).count() + 1 == parts)
-        .collect()
-}
-
-/// Whether `wanted` (exact, or a prefix when it ends with `sep`) names one
-/// of the addresses of kind (`sep`, `parts`) the diagnostic's location
-/// mentions, else, when the location mentions none, its message.
-fn mentions(d: &bussard_model::Diagnostic, wanted: &str, sep: char, parts: usize) -> bool {
-    let wanted = wanted.trim();
-    let hit = |t: &&str| {
-        if wanted.ends_with(sep) {
-            t.starts_with(wanted)
-        } else {
-            *t == wanted
-        }
-    };
-    let in_location = address_tokens(&d.location, sep, parts);
-    if in_location.is_empty() {
-        address_tokens(&d.message, sep, parts).iter().any(hit)
-    } else {
-        in_location.iter().any(hit)
-    }
-}
-
-/// `knx_validate`: diagnostics as JSON plus counts.
-pub fn validate_result(model: &Model) -> Value {
-    validate_result_with(model, Vec::new())
-}
-
-/// [`validate_result`] with `extra` diagnostics merged in and sorted like
-/// the model's own (the keyring rules of issue #205). Lists every
-/// diagnostic; `knx_validate` uses [`validate_filtered`].
-pub fn validate_result_with(model: &Model, extra: Vec<bussard_model::Diagnostic>) -> Value {
-    let all = ValidateFilter {
-        severity: Some(bussard_model::Severity::Info),
-        ..ValidateFilter::default()
-    };
-    validate_filtered(model, extra, &all)
-}
-
 /// `knx_validate` (issue #304): the diagnostics `filter` selects (by default
 /// errors and warnings), with `counts` per severity over the whole model,
 /// `shown` and a `note` naming what the filter left out.
@@ -665,14 +613,9 @@ pub fn validate_filtered(
             filter
                 .address
                 .as_deref()
-                .is_none_or(|a| mentions(d, a, '.', 3))
+                .is_none_or(|a| d.mentions_device(a))
         })
-        .filter(|d| {
-            filter
-                .group
-                .as_deref()
-                .is_none_or(|g| mentions(d, g, '/', 3) || mentions(d, g, '/', 2))
-        })
+        .filter(|d| filter.group.as_deref().is_none_or(|g| d.mentions_group(g)))
         .map(|d| {
             json!({
                 "code": d.code,
@@ -981,19 +924,19 @@ mod tests {
     fn lookup_matches_across_kinds() -> TestResult {
         let m = model()?;
         // "wind" hits the GA name and the object name.
-        let v = model_lookup(&m, "wind", 50);
+        let v = model_lookup(&m, "wind", 50, None);
         assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["groups"][0]["address"], "3/2/0");
         assert_eq!(v["objects"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["objects"][0]["linked_gas"][0], "3/2/0");
 
         // A room-name match returns the device.
-        let v = model_lookup(&m, "wohnzimmer", 50);
+        let v = model_lookup(&m, "wohnzimmer", 50, None);
         assert_eq!(v["devices"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["devices"][0]["ia"], "1.1.4");
 
         // An address substring match.
-        let v = model_lookup(&m, "3/0/4", 50);
+        let v = model_lookup(&m, "3/0/4", 50, None);
         assert_eq!(v["groups"][0]["address"], "3/0/4");
         Ok(())
     }
@@ -1002,7 +945,7 @@ mod tests {
     fn lookup_respects_limit() -> TestResult {
         let m = model()?;
         // Both GAs contain "3/" — limit to 1.
-        let v = model_lookup(&m, "3/", 1);
+        let v = model_lookup(&m, "3/", 1, None);
         assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
         Ok(())
     }
@@ -1135,7 +1078,11 @@ mod tests {
     #[test]
     fn validate_shape_and_counts() -> TestResult {
         let m = model()?;
-        let v = validate_result(&m);
+        let all = ValidateFilter {
+            severity: Some(bussard_model::Severity::Info),
+            ..ValidateFilter::default()
+        };
+        let v = validate_filtered(&m, Vec::new(), &all);
         assert!(v["counts"]["total"].as_u64().is_some());
         assert!(v["diagnostics"].is_array());
         // A well-formed fixture: `ok` reflects zero errors.

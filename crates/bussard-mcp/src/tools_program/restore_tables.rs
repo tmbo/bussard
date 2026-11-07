@@ -16,7 +16,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Instant;
 
 use bussard_download::backup::{
     DeviceBackup, backups_root, find_device_backup, read_device_backup,
@@ -26,30 +25,18 @@ use bussard_download::{
     render_plan_text, state_hash,
 };
 use bussard_mgmt::{MaskProfile, system_type};
-use bussard_model::history::{History, SnapshotReason};
+use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::params::BuiltPlan;
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::{
-    BussardMcp, DeviceRead, Origin, Prepared, ProgrammingTier, Read, chain, put, read_device,
+    BussardMcp, DeviceRead, Origin, Prepared, ProgrammingTier, Read, Subject, chain, read_device,
     refuse_protected, security_for, security_json,
 };
-
-/// One table-restore plan this session produced, remembered until written,
-/// refused or expired.
-#[derive(Debug, Clone)]
-pub(super) struct PendingTables {
-    /// The device.
-    target: IndividualAddress,
-    /// The backup file.
-    file: PathBuf,
-    /// When the plan was produced.
-    created: Instant,
-}
 
 /// What a table restore read and planned.
 struct Planned {
@@ -143,32 +130,14 @@ fn tables_digest(
     desired: &DesiredTables,
     security: Option<&SecurityInputs>,
 ) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-restore-tables-v1");
-    put(&mut h, &target.raw().to_be_bytes());
-    put(&mut h, backup_bytes);
-    put(&mut h, &program::plan::live_fingerprint(read));
-    let addresses: Vec<u8> = desired
-        .addresses
-        .iter()
-        .flat_map(|ga| ga.raw().to_be_bytes())
-        .collect();
-    put(&mut h, &addresses);
-    let associations: Vec<u8> = desired
-        .associations
-        .iter()
-        .flat_map(|(tsap, asap)| {
-            let mut pair = tsap.to_be_bytes().to_vec();
-            pair.extend_from_slice(&asap.to_be_bytes());
-            pair
-        })
-        .collect();
-    put(&mut h, &associations);
-    match security {
-        Some(inputs) => put(&mut h, inputs.describe(&desired.addresses).as_bytes()),
-        None => put(&mut h, b"plain"),
-    }
-    bussard_model::text::hex(&h.finalize())
+    let security = security.map(|inputs| inputs.describe(&desired.addresses));
+    Fingerprint::new(b"bussard-restore-tables-v1")
+        .address(target)
+        .put(backup_bytes)
+        .put(program::plan::live_fingerprint(read))
+        .desired(desired)
+        .put(security.as_deref().unwrap_or("plain"))
+        .hex()
 }
 
 /// The device plan of a restore: the tables only, no parameter, flag or
@@ -235,18 +204,25 @@ impl BussardMcp {
             if let Some(refusal) = tier.jobs.busy(crate::jobs::JobKind::Plan) {
                 return Err(refusal);
             }
-            let _guard = tier.bus_lock.lock().await;
-            let mut warm = self.warm().lock().await;
-            warm.release().await;
-            let planned = self.plan_tables(target, &file).await;
-            drop(warm);
-            let planned = planned?;
+            let planned = self.on_bus(tier, self.plan_tables(target, &file)).await?;
             return Ok(self.tables_plan_json(tier, target, &file, &gateway, &planned));
         };
         let digest = digest.to_string();
-        self.run_job(target, "restore", move |me, job, started| async move {
-            me.tables_job(&job, target, &file, &digest, started).await;
-        })
+        self.run_write(
+            Subject::Device(target),
+            "restore",
+            move |me, job, gate| async move {
+                let tier = me.tier()?;
+                me.on_bus(tier, async {
+                    let prepared = me.tables_preflight(tier, target, &file, &digest).await?;
+                    let record =
+                        crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
+                    gate.pass(prepared.result.clone(), record);
+                    Ok(me.apply_write(tier, &job, prepared).await)
+                })
+                .await
+            },
+        )
         .await
     }
 
@@ -346,16 +322,9 @@ impl BussardMcp {
     ) -> Value {
         let noop = planned.noop;
         if !noop {
-            let mut plans = tier.table_restores();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.insert(
-                planned.digest.clone(),
-                PendingTables {
-                    target,
-                    file: file.to_path_buf(),
-                    created: Instant::now(),
-                },
-            );
+            let subject = format!("{target} from {}", file.display());
+            tier.table_restores
+                .insert(planned.digest.clone(), subject, ());
         }
         let tables = planned.read.live.tables();
         let report = &planned.report;
@@ -404,7 +373,7 @@ impl BussardMcp {
                 "restore the link tables of {target} from {name} through {gateway}?"
             )),
             "plan_digest": (!noop).then(|| planned.digest.clone()),
-            "expires_at": (!noop).then(|| bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl)),
+            "expires_at": (!noop).then(|| tier.table_restores.expires_at(now)),
             "next_step": if noop {
                 format!("nothing to write: {target} already holds the backup's link tables")
             } else {
@@ -414,46 +383,6 @@ impl BussardMcp {
                     .to_string()
             },
         })
-    }
-
-    /// One table-restore job: the pre-flight (digest, fresh read, snapshot,
-    /// pre-write backup), then `knx_apply_device`'s table write and
-    /// read-back, holding the bus lock and the management slot.
-    async fn tables_job(
-        &self,
-        job: &str,
-        target: IndividualAddress,
-        file: &Path,
-        digest: &str,
-        started: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        let state = std::sync::Arc::clone(self.state());
-        let Some(tier) = state.programming.as_ref() else {
-            let _ = started.send(Err("the programming tier is off".into()));
-            return;
-        };
-        let _guard = tier.bus_lock.lock().await;
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
-        let prepared = match self.tables_preflight(tier, target, file, digest).await {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                tier.jobs.refuse(job, &reason);
-                let _ = started.send(Err(reason));
-                return;
-            }
-        };
-        let record = prepared.snapshot.as_ref().map(|id| {
-            History::open(&prepared.dir)
-                .history_dir()
-                .join(id)
-                .join(crate::jobs::RECORD_FILE)
-        });
-        tier.jobs.started(job, prepared.result.clone(), record);
-        let _ = started.send(Ok(()));
-        let result = self.apply_write(tier, job, prepared).await;
-        drop(warm);
-        tier.jobs.finish(job, result);
     }
 
     /// The pre-flight of a table restore. `Err` is a refusal; nothing was
@@ -467,30 +396,13 @@ impl BussardMcp {
     ) -> Result<Prepared, String> {
         let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
-        let pending = {
-            let mut plans = tier.table_restores();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.get(digest).cloned()
-        };
-        let Some(pending) = pending else {
-            return Err(format!(
-                "no fresh table-restore plan with digest {digest:?} in this session (plans \
-                 expire after {} minute(s) and are single use); call knx_restore_tables without \
-                 plan_digest, show the plan to the human and ask again",
-                tier.plan_ttl.as_secs().div_ceil(60)
-            ));
-        };
-        if pending.target != target || pending.file != file {
-            return Err(format!(
-                "table-restore plan {digest} is for {} from {}, not {target} from {}",
-                pending.target,
-                pending.file.display(),
-                file.display()
-            ));
-        }
-        let planned = self.plan_tables(target, file).await;
+        let subject = format!("{target} from {}", file.display());
+        let again = "call knx_restore_tables without plan_digest, show the plan to the human and \
+                     ask again";
         // One digest, one write: consumed whatever the fresh read says.
-        tier.table_restores().remove(digest);
+        tier.table_restores
+            .take(digest, subject, "table-restore plan", again)?;
+        let planned = self.plan_tables(target, file).await;
         let planned = planned?;
         if planned.digest != digest {
             return Err(format!(
@@ -505,24 +417,11 @@ impl BussardMcp {
             ));
         }
         // The audit line, before the bus write.
-        let history = History::open(&dir);
-        let snapshot = if history.has_model_files() {
-            let reason = SnapshotReason::new("mcp knx_restore_tables")
-                .with_args([target.to_string(), file.display().to_string()])
-                .with_gateway(Some(gateway.clone()))
-                .with_result("before restoring the device tables");
-            match history.snapshot(reason) {
-                Ok(id) => Some(id.to_string()),
-                Err(err) => {
-                    return Err(format!(
-                        "refusing to write {target}: the audit snapshot could not be recorded \
-                         ({err})"
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        let reason = SnapshotReason::new("mcp knx_restore_tables")
+            .with_args([target.to_string(), file.display().to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before restoring the device tables");
+        let snapshot = super::audit_snapshot(&dir, reason, target)?;
         // The state this restore overwrites is still the only copy of what
         // the device holds now: it is backed up first, as `apply` does.
         let backup_path = program::apply::back_up(&dir, target, &planned.read.live, None)

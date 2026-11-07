@@ -34,7 +34,8 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::state::{ConnState, READ_RESPONSE_TIMEOUT, SharedState};
+use crate::reply::{invalid, ok};
+use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
 
 /// How long `knx_bus_reconnect` waits for its connect attempt: the secure
@@ -69,9 +70,8 @@ pub struct BussardMcp {
 
 impl BussardMcp {
     /// Builds the server over `state`. The instance router starts with every
-    /// tool registered, then unregisters the ones this mode must not expose:
-    /// `knx_read_group` in passive mode, and `knx_write_group` unless
-    /// `--allow-writes` is set (and never in passive mode).
+    /// tool registered, then unregisters the ones whose [`crate::Tier`] this
+    /// mode does not allow ([`crate::TOOLS`]).
     pub fn new(state: Arc<SharedState>) -> Self {
         // The bus tools, the model-edit tools, the group-planning tools, the
         // learn/acceptance tools, the audit tool and the bundle/diff tools live
@@ -93,46 +93,9 @@ impl BussardMcp {
             + Self::ha_automation_router()
             + Self::enroll_router()
             + Self::viz_router();
-        if state.no_model_edits {
-            for name in crate::tools_model::MODEL_EDIT_TOOLS {
-                tool_router.remove_route(name);
-            }
-            // Certificate enrolment writes the key store (issue #732).
-            for name in crate::tools_enroll::ENROLL_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if state.passive {
-            tool_router.remove_route("knx_read_group");
-            // Passive mode leaves the connection to the actor's own reconnect.
-            tool_router.remove_route("knx_bus_reconnect");
-            // Introspection actively transmits management traffic, so it is a
-            // bus-touching tool: unavailable in passive (observe-only) mode.
-            tool_router.remove_route("knx_describe_device");
-            // The backup and reconstruct reads transmit management traffic
-            // too (issue #717).
-            for name in crate::tools_device::DEVICE_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if !state.allow_writes || state.passive {
-            tool_router.remove_route("knx_write_group");
-            // Running the acceptance suite writes to the bus, so it follows the
-            // write tier. `knx_infer_group` stays: it only reads the ring.
-            tool_router.remove_route("knx_run_tests");
-        }
-        if state.programming.is_none() || state.passive {
-            // The programming tier writes device tables: registered only with
-            // `--allow-programming`, never in passive mode (issue #118).
-            for name in crate::tools_program::PROGRAMMING_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if state.home_assistant.is_none() {
-            // The Home Assistant tier needs the `[home_assistant]` table and
-            // `--allow-home-assistant` (issue #280). It never touches the bus,
-            // so passive mode keeps it.
-            for name in crate::tools_ha::HA_TOOLS {
+        let tiers = crate::guidance::Tiers::of(&state);
+        for (name, tier) in crate::TOOLS {
+            if !tiers.allows(*tier) {
                 tool_router.remove_route(name);
             }
         }
@@ -368,16 +331,6 @@ pub struct WaitArgs {
     pub timeout_seconds: u32,
 }
 
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A bad-argument error (invalid address, etc.).
-fn invalid(msg: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(msg.into(), None)
-}
-
 /// Builds a combined filter from optional ga + source terms.
 fn build_filter(ga: Option<&str>, source: Option<&str>) -> Result<Filter, ErrorData> {
     let mut terms: Vec<String> = Vec::new();
@@ -421,13 +374,10 @@ impl BussardMcp {
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        let mut value = tools::model_lookup_with_capabilities(
-            &self.state.model.current(),
-            &self.state.dir,
-            &args.query,
-            limit,
-            crate::guidance::Tiers::of(&self.state),
-        );
+        let tiers = crate::guidance::Tiers::of(&self.state);
+        let model = self.state.model.current();
+        let capabilities = Some((self.state.dir.as_path(), tiers));
+        let mut value = tools::model_lookup(&model, &args.query, limit, capabilities);
         if !args.technical {
             crate::everyday::plain_lookup(&mut value);
         }
@@ -794,15 +744,6 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<GaArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Passive mode: the tool is unregistered, but guard anyway.
-        if self.state.passive {
-            return ok(json!({
-                "ga": args.ga,
-                "ok": false,
-                "reason": "server is in passive mode; bus reads are disabled",
-            }));
-        }
-
         let ga: GroupAddress = args
             .ga
             .parse()
@@ -817,23 +758,11 @@ impl BussardMcp {
             Err(err) => return ok(group_error_json(ga, &err)),
         };
 
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
-            }));
+        // Passive mode: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Read) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
-
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // Sender admission (issue #297): a responder that does not admit the
         // tunnel address never answers a secured read; an unknown verdict
@@ -916,36 +845,15 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<DescribeArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Passive mode: the tool is unregistered, but guard anyway.
-        if self.state.passive {
-            return ok(json!({
-                "address": args.address,
-                "ok": false,
-                "reason": "server is in passive mode; bus management traffic is disabled",
-            }));
-        }
-
         let target: IndividualAddress = args
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
-            }));
+        // Passive mode: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Manage) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("address", &target.to_string(), reason)),
         };
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // KNX Data Secure (issue #71): with `--keyring`, the target's tool key
         // wraps every management APDU, exactly as `bussard describe --keyring`.
@@ -1058,15 +966,6 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<WriteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Writes disabled: the tool is unregistered, but guard anyway.
-        if self.state.passive || !self.state.allow_writes {
-            return ok(json!({
-                "ga": args.ga,
-                "ok": false,
-                "reason": "bus writes are disabled on this server",
-            }));
-        }
-
         let ga: GroupAddress = args
             .ga
             .parse()
@@ -1107,22 +1006,11 @@ impl BussardMcp {
                 Err(refusal) => return ok(write_refusal_json(ga, &refusal)),
             };
 
-        let Some(service) = self.state.bus.service() else {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": "bus is not wired",
-            }));
+        // Writes disabled: the tool is unregistered, but guarded anyway.
+        let service = match self.state.live_service(Need::Write) {
+            Ok(service) => service,
+            Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
-
-        if self.state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": self.state.bus.not_connected_reason(),
-                "bus": self.state.bus.to_json(),
-            }));
-        }
 
         // Sender admission (issue #297): refuse a secured write the devices on
         // the GA would discard, before anything is sent. The rate limiter's
@@ -1166,6 +1054,12 @@ impl BussardMcp {
 /// keyring, the lock, the PID 54 tables read in its lifetime, the warm
 /// connection and the rate limiter.
 impl BussardMcp {
+    /// A bus tool's result when the bus cannot be used: `ok: false`, the
+    /// reason and the bus status, about `key: value`.
+    fn bus_refusal(&self, key: &str, value: &str, reason: String) -> Value {
+        json!({ key: value, "ok": false, "reason": reason, "bus": self.state.bus.to_json() })
+    }
+
     fn group_context<'a>(&'a self, model: &'a bussard_model::Model) -> group::GroupContext<'a> {
         group::GroupContext {
             model: Some(model),

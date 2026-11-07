@@ -53,14 +53,16 @@
 //!
 //! **Scan jobs (issue #747).** `knx_find_devices` sweeps a line, which takes
 //! seconds per address, so it runs as a job of the same table
-//! ([`JobKind::Scan`], claimed with [`JobTable::claim_scan`]). A scan has no
+//! ([`JobKind::Scan`], claimed with [`JobTable::claim`]). A scan has no
 //! device address: its job carries `address: null` and `line`, and reports
 //! the addresses probed and the devices found so far in `progress`. It takes
 //! the one slot, so a scan never runs while a plan or an apply reads or
 //! writes a device.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -69,6 +71,8 @@ use bussard_model::IndividualAddress;
 use bussard_model::history::HISTORY_DIR;
 use bussard_service::observer::{Answer, Event, ProgressSink, Prompt, Question, Step};
 use serde_json::{Map, Value, json};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 /// How long `knx_apply_device` waits for the write to finish, counted from
 /// the start of the call, before it answers `started: true`. The client
@@ -110,6 +114,17 @@ pub enum JobKind {
 }
 
 impl JobKind {
+    /// Every kind.
+    const ALL: [JobKind; 7] = [
+        JobKind::Apply,
+        JobKind::Plan,
+        JobKind::Read,
+        JobKind::Scan,
+        JobKind::Add,
+        JobKind::Replace,
+        JobKind::Commission,
+    ];
+
     /// The kind as `knx_apply_status` reports it.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -122,16 +137,35 @@ impl JobKind {
             JobKind::Commission => "commission",
         }
     }
+
+    /// The kind a record names (an apply when it names none).
+    fn of(record: &Value) -> JobKind {
+        let named = record["kind"].as_str();
+        let found = JobKind::ALL.into_iter().find(|k| Some(k.as_str()) == named);
+        found.unwrap_or(JobKind::Apply)
+    }
 }
 
-/// The outcome of claiming the slot for a plan.
+/// What a job is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Subject<'a> {
+    /// One device (a line job of the programming tier names the line
+    /// coupler's address).
+    Device(IndividualAddress),
+    /// A line (`"1.1"`): the job has no device address.
+    Line(&'a str),
+    /// The bus: a device not addressed yet.
+    Bus,
+}
+
+/// A claimed slot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanClaim {
-    /// A new plan job with this id; the caller starts its work.
-    New(String),
-    /// A plan job of the same device is already running under this id; the
-    /// caller waits for it instead of reading the device again.
-    Running(String),
+pub struct Claim {
+    /// The job's id.
+    pub id: String,
+    /// A plan job of the same device was already running: the caller waits
+    /// for it instead of reading the device again (issue #332).
+    pub joined: bool,
 }
 
 /// A job's lifecycle state.
@@ -263,99 +297,42 @@ impl JobTable {
         Some((id, address))
     }
 
-    /// Claims the one apply slot for `address` and returns the new job's id,
-    /// or the refusal naming the job that runs.
-    pub fn claim(&self, address: IndividualAddress) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Apply) {
-            return Err(refusal);
-        }
-        Ok(insert(&mut inner, JobKind::Apply, Some(address), None))
-    }
-
-    /// Claims the slot for a scan of `line` (`"1.1"`, issue #747) and returns
-    /// the new job's id, or the refusal naming the job that runs. A new scan
-    /// drops the finished scan jobs of the same line (it supersedes them).
-    pub fn claim_scan(&self, line: &str) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Scan) {
-            return Err(refusal);
-        }
-        let id = insert(&mut inner, JobKind::Scan, None, Some(line));
-        inner.jobs.retain(|job_id, job| {
-            *job_id == id
-                || !(job.kind == JobKind::Scan
-                    && job.state == JobState::Done
-                    && job.context["line"] == line)
-        });
-        Ok(id)
-    }
-
-    /// Claims the slot for a plan of `address` (issue #332): a new job, the
-    /// running plan job of the same device, or the refusal naming the job
-    /// that runs. A new plan drops the finished plan jobs of the device (it
+    /// Claims the one bus slot for a `kind` job about `subject`, or the
+    /// refusal naming the job that runs: one bus job at a time, so a plan
+    /// never reads a device while a write runs and the other way round. A
+    /// plan of the device a running plan job reads joins that job; a new
+    /// plan or scan drops the finished ones of its device or line (it
     /// supersedes them).
-    pub fn claim_plan(&self, address: IndividualAddress) -> Result<PlanClaim, String> {
+    pub fn claim(&self, kind: JobKind, subject: Subject<'_>) -> Result<Claim, String> {
         let mut inner = self.inner();
+        let (address, line) = match subject {
+            Subject::Device(address) => (Some(address), None),
+            Subject::Line(line) => (None, Some(line)),
+            Subject::Bus => (None, None),
+        };
         if let Some(id) = &inner.running
             && let Some(job) = inner.jobs.get(id)
+            && kind == JobKind::Plan
             && job.kind == JobKind::Plan
-            && job.address == Some(address)
+            && job.address == address
         {
-            return Ok(PlanClaim::Running(id.clone()));
+            let id = id.clone();
+            return Ok(Claim { id, joined: true });
         }
-        if let Some(refusal) = busy_message(&inner, JobKind::Plan) {
+        if let Some(refusal) = busy_message(&inner, kind) {
             return Err(refusal);
         }
         // Inserted before the prune, so the new id never reuses a dropped one.
-        let id = insert(&mut inner, JobKind::Plan, Some(address), None);
-        inner.jobs.retain(|_, job| {
-            !(job.kind == JobKind::Plan
-                && job.address == Some(address)
-                && job.state == JobState::Done)
+        let id = insert(&mut inner, kind, address, line);
+        inner.jobs.retain(|job_id, job| {
+            let superseded = match kind {
+                JobKind::Plan => job.address == address,
+                JobKind::Scan => job.context["line"].as_str() == line,
+                _ => false,
+            };
+            *job_id == id || !(job.kind == kind && job.state == JobState::Done && superseded)
         });
-        Ok(PlanClaim::New(id))
-    }
-
-    /// Claims the slot for a read-only bus job of `address` (issue #748),
-    /// or the refusal naming the job that runs. One bus job at a time: a
-    /// read never runs while an apply or a plan does.
-    pub fn claim_read(&self, address: IndividualAddress) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Read) {
-            return Err(refusal);
-        }
-        Ok(insert(&mut inner, JobKind::Read, Some(address), None))
-    }
-
-    /// Claims the slot for adding a device (issue #749) and returns the new
-    /// job's id, or the refusal naming the job that runs.
-    pub fn claim_add(&self) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Add) {
-            return Err(refusal);
-        }
-        Ok(insert(&mut inner, JobKind::Add, None, None))
-    }
-
-    /// Claims the slot for replacing the device at `address` (issue #751)
-    /// and returns the new job's id, or the refusal naming the job that runs.
-    pub fn claim_replace(&self, address: IndividualAddress) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Replace) {
-            return Err(refusal);
-        }
-        Ok(insert(&mut inner, JobKind::Replace, Some(address), None))
-    }
-
-    /// Claims the slot for commissioning `line` (`"1.1"`, issue #753) and
-    /// returns the new job's id, or the refusal naming the job that runs.
-    pub fn claim_commission(&self, line: &str) -> Result<String, String> {
-        let mut inner = self.inner();
-        if let Some(refusal) = busy_message(&inner, JobKind::Commission) {
-            return Err(refusal);
-        }
-        Ok(insert(&mut inner, JobKind::Commission, None, Some(line)))
+        Ok(Claim { id, joined: false })
     }
 
     /// Drops `key` from the fields a paused job reported at the top of its
@@ -719,6 +696,119 @@ impl JobTable {
     pub fn result(&self, id: &str) -> Option<Value> {
         self.inner().jobs.get(id).and_then(|job| job.result.clone())
     }
+
+    /// Waits up to `wait` for job `id` and returns its result once done.
+    pub async fn outcome(&self, id: &str, wait: Duration) -> Option<Value> {
+        if self.wait(id, wait).await {
+            self.result(id)
+        } else {
+            None
+        }
+    }
+
+    /// Runs `work` as job `id` in a server task, so a client that stops
+    /// waiting does not cut it: its value finishes the job, its `Err` is the
+    /// refusal ([`JobTable::refuse`]). `verb` names the job when the task
+    /// panics.
+    pub fn spawn<F>(self: &Arc<Self>, id: &str, verb: &'static str, work: F)
+    where
+        F: Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        let (jobs, job) = (Arc::clone(self), id.to_string());
+        self.watch(
+            id,
+            verb,
+            tokio::spawn(async move {
+                match work.await {
+                    Ok(result) => jobs.finish(&job, result),
+                    Err(reason) => jobs.refuse(&job, &reason),
+                }
+            }),
+        );
+    }
+
+    /// Finishes job `id` with a failure when its task `worker` panics, so a
+    /// panic never leaves the slot claimed for good.
+    pub fn watch(self: &Arc<Self>, id: &str, verb: &'static str, worker: JoinHandle<()>) {
+        let (jobs, job) = (Arc::clone(self), id.to_string());
+        tokio::spawn(async move {
+            if let Err(err) = worker.await {
+                jobs.finish(
+                    &job,
+                    json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": format!("the {verb} task stopped unexpectedly: {err}"),
+                    }),
+                );
+            }
+        });
+    }
+}
+
+/// The pre-flight gate of a write job (issue #289): the call that started
+/// the job waits on it, and answers with the refusal, or once the
+/// pre-flight passed with the result or the job id.
+#[derive(Clone)]
+pub struct Gate {
+    /// The job table.
+    jobs: Arc<JobTable>,
+    /// The job.
+    job: String,
+    /// The waiting call, until the pre-flight ended.
+    tx: Arc<std::sync::Mutex<Option<Verdict>>>,
+}
+
+/// Where the pre-flight's verdict goes: `Ok` once it passed, else the
+/// refusal.
+type Verdict = oneshot::Sender<Result<(), String>>;
+
+impl Gate {
+    /// A gate for `job`, and what the call waits on.
+    pub fn new(jobs: &Arc<JobTable>, job: &str) -> (Gate, oneshot::Receiver<Result<(), String>>) {
+        let (tx, rx) = oneshot::channel();
+        let gate = Gate {
+            jobs: Arc::clone(jobs),
+            job: job.to_string(),
+            tx: Arc::new(std::sync::Mutex::new(Some(tx))),
+        };
+        (gate, rx)
+    }
+
+    /// The pre-flight passed: records what it established (`context`, the
+    /// record file) and lets the call answer.
+    pub fn pass(&self, context: Value, record: Option<PathBuf>) {
+        self.jobs.started(&self.job, context, record);
+        self.send(Ok(()));
+    }
+
+    /// The pre-flight refused: the call answers with `reason`.
+    pub fn refuse(&self, reason: &str) {
+        self.send(Err(reason.to_string()));
+    }
+
+    /// Answers the waiting call once.
+    fn send(&self, verdict: Result<(), String>) {
+        let tx = self
+            .tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(tx) = tx {
+            let _ = tx.send(verdict);
+        }
+    }
+}
+
+/// The record file of a job whose audit snapshot is `snapshot` in the
+/// history of `dir`.
+pub fn record_file(dir: &Path, snapshot: Option<&str>) -> Option<PathBuf> {
+    snapshot.map(|id| {
+        bussard_model::history::History::open(dir)
+            .history_dir()
+            .join(id)
+            .join(RECORD_FILE)
+    })
 }
 
 impl Job {
@@ -758,7 +848,7 @@ impl Job {
                 status.entry(key.clone()).or_insert_with(|| value.clone());
             }
         }
-        status["next_step"] = json!(next_step(&status));
+        status["next_step"] = json!(next_step(self.kind, &status));
         status
     }
 }
@@ -815,42 +905,21 @@ fn restored(mut record: Value) -> Value {
         record["step"] = json!("interrupted: the server stopped before the write ended");
     }
     record["from_record"] = json!(true);
-    record["next_step"] = json!(next_step(&record));
+    record["next_step"] = json!(next_step(JobKind::of(&record), &record));
     record
 }
 
-/// What the assistant does next with a job in `status`.
-fn next_step(status: &Value) -> String {
+/// What the assistant does next with a `kind` job in `status`.
+fn next_step(kind: JobKind, status: &Value) -> String {
     let job = status["job"].as_str().unwrap_or_default();
     let address = status["address"].as_str().unwrap_or_default();
-    if status["kind"] == "scan" {
-        let line = status["line"].as_str().unwrap_or_default();
-        return match status["state"].as_str() {
-            Some("running") => format!(
-                "Still scanning line {line} ({}; {} device(s) found so far). Call \
-                 knx_job_status with job {job} again in a few seconds; the scan continues in \
-                 the server whether or not you poll. Nothing is written.",
-                status["step"].as_str().unwrap_or("probing"),
-                status["progress"]["found"].as_u64().unwrap_or(0)
-            ),
-            _ if status["result"]["ok"] == true => format!(
-                "The scan of line {line} is done: `result` is exactly what knx_find_devices \
-                 returns. Tell the human result.summary and the devices by name."
-            ),
-            _ => format!("The scan of line {line} did not run: tell the human result.reason."),
-        };
-    }
-    if status["kind"] == "add" {
-        return add_next_step(status, job);
-    }
-    if status["kind"] == "replace" {
-        return replace_next_step(status, job, address);
-    }
-    if status["kind"] == "commission" {
-        return commission_next_step(status, job);
-    }
-    if status["kind"] == "plan" {
-        return match status["state"].as_str() {
+    let state = status["state"].as_str();
+    match kind {
+        JobKind::Scan => scan_next_step(status, job),
+        JobKind::Add => add_next_step(status, job),
+        JobKind::Replace => replace_next_step(status, job, address),
+        JobKind::Commission => commission_next_step(status, job),
+        JobKind::Plan => match state {
             Some("running") => format!(
                 "Still reading {address} for the plan. Call knx_apply_status with job {job} \
                  again in a few seconds; the read continues in the server whether or not you \
@@ -865,8 +934,32 @@ fn next_step(status: &Value) -> String {
                  ask result.question; knx_apply_device takes result.plan_digest only after an \
                  explicit yes."
             ),
-        };
+        },
+        JobKind::Apply | JobKind::Read => apply_next_step(status, job, address),
     }
+}
+
+/// What the assistant does next with a `knx_find_devices` job (issue #747).
+fn scan_next_step(status: &Value, job: &str) -> String {
+    let line = status["line"].as_str().unwrap_or_default();
+    match status["state"].as_str() {
+        Some("running") => format!(
+            "Still scanning line {line} ({}; {} device(s) found so far). Call knx_job_status \
+             with job {job} again in a few seconds; the scan continues in the server whether or \
+             not you poll. Nothing is written.",
+            status["step"].as_str().unwrap_or("probing"),
+            status["progress"]["found"].as_u64().unwrap_or(0)
+        ),
+        _ if status["result"]["ok"] == true => format!(
+            "The scan of line {line} is done: `result` is exactly what knx_find_devices returns. \
+             Tell the human result.summary and the devices by name."
+        ),
+        _ => format!("The scan of line {line} did not run: tell the human result.reason."),
+    }
+}
+
+/// What the assistant does next with an apply job (and a read job).
+fn apply_next_step(status: &Value, job: &str, address: &str) -> String {
     match status["state"].as_str() {
         Some("running") => format!(
             "Still working on {address} ({}). Call knx_apply_status with job {job} again in a \
@@ -1185,15 +1278,25 @@ mod tests {
         "1.1.4".parse().map_err(|_| "address".to_string())
     }
 
+    /// Claims an apply of 1.1.4.
+    fn apply(jobs: &JobTable) -> Result<String, String> {
+        Ok(jobs.claim(JobKind::Apply, Subject::Device(ia()?))?.id)
+    }
+
+    /// Claims a plan of `at`.
+    fn plan(jobs: &JobTable, at: IndividualAddress) -> Result<Claim, String> {
+        jobs.claim(JobKind::Plan, Subject::Device(at))
+    }
+
     #[test]
     fn test_claim_refuses_a_second_apply_with_the_running_job() -> Result<(), String> {
         let jobs = JobTable::new();
-        let first = jobs.claim(ia()?)?;
-        let refused = jobs.claim(ia()?).err().ok_or("second claim must refuse")?;
+        let first = apply(&jobs)?;
+        let refused = apply(&jobs).err().ok_or("second claim must refuse")?;
         assert!(refused.contains(&first), "{refused}");
         jobs.abandon(&first);
         assert!(jobs.running().is_none());
-        let second = jobs.claim(ia()?)?;
+        let second = apply(&jobs)?;
         jobs.finish(&second, json!({"ok": true}));
         assert!(jobs.running().is_none());
         Ok(())
@@ -1207,7 +1310,7 @@ mod tests {
         let record = snapshot.join(RECORD_FILE);
 
         let jobs = JobTable::new();
-        let id = jobs.claim(ia()?)?;
+        let id = apply(&jobs)?;
         jobs.started(&id, json!({"backup": "b.json"}), Some(record.clone()));
         // A new server (empty session) reads the running record back.
         let fresh = JobTable::new();
@@ -1230,23 +1333,26 @@ mod tests {
     {
         let jobs = JobTable::new();
         let other: IndividualAddress = "1.1.5".parse().map_err(|_| "address".to_string())?;
-        let PlanClaim::New(plan) = jobs.claim_plan(ia()?)? else {
-            return Err("the first plan must be new".into());
-        };
-        assert!(plan.starts_with("plan-"), "{plan}");
-        assert_eq!(jobs.claim_plan(ia()?)?, PlanClaim::Running(plan.clone()));
-        let refused = jobs
-            .claim_plan(other)
-            .err()
-            .ok_or("another device must wait")?;
-        assert!(refused.contains(&plan), "{refused}");
-        let refused = jobs.claim(ia()?).err().ok_or("an apply must wait")?;
-        assert!(refused.contains(&plan), "{refused}");
-        jobs.finish(&plan, json!({"ok": true}));
+        let first = plan(&jobs, ia()?)?;
+        assert!(!first.joined, "the first plan must be new");
+        let plan_id = first.id;
+        assert!(plan_id.starts_with("plan-"), "{plan_id}");
+        assert_eq!(
+            plan(&jobs, ia()?)?,
+            Claim {
+                id: plan_id.clone(),
+                joined: true
+            }
+        );
+        let refused = plan(&jobs, other).err().ok_or("another device must wait")?;
+        assert!(refused.contains(&plan_id), "{refused}");
+        let refused = apply(&jobs).err().ok_or("an apply must wait")?;
+        assert!(refused.contains(&plan_id), "{refused}");
+        jobs.finish(&plan_id, json!({"ok": true}));
         assert!(jobs.last(Path::new("/nonexistent"), ia()?).is_none());
 
-        let apply = jobs.claim(ia()?)?;
-        let refused = jobs.claim_plan(ia()?).err().ok_or("a plan must wait")?;
+        let apply = apply(&jobs)?;
+        let refused = plan(&jobs, ia()?).err().ok_or("a plan must wait")?;
         assert!(refused.contains(&apply), "{refused}");
         jobs.refuse(&apply, "the device moved");
         let status = jobs
@@ -1255,16 +1361,16 @@ mod tests {
         assert_eq!(status["result"]["refused"], true, "{status}");
         assert!(jobs.running().is_none());
         // A new plan of the device supersedes its finished plan job.
-        assert!(matches!(jobs.claim_plan(ia()?)?, PlanClaim::New(_)));
-        assert!(jobs.status(Path::new("/nonexistent"), &plan).is_none());
+        assert!(!plan(&jobs, ia()?)?.joined);
+        assert!(jobs.status(Path::new("/nonexistent"), &plan_id).is_none());
         Ok(())
     }
 
     #[test]
     fn test_pause_frees_the_slot_and_resume_takes_it_again() -> Result<(), String> {
         let jobs = JobTable::new();
-        let add = jobs.claim_add()?;
-        assert!(jobs.claim(ia()?).is_err(), "the slot is the add's");
+        let add = jobs.claim(JobKind::Add, Subject::Bus)?.id;
+        assert!(apply(&jobs).is_err(), "the slot is the add's");
         jobs.pause(
             &add,
             "identified",
@@ -1279,7 +1385,7 @@ mod tests {
         assert_eq!(status["plan_digest"], "abc", "{status}");
         assert_eq!(status["address"], "1.1.4", "{status}");
         assert_eq!(status["done"], false, "{status}");
-        let other = jobs.claim(ia()?)?;
+        let other = apply(&jobs)?;
         let refused = jobs
             .resume(&add, "writing")
             .err()
@@ -1302,7 +1408,7 @@ mod tests {
     #[tokio::test]
     async fn test_wait_returns_when_the_job_finishes() -> Result<(), String> {
         let jobs = std::sync::Arc::new(JobTable::new());
-        let id = jobs.claim(ia()?)?;
+        let id = apply(&jobs)?;
         assert!(!jobs.wait(&id, Duration::from_millis(10)).await);
         let finisher = std::sync::Arc::clone(&jobs);
         let job = id.clone();

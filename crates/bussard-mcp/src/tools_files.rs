@@ -16,6 +16,7 @@
 //! `.knxproj` without a password gets bussard's password form when the
 //! client shows URLs ([`crate::password_form`], #818).
 
+use crate::reply::{ok, refusal};
 use std::path::{Path, PathBuf};
 
 use bussard_model::Model;
@@ -42,10 +43,6 @@ use serde_json::{Value, json};
 use crate::args::Parameters;
 use crate::password_form::{self, Attempt, Step};
 use crate::server::BussardMcp;
-
-/// The export tool, registered in every tier. `knx_import_file` writes the
-/// model and is listed with [`crate::tools_model::MODEL_EDIT_TOOLS`].
-pub const EXPORT_TOOLS: [&str; 1] = ["knx_export"];
 
 /// How a download is consented to over MCP, for the refusal sentence.
 const CONSENT_HINT: &str = "it is copyrighted vendor product data fetched over the network; \
@@ -815,14 +812,4 @@ fn refused(reason: impl Into<String>, out: &Collected) -> Value {
         "reason": reason.into(),
         "sentences": sentences(out),
     })
-}
-
-/// A structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A refusal, reported as a normal (structured) result the caller reads out.
-fn refusal(reason: impl Into<String>) -> Result<CallToolResult, ErrorData> {
-    ok(refused(reason, &Collected::default()))
 }

@@ -20,6 +20,7 @@
 //!   protected GA, ever.
 
 use crate::args::Parameters;
+use crate::reply::{invalid, ok};
 use bussard_model::GroupAddress;
 use bussard_model::tests_schema;
 use bussard_model::text::{from_hex, hex};
@@ -30,10 +31,9 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::server::BussardMcp;
-use crate::state::ConnState;
 
 /// Arguments for `knx_infer_group`.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -66,16 +66,6 @@ const NEXT_STEP: &str = "Tell the human what you think this group address is \
     sender is known. If the candidates \
     are not confident enough, ask the human to trigger the same object again and call this tool \
     once more; repeated observations narrow the candidate set.";
-
-/// Turns a JSON value into a structured tool result.
-fn ok(value: Value) -> Result<CallToolResult, ErrorData> {
-    Ok(CallToolResult::structured(value))
-}
-
-/// A bad-argument error.
-fn invalid(msg: impl Into<String>) -> ErrorData {
-    ErrorData::invalid_params(msg.into(), None)
-}
 
 #[tool_router(router = learn_router, vis = "pub(crate)")]
 impl BussardMcp {
@@ -257,22 +247,17 @@ impl BussardMcp {
             .map(|t| t.name.clone())
             .collect();
 
-        let Some(handle) = state.bus.handle() else {
-            return ok(json!({
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": state.bus.to_json(),
-                "refused_protected": refused,
-            }));
+        let handle = match state.live_service(crate::state::Need::Write) {
+            Ok(service) => service.handle(),
+            Err(reason) => {
+                return ok(json!({
+                    "ok": false,
+                    "reason": reason,
+                    "bus": state.bus.to_json(),
+                    "refused_protected": refused,
+                }));
+            }
         };
-        if state.bus.state() != ConnState::Connected {
-            return ok(json!({
-                "ok": false,
-                "reason": state.bus.not_connected_reason(),
-                "bus": state.bus.to_json(),
-                "refused_protected": refused,
-            }));
-        }
 
         // A whole suite is a burst of bus writes: hold one rate-limiter permit
         // across the run, as the introspection tool does.

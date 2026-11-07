@@ -146,7 +146,7 @@ fn object_hits(v: &serde_json::Value) -> Vec<(String, String, u64)> {
 #[test]
 fn test_model_lookup_finds_unlinked_objects_by_vendor_text() -> TestResult {
     let model = fixture()?;
-    let v = model_lookup(&model, "mapper", 50);
+    let v = model_lookup(&model, "mapper", 50, None);
     let hit = |n: u64| ("1.1.201".to_string(), "mapper-3".to_string(), n);
     assert_eq!(object_hits(&v), [hit(15), hit(16)], "{v}");
     assert_eq!(v["objects"][0]["text"], "Mapper Objekt 1A - 1 Bit", "{v}");
@@ -165,7 +165,7 @@ fn test_model_lookup_finds_unlinked_objects_by_vendor_text() -> TestResult {
 #[test]
 fn test_model_lookup_matches_object_function_and_names_the_channel() -> TestResult {
     let model = fixture()?;
-    let v = model_lookup(&model, "Logik", 50);
+    let v = model_lookup(&model, "Logik", 50, None);
     let hit = |n: u64| ("1.1.16".to_string(), "tsm-taste-5-19".to_string(), n);
     assert_eq!(object_hits(&v), [hit(1049), hit(1050)], "{v}");
     assert_eq!(v["channels"], serde_json::json!([]), "{v}");
@@ -175,7 +175,7 @@ fn test_model_lookup_matches_object_function_and_names_the_channel() -> TestResu
 #[test]
 fn test_model_lookup_keeps_link_names_and_their_groups() -> TestResult {
     let model = fixture()?;
-    let v = model_lookup(&model, "zu hause", 50);
+    let v = model_lookup(&model, "zu hause", 50, None);
     assert_eq!(
         object_hits(&v),
         [("1.1.16".to_string(), "tsm-taste-5-19".to_string(), 85)],
@@ -188,7 +188,7 @@ fn test_model_lookup_keeps_link_names_and_their_groups() -> TestResult {
         "{v}"
     );
     // The limit bounds objects and channels alike.
-    let v = model_lookup(&model, "e", 1);
+    let v = model_lookup(&model, "e", 1, None);
     assert_eq!(v["objects"].as_array().map(Vec::len), Some(1), "{v}");
     assert_eq!(v["channels"].as_array().map(Vec::len), Some(1), "{v}");
     Ok(())

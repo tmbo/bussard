@@ -541,7 +541,7 @@ async fn test_programming_tools_registered_only_with_the_tier() -> anyhow::Resul
         .into_iter()
         .map(|t| t.name.to_string())
         .collect();
-    for tool in bussard_mcp::tools_program::PROGRAMMING_TOOLS {
+    for tool in bussard_mcp::tools_of(bussard_mcp::Tier::Programming) {
         assert!(
             names.iter().any(|n| n == tool),
             "{tool} missing from {names:?}"

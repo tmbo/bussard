@@ -26,7 +26,7 @@
 
 use std::time::Instant;
 
-use crate::jobs::JobSink;
+use crate::jobs::{JobKind, JobSink, Subject};
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{
@@ -37,12 +37,12 @@ use bussard_service::observer::Collected;
 use bussard_service::program::Question;
 use bussard_service::program::adopt::{self, Adopted, Keys, PlanRequest, Planned, RunRequest};
 use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::addressing::{Wording, Yes, assigned_notes, found_sentence, readback_json, refused};
-use super::{BussardMcp, ProgrammingTier, chain, put};
+use super::{BussardMcp, ProgrammingTier, chain};
 
 /// The question of the `press_button` step.
 const PRESS_BUTTON: &str = "Press the programming button on the new device (its LED usually \
@@ -80,7 +80,7 @@ impl Identification {
 
 /// One identified device waiting for the human's yes, by job id.
 #[derive(Debug, Clone)]
-pub(super) struct PendingAdd {
+pub(super) struct AddPlan {
     /// What the identification established.
     id: Identification,
     /// The `address` argument of the first call.
@@ -91,8 +91,6 @@ pub(super) struct PendingAdd {
     product_file: Option<std::path::PathBuf>,
     /// The digest the human's yes answers.
     digest: String,
-    /// When the device was identified.
-    created: Instant,
 }
 
 /// The plan digest: the device (current and target address, serial, mask,
@@ -100,29 +98,27 @@ pub(super) struct PendingAdd {
 /// model's device list.
 fn add_digest(id: &Identification, model: &Model) -> String {
     let (p, v) = (&id.planned, id.identified());
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-add-device-v1");
-    put(&mut h, &p.current.raw().to_be_bytes());
-    put(&mut h, &p.target.raw().to_be_bytes());
-    put(&mut h, v.serial.as_deref().unwrap_or_default());
-    put(&mut h, &v.mask.unwrap_or(0).to_be_bytes());
-    put(&mut h, &v.manufacturer_id.unwrap_or(0).to_be_bytes());
-    put(&mut h, v.order.as_deref().unwrap_or("").as_bytes());
-    put(&mut h, v.secure.as_str().as_bytes());
-    put(&mut h, &[u8::from(p.secured)]);
-    put(&mut h, id.order.as_deref().unwrap_or("").as_bytes());
     let product = match &id.product {
         Some(ProductPlan::Cached { path }) => format!("cached:{}", path.display()),
         Some(ProductPlan::Download { entry }) => format!("download:{}", entry.sha256),
         Some(ProductPlan::Missing { .. }) | None => "none".to_string(),
     };
-    put(&mut h, product.as_bytes());
-    for address in model.devices.keys() {
-        put(&mut h, &address.raw().to_be_bytes());
-    }
-    let bytes: [u8; 32] = h.finalize().into();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256:{hex}")
+    let h = Fingerprint::new(b"bussard-add-device-v1")
+        .address(p.current)
+        .address(p.target)
+        .put(v.serial.as_deref().unwrap_or_default())
+        .put(v.mask.unwrap_or(0).to_be_bytes())
+        .put(v.manufacturer_id.unwrap_or(0).to_be_bytes())
+        .put(v.order.as_deref().unwrap_or(""))
+        .put(v.secure.as_str())
+        .put([u8::from(p.secured)])
+        .put(id.order.as_deref().unwrap_or(""))
+        .put(product);
+    let h = model
+        .devices
+        .keys()
+        .fold(h, |h, address| h.address(*address));
+    format!("sha256:{}", h.hex())
 }
 
 /// The refusal for a stop of the flow; `planning` while nothing is decided
@@ -179,7 +175,7 @@ impl BussardMcp {
                     )
                     .map_err(|e| e.to_string())?;
                 }
-                let job = tier.jobs.claim_add()?;
+                let job = tier.jobs.claim(JobKind::Add, Subject::Bus)?.id;
                 // `product`: the import `bussard adopt --product` runs, before
                 // the bus is touched (issue #779).
                 let imported = match args.product.as_deref().map(str::trim) {
@@ -201,7 +197,7 @@ impl BussardMcp {
                 let worker = tokio::spawn(async move {
                     me.add_identify_job(&id, address, order, product_file).await;
                 });
-                self.watch_job(job.clone(), "add-device", worker);
+                tier.jobs.watch(&job, "add-device", worker);
                 Ok(json!({
                     "ok": true,
                     "started": true,
@@ -266,17 +262,14 @@ impl BussardMcp {
                 let model = state.model.reload();
                 let detail = identified_detail(&id, &model, &digest, tier);
                 let question = add_question(&id);
-                tier.adds().insert(
-                    job.to_string(),
-                    PendingAdd {
-                        id,
-                        address_arg: address,
-                        order_arg,
-                        product_file,
-                        digest,
-                        created: Instant::now(),
-                    },
-                );
+                let plan = AddPlan {
+                    id,
+                    address_arg: address,
+                    order_arg,
+                    product_file,
+                    digest,
+                };
+                tier.adds.insert(job, "", plan);
                 tier.jobs
                     .pause(job, "identified", question, Some(target), detail);
             }
@@ -293,10 +286,7 @@ impl BussardMcp {
         product_file: Option<&std::path::Path>,
     ) -> Result<(Identification, String), String> {
         let state = self.state();
-        let tier = state
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {
             service: &service,
@@ -385,17 +375,12 @@ impl BussardMcp {
         download: Option<bool>,
     ) -> Result<Value, String> {
         let began = Instant::now();
-        let pending = {
-            let mut adds = tier.adds();
-            adds.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            adds.get(job).cloned()
-        };
-        let Some(pending) = pending else {
-            return Err(format!(
+        let pending = tier.adds.get(job).ok_or_else(|| {
+            format!(
                 "no identified device waits under job {job} (it was written, refused, or older \
                  than the plan lifetime). Call knx_add_device without `job` to start again."
-            ));
-        };
+            )
+        })?;
         let needs_download = matches!(pending.id.product, Some(ProductPlan::Download { .. }));
         Yes {
             job,
@@ -405,7 +390,7 @@ impl BussardMcp {
         }
         .check(&pending.digest, "adding the device", needs_download)?;
         tier.jobs.resume(job, "checking the device again")?;
-        tier.adds().remove(job);
+        tier.adds.retire(job);
         let me = self.clone();
         let id = job.to_string();
         let work = async move { me.add_write_job(&id, pending).await };
@@ -419,7 +404,7 @@ impl BussardMcp {
 
     /// The write job: the fresh read, the download, the address, the
     /// read-back, the device file. Returns the job's result.
-    async fn add_write_job(&self, job: &str, pending: PendingAdd) -> Value {
+    async fn add_write_job(&self, job: &str, pending: AddPlan) -> Value {
         let state = std::sync::Arc::clone(self.state());
         let Some(tier) = state.programming.as_ref() else {
             return json!({ "ok": false, "reason": "the programming tier is off" });
@@ -435,12 +420,9 @@ impl BussardMcp {
     }
 
     /// The write itself; `Err` is the reason it stopped.
-    async fn add_write(&self, job: &str, p: &PendingAdd) -> Result<Value, String> {
+    async fn add_write(&self, job: &str, p: &AddPlan) -> Result<Value, String> {
         let state = self.state();
-        let tier = state
-            .programming
-            .as_ref()
-            .ok_or("the programming tier is off")?;
+        let tier = self.tier()?;
         let dir = state.dir.clone();
         let (service, source) = self.address_bus().await?;
         let flow = AssignFlow {
@@ -556,7 +538,7 @@ impl BussardMcp {
 /// download (a failure is a note and the device is added without it).
 fn select_product(
     dir: &std::path::Path,
-    p: &PendingAdd,
+    p: &AddPlan,
     jobs: &crate::jobs::JobTable,
     job: &str,
     notes: &mut Vec<String>,
@@ -749,7 +731,7 @@ fn identified_detail(
         "sentences": sentences,
         "plan_digest": digest,
         "model_devices": model.devices.len(),
-        "expires_at": bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl),
+        "expires_at": tier.adds.expires_at(now),
     })
 }
 
@@ -833,18 +815,6 @@ fn done_result(adopted: &Adopted, dir: &std::path::Path, notes: Vec<String>) -> 
         "summary": summary,
         "next_step": next_step,
     })
-}
-
-impl ProgrammingTier {
-    /// The identified devices waiting for a yes, recovering from a poisoned
-    /// lock.
-    pub(super) fn adds(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PendingAdd>> {
-        self.adds
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 }
 
 /// Imports the `.knxprod` at `file` into the product store of `dir` behind a

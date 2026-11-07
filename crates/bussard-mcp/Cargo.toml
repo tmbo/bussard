@@ -29,8 +29,6 @@ bussard-secure = { workspace = true }
 bussard-ha = { workspace = true }
 # The rendered automation as YAML for the human (issue #280).
 serde_norway = { workspace = true }
-# SHA-256 for the programming tier's plan digest. MIT OR Apache-2.0.
-sha2 = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 serde = { workspace = true }
@@ -81,6 +79,9 @@ bussard-prod = { workspace = true }
 # Packs the synthetic `.knxprod` of the flash test (issue #303). Already in
 # the tree (bussard-prod, bussard-model). MIT.
 zip = { workspace = true }
+
+# The tests hash product archives as the lock pins them. MIT OR Apache-2.0.
+sha2 = { workspace = true }
 
 [lints]
 workspace = true

@@ -10,6 +10,7 @@
 //! table ([`crate::jobs::JobKind::Scan`]) and reports the addresses probed
 //! and the devices found so far while it runs; `knx_job_status` reads it.
 
+use crate::jobs::{JobKind, Subject};
 use std::sync::Arc;
 
 use bussard_model::text::hex;
@@ -24,7 +25,7 @@ use serde_json::{Value, json};
 
 use crate::jobs::JobTable;
 use crate::server::BussardMcp;
-use crate::state::SharedState;
+use crate::state::{Need, SharedState};
 use crate::warm::WarmConnection;
 
 /// What `knx_find_devices` scans: the parsed line and range.
@@ -64,7 +65,7 @@ impl ScanRequest {
 impl BussardMcp {
     /// `knx_find_devices`'s body; `Err` is a refusal reason.
     pub(crate) async fn find_devices(&self, request: ScanRequest) -> Result<Value, String> {
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         // The keyring's tool keys (issue #203): a listed device is identified
         // over A_SecureData, as `bussard scan --keyring`.
@@ -75,7 +76,7 @@ impl BussardMcp {
         .map_err(|e| format!("loading the keyring for the scan: {e}"))?;
         let line = request.line();
         let jobs = Arc::clone(&state.jobs);
-        let id = jobs.claim_scan(&line)?;
+        let id = jobs.claim(JobKind::Scan, Subject::Line(&line))?.id;
         let total = request.range.count();
         jobs.progress(&id, "total", json!(total));
         jobs.progress(&id, "probed", json!(0));
@@ -86,17 +87,13 @@ impl BussardMcp {
         let warm = self.warm().clone();
         let task_jobs = Arc::clone(&jobs);
         let task_id = id.clone();
-        tokio::spawn(async move {
-            let result = run_scan(
+        jobs.spawn(&id, "scan", async move {
+            Ok(run_scan(
                 &service, &state, request, &keys, &task_jobs, &task_id, &warm,
             )
-            .await;
-            task_jobs.finish(&task_id, result);
+            .await)
         });
-
-        if jobs.wait(&id, jobs.read_wait()).await
-            && let Some(result) = jobs.result(&id)
-        {
+        if let Some(result) = jobs.outcome(&id, jobs.read_wait()).await {
             // Answered inline: the job is not needed any more.
             jobs.abandon(&id);
             return Ok(result);
@@ -138,7 +135,7 @@ impl BussardMcp {
     /// `knx_show_device {live: true}`'s live part: what `bussard status
     /// <ia>` reads, as JSON; `Err` is a refusal reason.
     pub(crate) async fn live_status(&self, target: IndividualAddress) -> Result<Value, String> {
-        let service = self.device_read_bus()?;
+        let service = self.state().live_service(Need::Manage)?.clone();
         let state = Arc::clone(self.state());
         let model = state.model.current();
         // KNX Data Secure (issue #533): the target's tool key wraps every
@@ -333,11 +330,7 @@ fn scan_result(dir: &std::path::Path, range: LineRange, swept: Sweep, model: &Mo
         "to": range.to,
         "summary": summary,
         "devices": devices,
-        "not_in_model": report
-            .not_in_model
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
+        "not_in_model": report.not_in_model,
         "missing_from_bus": missing
             .iter()
             .map(|(addr, name)| json!({ "name": name, "address": addr.to_string() }))

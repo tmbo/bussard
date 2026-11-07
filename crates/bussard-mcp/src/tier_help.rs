@@ -1,11 +1,10 @@
 //! The `bussard mcp --help` texts of the tier flags, built from the
-//! registration tables ([`crate::tool_names_with_ha`] and the tier lists) so
-//! the tool names and counts they print cannot drift from the server
-//! (issue #704).
+//! registration table ([`crate::TOOLS`]) so the tool names and counts they
+//! print cannot drift from the server (issue #704).
 
-use crate::{tool_names_with_ha, tools_enroll, tools_ha, tools_model, tools_program};
+use crate::{Tier, tool_names, tools_of};
 
-/// How many tools each tier registers, from [`crate::tool_names_with_ha`].
+/// How many tools each tier registers, from [`crate::TOOLS`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TierCounts {
     /// Tools in `--passive` mode, model edits included.
@@ -23,42 +22,32 @@ pub struct TierCounts {
     pub home_assistant: usize,
 }
 
-/// The tool counts of every tier, computed from the registration tables.
+/// The tool counts of every tier, computed from the registration table.
 pub fn tier_counts() -> TierCounts {
     TierCounts {
-        passive: names(true, false, false, false, false).len(),
-        default: names(false, false, false, false, false).len(),
-        writes: names(false, true, false, false, false).len(),
+        passive: tool_names(true, false, false).len(),
+        default: tool_names(false, false, false).len(),
+        writes: tool_names(false, true, false).len(),
         model_edits: no_model_edits_omitted().len(),
-        programming: tools_program::PROGRAMMING_TOOLS.len(),
-        home_assistant: tools_ha::HA_TOOLS.len(),
+        programming: tools_of(Tier::Programming).len(),
+        home_assistant: tools_of(Tier::HomeAssistant).len(),
     }
 }
 
 /// The tools the default tier has and `--passive` omits.
 pub fn passive_omitted() -> Vec<&'static str> {
-    added(
-        &names(true, false, false, false, false),
-        &names(false, false, false, false, false),
-    )
+    tools_of(Tier::Bus)
 }
 
 /// The tools `--allow-writes` adds to the default tier.
 pub fn writes_added() -> Vec<&'static str> {
-    added(
-        &names(false, false, false, false, false),
-        &names(false, true, false, false, false),
-    )
+    tools_of(Tier::Writes)
 }
 
 /// The tools `--no-model-edits` withholds: the model edits and the
 /// certificate enrolment, which writes the key store.
 pub fn no_model_edits_omitted() -> Vec<&'static str> {
-    tools_model::MODEL_EDIT_TOOLS
-        .iter()
-        .chain(&tools_enroll::ENROLL_TOOLS)
-        .copied()
-        .collect()
+    tools_of(Tier::ModelEdit)
 }
 
 /// Help for `--passive`.
@@ -83,7 +72,7 @@ pub fn allow_programming_help() -> String {
         "Programming tier: registers {}, which write one device after a plan the human \
          approved. Off by default. Mutually exclusive with `--passive`; a non-loopback \
          gateway also needs `--allow-remote-gateway` or BUSSARD_ALLOW_REAL_GATEWAY=1.",
-        code_list(&tools_program::PROGRAMMING_TOOLS)
+        code_list(&tools_of(Tier::Programming))
     )
 }
 
@@ -102,7 +91,7 @@ pub fn allow_home_assistant_help() -> String {
         "Home Assistant tier: registers {} when bussard.toml has a `[home_assistant]` table. \
          Writes only the KNX YAML file it names and bussard's own automations, each after a \
          plan the human approved, then reloads them. Off by default; never touches the bus.",
-        code_list(&tools_ha::HA_TOOLS)
+        code_list(&tools_of(Tier::HomeAssistant))
     )
 }
 
@@ -122,31 +111,6 @@ pub fn tier_counts_help() -> String {
         c.home_assistant,
         code_list(&crate::onboarding::ONBOARDING_TOOLS)
     )
-}
-
-/// [`tool_names_with_ha`] with every switch spelled out.
-fn names(
-    passive: bool,
-    allow_writes: bool,
-    no_model_edits: bool,
-    allow_programming: bool,
-    home_assistant: bool,
-) -> Vec<&'static str> {
-    tool_names_with_ha(
-        passive,
-        allow_writes,
-        no_model_edits,
-        allow_programming,
-        home_assistant,
-    )
-}
-
-/// The names in `with` that `base` lacks, in `with`'s order.
-fn added(base: &[&'static str], with: &[&'static str]) -> Vec<&'static str> {
-    with.iter()
-        .filter(|name| !base.contains(name))
-        .copied()
-        .collect()
 }
 
 /// `` `a`, `b` and `c` ``.
@@ -182,8 +146,8 @@ mod tests {
     #[test]
     fn test_tier_counts_include_knx_viz_in_every_tier() {
         for (passive, writes) in [(true, false), (false, false), (false, true)] {
-            assert!(names(passive, writes, false, false, false).contains(&"knx_viz"));
-            assert!(names(passive, writes, true, false, false).contains(&"knx_viz"));
+            assert!(tool_names(passive, writes, false).contains(&"knx_viz"));
+            assert!(tool_names(passive, writes, true).contains(&"knx_viz"));
         }
         assert!(!passive_omitted().contains(&"knx_viz"));
         assert!(!no_model_edits_omitted().contains(&"knx_viz"));
@@ -201,7 +165,7 @@ mod tests {
     #[test]
     fn test_allow_programming_help_names_every_programming_tool() {
         let help = allow_programming_help();
-        for name in tools_program::PROGRAMMING_TOOLS {
+        for name in tools_of(Tier::Programming) {
             assert!(help.contains(&format!("`{name}`")), "{name}");
         }
         assert!(!help.contains("issue"));

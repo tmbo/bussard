@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use bussard_mcp::tier_help::{TierCounts, tier_counts};
-use bussard_mcp::{tools_ha, tools_program};
+use bussard_mcp::{Tier, tools_of};
 use bussard_mgmt::{MaskCapabilities, MaskProfile, PROPERTY_ONLY_FLASH_MASK, capability_table};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -305,8 +305,8 @@ fn test_mcp_tools_doc_names_every_tier_tool() -> TestResult {
     let tiers: [(&str, Vec<&str>); 5] = [
         ("Passive", bussard_mcp::tier_help::passive_omitted()),
         ("Write", bussard_mcp::tier_help::writes_added()),
-        ("Programming", tools_program::PROGRAMMING_TOOLS.to_vec()),
-        ("Home Assistant", tools_ha::HA_TOOLS.to_vec()),
+        ("Programming", tools_of(Tier::Programming)),
+        ("Home Assistant", tools_of(Tier::HomeAssistant)),
         (
             "No project edits",
             bussard_mcp::tier_help::no_model_edits_omitted(),
