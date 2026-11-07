@@ -34,6 +34,9 @@ use bussard_download::tables_sys7::read_sys7_tables;
 use bussard_download::{FlashStep, Session, compute_tables, flash, plan, sys7_table_images};
 use bussard_mgmt::LsmAccess;
 use bussard_mgmt::connection::Layer4Connection;
+use bussard_mgmt::function_property::{
+    A_FUNCTION_PROPERTY_COMMAND, A_FUNCTION_PROPERTY_STATE_RESPONSE,
+};
 use bussard_mgmt::load::LoadState;
 use bussard_model::facts::DeviceFactsRecord;
 use bussard_product::application::{ApplicationProgram, parse_application_program};
@@ -245,6 +248,12 @@ struct DeviceState {
     intermediate: HashMap<u8, (u8, u32)>,
     /// How many intermediate states the device reported.
     intermediate_reported: usize,
+    /// What the device answers after the object and PID of an
+    /// `A_FunctionPropertyCommand` (issue #946): `[0]` is return code 0, an
+    /// empty answer says the property is not a function property.
+    function_answer: Vec<u8>,
+    /// The `A_FunctionPropertyCommand` payloads the device saw.
+    function_calls: Vec<Vec<u8>>,
 }
 
 impl DeviceState {
@@ -328,6 +337,8 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         intermediate_lsm: None,
         intermediate: HashMap::new(),
         intermediate_reported: 0,
+        function_answer: vec![0x00],
+        function_calls: Vec::new(),
     }))
 }
 
@@ -772,6 +783,16 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             A_PROPERTY_VALUE_RESPONSE,
             prop_response(obj, pid, 1, start, value),
         );
+    }
+
+    // A_FunctionPropertyCommand (issue #946): object, PID, the configured
+    // answer.
+    if req_apci == A_FUNCTION_PROPERTY_COMMAND {
+        let mut s = lock(state);
+        s.function_calls.push(payload.to_vec());
+        let mut answer: Vec<u8> = payload.iter().take(2).copied().collect();
+        answer.extend_from_slice(&s.function_answer);
+        return Reaction::Answer(A_FUNCTION_PROPERTY_STATE_RESPONSE, answer);
     }
 
     Reaction::Nak
@@ -1274,6 +1295,249 @@ async fn test_flash_system7_delay_pauses_before_restart() -> Result<(), Box<dyn 
     assert_eq!(lock(&state).restarts_seen, 1, "one terminal restart");
     drop(handle);
     let _ = session.into_disconnect().await;
+    Ok(())
+}
+
+/// `mdt_canonical_app` with the Berker/Hager 0701 function call (object 5
+/// PID 52, `04`) after the PID 78 compare, before the unloads (issue #946).
+fn app_with_function_call() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+    let mut app = mdt_canonical_app()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let compare = ops
+        .iter()
+        .position(|op| matches!(op, bussard_product::application::LoadOp::CompareProp { .. }))
+        .ok_or("the procedure compares PID 78")?;
+    ops.insert(
+        compare + 1,
+        bussard_product::application::LoadOp::InvokeFunctionProp {
+            obj_idx: Some(5),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(52),
+            inline_data: Some(vec![0x04]),
+        },
+    );
+    Ok(app)
+}
+
+/// Flashes [`app_with_function_call`] on a device that answers the call
+/// with `answer` after the object and PID; returns the flash result and the
+/// calls the device saw.
+async fn flash_with_function_call(
+    answer: Vec<u8>,
+) -> Result<
+    (
+        Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError>,
+        Vec<Vec<u8>>,
+        usize,
+    ),
+    Box<dyn std::error::Error>,
+> {
+    set_sys7_lsm_env(LsmMode::MemoryMapped);
+    let (mut bus, state, handle) = setup(LsmMode::MemoryMapped, Fault::None).await?;
+    lock(&state).function_answer = answer;
+    let plan = plan_flash_default(
+        &app_with_function_call()?,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let call = plan
+        .steps
+        .iter()
+        .position(|s| {
+            *s == FlashStep::InvokeFunctionProp {
+                object: bussard_download::PropObject::Index(5),
+                prop_id: 52,
+                data: vec![0x04],
+            }
+        })
+        .ok_or("the call lowers to a step")?;
+    let unload = plan
+        .steps
+        .iter()
+        .position(|s| matches!(s, FlashStep::Sys7Unload { .. }))
+        .ok_or("the plan unloads")?;
+    assert!(call < unload, "the call goes before the unloads");
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        "1.1.99".parse()?,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = authed_session(l4).await?;
+    let result = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    drop(handle);
+    let s = lock(&state);
+    Ok((result, s.function_calls.clone(), s.memory_writes_seen))
+}
+
+/// `mdt_canonical_app` with the Hager 0701 declared writes before the last
+/// `LoadCompleted` (issue #946): object 6 PID 52 declared with 12 one-octet
+/// elements and written from a 12-octet `InlineData`, and object 7 PID 52
+/// declared and written without `InlineData` or a parameter in it.
+fn app_with_declared_writes() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+    use bussard_product::application::LoadOp;
+    let mut app = mdt_canonical_app()?;
+    let ops = &mut app.load_procedures[0].ops;
+    let completed = ops
+        .iter()
+        .rposition(|op| matches!(op, LoadOp::LoadCompleted { .. }))
+        .ok_or("the procedure completes a load")?;
+    let declare = |obj: u32| LoadOp::DeclarePropDesc {
+        obj_idx: Some(obj),
+        obj_type: None,
+        occurrence: None,
+        prop_id: Some(52),
+        prop_type: Some("PDT_UNSIGNED_CHAR".to_string()),
+        max_elements: Some(12),
+        writable: Some(true),
+        read_access: Some(0),
+        write_access: Some(0),
+    };
+    let write = |obj: u32, inline: Option<Vec<u8>>| LoadOp::WriteProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        prop_id: Some(52),
+        inline_data: inline,
+        start_element: None,
+        count: Some(12),
+        verify: Some(false),
+        occurrence: None,
+    };
+    let inserted = [
+        declare(6),
+        write(6, Some((1..=12).collect())),
+        declare(7),
+        write(7, None),
+    ];
+    for (i, op) in inserted.into_iter().enumerate() {
+        ops.insert(completed + i, op);
+    }
+    Ok(app)
+}
+
+#[test]
+fn test_plan_flash_system7_lowers_declared_writes() -> Result<(), Box<dyn std::error::Error>> {
+    // Issue #946: on System 7 a declaration sends nothing and sizes the write
+    // that follows, as on System B (#938); a declared write with no value
+    // (no InlineData, no parameter) sends nothing, as ETS on the STXE530.
+    let plan = plan_flash_default(
+        &app_with_declared_writes()?,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let at = plan
+        .steps
+        .iter()
+        .position(|s| {
+            matches!(
+                s,
+                FlashStep::DeclareProp {
+                    object: bussard_download::PropObject::Index(6),
+                    prop_id: 52,
+                    max_elements: 12,
+                    ..
+                }
+            )
+        })
+        .ok_or("the declaration of object 6")?;
+    assert_eq!(
+        plan.steps.get(at + 1),
+        Some(&FlashStep::WriteProp {
+            object: bussard_download::PropObject::Index(6),
+            prop_id: 52,
+            value: (1..=12).collect(),
+            start_element: 1,
+            count: 12,
+            verify: false,
+            from_parameters: false,
+        })
+    );
+    assert!(matches!(
+        plan.steps.get(at + 2),
+        Some(FlashStep::DeclareProp {
+            object: bussard_download::PropObject::Index(7),
+            ..
+        })
+    ));
+    assert!(
+        !plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::WriteProp {
+                object: bussard_download::PropObject::Index(7),
+                ..
+            }
+        )),
+        "nothing is written to object 7"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_refuses_a_function_call() -> Result<(), Box<dyn std::error::Error>> {
+    // Issue #946: no capture shows which function calls a parameter-only
+    // download makes, so it is refused rather than dropping the call.
+    let plan = plan_flash_default(
+        &app_with_function_call()?,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    let result = plan.parameters_only(&BTreeMap::new());
+    assert!(
+        matches!(
+            result,
+            Err(bussard_download::PartialPlanError::UncapturedStep { .. })
+        ),
+        "{:?}",
+        result.err()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_system7_invoke_function_prop_checks_the_return_code()
+-> Result<(), Box<dyn std::error::Error>> {
+    // The capture's exchange: `05 34 04` answered `05 34 00`.
+    let (result, calls, _) = flash_with_function_call(vec![0x00]).await?;
+    let outcome = result?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(calls, vec![vec![0x05, 0x34, 0x04]]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_system7_invoke_function_prop_refused_fails_the_flash()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A non-zero return code, and an answer without one (not a function
+    // property), each stop the flash before the download writes anything.
+    for answer in [vec![0x01], Vec::new()] {
+        let (result, calls, writes) = flash_with_function_call(answer.clone()).await?;
+        assert!(result.is_err(), "answer {answer:?}: {result:?}");
+        assert_eq!(calls.len(), 1, "answer {answer:?}");
+        assert_eq!(
+            writes, 0,
+            "answer {answer:?}: nothing written after the refusal"
+        );
+    }
     Ok(())
 }
 
@@ -4564,5 +4828,57 @@ async fn test_probe_resident_state_sys7_reads_the_application_id()
             drop(handle);
         }
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_invoke_function_property_refuses_a_target_that_does_not_fit()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #946: an object index or PID past what the service carries is a
+    // refusal before anything is sent, never a clamp to another property.
+    let target: bussard_model::IndividualAddress = "1.1.7".parse()?;
+    let gw = MockGateway::builder()
+        .device(MockDevice::new(target))
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let cases = [
+        (bussard_download::PropObject::Index(256), 52),
+        (bussard_download::PropObject::Index(5), 256),
+        (
+            bussard_download::PropObject::Type {
+                object_type: 65281,
+                occurrence: 0,
+            },
+            0x1000,
+        ),
+    ];
+    for (object, pid) in cases {
+        let result =
+            bussard_download::flash::invoke_function_property(&mut l4, object, pid, &[0x04]).await;
+        assert!(
+            matches!(
+                result,
+                Err(bussard_mgmt::load::WriteError::TargetOutOfRange { .. })
+            ),
+            "{object} PID {pid}: {result:?}"
+        );
+    }
+    let _ = l4.disconnect().await;
+    let requests = gw.with_device(target, |d| d.requests.clone())?;
+    assert!(
+        !requests
+            .iter()
+            .any(|(apci, _)| *apci == A_FUNCTION_PROPERTY_COMMAND
+                || *apci == bussard_mgmt::property_ext::A_FUNCTION_PROPERTY_EXT_COMMAND),
+        "nothing sent: {requests:?}"
+    );
     Ok(())
 }

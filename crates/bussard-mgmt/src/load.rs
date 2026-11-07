@@ -605,6 +605,21 @@ pub enum WriteError {
         detail: String,
     },
 
+    /// A property or function-property target does not fit the field the
+    /// service carries it in (an 8-bit object index or PID on the plain
+    /// services, a 12-bit PID on the extended ones). Refused before anything is
+    /// sent: a clamped value would address another property (issue #946).
+    #[error(
+        "{address}: {detail} does not fit the service that would carry it; nothing was sent, \
+         rather than addressing another property"
+    )]
+    TargetOutOfRange {
+        /// The device.
+        address: IndividualAddress,
+        /// The value that does not fit, and the field.
+        detail: String,
+    },
+
     /// The device answered a master-reset `A_Restart` with a non-zero error code
     /// in its `A_Restart_Response`: it refused the reset and erased nothing.
     #[error(

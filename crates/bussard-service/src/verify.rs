@@ -147,6 +147,48 @@ pub struct ExpectedProperty {
     pub value: Vec<u8>,
 }
 
+/// The parts of `write` the device still holds after `later` (the writes
+/// that follow it): the runs of its elements that no later write to the same
+/// object and property covers (issue #946). A write whose value is not whole
+/// elements is kept as it is.
+fn still_held(write: &ExpectedProperty, later: &[ExpectedProperty]) -> Vec<ExpectedProperty> {
+    let count = usize::from(write.count.max(1));
+    if !write.value.len().is_multiple_of(count) {
+        return vec![write.clone()];
+    }
+    let elem = write.value.len() / count;
+    let covered = |element: u32| {
+        later.iter().any(|l| {
+            l.object == write.object
+                && l.prop_id == write.prop_id
+                && (u32::from(l.start)..u32::from(l.start) + u32::from(l.count.max(1)))
+                    .contains(&element)
+        })
+    };
+    let mut out = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for i in 0..=count {
+        let held = i < count && !covered(u32::from(write.start) + i as u32);
+        match (held, run) {
+            (true, None) => run = Some((i, i + 1)),
+            (true, Some((from, _))) => run = Some((from, i + 1)),
+            (false, Some((from, to))) => {
+                out.push(ExpectedProperty {
+                    object: write.object,
+                    prop_id: write.prop_id,
+                    // Within the write's own u16 extent.
+                    start: write.start + from as u16,
+                    count: (to - from) as u16,
+                    value: write.value[from * elem..to * elem].to_vec(),
+                });
+                run = None;
+            }
+            (false, None) => {}
+        }
+    }
+    out
+}
+
 impl ExpectedProperty {
     /// The property writes of `flash` a read-back compares: every write of a
     /// System 7 or property-only plan, the writes of a System B plan whose
@@ -181,7 +223,7 @@ impl ExpectedProperty {
         let every_write = flash.is_sys7() || flash.is_property_only();
         let knxnet: Vec<ExpectedProperty> = knxnet.collect();
         let mut declared: Vec<(PropObject, u32)> = Vec::new();
-        flash
+        let writes: Vec<ExpectedProperty> = flash
             .steps
             .iter()
             .filter_map(|step| match step {
@@ -211,6 +253,17 @@ impl ExpectedProperty {
                 _ => None,
             })
             .chain(knxnet)
+            .collect();
+        // A property the procedure writes twice holds the last value: the
+        // Berker/Hager 0701 programs write object 5 PID 51 with `01` before
+        // the download and `02` after it (issue #946,
+        // `captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults/ops.txt`
+        // ops 8 and 132), and the device reads back `02`. Each write is
+        // expected only on the elements no later write covers.
+        writes
+            .iter()
+            .enumerate()
+            .flat_map(|(i, w)| still_held(w, writes.get(i + 1..).unwrap_or_default()))
             .collect()
     }
 
@@ -1222,6 +1275,84 @@ mod tests {
             value: vec![1, 2, 3],
         }));
         assert!(!expected.iter().any(|e| e.prop_id == 56), "{expected:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_still_held_supersedes_by_element_overlap() {
+        let w = |start: u16, count: u16, value: &[u8]| ExpectedProperty {
+            object: PropObject::Index(5),
+            prop_id: 51,
+            start,
+            count,
+            value: value.to_vec(),
+        };
+        // A later write of elements 1..=2 covers an earlier one of element 1.
+        assert!(still_held(&w(1, 1, &[1]), &[w(1, 2, &[2, 3])]).is_empty());
+        // A later write of element 2 leaves elements 1 and 3 of 1..=3.
+        assert_eq!(
+            still_held(&w(1, 3, &[1, 2, 3]), &[w(2, 1, &[9])]),
+            vec![w(1, 1, &[1]), w(3, 1, &[3])]
+        );
+        // Another property, or no overlap, keeps the write whole.
+        let other = ExpectedProperty {
+            prop_id: 52,
+            ..w(1, 1, &[7])
+        };
+        assert_eq!(still_held(&w(1, 1, &[1]), &[other]), vec![w(1, 1, &[1])]);
+        assert_eq!(
+            still_held(&w(1, 1, &[1]), &[w(2, 1, &[2])]),
+            vec![w(1, 1, &[1])]
+        );
+    }
+
+    #[test]
+    fn test_from_flash_plan_keeps_the_last_write_of_a_property() -> TestResult {
+        // Issue #946: the Berker/Hager 0701 programs write object 5 PID 51
+        // with `01` before the download and `02` after it; the read-back
+        // expects `02` only.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="M-0006_A-1" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-0701" Name="S7" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           <Code>
+            <AbsoluteSegment Id="M-0006_A-1_AS-1" Size="2" Address="17408"><Data>BAU=</Data></AbsoluteSegment>
+           </Code>
+           <LoadProcedures><LoadProcedure>
+            <LdCtrlConnect />
+            <LdCtrlWriteProp ObjIdx="5" PropId="51" InlineData="01" />
+            <LdCtrlUnload LsmIdx="3" />
+            <LdCtrlLoad LsmIdx="3" />
+            <LdCtrlAbsSegment LsmIdx="3" Address="17408" Size="2" />
+            <LdCtrlTaskSegment LsmIdx="3" Address="17408" />
+            <LdCtrlLoadCompleted LsmIdx="3" />
+            <LdCtrlWriteProp ObjIdx="5" PropId="51" InlineData="02" />
+            <LdCtrlRestart />
+            <LdCtrlDisconnect />
+           </LoadProcedure></LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app =
+            bussard_product::application::parse_application_program("M-0006_A-1", xml.as_bytes())?;
+        let plan = bussard_download::flash::plan_flash_sys7_with_hawk(
+            &app,
+            "1.1.1",
+            0x0701,
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+            None,
+            &std::collections::BTreeMap::new(),
+        )?;
+        assert_eq!(
+            ExpectedProperty::from_flash_plan(&plan),
+            vec![ExpectedProperty {
+                object: PropObject::Index(5),
+                prop_id: 51,
+                start: 1,
+                count: 1,
+                value: vec![0x02],
+            }]
+        );
         Ok(())
     }
 

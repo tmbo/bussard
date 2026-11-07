@@ -1067,6 +1067,77 @@ def func_command(obj_type: int, pid: int, data: bytes, seq: int = 0) -> bytes:
     return numbered(seq, 0x1D4, head + data)
 
 
+class TestFunctionProperties(unittest.TestCase):
+    """`function_properties.json` and its comparison with the plan's
+    `function_property` records (bussard issue #946)."""
+
+    def image_dir(self) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.1"
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            # The Berker 0701 calls: object 5 PID 52 with 04, then 10.
+            cemi_ldata(tool, dev, numbered(0, 0x2C7, bytes([5, 52, 0x04]))),
+            cemi_ldata(tool, dev, numbered(1, 0x2C7, bytes([5, 52, 0x10]))),
+            # The Gira 07B0 call by type, and a security load control.
+            cemi_ldata(tool, dev, func_command(65281, 208, b"\xff", seq=2)),
+            cemi_ldata(tool, dev, func_command(17, 5, bytes([1]) + bytes(9), seq=3)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", path, "--device", dev, "--out", out]), 0)
+        return out
+
+    @staticmethod
+    def plan(*calls) -> dict:
+        steps = []
+        for i, (obj, pid, data) in enumerate(calls, start=1):
+            rec = dict(obj, pid=pid, length=len(data) // 2, data=data)
+            steps.append({"index": i, "label": "call", "function_property": rec})
+        return {"steps": steps}
+
+    def test_compose_lists_load_procedure_calls_only(self):
+        out = self.image_dir()
+        with open(os.path.join(out, memimage.FUNCTION_PROPERTIES_FILE)) as fh:
+            calls = json.load(fh)
+        self.assertEqual(
+            [(c["service"], c["object"], c["pid"], c["data"]) for c in calls],
+            [
+                ("A_FunctionPropertyCommand", {"index": 5}, 52, "04"),
+                ("A_FunctionPropertyCommand", {"index": 5}, 52, "10"),
+                ("A_FunctionPropertyExt_Command", {"type": 65281, "instance": 1}, 208, "ff"),
+            ],
+        )
+
+    def test_compare_function_properties_identical_and_differs(self):
+        out = self.image_dir()
+        same = self.plan(({"object": 5}, 52, "04"), ({"object": 5}, 52, "10"),
+                         ({"object_type": 65281, "instance": 1}, 208, "ff"))
+        fp = memimage.compare_function_properties(same, out)
+        self.assertEqual(fp["verdict"], memimage.IDENTICAL, fp)
+        self.assertEqual(len(fp["matched"]), 3)
+        other = self.plan(({"object": 5}, 52, "04"), ({"object": 5}, 52, "11"))
+        fp = memimage.compare_function_properties(other, out)
+        self.assertEqual(fp["verdict"], memimage.DIFFERS)
+        self.assertEqual(fp["value_differs"], 1)
+        self.assertEqual([e["key"] for e in fp["ets_only"]], [["type65281.1", 208]])
+
+    def test_compare_properties_leaves_the_calls_to_their_own_verdict(self):
+        # The extended load-procedure call is not an ETS-only property write;
+        # the security load control stays in the property comparison.
+        out = self.image_dir()
+        props = memimage.compare_properties({"steps": []}, out)
+        self.assertEqual([e["key"][:2] for e in props["ets_only"]], [["type17.1", 5]])
+
+    def test_compare_function_properties_none_without_calls(self):
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(memimage.compare_function_properties({"steps": []}, out)["verdict"], "none")
+
+
 class TestPropertyWrites(unittest.TestCase):
     """`properties.json` and its parity check against bussard's plan."""
 

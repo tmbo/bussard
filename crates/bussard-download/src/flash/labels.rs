@@ -267,6 +267,19 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
         FlashStep::Delay { milliseconds } => {
             format!("wait {milliseconds} ms (LdCtrlDelay), nothing sent")
         }
+        FlashStep::InvokeFunctionProp {
+            object,
+            prop_id,
+            data,
+        } => format!(
+            "call function property {object} PID {prop_id} with {} (LdCtrlInvokeFunctionProp), \
+             expect return code 0",
+            if data.is_empty() {
+                "no input".to_string()
+            } else {
+                data.iter().map(|b| format!("{b:02X}")).collect::<String>()
+            }
+        ),
         FlashStep::DeclareProp {
             object,
             prop_id,

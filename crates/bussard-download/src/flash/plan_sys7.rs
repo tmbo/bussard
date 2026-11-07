@@ -367,6 +367,11 @@ pub(super) fn plan_flash_sys7(
     // ([`sys7_task_identity`]). A product that lacks one refuses at the first
     // TaskSegment op rather than writing a guessed identity.
     let task_identity = sys7_task_identity(app);
+    // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #946,
+    // as on System B since #938).
+    let mut declared: Vec<super::declare::PropDecl> = Vec::new();
+    // The parameters placed in properties, resolved once (issue #945).
+    let property_params = bussard_product::PropertyParameters::resolve(app, &config);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;
@@ -641,16 +646,52 @@ pub(super) fn plan_flash_sys7(
                 // which is identical on System 7 (`[system7-spec §4.6]`).
                 steps.push(super::plan_props::lower_compare_prop(step_no, op)?);
             }
-            LoadOp::WriteProp { .. } => {
-                // A property write with its Count and Verify (issue #390): the
-                // 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the MDT 0705
-                // label properties their parameters compose.
-                steps.push(super::plan_props::lower_write_prop(
-                    step_no,
-                    op,
-                    &property_values,
-                    app,
+            // A function property call, its return code checked (issue #946):
+            // the Berker/Hager 0701 programs call object 5 PID 52 before the
+            // unloads.
+            LoadOp::InvokeFunctionProp { .. } => {
+                steps.push(super::function_prop::lower_invoke_function_prop(
+                    step_no, op,
                 )?);
+            }
+            // A declaration sends nothing; it sizes the writes to its property
+            // that follow, as on System B (issue #946, #938). The Hager 0701
+            // programs declare object 6 to 8's parameter properties.
+            LoadOp::DeclarePropDesc { .. } => {
+                let decl = super::declare::lower_declare_prop(step_no, op)?;
+                steps.push(decl.step());
+                declared.push(decl);
+            }
+            LoadOp::WriteProp { .. } => {
+                // A write to a declared property: `Count` elements of the
+                // declared type (issue #946).
+                if let Some(decl) = super::declare::declaration_for(&declared, step_no, op) {
+                    let inline = match op {
+                        LoadOp::WriteProp { inline_data, .. } => inline_data.as_deref(),
+                        _ => None,
+                    };
+                    // A write with neither `InlineData` nor a parameter placed
+                    // in the property sends nothing, as ETS on the Hager
+                    // STXE530's object 6 PID 52 (`M-0009_A-20BB-10-0991`).
+                    steps.extend(super::declare::lower_declared_write_prop(
+                        step_no,
+                        op,
+                        decl,
+                        inline,
+                        &property_params,
+                        app,
+                    )?);
+                } else {
+                    // A property write with its Count and Verify (issue #390):
+                    // the 0701 programs' `ObjIdx=3 PropId=204 Count=2` and the
+                    // MDT 0705 label properties their parameters compose.
+                    steps.push(super::plan_props::lower_write_prop(
+                        step_no,
+                        op,
+                        &property_values,
+                        app,
+                    )?);
+                }
             }
             LoadOp::LoadImageProp {
                 obj_idx,

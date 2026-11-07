@@ -31,6 +31,7 @@
 //! | `WriteMem{addr,sz}` | [`write_memory`]`(addr, image)`                      | absolute placement (an absolute segment's data) |
 //! | `WriteProp{ot,pid}` | [`write_property`]                                   | a property write, echo-validated |
 //! | `DeclarePropDesc{oi,pid}` | (nothing sent)                                 | element size and `MaxElements` for the next write to that property (issue #938) |
+//! | `InvokeFunctionProp{oi,pid}` | [`invoke_function_property`]                  | one `A_FunctionPropertyCommand` (by type: `A_FunctionPropertyExt_Command`); a non-zero or missing return code fails the flash (issue #946) |
 //! | `CompareProp{oi,pid}`| [`compare_property`]                                | reads the property and byte-compares it (under `Mask`) against the op's `InlineData`; a mismatch fails the flash |
 //! | `CompareRelMem{oi,off}`| [`compare_rel_mem`]                              | reads relative memory at `base+off` and byte-compares it (under `Mask`, optionally `Invert`ed) against the op's `InlineData`; a mismatch fails the flash |
 //! | `LoadImageProp{oi,pid}`| [`read_mcb_table`]                                | reads the object's `PID_MCB_TABLE` one element per request and checks the device CRC over the stored segment against the written image |
@@ -103,6 +104,7 @@ mod declare;
 mod execute;
 mod execute_props;
 mod execute_sys7;
+mod function_prop;
 mod knxnet_ip;
 mod labels;
 mod load_records;
@@ -121,6 +123,7 @@ mod verify;
 
 pub(crate) use execute::probe_object_types;
 pub use execute::{discover_application_object, flash};
+pub use function_prop::invoke_function_property;
 pub use knxnet_ip::{
     ETS_PROJECT_INSTALLATION_ID, ETS_ROUTING_MULTICAST, ETS_ROUTING_TTL, KnxnetIpProgram,
     KnxnetIpWrite, knxnet_ip_program, write_knxnet_ip,
@@ -451,6 +454,20 @@ pub enum FlashStep {
         prop_type: String,
         /// The most elements the property holds (`MaxElements`).
         max_elements: u32,
+    },
+    /// A function property call (`LdCtrlInvokeFunctionProp`, issue #946): one
+    /// `A_FunctionPropertyCommand` (object by index) or
+    /// `A_FunctionPropertyExt_Command` (object by type) with `data` as the
+    /// function's input. The device's state response must carry return code
+    /// 00h; a non-zero code, a response without one or no response fails the
+    /// flash (KNX 3/3/7 §3.4.7.3).
+    InvokeFunctionProp {
+        /// The interface object the call names.
+        object: PropObject,
+        /// The function property's id.
+        prop_id: u32,
+        /// The function's input, the op's `InlineData`.
+        data: Vec<u8>,
     },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
@@ -812,7 +829,7 @@ pub enum PlanError {
          `bussard flash` cannot execute it and refuses the procedure rather than \
          leaving the device partially flashed (supported: Unload/Load/LoadCompleted/\
          RelSegment/WriteRelMem/WriteMem/DeclarePropDesc/WriteProp/CompareProp/CompareRelMem/LoadImageProp/\
-         Delay/Restart \
+         InvokeFunctionProp/Delay/Restart \
          on a single-LSM System B device)"
     )]
     UnsupportedOp {

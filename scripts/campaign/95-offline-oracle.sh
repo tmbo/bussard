@@ -830,6 +830,16 @@ for dev in devices:
     if props.get("not_compared"):
         detail += " [ETS-only not compared: %s]" % ", ".join(
             "%s PID %s" % (e["key"][0], e["key"][1]) for e in props["not_compared"])
+    # A load procedure's function property calls (issue #946).
+    fp = r.get("function_properties") or {}
+    if fp.get("verdict") == "identical":
+        detail += "  fcall=ok(%d)" % len(fp.get("matched", []))
+    elif fp.get("verdict") == "differs":
+        detail += "  fcall=differs(bussard-only %d, ets-only %d, value %d)" % (
+            len(fp.get("bussard_only", [])), len(fp.get("ets_only", [])),
+            fp.get("value_differs", 0))
+    elif fp.get("verdict") == "not-comparable":
+        detail += "  fcall=n/c"
     lc = r.get("load_controls") or {}
     if lc.get("verdict") == "identical":
         detail += "  loadctl=ok(%d)" % lc.get("ets_records", 0)
@@ -851,6 +861,9 @@ for dev in devices:
     if verdict == "identical" and props.get("verdict") == "differs" and not row.get("expect_props"):
         verdict = "differs"
         detail += "  (property writes differ)"
+    if verdict == "identical" and fp.get("verdict") == "differs":
+        verdict = "differs"
+        detail += "  (function property calls differ)"
     print(FMT % (dev, r.get("system") or "-", verdict, cov_text, conf_text, detail))
     shown = conf.get("mismatches", [])
     for m in shown[:20]:

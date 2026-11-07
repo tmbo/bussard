@@ -177,6 +177,41 @@ fn placed_ranges(set: &BTreeSet<usize>) -> Vec<[usize; 2]> {
 /// dump has no device, and the offline oracle compares against that capture.
 const DUMP_NOMINAL_MAX_APDU: u16 = 233;
 
+/// The `PID_MAX_APDU_LENGTH` of a System 7 device (issue #946): 15 octets,
+/// which the Berker/Hager 0701 capture shows (`M-0006_A-E00D-01-28AB-O0009`,
+/// `PID_MAX_APDU_LENGTH` = `000f`, the declared writes sent ten elements per
+/// request).
+const DUMP_SYS7_MAX_APDU: u16 = 15;
+
+/// The APDU limit the dump splits a property write under: the executor
+/// splits at the negotiated `PID_MAX_APDU_LENGTH`
+/// ([`bussard_download::flash::property_write_requests`] with the
+/// connection's value); the dump has no device and assumes the reference
+/// device of its system, 15 octets on System 7, 233 otherwise.
+fn dump_max_apdu(plan: &FlashPlan) -> u16 {
+    if plan.is_sys7() {
+        DUMP_SYS7_MAX_APDU
+    } else {
+        DUMP_NOMINAL_MAX_APDU
+    }
+}
+
+/// The object part of a dump property or function-property record: the
+/// index for the plain services, type and 1-based instance for the extended
+/// ones.
+fn object_record(object: &bussard_download::PropObject) -> Value {
+    match object {
+        bussard_download::PropObject::Index(index) => json!({ "object": index }),
+        bussard_download::PropObject::Type {
+            object_type,
+            occurrence,
+        } => json!({
+            "object_type": object_type,
+            "instance": u32::from(*occurrence) + 1,
+        }),
+    }
+}
+
 /// The wire writes of a Data Secure security-object step as `plan.json`
 /// property records (`knxtrace imgdiff` aligns them with ETS's
 /// `properties.json`, issue #156). A group key table value is reduced to the
@@ -447,8 +482,9 @@ pub fn write_dump(
             // one record per request as the executor splits it
             // ([`bussard_download::flash::property_write_requests`]: at most
             // 15 elements per plain request, 255 per extended one, within the
-            // nominal APDU). A System B write of one element keeps the
-            // label-only record the oracle rows were recorded with.
+            // APDU the dump assumes for the system, [`dump_max_apdu`]). A
+            // System B write of one element keeps the label-only record the
+            // oracle rows were recorded with.
             FlashStep::WriteProp {
                 object,
                 prop_id,
@@ -463,24 +499,13 @@ pub fn write_dump(
                     *start_element,
                     *count,
                     value.len(),
-                    DUMP_NOMINAL_MAX_APDU,
+                    dump_max_apdu(plan),
                 );
                 let records: Vec<Value> = requests
                     .into_iter()
                     .map(|request| {
                         let chunk = value.get(request.octets).unwrap_or_default();
-                        let mut prop = match object {
-                            bussard_download::PropObject::Index(index) => {
-                                json!({ "object": index })
-                            }
-                            bussard_download::PropObject::Type {
-                                object_type,
-                                occurrence,
-                            } => json!({
-                                "object_type": object_type,
-                                "instance": u32::from(*occurrence) + 1,
-                            }),
-                        };
+                        let mut prop = object_record(object);
                         prop["pid"] = json!(prop_id);
                         prop["start_element"] = json!(request.start);
                         prop["count"] = json!(request.count);
@@ -496,6 +521,22 @@ pub fn write_dump(
                     Ok([one]) => record["property"] = one,
                     Err(records) => record["properties"] = json!(records),
                 }
+            }
+            // A function property call (issue #946), as the wire carries it:
+            // by index on `A_FunctionPropertyCommand`, by type on
+            // `A_FunctionPropertyExt_Command` (instance 1-based). `knxtrace
+            // imgdiff` compares the `function_property` record against the
+            // captured calls of either form.
+            FlashStep::InvokeFunctionProp {
+                object,
+                prop_id,
+                data,
+            } => {
+                let mut call = object_record(object);
+                call["pid"] = json!(prop_id);
+                call["length"] = json!(data.len());
+                call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                record["function_property"] = call;
             }
             // A System B write to an object named by type (issue #948), one
             // record per request as the executor splits it: on the extended

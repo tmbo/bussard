@@ -565,6 +565,27 @@ pub enum LoadOp {
         /// `WriteAccess`: the access level a write needs.
         write_access: Option<u32>,
     },
+    /// `<LdCtrlInvokeFunctionProp …>`: call a function property of an
+    /// interface object with the op's `InlineData` as its input, and check the
+    /// state the device answers (issue #946). By index it is one
+    /// `A_FunctionPropertyCommand` answered by `A_FunctionPropertyState_Response`
+    /// (KNX 3/3/7 §3.4.7.1, return code 00h = success per §3.4.7.3); by type
+    /// it is the extended `A_FunctionPropertyExtCommand` (§3.4.8.1). ETS calls
+    /// object 5 PID 52 with `04` and `10` on the Berker/Hager 0701 programs
+    /// (`captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults`, frames
+    /// 176 and 212) and object type 65281 PID 208 with `FF` on a Gira 07B0.
+    InvokeFunctionProp {
+        /// Object index (`ObjIdx`), when addressed by index.
+        obj_idx: Option<u32>,
+        /// Object type (`ObjType`), when addressed by type.
+        obj_type: Option<u32>,
+        /// `Occurrence`: which object of `ObjType` (absent = the first, 0).
+        occurrence: Option<u32>,
+        /// Property id (`PropId`).
+        prop_id: Option<u32>,
+        /// The function's input (`InlineData`), absent when the op has none.
+        inline_data: Option<Vec<u8>>,
+    },
     /// `<LdCtrlMerge MergeId=…>`: a splice marker in a **master-template**
     /// `Load` procedure (`knx_master.xml`). It is not an on-wire operation: when
     /// a merged application is assembled against the master template, each
@@ -3035,6 +3056,13 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             read_access: u(b"ReadAccess"),
             write_access: u(b"WriteAccess"),
         },
+        b"LdCtrlInvokeFunctionProp" => LoadOp::InvokeFunctionProp {
+            obj_idx: u(b"ObjIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
+            prop_id: u(b"PropId"),
+            inline_data: get(m, b"InlineData").and_then(decode_hex_bytes),
+        },
         b"LdCtrlMerge" => LoadOp::Merge {
             merge_id: s(b"MergeId"),
         },
@@ -3885,6 +3913,44 @@ mod tests {
             write_access: Some(15),
         }));
         assert!(!ops.iter().any(|op| matches!(op, LoadOp::Raw { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_invoke_function_prop_is_typed()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // `LdCtrlInvokeFunctionProp` parses as a typed call by index (the
+        // Berker/Hager 0701 form) and by type (the Gira 07B0 form), not a
+        // Raw op the planner refuses (issue #946).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure>
+           <LdCtrlInvokeFunctionProp AppliesTo="full,grp" ObjIdx="5" PropId="52" InlineData="04" />
+           <LdCtrlInvokeFunctionProp AppliesTo="all" ObjType="65281" PropId="208" InlineData="FF" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let lp = &app.load_procedures[0];
+        assert_eq!(
+            lp.ops,
+            vec![
+                LoadOp::InvokeFunctionProp {
+                    obj_idx: Some(5),
+                    obj_type: None,
+                    occurrence: None,
+                    prop_id: Some(52),
+                    inline_data: Some(vec![0x04]),
+                },
+                LoadOp::InvokeFunctionProp {
+                    obj_idx: None,
+                    obj_type: Some(65281),
+                    occurrence: None,
+                    prop_id: Some(208),
+                    inline_data: Some(vec![0xFF]),
+                },
+            ]
+        );
+        assert_eq!(lp.applies_to[0].as_deref(), Some("full,grp"));
         Ok(())
     }
 
