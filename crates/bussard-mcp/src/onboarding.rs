@@ -498,7 +498,7 @@ impl SetupMcp {
             Err(SetupError::PasswordRequired) => return password_required(log),
             Err(err) => {
                 return failure(
-                    format!("The setup failed: {}", setup::products::error_chain(&err)),
+                    format!("The setup failed: {}", bussard_service::chain(&err)),
                     log,
                 );
             }
@@ -595,8 +595,7 @@ impl SetupMcp {
         }
         let state = crate::build_state(&config).map_err(|e| format!("{e:#}"))?;
         let instance = crate::instances::register(&dir);
-        let service = BusService::open(config.connection.clone(), config.write_policy())
-            .map_err(|e| e.to_string())?;
+        let service = BusService::open(config.connection.clone(), config.write_policy())?;
         if service.gate() == Some(bussard_transport::write_gate::WriteGate::OptedIn) {
             tracing::warn!(
                 "{}",

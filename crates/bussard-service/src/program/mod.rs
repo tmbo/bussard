@@ -21,44 +21,22 @@ pub mod read;
 pub mod report;
 pub mod resident;
 
+use crate::ServiceError;
+
 pub use crate::observer::{
     Answer, Ask, Declined, Event, Note, Observer, ProgressSink, Prompt, Question, Step, ask,
 };
 
-/// An error and its sources, joined with `": "` (anyhow's `{:#}`).
-pub fn chain(err: &dyn std::error::Error) -> String {
-    let mut text = err.to_string();
-    let mut source = err.source();
-    while let Some(cause) = source {
-        text.push_str(": ");
-        text.push_str(&cause.to_string());
-        source = cause.source();
-    }
-    text
-}
+pub use crate::util::chain;
 
-/// A file a dry run reads or writes that failed, with what was being done.
-#[derive(Debug, thiserror::Error)]
-#[error("{context}")]
-pub struct FileError {
-    /// What was being done (`writing <path>`).
-    pub context: String,
-    /// The failure.
-    #[source]
-    pub source: Box<dyn std::error::Error + Send + Sync>,
-}
-
-/// Adds a [`FileError`] context to a failure.
+/// Adds a [`ServiceError::Context`] to a failure.
 pub(crate) trait Ctx<T> {
     /// The failure, under the context `what` names.
-    fn ctx(self, what: impl FnOnce() -> String) -> Result<T, FileError>;
+    fn ctx(self, what: impl FnOnce() -> String) -> Result<T, ServiceError>;
 }
 
 impl<T, E: std::error::Error + Send + Sync + 'static> Ctx<T> for Result<T, E> {
-    fn ctx(self, what: impl FnOnce() -> String) -> Result<T, FileError> {
-        self.map_err(|err| FileError {
-            context: what(),
-            source: Box::new(err),
-        })
+    fn ctx(self, what: impl FnOnce() -> String) -> Result<T, ServiceError> {
+        self.map_err(|err| ServiceError::context(what(), err))
     }
 }

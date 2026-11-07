@@ -170,8 +170,6 @@ fn run_error(err: RunError) -> anyhow::Error {
     match err {
         RunError::Session(err) => err.into(),
         RunError::Mgmt(err) => err.into(),
-        RunError::Facts { address, source } => anyhow::Error::from(source)
-            .context(format!("describing the interface objects of {address}")),
         other => anyhow::Error::new(other),
     }
 }

@@ -546,20 +546,6 @@ pub struct InterfaceReadPlan {
     pub rows: Option<Vec<crate::property_plan::PropertyRow>>,
 }
 
-/// Why [`read_and_plan`] has no plan.
-#[derive(Debug, thiserror::Error)]
-pub enum ReadAndPlanError {
-    /// The session or the read failed.
-    #[error(transparent)]
-    Service(#[from] crate::ServiceError),
-    /// The device has no KNXnet/IP parameter object.
-    #[error(
-        "devices/{0}.toml has a [knxnet] table, but {0} has no KNXnet/IP parameter object \
-         (interface object type 11): it is not an IP interface, or not this one"
-    )]
-    NotAnInterface(IndividualAddress),
-}
-
 /// Reads the interface in one management session on `service` (with
 /// `options`) and plans `req.config` against it: `bussard plan`/`apply` of
 /// an interface and the MCP `knx_plan_device`/`knx_apply_device` pre-flight.
@@ -568,12 +554,12 @@ pub enum ReadAndPlanError {
 /// # Errors
 ///
 /// The session or the read failed, or the device has no KNXnet/IP parameter
-/// object.
+/// object ([`ServiceError::Refused`](crate::ServiceError::Refused)).
 pub async fn read_and_plan(
     service: &crate::BusService,
     options: &crate::L4Options,
     req: InterfaceRequest<'_>,
-) -> Result<InterfaceReadPlan, ReadAndPlanError> {
+) -> Result<InterfaceReadPlan, crate::ServiceError> {
     let (read, rows) = service
         .with_l4(req.target, options, async |l4| {
             let read = read_interface(l4, req.facts, req.device)
@@ -587,7 +573,11 @@ pub async fn read_and_plan(
         })
         .await?;
     let Some(knxnet) = &read.knxnet else {
-        return Err(ReadAndPlanError::NotAnInterface(req.target));
+        return Err(crate::ServiceError::Refused(format!(
+            "devices/{0}.toml has a [knxnet] table, but {0} has no KNXnet/IP parameter object \
+             (interface object type 11): it is not an IP interface, or not this one",
+            req.target
+        )));
     };
     let plan = plan_interface(req.target, req.config, knxnet, read.tunnel_slots, req.link);
     Ok(InterfaceReadPlan { read, plan, rows })

@@ -10,10 +10,11 @@ use bussard_model::history::{History, SnapshotId, SnapshotReason};
 use bussard_model::{Model, Severity};
 use bussard_project::keystore::{ImportReport, KeyStore, SaveOutcome};
 
-use super::products::{self, error_chain};
+use super::products;
 use super::skeleton::{self, KEYRING_PASSWORD_ENV};
 use super::{Context as _, SetupError};
 use crate::observer::{ProgressSink, Prompt};
+use crate::util::chain;
 
 /// The environment variable the project password is read from.
 pub const PROJECT_PASSWORD_ENV: &str = "BUSSARD_PROJECT_PASSWORD";
@@ -467,7 +468,7 @@ pub fn import_neighbour(project: &Path, dir: &Path, out: &mut dyn ProgressSink) 
                 Err(err) => out.warn(&format!(
                     "warning: the ETS keyring {} was not imported into the key store: {}",
                     file.display(),
-                    error_chain(&err)
+                    chain(&err)
                 )),
             }
         }

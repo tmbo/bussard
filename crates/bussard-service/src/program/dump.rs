@@ -28,7 +28,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use super::{Ctx, FileError};
+use super::Ctx;
+use crate::ServiceError;
 use bussard_download::{FlashPlan, FlashStep, ImageRef, trace};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -93,7 +94,7 @@ fn write_file(
     step: usize,
     suffix: &str,
     bytes: &[u8],
-) -> Result<String, FileError> {
+) -> Result<String, ServiceError> {
     let mut name = format!("{stem}{suffix}");
     if !used.insert(name.clone()) {
         name = format!("{stem}_s{step}{suffix}");
@@ -118,7 +119,7 @@ fn image_record(
     object: Option<u32>,
     offset: Option<u32>,
     part: Option<(usize, usize)>,
-) -> Result<Value, FileError> {
+) -> Result<Value, ServiceError> {
     let whole = plan.image_bytes(&image.segment_id).unwrap_or_default();
     // A System 7 allocation that holds a part of its segment's image (issue
     // #413) streams only that part, at its own address: dump the part, its
@@ -293,7 +294,7 @@ pub fn write_dump(
     device_mask: u16,
     plan: &FlashPlan,
     table_images: &BTreeMap<u32, Vec<u8>>,
-) -> Result<(), FileError> {
+) -> Result<(), ServiceError> {
     std::fs::create_dir_all(dir).ctx(|| format!("creating {}", dir.display()))?;
     let labels = trace(plan);
     let salt = std::env::var(ORACLE_SALT_ENV)

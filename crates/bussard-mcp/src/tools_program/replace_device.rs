@@ -171,8 +171,7 @@ impl BussardMcp {
         let target = parse_address(address)?;
         let model = self.state().model.reload();
         let dir = self.state().dir.clone();
-        let replacement =
-            Replacement::from_model(&model, &dir, target, false).map_err(|e| e.to_string())?;
+        let replacement = Replacement::from_model(&model, &dir, target, false)?;
         if bussard_service::secure::model_activated(Some(&model), target) {
             return Err(format!(
                 "{target} is KNX Data Secure-activated in the model. A replacement arrives \

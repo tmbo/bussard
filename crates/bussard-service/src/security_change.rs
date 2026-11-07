@@ -381,17 +381,6 @@ fn update_cached_flags(dir: &std::path::Path, target: IndividualAddress, value: 
     }
 }
 
-/// Why [`record_security_flags`] could not update the lock.
-#[derive(Debug, thiserror::Error)]
-pub enum RecordFlagsError {
-    /// The model did not load.
-    #[error("loading the model to record the security flags: {0}")]
-    Load(#[from] bussard_model::LoadError),
-    /// The model did not save.
-    #[error("saving the security flags to bussard.lock: {0}")]
-    Save(#[from] bussard_model::SaveError),
-}
-
 /// Records the group-object security flags a verified secured write put on
 /// `device` (PID 61, `secured`: the objects flagged `0x03`) as the `secure`
 /// flag of its linked com-objects in the lock (issue #331), the way
@@ -409,8 +398,10 @@ pub fn record_security_flags(
     dir: &std::path::Path,
     device: IndividualAddress,
     secured: &BTreeSet<u16>,
-) -> Result<bool, RecordFlagsError> {
-    let mut model = Model::load(dir)?;
+) -> Result<bool, crate::ServiceError> {
+    let mut model = Model::load(dir).map_err(|e| {
+        crate::ServiceError::because("loading the model to record the security flags", e)
+    })?;
     let linked: BTreeSet<u16> = model
         .links
         .links
@@ -435,7 +426,9 @@ pub fn record_security_flags(
         }
     }
     if changed {
-        model.save(dir)?;
+        model.save(dir).map_err(|e| {
+            crate::ServiceError::because("saving the security flags to bussard.lock", e)
+        })?;
     }
     Ok(changed)
 }

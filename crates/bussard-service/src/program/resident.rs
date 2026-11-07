@@ -33,7 +33,8 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use super::{Ctx, FileError};
+use super::Ctx;
+use crate::ServiceError;
 use bussard_download::{FlashPlan, ResidentObject, ResidentState};
 use bussard_mgmt::LoadState;
 use bussard_mgmt::load::McbEntry;
@@ -77,13 +78,13 @@ pub struct Recorded {
 }
 
 /// Decodes a hex string: an odd length or a non-hex digit is an error.
-fn hex(text: &str) -> Result<Vec<u8>, FileError> {
+fn hex(text: &str) -> Result<Vec<u8>, ServiceError> {
     bussard_model::text::from_hex(text.trim()).ctx(|| format!("hex {text:?}"))
 }
 
 impl Recorded {
     /// Reads a `--resident` file.
-    pub fn read(path: &Path) -> Result<Recorded, FileError> {
+    pub fn read(path: &Path) -> Result<Recorded, ServiceError> {
         let text = std::fs::read_to_string(path)
             .ctx(|| format!("reading the recorded device state {}", path.display()))?;
         let recorded: RecordedState = serde_json::from_str(&text)
@@ -92,7 +93,7 @@ impl Recorded {
     }
 
     /// Builds the probe state and the MCB entries from the parsed file.
-    fn from_state(recorded: RecordedState) -> Result<Recorded, FileError> {
+    fn from_state(recorded: RecordedState) -> Result<Recorded, ServiceError> {
         let objects = recorded
             .objects
             .iter()

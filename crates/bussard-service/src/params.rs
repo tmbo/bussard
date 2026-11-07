@@ -34,15 +34,11 @@ use bussard_model::schema::{Device, ProductEntry};
 use bussard_model::{IndividualAddress, Model};
 use bussard_prod::{AppSelection, ApplicationProgram, ProductCatalog, ProductData};
 
+use crate::ServiceError;
 use crate::util::chain;
 
 /// The retained product store under a model directory (issue #228).
 pub const PRODUCTS_DIR: &str = "products";
-
-/// Why the product data for a device could not be resolved.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{0}")]
-pub struct ProductError(pub String);
 
 /// The `--product` / `--application` selection of a command.
 #[derive(Debug, Clone, Copy, Default)]
@@ -185,9 +181,9 @@ pub fn verified_path(
     dir: &Path,
     what: &str,
     entry: &ProductEntry,
-) -> Result<PathBuf, ProductError> {
+) -> Result<PathBuf, ServiceError> {
     bussard_prod::product_model::verified_archive(dir, what, entry)
-        .map_err(|e| ProductError(chain(&e)))
+        .map_err(|e| ServiceError::Refused(chain(&e)))
 }
 
 /// The archive a model device's product data comes from: the entry its lock
@@ -196,7 +192,7 @@ pub fn verified_path(
 /// # Errors
 ///
 /// The pinned archive is missing or its content changed.
-pub fn device_archive(dir: &Path, device: &Device) -> Result<Option<PathBuf>, ProductError> {
+pub fn device_archive(dir: &Path, device: &Device) -> Result<Option<PathBuf>, ServiceError> {
     let Some(entry) = &device.lock.product_entry else {
         return Ok(None);
     };
@@ -210,7 +206,7 @@ pub fn device_archive(dir: &Path, device: &Device) -> Result<Option<PathBuf>, Pr
 /// # Errors
 ///
 /// A matching entry's archive is missing or changed.
-pub fn archive_for_order(dir: &Path, order: &str) -> Result<Option<PathBuf>, ProductError> {
+pub fn archive_for_order(dir: &Path, order: &str) -> Result<Option<PathBuf>, ServiceError> {
     let want = bussard_prod::normalize_order_number(order);
     let entries = bussard_model::lock_products::lock_entries(dir);
     let mut matching = entries.iter().filter(|e| {
@@ -243,18 +239,18 @@ pub fn resolve_product(
     target: IndividualAddress,
     missing: MissingProduct,
     on_parse: Option<ParseHook>,
-) -> Result<ProductLookup, ProductError> {
+) -> Result<ProductLookup, ServiceError> {
     let (explicit, application) = (selection.product, selection.application);
     let model_device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
     let device_product = model_device.and_then(|d| d.product.as_ref());
     let order = device_product.and_then(|p| p.order_number.clone());
-    let refused = |err: ProductError| match missing {
+    let refused = |err: ServiceError| match missing {
         MissingProduct::Refuse => Err(err),
         MissingProduct::Warn => Ok(ProductLookup {
             source: None,
-            warning: Some(err.0),
+            warning: Some(err.to_string()),
         }),
     };
     // The archive bussard.lock pins for the device (issue #228), verified; a
@@ -284,9 +280,9 @@ pub fn resolve_product(
     // every choice and every refusal reads as before.
     let app_ref = device_product.and_then(|p| p.application_ref.as_deref());
     let read_error = |e: bussard_prod::ProdError| {
-        ProductError(format!("reading product data from {}: {e}", path.display()))
+        ServiceError::Refused(format!("reading product data from {}: {e}", path.display()))
     };
-    let app_error = |e: ProductError| ProductError(format!("{}: {e}", path.display()));
+    let app_error = |e: ServiceError| ServiceError::Refused(format!("{}: {e}", path.display()));
     let found = |product, app_id| {
         Ok(ProductLookup {
             source: Some(ProductSource { product, app_id }),
@@ -371,13 +367,13 @@ fn select_app(
     application: Option<&str>,
     device_product: Option<&bussard_model::schema::Product>,
     order: Option<&str>,
-) -> Result<String, ProductError> {
+) -> Result<String, ServiceError> {
     if let Some(id) = application {
         let candidates: Vec<&ApplicationProgram> = product.applications.iter().collect();
         return select_application(&candidates, Some(id))
             .map(|a| a.id.clone())
             .map_err(|_| {
-                ProductError(format!("no application program {id:?} in the product data"))
+                ServiceError::Refused(format!("no application program {id:?} in the product data"))
             });
     }
     if let Some(wanted) = device_product.and_then(|p| p.application_ref.as_deref()) {
@@ -393,7 +389,7 @@ fn select_app(
     }
     match product.applications.as_slice() {
         [only] => Ok(only.id.clone()),
-        apps => Err(ProductError(format!(
+        apps => Err(ServiceError::Refused(format!(
             "the product data has {} application programs; pass --application to choose one",
             apps.len()
         ))),

@@ -193,10 +193,7 @@ impl BussardMcp {
     ) -> Result<Vec<(LineOutcome, Vec<String>)>, String> {
         let (_, service, _) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| super::chain(&e))?;
+        let source = service.checked_source(false).await?;
         let material = |address: IndividualAddress| self.plan_material(address, model);
         let tunnel = |secured: bool| self.admitted_tunnel(model, secured);
         let visit = LineVisit {
