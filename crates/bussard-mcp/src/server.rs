@@ -21,12 +21,11 @@ use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::admission::Admission;
-use bussard_service::describe;
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
-    DptOverridePolicy, ServiceError, WriteCheck, WriteRefusal, WriteValue, group_key_for,
-    prepare_group_write,
+    DptOverridePolicy, ServiceError, WriteCheck, WriteRefusal, WriteValue, prepare_group_write,
 };
+use bussard_service::{describe, group};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
@@ -166,35 +165,6 @@ impl BussardMcp {
     ) -> Self {
         self.enroll = crate::tools_enroll::EnrollJobs::with_timeouts(timeouts);
         self
-    }
-
-    /// Resolves an unknown sender admission by reading the receivers' PID 54
-    /// once per server lifetime (issue #316, see
-    /// [`bussard_service::admission::resolve_unknown`]). The tables read are
-    /// recorded in the lock.
-    async fn resolve_admission(
-        &self,
-        service: &bussard_service::BusService,
-        verdict: impl Fn(&bussard_service::admission::LiveTables) -> Admission,
-    ) -> bussard_service::admission::Resolved {
-        let keys = bussard_service::secure::ToolKeys::load(ToolKeySource {
-            keyring: self.state.keyring.as_deref(),
-            tool_key: None,
-        })
-        .unwrap_or_default();
-        // Recorded as adopt and a verified apply record it: evidence about the
-        // device, not a model edit.
-        let dir = Some(self.state.dir.as_path());
-        // Management calls are sequential (issue #215): the read opens its
-        // own lease, so the warm connection is released first.
-        let mut warm = self.warm.lock().await;
-        warm.release().await;
-        let mut live = self.admission_tables.lock().await;
-        let resolved =
-            bussard_service::admission::resolve_unknown(service, dir, &keys, &mut live, verdict)
-                .await;
-        drop(warm);
-        resolved
     }
 
     /// The shared state (for tests and the runner).
@@ -842,22 +812,9 @@ impl BussardMcp {
         // server's `--keyring`, or `secure: true` in the model) is read with a
         // secured GroupValueRead; a secured GA without a key is refused.
         let model = self.state.model.current();
-        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
-            Ok(keys) => keys,
-            Err(reason) => {
-                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-            }
-        };
-        let key = match group_key_for(Some(&model), ga, keys.as_deref()) {
+        let key = match group::read_key(Some(&model), ga, self.state.keyring.as_deref()) {
             Ok(key) => key,
-            Err(err) => {
-                return ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": false,
-                    "refused": true,
-                    "reason": crate::secure_group::no_key_reason(&err),
-                }));
-            }
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
 
         let Some(service) = self.state.bus.service() else {
@@ -879,54 +836,30 @@ impl BussardMcp {
         }
 
         // Sender admission (issue #297): a responder that does not admit the
-        // tunnel address never answers a secured read.
-        let sender = bussard_bus::ops::group_source(service.handle());
-        let admission = match &key {
-            Some(_) => {
-                let evidence =
-                    match crate::secure_group::admission_evidence(self.state.keyring.as_deref()) {
-                        Ok(evidence) => evidence,
-                        Err(reason) => {
-                            return ok(
-                                json!({ "ga": ga.to_string(), "ok": false, "reason": reason }),
-                            );
-                        }
-                    };
-                // An unknown verdict reads the responders' PID 54 first (#316).
-                Some(
-                    self.resolve_admission(service, |live| {
-                        bussard_service::admission::check_sender_admission(
-                            Some(&model),
-                            ga,
-                            sender,
-                            &evidence,
-                            live,
-                        )
-                    })
-                    .await,
-                )
-            }
-            None => None,
-        };
-        let note = resolved_note(admission.as_ref());
-        let admission = admission.map(|r| r.admission);
-        if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
-            return ok(admission_refusal_json(ga, refused));
-        }
-
-        // Rate limit + concurrency cap. Hold the permit across the whole read.
-        let _permit = self.state.read_limiter.acquire().await;
-
-        // The shared read implementation: subscribe, send (completion-tracked),
-        // skip the L_Data.con echo, decode against the GA's DPT (#32, #30).
-        let dpt = model.groups.groups.get(&ga).and_then(|g| g.dpt);
-        match service
-            .read_group(ga, dpt, key.as_ref(), READ_RESPONSE_TIMEOUT)
-            .await
+        // tunnel address never answers a secured read; an unknown verdict
+        // reads the responders' PID 54 first (#316). Rate limit + concurrency
+        // cap across the whole read. The shared read implementation:
+        // subscribe, send (completion-tracked), skip the L_Data.con echo,
+        // decode against the GA's DPT (#32, #30).
+        let secured = key.is_some();
+        let outcome = match group::read(
+            service,
+            &self.group_context(&model),
+            ga,
+            key,
+            READ_RESPONSE_TIMEOUT,
+        )
+        .await
         {
-            Ok(Some(read)) => {
-                let outcome = read.outcome;
-                let (display, typed) = match &outcome.value {
+            Ok(outcome) => outcome,
+            Err(err) => return ok(group_error_json(ga, &err)),
+        };
+        let admission = outcome.admission.as_ref();
+        match outcome.result {
+            Err(refused) => ok(admission_refusal_json(ga, &refused)),
+            Ok(Ok(Some(read))) => {
+                let read_outcome = read.outcome;
+                let (display, typed) = match &read_outcome.value {
                     Some(v) => (Some(v.to_string()), tools::typed_value_json(v)),
                     None => (None, Value::Null),
                 };
@@ -935,26 +868,26 @@ impl BussardMcp {
                     "ok": true,
                     "value": display,
                     "typed": typed,
-                    "dpt": outcome.dpt.map(|d| d.to_string()),
-                    "source": outcome.source.to_string(),
+                    "dpt": read_outcome.dpt.map(|d| d.to_string()),
+                    "source": read_outcome.source.to_string(),
                     "secured": read.secured,
-                    "admission": admission.as_ref().map(Admission::label),
+                    "admission": admission.map(Admission::label),
                 }))
             }
-            Ok(None) => ok(json!({
+            Ok(Ok(None)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "timed_out": true,
-                "secured": key.is_some(),
-                "reason": if key.is_some() {
-                    bussard_service::admission::secured_read_timeout(ga, sender)
+                "secured": secured,
+                "reason": if secured {
+                    bussard_service::admission::secured_read_timeout(ga, outcome.sender)
                 } else {
                     "no response within timeout".to_string()
                 },
-                "admission": admission.as_ref().map(Admission::label),
-                "note": note,
+                "admission": admission.map(Admission::label),
+                "note": outcome.note,
             })),
-            Err(err) => ok(json!({
+            Ok(Err(err)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": false,
                 "reason": format!("bus send failed: {err}"),
@@ -1144,11 +1077,9 @@ impl BussardMcp {
         // force on the very next write rather than after a restart.
         let model = self.state.model.current();
         // KNX Data Secure group keys from the server's `--keyring` (issue #172).
-        let keys = match crate::secure_group::group_keys(self.state.keyring.as_deref()) {
+        let keys = match group::load_keys(self.state.keyring.as_deref()) {
             Ok(keys) => keys,
-            Err(reason) => {
-                return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-            }
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
 
         // The shared write policy (bussard_service::write). Protected GAs are
@@ -1165,7 +1096,7 @@ impl BussardMcp {
             dpt: args.dpt.as_deref(),
             dpt_policy: DptOverridePolicy::MustMatchModel,
             force: false,
-            group_keys: keys.as_deref(),
+            group_keys: keys.as_ref(),
         };
         let write =
             match prepare_group_write(Some(&model), ga, WriteValue::Human(&args.value), &check) {
@@ -1194,48 +1125,18 @@ impl BussardMcp {
         }
 
         // Sender admission (issue #297): refuse a secured write the devices on
-        // the GA would discard, before anything is sent.
-        let admission = if write.is_secured() {
-            let evidence =
-                match crate::secure_group::admission_evidence(self.state.keyring.as_deref()) {
-                    Ok(evidence) => evidence,
-                    Err(reason) => {
-                        return ok(json!({ "ga": ga.to_string(), "ok": false, "reason": reason }));
-                    }
-                };
-            let sender = bussard_bus::ops::group_source(service.handle());
-            // E038 (issue #348): a tunnel-only secured GA whose devices admit
-            // no tunnelling address is refused while admit_tunnel_senders is
-            // off. An unknown verdict reads the receivers' PID 54 first, and
-            // a "not listed" there refuses too (issue #316).
-            Some(
-                self.resolve_admission(service, |live| {
-                    bussard_service::admission::check_tunnel_write(
-                        Some(&model),
-                        ga,
-                        sender,
-                        &evidence,
-                        live,
-                    )
-                })
-                .await,
-            )
-        } else {
-            None
+        // the GA would discard, before anything is sent. The rate limiter's
+        // spacing and concurrency cap are shared with reads. Sent once,
+        // completion-tracked against the gateway ACK; a transport failure
+        // surfaces as ok:false, an honest failure, not a silent success.
+        let outcome = match group::write(service, &self.group_context(&model), write).await {
+            Ok(outcome) => outcome,
+            Err(err) => return ok(group_error_json(ga, &err)),
         };
-        let note = resolved_note(admission.as_ref());
-        let admission = admission.map(|r| r.admission);
-        if let Some(refused) = admission.as_ref().filter(|a| a.is_refused()) {
-            return ok(admission_refusal_json(ga, refused));
-        }
-
-        // Share the read rate limiter (spacing + concurrency cap) with writes.
-        let _permit = self.state.read_limiter.acquire().await;
-
-        // Send once (completion-tracked against the gateway ACK). A transport
-        // failure surfaces as ok:false — an honest failure, not a silent success.
-        match service.send_prepared(write).await {
-            Ok(sent) => ok(json!({
+        let admission = outcome.admission.as_ref();
+        match outcome.result {
+            Err(refused) => ok(admission_refusal_json(ga, &refused)),
+            Ok(Ok(sent)) => ok(json!({
                 "ga": ga.to_string(),
                 "ok": true,
                 "confirmed": sent.confirmed,
@@ -1247,8 +1148,8 @@ impl BussardMcp {
                     bussard_service::admission::WRITE_RESULT_UNCONFIRMED
                 },
                 "secured": sent.write.is_secured(),
-                "admission": admission.as_ref().map(Admission::label),
-                "note": note,
+                "admission": admission.map(Admission::label),
+                "note": outcome.note,
                 "written": {
                     "address": ga.to_string(),
                     "name": sent.write.name,
@@ -1256,15 +1157,46 @@ impl BussardMcp {
                     "dpt": sent.write.dpt.map(|d| d.to_string()),
                 },
             })),
-            Err(refusal) => ok(write_refusal_json(ga, &refusal)),
+            Ok(Err(refusal)) => ok(write_refusal_json(ga, &refusal)),
         }
     }
 }
 
-/// The note of a secured write or read sent without admission evidence, with
-/// the reasons a PID 54 read failed (issues #297, #316).
-fn resolved_note(resolved: Option<&bussard_service::admission::Resolved>) -> Option<String> {
-    resolved.and_then(bussard_service::admission::Resolved::note)
+/// What a group read or write shares with this server: the model, the
+/// keyring, the lock, the PID 54 tables read in its lifetime, the warm
+/// connection and the rate limiter.
+impl BussardMcp {
+    fn group_context<'a>(&'a self, model: &'a bussard_model::Model) -> group::GroupContext<'a> {
+        group::GroupContext {
+            model: Some(model),
+            keyring: self.state.keyring.as_deref(),
+            lock_dir: Some(self.state.dir.as_path()),
+            live: &self.admission_tables,
+            warm: Some(&self.warm),
+            limiter: Some(&self.state.read_limiter),
+        }
+    }
+}
+
+/// The result of a group read or write that could not start: `ok: false`,
+/// the reason, and `refused: true` for a secured GA without a group key.
+fn group_error_json(ga: GroupAddress, err: &group::GroupError) -> Value {
+    match err {
+        group::GroupError::NoKey(err) => json!({
+            "ga": ga.to_string(),
+            "ok": false,
+            "refused": true,
+            "reason": crate::secure_group::no_key_reason(err),
+        }),
+        group::GroupError::Keys { source, .. } | group::GroupError::Evidence { source, .. } => {
+            json!({ "ga": ga.to_string(), "ok": false, "reason": bussard_service::program::chain(source) })
+        }
+        group::GroupError::ToolKeys(err) => json!({
+            "ga": ga.to_string(),
+            "ok": false,
+            "reason": bussard_service::program::chain(err),
+        }),
+    }
 }
 
 /// The result of a secured write or read refused for sender admission (issue
