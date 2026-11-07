@@ -638,15 +638,14 @@ impl ProductModels {
 /// The process-wide memo behind [`ProductModels`] (issue #339) and the file
 /// layout: a header, then the model.
 mod cache {
-    use std::collections::HashMap;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Arc, Mutex};
-    use std::time::SystemTime;
 
     use serde::{Deserialize, Serialize};
 
     use super::{MODEL_FORMAT, ProductModel};
+    use crate::memo::StampedMemo;
 
     /// The file layout; a file of another one is ignored and rebuilt.
     pub(super) const SCHEMA: u32 = 2;
@@ -677,37 +676,11 @@ mod cache {
     /// Drops the memo entry of `path`, so the next load reads the file.
     #[cfg(test)]
     pub(super) fn forget(path: &Path) {
-        if let Ok(mut memo) = MEMO.lock()
-            && let Some(map) = memo.as_mut()
-        {
-            map.remove(path);
-        }
+        MEMO.forget(path);
     }
 
-    /// The identity of a model file on disk: its length and modification
-    /// time. A rewrite changes at least one of them.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    struct Stamp {
-        len: u64,
-        mtime: SystemTime,
-    }
-
-    impl Stamp {
-        /// The stamp of the file at `path`, if it exists and has a time.
-        fn of(path: &Path) -> Option<Self> {
-            let meta = std::fs::metadata(path).ok()?;
-            Some(Self {
-                len: meta.len(),
-                mtime: meta.modified().ok()?,
-            })
-        }
-    }
-
-    /// One memoized model: the stamp it was read at and the model.
-    type MemoEntry = (Stamp, Arc<ProductModel>);
-
-    /// The memo, keyed by the model file's path.
-    static MEMO: Mutex<Option<HashMap<PathBuf, MemoEntry>>> = Mutex::new(None);
+    /// The memo of the models read, by file.
+    static MEMO: StampedMemo<Arc<ProductModel>> = StampedMemo::new();
 
     /// A model file's header: what must match this build and the file name
     /// for the model to be used.
@@ -749,21 +722,6 @@ mod cache {
         Some(format!("{{\"header\":{header}"))
     }
 
-    /// The memoized model of `path`, if memoized at `stamp`.
-    fn memo_get(path: &Path, stamp: Stamp) -> Option<Arc<ProductModel>> {
-        let memo = MEMO.lock().ok()?;
-        let (at, model) = memo.as_ref()?.get(path)?;
-        (*at == stamp).then(|| Arc::clone(model))
-    }
-
-    /// Memoizes `model` as the content of `path` at `stamp`.
-    fn memo_put(path: &Path, stamp: Stamp, model: &Arc<ProductModel>) {
-        if let Ok(mut memo) = MEMO.lock() {
-            memo.get_or_insert_with(HashMap::new)
-                .insert(path.to_path_buf(), (stamp, Arc::clone(model)));
-        }
-    }
-
     /// The model the file at `path` holds for `app_ref`, if its header
     /// matches.
     pub(super) fn read(path: &Path, app_ref: &str) -> Option<ProductModel> {
@@ -788,9 +746,7 @@ mod cache {
             let _ = std::fs::remove_file(&tmp);
             return Err(err);
         }
-        if let Some(stamp) = Stamp::of(path) {
-            memo_put(path, stamp, &Arc::new(model));
-        }
+        MEMO.put(path, Arc::new(model));
         Ok(())
     }
 
@@ -798,17 +754,12 @@ mod cache {
     /// memo, else read. `None` when the file is missing, outdated or
     /// unparsable.
     pub(super) fn load(path: &Path, app_ref: &str) -> Option<Arc<ProductModel>> {
-        let stamp = Stamp::of(path)?;
-        if let Some(model) = memo_get(path, stamp) {
-            return Some(model);
-        }
-        let model = Arc::new(read(path, app_ref)?);
-        count_read();
-        // Remember it only when the file did not change under the read.
-        if Stamp::of(path) == Some(stamp) {
-            memo_put(path, stamp, &model);
-        }
-        Some(model)
+        MEMO.get_or_try_insert(path, || -> Result<_, ()> {
+            let model = read(path, app_ref).ok_or(())?;
+            count_read();
+            Ok(Arc::new(model))
+        })
+        .ok()
     }
 }
 
