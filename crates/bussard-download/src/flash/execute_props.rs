@@ -76,6 +76,11 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
         else {
             continue;
         };
+        // A load-state transition is confirmed by the state the device
+        // answered, not read back as the value written (issue #947).
+        if step.load_state_control().is_some() {
+            continue;
+        }
         let elem = (value.len() / usize::from((*count).max(1))).max(1);
         let held = read_property_value(
             session.l4(),

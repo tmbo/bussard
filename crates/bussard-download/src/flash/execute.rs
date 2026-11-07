@@ -724,6 +724,31 @@ impl StepExecutor for SystemB<'_> {
                 && object.index().is_some_and(|obj_idx| {
                     !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                 }) => {}
+            // A procedure's own load-state transition of an object (issue
+            // #947, ise smart connect object 8): confirmed by the load state
+            // the device answers, as a `LoadCompleted` step is, and the
+            // object joins the post-flash load-state verify on completion.
+            // Sent to the object the op names, never redirected to the
+            // application object as an `Unload` naming an unlisted index is.
+            FlashStep::WriteProp {
+                object: super::PropObject::Index(index),
+                ..
+            } if step.load_state_control().is_some() => {
+                let obj = u8::try_from(*index).map_err(|_| {
+                    WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                        address: session.l4().target(),
+                        reason: format!("object index {index} exceeds the 8-bit index space"),
+                    })
+                })?;
+                if let Some((_, control)) = step.load_state_control() {
+                    write_load_control_resumable(session, obj, control).await?;
+                    if control == LoadControl::LoadCompleted
+                        && !self.completed_objects.contains(&obj)
+                    {
+                        self.completed_objects.push(obj);
+                    }
+                }
+            }
             // PID_MCB_TABLE is an array of 8-octet entries and the vendor
             // InlineData is padded to 10: ETS writes one 8-octet element per
             // request from `StartElement` (1.1.18 capture: `count=1 index=1

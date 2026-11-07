@@ -504,6 +504,58 @@ async fn test_write_property_value_splits_elements_to_the_apdu_budget() -> TestR
 }
 
 #[tokio::test]
+async fn test_write_property_value_writes_500_elements_past_element_255() -> TestResult {
+    // Issue #947: `Count="500"` four-octet elements to object 8 PID 64, the
+    // Jung Sonos-Gateway write. On a 65-octet APDU ETS sends 15 elements per
+    // request from element 1 to 496 (34 requests, ops 59 to 92 of the
+    // capture); the 12-bit start packs past 255, and the read-back verifies.
+    let device = MockDevice::new(ia("1.1.200")?).with_writable_property(8, 64, 4, &[0; 2000]);
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = connect(&gw).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    l4.set_max_apdu(Some(65));
+    let mut session = Session::from_connection(l4);
+    let value: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
+    bussard_download::write_property_value(
+        session.l4(),
+        PropObject::Index(8),
+        64,
+        1,
+        500,
+        &value,
+        true,
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    let dev = gw.with_device(ia("1.1.200")?, |d| d.clone())?;
+    assert_eq!(dev.property(8, 64), Some(&value[..]));
+    let writes: Vec<(u8, u16)> = dev
+        .requests
+        .iter()
+        .filter(|(apci, _)| *apci == 0x3D7)
+        .map(|(_, d)| (d[2] >> 4, u16::from_be_bytes([d[2] & 0x0F, d[3]])))
+        .collect();
+    let mut expected: Vec<(u8, u16)> = (0..33).map(|i| (15, 1 + 15 * i)).collect();
+    expected.push((5, 496));
+    assert_eq!(writes, expected);
+    // The dry run lists the same requests.
+    let planned: Vec<(usize, u16)> =
+        bussard_download::property_write_requests(PropObject::Index(8), 1, 500, 2000, 65)
+            .into_iter()
+            .map(|r| (r.count, r.start))
+            .collect();
+    let sent: Vec<(usize, u16)> = writes.iter().map(|(n, s)| (usize::from(*n), *s)).collect();
+    assert_eq!(planned, sent);
+    Ok(())
+}
+
+#[tokio::test]
 async fn test_flash_property_procedure_falls_back_when_ext_goes_unanswered() -> TestResult {
     // A device that T_ACKs the extended services and never answers them, and
     // whose object walk stops early: the object is found in PID_IO_LIST.

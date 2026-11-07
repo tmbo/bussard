@@ -684,6 +684,81 @@ pub fn write_dump(
 mod tests {
     use super::*;
 
+    /// A property-only plan (mask 0021) of one `LdCtrlWriteProp` of `count`
+    /// one-octet elements to `object` (`ObjIdx="3"` or `ObjType="11"`).
+    fn property_only_plan(
+        object: &str,
+        count: usize,
+    ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let data: String = (0..count).map(|i| format!("{:02X}", i % 251)).collect();
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+             <ApplicationProgram Id="M-0004_A-1" ApplicationNumber="22" ApplicationVersion="16"
+                MaskVersion="MV-0021" Name="IP">
+              <Static>
+               <LoadProcedures>
+                <LoadProcedure>
+                 <LdCtrlWriteProp {object} PropId="205" Count="{count}" InlineData="{data}" />
+                </LoadProcedure>
+               </LoadProcedures>
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        let app =
+            bussard_prod::application::parse_application_program("M-0004_A-1", xml.as_bytes())?;
+        Ok(bussard_download::plan_flash(
+            &app,
+            "1.1.200",
+            0x0021,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_prod::dynamic::DynamicMemo::new(&app),
+        )?)
+    }
+
+    /// The `(start_element, count)` of each property record `write_dump`
+    /// gives the plan's one step.
+    fn dumped_requests(
+        plan: &FlashPlan,
+        name: &str,
+    ) -> Result<Vec<(u64, u64)>, Box<dyn std::error::Error>> {
+        let dir = std::env::temp_dir().join(format!("bussard-dump-{name}-{}", std::process::id()));
+        write_dump(&dir, "1.1.200", 0x0021, plan, &BTreeMap::new())?;
+        let text = std::fs::read_to_string(dir.join("plan.json"))?;
+        let _ = std::fs::remove_dir_all(&dir);
+        let dump: Value = serde_json::from_str(&text)?;
+        let step = dump["steps"].get(0).ok_or("one step")?;
+        let records = match step.get("properties") {
+            Some(Value::Array(records)) => records.clone(),
+            _ => vec![step.get("property").ok_or("a property record")?.clone()],
+        };
+        Ok(records
+            .iter()
+            .map(|r| {
+                (
+                    r["start_element"].as_u64().unwrap_or(0),
+                    r["count"].as_u64().unwrap_or(0),
+                )
+            })
+            .collect())
+    }
+
+    #[test]
+    fn test_write_dump_splits_a_property_only_write_as_the_executor_does()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #947: a plain write of 20 elements goes out as 15 and 5, as
+        // `write_plain` sends it; by type on the extended service, 300
+        // one-octet elements as 224 and 76 within the nominal 233-octet APDU.
+        let plain = property_only_plan(r#"ObjIdx="3""#, 20)?;
+        assert_eq!(dumped_requests(&plain, "plain")?, vec![(1, 15), (16, 5)]);
+        let typed = property_only_plan(r#"ObjType="11""#, 300)?;
+        assert_eq!(dumped_requests(&typed, "typed")?, vec![(1, 224), (225, 76)]);
+        Ok(())
+    }
+
     #[test]
     fn test_file_safe_replaces_separators() {
         assert_eq!(file_safe("M-0004_A-1/RS 04"), "M-0004_A-1_RS_04");
