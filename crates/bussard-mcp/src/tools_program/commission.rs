@@ -31,16 +31,18 @@ use std::time::Instant;
 
 use bussard_model::Model;
 use bussard_model::history::SnapshotReason;
-use bussard_service::assign::{ProgrammingWait, hex, wait_for_programming_mode};
+use bussard_service::assign::hex;
 use bussard_service::commission::{
-    Identified, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed, forget_facts,
+    Identified, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed,
     identify_pressed, probe_line,
 };
 use bussard_service::line::WalkEvent;
+use bussard_service::program::assign::{AssignFlow, Stop as FlowStop};
 use bussard_service::setup::Collected;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::addressing::{AddressJob, assigned_notes};
 use super::{BussardMcp, ProgrammingTier, chain, put};
 
 /// The answers a paused job takes.
@@ -563,12 +565,9 @@ impl BussardMcp {
             let Some(tier) = state.programming.as_ref() else {
                 return;
             };
-            let segment = {
-                let _guard = tier.bus_lock.lock().await;
-                let mut warm = me.warm().lock().await;
-                warm.release().await;
-                me.commission_segment(&id, run, &stop).await
-            };
+            let segment = me
+                .on_bus(tier, me.commission_segment(&id, run, &stop))
+                .await;
             match segment {
                 Segment::Done(result) => {
                     tier.commissions().jobs.remove(&id);
@@ -621,22 +620,13 @@ impl BussardMcp {
                 Some("the programming tier is off".into()),
             ));
         };
-        let Some(service) = state.bus.service().cloned() else {
-            return Segment::Done(final_result(
-                &run,
-                false,
-                Some("the bus is not wired".into()),
-            ));
+        let (service, source) = match self.address_bus().await {
+            Ok(bus) => bus,
+            Err(reason) => return Segment::Done(final_result(&run, false, Some(reason))),
         };
-        let source = match service.checked_source(false).await {
-            Ok(source) => source,
-            Err(e) => {
-                return Segment::Done(final_result(
-                    &run,
-                    false,
-                    Some(format!("the source address check failed: {e}")),
-                ));
-            }
+        let flow = AssignFlow {
+            service: &service,
+            source,
         };
         let jobs = Arc::clone(&tier.jobs);
 
@@ -717,26 +707,25 @@ impl BussardMcp {
                     "device": device_json(target),
                 }),
             );
-            tier.jobs.step(job, "press_button");
-            tier.jobs.ask(
+            let mut observer = AddressJob {
+                jobs: &tier.jobs,
                 job,
-                Some(format!(
+                press: format!(
                     "Device {} of {}: press the programming button on {} (its LED usually \
                      lights up), then say done.",
                     cur.position,
                     cur.total,
                     who(target)
-                )),
-            );
-            let mut quiet = |_| {};
+                ),
+                check_gone: false,
+            };
             let waited = tokio::select! {
-                waited = wait_for_programming_mode(&service, source, &mut quiet) => waited,
+                waited = flow.wait_for_one(&mut observer) => waited,
                 () = stop.wait() => return Segment::Done(final_result(&run, true, None)),
             };
-            tier.jobs.ask(job, None);
             let current = match waited {
-                Ok(ProgrammingWait::One(current)) => current,
-                Ok(ProgrammingWait::Several(found)) => {
+                Ok(current) => current,
+                Err(FlowStop::Several(found)) => {
                     let list: Vec<String> = found.iter().map(ToString::to_string).collect();
                     let reason = format!(
                         "{} devices are in programming mode ({}); commissioning works on one \
@@ -750,7 +739,7 @@ impl BussardMcp {
                     );
                     return pause(run, "press_button", reason, question, Value::Null, false);
                 }
-                Ok(ProgrammingWait::Nothing { waited }) => {
+                Err(FlowStop::Nothing { waited }) => {
                     let reason = format!(
                         "No device entered programming mode within {} s. Nothing was written.",
                         waited.as_secs()
@@ -772,9 +761,7 @@ impl BussardMcp {
             };
 
             // identified
-            tier.jobs
-                .step(job, format!("identifying the device at {current}"));
-            let identified = match identify_pressed(&service, source, target, current).await {
+            let identified = match identify_pressed(&flow, target, current, &mut observer).await {
                 Ok(identified) => identified,
                 Err(e) => {
                     let reason = format!(
@@ -836,20 +823,10 @@ impl BussardMcp {
             }
 
             // assigned
-            tier.jobs
-                .step(job, format!("writing the address {}", target.address));
             let (outcome, readback) =
-                match assign_pressed(&service, source, target, &identified).await {
-                    Ok(assigned) => {
-                        forget_facts(&state.dir, target.address);
-                        let mut notes = assigned.warnings.clone();
-                        if assigned.still_in_programming_mode {
-                            notes.push(format!(
-                                "{} is still in programming mode after the assignment; ask the \
-                                 human to press its programming button once to leave it.",
-                                target.name
-                            ));
-                        }
+                match assign_pressed(&flow, &state.dir, target, &identified, &mut observer).await {
+                    Ok(labelled) => {
+                        let mut notes = assigned_notes(&labelled.assigned);
                         if matches!(identified.check, OrderCheck::NoModelNumber) {
                             notes.push(format!(
                                 "Assigned on the human's word: the model has no order number \
@@ -857,19 +834,16 @@ impl BussardMcp {
                                 target.name
                             ));
                         }
-                        let v = &assigned.identity;
+                        let v = &labelled.identity;
                         let readback = json!({
                             "verified": true,
                             "mask": v.mask.map(|m| format!("{m:04X}")),
                             "serial": v.serial.as_deref().map(hex),
                             "order_number": v.order,
-                            "programming_mode_cleared": assigned.programming_mode_cleared,
+                            "programming_mode_cleared": v.programming_mode_cleared,
                             "notes": notes,
                         });
-                        (
-                            Outcome::commissioned(target, assigned.label.clone()),
-                            readback,
-                        )
+                        (Outcome::commissioned(target, labelled.label), readback)
                     }
                     Err(e) => (
                         Outcome::failed(target, chain(&e)),

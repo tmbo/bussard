@@ -1,6 +1,6 @@
 //! `knx_add_device` (issue #749): add a new device from chat, the flow
 //! `bussard adopt` runs at the terminal, on the same functions
-//! ([`bussard_service::assign`] and [`bussard_service::adopt::flow`]).
+//! ([`bussard_service::program::adopt`], issue #902).
 //!
 //! Three steps, one job of the server's job table
 //! ([`crate::jobs::JobKind::Add`]):
@@ -28,66 +28,43 @@ use std::time::Instant;
 
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
-use bussard_service::BusService;
 use bussard_service::adopt::flow::{
-    ProductPlan, SelectedProduct, adopt_target, build_device, order_matches, product_plan,
-    selected_from_archive, useful_objects,
+    ProductPlan, SelectedProduct, product_plan, selected_from_archive, useful_objects,
 };
-use bussard_service::assign::{
-    ProgrammingWait, Verified, VerifyKey, hex, identify, in_programming_mode, probe_occupant,
-    still_in_programming_mode, verify_assignment_with, wait_for_programming_mode, write_address,
-    write_device_file,
-};
-use bussard_service::identity::SecureStatus;
-use bussard_service::secure::{SecureMaterial, ToolKeySource, ToolKeys};
-use bussard_service::setup::{Collected, DownloadAnswer, DownloadPrompt, SetupError};
+use bussard_service::assign::{AssignError, hex};
+use bussard_service::program::Question;
+use bussard_service::program::adopt::{self, Adopted, Keys, PlanRequest, Planned, RunRequest};
+use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::secure::{ToolKeySource, ToolKeys};
+use bussard_service::setup::Collected;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
+use super::addressing::{
+    AddressJob, Wording, Yes, assigned_notes, found_sentence, readback_json, refused,
+};
 use super::{BussardMcp, ProgrammingTier, chain, put};
 
 /// The question of the `press_button` step.
 const PRESS_BUTTON: &str = "Press the programming button on the new device (its LED usually \
     lights up), then say done.";
 
-/// One identified device waiting for the human's yes, by job id.
-#[derive(Debug, Clone)]
-pub(super) struct PendingAdd {
-    /// The device's address when it answered the programming-mode broadcast.
-    current: IndividualAddress,
-    /// The address it gets.
-    target: IndividualAddress,
-    /// The `address` argument of the first call.
-    address_arg: Option<String>,
-    /// The `order_number` argument of the first call.
-    order_arg: Option<String>,
-    /// The archive the `product` argument of the first call stored.
-    product_file: Option<std::path::PathBuf>,
-    /// What the identification read.
-    identified: Verified,
-    /// The keyring lists the device: adopted where it is, over A_SecureData.
-    secured: bool,
-    /// The order number the product data is looked up by.
-    order: Option<String>,
-    /// Where the product data comes from.
-    product: Option<ProductPlan>,
-    /// The digest the human's yes answers.
-    digest: String,
-    /// When the device was identified.
-    created: Instant,
-}
+/// How `knx_add_device` names the device in its refusals.
+const WORDING: Wording = Wording {
+    work: "adding",
+    device: "the new device",
+    all_but: "the new one",
+    subject: "the device",
+    tool: "knx_add_device",
+};
 
-/// What the identification established, before the digest.
+/// What the identification established: the plan of the adoption and where
+/// its product data comes from.
+#[derive(Debug, Clone)]
 struct Identification {
-    /// The address it answered at.
-    current: IndividualAddress,
-    /// The address it gets.
-    target: IndividualAddress,
-    /// What it reported.
-    identified: Verified,
-    /// The keyring lists it.
-    secured: bool,
-    /// The order number for the product data.
+    /// The adoption's plan (the identified device, its address).
+    planned: Planned,
+    /// The order number the product data is looked up by.
     order: Option<String>,
     /// Where the product data comes from.
     product: Option<ProductPlan>,
@@ -95,26 +72,45 @@ struct Identification {
     from_file: bool,
 }
 
+impl Identification {
+    /// What the device reported.
+    fn identified(&self) -> bussard_service::assign::Verified {
+        self.planned.identified.clone().unwrap_or_default()
+    }
+}
+
+/// One identified device waiting for the human's yes, by job id.
+#[derive(Debug, Clone)]
+pub(super) struct PendingAdd {
+    /// What the identification established.
+    id: Identification,
+    /// The `address` argument of the first call.
+    address_arg: Option<String>,
+    /// The `order_number` argument of the first call.
+    order_arg: Option<String>,
+    /// The archive the `product` argument of the first call stored.
+    product_file: Option<std::path::PathBuf>,
+    /// The digest the human's yes answers.
+    digest: String,
+    /// When the device was identified.
+    created: Instant,
+}
+
 /// The plan digest: the device (current and target address, serial, mask,
 /// manufacturer, order number, Secure), the product data it would get and the
 /// model's device list.
 fn add_digest(id: &Identification, model: &Model) -> String {
+    let (p, v) = (&id.planned, id.identified());
     let mut h = Sha256::new();
     put(&mut h, b"bussard-add-device-v1");
-    put(&mut h, &id.current.raw().to_be_bytes());
-    put(&mut h, &id.target.raw().to_be_bytes());
-    put(&mut h, id.identified.serial.as_deref().unwrap_or_default());
-    put(&mut h, &id.identified.mask.unwrap_or(0).to_be_bytes());
-    put(
-        &mut h,
-        &id.identified.manufacturer_id.unwrap_or(0).to_be_bytes(),
-    );
-    put(
-        &mut h,
-        id.identified.order.as_deref().unwrap_or("").as_bytes(),
-    );
-    put(&mut h, id.identified.secure.as_str().as_bytes());
-    put(&mut h, &[u8::from(id.secured)]);
+    put(&mut h, &p.current.raw().to_be_bytes());
+    put(&mut h, &p.target.raw().to_be_bytes());
+    put(&mut h, v.serial.as_deref().unwrap_or_default());
+    put(&mut h, &v.mask.unwrap_or(0).to_be_bytes());
+    put(&mut h, &v.manufacturer_id.unwrap_or(0).to_be_bytes());
+    put(&mut h, v.order.as_deref().unwrap_or("").as_bytes());
+    put(&mut h, v.secure.as_str().as_bytes());
+    put(&mut h, &[u8::from(p.secured)]);
     put(&mut h, id.order.as_deref().unwrap_or("").as_bytes());
     let product = match &id.product {
         Some(ProductPlan::Cached { path }) => format!("cached:{}", path.display()),
@@ -130,33 +126,34 @@ fn add_digest(id: &Identification, model: &Model) -> String {
     format!("sha256:{hex}")
 }
 
-/// Answers the download question with the human's `download: true`.
-struct Consented;
-
-impl DownloadPrompt for Consented {
-    fn download(&mut self, _question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(DownloadAnswer::Yes)
+/// The refusal for a stop of the flow; `planning` while nothing is decided
+/// yet (the occupied address gets the longer advice).
+fn refusal(stop: Stop, planning: bool) -> String {
+    if let Some(reason) = WORDING.wait_refusal(&stop) {
+        return reason;
     }
-}
-
-/// Who the device is, in words: the product name or order number, then the
-/// manufacturer.
-fn who(identified: &Verified) -> String {
-    let manufacturer = identified
-        .manufacturer_id
-        .map(bussard_mgmt::manufacturers::display);
-    match (&identified.order, manufacturer) {
-        (Some(order), Some(m))
-            if order
-                .to_ascii_uppercase()
-                .starts_with(&m.to_ascii_uppercase()) =>
-        {
-            order.clone()
+    match stop {
+        Stop::Identify { current, source } => format!(
+            "the device in programming mode at {current} did not answer the identification \
+             ({}). Nothing was written.",
+            chain(&source)
+        ),
+        Stop::Occupied { target, occupant } if planning => format!(
+            "{target} is already in use: a device answers there ({}). Two devices on one address \
+             answer the same connection. Pick a free address (the `address` argument) or \
+             re-address that device first. Nothing was written.",
+            occupant.describe()
+        ),
+        Stop::Occupied { target, occupant } => format!(
+            "{target} is already in use: a device answers there ({}). Nothing was written.",
+            occupant.describe()
+        ),
+        Stop::Assign(AssignError::Refused(reason)) if reason.ends_with("Nothing was written.") => {
+            reason
         }
-        (Some(order), Some(m)) => format!("{m} {order}"),
-        (Some(order), None) => order.clone(),
-        (None, Some(m)) => format!("A {m} device"),
-        (None, None) => "A device".to_string(),
+        Stop::Assign(AssignError::Refused(reason)) => format!("{reason}. Nothing was written."),
+        Stop::Refused(reason) => reason,
+        other => chain(&other),
     }
 }
 
@@ -251,38 +248,32 @@ impl BussardMcp {
         let Some(tier) = state.programming.as_ref() else {
             return;
         };
-        let outcome = {
-            let _guard = tier.bus_lock.lock().await;
-            let mut warm = self.warm().lock().await;
-            warm.release().await;
-            tier.jobs.step(job, "press_button");
-            tier.jobs.ask(job, Some(PRESS_BUTTON.to_string()));
-            self.add_identify(
-                job,
-                address.as_deref(),
-                order_arg.as_deref(),
-                product_file.as_deref(),
-            )
-            .await
-        };
+        let outcome = self
+            .on_bus(tier, async {
+                tier.jobs.step(job, "press_button");
+                tier.jobs.ask(job, Some(PRESS_BUTTON.to_string()));
+                self.add_identify(
+                    job,
+                    address.as_deref(),
+                    order_arg.as_deref(),
+                    product_file.as_deref(),
+                )
+                .await
+            })
+            .await;
         match outcome {
             Ok((id, digest)) => {
-                let target = id.target;
+                let target = id.planned.target;
                 let model = state.model.reload();
                 let detail = identified_detail(&id, &model, &digest, tier);
                 let question = add_question(&id);
                 tier.adds().insert(
                     job.to_string(),
                     PendingAdd {
-                        current: id.current,
-                        target: id.target,
+                        id,
                         address_arg: address,
                         order_arg,
                         product_file,
-                        identified: id.identified,
-                        secured: id.secured,
-                        order: id.order,
-                        product: id.product,
                         digest,
                         created: Instant::now(),
                     },
@@ -290,10 +281,7 @@ impl BussardMcp {
                 tier.jobs
                     .pause(job, "identified", question, Some(target), detail);
             }
-            Err(reason) => tier.jobs.finish(
-                job,
-                json!({ "ok": false, "refused": true, "written": false, "reason": reason }),
-            ),
+            Err(reason) => tier.jobs.finish(job, refused(reason)),
         }
     }
 
@@ -310,104 +298,73 @@ impl BussardMcp {
             .programming
             .as_ref()
             .ok_or("the programming tier is off")?;
-        let service = state.bus.service().ok_or("the bus is not wired")?.clone();
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| format!("the source address check failed: {e}"))?;
-        let found = wait_for_programming_mode(&service, source, &mut |_| {})
-            .await
-            .map_err(|e| chain(&e))?;
-        let current = match found {
-            ProgrammingWait::One(current) => current,
-            ProgrammingWait::Several(found) => {
-                let list: Vec<String> = found.iter().map(ToString::to_string).collect();
-                return Err(format!(
-                    "{} devices are in programming mode ({}); adding works on one device at a \
-                     time. Ask the human to leave programming mode on all but the new one, then \
-                     call knx_add_device again. Nothing was written.",
-                    found.len(),
-                    list.join(", ")
-                ));
-            }
-            ProgrammingWait::Nothing { waited } => {
-                return Err(format!(
-                    "No device entered programming mode within {} s. Ask the human to press the \
-                     programming button on the new device (its LED usually lights up), then call \
-                     knx_add_device again. Nothing was written.",
-                    waited.as_secs()
-                ));
-            }
+        let (service, source) = self.address_bus().await?;
+        let flow = AssignFlow {
+            service: &service,
+            source,
         };
-        tier.jobs.ask(job, None);
-        tier.jobs
-            .step(job, format!("identifying the device at {current}"));
+        let observer = &mut self.add_observer(tier, job);
+        let current = flow
+            .wait_for_one(observer)
+            .await
+            .map_err(|stop| refusal(stop, true))?;
         let id = self
-            .identification(&service, source, current, address, order_arg, product_file)
+            .identification(&flow, current, address, order_arg, product_file, observer)
             .await?;
         let digest = add_digest(&id, &state.model.reload());
         Ok((id, digest))
     }
 
+    /// The observer of an add job.
+    fn add_observer<'a>(&self, tier: &'a ProgrammingTier, job: &'a str) -> AddressJob<'a> {
+        AddressJob {
+            jobs: &tier.jobs,
+            job,
+            press: PRESS_BUTTON.to_string(),
+            check_gone: false,
+        }
+    }
+
+    /// The keyring's tool keys.
+    fn add_keys(&self) -> Result<ToolKeys, String> {
+        ToolKeys::load(ToolKeySource {
+            keyring: self.state().keyring.as_deref(),
+            tool_key: None,
+        })
+        .map_err(|e| chain(&e))
+    }
+
     /// Reads what the device in programming mode at `current` is and plans
-    /// its adoption: the target address, the occupant check, the product
-    /// data (the archive `product_file` names when given). Read-only.
+    /// its adoption ([`adopt::plan`]) and its product data (the archive
+    /// `product_file` names when given). Read-only.
     async fn identification(
         &self,
-        service: &BusService,
-        source: IndividualAddress,
+        flow: &AssignFlow<'_>,
         current: IndividualAddress,
         address: Option<&str>,
         order_arg: Option<&str>,
         product_file: Option<&std::path::Path>,
+        observer: &mut AddressJob<'_>,
     ) -> Result<Identification, String> {
         let state = self.state();
-        let keyring = state.keyring.as_deref();
-        let keys = ToolKeys::load(ToolKeySource {
-            keyring,
-            tool_key: None,
-        })
-        .map_err(|e| chain(&e))?;
-        let secured = keys.lists(current);
-        let key = if secured {
-            keys.tool_key(current)
-        } else {
-            None
-        };
-        let identified = identify(service, source, current, key).await.map_err(|e| {
-            format!(
-                "the device in programming mode at {current} did not answer the \
-                     identification ({}). Nothing was written.",
-                chain(&e)
-            )
-        })?;
-        if identified.secure == SecureStatus::ActivatedNoKey {
-            return Err(bussard_service::adopt::flow::activated_without_key(
-                current, current, &keys, keyring,
-            ));
-        }
+        let keys = self.add_keys()?;
         let model = state.model.reload();
-        let target = adopt_target(address, current, secured, Some(&model)).map_err(|e| {
-            let reason = e.to_string();
-            if reason.ends_with("Nothing was written.") {
-                reason
-            } else {
-                format!("{reason}. Nothing was written.")
-            }
-        })?;
-        if target != current
-            && let Some(occupant) = probe_occupant(service, source, target).await
-        {
-            return Err(format!(
-                "{target} is already in use: a device answers there ({}). Two devices on one \
-                 address answer the same connection. Pick a free address (the `address` \
-                 argument) or re-address that device first. Nothing was written.",
-                occupant.describe()
-            ));
-        }
+        let request = PlanRequest {
+            address,
+            model: Some(&model),
+            keys: Keys {
+                keys: &keys,
+                keyring: state.keyring.as_deref(),
+            },
+            identify: true,
+            force: false,
+        };
+        let planned = adopt::plan(flow, current, request, observer)
+            .await
+            .map_err(|stop| refusal(stop, true))?;
         let order = order_arg
             .map(str::to_string)
-            .or_else(|| identified.order.clone());
+            .or_else(|| planned.identified.as_ref().and_then(|v| v.order.clone()));
         let product = match product_file {
             Some(path) => Some(ProductPlan::Cached {
                 path: path.to_path_buf(),
@@ -415,10 +372,7 @@ impl BussardMcp {
             None => order.as_deref().map(|o| product_plan(&state.dir, o)),
         };
         Ok(Identification {
-            current,
-            target,
-            identified,
-            secured,
+            planned,
             order,
             product,
             from_file: product_file.is_some(),
@@ -448,64 +402,25 @@ impl BussardMcp {
                  than the plan lifetime). Call knx_add_device without `job` to start again."
             ));
         };
-        let Some(digest) = digest.map(str::trim) else {
-            return Err(format!(
-                "pass the plan_digest of job {job} (knx_job_status shows it) with yes: true"
-            ));
-        };
-        if digest != pending.digest {
-            return Err(format!(
-                "the plan_digest does not match job {job}: pass the one knx_job_status shows for \
-                 it. Nothing was written."
-            ));
+        let needs_download = matches!(pending.id.product, Some(ProductPlan::Download { .. }));
+        Yes {
+            job,
+            digest,
+            yes,
+            download,
         }
-        if yes != Some(true) {
-            return Err(
-                "adding the device writes to the bus: pass yes: true only after the human's \
-                 explicit yes to the question. Nothing was written."
-                    .into(),
-            );
-        }
-        if matches!(pending.product, Some(ProductPlan::Download { .. })) && download != Some(true) {
-            return Err(
-                "the product data needs a download from the vendor, a separate consent: ask the \
-                 human whether bussard may download it, and pass download: true only after a \
-                 yes to that too (without it, nothing is written)."
-                    .into(),
-            );
-        }
+        .check(&pending.digest, "adding the device", needs_download)?;
         tier.jobs.resume(job, "checking the device again")?;
         tier.adds().remove(job);
         let me = self.clone();
         let id = job.to_string();
-        let worker = tokio::spawn(async move {
-            let result = me.add_write_job(&id, pending).await;
-            if let Some(tier) = me.state().programming.as_ref() {
-                tier.jobs.finish(&id, result);
-            }
-        });
-        self.watch_job(job.to_string(), "add-device", worker);
-        let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
-        if tier.jobs.wait(job, wait).await {
-            let mut result = tier.jobs.result(job).unwrap_or_else(|| json!({}));
-            super::merge(
-                &mut result,
-                json!({ "started": false, "done": true, "job": job }),
-            );
-            return Ok(result);
-        }
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "job": job,
-            "step": "writing",
-            "next_step": format!(
-                "The device is being added in the server as job {job}. Call knx_job_status \
-                 with job {job} every few seconds until `done` is true; its `result` is the \
-                 outcome."
-            ),
-        }))
+        let work = async move { me.add_write_job(&id, pending).await };
+        let next_step = format!(
+            "The device is being added in the server as job {job}. Call knx_job_status with job \
+             {job} every few seconds until `done` is true; its `result` is the outcome."
+        );
+        self.spawn_write(tier, job, began, "add-device", work, next_step)
+            .await
     }
 
     /// The write job: the fresh read, the download, the address, the
@@ -515,12 +430,7 @@ impl BussardMcp {
         let Some(tier) = state.programming.as_ref() else {
             return json!({ "ok": false, "reason": "the programming tier is off" });
         };
-        let _guard = tier.bus_lock.lock().await;
-        let mut warm = self.warm().lock().await;
-        warm.release().await;
-        let result = self.add_write(job, &pending).await;
-        drop(warm);
-        match result {
+        match self.on_bus(tier, self.add_write(job, &pending)).await {
             Ok(value) => value,
             Err(reason) => json!({
                 "ok": false,
@@ -538,41 +448,27 @@ impl BussardMcp {
             .as_ref()
             .ok_or("the programming tier is off")?;
         let dir = state.dir.clone();
-        let service = state.bus.service().ok_or("the bus is not wired")?.clone();
-        let source = service
-            .checked_source(false)
-            .await
-            .map_err(|e| format!("the source address check failed: {e}"))?;
+        let (service, source) = self.address_bus().await?;
+        let flow = AssignFlow {
+            service: &service,
+            source,
+        };
+        let observer = &mut self.add_observer(tier, job);
 
         // The fresh read: the same single device in programming mode, the same
         // identity and plan, else the digest the human answered is stale.
-        let now = in_programming_mode(&service, source)
+        let current = p.id.planned.current;
+        flow.still_the_one(current)
             .await
-            .map_err(|e| chain(&e))?;
-        if now != [p.current] {
-            return Err(format!(
-                "the device is no longer the one device in programming mode at {} (now: {}). \
-                 Ask the human to press its programming button again, then call knx_add_device \
-                 again. Nothing was written.",
-                p.current,
-                if now.is_empty() {
-                    "none".to_string()
-                } else {
-                    now.iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                }
-            ));
-        }
+            .map_err(|stop| refusal(stop, true))?;
         let fresh = self
             .identification(
-                &service,
-                source,
-                p.current,
+                &flow,
+                current,
                 p.address_arg.as_deref(),
                 p.order_arg.as_deref(),
                 p.product_file.as_deref(),
+                observer,
             )
             .await?;
         if add_digest(&fresh, &state.model.reload()) != p.digest {
@@ -584,199 +480,50 @@ impl BussardMcp {
             );
         }
 
-        let mut notes: Vec<String> = Vec::new();
-        // The product data: the store, or the download the human agreed to.
-        let selected = match (&p.order, &p.product) {
-            // A `product` file is used whatever order number the device
-            // reported, as `bussard adopt --product` uses it.
-            (order, Some(ProductPlan::Cached { path }))
-                if order.is_some() || p.product_file.is_some() =>
-            {
-                let order = order.as_deref().unwrap_or_default();
-                match selected_from_archive(path, &dir, order) {
-                    Ok(selected) => Some(selected),
-                    Err(why) => {
-                        notes.push(format!(
-                            "The product data {} did not load ({why}); the device was added \
-                             without a com-object table.",
-                            if order.is_empty() {
-                                format!("in {}", path.display())
-                            } else {
-                                format!("for {order}")
-                            }
-                        ));
-                        None
-                    }
-                }
-            }
-            (Some(order), Some(ProductPlan::Download { entry })) => {
-                tier.jobs.step(
-                    job,
-                    format!("downloading the product data for {order} ({})", entry.name),
-                );
-                self.download_product(&dir, order, &mut notes)
-            }
-            (Some(_), Some(ProductPlan::Missing { sentence })) => {
-                notes.push(sentence.clone());
-                None
-            }
-            _ => None,
-        };
-
-        // The address.
+        let keys = self.add_keys()?;
         let model = state.model.reload();
-        if p.target != p.current {
-            if let Some(occupant) = probe_occupant(&service, source, p.target).await {
-                return Err(format!(
-                    "{} is already in use: a device answers there ({}). Nothing was written.",
-                    p.target,
-                    occupant.describe()
-                ));
-            }
-            tier.jobs
-                .step(job, format!("writing the address {}", p.target));
-            write_address(&service, source, p.target)
-                .await
-                .map_err(|e| format!("broadcasting the new individual address: {}", chain(&e)))?;
-        }
-
-        // The independent read-back at the target.
-        tier.jobs
-            .step(job, format!("reading the device back at {}", p.target));
-        let material = self.add_material(p)?;
-        let key = VerifyKey {
-            tool_key: material.tool_key.clone(),
-            from_old_address: false,
-        };
-        let verified = verify_assignment_with(&service, source, p.target, false, &key)
-            .await
-            .map_err(|e| chain(&e))?;
-        notes.extend(verified.warnings.iter().cloned());
-        if verified.secure == SecureStatus::ActivatedNoKey {
-            let keys = ToolKeys::load(ToolKeySource {
+        let mut notes: Vec<String> = Vec::new();
+        let target = p.id.planned.target;
+        let jobs = &tier.jobs;
+        let mut product = |_: Option<&str>| select_product(&dir, p, jobs, job, &mut notes);
+        let request = RunRequest {
+            dir: &dir,
+            model: Some(&model),
+            keys: Keys {
+                keys: &keys,
                 keyring: state.keyring.as_deref(),
-                tool_key: None,
-            })
-            .map_err(|e| chain(&e))?;
-            return Err(bussard_service::adopt::flow::activated_without_key(
-                p.target,
-                p.current,
-                &keys,
-                state.keyring.as_deref(),
-            ));
-        }
-        let serial_matches = match (&verified.serial, &p.identified.serial) {
-            (Some(now), Some(then)) => now == then,
-            _ => true,
+            },
+            question: &Question {
+                prompt: add_question(&p.id),
+                action: format!("knx_add_device job {job}"),
+            },
+            recheck_target: true,
+            product: &mut product,
+            product_file: None,
+            on_parse: None,
+            snapshot: SnapshotReason::new("knx_add_device")
+                .with_args([target.to_string()])
+                .with_result("before writing the added device file"),
         };
-        let mask_matches = match (verified.mask, p.identified.mask) {
-            (Some(now), Some(then)) => now == then,
-            _ => true,
-        };
-        let readback_verified = serial_matches && mask_matches;
-        if p.target != p.current {
-            if still_in_programming_mode(&service, source, p.target).await {
-                notes.push(format!(
-                    "{} is still in programming mode after the assignment; ask the human to \
-                     press its programming button once to leave it (on KNX Virtual: toggle it \
-                     off in the GUI).",
-                    p.target
-                ));
-            }
-        } else {
+        let adopted = adopt::run(&flow, &p.id.planned, request, observer)
+            .await
+            .map_err(|stop| refusal(stop, false))?;
+        notes.extend(assigned_notes(&adopted.assigned));
+        if let (Some(read), Some(sel)) = (&adopted.order_mismatch, &adopted.selected) {
             notes.push(format!(
-                "{} stays in programming mode (nothing was written to it); ask the human to \
-                 press its programming button to leave it.",
-                p.target
-            ));
-        }
-        let mismatch = match (&selected, verified.order.as_deref()) {
-            (Some(sel), Some(read)) if !sel.order_numbers.is_empty() => {
-                !order_matches(read, &sel.order_numbers)
-            }
-            _ => false,
-        };
-        if mismatch && let Some(sel) = &selected {
-            notes.push(format!(
-                "The device reported order number {:?}, which is not among the product's order \
-                 numbers ({}): the product data may not match this hardware.",
-                verified.order.as_deref().unwrap_or_default(),
+                "The device reported order number {read:?}, which is not among the product's \
+                 order numbers ({}): the product data may not match this hardware.",
                 sel.order_numbers.join(", ")
             ));
         }
-
-        // The device file.
-        tier.jobs.step(job, "writing the device file");
-        let device = build_device(p.target, &verified, selected.as_ref());
-        let (device, model_out, secure) = if verified.secure == SecureStatus::Activated {
-            let (device, model_out, summary) = self
-                .add_secured(
-                    &service,
-                    source,
-                    p,
-                    &model,
-                    device,
-                    selected.as_ref(),
-                    &material,
-                )
-                .await?;
-            (device, Some(model_out), Some(summary))
-        } else {
-            (device, None, None)
-        };
-        let mut device = device;
-        if device.knxnet.is_none()
-            && let Ok(Some(knxnet)) = bussard_service::adopt::flow::read_knxnet_settings(
-                &service, source, p.target, &dir, &material,
-            )
-            .await
-        {
-            device.knxnet = Some(knxnet.as_config());
-        }
-        let mut said = Collected::default();
-        bussard_service::setup::import::snapshot(
+        attach_serial(
             &dir,
-            SnapshotReason::new("knx_add_device")
-                .with_args([p.target.to_string()])
-                .with_result("before writing the added device file"),
-            &mut said,
+            target,
+            adopted.assigned.verified.serial.as_deref(),
+            &mut notes,
         );
-        let path = write_device_file(
-            model_out.as_ref().or(Some(&model)),
-            &dir,
-            device.clone(),
-            verified.serial.as_deref(),
-            "device file",
-        )
-        .map_err(|e| chain(&e))?;
-        attach_serial(&dir, p.target, verified.serial.as_deref(), &mut notes);
         let _ = state.model.reload();
-
-        Ok(done_result(DoneParts {
-            p,
-            verified: &verified,
-            readback_verified,
-            device: &device,
-            selected: selected.as_ref(),
-            path: &path,
-            dir: &dir,
-            secure,
-            notes,
-        }))
-    }
-
-    /// The Data Secure material for the device: its tool key and the
-    /// keyring's group keys when the keyring lists it, else nothing.
-    fn add_material(&self, p: &PendingAdd) -> Result<SecureMaterial, String> {
-        if !p.secured {
-            return Ok(SecureMaterial::default());
-        }
-        let keys = ToolKeys::load(ToolKeySource {
-            keyring: self.state().keyring.as_deref(),
-            tool_key: None,
-        })
-        .map_err(|e| chain(&e))?;
-        keys.material(p.current, true).map_err(|e| chain(&e))
+        Ok(done_result(&adopted, &dir, notes))
     }
 
     /// The `product` argument: imports the `.knxprod` into the product store
@@ -808,129 +555,63 @@ impl BussardMcp {
             format!("the product file {file} did not import ({why}). Nothing was written.")
         })
     }
+}
 
-    /// Downloads the product data for `order` (the human agreed) and loads
-    /// it; a failure is a note and the device is added without it.
-    fn download_product(
-        &self,
-        dir: &std::path::Path,
-        order: &str,
-        notes: &mut Vec<String>,
-    ) -> Option<SelectedProduct> {
-        let mut said = Collected::default();
-        let outcome = match bussard_service::setup::products::fetch_missing(
-            dir,
-            &[order.to_string()],
-            &mut Consented,
-            &mut said,
-        ) {
-            Ok(outcome) => outcome,
-            Err(err) => {
-                notes.push(format!(
-                    "The product data for {order} was not downloaded ({}); the device was added \
-                     without a com-object table.",
-                    chain(&err)
-                ));
-                return None;
-            }
-        };
-        let Some((_, path)) = outcome.fetched.first() else {
-            let why = outcome
-                .not_fetched
-                .first()
-                .map(|(_, why)| why.clone())
-                .unwrap_or_else(|| "it is not in the index".to_string());
-            notes.push(format!(
-                "The product data for {order} was not downloaded ({why}); the device was added \
-                 without a com-object table."
-            ));
-            return None;
-        };
-        match selected_from_archive(path, dir, order) {
-            Ok(selected) => Some(selected),
-            Err(why) => {
-                notes.push(format!(
-                    "The downloaded product data for {order} did not load ({why}); the device \
-                     was added without a com-object table."
-                ));
-                None
-            }
+/// The product data the human agreed to: the stored archive, or the
+/// download (a failure is a note and the device is added without it).
+fn select_product(
+    dir: &std::path::Path,
+    p: &PendingAdd,
+    jobs: &crate::jobs::JobTable,
+    job: &str,
+    notes: &mut Vec<String>,
+) -> Option<SelectedProduct> {
+    let without = "the device was added without a com-object table.";
+    match (&p.id.order, &p.id.product) {
+        // A `product` file is used whatever order number the device
+        // reported, as `bussard adopt --product` uses it.
+        (order, Some(ProductPlan::Cached { path }))
+            if order.is_some() || p.product_file.is_some() =>
+        {
+            let order = order.as_deref().unwrap_or_default();
+            selected_from_archive(path, dir, order)
+                .map_err(|why| {
+                    let what = if order.is_empty() {
+                        format!("in {}", path.display())
+                    } else {
+                        format!("for {order}")
+                    };
+                    notes.push(format!(
+                        "The product data {what} did not load ({why}); {without}"
+                    ));
+                })
+                .ok()
         }
-    }
-
-    /// The secured half of a Data Secure device: what ETS programmed into
-    /// it, read over A_SecureData and recorded.
-    #[allow(clippy::too_many_arguments)] // one call site; the flow's state
-    async fn add_secured(
-        &self,
-        service: &BusService,
-        source: IndividualAddress,
-        p: &PendingAdd,
-        model: &Model,
-        device: bussard_model::schema::Device,
-        selected: Option<&SelectedProduct>,
-        material: &SecureMaterial,
-    ) -> Result<
-        (
-            bussard_model::schema::Device,
-            Model,
-            bussard_service::adopt::flow::SecureSummary,
-        ),
-        String,
-    > {
-        let dir = &self.state().dir;
-        let with_device = bussard_service::adopt::flow::with_device(Some(model), &device, p.target);
-        let mut notes = Vec::new();
-        let lookup = bussard_service::params::resolve_product(
-            dir,
-            bussard_service::params::Selection {
-                product: None,
-                application: selected.map(|s| s.application_ref.as_str()),
-            },
-            Some(&with_device),
-            p.target,
-            bussard_service::params::MissingProduct::Warn,
-            None,
-        );
-        let product = match lookup {
-            Ok(lookup) => {
-                if let Some(warning) = lookup.warning {
-                    notes.push(format!("parameters not read: {warning}"));
-                }
-                lookup.source
-            }
-            Err(err) => {
-                notes.push(format!("parameters not read: {}", chain(&err)));
-                None
-            }
-        };
-        let read = bussard_service::adopt::flow::read_secured(
-            service,
-            source,
-            p.target,
-            &with_device,
-            product.as_ref(),
-            material,
-            notes,
-        )
-        .await
-        .map_err(|e| {
-            format!(
-                "reading {} over A_SecureData with its keyring tool key: {}",
-                p.target,
-                chain(&e)
-            )
-        })?;
-        bussard_service::adopt::flow::record_secured(
-            Some(model),
-            device,
-            p.target,
-            selected,
-            &read,
-            material,
-            p.current,
-        )
-        .map_err(|e| chain(&e))
+        (Some(order), Some(ProductPlan::Download { entry })) => {
+            jobs.step(
+                job,
+                format!("downloading the product data for {order} ({})", entry.name),
+            );
+            let path = super::addressing::download(dir, order)
+                .map_err(|why| {
+                    notes.push(format!(
+                        "The product data for {order} was not downloaded ({why}); {without}"
+                    ));
+                })
+                .ok()?;
+            selected_from_archive(&path, dir, order)
+                .map_err(|why| {
+                    notes.push(format!(
+                        "The downloaded product data for {order} did not load ({why}); {without}"
+                    ));
+                })
+                .ok()
+        }
+        (Some(_), Some(ProductPlan::Missing { sentence })) => {
+            notes.push(sentence.clone());
+            None
+        }
+        _ => None,
     }
 }
 
@@ -971,10 +652,11 @@ fn attach_serial(
 
 /// The question of the `identified` step.
 fn add_question(id: &Identification) -> String {
-    let address = if id.target == id.current {
-        format!("Adopt it at {}", id.current)
+    let (current, target) = (id.planned.current, id.planned.target);
+    let address = if target == current {
+        format!("Adopt it at {current}")
     } else {
-        format!("Assign {}", id.target)
+        format!("Assign {target}")
     };
     let product = match &id.product {
         Some(ProductPlan::Download { .. }) => ", download the product data",
@@ -990,56 +672,37 @@ fn identified_detail(
     digest: &str,
     tier: &ProgrammingTier,
 ) -> Value {
-    let v = &id.identified;
-    let mask = v.mask.map(|m| format!("{m:04X}"));
-    let system = v.mask.map(bussard_mgmt::system_type);
-    let mut sentences = vec![format!(
-        "{} is in programming mode at {}{}{}.",
-        who(v),
-        id.current,
-        v.serial
-            .as_deref()
-            .map(|s| format!(", serial {}", hex(s)))
-            .unwrap_or_default(),
-        match (&mask, system) {
-            (Some(mask), Some(system)) => format!(", mask {mask} ({system})"),
-            _ => String::new(),
-        }
-    )];
-    if id.secured {
-        sentences.push(format!(
-            "It is KNX Data Secure-activated and the keyring lists it at {}: it keeps that \
+    let v = id.identified();
+    let (current, target) = (id.planned.current, id.planned.target);
+    let mut sentences = vec![found_sentence(&v, current, "")];
+    sentences.push(if id.planned.secured {
+        format!(
+            "It is KNX Data Secure-activated and the keyring lists it at {current}: it keeps that \
              address and bussard reads what ETS programmed into it over A_SecureData. Nothing \
-             is written to it.",
-            id.current
-        ));
-    } else if id.target == id.current {
-        sentences.push(format!(
-            "It already has the address {}; no address is written.",
-            id.target
-        ));
+             is written to it."
+        )
+    } else if target == current {
+        format!("It already has the address {target}; no address is written.")
     } else {
-        sentences.push(format!(
-            "It gets the address {} (the device file names it there).",
-            id.target
-        ));
-    }
+        format!("It gets the address {target} (the device file names it there).")
+    });
+    let file_name = |path: &std::path::Path| {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    };
     let (product_data, download_needed) = match (&id.order, &id.product) {
         (_, Some(ProductPlan::Cached { path })) if id.from_file => (
             format!(
                 "the file you gave, imported into the model's product store ({})",
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
+                file_name(path)
             ),
             false,
         ),
         (Some(order), Some(ProductPlan::Cached { path })) => (
             format!(
                 "{order}: in the model's product store ({})",
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
+                file_name(path)
             ),
             false,
         ),
@@ -1073,20 +736,19 @@ fn identified_detail(
         );
     }
     sentences.push(format!(
-        "Then bussard reads the device back at {} and writes devices/{}.toml with its \
-         bussard.lock entry.",
-        id.target, id.target
+        "Then bussard reads the device back at {target} and writes devices/{target}.toml with \
+         its bussard.lock entry."
     ));
     let now = std::time::SystemTime::now();
     json!({
-        "current_address": id.current.to_string(),
+        "current_address": current.to_string(),
         "serial": v.serial.as_deref().map(hex),
-        "mask": mask,
-        "system_type": system,
+        "mask": v.mask.map(|m| format!("{m:04X}")),
+        "system_type": v.mask.map(bussard_mgmt::system_type),
         "manufacturer": v.manufacturer_id.map(bussard_mgmt::manufacturers::display),
         "order_number": v.order,
         "secure": v.secure.as_str(),
-        "keeps_address": id.target == id.current,
+        "keeps_address": target == current,
         "product_data": product_data,
         "download_needed": download_needed,
         "sentences": sentences,
@@ -1096,44 +758,14 @@ fn identified_detail(
     })
 }
 
-/// What the `done` result is made of.
-struct DoneParts<'a> {
-    /// The plan the human answered.
-    p: &'a PendingAdd,
-    /// The read-back at the target.
-    verified: &'a Verified,
-    /// The read-back matched the identification (serial and mask).
-    readback_verified: bool,
-    /// The device file written.
-    device: &'a bussard_model::schema::Device,
-    /// The product data it got.
-    selected: Option<&'a SelectedProduct>,
-    /// The device file's path.
-    path: &'a std::path::Path,
-    /// The model directory.
-    dir: &'a std::path::Path,
-    /// What a Data Secure adoption recorded.
-    secure: Option<bussard_service::adopt::flow::SecureSummary>,
-    /// Notes for the human.
-    notes: Vec<String>,
-}
-
 /// The `done` result: names first, one summary sentence.
-fn done_result(d: DoneParts<'_>) -> Value {
-    let DoneParts {
-        p,
-        verified,
-        readback_verified,
-        device,
-        selected,
-        path,
-        dir,
-        secure,
-        notes,
-    } = d;
-    let name = device.name.clone();
+fn done_result(adopted: &Adopted, dir: &std::path::Path, notes: Vec<String>) -> Value {
+    let a = &adopted.assigned;
+    let (target, current) = (a.target, a.current);
+    let selected = adopted.selected.as_ref();
+    let name = adopted.device.name.clone();
+    let path = &adopted.path;
     let relative = path.strip_prefix(dir).unwrap_or(path).display().to_string();
-    let assigned = p.target != p.current;
     let product = selected.map(|s| {
         json!({
             "name": s.display_name(),
@@ -1141,7 +773,7 @@ fn done_result(d: DoneParts<'_>) -> Value {
             "com_objects": s.com_objects.len(),
         })
     });
-    let objects: Vec<Value> = useful_objects(device, selected)
+    let objects: Vec<Value> = useful_objects(&adopted.device, selected)
         .into_iter()
         .take(8)
         .map(|o| {
@@ -1155,58 +787,47 @@ fn done_result(d: DoneParts<'_>) -> Value {
             })
         })
         .collect();
-    let what = if assigned {
-        format!("now answers at {} (was {})", p.target, p.current)
+    let what = if a.written {
+        format!("now answers at {target} (was {current})")
     } else {
-        format!("answers at {}", p.target)
+        format!("answers at {target}")
     };
-    let check = if readback_verified {
+    let check = if a.matches_identified {
         "the read-back there matches the identified serial and mask"
     } else {
         "but the read-back there does NOT match the identified serial or mask"
     };
-    let summary = format!(
-        "{name} ({}) {what}; {check}; its device file is {relative}.",
-        p.target
-    );
-    let next_step = match (&secure, selected) {
+    let summary = format!("{name} ({target}) {what}; {check}; its device file is {relative}.");
+    let next_step = match (&adopted.secure, selected) {
         (Some(_), _) => format!(
             "Tell the human the summary. Its links and parameters are in the model now; \
-             knx_plan_device for {} should report nothing to do.",
-            p.target
+             knx_plan_device for {target} should report nothing to do."
         ),
         (None, Some(_)) => format!(
             "Tell the human the summary, then name the device and its room \
              (knx_rename_device or the device file) and wire its group objects: `objects` lists \
-             them, transmit-capable first. knx_plan_device and knx_apply_device for {} write \
-             the links; a factory-fresh device needs its application loaded first (the plan \
-             says so).",
-            p.target
+             them, transmit-capable first. knx_plan_device and knx_apply_device for {target} \
+             write the links; a factory-fresh device needs its application loaded first (the \
+             plan says so)."
         ),
         (None, None) => format!(
             "Tell the human the summary. It has no product data yet: knx_import_file with its \
-             .knxprod attaches it; then wire its group objects and plan {}.",
-            p.target
+             .knxprod attaches it; then wire its group objects and plan {target}."
         ),
     };
     json!({
-        "ok": readback_verified,
+        "ok": a.matches_identified,
         "step": "done",
         "name": name,
-        "address": p.target.to_string(),
-        "from": p.current.to_string(),
-        "assigned": assigned,
-        "verified": readback_verified,
-        "readback": {
-            "mask": verified.mask.map(|m| format!("{m:04X}")),
-            "serial": verified.serial.as_deref().map(hex),
-            "order_number": verified.order,
-            "secure": verified.secure.as_str(),
-        },
+        "address": target.to_string(),
+        "from": current.to_string(),
+        "assigned": a.written,
+        "verified": a.matches_identified,
+        "readback": readback_json(&a.verified),
         "device_file": relative,
         "product": product,
         "objects": objects,
-        "secure": secure.map(|s| json!({
+        "secure": adopted.secure.as_ref().map(|s| json!({
             "links": s.links,
             "parameters": s.parameters,
             "secure_objects": s.adoption.secure_objects,
