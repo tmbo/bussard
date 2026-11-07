@@ -1424,7 +1424,14 @@ def compare_properties(
                 ga = ets_groups.get(int(entry.get("index", 0)))
                 if ga:
                     entry["ga"] = ga
-    ours = plan_property_writes(plan)
+    # The same rule on bussard's side: a load procedure's own write of
+    # PID_LOAD_STATE_CONTROL (ise smart connect, object 8, #947) is listed
+    # with the step's load controls and judged there.
+    ours = [
+        w
+        for w in plan_property_writes(plan)
+        if not ("index" in w["object"] and w["pid"] == PID_LOAD_STATE_CONTROL)
+    ]
     ip_secure = plan.get("system") == IP_SECURE_SYSTEM
     if ip_secure:
         # Only the IP Secure properties, and with `phase` only the writes

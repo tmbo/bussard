@@ -308,8 +308,9 @@ pub enum FlashStep {
         /// The 1-based element the value is written from (`StartElement`, default 1).
         start_element: u16,
         /// How many elements `value` spans (`Count`, default 1). A System B
-        /// plan keeps 1: its value is written as one element, as before
-        /// issue #390.
+        /// write with `InlineData` keeps 1: its value is written as one
+        /// element, as before issue #390. More than 15 go out in requests of
+        /// at most 15 elements each (issue #947).
         count: u16,
         /// `Verify="true"`: read the property back right after writing it and
         /// fail the flash on a difference, as ETS does.

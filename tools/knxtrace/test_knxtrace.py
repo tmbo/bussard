@@ -1214,6 +1214,9 @@ class TestPropertyWrites(unittest.TestCase):
                 {"index": 4, "label": label % (4, 5, 13, 5)},
                 {"index": 5, "label": "5.", "property": {
                     "object": 4, "pid": 13, "start_element": 1, "length": 5, "data": "00fa000113"}},
+                # A load procedure's own PID_LOAD_STATE_CONTROL write (#947) is a
+                # load control on bussard's side too, not a property write.
+                {"index": 6, "label": label % (6, 8, 5, 10)},
             ],
         }
         with open(os.path.join(plan_dir, "plan.json"), "w") as fh:

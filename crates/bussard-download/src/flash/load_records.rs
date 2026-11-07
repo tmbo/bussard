@@ -13,7 +13,7 @@
 
 use bussard_mgmt::{LoadControl, LsmAccess, sys7};
 
-use super::{FlashPlan, FlashStep};
+use super::{FlashPlan, FlashStep, PropObject};
 
 /// Where a load-control record goes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +55,9 @@ impl FlashPlan {
     /// unloaded after the reset (KNX Virtual), since that depends on the
     /// device's answer.
     pub fn load_control_records(&self, step: &FlashStep) -> Vec<LoadControlRecord> {
+        if let Some(record) = load_state_write(step) {
+            return vec![record];
+        }
         match self.sys7_lsm_access() {
             Some(access) => sys7_records(&access, step),
             None => system_b_records(step),
@@ -70,6 +73,46 @@ fn simple(control: LoadControl) -> &'static str {
         LoadControl::AdditionalLoadControls => "additional",
         LoadControl::NoOperation => "no-operation",
     }
+}
+
+/// A load procedure's own `LdCtrlWriteProp` of the 10-octet
+/// `PID_LOAD_STATE_CONTROL` value on an index-addressed object (the ise smart
+/// connect programs drive object 8's load-state machine this way, issue
+/// #947): on the wire it is the load-control record its value spells, the
+/// same `A_PropertyValue_Write` ETS sends, so the oracle judges it with the
+/// load controls.
+fn load_state_write(step: &FlashStep) -> Option<LoadControlRecord> {
+    let FlashStep::WriteProp {
+        object: PropObject::Index(index),
+        prop_id,
+        value,
+        start_element: 1,
+        count: 1,
+        ..
+    } = step
+    else {
+        return None;
+    };
+    if *prop_id != u32::from(bussard_mgmt::load::PID_LOAD_STATE_CONTROL)
+        || value.len() != LoadControl::Unload.encode_full().len()
+    {
+        return None;
+    }
+    let event = match value.first() {
+        Some(0) => simple(LoadControl::NoOperation),
+        Some(1) => simple(LoadControl::StartLoading),
+        Some(2) => simple(LoadControl::LoadCompleted),
+        Some(3) => simple(LoadControl::AdditionalLoadControls),
+        Some(4) => simple(LoadControl::Unload),
+        _ => return None,
+    };
+    Some(LoadControlRecord {
+        form: LoadControlForm::Property {
+            object: Some(*index),
+        },
+        event,
+        bytes: value.clone(),
+    })
 }
 
 fn system_b_records(step: &FlashStep) -> Vec<LoadControlRecord> {
@@ -260,6 +303,34 @@ fn sys7_records(access: &LsmAccess, step: &FlashStep) -> Vec<LoadControlRecord> 
 mod tests {
     use super::*;
     use crate::flash::SegmentFill;
+
+    #[test]
+    fn test_load_state_write_is_a_load_control_record() {
+        // `M-007C_A-0006-20-C776` (issue #947): `LdCtrlWriteProp ObjIdx="8"
+        // PropId="5" InlineData="04000000000000000000"` is the unload ETS
+        // sends to object 8 (ops.txt op 43).
+        let write = |value: Vec<u8>| FlashStep::WriteProp {
+            object: PropObject::Index(8),
+            prop_id: 5,
+            value,
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        let mut unload = vec![0; 10];
+        unload[0] = 4;
+        assert_eq!(
+            load_state_write(&write(unload.clone())),
+            Some(LoadControlRecord {
+                form: LoadControlForm::Property { object: Some(8) },
+                event: "unload",
+                bytes: unload,
+            })
+        );
+        // Not a 10-octet record: an ordinary property write.
+        assert_eq!(load_state_write(&write(vec![4])), None);
+    }
 
     #[test]
     fn test_system_b_records_rel_segment_with_fill() {

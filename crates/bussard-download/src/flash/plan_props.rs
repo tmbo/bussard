@@ -288,6 +288,12 @@ pub(super) fn guarded_ops(
     }
 }
 
+/// The last element the 12-bit start index of `A_PropertyValue_Write`
+/// addresses (KNX 3/3/7). An object named by type is written on the extended
+/// service (a 16-bit start index) but falls back to the plain one, so the same
+/// bound holds for it.
+const MAX_START_ELEMENT: u64 = 0x0FFF;
+
 /// How an op names its object: by index when it carries `ObjIdx`, else by
 /// `ObjType` and `Occurrence`, the device object by index 0.
 pub(super) fn prop_object(
@@ -456,13 +462,33 @@ pub(super) fn lower_write_prop(
             }
         },
     };
+    let start_element = start_element.unwrap_or(1).max(1);
+    // `Count` is a 16-bit element count in the procedure; only the per-request
+    // count is a nibble, and the executor splits the write into requests of at
+    // most 15 elements (ETS writes `Count="500"` to object 8 PID 64 of the Jung
+    // Sonos-Gateway as 34 requests from element 1 to 496, issue #947). What
+    // bounds the write is the 12-bit start element of its last request.
     let count = count.unwrap_or(1).max(1);
-    let count = u16::try_from(count)
-        .ok()
-        .filter(|c| *c <= u16::from(u8::MAX))
-        .ok_or_else(|| PlanError::UnsupportedWriteProp {
+    let last_element = u64::from(start_element) + u64::from(count) - 1;
+    if last_element > MAX_START_ELEMENT {
+        return Err(PlanError::UnsupportedWriteProp {
             step,
-            reason: format!("the write to {name} has Count {count}, more than 255 elements"),
+            reason: format!(
+                "the write to {name} has Count {count} from element {start_element}, past \
+                 element {MAX_START_ELEMENT}, the last the 12-bit start index addresses"
+            ),
+        });
+    }
+    let count = u16::try_from(count).map_err(|_| PlanError::UnsupportedWriteProp {
+        step,
+        reason: format!("the write to {name} has Count {count}, more than 16 bits"),
+    })?;
+    let start_element =
+        u16::try_from(start_element).map_err(|_| PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!(
+                "the write to {name} starts at element {start_element}, more than 16 bits"
+            ),
         })?;
     if !value.len().is_multiple_of(usize::from(count)) {
         return Err(PlanError::UnsupportedWriteProp {
@@ -473,10 +499,6 @@ pub(super) fn lower_write_prop(
             ),
         });
     }
-    let start_element = start_element
-        .and_then(|e| u16::try_from(e).ok())
-        .unwrap_or(1)
-        .max(1);
     if let PropObject::Index(index) = object
         && index > u32::from(u8::MAX)
     {
@@ -874,6 +896,92 @@ mod tests {
             lower_write_prop(1, &op, &PropertyValues::new(), &app),
             Err(PlanError::UnsupportedWriteProp { .. })
         ));
+        Ok(())
+    }
+
+    /// A write of `count` elements without `InlineData` to object 8 `prop_id`,
+    /// as the ise smart connect and Jung Sonos procedures carry it.
+    fn count_write(prop_id: u32, count: u32) -> LoadOp {
+        LoadOp::WriteProp {
+            obj_idx: Some(8),
+            obj_type: None,
+            prop_id: Some(prop_id),
+            inline_data: None,
+            start_element: None,
+            count: Some(count),
+            verify: Some(false),
+            occurrence: None,
+        }
+    }
+
+    #[test]
+    fn test_lower_write_prop_takes_a_count_of_500() -> TestResult {
+        // `M-0004_A-B015-21-F7AD-O007C` (issue #947): `Count="500"` on object 8
+        // PID 64, four-octet elements composed from the parameters. ETS writes
+        // them in 34 requests from element 1 to 496 (ops 59 to 92).
+        let app = guarded_app()?;
+        let value: Vec<u8> = (0..2000u32).map(|i| (i % 251) as u8).collect();
+        let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), value.clone())]);
+        assert_eq!(
+            lower_write_prop(32, &count_write(64, 500), &values, &app)?,
+            FlashStep::WriteProp {
+                object: PropObject::Index(8),
+                prop_id: 64,
+                value,
+                start_element: 1,
+                count: 500,
+                verify: false,
+                from_parameters: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_write_prop_refuses_a_count_past_the_start_index() -> TestResult {
+        // Element 4096 is past the 12-bit start index of the last request.
+        let app = guarded_app()?;
+        let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4096])]);
+        match lower_write_prop(7, &count_write(64, 4096), &values, &app) {
+            Err(PlanError::UnsupportedWriteProp { step: 7, reason }) => {
+                assert!(reason.contains("Count 4096"), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
+        // 4095 elements end on the last addressable element.
+        let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![0; 4095])]);
+        assert!(matches!(
+            lower_write_prop(7, &count_write(64, 4095), &values, &app)?,
+            FlashStep::WriteProp { count: 4095, .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_write_prop_count_without_inline_data() -> TestResult {
+        // `M-007C_A-0006-20-C776` (issue #947): `Count="237"` on object 8 PID
+        // 64 without `InlineData` writes the 237 elements the parameters
+        // compose.
+        let app = guarded_app()?;
+        let values = PropertyValues::from([((PropertyObjectRef::Index(8), 64), vec![7; 948])]);
+        assert!(matches!(
+            lower_write_prop(28, &count_write(64, 237), &values, &app)?,
+            FlashStep::WriteProp {
+                count: 237,
+                from_parameters: true,
+                ..
+            }
+        ));
+        // `Count="64"` on object 8 PID 68, which no parameter is stored in:
+        // ETS reads the description and writes nothing
+        // (`M-007C_A-000E-20-E64D` op 130, `M-007C_A-0010-20-5E04` op 130).
+        assert_eq!(
+            lower_write_prop(30, &count_write(68, 64), &values, &app)?,
+            FlashStep::DescribeProp {
+                object: PropObject::Index(8),
+                prop_id: 68,
+            }
+        );
         Ok(())
     }
 
