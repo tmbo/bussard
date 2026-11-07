@@ -42,12 +42,12 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{ProductPlan, product_plan};
 use bussard_service::assign::hex;
 use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::replace::{self, Pressed, Replacement};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::addressing::{Wording, Yes, assigned_notes, found_sentence, refused};
-use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for, put};
+use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for};
 use crate::jobs::JobSink;
 
 /// The question of the `press_button` step.
@@ -81,7 +81,7 @@ enum Source {
 
 /// One identified replacement waiting for the human's yes, by job id.
 #[derive(Debug, Clone)]
-pub(super) struct PendingReplace {
+pub(super) struct ReplacePlan {
     /// The replacement.
     replacement: Replacement,
     /// What the identification read.
@@ -90,8 +90,6 @@ pub(super) struct PendingReplace {
     source: Source,
     /// The digest the human's yes answers.
     digest: String,
-    /// When the device was identified.
-    created: Instant,
 }
 
 /// How `knx_replace_device` names the device in its refusals.
@@ -120,20 +118,7 @@ fn refusal(target: IndividualAddress, stop: Stop) -> String {
 /// flash loads. The flash and the apply are planned from exactly these after
 /// the address is written, so a yes to this digest is a yes to all three.
 fn replace_digest(model: &Model, r: &Replacement, p: &Pressed, source: &Source) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-replace-device-v1");
-    put(&mut h, &r.target.raw().to_be_bytes());
-    put(&mut h, &p.address.raw().to_be_bytes());
-    put(&mut h, p.serial.as_deref().unwrap_or_default());
-    put(&mut h, &p.mask.unwrap_or(0).to_be_bytes());
-    put(&mut h, p.order.as_deref().unwrap_or("").as_bytes());
-    put(&mut h, p.application_id.as_deref().unwrap_or("").as_bytes());
     let device = model.devices.get(&r.target).map(|d| &d.device);
-    put(&mut h, format!("{device:?}").as_bytes());
-    put(
-        &mut h,
-        format!("{:?}", model.links.links.get(&r.target)).as_bytes(),
-    );
     let product = match source {
         Source::Pinned {
             archive,
@@ -141,10 +126,17 @@ fn replace_digest(model: &Model, r: &Replacement, p: &Pressed, source: &Source) 
         } => format!("pinned:{archive}:{application}"),
         Source::Download { sha256, .. } => format!("download:{sha256}"),
     };
-    put(&mut h, product.as_bytes());
-    let bytes: [u8; 32] = h.finalize().into();
-    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("sha256:{hex}")
+    let h = Fingerprint::new(b"bussard-replace-device-v1")
+        .address(r.target)
+        .address(p.address)
+        .put(p.serial.as_deref().unwrap_or_default())
+        .put(p.mask.unwrap_or(0).to_be_bytes())
+        .put(p.order.as_deref().unwrap_or(""))
+        .put(p.application_id.as_deref().unwrap_or(""))
+        .put(format!("{device:?}"))
+        .put(format!("{:?}", model.links.links.get(&r.target)))
+        .put(product);
+    format!("sha256:{}", h.hex())
 }
 
 impl BussardMcp {
@@ -203,7 +195,7 @@ impl BussardMcp {
         let worker = tokio::spawn(async move {
             me.replace_identify_job(&id, replacement, source).await;
         });
-        self.watch_job(job.clone(), "replace-device", worker);
+        tier.jobs.watch(&job, "replace-device", worker);
         Ok(json!({
             "ok": true,
             "started": true,
@@ -247,16 +239,13 @@ impl BussardMcp {
                     replacement.name, replacement.target, pressed.address, replacement.target
                 );
                 let target = replacement.target;
-                tier.replaces().insert(
-                    job.to_string(),
-                    PendingReplace {
-                        replacement,
-                        pressed,
-                        source,
-                        digest,
-                        created: Instant::now(),
-                    },
-                );
+                let plan = ReplacePlan {
+                    replacement,
+                    pressed,
+                    source,
+                    digest,
+                };
+                tier.replaces.insert(job, "", plan);
                 tier.jobs
                     .pause(job, "identified", question, Some(target), detail);
             }
@@ -302,18 +291,13 @@ impl BussardMcp {
         download: Option<bool>,
     ) -> Result<Value, String> {
         let began = Instant::now();
-        let pending = {
-            let mut replaces = tier.replaces();
-            replaces.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            replaces.get(job).cloned()
-        };
-        let Some(pending) = pending else {
-            return Err(format!(
+        let pending = tier.replaces.get(job).ok_or_else(|| {
+            format!(
                 "no identified replacement waits under job {job} (it was written, refused, or \
                  older than the plan lifetime). Call knx_replace_device with the address to \
                  start again."
-            ));
-        };
+            )
+        })?;
         let needs_download = matches!(pending.source, Source::Download { .. });
         Yes {
             job,
@@ -323,7 +307,7 @@ impl BussardMcp {
         }
         .check(&pending.digest, "replacing the device", needs_download)?;
         tier.jobs.resume(job, "checking the device again")?;
-        tier.replaces().remove(job);
+        tier.replaces.retire(job);
         let me = self.clone();
         let id = job.to_string();
         let work = async move { me.replace_write_job(&id, pending).await };
@@ -339,7 +323,7 @@ impl BussardMcp {
 
     /// The write job: the assign half, then the flash and the apply, then
     /// the record. Returns the job's result.
-    async fn replace_write_job(&self, job: &str, p: PendingReplace) -> Value {
+    async fn replace_write_job(&self, job: &str, p: ReplacePlan) -> Value {
         let state = std::sync::Arc::clone(self.state());
         let Some(tier) = state.programming.as_ref() else {
             return json!({ "ok": false, "reason": "the programming tier is off" });
@@ -499,7 +483,7 @@ impl BussardMcp {
 
     /// The assign half of the write job: the fresh read against the digest,
     /// the download, the address and its read-back.
-    async fn replace_assign(&self, job: &str, p: &PendingReplace) -> Result<Swap, String> {
+    async fn replace_assign(&self, job: &str, p: &ReplacePlan) -> Result<Swap, String> {
         let state = self.state();
         let tier = state
             .programming
@@ -863,14 +847,14 @@ fn identified_detail(
         "download_needed": download_needed,
         "sentences": sentences,
         "plan_digest": digest,
-        "expires_at": bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl),
+        "expires_at": tier.replaces.expires_at(now),
     })
 }
 
 /// The result when the address took but the flash or the apply did not
 /// complete: not recorded, with the recovery the CLI names.
 fn after_assign_failure(
-    p: &PendingReplace,
+    p: &ReplacePlan,
     pressed: &Pressed,
     notes: Vec<String>,
     reason: String,
@@ -897,7 +881,7 @@ fn after_assign_failure(
 
 /// The `done` result: names first, one summary sentence.
 fn done_result(
-    p: &PendingReplace,
+    p: &ReplacePlan,
     pressed: &Pressed,
     write: Option<Value>,
     recorded: Value,
@@ -950,16 +934,4 @@ fn done_result(
              do; a fresh knx_backup_device run keeps the new device's state."
         ),
     })
-}
-
-impl ProgrammingTier {
-    /// The identified replacements waiting for a yes, recovering from a
-    /// poisoned lock.
-    pub(super) fn replaces(
-        &self,
-    ) -> std::sync::MutexGuard<'_, std::collections::HashMap<String, PendingReplace>> {
-        self.replaces
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
 }

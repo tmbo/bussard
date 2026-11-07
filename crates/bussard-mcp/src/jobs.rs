@@ -60,7 +60,9 @@
 //! writes a device.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -69,6 +71,8 @@ use bussard_model::IndividualAddress;
 use bussard_model::history::HISTORY_DIR;
 use bussard_service::observer::{Answer, Event, ProgressSink, Prompt, Question, Step};
 use serde_json::{Map, Value, json};
+use tokio::sync::oneshot;
+use tokio::task::JoinHandle;
 
 /// How long `knx_apply_device` waits for the write to finish, counted from
 /// the start of the call, before it answers `started: true`. The client
@@ -719,6 +723,119 @@ impl JobTable {
     pub fn result(&self, id: &str) -> Option<Value> {
         self.inner().jobs.get(id).and_then(|job| job.result.clone())
     }
+
+    /// Waits up to `wait` for job `id` and returns its result once done.
+    pub async fn outcome(&self, id: &str, wait: Duration) -> Option<Value> {
+        if self.wait(id, wait).await {
+            self.result(id)
+        } else {
+            None
+        }
+    }
+
+    /// Runs `work` as job `id` in a server task, so a client that stops
+    /// waiting does not cut it: its value finishes the job, its `Err` is the
+    /// refusal ([`JobTable::refuse`]). `verb` names the job when the task
+    /// panics.
+    pub fn spawn<F>(self: &Arc<Self>, id: &str, verb: &'static str, work: F)
+    where
+        F: Future<Output = Result<Value, String>> + Send + 'static,
+    {
+        let (jobs, job) = (Arc::clone(self), id.to_string());
+        self.watch(
+            id,
+            verb,
+            tokio::spawn(async move {
+                match work.await {
+                    Ok(result) => jobs.finish(&job, result),
+                    Err(reason) => jobs.refuse(&job, &reason),
+                }
+            }),
+        );
+    }
+
+    /// Finishes job `id` with a failure when its task `worker` panics, so a
+    /// panic never leaves the slot claimed for good.
+    pub fn watch(self: &Arc<Self>, id: &str, verb: &'static str, worker: JoinHandle<()>) {
+        let (jobs, job) = (Arc::clone(self), id.to_string());
+        tokio::spawn(async move {
+            if let Err(err) = worker.await {
+                jobs.finish(
+                    &job,
+                    json!({
+                        "ok": false,
+                        "verified": false,
+                        "reason": format!("the {verb} task stopped unexpectedly: {err}"),
+                    }),
+                );
+            }
+        });
+    }
+}
+
+/// The pre-flight gate of a write job (issue #289): the call that started
+/// the job waits on it, and answers with the refusal, or once the
+/// pre-flight passed with the result or the job id.
+#[derive(Clone)]
+pub struct Gate {
+    /// The job table.
+    jobs: Arc<JobTable>,
+    /// The job.
+    job: String,
+    /// The waiting call, until the pre-flight ended.
+    tx: Arc<std::sync::Mutex<Option<Verdict>>>,
+}
+
+/// Where the pre-flight's verdict goes: `Ok` once it passed, else the
+/// refusal.
+type Verdict = oneshot::Sender<Result<(), String>>;
+
+impl Gate {
+    /// A gate for `job`, and what the call waits on.
+    pub fn new(jobs: &Arc<JobTable>, job: &str) -> (Gate, oneshot::Receiver<Result<(), String>>) {
+        let (tx, rx) = oneshot::channel();
+        let gate = Gate {
+            jobs: Arc::clone(jobs),
+            job: job.to_string(),
+            tx: Arc::new(std::sync::Mutex::new(Some(tx))),
+        };
+        (gate, rx)
+    }
+
+    /// The pre-flight passed: records what it established (`context`, the
+    /// record file) and lets the call answer.
+    pub fn pass(&self, context: Value, record: Option<PathBuf>) {
+        self.jobs.started(&self.job, context, record);
+        self.send(Ok(()));
+    }
+
+    /// The pre-flight refused: the call answers with `reason`.
+    pub fn refuse(&self, reason: &str) {
+        self.send(Err(reason.to_string()));
+    }
+
+    /// Answers the waiting call once.
+    fn send(&self, verdict: Result<(), String>) {
+        let tx = self
+            .tx
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(tx) = tx {
+            let _ = tx.send(verdict);
+        }
+    }
+}
+
+/// The record file of a job whose audit snapshot is `snapshot` in the
+/// history of `dir`.
+pub fn record_file(dir: &Path, snapshot: Option<&str>) -> Option<PathBuf> {
+    snapshot.map(|id| {
+        bussard_model::history::History::open(dir)
+            .history_dir()
+            .join(id)
+            .join(RECORD_FILE)
+    })
 }
 
 impl Job {

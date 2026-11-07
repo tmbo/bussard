@@ -26,9 +26,9 @@
 //! process environment or the model's `.env`) and is never part of a result
 //! or a log line.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
 use bussard_ha::api::{HaClient, HaStatus};
@@ -36,14 +36,15 @@ use bussard_ha::plan::{EntityChangeKind, EntityDiff, FileState, Layout};
 use bussard_model::Model;
 use bussard_model::change::ChangeSet;
 use bussard_model::schema::HomeAssistantConfig;
+use bussard_service::program::plan::Fingerprint;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
+use crate::confirm::Store;
 use crate::server::BussardMcp;
 
 /// The tools of the Home Assistant tier, in registration order: the KNX
@@ -70,15 +71,12 @@ const UI_NOTE: &str = "KNX entities created in Home Assistant's UI live in its .
 pub struct HomeAssistantTier {
     /// The `[home_assistant]` table as the server started with it.
     config: HomeAssistantConfig,
-    /// How long a plan stays valid.
-    plan_ttl: Duration,
     /// Plans produced in this session, by digest.
-    plans: std::sync::Mutex<HashMap<String, Instant>>,
+    plans: Store<()>,
     /// Serialises applies.
     lock: tokio::sync::Mutex<()>,
     /// Automation plans produced in this session, by digest.
-    automation_plans:
-        std::sync::Mutex<HashMap<String, crate::tools_ha_automation::PendingAutomation>>,
+    pub(crate) automation_plans: Store<crate::tools_ha_automation::Op>,
 }
 
 impl HomeAssistantTier {
@@ -86,16 +84,10 @@ impl HomeAssistantTier {
     pub fn new(config: HomeAssistantConfig, plan_ttl: Duration) -> Self {
         HomeAssistantTier {
             config,
-            plan_ttl,
-            plans: std::sync::Mutex::new(HashMap::new()),
+            plans: Store::new(plan_ttl),
             lock: tokio::sync::Mutex::new(()),
-            automation_plans: std::sync::Mutex::new(HashMap::new()),
+            automation_plans: Store::new(plan_ttl),
         }
-    }
-
-    /// How long a plan stays valid.
-    pub(crate) fn plan_ttl(&self) -> Duration {
-        self.plan_ttl
     }
 
     /// The lock every Home Assistant write holds.
@@ -103,26 +95,9 @@ impl HomeAssistantTier {
         &self.lock
     }
 
-    /// The automation plan table, recovering from a poisoned lock.
-    pub(crate) fn automation_plans(
-        &self,
-    ) -> std::sync::MutexGuard<'_, HashMap<String, crate::tools_ha_automation::PendingAutomation>>
-    {
-        self.automation_plans
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     /// The `[home_assistant]` table the tier runs with.
     pub fn config(&self) -> &HomeAssistantConfig {
         &self.config
-    }
-
-    /// The plan table, recovering from a poisoned lock (plain data).
-    fn plans(&self) -> std::sync::MutexGuard<'_, HashMap<String, Instant>> {
-        self.plans
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 }
 
@@ -277,9 +252,7 @@ impl BussardMcp {
         let model = self.state().model.reload();
         let prepared = prepare(&dir, &model, &tier.config)?;
         if let Some(digest) = &prepared.digest {
-            let mut plans = tier.plans();
-            plans.retain(|_, created| created.elapsed() <= tier.plan_ttl);
-            plans.insert(digest.clone(), Instant::now());
+            tier.plans.insert(digest.clone(), "", ());
         }
         let status = fetch_status(&tier.config).await;
         let mut out = plan_json(&prepared, &dir);
@@ -299,10 +272,7 @@ impl BussardMcp {
                     Err(reason) => json!({"reachable": false, "errors": [reason]}),
                 },
             );
-            map.insert(
-                "plan_ttl_minutes".into(),
-                json!(tier.plan_ttl.as_secs().div_ceil(60)),
-            );
+            map.insert("plan_ttl_minutes".into(), json!(tier.plans.ttl_minutes()));
             if let Ok(s) = &status {
                 map.insert(
                     "automations".into(),
@@ -317,37 +287,20 @@ impl BussardMcp {
     async fn ha_apply(&self, digest: &str) -> Result<Value, String> {
         let tier = self.ha_tier()?;
         let _guard = tier.lock.lock().await;
-        let created = tier.plans().get(digest).copied();
-        match created {
-            None => {
-                return Err(
-                    "this plan_digest was not produced by knx_ha_plan in this server \
-                            session (or was already used); run knx_ha_plan, show the sentences \
-                            to the human and ask again"
-                        .to_string(),
-                );
-            }
-            Some(at) if at.elapsed() > tier.plan_ttl => {
-                tier.plans().remove(digest);
-                return Err(format!(
-                    "the plan expired ({} minutes); run knx_ha_plan again and ask the human again",
-                    tier.plan_ttl.as_secs().div_ceil(60)
-                ));
-            }
-            Some(_) => {}
-        }
+        let again = "call knx_ha_plan, show the sentences to the human and ask again";
+        tier.plans.fresh(digest, "", "plan", again)?;
         let dir = self.state().dir.clone();
         let model = self.state().model.reload();
         let prepared = prepare(&dir, &model, &tier.config)?;
         if let FileState::NotYaml { reason } = &prepared.file {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(format!(
                 "{} is not YAML-managed: {reason}",
                 prepared.path.display()
             ));
         }
         if prepared.digest.as_deref() != Some(digest) {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(
                 "the plan is stale: the model, ha.toml or the file changed since \
                         knx_ha_plan. Nothing was written. Run knx_ha_plan again, show the new \
@@ -366,7 +319,7 @@ impl BussardMcp {
                 before.errors.join("; ")
             ));
         }
-        tier.plans().remove(digest);
+        tier.plans.retire(digest);
         let current = prepared.current.clone().unwrap_or_default();
         let backup = bussard_ha::apply::write_with_backup(
             &dir,
@@ -517,29 +470,17 @@ fn serde_norway_ok(text: &str) -> bool {
 
 /// SHA-256 over everything the write depends on.
 fn plan_digest(path: &Path, layout: Layout, desired: &str, current: Option<&[u8]>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"bussard-ha-plan-v1\0");
-    hasher.update(path.to_string_lossy().as_bytes());
-    hasher.update([0]);
-    hasher.update(match layout {
-        Layout::Package => b"package".as_slice(),
-        Layout::Included => b"included".as_slice(),
-    });
-    hasher.update([0]);
-    hasher.update((desired.len() as u64).to_le_bytes());
-    hasher.update(desired.as_bytes());
-    match current {
-        Some(bytes) => {
-            hasher.update([1]);
-            hasher.update(bytes);
-        }
-        None => hasher.update([0]),
-    }
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    let layout = match layout {
+        Layout::Package => "package",
+        Layout::Included => "included",
+    };
+    Fingerprint::new(b"bussard-ha-plan-v1")
+        .put(path.to_string_lossy().as_bytes())
+        .put(layout)
+        .put(desired)
+        .put([u8::from(current.is_some())])
+        .put(current.unwrap_or_default())
+        .hex()
 }
 
 /// The status read on a blocking thread, or why the client could not be built.

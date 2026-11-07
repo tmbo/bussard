@@ -15,17 +15,20 @@ use bussard_service::ip_secure::{
     run_switch, secured_through,
 };
 use bussard_service::observer::Event;
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use super::BussardMcp;
 
 /// The plan digest of a switch: the target, the direction, the step lines
 /// and the names of the generated credentials (never a value).
 fn digest(plan: &SwitchPlan) -> String {
-    let full: [u8; 32] = Sha256::digest(interface_digest_text(plan)).into();
-    full.iter().take(8).map(|b| format!("{b:02x}")).collect()
+    let mut digest = Fingerprint::new(b"bussard-interface-secure-v1")
+        .put(interface_digest_text(plan))
+        .hex();
+    digest.truncate(16);
+    digest
 }
 
 impl BussardMcp {

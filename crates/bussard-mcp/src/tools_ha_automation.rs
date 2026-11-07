@@ -19,35 +19,26 @@
 //! automation is updated or removed only when its description carries the
 //! bussard marker line, so automations made by hand are never touched.
 
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use crate::args::Parameters;
 use bussard_ha::api::{HaClient, HaStatus};
 use bussard_ha::automation::{self, Rule};
 use bussard_model::Model;
 use bussard_model::schema::HomeAssistantConfig;
+use bussard_service::program::plan::Fingerprint;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
 use crate::server::BussardMcp;
 
-/// One automation plan this session produced.
-#[derive(Debug, Clone)]
-pub struct PendingAutomation {
-    /// When the plan was produced.
-    created: Instant,
-    /// What the plan does.
-    op: Op,
-}
-
 /// What an automation plan does.
 #[derive(Debug, Clone)]
-enum Op {
+pub(crate) enum Op {
     /// Create or replace `id` from `rule`.
     Save {
         id: String,
@@ -310,15 +301,7 @@ impl BussardMcp {
         let unchanged = planned.config.is_some() && planned.config == planned.previous;
         let (op_name, sentences, question) = describe(&planned);
         if !unchanged {
-            let mut plans = tier.automation_plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl());
-            plans.insert(
-                planned.digest.clone(),
-                PendingAutomation {
-                    created: Instant::now(),
-                    op,
-                },
-            );
+            tier.automation_plans.insert(planned.digest.clone(), "", op);
         }
         let yaml = planned
             .config
@@ -336,7 +319,7 @@ impl BussardMcp {
             "question": (!unchanged).then_some(question),
             "plan_digest": (!unchanged).then_some(planned.digest),
             "backup_dir": bussard_ha::apply::backup_dir(&self.state().dir).display().to_string(),
-            "plan_ttl_minutes": tier.plan_ttl().as_secs().div_ceil(60),
+            "plan_ttl_minutes": tier.automation_plans.ttl_minutes(),
         })
     }
 
@@ -355,16 +338,10 @@ impl BussardMcp {
     ) -> Result<Value, String> {
         let tier = self.ha_tier()?;
         let _guard = tier.write_lock().lock().await;
-        let pending = tier.automation_plans().get(digest).cloned();
-        let Some(pending) = pending else {
-            return Err(
-                "this plan_digest was not produced by a plan in this server session (or \
-                        was already used); plan again, show it to the human and ask again"
-                    .to_string(),
-            );
-        };
-        let is_remove = matches!(pending.op, Op::Remove { .. });
-        let wrong_tool = match (&pending.op, remove_id) {
+        let again = "plan again, show it to the human and ask again";
+        let op = tier.automation_plans.fresh(digest, "", "plan", again)?;
+        let is_remove = matches!(op, Op::Remove { .. });
+        let wrong_tool = match (&op, remove_id) {
             (Op::Remove { id }, Some(asked)) => id != asked,
             (Op::Remove { .. }, None) | (Op::Save { .. }, Some(_)) => true,
             (Op::Save { .. }, None) => false,
@@ -380,20 +357,16 @@ impl BussardMcp {
                     .to_string()
             });
         }
-        if pending.created.elapsed() > tier.plan_ttl() {
-            tier.automation_plans().remove(digest);
-            return Err("the plan expired; plan again and ask the human again".to_string());
-        }
         let config = tier.config().clone();
-        let planned = match self.render_op(&config, &pending.op).await {
+        let planned = match self.render_op(&config, &op).await {
             Ok(p) => p,
             Err(reason) => {
-                tier.automation_plans().remove(digest);
+                tier.automation_plans.retire(digest);
                 return Err(format!("nothing was written: {reason}"));
             }
         };
         if planned.digest != digest {
-            tier.automation_plans().remove(digest);
+            tier.automation_plans.retire(digest);
             return Err(
                 "the plan is stale: the model or the automation in Home Assistant \
                         changed since the plan. Nothing was written. Plan again, show it to the \
@@ -401,7 +374,7 @@ impl BussardMcp {
                     .to_string(),
             );
         }
-        tier.automation_plans().remove(digest);
+        tier.automation_plans.retire(digest);
         let dir = self.state().dir.clone();
         let backup = match &planned.previous {
             Some(prev) => Some(
@@ -559,25 +532,12 @@ async fn read_automation(config: &HomeAssistantConfig, id: &str) -> Result<Optio
 
 /// SHA-256 over the id, the config to write and the config stored now.
 fn automation_digest(id: &str, config: Option<&Value>, previous: Option<&Value>) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(b"bussard-ha-automation-v1\0");
-    hasher.update(id.as_bytes());
+    let mut h = Fingerprint::new(b"bussard-ha-automation-v1").put(id);
     for part in [config, previous] {
-        match part {
-            Some(v) => {
-                let text = v.to_string();
-                hasher.update([1]);
-                hasher.update((text.len() as u64).to_le_bytes());
-                hasher.update(text.as_bytes());
-            }
-            None => hasher.update([0]),
-        }
+        h = h.put([u8::from(part.is_some())]);
+        h = h.put(part.map(Value::to_string).unwrap_or_default());
     }
-    hasher
-        .finalize()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+    h.hex()
 }
 
 /// The bussard-managed automations Home Assistant runs, for `knx_ha_plan`:

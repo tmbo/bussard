@@ -170,6 +170,7 @@
 
 pub mod args;
 pub mod browser;
+pub mod confirm;
 pub mod elicit;
 pub mod everyday;
 pub mod guidance;

@@ -10,21 +10,22 @@
 //! tunnels through, or rewrites its tunnel addresses (PID 53), is refused with the
 //! reason and the terminal command the owner runs instead.
 
-use std::time::{Instant, SystemTime};
+use std::time::SystemTime;
 
 use bussard_model::IndividualAddress;
-use bussard_model::history::{History, SnapshotReason};
+use bussard_model::history::SnapshotReason;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_secure::{Key16, SequenceHighWater};
 use bussard_service::knxnet::{
     self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, ReadAndPlanError,
     SessionLink, apply_interface, interface_config, write_interface_backup,
 };
+use bussard_service::program::plan::Fingerprint;
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 
-use super::{BussardMcp, PendingPlan, ProgrammingTier, chain};
+use super::{BussardMcp, PlanSides, ProgrammingTier, chain};
+use crate::jobs::Gate;
 
 /// What one interface read and plan produced.
 struct Planned {
@@ -41,18 +42,19 @@ struct Planned {
 
 /// The digest halves of an interface plan: the state it read, and the
 /// writes it derived.
-fn digests(plan: &InterfacePlan) -> ([u8; 32], [u8; 32]) {
-    let live: [u8; 32] = Sha256::digest(format!("interface {}", plan.state_hash)).into();
-    let mut model = Sha256::new();
+fn sides(plan: &InterfacePlan) -> PlanSides {
+    let live = Fingerprint::new(b"interface").put(&plan.state_hash);
+    let mut model = Fingerprint::new(b"interface-writes");
     for step in &plan.steps {
-        model.update(step.wire().as_bytes());
-        model.update([0]);
+        model = model.put(step.wire());
     }
     for change in &plan.changes {
-        model.update(change.sentence.as_bytes());
-        model.update([0]);
+        model = model.put(&change.sentence);
     }
-    (live, model.finalize().into())
+    PlanSides {
+        live: live.finish(),
+        model: model.finish(),
+    }
 }
 
 /// The session options of one interface read or write: the checked
@@ -198,22 +200,7 @@ impl BussardMcp {
         if noop && !procedure_differs {
             self.session_edits().applied(target, true);
         }
-        let digest = if noop {
-            None
-        } else {
-            let (live, model_digest) = digests(plan);
-            let pending = PendingPlan {
-                target,
-                created: Instant::now(),
-                live,
-                model: model_digest,
-            };
-            let digest = super::plan_digest(&pending);
-            let mut plans = tier.plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.insert(digest.clone(), pending);
-            Some(digest)
-        };
+        let digest = (!noop).then(|| tier.remember_plan(target, sides(plan)));
         let now = SystemTime::now();
         Ok(json!({
             "ok": true,
@@ -236,7 +223,7 @@ impl BussardMcp {
             "backup_dir": device_plan.backup_dir,
             "plan_digest": digest,
             "planned_at": bussard_monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| bussard_monitor::timefmt::to_rfc3339(now + tier.plan_ttl)),
+            "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
             "next_step": if noop {
                 if procedure_differs {
                     format!(
@@ -261,29 +248,21 @@ impl BussardMcp {
     /// The apply job of an IP interface: the pre-flight (the digest names a
     /// fresh plan of this session, a fresh read reproduces it, the gates
     /// pass, the snapshot and the backup are written), then the write and its
-    /// read-back. The caller holds the bus lock and the warm slot.
-    pub(super) async fn apply_interface_job(
+    /// read-back. The caller holds the bus lock and the warm slot. `Err` is
+    /// the pre-flight's refusal.
+    pub(super) async fn apply_interface(
         &self,
         tier: &ProgrammingTier,
         job: &str,
         target: IndividualAddress,
         digest: &str,
         plan_hash: Option<&str>,
-        started: tokio::sync::oneshot::Sender<Result<(), String>>,
-    ) {
-        let prepared = self
+        gate: &Gate,
+    ) -> Result<Value, String> {
+        let (service, config, planned, mut result, tool_key, high_water) = self
             .interface_preflight(tier, target, digest, plan_hash)
-            .await;
-        let (service, config, planned, mut result, tool_key, high_water) = match prepared {
-            Ok(prepared) => prepared,
-            Err(reason) => {
-                tier.jobs.refuse(job, &reason);
-                let _ = started.send(Err(reason));
-                return;
-            }
-        };
-        tier.jobs.started(job, result.clone(), None);
-        let _ = started.send(Ok(()));
+            .await?;
+        gate.pass(result.clone(), None);
         tier.jobs
             .step(job, "writing the KNXnet/IP parameter object");
         let dir = self.state().dir.clone();
@@ -298,44 +277,36 @@ impl BussardMcp {
             })
             .await
             .map_err(|err| session_error(target, &err));
-        match applied {
+        let failure = match applied {
             Ok(applied) => {
                 result["written"] = json!(applied.written);
                 result["readback"] = json!(applied.readback);
-                match applied.failure() {
-                    Some(failure) => {
-                        result["ok"] = json!(false);
-                        result["verified"] = json!(false);
-                        result["reason"] = json!(failure);
-                        result["recovery"] = json!(format!(
+                applied.failure().map(|failure| {
+                    json!({
+                        "reason": failure,
+                        "recovery": format!(
                             "The values before the apply are in {}. Plan {target} again with \
                              knx_plan_device to see what the interface holds; do not report the \
                              change as done until a plan reports nothing to do.",
                             result["backup"].as_str().unwrap_or("the backup")
-                        ));
-                    }
-                    None => {
-                        result["ok"] = json!(true);
-                        result["verified"] = json!(true);
-                        self.session_edits().applied(target, true);
-                    }
-                }
+                        ),
+                    })
+                })
             }
-            Err(reason) => {
-                result["ok"] = json!(false);
-                result["verified"] = json!(false);
-                result["reason"] = json!(reason);
-            }
+            Err(reason) => Some(json!({ "reason": reason })),
+        };
+        let ok = failure.is_none();
+        result["ok"] = json!(ok);
+        result["verified"] = json!(ok);
+        match failure {
+            Some(failure) => super::merge(&mut result, failure),
+            None => self.session_edits().applied(target, true),
         }
         tracing::info!(
             "audit: knx_apply_device {target} KNXnet/IP parameter object: {}",
-            if result["ok"] == json!(true) {
-                "verified"
-            } else {
-                "NOT VERIFIED"
-            }
+            if ok { "verified" } else { "NOT VERIFIED" }
         );
-        tier.jobs.finish(job, result);
+        Ok(result)
     }
 
     /// The pre-flight of an interface apply; `Err` is a refusal reason and
@@ -360,28 +331,12 @@ impl BussardMcp {
     > {
         let (_, service, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
-        let planned_before = {
-            let mut plans = tier.plans();
-            plans.retain(|_, p| p.created.elapsed() <= tier.plan_ttl);
-            plans.get(digest).cloned()
-        };
-        let Some(before) = planned_before else {
-            return Err(format!(
-                "no fresh plan with digest {digest:?} in this session (plans expire after {} \
-                 minute(s) and are single use); call knx_plan_device for {target}, show the plan \
-                 to the human and ask again",
-                tier.plan_ttl.as_secs().div_ceil(60)
-            ));
-        };
-        if before.target != target {
-            return Err(format!(
-                "plan {digest} is for {}, not {target}",
-                before.target
-            ));
-        }
+        let before = tier
+            .plans
+            .fresh(digest, target, "plan", super::again(target))?;
         let model = self.state().model.reload();
         let Some(config) = interface_config(&model, target).cloned() else {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(format!(
                 "{target} is no longer planned as an IP interface (its [knxnet] table or links \
                  changed); plan it again with knx_plan_device"
@@ -401,8 +356,8 @@ impl BussardMcp {
                 None,
             )
             .await?;
-        let (live, model_digest) = digests(&planned.plan);
-        let moved = match (live != before.live, model_digest != before.model) {
+        let now = sides(&planned.plan);
+        let moved = match (now.live != before.live, now.model != before.model) {
             (true, true) => Some("the interface's values and the model both changed"),
             (true, false) => Some("the interface's KNXnet/IP values changed"),
             (false, true) => Some("the device file's [knxnet] table changed"),
@@ -412,7 +367,7 @@ impl BussardMcp {
             plan_hash.is_some_and(|h| !h.eq_ignore_ascii_case(&planned.plan.state_hash));
         let moved = moved.or(hash_moved.then_some("the device state no longer matches plan_hash"));
         if let Some(what) = moved {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(format!(
                 "refusing to write {target}: {what} since the plan was made. Plan again with \
                  knx_plan_device and show the new plan to the human."
@@ -421,33 +376,20 @@ impl BussardMcp {
         if let Some(refusal) =
             bussard_service::drift_refusal(target, &planned.read.check, "apply to")
         {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(refusal);
         }
         if let Some(why) = planned.plan.refusal(false) {
-            tier.plans().remove(digest);
+            tier.plans.retire(digest);
             return Err(format!("refusing to write {target}: {why}"));
         }
         // The plan is consumed from here on: one digest, one write.
-        tier.plans().remove(digest);
-        let history = History::open(&dir);
-        let snapshot = if history.has_model_files() {
-            let reason = SnapshotReason::new("mcp knx_apply_device")
-                .with_args([target.to_string(), digest.to_string()])
-                .with_gateway(Some(gateway.clone()))
-                .with_result("before writing the KNXnet/IP parameter object");
-            match history.snapshot(reason) {
-                Ok(id) => Some(id.to_string()),
-                Err(err) => {
-                    return Err(format!(
-                        "refusing to write {target}: the audit snapshot could not be recorded \
-                         ({err})"
-                    ));
-                }
-            }
-        } else {
-            None
-        };
+        tier.plans.retire(digest);
+        let reason = SnapshotReason::new("mcp knx_apply_device")
+            .with_args([target.to_string(), digest.to_string()])
+            .with_gateway(Some(gateway.clone()))
+            .with_result("before writing the KNXnet/IP parameter object");
+        let snapshot = super::audit_snapshot(&dir, reason, target)?;
         let Some(facts) = &planned.read.knxnet else {
             return Err(format!("{target}: no KNXnet/IP parameter object"));
         };

@@ -86,17 +86,13 @@ impl BussardMcp {
         let warm = self.warm().clone();
         let task_jobs = Arc::clone(&jobs);
         let task_id = id.clone();
-        tokio::spawn(async move {
-            let result = run_scan(
+        jobs.spawn(&id, "scan", async move {
+            Ok(run_scan(
                 &service, &state, request, &keys, &task_jobs, &task_id, &warm,
             )
-            .await;
-            task_jobs.finish(&task_id, result);
+            .await)
         });
-
-        if jobs.wait(&id, jobs.read_wait()).await
-            && let Some(result) = jobs.result(&id)
-        {
+        if let Some(result) = jobs.outcome(&id, jobs.read_wait()).await {
             // Answered inline: the job is not needed any more.
             jobs.abandon(&id);
             return Ok(result);

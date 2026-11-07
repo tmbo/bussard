@@ -512,38 +512,16 @@ impl BussardMcp {
         let me = self.clone();
         let id = job.clone();
         let worker_line = line_text.clone();
-        let worker = tokio::spawn(async move {
-            let result = me
-                .reconstruct_line_body(
-                    &id,
-                    &service,
-                    (area, line_no),
-                    (from, to),
-                    &out,
-                    &worker_line,
-                )
-                .await
-                .unwrap_or_else(
-                    |reason| json!({"line": worker_line, "ok": false, "reason": reason}),
-                );
-            me.state().jobs.finish(&id, result);
-        });
-        let watched = job.clone();
-        let jobs = Arc::clone(&state.jobs);
-        tokio::spawn(async move {
-            if let Err(err) = worker.await {
-                jobs.finish(
-                    &watched,
-                    json!({
-                        "ok": false,
-                        "reason": format!("the line sweep stopped unexpectedly: {err}"),
-                    }),
-                );
-            }
+        state.jobs.spawn(&job, "line sweep", async move {
+            let range = (from, to);
+            let body =
+                me.reconstruct_line_body(&id, &service, (area, line_no), range, &out, &worker_line);
+            Ok(body.await.unwrap_or_else(
+                |reason| json!({"line": worker_line, "ok": false, "reason": reason}),
+            ))
         });
         let wait = state.jobs.read_wait().saturating_sub(began.elapsed());
-        if state.jobs.wait(&job, wait).await {
-            let mut result = state.jobs.result(&job).unwrap_or_else(|| json!({}));
+        if let Some(mut result) = state.jobs.outcome(&job, wait).await {
             result["job"] = json!(job);
             return Ok(result);
         }

@@ -309,15 +309,59 @@ pub fn put_desired(h: &mut Sha256, desired: &DesiredTables) {
     put(h, &associations);
 }
 
+/// The one digest builder of a confirmed write (issue #905): SHA-256 over a
+/// salt, then length-prefixed fields ([`put`]), so field boundaries are
+/// unambiguous and every digest a human's yes answers is built the same way.
+#[derive(Clone)]
+pub struct Fingerprint(Sha256);
+
+impl Fingerprint {
+    /// A digest salted with `salt` (`b"bussard-plan-v1"`).
+    pub fn new(salt: &[u8]) -> Self {
+        let mut h = Sha256::new();
+        put(&mut h, salt);
+        Fingerprint(h)
+    }
+
+    /// Adds one field.
+    #[must_use]
+    pub fn put(mut self, bytes: impl AsRef<[u8]>) -> Self {
+        put(&mut self.0, bytes.as_ref());
+        self
+    }
+
+    /// Adds a device address.
+    #[must_use]
+    pub fn address(self, address: IndividualAddress) -> Self {
+        self.put(address.raw().to_be_bytes())
+    }
+
+    /// Adds desired tables ([`put_desired`]).
+    #[must_use]
+    pub fn desired(mut self, desired: &DesiredTables) -> Self {
+        put_desired(&mut self.0, desired);
+        self
+    }
+
+    /// The digest.
+    pub fn finish(self) -> [u8; 32] {
+        self.0.finalize().into()
+    }
+
+    /// The digest as lowercase hex.
+    pub fn hex(self) -> String {
+        bussard_model::text::hex(&self.finish())
+    }
+}
+
 /// The plan digest a human approves: SHA-256 over the device, the model's
 /// side and the device's side of the plan, as lowercase hex.
 pub fn plan_digest(target: IndividualAddress, model: &[u8; 32], live: &[u8; 32]) -> String {
-    let mut h = Sha256::new();
-    put(&mut h, b"bussard-plan-v1");
-    put(&mut h, &target.raw().to_be_bytes());
-    put(&mut h, model);
-    put(&mut h, live);
-    bussard_model::text::hex(&h.finalize())
+    Fingerprint::new(b"bussard-plan-v1")
+        .address(target)
+        .put(model)
+        .put(live)
+        .hex()
 }
 
 /// The link-table plan of writing `desired` (a backup's tables, for a
