@@ -20,8 +20,8 @@ use anyhow::Context;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::knxnet::{
-    InterfacePlan, InterfaceRead, SessionLink, apply_interface, plan_interface, read_interface,
-    write_interface_backup,
+    self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, ReadAndPlanError,
+    SessionLink, apply_interface, write_interface_backup,
 };
 use bussard_service::property_plan::PropertyRow;
 use bussard_service::{L4Options, WritePolicy};
@@ -128,7 +128,8 @@ impl Session<'_> {
 }
 
 /// Reads the interface on `service` and plans `session.config` against it;
-/// with `procedure`, also reads the properties that procedure writes.
+/// with `procedure`, also reads the properties that procedure writes
+/// ([`bussard_service::knxnet::read_and_plan`]).
 fn read_and_plan(
     runtime: &tokio::runtime::Runtime,
     bus: &BusSession,
@@ -139,27 +140,23 @@ fn read_and_plan(
 ) -> anyhow::Result<(InterfaceRead, InterfacePlan, Option<Vec<PropertyRow>>)> {
     let target = session.target;
     let facts = crate::conn_cmd::facts_cache(session.dir, true, session.overrides.refresh_facts);
-    let device = session.model.devices.get(&target).map(|d| &d.device);
-    let (read, rows) = runtime
-        .block_on(bus.service().with_l4(target, options, async |l4| {
-            let read = read_interface(l4, &facts, device).await?;
-            let rows = match procedure {
-                Some(plan) => {
-                    Some(bussard_service::property_plan::read_property_rows(l4, plan).await)
-                }
-                None => None,
-            };
-            anyhow::Ok((read, rows))
-        }))
-        .map_err(|err| crate::secure_key::secure_hint(target, options.tool_key.is_some(), err))?;
-    let Some(knxnet) = &read.knxnet else {
-        anyhow::bail!(
-            "devices/{target}.toml has a [knxnet] table, but {target} has no KNXnet/IP parameter \
-             object (interface object type 11): it is not an IP interface, or not this one"
-        );
+    let req = InterfaceRequest {
+        target,
+        config: session.config,
+        device: session.model.devices.get(&target).map(|d| &d.device),
+        facts: &facts,
+        link,
+        procedure,
     };
-    let plan = plan_interface(target, session.config, knxnet, read.tunnel_slots, link);
-    Ok((read, plan, rows))
+    match runtime.block_on(knxnet::read_and_plan(bus.service(), options, req)) {
+        Ok(InterfaceReadPlan { read, plan, rows }) => Ok((read, plan, rows)),
+        Err(ReadAndPlanError::Service(err)) => Err(crate::secure_key::secure_hint(
+            target,
+            options.tool_key.is_some(),
+            err.into(),
+        )),
+        Err(err) => Err(err.into()),
+    }
 }
 
 /// Prints the plan as text, with the writes on the wire under `-v`.

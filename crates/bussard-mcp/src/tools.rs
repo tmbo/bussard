@@ -8,7 +8,6 @@
 
 use std::time::SystemTime;
 
-use bussard_mgmt::PropertyDesc;
 use bussard_model::codec::TypedValue;
 use bussard_model::param_model::ProductModels;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
@@ -732,32 +731,6 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
 /// The object-type and PID name tables, shared with `bussard describe` so the
 /// MCP and CLI surfaces agree (they live in [`bussard_service::describe`]).
 pub use bussard_service::describe::{object_type_name, pid_name};
-
-/// Renders one enumerated interface object and its property descriptions to the
-/// JSON shape the `knx_describe_device` tool returns (issue #72).
-pub fn describe_object_json(index: u8, object_type: u16, properties: &[PropertyDesc]) -> Value {
-    let props: Vec<Value> = properties
-        .iter()
-        .map(|p| {
-            json!({
-                "index": p.property_index,
-                "pid": p.property_id,
-                "name": pid_name(p.property_id),
-                "pdt": format!("0x{:02X}", p.pdt),
-                "writable": p.writable,
-                "max_elements": p.max_elements,
-                "read_level": p.read_level,
-                "write_level": p.write_level,
-            })
-        })
-        .collect();
-    json!({
-        "index": index,
-        "object_type": object_type,
-        "object_type_name": object_type_name(object_type),
-        "properties": props,
-    })
-}
 
 /// A structured JSON rendering of a [`TypedValue`] for tool responses.
 pub(crate) fn typed_value_json(v: &TypedValue) -> Value {

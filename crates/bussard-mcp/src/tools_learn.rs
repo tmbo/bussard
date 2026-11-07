@@ -20,12 +20,11 @@
 //!   protected GA, ever.
 
 use crate::args::Parameters;
+use bussard_model::GroupAddress;
 use bussard_model::tests_schema;
 use bussard_model::text::{from_hex, hex};
-use bussard_model::{Dpt, GroupAddress};
 use bussard_monitor::Filter;
 use bussard_monitor::acceptance::{self, RunOptions, SkipManual};
-use bussard_monitor::infer;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
@@ -142,29 +141,11 @@ impl BussardMcp {
 
         // The sender is the source of the most recent telegram on the GA.
         let sender = seen.last().map(|t| t.source);
-        let object = sender.and_then(|ia| infer::sending_object(&model, ia, ga));
-        let declared = object.as_ref().and_then(|o| o.declared_dpt);
-
-        let candidates = match payloads.split_first() {
-            Some((first, rest)) => infer::refine(infer::infer_dpt(first, declared), rest),
-            // Nothing seen yet: still report what the model knows, with the
-            // declared DPT as the only candidate.
-            None => match declared {
-                Some(dpt) => infer::infer_dpt(&placeholder_payload(dpt), Some(dpt)),
-                None => Vec::new(),
-            },
-        };
-
-        // With no link in the model there is no com-object index; `u16::MAX` is
-        // an index no com object uses, so the proposal falls back to the
-        // device's own name and location.
-        let proposed_name = sender.and_then(|ia| {
-            infer::propose_name(
-                &model,
-                ia,
-                object.as_ref().map(|o| o.index).unwrap_or(u16::MAX),
-            )
-        });
+        let bussard_service::learn::Observation {
+            object,
+            candidates,
+            proposed_name,
+        } = bussard_service::learn::observe(&model, ga, sender, &payloads);
 
         let group = model.groups.groups.get(&ga).map(|g| {
             json!({
@@ -316,16 +297,6 @@ impl BussardMcp {
     }
 }
 
-/// A payload of the right width for `dpt`, used only to seed the candidate list
-/// when the ring has seen nothing yet.
-fn placeholder_payload(dpt: Dpt) -> Vec<u8> {
-    match dpt.expected_size() {
-        Some(bussard_model::ApduSize::Bits(_)) => vec![0],
-        Some(bussard_model::ApduSize::Bytes(n)) => vec![0; n as usize],
-        None => vec![0],
-    }
-}
-
 /// Parses a hex payload such as `"01"`, `"0x0c1a"` or `"0c 1a"`.
 fn parse_hex(text: &str) -> Option<Vec<u8>> {
     let cleaned: String = text
@@ -352,13 +323,6 @@ mod tests {
         assert_eq!(parse_hex("0c 1a"), Some(vec![0x0c, 0x1a]));
         assert_eq!(parse_hex("xyz"), None);
         assert_eq!(parse_hex("1"), None);
-    }
-
-    #[test]
-    fn test_placeholder_payload_matches_the_dpt_width() {
-        assert_eq!(placeholder_payload(Dpt::new(1, Some(1))).len(), 1);
-        assert_eq!(placeholder_payload(Dpt::new(9, Some(1))).len(), 2);
-        assert_eq!(placeholder_payload(Dpt::new(16, Some(1))).len(), 14);
     }
 
     #[test]

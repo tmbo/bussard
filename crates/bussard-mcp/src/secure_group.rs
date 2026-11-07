@@ -12,8 +12,8 @@
 use std::path::Path;
 use std::sync::Arc;
 
+use bussard_service::SecureGroupError;
 use bussard_service::secure::KeyStore;
-use bussard_service::{GroupKeys, SecureGroupError};
 
 /// The error chain of `err` as one human reason (the file and the cause,
 /// never a key).
@@ -36,16 +36,6 @@ pub(crate) fn key_store(keyring: Option<&Path>) -> Result<Option<Arc<KeyStore>>,
     keyring
         .map(|path| bussard_service::secure::load_keys(path).map_err(|e| reason(&e)))
         .transpose()
-}
-
-/// The group keys of `keyring`, or `None` when the server has no keyring.
-///
-/// # Errors
-///
-/// A human reason (naming the file and the cause, never a key) when the
-/// keyring cannot be loaded.
-pub(crate) fn group_keys(keyring: Option<&Path>) -> Result<Option<Arc<GroupKeys>>, String> {
-    Ok(key_store(keyring)?.map(|store| Arc::new(bussard_service::secure::group_key_map(&store))))
 }
 
 /// The sender admission evidence (issue #297) of the server's keyring: its

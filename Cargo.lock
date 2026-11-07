@@ -514,6 +514,7 @@ dependencies = [
  "bussard-download",
  "bussard-mgmt",
  "bussard-model",
+ "bussard-monitor",
  "bussard-prod",
  "bussard-project",
  "bussard-secure",
