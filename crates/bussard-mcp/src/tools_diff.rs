@@ -28,9 +28,6 @@ use serde_json::{Value, json};
 
 use crate::server::BussardMcp;
 
-/// The tools this module registers, present in every tier.
-pub const DIFF_TOOLS: [&str; 2] = ["knx_export_bundle", "knx_diff_project"];
-
 /// Arguments for `knx_export_bundle`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct ExportBundleArgs {

@@ -133,22 +133,6 @@ mod restore;
 mod restore_tables;
 mod secure_diag;
 
-/// The tools of the programming tier, in registration order.
-pub const PROGRAMMING_TOOLS: [&str; 12] = [
-    "knx_plan_device",
-    "knx_apply_device",
-    "knx_add_device",
-    "knx_commission_line",
-    "knx_replace_device",
-    "knx_interface_secure",
-    "knx_clear_security_log",
-    "knx_apply_status",
-    "knx_last_apply",
-    "knx_restore_parameters",
-    "knx_restart_device",
-    "knx_restore_tables",
-];
-
 /// How long a plan stays valid for `knx_apply_device` unless configured.
 pub const DEFAULT_PLAN_TTL: Duration = Duration::from_secs(10 * 60);
 

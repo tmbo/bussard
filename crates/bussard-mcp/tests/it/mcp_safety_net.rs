@@ -498,7 +498,11 @@ async fn test_restart_and_restore_tables_refused_outside_the_programming_tier() 
 async fn test_passive_mode_omits_the_device_reads() -> anyhow::Result<()> {
     let mut names = bussard_mcp::tool_names(true, false, true);
     names.sort_unstable();
-    for tool in bussard_mcp::tools_device::DEVICE_TOOLS {
+    for tool in [
+        "knx_backup_device",
+        "knx_reconstruct_device",
+        "knx_find_devices",
+    ] {
         assert!(!names.contains(&tool), "{tool} in passive mode");
         assert!(bussard_mcp::tool_names(false, false, true).contains(&tool));
     }

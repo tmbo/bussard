@@ -48,18 +48,6 @@ use serde_json::{Value, json};
 use crate::confirm::Store;
 use crate::server::BussardMcp;
 
-/// The tools of the Home Assistant tier, in registration order: the KNX
-/// YAML trio, then the bussard-managed automations
-/// ([`crate::tools_ha_automation`]).
-pub const HA_TOOLS: [&str; 6] = [
-    "knx_ha_status",
-    "knx_ha_plan",
-    "knx_ha_apply",
-    "knx_ha_automation_plan",
-    "knx_ha_automation_apply",
-    "knx_ha_automation_remove",
-];
-
 /// What `knx_ha_status` says about entities created in Home Assistant's UI.
 const UI_NOTE: &str = "KNX entities created in Home Assistant's UI live in its .storage and \
     are not visible through the REST API; bussard neither lists nor touches them. bussard \

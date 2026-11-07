@@ -42,13 +42,6 @@ use crate::guidance::Tiers;
 use crate::server::BussardMcp;
 use crate::state::Need;
 
-/// The tools this module registers: the default tier, omitted in `--passive`.
-pub const DEVICE_TOOLS: [&str; 3] = [
-    "knx_backup_device",
-    "knx_reconstruct_device",
-    "knx_find_devices",
-];
-
 /// Arguments for `knx_backup_device`.
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct BackupDeviceArgs {

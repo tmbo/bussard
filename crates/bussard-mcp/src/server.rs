@@ -70,9 +70,8 @@ pub struct BussardMcp {
 
 impl BussardMcp {
     /// Builds the server over `state`. The instance router starts with every
-    /// tool registered, then unregisters the ones this mode must not expose:
-    /// `knx_read_group` in passive mode, and `knx_write_group` unless
-    /// `--allow-writes` is set (and never in passive mode).
+    /// tool registered, then unregisters the ones whose [`crate::Tier`] this
+    /// mode does not allow ([`crate::TOOLS`]).
     pub fn new(state: Arc<SharedState>) -> Self {
         // The bus tools, the model-edit tools, the group-planning tools, the
         // learn/acceptance tools, the audit tool and the bundle/diff tools live
@@ -94,46 +93,9 @@ impl BussardMcp {
             + Self::ha_automation_router()
             + Self::enroll_router()
             + Self::viz_router();
-        if state.no_model_edits {
-            for name in crate::tools_model::MODEL_EDIT_TOOLS {
-                tool_router.remove_route(name);
-            }
-            // Certificate enrolment writes the key store (issue #732).
-            for name in crate::tools_enroll::ENROLL_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if state.passive {
-            tool_router.remove_route("knx_read_group");
-            // Passive mode leaves the connection to the actor's own reconnect.
-            tool_router.remove_route("knx_bus_reconnect");
-            // Introspection actively transmits management traffic, so it is a
-            // bus-touching tool: unavailable in passive (observe-only) mode.
-            tool_router.remove_route("knx_describe_device");
-            // The backup and reconstruct reads transmit management traffic
-            // too (issue #717).
-            for name in crate::tools_device::DEVICE_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if !state.allow_writes || state.passive {
-            tool_router.remove_route("knx_write_group");
-            // Running the acceptance suite writes to the bus, so it follows the
-            // write tier. `knx_infer_group` stays: it only reads the ring.
-            tool_router.remove_route("knx_run_tests");
-        }
-        if state.programming.is_none() || state.passive {
-            // The programming tier writes device tables: registered only with
-            // `--allow-programming`, never in passive mode (issue #118).
-            for name in crate::tools_program::PROGRAMMING_TOOLS {
-                tool_router.remove_route(name);
-            }
-        }
-        if state.home_assistant.is_none() {
-            // The Home Assistant tier needs the `[home_assistant]` table and
-            // `--allow-home-assistant` (issue #280). It never touches the bus,
-            // so passive mode keeps it.
-            for name in crate::tools_ha::HA_TOOLS {
+        let tiers = crate::guidance::Tiers::of(&state);
+        for (name, tier) in crate::TOOLS {
+            if !tiers.allows(*tier) {
                 tool_router.remove_route(name);
             }
         }

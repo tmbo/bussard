@@ -23,9 +23,6 @@ use serde_json::{Value, json};
 use crate::jobs::JobTable;
 use crate::server::BussardMcp;
 
-/// The tools this module registers, present in every tier.
-pub const JOB_TOOLS: [&str; 1] = ["knx_job_status"];
-
 /// Arguments for `knx_job_status`.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct JobStatusArgs {

@@ -105,8 +105,8 @@
 //! `--no-model-edits` the model-edit and enrolment tools are withheld, giving
 //! 18, 24 and 26. [`tier_help::tier_counts`] computes them from this table.
 //!
-//! `--allow-programming` (issue #118) adds the eleven programming tools
-//! ([`tools_program::PROGRAMMING_TOOLS`]) to any non-passive tier. They write
+//! `--allow-programming` (issue #118) adds the twelve programming tools
+//! ([`Tier::Programming`] in [`TOOLS`]) to any non-passive tier. They write
 //! device tables, so they pass the non-loopback write gate on every call, run
 //! the source-address probe, and apply only a plan whose digest this session
 //! produced minutes ago and which a fresh read still reproduces. The write
@@ -130,7 +130,7 @@
 //! [`tools_program`].
 //!
 //! `--allow-home-assistant` (issue #280) adds the six Home Assistant tools
-//! ([`tools_ha::HA_TOOLS`]) when `bussard.toml` has a `[home_assistant]`
+//! ([`Tier::HomeAssistant`]) when `bussard.toml` has a `[home_assistant]`
 //! table: `knx_ha_status` reads Home Assistant's REST API, `knx_ha_plan`
 //! diffs the KNX YAML generated from the model against the file Home
 //! Assistant reads, and `knx_ha_apply` writes it (backup first) and reloads
@@ -445,33 +445,121 @@ pub async fn run_onboarding_http_with_ready(
     run::serve_onboarding_http(onboarding::SetupMcp::new(onboarding), options, on_ready).await
 }
 
+/// The tier a tool belongs to (issue #905): which server flags register it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    /// Every tier, `--passive` included: the model, the ring, the job table.
+    Read,
+    /// The default tier: transmits read or management traffic, so not in
+    /// `--passive`.
+    Bus,
+    /// `--allow-writes`, never with `--passive`.
+    Writes,
+    /// Writes the model files or the key store; withheld by
+    /// `--no-model-edits`.
+    ModelEdit,
+    /// `--allow-programming`, never with `--passive`.
+    Programming,
+    /// `--allow-home-assistant` with a `[home_assistant]` table; never
+    /// touches the bus, so `--passive` keeps it.
+    HomeAssistant,
+}
+
+/// Every tool of the server with its tier, in registration order: the one
+/// table [`tool_names`], [`server::BussardMcp::new`] and [`tier_help`] read.
+pub const TOOLS: &[(&str, Tier)] = &[
+    ("knx_project_summary", Tier::Read),
+    ("knx_model_lookup", Tier::Read),
+    ("knx_get_group", Tier::Read),
+    ("knx_get_device", Tier::Read),
+    ("knx_show_device", Tier::Read),
+    ("knx_recent_telegrams", Tier::Read),
+    ("knx_wait_for_telegram", Tier::Read),
+    ("knx_validate", Tier::Read),
+    // `knx_audit` refuses `live: true` in passive mode.
+    ("knx_audit", Tier::Read),
+    // Only reads the telegram ring.
+    ("knx_infer_group", Tier::Read),
+    ("knx_bus_status", Tier::Read),
+    ("knx_read_group", Tier::Bus),
+    // Introspection, backups, reconstruction and scans transmit management
+    // traffic (issue #717); passive mode leaves the connection to the actor.
+    ("knx_describe_device", Tier::Bus),
+    ("knx_bus_reconnect", Tier::Bus),
+    ("knx_backup_device", Tier::Bus),
+    ("knx_reconstruct_device", Tier::Bus),
+    ("knx_find_devices", Tier::Bus),
+    ("knx_write_group", Tier::Writes),
+    // The acceptance suite writes to the bus.
+    ("knx_run_tests", Tier::Writes),
+    ("knx_describe_change", Tier::Read),
+    ("knx_history", Tier::Read),
+    ("knx_export_bundle", Tier::Read),
+    ("knx_diff_project", Tier::Read),
+    ("knx_export", Tier::Read),
+    ("knx_job_status", Tier::Read),
+    ("knx_viz", Tier::Read),
+    ("knx_scaffold_groups", Tier::ModelEdit),
+    ("knx_reserve_groups", Tier::ModelEdit),
+    ("knx_set_group", Tier::ModelEdit),
+    ("knx_remove_group", Tier::ModelEdit),
+    ("knx_add_link", Tier::ModelEdit),
+    ("knx_remove_link", Tier::ModelEdit),
+    ("knx_set_device", Tier::ModelEdit),
+    ("knx_set_parameter", Tier::ModelEdit),
+    ("knx_set_interface", Tier::ModelEdit),
+    ("knx_undo", Tier::ModelEdit),
+    ("knx_discard_edits", Tier::ModelEdit),
+    // Imports write the model files too (issue #743).
+    ("knx_import_file", Tier::ModelEdit),
+    // Certificate enrolment writes the key store (issue #732).
+    ("knx_enroll_certificates", Tier::ModelEdit),
+    ("knx_enroll_status", Tier::ModelEdit),
+    ("knx_plan_device", Tier::Programming),
+    ("knx_apply_device", Tier::Programming),
+    ("knx_add_device", Tier::Programming),
+    ("knx_commission_line", Tier::Programming),
+    ("knx_replace_device", Tier::Programming),
+    ("knx_interface_secure", Tier::Programming),
+    ("knx_clear_security_log", Tier::Programming),
+    ("knx_apply_status", Tier::Programming),
+    ("knx_last_apply", Tier::Programming),
+    ("knx_restore_parameters", Tier::Programming),
+    ("knx_restart_device", Tier::Programming),
+    ("knx_restore_tables", Tier::Programming),
+    ("knx_ha_status", Tier::HomeAssistant),
+    ("knx_ha_plan", Tier::HomeAssistant),
+    ("knx_ha_apply", Tier::HomeAssistant),
+    ("knx_ha_automation_plan", Tier::HomeAssistant),
+    ("knx_ha_automation_apply", Tier::HomeAssistant),
+    ("knx_ha_automation_remove", Tier::HomeAssistant),
+];
+
+/// The tools of `tier`, in registration order.
+pub fn tools_of(tier: Tier) -> Vec<&'static str> {
+    TOOLS
+        .iter()
+        .filter(|(_, t)| *t == tier)
+        .map(|(name, _)| *name)
+        .collect()
+}
+
 /// The set of tool names exposed, in registration order. Used by tests and docs.
 ///
-/// - passive mode: 32 tools (no bus-touching tools: no `knx_read_group`, no
-///   `knx_describe_device`, no `knx_backup_device`, no `knx_reconstruct_device`,
-///   no `knx_bus_reconnect`, no `knx_write_group`, no `knx_run_tests`).
+/// - passive mode: 32 tools (no [`Tier::Bus`] or [`Tier::Writes`] tools).
 ///   `knx_infer_group` is there: it only reads the telegram ring.
 ///   `knx_bus_status` reads the connection state. `knx_audit` is there too,
 ///   but refuses `live: true`.
-/// - default mode: 38 tools (adds `knx_read_group`, `knx_describe_device`,
-///   `knx_bus_reconnect` and [`tools_device::DEVICE_TOOLS`]).
+/// - default mode: 38 tools (adds the [`Tier::Bus`] tools).
 /// - `--allow-writes`: 40 tools (adds `knx_write_group` and `knx_run_tests`).
-/// - `--no-model-edits` removes the model-edit tools
-///   ([`tools_model::MODEL_EDIT_TOOLS`], including the two reservation tools and
-///   `knx_import_file`) and the enrolment tools from any of those (18, 24 and
-///   26 tools).
-///
-/// The two model/history read tools (`knx_describe_change`, `knx_history`),
-/// the two bundle/diff tools (`knx_export_bundle`, `knx_diff_project`),
-/// `knx_export`, `knx_job_status` and the model-edit tools touch files
-/// only, so they
-/// are present in every tier including `--passive`.
+/// - `--no-model-edits` removes the [`Tier::ModelEdit`] tools from any of
+///   those (18, 24 and 26 tools).
 pub fn tool_names(passive: bool, allow_writes: bool, no_model_edits: bool) -> Vec<&'static str> {
     tool_names_for(passive, allow_writes, no_model_edits, false)
 }
 
-/// [`tool_names`] with the programming tier: `allow_programming` appends
-/// [`tools_program::PROGRAMMING_TOOLS`] unless the server is passive.
+/// [`tool_names`] with the programming tier: `allow_programming` adds the
+/// [`Tier::Programming`] tools unless the server is passive.
 pub fn tool_names_for(
     passive: bool,
     allow_writes: bool,
@@ -488,9 +576,8 @@ pub fn tool_names_for(
 }
 
 /// [`tool_names_for`] with the Home Assistant tier: `home_assistant` (the
-/// `[home_assistant]` table and `--allow-home-assistant` together) appends
-/// [`tools_ha::HA_TOOLS`]. That tier never touches the bus, so passive mode
-/// does not remove it.
+/// `[home_assistant]` table and `--allow-home-assistant` together) adds the
+/// [`Tier::HomeAssistant`] tools, also in passive mode.
 pub fn tool_names_with_ha(
     passive: bool,
     allow_writes: bool,
@@ -498,45 +585,16 @@ pub fn tool_names_with_ha(
     allow_programming: bool,
     home_assistant: bool,
 ) -> Vec<&'static str> {
-    let mut names = vec![
-        "knx_project_summary",
-        "knx_model_lookup",
-        "knx_get_group",
-        "knx_get_device",
-        "knx_show_device",
-        "knx_recent_telegrams",
-        "knx_wait_for_telegram",
-        "knx_validate",
-        "knx_audit",
-        "knx_infer_group",
-        "knx_bus_status",
-    ];
-    if !passive {
-        names.push("knx_read_group");
-        names.push("knx_describe_device");
-        names.push("knx_bus_reconnect");
-        names.extend(tools_device::DEVICE_TOOLS);
-    }
-    if allow_writes && !passive {
-        names.push("knx_write_group");
-        names.push("knx_run_tests");
-    }
-    names.extend(tools_model::MODEL_READ_TOOLS);
-    names.extend(tools_diff::DIFF_TOOLS);
-    names.extend(tools_files::EXPORT_TOOLS);
-    names.extend(tools_jobs::JOB_TOOLS);
-    names.extend(tools_viz::VIZ_TOOLS);
-    if !no_model_edits {
-        names.extend(tools_model::MODEL_EDIT_TOOLS);
-        // Certificate enrolment writes the key store, not the model, but is
-        // withheld with the model edits (issue #732).
-        names.extend(tools_enroll::ENROLL_TOOLS);
-    }
-    if allow_programming && !passive {
-        names.extend(tools_program::PROGRAMMING_TOOLS);
-    }
-    if home_assistant {
-        names.extend(tools_ha::HA_TOOLS);
-    }
-    names
+    let tiers = guidance::Tiers {
+        passive,
+        writes: allow_writes && !passive,
+        programming: allow_programming && !passive,
+        model_edits: !no_model_edits,
+        home_assistant,
+    };
+    TOOLS
+        .iter()
+        .filter(|(_, tier)| tiers.allows(*tier))
+        .map(|(name, _)| *name)
+        .collect()
 }

@@ -30,9 +30,6 @@ use tokio::sync::Mutex;
 use crate::server::BussardMcp;
 use crate::state::SharedState;
 
-/// The tools this module registers, present in every tier.
-pub const VIZ_TOOLS: [&str; 1] = ["knx_viz"];
-
 /// How long a stopping page gets to finish open requests before it is cut.
 const STOP_GRACE: Duration = Duration::from_secs(2);
 

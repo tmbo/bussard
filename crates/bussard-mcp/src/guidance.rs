@@ -110,6 +110,18 @@ impl Tiers {
         }
     }
 
+    /// Whether these tiers register the tools of `tier`.
+    pub fn allows(&self, tier: crate::Tier) -> bool {
+        match tier {
+            crate::Tier::Read => true,
+            crate::Tier::Bus => !self.passive,
+            crate::Tier::Writes => self.writes,
+            crate::Tier::ModelEdit => self.model_edits,
+            crate::Tier::Programming => self.programming,
+            crate::Tier::HomeAssistant => self.home_assistant,
+        }
+    }
+
     /// The tier names in order: `passive`, or `read` followed by `write`
     /// and `programming` when those are on; then `home_assistant` when on.
     pub fn names(&self) -> Vec<&'static str> {

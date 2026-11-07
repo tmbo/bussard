@@ -44,10 +44,6 @@ use crate::args::Parameters;
 use crate::password_form::{self, Attempt, Step};
 use crate::server::BussardMcp;
 
-/// The export tool, registered in every tier. `knx_import_file` writes the
-/// model and is listed with [`crate::tools_model::MODEL_EDIT_TOOLS`].
-pub const EXPORT_TOOLS: [&str; 1] = ["knx_export"];
-
 /// How a download is consented to over MCP, for the refusal sentence.
 const CONSENT_HINT: &str = "it is copyrighted vendor product data fetched over the network; \
     ask the human, then call knx_import_file again with download: true";

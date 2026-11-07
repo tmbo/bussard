@@ -92,10 +92,6 @@ use tokio::sync::watch;
 
 use crate::server::BussardMcp;
 
-/// The enrolment tools, withheld with `--no-model-edits` (they write the
-/// key store).
-pub const ENROLL_TOOLS: [&str; 2] = ["knx_enroll_certificates", "knx_enroll_status"];
-
 /// The longest `wait_seconds` of `knx_enroll_status` for the next
 /// certificate; `until_end` waits up to the session's lifetime.
 const MAX_STATUS_WAIT_SECS: u64 = 120;

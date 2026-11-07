@@ -215,30 +215,6 @@ pub struct UndoArgs {
     pub snapshot_id: Option<String>,
 }
 
-/// The names of the tools that edit the model, removed from the router when the
-/// server is started with `--no-model-edits`.
-///
-/// `knx_scaffold_groups` and `knx_reserve_groups` live on the group-planning
-/// router but write `groups.toml`, so they are withheld with the others.
-pub const MODEL_EDIT_TOOLS: [&str; 12] = [
-    "knx_scaffold_groups",
-    "knx_reserve_groups",
-    "knx_set_group",
-    "knx_remove_group",
-    "knx_add_link",
-    "knx_remove_link",
-    "knx_set_device",
-    "knx_set_parameter",
-    "knx_set_interface",
-    "knx_undo",
-    "knx_discard_edits",
-    // Imports write the model files too (issue #743, `crate::tools_files`).
-    "knx_import_file",
-];
-
-/// The read-only model/history tools, available in every tier.
-pub const MODEL_READ_TOOLS: [&str; 2] = ["knx_describe_change", "knx_history"];
-
 // `pub(crate)`: the router is combined in `BussardMcp::new` and needs no public
 // face (a `pub` macro-generated fn could not carry the doc comment the crate
 // requires).
