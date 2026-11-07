@@ -382,6 +382,41 @@ pub struct ManifestEntry {
     /// The device's identity against `bussard.lock` (issue #228, item 5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity: Option<bussard_model::identity::IdentityCheck>,
+    /// The device's backup while a run holds it, before it is written as
+    /// [`file`](Self::file). Never part of the manifest.
+    #[serde(skip)]
+    pub backup: Option<DeviceBackup>,
+}
+
+impl ManifestEntry {
+    /// The row of a device that answered, but whose read failed.
+    pub fn failed(address: IndividualAddress, detail: impl Into<String>) -> ManifestEntry {
+        ManifestEntry {
+            address: address.to_string(),
+            status: BackupStatus::Failed,
+            mask: None,
+            system_type: None,
+            application: None,
+            order_number: None,
+            read_time: Some(rfc3339_utc(SystemTime::now())),
+            file: None,
+            parameters: None,
+            detail: Some(detail.into()),
+            identity: None,
+            backup: None,
+        }
+    }
+
+    /// The row of a device nothing answered for.
+    pub fn unreachable(address: IndividualAddress) -> ManifestEntry {
+        ManifestEntry {
+            status: BackupStatus::Unreachable,
+            ..ManifestEntry::failed(
+                address,
+                "no answer at this address (switched off, disconnected, or removed)",
+            )
+        }
+    }
 }
 
 /// The per-run manifest written beside the device backups.
