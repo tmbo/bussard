@@ -310,9 +310,11 @@ fn run_parameters(
         .context("writing the parameter backup (refusing to write without a backup)")?;
     println!("parameter backup written to {}", pre.display());
     let mut observer = crate::progress::Terminal::new(yes, false);
-    bussard_service::program::Observer::step(
+    bussard_service::observer::ProgressSink::event(
         &mut observer,
-        bussard_service::program::Step::WriteParameters { plan: partial },
+        bussard_service::observer::Event::Step(bussard_service::observer::Step::WriteParameters {
+            plan: partial,
+        }),
     );
     let outcome = runtime.block_on(bussard_service::download::write_parameters(
         bussard_service::download::ParamWrite {

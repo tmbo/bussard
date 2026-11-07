@@ -20,6 +20,7 @@
 use std::io::{IsTerminal, Write};
 
 use anyhow::{Context, bail};
+use bussard_service::observer::{Answer, Ask, Prompt, Question};
 
 /// The flag that consents to downloading vendor product data without asking
 /// (`init`, `import`, `import-product`, `adopt`).
@@ -172,33 +173,50 @@ mod tests {
     }
 }
 
-/// How a command answers the one product-data download question
-/// (`--yes-download`, `--no-download`) of `init`, `import` and `adopt`.
+/// The terminal's answer to every question a flow asks
+/// ([`bussard_service::observer::Prompt`]): a write consent through
+/// [`confirm`] (`--yes`), the product-data download through [`download`]
+/// (`--yes-download`, `--no-download`), and a hand-edited conflict of
+/// `--interactive` as `keep [m]ine or take [t]heirs?`.
 #[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct DownloadConsent {
+pub(crate) struct Answers {
+    /// `--yes`: a write is confirmed without asking.
+    pub yes: bool,
     /// `--yes-download`: download without asking.
     pub yes_download: bool,
     /// `--no-download`: never download; report what is missing.
     pub no_download: bool,
 }
 
-impl bussard_service::setup::DownloadPrompt for DownloadConsent {
-    fn skip_downloads(&self) -> Option<String> {
-        self.no_download.then(|| "--no-download".to_string())
+impl Prompt for Answers {
+    fn ask(&mut self, question: &Question) -> Answer {
+        let answer = match question.kind {
+            Ask::Write => confirm(self.yes, &question.prompt, &question.action).map(Answer::from),
+            Ask::Download => download(self.yes_download, &question.prompt).map(|d| match d {
+                Download::Yes => Answer::Yes,
+                Download::No => Answer::No,
+                Download::NoTerminal => Answer::Refused(download_refusal(&question.action)),
+            }),
+            Ask::Conflict => take_theirs(&question.prompt).map(Answer::from),
+        };
+        answer.unwrap_or_else(|err| Answer::Refused(format!("{err:#}")))
     }
 
-    fn download(
-        &mut self,
-        question: &str,
-        files: usize,
-    ) -> Result<bussard_service::setup::DownloadAnswer, bussard_service::setup::SetupError> {
-        use bussard_service::setup::{DownloadAnswer, SetupError};
-        match download(self.yes_download, question).map_err(SetupError::source)? {
-            Download::Yes => Ok(DownloadAnswer::Yes),
-            Download::No => Ok(DownloadAnswer::No),
-            Download::NoTerminal => Ok(DownloadAnswer::Refused(download_refusal(&format!(
-                "{files} file(s)"
-            )))),
-        }
+    fn can_ask(&self) -> bool {
+        std::io::stdin().is_terminal()
     }
+
+    fn skips(&self, kind: Ask) -> Option<String> {
+        (kind == Ask::Download && self.no_download).then(|| "--no-download".to_string())
+    }
+}
+
+/// Shows one hand-edited conflict on stdout and reads whether to take the
+/// incoming value.
+fn take_theirs(sentence: &str) -> anyhow::Result<bool> {
+    print!("  {sentence}\n    keep [m]ine or take [t]heirs? [m] ");
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    Ok(matches!(line.trim(), "t" | "T" | "theirs"))
 }

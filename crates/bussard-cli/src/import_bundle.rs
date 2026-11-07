@@ -21,7 +21,7 @@ pub fn run_bundle(path: &Path, dir: &Path, choice: ConflictChoice) -> anyhow::Re
         path,
         dir,
         choice,
-        &mut Console,
+        &mut crate::confirm::Answers::default(),
         &mut Console,
     )?;
     Ok(crate::import_cmd::exit_code(&outcome))

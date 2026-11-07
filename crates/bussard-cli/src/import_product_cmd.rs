@@ -21,7 +21,6 @@ use anyhow::bail;
 use bussard_prod::ProductIndex;
 use bussard_service::files::products as files;
 use bussard_service::setup::products;
-use bussard_service::setup::{DownloadAnswer, DownloadPrompt, SetupError};
 
 use crate::cli::{Resolved, Run};
 use crate::console::Console;
@@ -131,33 +130,13 @@ fn run_order_number(
     yes_download: bool,
     inner: Option<&str>,
 ) -> anyhow::Result<ExitCode> {
-    let mut prompt = OrderPrompt { yes_download };
+    let mut prompt = crate::confirm::Answers {
+        yes_download,
+        ..Default::default()
+    };
     match files::import_product_order(order, dir, inner, &mut prompt, &mut Console)? {
         files::OrderImport::Declined => Ok(ExitCode::FAILURE),
         files::OrderImport::Imported(_) => Ok(ExitCode::SUCCESS),
-    }
-}
-
-/// The download question of `--order-number`: asked on a TTY; without one it
-/// needs `--yes-download` (the one download-consent flag, `crate::confirm`).
-struct OrderPrompt {
-    /// `--yes-download`.
-    yes_download: bool,
-}
-
-impl DownloadPrompt for OrderPrompt {
-    fn download(&mut self, question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(
-            match crate::confirm::download(self.yes_download, question)
-                .map_err(SetupError::source)?
-            {
-                crate::confirm::Download::Yes => DownloadAnswer::Yes,
-                crate::confirm::Download::No => DownloadAnswer::No,
-                crate::confirm::Download::NoTerminal => {
-                    DownloadAnswer::Refused(crate::confirm::download_refusal("this file"))
-                }
-            },
-        )
     }
 }
 

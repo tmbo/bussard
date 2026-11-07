@@ -45,7 +45,7 @@ use bussard_service::commission::{
 use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::{BusService, WritePolicy};
 
-use crate::addressing::{Bench, stopped};
+use crate::addressing::stopped;
 use crate::apply_cmd::ApplyArgs;
 use crate::cli::{Consent, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{
@@ -53,6 +53,7 @@ use crate::conn_cmd::{
     resolve_config, session_open_error,
 };
 use crate::flash_cmd::FlashArgs;
+use crate::progress::Terminal;
 
 /// `bussard commission`.
 #[derive(Debug, clap::Args)]
@@ -409,7 +410,7 @@ async fn assign_on_bus(
         .order_number
         .clone()
         .unwrap_or_else(|| "no order number in the model".to_string());
-    let bench = &mut Bench::new(true).indent("  ").press(format!(
+    let bench = &mut Terminal::new(true, false).indent("  ").press(format!(
         "  press the programming button on {} ({order})",
         target.name
     ));

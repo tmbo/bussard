@@ -582,6 +582,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         );
     let changes = report.additions.len() + report.removals.len();
     let question = program::Question {
+        kind: bussard_service::observer::Ask::Write,
         prompt: match built {
             Some(built) => built.plan.question(),
             None => format!("{verb} {changes} change(s) to {target} via {gateway}?"),

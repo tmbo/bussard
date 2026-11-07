@@ -63,10 +63,11 @@ use bussard_service::program::adopt;
 use bussard_service::program::assign::AssignFlow;
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 
-use crate::addressing::{Bench, question, stopped, warn_forced};
+use crate::addressing::{question, stopped, warn_forced};
 use crate::assign_cmd::{hex, load_model_optional};
 use crate::cli::{Consent, Resolved, Run, Spec};
 use crate::conn_cmd::{enforce_write_gate, gateway_display, open_checked, resolve_config};
+use crate::progress::Terminal;
 use crate::style::Style;
 
 /// `bussard adopt`.
@@ -119,9 +120,10 @@ impl Run for AdoptArgs {
 fn run(args: &AdoptArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let (scripted_address, product) = (args.address.as_deref(), args.product.as_deref());
     let (yes, force) = (args.consent.yes, args.force);
-    let consent = crate::confirm::DownloadConsent {
+    let consent = crate::confirm::Answers {
         yes_download: args.yes_download,
         no_download: args.no_download,
+        ..Default::default()
     };
     let (dir, allow_remote_gateway, keyring, overrides) =
         (g.dir(), g.allow_remote_gateway, g.keyring(), g.mgmt());
@@ -335,7 +337,7 @@ struct AdoptRun<'a> {
     /// The resolved gateway, for the prompt.
     gateway: &'a str,
     /// `--yes-download` / `--no-download`.
-    fetch: crate::confirm::DownloadConsent,
+    fetch: crate::confirm::Answers,
     /// `--product`, for the parameter read-back of a secured device.
     product: Option<&'a Path>,
 }
@@ -353,7 +355,7 @@ async fn adopt_flow(
     keys: adopt::Keys<'_>,
 ) -> anyhow::Result<ExitCode> {
     step(2, "assign an address");
-    let bench = &mut Bench::new(run.yes).wizard();
+    let bench = &mut Terminal::new(run.yes, false).wizard();
     let planned = async {
         let current = flow.wait_for_one(bench).await?;
         let request = adopt::PlanRequest {
@@ -470,7 +472,7 @@ async fn adopt_flow(
 fn fetch_product_for(
     order: &str,
     dir: &Path,
-    fetch: &mut crate::confirm::DownloadConsent,
+    fetch: &mut crate::confirm::Answers,
 ) -> Option<SelectedProduct> {
     let path = match bussard_service::params::archive_for_order(dir, order) {
         Ok(Some(path)) => path,
@@ -726,7 +728,7 @@ fn print_secure_summary(target: IndividualAddress, s: &SecureSummary) {
 /// Imports a `.knxprod` (or an ETS project export) into the product store
 /// as `bussard import-product` does, and returns its product data.
 fn import_product(file: &Path, dir: &Path) -> anyhow::Result<ProductData> {
-    let mut said = bussard_service::setup::Collected::default();
+    let mut said = bussard_service::observer::Collected::default();
     let imported =
         bussard_service::files::products::import_product_file(file, dir, None, &mut said)?;
     let archive = imported.archive.as_deref().unwrap_or(file);
