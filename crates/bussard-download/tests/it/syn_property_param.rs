@@ -589,7 +589,7 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
 /// completed by `LdCtrlWriteProp ObjIdx="8" PropId="5"`, each followed by the
 /// `LdCtrlCompareProp` of the state it leaves.
 fn with_load_state_writes(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let control = |event: u8| {
         let mut value = vec![0u8; 10];
         value[0] = event;

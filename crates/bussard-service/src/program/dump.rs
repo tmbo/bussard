@@ -664,7 +664,7 @@ mod tests {
              </ApplicationProgram></KNX>"#
         );
         let app =
-            bussard_prod::application::parse_application_program("M-0004_A-1", xml.as_bytes())?;
+            bussard_product::application::parse_application_program("M-0004_A-1", xml.as_bytes())?;
         Ok(bussard_download::plan_flash(
             &app,
             "1.1.200",
@@ -674,7 +674,7 @@ mod tests {
             None,
             &BTreeMap::new(),
             &BTreeMap::new(),
-            &bussard_prod::dynamic::DynamicMemo::new(&app),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
         )?)
     }
 
