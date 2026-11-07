@@ -26,7 +26,7 @@
 
 use std::time::Instant;
 
-use crate::jobs::JobSink;
+use crate::jobs::{JobKind, JobSink, Subject};
 use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{
@@ -175,7 +175,7 @@ impl BussardMcp {
                     )
                     .map_err(|e| e.to_string())?;
                 }
-                let job = tier.jobs.claim_add()?;
+                let job = tier.jobs.claim(JobKind::Add, Subject::Bus)?.id;
                 // `product`: the import `bussard adopt --product` runs, before
                 // the bus is touched (issue #779).
                 let imported = match args.product.as_deref().map(str::trim) {

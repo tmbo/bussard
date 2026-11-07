@@ -13,6 +13,7 @@
 //! `<dir>/captures/backups/<timestamp>/`, where `knx_restore_tables` and
 //! `bussard restore` read them.
 
+use crate::jobs::{JobKind, Subject};
 use std::sync::Arc;
 use std::time::SystemTime;
 
@@ -508,7 +509,7 @@ impl BussardMcp {
         }
         let service = self.device_read_bus()?;
         let at = IndividualAddress::new(area, line_no, 0).map_err(|e| e.to_string())?;
-        let job = state.jobs.claim_read(at)?;
+        let job = state.jobs.claim(JobKind::Read, Subject::Device(at))?.id;
         let me = self.clone();
         let id = job.clone();
         let worker_line = line_text.clone();

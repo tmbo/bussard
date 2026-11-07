@@ -10,6 +10,7 @@
 //! table ([`crate::jobs::JobKind::Scan`]) and reports the addresses probed
 //! and the devices found so far while it runs; `knx_job_status` reads it.
 
+use crate::jobs::{JobKind, Subject};
 use std::sync::Arc;
 
 use bussard_model::text::hex;
@@ -75,7 +76,7 @@ impl BussardMcp {
         .map_err(|e| format!("loading the keyring for the scan: {e}"))?;
         let line = request.line();
         let jobs = Arc::clone(&state.jobs);
-        let id = jobs.claim_scan(&line)?;
+        let id = jobs.claim(JobKind::Scan, Subject::Line(&line))?.id;
         let total = request.range.count();
         jobs.progress(&id, "total", json!(total));
         jobs.progress(&id, "probed", json!(0));

@@ -115,7 +115,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::confirm::Store;
-use crate::jobs::{Gate, JobSink, PARAMETER_DOWNLOAD};
+use crate::jobs::{Gate, JobKind, JobSink, PARAMETER_DOWNLOAD, Subject as On};
 use crate::server::BussardMcp;
 use crate::state::ConnState;
 
@@ -1038,11 +1038,9 @@ impl BussardMcp {
     {
         let began = Instant::now();
         let (tier, _, _) = self.programming_preflight()?;
-        let (job, fresh) = match tier.jobs.claim_plan(subject.at())? {
-            crate::jobs::PlanClaim::New(job) => (job, true),
-            crate::jobs::PlanClaim::Running(job) => (job, false),
-        };
-        if fresh {
+        let claim = tier.jobs.claim(JobKind::Plan, On::Device(subject.at()))?;
+        let job = claim.id;
+        if !claim.joined {
             tier.jobs
                 .spawn(&job, "plan", work(self.clone(), job.clone()));
         }
@@ -1506,7 +1504,10 @@ impl BussardMcp {
     {
         let began = Instant::now();
         let (tier, _, _) = self.programming_preflight()?;
-        let job = tier.jobs.claim(subject.at())?;
+        let job = tier
+            .jobs
+            .claim(JobKind::Apply, On::Device(subject.at()))?
+            .id;
         let (gate, started) = Gate::new(&tier.jobs, &job);
         let fut = work(self.clone(), job.clone(), gate.clone());
         tier.jobs.spawn(&job, verb, async move {

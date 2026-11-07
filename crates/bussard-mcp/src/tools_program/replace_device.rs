@@ -48,7 +48,7 @@ use serde_json::{Value, json};
 
 use super::addressing::{Wording, Yes, assigned_notes, found_sentence, refused};
 use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for};
-use crate::jobs::JobSink;
+use crate::jobs::{JobKind, JobSink, Subject};
 
 /// The question of the `press_button` step.
 const PRESS_BUTTON: &str = "Press the programming button on the replacement device (its LED \
@@ -182,7 +182,10 @@ impl BussardMcp {
             ));
         }
         let source = replace_source(&dir, &model, &replacement)?;
-        let job = tier.jobs.claim_replace(target)?;
+        let job = tier
+            .jobs
+            .claim(JobKind::Replace, Subject::Device(target))?
+            .id;
         let backup = match backup(&dir, &model, &replacement) {
             Ok(backup) => backup,
             Err(reason) => {

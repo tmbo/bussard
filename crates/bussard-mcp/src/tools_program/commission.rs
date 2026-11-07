@@ -43,7 +43,7 @@ use serde_json::{Value, json};
 
 use super::addressing::assigned_notes;
 use super::{BussardMcp, ProgrammingTier, chain};
-use crate::jobs::JobSink;
+use crate::jobs::{JobKind, JobSink, Subject};
 
 /// The answers a paused job takes.
 const ANSWERS: [&str; 4] = ["retry", "skip", "stop", "assign"];
@@ -360,7 +360,10 @@ impl BussardMcp {
                     .into(),
             );
         }
-        let job = tier.jobs.claim_commission(&line)?;
+        let job = tier
+            .jobs
+            .claim(JobKind::Commission, Subject::Line(&line))?
+            .id;
         let stop = Arc::new(Stop::default());
         tier.commission_plans.retire(given);
         {

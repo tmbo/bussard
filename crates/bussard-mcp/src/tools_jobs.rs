@@ -83,6 +83,7 @@ fn job_status(jobs: &JobTable, dir: &Path, job: &str) -> Option<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::jobs::{JobKind, Subject};
     use bussard_model::IndividualAddress;
 
     #[test]
@@ -90,7 +91,7 @@ mod tests {
         let jobs = JobTable::new();
         let dir = Path::new("/nonexistent");
         let ia: IndividualAddress = "1.1.42".parse().map_err(|_| "address".to_string())?;
-        let id = jobs.claim(ia)?;
+        let id = jobs.claim(JobKind::Apply, Subject::Device(ia))?.id;
 
         let running = job_status(&jobs, dir, &id).ok_or("job not found")?;
         assert_eq!(running["done"], false, "{running}");
