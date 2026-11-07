@@ -10,7 +10,7 @@ use bussard_product::application::{
     parse_application_program_str,
 };
 use bussard_product::dynamic::{DynamicConfig, evaluate_dynamic, visible_parameter_refs};
-use bussard_product::label::substitute_label;
+use bussard_model::label::substitute_label;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

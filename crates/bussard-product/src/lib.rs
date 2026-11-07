@@ -19,13 +19,13 @@
 //! * [`image`], [`product_model`], [`cache`], [`index`], [`fetch`],
 //!   [`extract`] — the parameter image, the product model cache and the
 //!   product-data catalogue.
-//! * [`import`] — `.knxproj` import into a [`Model`]; [`lock_keys`] derives
+//! * [`import`] — `.knxproj` import into a [`Model`](bussard_model::Model); [`lock_keys`] derives
 //!   the lock keys of an imported project.
 //!
 //! # Entry points
 //!
 //! * [`read_knxprod`] opens a `.knxprod` file and returns [`ProductData`].
-//! * [`import()`] reads a `.knxproj` into a [`Model`].
+//! * [`import()`] reads a `.knxproj` into a [`Model`](bussard_model::Model).
 //!
 //! A `.knxprod` is a plain ZIP holding `knx_master.xml`, one or more `M-XXXX/`
 //! manufacturer folders (each with `Hardware.xml`, `Catalog.xml`, and the
@@ -48,7 +48,6 @@ pub mod hardware;
 pub mod image;
 pub mod import;
 pub mod index;
-pub mod label;
 pub mod lock_keys;
 pub mod master;
 pub mod product_model;
@@ -66,15 +65,12 @@ pub use application::{
     SegmentFill, SegmentKind, TableLocation, parse_application_program,
     parse_application_program_in, program_languages,
 };
-pub use attrs::{Attrs, attr_value, attrs_map, flagset_from, get, strip_bom, strip_bom_bytes};
-pub use bussard_model::loader::Model;
+pub(crate) use attrs::{strip_bom, strip_bom_bytes};
 pub use container::{AppEntry, MAX_INNER_KNXPROD_SIZE, inner_knxprod_bytes, inner_knxprod_entries};
-pub use dpt::{dpt_from_object_size, parse_ets_dpt};
 pub use error::{ProductError, Result};
 pub use extract::{Extracted, extract_from_project};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, Verified, fetch_entry};
-pub use flags::{FlagSet, parse_flag_value};
-pub use hardware::{Hardware, HardwareCatalog, ProductInfo, parse_hardware};
+use hardware::HardwareCatalog;
 pub use image::{
     ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyParameters, PropertyValues, StaticSlot,
     canonical_parameter_value, compose_property_value, compute_dynamic_parameter_image,
@@ -89,10 +85,8 @@ pub use master::{
     BUILTIN_TEMPLATE_MASKS, HawkConfig, HawkResource, MaskLoadProcedure, MasterTemplate,
     parse_master_template,
 };
-pub use translation::TranslationCollector;
-pub use zip_util::{
-    CappedReadError, MAX_ENTRY_SIZE, ZipOpenError, open_zip, read_capped, read_capped_with,
-    read_entry_opt, read_to_cap,
+pub(crate) use zip_util::{
+    CappedReadError, ZipOpenError, open_zip, read_capped, read_entry_opt, read_to_cap,
 };
 
 /// The parsed contents of a `.knxprod`.

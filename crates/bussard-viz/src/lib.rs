@@ -101,7 +101,7 @@ pub struct VizConfig {
     pub allowed_hosts: Vec<String>,
     /// The keyring or key store for KNX Data Secure group communication
     /// (`--keyring`, issue #172): secured writes and decrypted live traffic.
-    pub group_keys: Option<std::sync::Arc<bussard_service::secure::KeyStore>>,
+    pub group_keys: Option<std::sync::Arc<bussard_service::keys::KeyStore>>,
 }
 
 /// Errors surfaced while starting the viz server.

@@ -199,7 +199,7 @@ pub struct Security {
     /// write to a secured GA is sealed under its group key, and secured
     /// telegrams in the live traffic are decrypted. `None` without a keyring.
     /// `Debug` redacts the keys.
-    pub group_keys: Option<Arc<bussard_service::secure::KeyStore>>,
+    pub group_keys: Option<Arc<bussard_service::keys::KeyStore>>,
 }
 
 /// The shared application state, cloned into every handler by axum.

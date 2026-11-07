@@ -86,7 +86,7 @@ pub struct ComObjectRef {
     pub priority: Option<bussard_model::Priority>,
     /// The `TextParameterRefId`, app-relative (e.g. `MD-1_P-1_R-1`): the
     /// parameter ref whose value replaces the `{{0}}`/`{{0:…}}` placeholder in
-    /// [`Self::text`] (see [`crate::label::substitute_label`]).
+    /// [`Self::text`] (see [`bussard_model::label::substitute_label`]).
     pub text_parameter_ref: Option<String>,
 }
 
