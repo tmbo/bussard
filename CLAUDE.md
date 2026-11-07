@@ -24,7 +24,7 @@ reimplementation, so it is a hard constraint, not a preference.
 
 ## Workspace Layout
 
-This is a Cargo **workspace** of 13 crates under `crates/`, not a single crate.
+This is a Cargo **workspace** of 14 crates under `crates/`, not a single crate.
 Shared settings (version, edition, license, MSRV, dependency versions) are
 centralized in the root `Cargo.toml` under `[workspace.package]` and
 `[workspace.dependencies]`; individual crates inherit them with

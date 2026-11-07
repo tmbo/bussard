@@ -1,4 +1,4 @@
-- The workspace has 13 crates instead of 16 (#916): the bus actor is
+- The workspace has 14 crates instead of 16 (#916): the bus actor is
   `bussard_transport::bus`, `bussard-product` holds the ETS-XML parsers, the
   `.knxprod` reader and the `.knxproj` import (formerly `bussard-ets`,
   `bussard-prod` and half of `bussard-project`), and `bussard-project` keeps
