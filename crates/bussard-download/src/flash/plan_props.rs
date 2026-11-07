@@ -290,7 +290,7 @@ pub(super) fn guarded_ops(
 
 /// How an op names its object: by index when it carries `ObjIdx`, else by
 /// `ObjType` and `Occurrence`, the device object by index 0.
-fn prop_object(
+pub(super) fn prop_object(
     step: usize,
     obj_idx: Option<u32>,
     obj_type: Option<u32>,
@@ -354,7 +354,7 @@ fn parameter_value(
 /// cannot be told apart at plan time, and a location naming no object is
 /// unplaceable: both count as the same object, so the caller refuses rather
 /// than skips.
-fn may_hold(
+pub(super) fn may_hold(
     loc: &bussard_prod::application::PropertyLocation,
     object: PropObject,
     prop_id: u32,

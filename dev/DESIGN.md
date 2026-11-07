@@ -512,9 +512,9 @@ What blocked the four refusals:
   strict membership check has real user cost here: it blocks two otherwise fully
   executable panels over a vendor data-quality quirk.
 
-Other unhandled load ops the sweep surfaced (all kept as `LoadOp::Raw`, none yet blocking
-an executable procedure): `LdCtrlTaskCtrl2`, `LdCtrlTaskPtr`, `LdCtrlDeclarePropDesc`,
-`LdCtrlDelay`, `LdCtrlCompareMem`. Load-op use splits cleanly by mask family: System B
+Other load ops the sweep surfaced: `LdCtrlTaskCtrl2`, `LdCtrlTaskPtr`, `LdCtrlCompareMem`,
+and `LdCtrlDelay` (typed since #615) and `LdCtrlDeclarePropDesc` (typed since #938, lowered
+on System B; see [flash-op-coverage.md](flash-op-coverage.md)). Load-op use splits cleanly by mask family: System B
 (`07B0`) procedures are property-and-MCB based (`RelSegment`, `WriteRelMem`,
 `LoadImageProp`, `CompareProp`), System 7/2 (`0705`/`0701`/`0021`) procedures are segment
 based (`AbsSegment`, `WriteMem`), and the RF/coupler masks are where the

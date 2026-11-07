@@ -537,6 +537,34 @@ pub enum LoadOp {
         /// is absent or not a number.
         milliseconds: Option<u32>,
     },
+    /// `<LdCtrlDeclarePropDesc …>`: the tool-side description of an
+    /// interface-object property the next `LdCtrlWriteProp` writes. Nothing
+    /// goes on the wire: the declaration stands in for the description a tool
+    /// would otherwise read from the device before writing (KNX Cookbook 2/3/1
+    /// §1.1, Example 3; the KNX Standard defines no such load control). ETS
+    /// sends no `A_PropertyDescription_Read` for a declared property and writes
+    /// it in elements of the declared type (five Hager 07B0 actuators, issue
+    /// #938).
+    DeclarePropDesc {
+        /// Object index (`ObjIdx`), when addressed by index.
+        obj_idx: Option<u32>,
+        /// Object type (`ObjType`), when addressed by type.
+        obj_type: Option<u32>,
+        /// `Occurrence`: which object of `ObjType` (absent = the first, 0).
+        occurrence: Option<u32>,
+        /// Property id (`PropId`).
+        prop_id: Option<u32>,
+        /// The property datatype name (`PropType`, e.g. `"PDT_UNSIGNED_CHAR"`).
+        prop_type: Option<String>,
+        /// The most elements the property holds (`MaxElements`).
+        max_elements: Option<u32>,
+        /// `Writable`: whether the property may be written.
+        writable: Option<bool>,
+        /// `ReadAccess`: the access level a read needs.
+        read_access: Option<u32>,
+        /// `WriteAccess`: the access level a write needs.
+        write_access: Option<u32>,
+    },
     /// `<LdCtrlMerge MergeId=…>`: a splice marker in a **master-template**
     /// `Load` procedure (`knx_master.xml`). It is not an on-wire operation: when
     /// a merged application is assembled against the master template, each
@@ -2996,6 +3024,17 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         b"LdCtrlDelay" => LoadOp::Delay {
             milliseconds: u(b"MilliSeconds"),
         },
+        b"LdCtrlDeclarePropDesc" => LoadOp::DeclarePropDesc {
+            obj_idx: u(b"ObjIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
+            prop_id: u(b"PropId"),
+            prop_type: s(b"PropType"),
+            max_elements: u(b"MaxElements"),
+            writable: get(m, b"Writable").map(parse_xml_bool),
+            read_access: u(b"ReadAccess"),
+            write_access: u(b"WriteAccess"),
+        },
         b"LdCtrlMerge" => LoadOp::Merge {
             merge_id: s(b"MergeId"),
         },
@@ -3816,18 +3855,36 @@ mod tests {
     #[test]
     fn test_push_load_op_delay_is_typed() -> std::result::Result<(), Box<dyn std::error::Error>> {
         // `LdCtrlDelay MilliSeconds` parses as a typed pause, not a Raw op the
-        // planner refuses (issue #615); the DeclarePropDesc beside it stays Raw.
+        // planner refuses (issue #615).
         let xml = include_bytes!("../tests/fixtures/ldctrl_declare_prop_desc_and_delay.app.xml");
         let app = parse_application_program("M-00FA_A-0004-11-ABCD-O000A", xml)?;
         let ops = &app.load_procedures[0].ops;
         assert!(ops.contains(&LoadOp::Delay {
             milliseconds: Some(1000)
         }));
-        assert!(
-            ops.iter().any(
-                |op| matches!(op, LoadOp::Raw { name, .. } if name == "LdCtrlDeclarePropDesc")
-            )
-        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_declare_prop_desc_is_typed()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // `LdCtrlDeclarePropDesc` parses as a typed declaration with every
+        // attribute, not a Raw op the planner refuses (issue #938).
+        let xml = include_bytes!("../tests/fixtures/ldctrl_declare_prop_desc_and_delay.app.xml");
+        let app = parse_application_program("M-00FA_A-0004-11-ABCD-O000A", xml)?;
+        let ops = &app.load_procedures[0].ops;
+        assert!(ops.contains(&LoadOp::DeclarePropDesc {
+            obj_idx: Some(5),
+            obj_type: None,
+            occurrence: None,
+            prop_id: Some(52),
+            prop_type: Some("PDT_GENERIC_01".to_string()),
+            max_elements: Some(1),
+            writable: Some(true),
+            read_access: Some(15),
+            write_access: Some(15),
+        }));
+        assert!(!ops.iter().any(|op| matches!(op, LoadOp::Raw { .. })));
         Ok(())
     }
 
