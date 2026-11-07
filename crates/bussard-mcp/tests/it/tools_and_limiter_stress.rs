@@ -89,14 +89,14 @@ fn small_model() -> TestResult<Model> {
 #[test]
 fn model_lookup_limit_zero_returns_zero() -> TestResult {
     let m = small_model()?;
-    let v = model_lookup(&m, "group", 0);
+    let v = model_lookup(&m, "group", 0, None);
     assert_eq!(
         v["groups"].as_array().ok_or("not an array")?.len(),
         0,
         "limit==0 must yield zero results"
     );
     // And a non-zero limit still yields exactly that many.
-    let v1 = model_lookup(&m, "group", 1);
+    let v1 = model_lookup(&m, "group", 1, None);
     assert_eq!(v1["groups"].as_array().ok_or("not an array")?.len(), 1);
     Ok(())
 }
@@ -104,7 +104,7 @@ fn model_lookup_limit_zero_returns_zero() -> TestResult {
 #[test]
 fn model_lookup_limit_usize_max_is_bounded_by_data() -> TestResult {
     let m = small_model()?;
-    let v = model_lookup(&m, "group", usize::MAX);
+    let v = model_lookup(&m, "group", usize::MAX, None);
     // All 10 groups match "group" but there are only 10.
     assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 10);
     Ok(())
@@ -115,7 +115,7 @@ fn model_lookup_empty_query_matches_broadly_without_panic() -> TestResult {
     let m = small_model()?;
     // Empty query: `contains("")` is always true, so everything matches (bounded
     // by the limit). Must not panic.
-    let v = model_lookup(&m, "", 3);
+    let v = model_lookup(&m, "", 3, None);
     assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 3);
     Ok(())
 }
@@ -124,7 +124,7 @@ fn model_lookup_empty_query_matches_broadly_without_panic() -> TestResult {
 fn model_lookup_unicode_query_is_safe() -> TestResult {
     let m = small_model()?;
     for q in ["🚀", "Ω≈ç", "\0", "  ", "GROUP"] {
-        let r = std::panic::catch_unwind(|| model_lookup(&m, q, 50));
+        let r = std::panic::catch_unwind(|| model_lookup(&m, q, 50, None));
         assert!(r.is_ok(), "model_lookup panicked on {q:?}");
     }
     Ok(())

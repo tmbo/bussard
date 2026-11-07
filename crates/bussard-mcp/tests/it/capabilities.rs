@@ -1548,13 +1548,8 @@ async fn test_read_tools_technical_is_the_old_payload_and_the_default_is_smaller
             json!({"query": query, "technical": true}),
         )
         .await?;
-        let before = bussard_mcp::tools::model_lookup_with_capabilities(
-            &model,
-            dir.path(),
-            query,
-            50,
-            read_tiers(),
-        );
+        let capabilities = Some((dir.path(), read_tiers()));
+        let before = bussard_mcp::tools::model_lookup(&model, query, 50, capabilities);
         assert_eq!(technical, before, "{query}");
         let (p, t) = (plain.to_string().len(), technical.to_string().len());
         println!("knx_model_lookup {query:?}: default {p} B, technical {t} B");

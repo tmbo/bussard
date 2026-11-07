@@ -374,13 +374,10 @@ impl BussardMcp {
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        let mut value = tools::model_lookup_with_capabilities(
-            &self.state.model.current(),
-            &self.state.dir,
-            &args.query,
-            limit,
-            crate::guidance::Tiers::of(&self.state),
-        );
+        let tiers = crate::guidance::Tiers::of(&self.state);
+        let model = self.state.model.current();
+        let capabilities = Some((self.state.dir.as_path(), tiers));
+        let mut value = tools::model_lookup(&model, &args.query, limit, capabilities);
         if !args.technical {
             crate::everyday::plain_lookup(&mut value);
         }

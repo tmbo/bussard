@@ -330,11 +330,7 @@ fn scan_result(dir: &std::path::Path, range: LineRange, swept: Sweep, model: &Mo
         "to": range.to,
         "summary": summary,
         "devices": devices,
-        "not_in_model": report
-            .not_in_model
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>(),
+        "not_in_model": report.not_in_model,
         "missing_from_bus": missing
             .iter()
             .map(|(addr, name)| json!({ "name": name, "address": addr.to_string() }))

@@ -64,6 +64,47 @@ impl Diagnostic {
             location: location.into(),
         }
     }
+
+    /// Whether the diagnostic is about device `wanted` (`"1.1.4"`), or a
+    /// device of the line `wanted` names when it ends with a dot (`"1.1."`).
+    pub fn mentions_device(&self, wanted: &str) -> bool {
+        self.mentions(wanted, '.', 3)
+    }
+
+    /// Whether the diagnostic is about group address `wanted` (`"3/2/0"`),
+    /// or one of the range it names when it ends with a slash (`"3/"`).
+    pub fn mentions_group(&self, wanted: &str) -> bool {
+        self.mentions(wanted, '/', 3) || self.mentions(wanted, '/', 2)
+    }
+
+    /// Whether `wanted` (exact, or a prefix when it ends with `sep`) names
+    /// one of the addresses of kind (`sep`, `parts`) the location mentions,
+    /// else, when the location mentions none, the message.
+    fn mentions(&self, wanted: &str, sep: char, parts: usize) -> bool {
+        let wanted = wanted.trim();
+        let hit = |t: &&str| {
+            if wanted.ends_with(sep) {
+                t.starts_with(wanted)
+            } else {
+                *t == wanted
+            }
+        };
+        // The address-like tokens of a text: runs of digits and `sep`,
+        // trimmed of `sep`, that hold `sep` exactly `parts - 1` times.
+        let tokens = |text: &'_ str| -> Vec<String> {
+            text.split(|c: char| !(c.is_ascii_digit() || c == sep))
+                .map(|t| t.trim_matches(sep).to_string())
+                .filter(|t| t.matches(sep).count() + 1 == parts)
+                .collect()
+        };
+        let in_location = tokens(&self.location);
+        let found = if in_location.is_empty() {
+            tokens(&self.message)
+        } else {
+            in_location
+        };
+        found.iter().map(String::as_str).any(|t| hit(&t))
+    }
 }
 
 /// The declared size of an object, for size-conflict checks.
