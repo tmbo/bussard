@@ -371,7 +371,7 @@ pub(super) fn plan_flash_sys7(
     // as on System B since #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
     // The parameters placed in properties, resolved once (issue #945).
-    let property_params = bussard_prod::PropertyParameters::resolve(app, &config);
+    let property_params = bussard_product::PropertyParameters::resolve(app, &config);
 
     for (i, op) in ops.iter().enumerate() {
         let step_no = i + 1;

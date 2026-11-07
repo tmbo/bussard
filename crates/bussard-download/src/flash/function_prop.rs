@@ -28,7 +28,7 @@ use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::function_property::function_property_command;
 use bussard_mgmt::load::WriteError;
 use bussard_mgmt::property_ext::{PropertyExtAddress, function_property_ext_command};
-use bussard_prod::application::LoadOp;
+use bussard_product::application::LoadOp;
 
 /// The largest PID the extended property services carry (12 bits, KNX 3/3/7
 /// §3.4.8).

@@ -1333,7 +1333,7 @@ mod tests {
           </Static>
          </ApplicationProgram></KNX>"#;
         let app =
-            bussard_prod::application::parse_application_program("M-0006_A-1", xml.as_bytes())?;
+            bussard_product::application::parse_application_program("M-0006_A-1", xml.as_bytes())?;
         let plan = bussard_download::flash::plan_flash_sys7_with_hawk(
             &app,
             "1.1.1",

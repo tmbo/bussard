@@ -1305,11 +1305,11 @@ fn app_with_function_call() -> Result<ApplicationProgram, Box<dyn std::error::Er
     let ops = &mut app.load_procedures[0].ops;
     let compare = ops
         .iter()
-        .position(|op| matches!(op, bussard_prod::application::LoadOp::CompareProp { .. }))
+        .position(|op| matches!(op, bussard_product::application::LoadOp::CompareProp { .. }))
         .ok_or("the procedure compares PID 78")?;
     ops.insert(
         compare + 1,
-        bussard_prod::application::LoadOp::InvokeFunctionProp {
+        bussard_product::application::LoadOp::InvokeFunctionProp {
             obj_idx: Some(5),
             obj_type: None,
             occurrence: None,
@@ -1387,7 +1387,7 @@ async fn flash_with_function_call(
 /// elements and written from a 12-octet `InlineData`, and object 7 PID 52
 /// declared and written without `InlineData` or a parameter in it.
 fn app_with_declared_writes() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let mut app = mdt_canonical_app()?;
     let ops = &mut app.load_procedures[0].ops;
     let completed = ops

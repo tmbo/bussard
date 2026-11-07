@@ -597,7 +597,7 @@ async fn test_flash_writes_a_declared_property_without_a_description_read() -> T
 fn test_plan_flash_system_b_lowers_a_function_call() -> TestResult {
     // Issue #946: the Hager 07B0 programs call object 6 PID 52 inside the
     // merged download; the call lowers to a step, not a refusal.
-    use bussard_prod::application::LoadOp;
+    use bussard_product::application::LoadOp;
     let (product, _tmp) = product()?;
     let mut app = product
         .applications
