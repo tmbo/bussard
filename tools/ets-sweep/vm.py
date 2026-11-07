@@ -27,6 +27,7 @@ import base64
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import paramiko
@@ -65,14 +66,24 @@ def connect() -> paramiko.SSHClient:
     this Python ('No route to host' while /usr/bin/nc connects, 2026-11-03),
     the connection goes through /usr/bin/nc instead: a system binary is not
     subject to that check, and paramiko speaks ssh over its pipes."""
-    c = paramiko.SSHClient()
-    c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    try:
-        c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10)
-    except (OSError, paramiko.ssh_exception.NoValidConnectionsError):
-        proxy = paramiko.ProxyCommand(f"/usr/bin/nc {HOST} {PORT}")
-        c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10, sock=proxy)
-    return c
+    # A failed handshake ('No existing session') ended a night's sweep once
+    # while the VM's sshd answered again minutes later (2026-11-07): retry.
+    last: Exception | None = None
+    for attempt in range(5):
+        c = paramiko.SSHClient()
+        c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        try:
+            try:
+                c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10)
+            except (OSError, paramiko.ssh_exception.NoValidConnectionsError):
+                proxy = paramiko.ProxyCommand(f"/usr/bin/nc {HOST} {PORT}")
+                c.connect(HOST, port=PORT, username=USER, password=password(), timeout=10, sock=proxy)
+            return c
+        except paramiko.ssh_exception.SSHException as exc:
+            last = exc
+            c.close()
+            time.sleep(15 * (attempt + 1))
+    raise last if last else RuntimeError("ssh connect failed")
 
 
 def run(c: paramiko.SSHClient, cmd: str, timeout: int = 60) -> tuple[int, str]:
