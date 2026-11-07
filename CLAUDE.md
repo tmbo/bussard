@@ -24,14 +24,14 @@ reimplementation, so it is a hard constraint, not a preference.
 
 ## Workspace Layout
 
-This is a Cargo **workspace** of 16 crates under `crates/`, not a single crate.
+This is a Cargo **workspace** of 15 crates under `crates/`, not a single crate.
 Shared settings (version, edition, license, MSRV, dependency versions) are
 centralized in the root `Cargo.toml` under `[workspace.package]` and
 `[workspace.dependencies]`; individual crates inherit them with
 `x.workspace = true`.
 
 Crates: `bussard-model` (KNX types, DPT codecs, the TOML model files and lock), `bussard-project`,
-`bussard-transport`, `bussard-monitor`, `bussard-bus`, `bussard-mcp` (MCP
+`bussard-transport` (KNXnet/IP and the bus actor), `bussard-monitor`, `bussard-mcp` (MCP
 server), `bussard-viz` (the `viz` web server), `bussard-mgmt`, `bussard-prod`,
 `bussard-ets` (`.knxproj`/`.knxprod` import), `bussard-secure` (KNX Secure),
 `bussard-ha` (Home Assistant), `bussard-download`, `bussard-service` (the layer

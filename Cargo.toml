@@ -14,7 +14,6 @@ members = [
     "crates/bussard-mgmt",
     "crates/bussard-prod",
     "crates/bussard-ets",
-    "crates/bussard-bus",
     "crates/bussard-download",
     "crates/bussard-secure",
     "crates/bussard-service",
@@ -37,7 +36,6 @@ bussard-model = { path = "crates/bussard-model", version = "0.10.0" }
 bussard-project = { path = "crates/bussard-project", version = "0.10.0" }
 bussard-transport = { path = "crates/bussard-transport", version = "0.10.0" }
 bussard-monitor = { path = "crates/bussard-monitor", version = "0.10.0" }
-bussard-bus = { path = "crates/bussard-bus", version = "0.10.0" }
 bussard-mcp = { path = "crates/bussard-mcp", version = "0.10.0" }
 bussard-mgmt = { path = "crates/bussard-mgmt", version = "0.10.0" }
 bussard-prod = { path = "crates/bussard-prod", version = "0.10.0" }

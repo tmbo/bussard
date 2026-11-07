@@ -1,4 +1,4 @@
-//! Actor tests for `bussard-bus` against the `bussard-testkit` mock KNXnet/IP
+//! Bus actor tests against the `bussard-testkit` mock KNXnet/IP
 //! gateway (loopback only).
 //!
 //! The mock drives the actor through a CONNECT handshake, ACKs (or deliberately
@@ -15,8 +15,9 @@
 use std::net::SocketAddrV4;
 use std::time::Duration;
 
-use bussard_bus::{Bus, BusError, BusState};
 use bussard_testkit::{AckPolicy, MockGateway, TestResult, ga, group_dest, ia};
+use bussard_transport::TransportError;
+use bussard_transport::bus::{Bus, BusState};
 use bussard_transport::cemi::CemiFrame;
 use bussard_transport::{ConnectionConfig, TransportKind, TunnelReconnect};
 
@@ -184,7 +185,7 @@ async fn send_errors_on_ack_exhaustion() -> TestResult {
     .await
     .map_err(|_| "send did not return after ACK exhaustion")?;
     assert!(
-        matches!(result, Err(BusError::Transport(_))),
+        matches!(result, Err(ref e) if !matches!(e, TransportError::Stale | TransportError::ActorGone)),
         "ACK exhaustion must surface as a transport error, got {result:?}"
     );
 
@@ -274,7 +275,7 @@ async fn staleness_cutoff_drops_queued_frame_while_reconnecting() -> TestResult 
     .await
     .map_err(|_| "send did not resolve within the staleness window")?;
     assert!(
-        matches!(result, Err(BusError::Stale)),
+        matches!(result, Err(TransportError::Stale)),
         "a frame queued while reconnecting must be dropped stale, got {result:?}"
     );
 
@@ -337,7 +338,7 @@ async fn close_during_reconnect_opens_no_fresh_tunnel() -> TestResult {
 }
 
 /// Waits until the handle reports [`BusState::Connected`], up to ~3s.
-async fn wait_connected(handle: &bussard_bus::BusHandle) -> TestResult {
+async fn wait_connected(handle: &bussard_transport::bus::BusHandle) -> TestResult {
     for _ in 0..300 {
         if handle.status() == BusState::Connected {
             return Ok(());
@@ -368,7 +369,7 @@ async fn test_secure_only_interface_stops_the_actor_with_a_fatal_error() -> Test
     assert_eq!(handle.status(), BusState::Closed);
     let fatal = handle.fatal_error().ok_or("a fatal error is recorded")?;
     assert!(fatal.contains("requires KNXnet/IP Secure"), "{fatal}");
-    assert_eq!(bussard_bus::fatal_connect_error(), Some(fatal));
+    assert_eq!(bussard_transport::bus::fatal_connect_error(), Some(fatal));
     tokio::time::timeout(FINISH, task).await??;
     assert_eq!(gw.stats()?.plain_refusals, 1, "no retry");
     Ok(())
@@ -376,7 +377,7 @@ async fn test_secure_only_interface_stops_the_actor_with_a_fatal_error() -> Test
 
 /// Waits (by polling the atomic status, never subscribing to the watch) until
 /// the handle reports `want`, up to ~5 s.
-async fn poll_status(handle: &bussard_bus::BusHandle, want: BusState) -> TestResult {
+async fn poll_status(handle: &bussard_transport::bus::BusHandle, want: BusState) -> TestResult {
     for _ in 0..500 {
         if handle.status() == want {
             return Ok(());
@@ -455,7 +456,8 @@ async fn test_state_changes_stores_reconnecting_without_a_receiver() -> TestResu
     // The second send hits the outage and drives the tunnel into re-establish.
     let sender = handle.clone();
     let pending = tokio::spawn(async move {
-        let receipt: TestResult<bussard_bus::SendReceipt> = Ok(sender.send(frame(0)?).await?);
+        let receipt: TestResult<bussard_transport::bus::SendReceipt> =
+            Ok(sender.send(frame(0)?).await?);
         receipt
     });
 
@@ -472,7 +474,7 @@ async fn test_state_changes_stores_reconnecting_without_a_receiver() -> TestResu
 
     // Once the tunnel is back, a fresh waiter sees Connected.
     assert!(handle.wait_connected(Duration::from_secs(12)).await);
-    let receipt: TestResult<bussard_bus::SendReceipt> =
+    let receipt: TestResult<bussard_transport::bus::SendReceipt> =
         tokio::time::timeout(Duration::from_secs(12), pending).await??;
     receipt?;
 

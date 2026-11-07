@@ -1,15 +1,15 @@
-//! The bus-service actor: a single owner of the [`bussard_transport::Transport`]
+//! The bus-service actor: a single owner of the [`Transport`](crate::Transport)
 //! providing frame subscriptions, sends with completion, and exclusive leases
 //! for connection-oriented management sessions.
 //!
 //! # Why an actor
 //!
-//! `bussard_transport`'s [`BusConnection::recv`](bussard_transport::BusConnection::recv)
+//! The transport's [`BusConnection::recv`](crate::BusConnection::recv)
 //! is single-consumer: whoever calls it takes the frame. That destroys group
 //! traffic for everyone else during a connection-oriented management (layer-4)
 //! session, and forces every frontend (monitor, MCP, `scan`/`assign`) to open
-//! its own tunnel — colliding on slot-limited gateways. This crate owns *one*
-//! [`Transport`](bussard_transport::Transport) inside a task and fans inbound
+//! its own tunnel — colliding on slot-limited gateways. This module owns *one*
+//! [`Transport`](crate::Transport) inside a task and fans inbound
 //! frames out over a broadcast channel, so a monitor, an MCP ring, and an active
 //! L4 session can all observe the bus at once.
 //!
@@ -21,7 +21,7 @@
 //!   `(TimestampedFrame, MessageCode)`; multiple concurrent consumers.
 //! - [`send`](BusHandle::send) — completes against the tunnel's `TUNNELING_ACK`
 //!   (returning a [`SendReceipt`]), with a **staleness cutoff**: a frame queued
-//!   while the actor is reconnecting is dropped with [`BusError::Stale`] after
+//!   while the actor is reconnecting is dropped with [`TransportError::Stale`] after
 //!   [`STALE_CUTOFF`] rather than firing seconds late.
 //! - [`lease`](BusHandle::lease) — an exclusive [`BusLease`] for one L4 session
 //!   at a time. Leases serialize only against *other leases*; independent group
@@ -41,24 +41,25 @@
 //!   close path (the #31 tunnel-slot guarantee), so a graceful shutdown never
 //!   opens a fresh tunnel just to close it.
 //!
-//! The [`ops`] module holds the shared `read_group` / `write_group`
-//! implementations the CLI and MCP both call (echo-skip, rate-limit hooks);
-//! policy (protected / `--force` / passive) stays at the edges.
-
-#![warn(missing_docs)]
-
-pub mod ops;
+//! The group read and write over a handle live in `bussard_service::group`,
+//! the one flow the CLI and MCP both call.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
-use bussard_transport::cemi::{CemiFrame, MessageCode};
-use bussard_transport::{
+use bussard_model::IndividualAddress;
+
+use crate::cemi::{CemiFrame, MessageCode};
+use crate::{
     BusConnection, ConnectionConfig, LinkState, TimestampedFrame, Transport, TransportError,
 };
 use tokio::sync::{Semaphore, broadcast, mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
+
+/// The fallback group-traffic source (`0.0.255`) when the transport assigns
+/// no individual address (routing, or a gateway reporting `0.0.0`).
+pub const FALLBACK_SOURCE_IA: IndividualAddress = IndividualAddress::from_raw(0x00FF);
 
 /// How long a frame may sit queued (waiting for a live connection) before the
 /// actor drops it rather than transmitting it stale. Keeps a write queued during
@@ -185,24 +186,6 @@ impl BusState {
     }
 }
 
-/// Errors surfaced by [`BusHandle`] operations.
-#[derive(Debug, thiserror::Error)]
-pub enum BusError {
-    /// The actor task is gone (closed or panicked); the bus is unusable.
-    #[error("bus actor is gone")]
-    ActorGone,
-
-    /// A queued frame was dropped without transmitting because the connection
-    /// did not come up within [`STALE_CUTOFF`].
-    #[error("frame dropped: bus was not connected within the staleness cutoff")]
-    Stale,
-
-    /// The send reached the connection but the transport reported an error
-    /// (e.g. TUNNELING_ACK exhaustion, a socket error, a server disconnect).
-    #[error(transparent)]
-    Transport(#[from] TransportError),
-}
-
 /// A receipt that a [`send`](BusHandle::send) completed against the transport.
 ///
 /// For a tunnel this means the gateway returned a matching `TUNNELING_ACK`
@@ -225,7 +208,7 @@ enum Command {
     Send {
         frame: Box<CemiFrame>,
         queued_at: Instant,
-        reply: oneshot::Sender<Result<SendReceipt, BusError>>,
+        reply: oneshot::Sender<Result<SendReceipt, TransportError>>,
     },
     /// Cleanly close the connection; reply when the DISCONNECT has been awaited.
     Close { reply: oneshot::Sender<()> },
@@ -344,7 +327,7 @@ impl Bus {
             link_losses: AtomicU64::new(0),
             generation: AtomicU64::new(0),
             fatal: std::sync::Mutex::new(None),
-            interface: bussard_transport::write_gate::gateway_display(&config),
+            interface: crate::write_gate::gateway_display(&config),
             diag: std::sync::Mutex::new(DiagState::default()),
         });
 
@@ -381,6 +364,15 @@ pub struct BusHandle {
 }
 
 impl BusHandle {
+    /// The source individual address to present on group traffic: the
+    /// tunnel-assigned address if the gateway gave one, else
+    /// [`FALLBACK_SOURCE_IA`] (issue #30).
+    pub fn group_source(&self) -> IndividualAddress {
+        self.assigned_individual_address()
+            .map(IndividualAddress::from_raw)
+            .unwrap_or(FALLBACK_SOURCE_IA)
+    }
+
     /// Subscribes to the inbound frame broadcast.
     ///
     /// The subscription is live from the moment this returns, so a caller can
@@ -396,10 +388,10 @@ impl BusHandle {
     ///
     /// For a tunnel the returned [`SendReceipt`] means the gateway ACKed the
     /// frame; an ACK exhaustion or socket error surfaces as
-    /// [`BusError::Transport`]. A frame queued while the actor is reconnecting is
-    /// dropped with [`BusError::Stale`] once [`STALE_CUTOFF`] elapses, so a write
+    /// that [`TransportError`]. A frame queued while the actor is reconnecting is
+    /// dropped with [`TransportError::Stale`] once [`STALE_CUTOFF`] elapses, so a write
     /// never fires an actuator seconds after the caller gave up.
-    pub async fn send(&self, frame: CemiFrame) -> Result<SendReceipt, BusError> {
+    pub async fn send(&self, frame: CemiFrame) -> Result<SendReceipt, TransportError> {
         let (reply, rx) = oneshot::channel();
         self.commands
             .send(Command::Send {
@@ -408,8 +400,8 @@ impl BusHandle {
                 reply,
             })
             .await
-            .map_err(|_| BusError::ActorGone)?;
-        rx.await.map_err(|_| BusError::ActorGone)?
+            .map_err(|_| TransportError::ActorGone)?;
+        rx.await.map_err(|_| TransportError::ActorGone)?
     }
 
     /// Acquires the exclusive lease for a connection-oriented (layer-4) session.
@@ -419,13 +411,13 @@ impl BusHandle {
     /// exclusivity — it serializes only other leases (the TP1 etiquette of one
     /// open connection at a time). Independent group [`send`](Self::send)s and
     /// [`subscribe`](Self::subscribe)rs are unaffected and proceed concurrently.
-    pub async fn lease(&self) -> Result<BusLease, BusError> {
+    pub async fn lease(&self) -> Result<BusLease, TransportError> {
         let permit = self
             .lease_gate
             .clone()
             .acquire_owned()
             .await
-            .map_err(|_| BusError::ActorGone)?;
+            .map_err(|_| TransportError::ActorGone)?;
         Ok(BusLease {
             handle: self.clone(),
             _permit: permit,
@@ -485,15 +477,15 @@ impl BusHandle {
     ///
     /// # Errors
     ///
-    /// [`BusError::ActorGone`] when the actor has stopped (closed, or on a
+    /// [`TransportError::ActorGone`] when the actor has stopped (closed, or on a
     /// fatal connect error).
-    pub async fn reconnect(&self) -> Result<(), BusError> {
+    pub async fn reconnect(&self) -> Result<(), TransportError> {
         let (reply, rx) = oneshot::channel();
         self.commands
             .send(Command::Reconnect { reply })
             .await
-            .map_err(|_| BusError::ActorGone)?;
-        rx.await.map_err(|_| BusError::ActorGone)
+            .map_err(|_| TransportError::ActorGone)?;
+        rx.await.map_err(|_| TransportError::ActorGone)
     }
 
     /// The current connection status.
@@ -503,7 +495,7 @@ impl BusHandle {
 
     /// How long the tunnel keeps re-establishing a lost gateway link before a
     /// pending send fails (the connection config's
-    /// [`TunnelReconnect::budget`](bussard_transport::TunnelReconnect::budget)).
+    /// [`TunnelReconnect::budget`](crate::TunnelReconnect::budget)).
     ///
     /// A management session that resumes after a link loss waits up to this
     /// long for [`wait_connected`](Self::wait_connected) before reconnecting
@@ -547,7 +539,7 @@ impl BusHandle {
     /// sender; the last value borrowed before that error is still valid.
     ///
     /// ```no_run
-    /// # async fn demo(handle: bussard_bus::BusHandle) {
+    /// # async fn demo(handle: bussard_transport::bus::BusHandle) {
     /// let mut states = handle.state_changes();
     /// // Observe the current state, then react to each transition.
     /// loop {
@@ -606,7 +598,7 @@ impl BusHandle {
     /// close it (a close requested during reconnect backoff simply stops the
     /// actor), preserving the #31 tunnel-slot guarantee. Idempotent — closing an
     /// already-gone actor is `Ok`.
-    pub async fn close(&self) -> Result<(), BusError> {
+    pub async fn close(&self) -> Result<(), TransportError> {
         let (reply, rx) = oneshot::channel();
         if self.commands.send(Command::Close { reply }).await.is_err() {
             // Actor already gone: treat as already-closed.
@@ -892,7 +884,7 @@ impl Actor {
                         // Connected here, so the only staleness is a very old
                         // queued frame; still enforce the cutoff.
                         if queued_at.elapsed() >= STALE_CUTOFF {
-                            let _ = reply.send(Err(BusError::Stale));
+                            let _ = reply.send(Err(TransportError::Stale));
                             continue;
                         }
                         // Await the ACK inline (see the method doc for why this must
@@ -905,7 +897,7 @@ impl Actor {
                             }
                             Err(err) => {
                                 let text = err.to_string();
-                                let _ = reply.send(Err(BusError::Transport(err)));
+                                let _ = reply.send(Err(err));
                                 // A send error is a connection problem: reconnect.
                                 return ActorOutcome::Dropped(text);
                             }
@@ -930,7 +922,7 @@ impl Actor {
 
     /// Waits out the reconnect backoff, or returns early on a Close command / all
     /// handles dropped. While disconnected, Send commands are answered with
-    /// [`BusError::Stale`] once they exceed the cutoff (so a queued write never
+    /// [`TransportError::Stale`] once they exceed the cutoff (so a queued write never
     /// fires late), and fresh ones wait out the remaining budget.
     async fn wait_backoff(&mut self, backoff: Duration) -> BackoffOutcome {
         let deadline = tokio::time::Instant::now() + backoff;
@@ -945,7 +937,7 @@ impl Actor {
                         // actuator write is worse than a clear failure (review A3).
                         let age = queued_at.elapsed();
                         if age >= STALE_CUTOFF {
-                            let _ = reply.send(Err(BusError::Stale));
+                            let _ = reply.send(Err(TransportError::Stale));
                         } else {
                             // Wait the remainder of the cutoff (or until the
                             // backoff deadline, whichever is first), then fail
@@ -954,10 +946,10 @@ impl Actor {
                             let stale_at = tokio::time::Instant::now() + (STALE_CUTOFF - age);
                             tokio::select! {
                                 _ = tokio::time::sleep_until(stale_at) => {
-                                    let _ = reply.send(Err(BusError::Stale));
+                                    let _ = reply.send(Err(TransportError::Stale));
                                 }
                                 _ = tokio::time::sleep_until(deadline) => {
-                                    let _ = reply.send(Err(BusError::Stale));
+                                    let _ = reply.send(Err(TransportError::Stale));
                                     return BackoffOutcome::Elapsed;
                                 }
                             }

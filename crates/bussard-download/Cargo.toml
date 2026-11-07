@@ -11,7 +11,6 @@ license.workspace = true
 bussard-model = { workspace = true }
 bussard-prod = { path = "../bussard-prod" }
 bussard-mgmt = { path = "../bussard-mgmt" }
-bussard-bus = { workspace = true }
 bussard-transport = { workspace = true }
 # Group keys for the KNX Data Secure security-object program (issue #156),
 # held as the redacting, zeroizing `Key16`. First-party crate.

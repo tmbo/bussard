@@ -3,7 +3,7 @@
 //!
 //! Runs over a read-only [`bussard_service::BusService`], calls the shared
 //! [`bussard_service::BusService::read_group`] (the plain path is
-//! [`bussard_bus::ops::read_group`], which subscribes, sends the read completion-tracked,
+//! [`bussard_service::group::read_group`], which subscribes, sends the read completion-tracked,
 //! skips the gateway's `L_Data.con` echo and decodes the answer), prints the
 //! typed value, and closes the bus cleanly. Exits non-zero on timeout so scripts
 //! can detect a non-responding object, and on a send failure (honest exit codes,

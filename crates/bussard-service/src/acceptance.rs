@@ -7,9 +7,9 @@
 //! deterministic apart from its start timestamp, so two runs of a healthy house
 //! produce identical output and a handover protocol can be diffed.
 //!
-//! The runner lives here rather than in the CLI because both `bussard test` and
-//! the `knx_run_tests` MCP tool drive it, and it needs exactly what this crate
-//! already owns: the decoded telegram [`ring`](crate::ring) and the bus actor.
+//! The runner lives in the service because both `bussard test` and the
+//! `knx_run_tests` MCP tool drive it, over the decoded telegram
+//! [`TelegramRing`] and the bus actor.
 //!
 //! # Safety
 //!
@@ -22,17 +22,18 @@
 use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 
-use bussard_bus::BusHandle;
-use bussard_bus::ops::{self, WriteOptions};
 use bussard_model::tests_schema::{Expectation, TestCase, TestSuite};
 use bussard_model::text::{from_hex, hex};
 use bussard_model::{GroupAddress, IndividualAddress, Model, encode, parse_value};
 use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 
-use crate::decode::{DecodedTelegram, DestinationRef};
-use crate::ring::TelegramRing;
-use crate::timefmt;
+use bussard_model::timefmt;
+use bussard_monitor::decode::{DecodedTelegram, DestinationRef};
+use bussard_monitor::ring::TelegramRing;
+use bussard_transport::bus::BusHandle;
+
+use crate::group::{self, WriteOptions};
 
 /// How a single test ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -235,7 +236,7 @@ pub async fn run_suite(
     manual: &mut (dyn ManualStep + Send),
 ) -> Report {
     let started_at = SystemTime::now();
-    let source = ops::group_source(handle);
+    let source = handle.group_source();
     let mut outcomes = Vec::new();
 
     for test in &suite.tests {
@@ -324,7 +325,7 @@ async fn run_one(
             // the gateway echo, which would add a second per test.
             confirm_timeout: Duration::ZERO,
         };
-        match ops::write_group(handle, write.ga, &payload, dpt.is_packable(), opts).await {
+        match group::write_group(handle, write.ga, &payload, dpt.is_packable(), opts).await {
             Ok(_) => format!("after writing {} = {typed} ({dpt})", write.ga),
             Err(err) => {
                 return outcome(Status::Fail, format!("could not write {}: {err}", write.ga));

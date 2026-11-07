@@ -268,25 +268,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72f5acc6cb2ba439de613abc23857ec3d78374d8ed5ac84e9d11336e87da8649"
 
 [[package]]
-name = "bussard-bus"
-version = "0.10.0"
-dependencies = [
- "bussard-model",
- "bussard-secure",
- "bussard-testkit",
- "bussard-transport",
- "thiserror",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "bussard-cli"
 version = "0.10.0"
 dependencies = [
  "anyhow",
  "axum",
- "bussard-bus",
  "bussard-download",
  "bussard-ha",
  "bussard-mcp",
@@ -319,7 +305,6 @@ dependencies = [
 name = "bussard-download"
 version = "0.10.0"
 dependencies = [
- "bussard-bus",
  "bussard-mgmt",
  "bussard-model",
  "bussard-prod",
@@ -369,7 +354,6 @@ dependencies = [
  "anyhow",
  "axum",
  "base64 0.22.1",
- "bussard-bus",
  "bussard-download",
  "bussard-ha",
  "bussard-mgmt",
@@ -400,7 +384,6 @@ dependencies = [
 name = "bussard-mgmt"
 version = "0.10.0"
 dependencies = [
- "bussard-bus",
  "bussard-model",
  "bussard-secure",
  "bussard-testkit",
@@ -432,7 +415,6 @@ dependencies = [
 name = "bussard-monitor"
 version = "0.10.0"
 dependencies = [
- "bussard-bus",
  "bussard-model",
  "bussard-project",
  "bussard-secure",
@@ -510,7 +492,6 @@ name = "bussard-service"
 version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
- "bussard-bus",
  "bussard-download",
  "bussard-mgmt",
  "bussard-model",
@@ -564,7 +545,6 @@ version = "0.10.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
- "bussard-bus",
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",

@@ -15,12 +15,12 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
-use bussard_bus::{BusHandle, BusState, ops};
 use bussard_mgmt::LeaseChannel;
 use bussard_mgmt::broadcast::devices_in_programming_mode;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::decode::{ApciKind, DestinationRef};
 use bussard_monitor::{DecodedTelegram, GroupKeyring, json_value};
+use bussard_transport::bus::{BusHandle, BusState};
 use bussard_transport::cemi::MessageCode;
 use serde_json::{Value, json};
 use tokio::sync::broadcast;
@@ -472,7 +472,7 @@ pub async fn watch_prog(hub: TrafficHub, handle: BusHandle) {
             continue;
         }
 
-        let source = ops::group_source(&handle);
+        let source = handle.group_source();
         let lease = match handle.lease().await {
             Ok(lease) => lease,
             // The actor is gone; stop watching.
@@ -777,9 +777,9 @@ mod tests {
     async fn test_feed_emits_bus_event_on_state_change() -> Result<(), Box<dyn std::error::Error>> {
         use std::net::{Ipv4Addr, SocketAddrV4};
 
-        use bussard_bus::Bus;
         use bussard_model::Model;
         use bussard_transport::ConnectionConfig;
+        use bussard_transport::bus::Bus;
 
         use crate::state::BusStatus;
         use bussard_service::ModelHandle;

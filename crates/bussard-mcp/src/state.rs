@@ -5,10 +5,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
-use bussard_bus::{BusDiagnostics, BusHandle, BusState};
 use bussard_monitor::TelegramRing;
 use bussard_service::BusService;
 use bussard_transport::TransportKind;
+use bussard_transport::bus::{BusDiagnostics, BusHandle, BusState};
 use serde_json::{Value, json};
 
 use crate::model_handle::ModelHandle;
@@ -338,7 +338,7 @@ mod tests {
 
     #[test]
     fn conn_state_maps_from_bus_state() {
-        use bussard_bus::BusState;
+        use bussard_transport::bus::BusState;
         assert_eq!(
             ConnState::from_bus(BusState::Connecting),
             ConnState::Connecting

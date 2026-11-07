@@ -6,7 +6,7 @@
 //! test writes a group value (or asks a human to do something) and waits for the
 //! telegram that proves the installation reacted.
 //!
-//! The runner itself lives in [`bussard_monitor::acceptance`], because the
+//! The runner itself lives in [`bussard_service::acceptance`], because the
 //! `knx_run_tests` MCP tool drives the same code. This module owns the CLI
 //! edges: loading the file, the safety gates, the confirmation, and the report.
 //!
@@ -28,8 +28,9 @@ use std::time::Duration;
 use anyhow::bail;
 use bussard_model::Model;
 use bussard_model::tests_schema::{self, TestSuite};
-use bussard_monitor::acceptance::{ManualDecision, ManualStep, RunOptions};
-use bussard_monitor::{DecodedTelegram, TelegramRing, acceptance};
+use bussard_monitor::{DecodedTelegram, TelegramRing};
+use bussard_service::acceptance;
+use bussard_service::acceptance::{ManualDecision, ManualStep, RunOptions};
 use bussard_service::{BusService, WritePolicy};
 
 use crate::cli::{Consent, Resolved, Run, Spec};

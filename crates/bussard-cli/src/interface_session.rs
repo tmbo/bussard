@@ -103,9 +103,11 @@ pub(crate) fn open(
             runtime.block_on(service.close());
             bail!("{fatal}");
         }
-        if bussard_bus::no_free_tunnel_seen() && runtime.block_on(gateway_is(&config, target)) {
+        if bussard_transport::bus::no_free_tunnel_seen()
+            && runtime.block_on(gateway_is(&config, target))
+        {
             runtime.block_on(service.close());
-            bussard_bus::clear_no_free_tunnel_seen();
+            bussard_transport::bus::clear_no_free_tunnel_seen();
             return open_device_management(
                 runtime,
                 config,
@@ -157,7 +159,8 @@ async fn wait_for_tunnel(service: &BusService) -> bool {
         if service.wait_connected((deadline - now).min(POLL)).await {
             return true;
         }
-        if service.handle().fatal_error().is_some() || bussard_bus::no_free_tunnel_seen() {
+        if service.handle().fatal_error().is_some() || bussard_transport::bus::no_free_tunnel_seen()
+        {
             return false;
         }
     }

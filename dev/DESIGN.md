@@ -139,8 +139,8 @@ crates/
   bussard-ets/        # shared ETS-XML primitives: streaming parsers, DPT/flag helpers, zip guard
   bussard-project/    # .knxproj import: AES zip + PBKDF2, streaming XML → model
   bussard-prod/       # .knxprod reading (import-product)
-  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec
-  bussard-bus/        # bus-service actor: one Transport owner, frame subscriptions, L4 leases
+  bussard-transport/  # trait BusConnection; Tunnel + Router impls; cEMI codec; the bus actor
+                      #   (`bus`: one Transport owner, frame subscriptions, L4 leases)
   bussard-monitor/    # decode pipeline, SQLite capture, formatters
   bussard-mgmt/       # layer-4 connection-oriented transport, management procedures, table read
   bussard-download/   # LoadProcedure interpreter, table/memory image builder, plan/apply/flash
@@ -155,7 +155,7 @@ crates/
 
 The separation that matters most: `bussard-mgmt` is fiddly and protocol-correct, heavily
 tested against real devices; `bussard-download` is pure-ish computation (model + product
-data → byte image), unit-testable without a bus. `bussard-bus` owns the single transport
+data → byte image), unit-testable without a bus. The bus actor (`bussard_transport::bus`) owns the single transport
 connection and hands out exclusive layer-4 leases so a management session and live group
 traffic share one gateway tunnel slot. `bussard-ets` factors the streaming-XML primitives
 shared by the `.knxproj` and `.knxprod` importers.
@@ -172,7 +172,7 @@ copy of each safety rule:
         \             |             /
          +------ bussard-service ---+               policy: gate, protected GAs, sessions
         /        |          |        \
-  bussard-bus  bussard-mgmt  bussard-model  bussard-secure    domain
+  bussard-transport  bussard-mgmt  bussard-model  bussard-secure    domain
 ```
 
 - `BusService::open(config, WritePolicy)` applies the non-loopback write gate (§8,

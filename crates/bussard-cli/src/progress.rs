@@ -201,7 +201,7 @@ pub(crate) fn is_bus_event(meta: &tracing::Metadata<'_>) -> bool {
     *meta.level() <= tracing::Level::DEBUG
         && (target.starts_with("bussard_download")
             || target.starts_with("bussard_mgmt")
-            || target.starts_with("bussard_bus"))
+            || target.starts_with("bussard_transport::bus"))
 }
 
 /// Formats a duration as `m:ss`.
@@ -1001,7 +1001,7 @@ mod tests {
             tracing::debug!(target: "bussard_transport::tunnel", "frame");
             tracing::trace!(target: "bussard_mgmt::connection", "too chatty");
             assert_eq!(last_event(), "waiting out the reboot");
-            tracing::warn!(target: "bussard_bus", "bus connect failed; retrying");
+            tracing::warn!(target: "bussard_transport::bus", "bus connect failed; retrying");
             assert_eq!(last_event(), "bus connect failed; retrying");
             set_active(None);
             assert_eq!(last_event(), "");

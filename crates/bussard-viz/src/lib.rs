@@ -5,7 +5,7 @@
 //!
 //! 1. loads the [`Model`](bussard_model::Model) and precomputes the `/api/model`
 //!    projection ([`project`]),
-//! 2. optionally spawns the [`Bus`](bussard_bus::Bus) actor and a feeder that
+//! 2. optionally spawns the [`Bus`](bussard_transport::bus::Bus) actor and a feeder that
 //!    fills the [`TrafficHub`](traffic::TrafficHub) from the live bus,
 //! 3. builds the axum [`router`] and serves it until the listener closes.
 //!

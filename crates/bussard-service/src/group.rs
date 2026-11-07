@@ -30,10 +30,11 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use bussard_bus::ops::{self, ReadOutcome};
-use bussard_bus::{BusError, SendReceipt};
+use bussard_model::codec::TypedValue;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_secure::{AsduError, Key16, SecurityAlgorithm, Sequence, decode_group, encode_group};
+use bussard_transport::TransportError;
+use bussard_transport::bus::{BusHandle, SendReceipt};
 use bussard_transport::cemi::{Apdu, CemiFrame, Destination, MessageCode};
 
 use crate::admission::{Admission, AdmissionEvidence, LiveTables, Resolved};
@@ -96,7 +97,7 @@ pub enum GroupSendError {
     Seal(#[from] AsduError),
     /// The send itself failed.
     #[error(transparent)]
-    Bus(#[from] BusError),
+    Bus(#[from] TransportError),
 }
 
 /// The result of a [`BusService::read_group`].
@@ -141,7 +142,7 @@ impl BusService {
         apdu: &Apdu,
         key: &Key16,
     ) -> Result<SecuredSend, GroupSendError> {
-        let source = ops::group_source(self.handle());
+        let source = self.handle().group_source();
         let sequence = self.group_high_water().next_seed();
         self.group_high_water().observe(sequence);
         let asdu = encode_group(
@@ -166,7 +167,7 @@ impl BusService {
     /// Sends a `GroupValueRead` for `ga` and waits up to `timeout` for the
     /// answer, decoded against `dpt` when given.
     ///
-    /// `key` `None` is exactly [`bussard_bus::ops::read_group`]. With a key the
+    /// `key` `None` is exactly [`read_group`]. With a key the
     /// read is sealed under it, and only a `GroupValueResponse` /
     /// `GroupValueWrite` to `ga` from another source whose MAC verifies under
     /// the same key is accepted; a telegram that does not verify is skipped.
@@ -183,7 +184,7 @@ impl BusService {
         timeout: Duration,
     ) -> Result<Option<GroupRead>, GroupSendError> {
         let Some(key) = key else {
-            let outcome = ops::read_group(self.handle(), ga, dpt, timeout).await?;
+            let outcome = read_group(self.handle(), ga, dpt, timeout).await?;
             return Ok(outcome.map(|outcome| GroupRead {
                 outcome,
                 secured: false,
@@ -401,7 +402,7 @@ pub async fn read(
     key: Option<Key16>,
     timeout: Duration,
 ) -> Result<GroupOutcome<ReadResult>, GroupError> {
-    let sender = ops::group_source(service.handle());
+    let sender = service.handle().group_source();
     let model = ctx.model;
     let resolved = match key {
         Some(_) => Some(
@@ -433,7 +434,7 @@ pub async fn write(
     ctx: &GroupContext<'_>,
     write: crate::write::PreparedWrite,
 ) -> Result<GroupOutcome<WriteResult>, GroupError> {
-    let sender = ops::group_source(service.handle());
+    let sender = service.handle().group_source();
     let (model, ga) = (ctx.model, write.ga);
     // E038 (issue #348): a tunnel-only secured GA whose devices admit no
     // tunnelling address is refused while admit_tunnel_senders is off; an
@@ -483,6 +484,165 @@ async fn outcome<R>(
         note,
         tables_read,
         result,
+    }
+}
+
+// The plain (unsecured) group read and write over a bus handle.
+
+/// The outcome of a plain [`read_group`] call.
+#[derive(Debug, Clone)]
+pub struct ReadOutcome {
+    /// The raw APDU payload octets of the response.
+    pub payload: Vec<u8>,
+    /// The typed value, decoded against `dpt` when one was supplied and decoding
+    /// succeeded.
+    pub value: Option<TypedValue>,
+    /// The DPT the value was decoded against, if any.
+    pub dpt: Option<Dpt>,
+    /// The individual address that answered.
+    pub source: IndividualAddress,
+}
+
+/// Sends a `GroupValueRead` for `ga` and waits for the answering
+/// `GroupValueResponse`/`Write`, decoding it against `dpt` if given.
+///
+/// The wait skips the gateway's `L_Data.con` echo of our own request and any
+/// frame from our own source address, so the value returned is the device's real
+/// answer (issue #32). Returns `Ok(None)` on timeout (no responder), which the
+/// caller renders as an honest non-zero exit / `ok: false`.
+///
+/// The send itself is completion-tracked: if the `GroupValueRead` cannot even be
+/// transmitted (bus reconnecting past the staleness cutoff, ACK exhaustion) that
+/// [`TransportError`] is returned rather than silently timing out.
+pub async fn read_group(
+    handle: &BusHandle,
+    ga: GroupAddress,
+    dpt: Option<Dpt>,
+    timeout: Duration,
+) -> Result<Option<ReadOutcome>, TransportError> {
+    let source = handle.group_source();
+
+    // Subscribe before sending so the response cannot be missed (issue #32).
+    let mut sub = handle.subscribe();
+
+    // Transmit the read, completion-tracked. A transport error is surfaced; a
+    // successful receipt means the read is on the wire.
+    handle.send(CemiFrame::group_read(ga, source)).await?;
+
+    let matched = sub
+        .wait_for_matching(timeout, |stamped, code| {
+            let frame = &stamped.frame;
+            is_group(frame, ga)
+                && matches!(
+                    frame.apdu,
+                    Apdu::GroupValueResponse(_) | Apdu::GroupValueWrite(_)
+                )
+                && code != MessageCode::LDataCon
+                && frame.source != source
+        })
+        .await;
+
+    let Some(frame) = matched else {
+        return Ok(None);
+    };
+
+    let payload = group_payload(&frame.frame.apdu);
+    let value = match (dpt, payload.is_empty()) {
+        (Some(d), false) => Some(bussard_model::decode(&d, &payload)),
+        _ => None,
+    };
+    Ok(Some(ReadOutcome {
+        payload,
+        value,
+        dpt,
+        source: frame.frame.source,
+    }))
+}
+
+/// The outcome of a [`write_group`] call.
+#[derive(Debug, Clone)]
+pub struct GroupWriteReceipt {
+    /// The transport receipt: the write was ACKed by the gateway.
+    pub receipt: SendReceipt,
+    /// Whether a bus confirmation (an `L_Data.con`/indication for our GA) was
+    /// observed within the settle window. KNX group writes are fire-and-forget,
+    /// so `false` is not an error — but it is reported.
+    pub confirmed: bool,
+    /// The source individual address the write was sent from.
+    pub source: IndividualAddress,
+}
+
+/// Options controlling [`write_group`]'s confirmation behaviour.
+#[derive(Debug, Clone, Copy)]
+pub struct WriteOptions {
+    /// How long to watch for a bus confirmation after the ACKed send. Zero skips
+    /// the confirmation wait entirely (pure fire-and-forget).
+    pub confirm_timeout: Duration,
+}
+
+impl Default for WriteOptions {
+    fn default() -> Self {
+        WriteOptions {
+            confirm_timeout: Duration::from_millis(1500),
+        }
+    }
+}
+
+/// Sends a `GroupValueWrite` of `payload` to `ga`, completion-tracked, and
+/// optionally watches for a bus confirmation.
+///
+/// The returned [`GroupWriteReceipt`] carries the [`SendReceipt`] (the gateway ACKed
+/// the frame — the honest success signal the CLI's exit code and MCP's `ok` now
+/// hinge on) plus whether a confirmation echo/indication for the GA was seen. A
+/// transport failure (ACK exhaustion, staleness) is a [`TransportError`], not a silent
+/// success.
+pub async fn write_group(
+    handle: &BusHandle,
+    ga: GroupAddress,
+    payload: &[u8],
+    packed: bool,
+    opts: WriteOptions,
+) -> Result<GroupWriteReceipt, TransportError> {
+    let source = handle.group_source();
+
+    // Subscribe before sending so a fast confirmation cannot be missed.
+    let mut sub = handle.subscribe();
+
+    // `packed` is a DPT property the caller derives from `Dpt::is_packable()`:
+    // only sub-byte DPTs (main 1/2/3) may use the 6-bit small APDU form. A
+    // byte-sized DPT with a small value must be sent as a separate data octet
+    // (issue #59), so the packing decision cannot be inferred from the byte here.
+    let receipt = handle
+        .send(CemiFrame::group_write(ga, source, payload, packed))
+        .await?;
+
+    let confirmed = if opts.confirm_timeout.is_zero() {
+        false
+    } else {
+        sub.wait_for_matching(opts.confirm_timeout, |stamped, _code| {
+            is_group(&stamped.frame, ga)
+        })
+        .await
+        .is_some()
+    };
+
+    Ok(GroupWriteReceipt {
+        receipt,
+        confirmed,
+        source,
+    })
+}
+
+/// Whether a frame targets group address `ga`.
+fn is_group(frame: &CemiFrame, ga: GroupAddress) -> bool {
+    matches!(frame.destination, Destination::Group(g) if g == ga)
+}
+
+/// Extracts the group APDU payload octets, if any.
+fn group_payload(apdu: &Apdu) -> Vec<u8> {
+    match apdu {
+        Apdu::GroupValueResponse(d) | Apdu::GroupValueWrite(d) => d.bytes(),
+        _ => Vec::new(),
     }
 }
 

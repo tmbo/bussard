@@ -102,7 +102,7 @@ pub async fn read_parameters(
 ) -> Result<ParamsRead, ServiceError> {
     // Best-effort: a denial or a device without authorize still reads.
     let options = L4Options::secured(
-        bussard_bus::ops::group_source(session.service.handle()),
+        session.service.handle().group_source(),
         session.tool_key.clone(),
         session.high_water.clone(),
     )

@@ -17,7 +17,6 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
-use bussard_bus::ops;
 use bussard_model::{GroupAddress, IndividualAddress};
 use bussard_monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::admission::Admission;
@@ -835,7 +834,7 @@ impl BussardMcp {
             model: Some(model.as_ref()),
             dir: None,
             keys,
-            source: ops::group_source(service.handle()).into(),
+            source: service.handle().group_source().into(),
             authorize: bussard_service::Authorize::BestEffort(bussard_mgmt::apci::FREE_ACCESS_KEY),
             walk: describe::Walk::Objects,
         };

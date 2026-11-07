@@ -93,6 +93,17 @@ pub enum TransportError {
     /// The connection has already been closed locally.
     #[error("connection is closed")]
     Closed,
+
+    /// The [bus actor](crate::bus) task is gone (closed or panicked); the bus
+    /// is unusable.
+    #[error("bus actor is gone")]
+    ActorGone,
+
+    /// A frame queued on the [bus actor](crate::bus) was dropped without
+    /// transmitting because the connection did not come up within
+    /// [`STALE_CUTOFF`](crate::bus::STALE_CUTOFF).
+    #[error("frame dropped: bus was not connected within the staleness cutoff")]
+    Stale,
     /// A device management connection reaches the KNXnet/IP server itself
     /// and has no bus behind it (issue #523): it cannot carry `what`.
     #[error(

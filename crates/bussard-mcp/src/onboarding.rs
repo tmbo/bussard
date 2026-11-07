@@ -26,7 +26,6 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
-use bussard_bus::BusHandle;
 use bussard_model::Model;
 use bussard_service::BusService;
 use bussard_service::observer::{Answer, Collected, ProgressSink, Prompt, Question};
@@ -34,6 +33,7 @@ use bussard_service::setup::{
     self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
 use bussard_transport::ConnectionConfig;
+use bussard_transport::bus::BusHandle;
 use bussard_transport::knxnet::GatewayInfo;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::{InputResponses, RequestState};

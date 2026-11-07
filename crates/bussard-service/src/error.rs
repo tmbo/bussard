@@ -1,7 +1,7 @@
 //! The service error type.
 
-use bussard_bus::BusError;
 use bussard_mgmt::{MgmtError, SourceCheckError};
+use bussard_transport::TransportError;
 use bussard_transport::write_gate::WriteGateRefused;
 
 use crate::secure::SecureKeyError;
@@ -33,11 +33,11 @@ pub enum ServiceError {
 
     /// The exclusive layer-4 lease on the bus could not be taken.
     #[error("leasing the bus")]
-    Lease(#[source] BusError),
+    Lease(#[source] TransportError),
 
     /// A group telegram could not be sent or answered.
     #[error(transparent)]
-    Bus(#[from] BusError),
+    Bus(#[from] TransportError),
 
     /// The management connection (connect, authorize, a request) failed.
     #[error(transparent)]

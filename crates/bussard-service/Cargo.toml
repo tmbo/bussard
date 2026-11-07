@@ -11,7 +11,6 @@ description = "The service layer between bussard's surfaces (CLI, MCP, viz) and 
 [dependencies]
 bussard-model = { workspace = true }
 bussard-transport = { workspace = true }
-bussard-bus = { workspace = true }
 bussard-mgmt = { workspace = true }
 bussard-secure = { workspace = true }
 # `.knxkeys` keyring parsing for the tool-key resolver (`secure`).

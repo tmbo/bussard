@@ -326,7 +326,7 @@ pub async fn probe<P>(
             };
         // A loss still being re-established counts too (issue #192).
         let link_lost = handle.link_losses() != losses_before
-            || handle.status() == bussard_bus::BusState::Reconnecting;
+            || handle.status() == bussard_transport::bus::BusState::Reconnecting;
         if attempt >= PREFLIGHT_ATTEMPTS
             || !preflight_interrupted(&descriptor, resident.as_ref(), link_lost)
         {

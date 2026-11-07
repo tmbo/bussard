@@ -2,7 +2,7 @@
 //!
 //! bussard has three surfaces: the `bussard` CLI, the MCP server
 //! (`bussard-mcp`) and the viz web server (`bussard-viz`). Each used to
-//! orchestrate the domain crates (`bussard-bus`, `bussard-mgmt`,
+//! orchestrate the domain crates (`bussard-transport`, `bussard-mgmt`,
 //! `bussard-model`, `bussard-secure`) on its own, so the safety rules were
 //! implemented once per surface and drifted apart (issue #86). This crate holds
 //! the one copy of each rule. A surface parses its input, calls in here and
@@ -22,9 +22,13 @@
 //! - [`write`]: the checked group write (GA, protected-GA check, DPT, encode,
 //!   send) with a typed [`WriteRefusal`] that each surface renders in its own
 //!   words.
-//! - [`group`]: KNX Data Secure group communication: which GAs are secured
-//!   ([`group_key_for`]), the secured `GroupValueRead`
-//!   ([`BusService::read_group`]) and the sealing behind the secured write.
+//! - [`group`]: the plain group read and write over the bus actor
+//!   ([`group::read_group`], [`group::write_group`]) and KNX Data Secure group
+//!   communication: which GAs are secured ([`group_key_for`]), the secured
+//!   `GroupValueRead` ([`BusService::read_group`]) and the sealing behind the
+//!   secured write.
+//! - [`acceptance`]: the scripted `tests.toml` runner behind `bussard test`
+//!   and `knx_run_tests`.
 //! - [`ModelHandle`]: a shared model that reloads itself when the files on disk
 //!   change, used by the long-lived MCP and viz servers, and
 //!   [`complete_product_models`], which fills in missing product models
@@ -73,6 +77,7 @@
 //! The crate never prints. Terminal prompts, JSON shapes and HTTP status codes
 //! stay with the surfaces.
 
+pub mod acceptance;
 pub mod admission;
 pub mod adopt;
 pub mod assign;

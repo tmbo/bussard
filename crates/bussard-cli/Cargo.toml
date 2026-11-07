@@ -21,7 +21,6 @@ bussard-project = { workspace = true }
 bussard-prod = { workspace = true }
 bussard-transport = { workspace = true }
 bussard-monitor = { workspace = true }
-bussard-bus = { workspace = true }
 bussard-mcp = { workspace = true }
 bussard-mgmt = { workspace = true }
 bussard-download = { workspace = true }

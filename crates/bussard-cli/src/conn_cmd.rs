@@ -189,7 +189,7 @@ pub(crate) fn facts_cache(
 /// The source individual address for a **connection-oriented** device command,
 /// checked against the bus first.
 ///
-/// Resolves the source exactly as [`bussard_bus::ops::group_source`] does (the tunnel-assigned
+/// Resolves the source exactly as [`BusHandle::group_source`](bussard_transport::bus::BusHandle::group_source) does (the tunnel-assigned
 /// individual address, or the `0.0.255` fallback on routing), then — unless
 /// `--skip-address-check` was passed — probes the bus for a device answering at
 /// that very address and refuses to continue if one does.

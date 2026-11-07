@@ -19,10 +19,10 @@ use std::net::SocketAddrV4;
 use std::path::Path;
 use std::time::{Duration, SystemTime};
 
-use bussard_bus::BusHandle;
 use bussard_mgmt::MaskProfile;
 use bussard_model::identity::IdentityCheck;
 use bussard_model::{GroupAddress, IndividualAddress, Model, ModelAnalysis};
+use bussard_transport::bus::BusHandle;
 use bussard_transport::cemi::{Apdu, Destination, MessageCode};
 use bussard_transport::knxnet::GatewayDescription;
 use serde::Serialize;
@@ -783,7 +783,7 @@ impl SecureLiveReport {
 /// The options of the MCP server's Secure probe: the bus's group source,
 /// discovery timeouts, no authorize.
 pub fn secure_probe_options(service: &BusService) -> L4Options {
-    L4Options::read_only(bussard_bus::ops::group_source(service.handle()))
+    L4Options::read_only(service.handle().group_source())
         .with_timeouts(bussard_mgmt::Timeouts::discovery())
         .with_authorize(Authorize::Skip)
 }

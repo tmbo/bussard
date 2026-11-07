@@ -349,8 +349,8 @@ fn must_fail<T, E>(result: Result<T, E>) -> Result<E, BoxError> {
 /// fix — the old `recv` would have stolen them).
 #[tokio::test]
 async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() -> TestResult {
-    use bussard_bus::Bus;
     use bussard_mgmt::LeaseChannel;
+    use bussard_transport::bus::Bus;
 
     let devices = vec![responder("1.1.4", 0x07B0, 0x0083)?];
     let gw = start_mock(devices).await?;
@@ -359,7 +359,7 @@ async fn device_read_over_a_lease_and_group_subscriber_both_see_frames() -> Test
     let (handle, _task) = Bus::connect(ConnectionConfig::tunnel(addr));
     // Wait for the actor to connect.
     for _ in 0..300 {
-        if handle.status() == bussard_bus::BusState::Connected {
+        if handle.status() == bussard_transport::bus::BusState::Connected {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;

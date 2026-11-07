@@ -9,10 +9,10 @@
 
 use std::time::{Duration, Instant};
 
-use bussard_bus::{Bus, BusHandle, BusState};
 use bussard_secure::{Key16, Password, salt};
 use bussard_testkit::secure_gateway::SECURE_GATEWAY_IA;
 use bussard_testkit::{MockSecureGateway, TestResult};
+use bussard_transport::bus::{Bus, BusHandle, BusState};
 use bussard_transport::{
     ConnectionConfig, SecureSource, SecureTunnelConfig, SecureUser, TunnelReconnect,
 };
@@ -39,7 +39,7 @@ fn fast_backoff() {
     // read once when an actor starts.
     unsafe {
         std::env::set_var(
-            bussard_bus::BACKOFF_START_MS_ENV,
+            bussard_transport::bus::BACKOFF_START_MS_ENV,
             BACKOFF_START.as_millis().to_string(),
         );
     }

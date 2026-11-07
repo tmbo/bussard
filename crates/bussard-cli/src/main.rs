@@ -682,7 +682,7 @@ fn cli_main() -> ExitCode {
     // A connect error that retrying cannot fix (a secure-only interface
     // without credentials, a refused KNXnet/IP Secure password; issue #182) is
     // the real cause of whatever the command reported next; name it alone.
-    if let Some(fatal) = bussard_bus::fatal_connect_error() {
+    if let Some(fatal) = bussard_transport::bus::fatal_connect_error() {
         eprintln!("error: {fatal}");
         if cli.global.timing {
             print_timing(started);
@@ -722,7 +722,7 @@ fn print_timing(started: std::time::Instant) {
 /// gateway refuse every connect with `E_NO_MORE_CONNECTIONS` (the actor retries
 /// such refusals, so the command itself only sees a bus that never came up).
 fn no_free_tunnel_or(code: ExitCode) -> ExitCode {
-    if bussard_bus::no_free_tunnel_seen() {
+    if bussard_transport::bus::no_free_tunnel_seen() {
         eprintln!("{}", conn_cmd::no_free_tunnel_message("the gateway"));
         ExitCode::from(conn_cmd::EXIT_NO_FREE_TUNNEL)
     } else {

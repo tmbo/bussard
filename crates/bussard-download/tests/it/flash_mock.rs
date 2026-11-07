@@ -3533,7 +3533,7 @@ async fn flash_surfaces_access_denied_on_a_nonzero_level() -> TestResult {
 /// `Transport` the other tests borrow, this can be reconnected, which the
 /// master-reset step requires after the device reboots.
 struct LeaseConnector {
-    handle: bussard_bus::BusHandle,
+    handle: bussard_transport::bus::BusHandle,
     target: bussard_model::IndividualAddress,
     source: bussard_model::IndividualAddress,
     /// The L4 timeout budget each opened connection uses. `None` keeps the default
@@ -3553,7 +3553,7 @@ struct LeaseConnector {
 impl LeaseConnector {
     /// A plain connector (no KNX Secure), as every pre-#71 test uses.
     fn plain(
-        handle: bussard_bus::BusHandle,
+        handle: bussard_transport::bus::BusHandle,
         target: bussard_model::IndividualAddress,
         source: bussard_model::IndividualAddress,
         timeouts: Option<bussard_mgmt::Timeouts>,
@@ -3570,7 +3570,7 @@ impl LeaseConnector {
 
     /// A connector that presents `key` as the target's tool key.
     fn secure(
-        handle: bussard_bus::BusHandle,
+        handle: bussard_transport::bus::BusHandle,
         target: bussard_model::IndividualAddress,
         source: bussard_model::IndividualAddress,
         timeouts: Option<bussard_mgmt::Timeouts>,
@@ -3628,7 +3628,9 @@ impl bussard_download::Connector for LeaseConnector {
 /// Spins up the mock gateway and a bus actor over it, returning the actor handle
 /// and shared device state. The caller drives the flash through a leasing
 /// [`Session`] so it can reconnect.
-async fn setup_bus(fault: Fault) -> TestResult<(bussard_bus::BusHandle, Shared, MockGateway)> {
+async fn setup_bus(
+    fault: Fault,
+) -> TestResult<(bussard_transport::bus::BusHandle, Shared, MockGateway)> {
     setup_bus_with(fresh_device(fault)).await
 }
 
@@ -3640,24 +3642,26 @@ async fn setup_bus_reconnect(
     state: Shared,
     reconnect: bussard_transport::TunnelReconnect,
 ) -> TestResult<(
-    bussard_bus::BusHandle,
+    bussard_transport::bus::BusHandle,
     Shared,
     MockGateway,
     std::net::SocketAddrV4,
 )> {
     let gw = start_gateway(&state).await?;
     let gateway = gw.addr();
-    let (handle, _actor) =
-        bussard_bus::Bus::connect(ConnectionConfig::tunnel(gateway).with_reconnect(reconnect));
+    let (handle, _actor) = bussard_transport::bus::Bus::connect(
+        ConnectionConfig::tunnel(gateway).with_reconnect(reconnect),
+    );
     handle.wait_connected(Duration::from_secs(5)).await;
     Ok((handle, state, gw, gateway))
 }
 
 async fn setup_bus_with(
     state: Shared,
-) -> TestResult<(bussard_bus::BusHandle, Shared, MockGateway)> {
+) -> TestResult<(bussard_transport::bus::BusHandle, Shared, MockGateway)> {
     let gw = start_gateway(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    let (handle, _actor) =
+        bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
     handle.wait_connected(Duration::from_secs(5)).await;
     Ok((handle, state, gw))
 }
@@ -3689,7 +3693,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
     // a FRESH base and the tool must re-read it (not reuse the stale pre-reset one).
     lock(&state)?.wipe_app_on_master_reset = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = app_with_master_reset()?;
     let plan = plan_flash_default(
@@ -3843,7 +3847,7 @@ async fn test_flash_master_reset_erase_code_4_over_loaded_device_redownloads() -
     let (handle, state, gw) = setup_bus_with(preloaded_device(&image)?).await?;
     lock(&state)?.wipe_app_on_master_reset = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     // `app_with_master_reset` with the write naming object 4, the object the
     // mock keeps the resident MCB on, and a vendor id (the confirmed form).
@@ -3925,7 +3929,7 @@ async fn flash_master_reset_expecting_confirmed_form(id: &str) -> TestResult {
     let (handle, state, gw) = setup_bus(Fault::None).await?;
     lock(&state)?.wipe_app_on_master_reset = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let mut app = app_with_master_reset()?;
     app.id = id.to_string();
@@ -3976,7 +3980,7 @@ async fn test_flash_master_reset_refused_fails_the_flash() -> TestResult {
     let (handle, state, gw) = setup_bus(Fault::None).await?;
     lock(&state)?.master_reset_unsupported = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &app_with_master_reset()?,
         "1.1.4",
@@ -4039,10 +4043,11 @@ async fn test_flash_reboot_probe_treats_negative_con_as_not_up_yet() -> TestResu
         s.wipe_app_on_master_reset = true;
     }
     let gw = start_gateway_booting(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    let (handle, _actor) =
+        bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
     handle.wait_connected(Duration::from_secs(5)).await;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &app_with_master_reset()?,
         "1.1.4",
@@ -4129,7 +4134,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     {
         let (handle, state, gw) = setup_bus(Fault::None).await?;
         lock(&state)?.die_after_exchanges = Some(BUDGET);
-        let source = bussard_bus::ops::group_source(&handle);
+        let source = handle.group_source();
         let app = fabricated_app()?;
         let plan = plan_flash_default(
             &app,
@@ -4185,7 +4190,7 @@ async fn flash_cycles_l4_connection_before_the_exchange_budget_and_reaches_loade
     {
         let (handle, state, gw) = setup_bus(Fault::None).await?;
         lock(&state)?.die_after_exchanges = Some(BUDGET);
-        let source = bussard_bus::ops::group_source(&handle);
+        let source = handle.group_source();
         let app = fabricated_app()?;
         let plan = plan_flash_default(
             &app,
@@ -4278,7 +4283,7 @@ async fn authorize_is_cached_and_not_repeated_on_a_device_without_authorize() ->
         s.authorize_unsupported = true;
         s.die_after_exchanges = Some(BUDGET);
     }
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let app = fabricated_app()?;
     let plan = plan_flash_default(
         &app,
@@ -4346,7 +4351,7 @@ async fn test_open_with_facts_reuses_the_preflight_table_and_authorize_verdict()
         .lock()
         .map_err(|e| e.to_string())?
         .authorize_unsupported = true;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     // Phase A, as the CLI runs it: its own connection, table walk, disconnect.
     let mut preflight = LeaseConnector::plain(handle.clone(), target, source, None);
@@ -4468,7 +4473,7 @@ async fn flash_resumes_when_connection_drops_inside_a_write() -> TestResult {
     // 7 since the load-control writes trust the echoed state (issue #211):
     // StartLoading and the allocation send three requests fewer.
     lock(&state)?.die_after_exchanges = Some(7);
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let app = fabricated_app_big()?;
     let plan = plan_flash_default(
         &app,
@@ -4575,7 +4580,7 @@ async fn test_flash_resumes_after_gateway_tunnel_loss_mid_write() -> TestResult 
     }
     let (handle, state, gw, _gateway) =
         setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &fabricated_app_big()?,
         "1.1.4",
@@ -4642,7 +4647,7 @@ async fn test_flash_fails_with_gateway_hint_when_tunnel_never_returns() -> TestR
     lock(&state)?.tunnel_outage = Some((3, Duration::MAX));
     let (handle, _state, gw, gateway) =
         setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(2))).await?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &fabricated_app_big()?,
         "1.1.4",
@@ -4715,7 +4720,7 @@ async fn flash_gives_up_cleanly_when_a_device_never_makes_progress() -> TestResu
     // Drop every numbered exchange (budget 0): the device answers nothing, so no
     // operation can make any forward progress on any window.
     lock(&state)?.die_after_exchanges = Some(0);
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let app = fabricated_app_big()?;
     let plan = plan_flash_default(
         &app,
@@ -4788,7 +4793,7 @@ async fn flash_final_restart_silence_is_success_not_failure() -> TestResult {
     // still return Ok with load_state == Loaded (verified BEFORE the restart).
     let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -4850,7 +4855,7 @@ async fn flash_verifies_after_terminal_restart_when_it_can_reconnect() -> TestRe
 
     let (handle, state, gw) = setup_bus(Fault::SilentAfterBasicRestart).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -4926,7 +4931,7 @@ async fn flash_fails_when_load_does_not_persist_across_the_restart() -> TestResu
 
     let (handle, state, gw) = setup_bus(Fault::UnloadedAfterBasicRestart).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -5382,7 +5387,7 @@ async fn flash_da_tp_four_objects(
     let (plan, table_images) = da_tp_four_object_plan(&state, mcb_checks)?;
     let obj3 = table_images.get(&3).cloned().ok_or("no obj3 image")?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open(connector, None, None).await?;
@@ -5551,7 +5556,7 @@ async fn da_tp_preflight_then_flash(
         lock(&state)?.latency = Some((latency, Duration::ZERO));
     }
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let started = std::time::Instant::now();
     let mut connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut l4 = bussard_download::Connector::connect(&mut connector).await?;
@@ -6461,7 +6466,7 @@ async fn test_probe_resident_state_manufacturer_check() -> TestResult {
 async fn flash_secure_reaches_loaded_with_every_apdu_wrapped() -> TestResult {
     let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -6531,7 +6536,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() -> T
     let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
     lock(&state)?.wipe_app_on_master_reset = true;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = app_with_master_reset()?;
     let plan = plan_flash_default(
@@ -6593,7 +6598,7 @@ async fn flash_secure_master_reset_reconnect_keeps_the_sequence_monotonic() -> T
 async fn flash_plain_against_an_activated_device_is_refused() -> TestResult {
     let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -6646,7 +6651,7 @@ async fn flash_plain_against_an_activated_device_is_refused() -> TestResult {
 async fn flash_with_a_wrong_tool_key_is_refused() -> TestResult {
     let (handle, state, gw) = setup_bus_with(secure_device(Fault::None)?).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let app = fabricated_app()?;
     let plan = plan_flash_default(
@@ -6861,7 +6866,7 @@ async fn reflash_over_stale_image(
     let stale = [0xAAu8; 6];
     let (handle, state, gw) = setup_bus_with(preloaded_device(&stale)?).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
 
     let mut plan = plan_flash_default(
         &app_with_sparse_segment()?,
@@ -7566,7 +7571,7 @@ async fn secure_flash_across_slow_security_layer(
         .map_err(|_| "poisoned")?
         .sync_drops_after_restart = sync_drops;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &app_with_sparse_segment()?,
         "1.1.4",
@@ -7731,7 +7736,7 @@ async fn flash_across_restart_outage(
     let (handle, state, gw, _gateway) =
         setup_bus_reconnect(state, fast_reconnect(Duration::from_secs(20))).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         app,
         "1.1.4",
@@ -7968,10 +7973,11 @@ async fn timed_secure_flash(
     let state = secure_device(Fault::None)?;
     configure(&mut *lock(&state)?);
     let gw = start_gateway_booting(&state).await?;
-    let (handle, _actor) = bussard_bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    let (handle, _actor) =
+        bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
     handle.wait_connected(Duration::from_secs(5)).await;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
-    let source = bussard_bus::ops::group_source(&handle);
+    let source = handle.group_source();
     let plan = plan_flash_default(
         &app_with_filled_segment(image)?,
         "1.1.4",
