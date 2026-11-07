@@ -716,6 +716,70 @@ class TestProductProperties(unittest.TestCase):
                              [{"object": 0, "pid": 78, "value": "09ffffffffff"}])
 
 
+class TestCompareProperties(unittest.TestCase):
+    """A device-object property the load procedure only compares is seeded
+    (#966, Jung F50 Secure room controller, obj 0 PID 201)."""
+
+    APP = "M-0004_A-D162-22-D781-O000A"
+
+    def _product(self, tmp: Path, compares: str) -> Path:
+        import zipfile
+
+        xml = f"""<KNX><ApplicationProgram Id="{self.APP}"><Static><LoadProcedures>
+          <LoadProcedure MergeId="1">{compares}</LoadProcedure>
+          </LoadProcedures></Static></ApplicationProgram></KNX>"""
+        path = tmp / "p.knxprod"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr(f"M-0004/{self.APP}.xml", xml)
+        return path
+
+    def test_seed_properties_seeds_a_range_compare(self):
+        from unittest import mock
+
+        import sweep
+
+        # This product's op shape: a lower bound only, 0x1_0004_0000_0000.
+        compare = """<LdCtrlCompareProp Range="[281492156579840,]" ObjIdx="0" PropId="201">
+                       <OnError Cause="CompareMismatch" MessageRef="M-1" /></LdCtrlCompareProp>"""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._product(Path(tmp), compare)
+            want = {"object": 0, "pid": 201, "value": "01000400000000"}
+            self.assertEqual(sweep.compare_properties(path, self.APP), [want])
+            with mock.patch.object(sweep, "product_properties", return_value=[]):
+                self.assertEqual(defaults.seed_properties(path, self.APP, None), [want])
+                # A seed is not learned.
+                self.assertEqual(defaults.learned_from_ets(path, self.APP, {"learned_properties": [want]}), [])
+        # An InlineData compare is knx-sim's (it honours the choose blocks).
+        inline = '<LdCtrlCompareProp InlineData="000A8000011D" ObjIdx="0" PropId="78" />'
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(sweep.compare_properties(self._product(Path(tmp), inline), self.APP), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._product(Path(tmp), compare)
+            # A parameter or ETS's log names the property: that value stays.
+            param = {"object": 0, "pid": 201, "value": "02000000000000"}
+            with mock.patch.object(sweep, "product_properties", return_value=[param]):
+                self.assertEqual(defaults.seed_properties(path, self.APP, None), [param])
+
+    def test_compare_value_shapes(self):
+        import sweep
+
+        tag = '<LdCtrlCompareProp ObjIdx="0" PropId="201" {}>'
+        cases = {
+            'InlineData="00000000014A"': "00000000014a",
+            # Seven octets for Count 6: the last six, as knx-sim reads it.
+            'InlineData="00000000200003" Count="6"': "000000200003",
+            'Range="[,513]"': "0201",
+            'Range="[0,65535]"': "0000",
+            'Range="(255,]"': "0100",
+            'Range="[5,1]"': None,
+            'Range="[,]"': None,
+            'InlineData="01" StartElement="2"': None,
+        }
+        for attrs, want in cases.items():
+            got = sweep.compare_value(tag.format(attrs))
+            self.assertEqual(got.hex() if got is not None else None, want, attrs)
+
+
 class TestModuleParameters(unittest.TestCase):
     """A module definition's parameters are relative to the module instance,
     not device-object properties (#422, Schneider STXF121)."""

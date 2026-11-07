@@ -196,7 +196,8 @@ def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | Non
     """The device properties the sim starts with: those the application binds
     parameters to (the hardware type ETS checks first, PID 78; 78 of 81
     learned values match), overridden by what a previous run learned from
-    ETS's log, else Zennio's rule for PID 78."""
+    ETS's log, else Zennio's rule for PID 78, and the device-object
+    properties the load procedure compares against a range (#966)."""
     # The device object only: its PIDs 78 and 25 are what ETS checks; a
     # property on an object the sim does not build would refuse the config.
     merged = {(p["object"], p["pid"]): p for p in sweep.product_properties(path, app) if p["object"] == 0}
@@ -205,6 +206,11 @@ def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | Non
     if (0, 78) not in merged:
         for p in guessed_identity(app) or []:
             merged[(p["object"], p["pid"])] = p
+    # A property the load procedure only compares against a range (Jung F50
+    # Secure, PID 201, #966): seeded where nothing above names it, so every
+    # earlier seed keeps its value.
+    for p in sweep.compare_properties(path, app):
+        merged.setdefault((p["object"], p["pid"]), p)
     return list(merged.values()) or None
 
 
@@ -214,7 +220,8 @@ def learned_from_ets(path: Path, app: str, prev: dict | None) -> list[dict]:
     run recorded its whole seed as learned (product parameters, guessed
     identities); such an entry equals the seed and goes, so a corrected seed
     is not overridden by its stale copy."""
-    seeds = [p for p in sweep.product_properties(path, app) if p["object"] == 0] + (guessed_identity(app) or [])
+    seeds = ([p for p in sweep.product_properties(path, app) if p["object"] == 0] + (guessed_identity(app) or [])
+             + sweep.compare_properties(path, app))
     return [p for p in (prev or {}).get("learned_properties") or [] if p not in seeds]
 
 
