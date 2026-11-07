@@ -139,7 +139,7 @@ pub use plan_sys7::{
 pub use props::{compare_property_value, read_property_value, write_property_value};
 pub use restart_form::{RestartForm, restart_form};
 pub use session::{
-    Connector, DeviceFacts, RebootReadiness, RestartKind, Session, SingleConnector, VerifyEchoes,
+    Connector, RebootReadiness, RestartKind, Session, SingleConnector, VerifyEchoes,
 };
 
 /// How a property step names its interface object (issue #390).

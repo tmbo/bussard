@@ -99,7 +99,7 @@ impl BussardMcp {
             dir: ctx.dir,
             plan: &image.plan,
             options: image.options,
-            facts: image.facts(),
+            facts: image.facts(target),
             tool_key: ctx.tool_key,
             high_water: ctx.high_water,
             handover: None,

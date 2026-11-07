@@ -77,6 +77,12 @@ pub struct DeviceFactsRecord {
     /// `PID_MAX_APDU_LENGTH` of the device object, when readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_apdu: Option<u16>,
+    /// The read of `PID_MAX_APDU_LENGTH` was answered without a value (the
+    /// device does not offer it), so a download keeps the conservative chunks
+    /// without asking again (issue #215). An unanswered read does not set it.
+    /// Only the flash pre-flight sets it; the facts cache leaves it false.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub max_apdu_absent: bool,
     /// How the device answered `A_Authorize_Request` with the free-access key,
     /// when a command presented it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -160,7 +166,48 @@ pub struct PropertyFacts {
     pub write_level: u8,
 }
 
+/// The interface-object type of an application-program object.
+const OT_APPLICATION_PROGRAM: u16 = 3;
+
 impl DeviceFactsRecord {
+    /// A record of `address` with nothing read yet: no mask, no objects, no
+    /// verdicts. A download session opened with it discovers everything
+    /// itself; a pre-flight fills in what it learned.
+    pub fn unread(address: IndividualAddress) -> DeviceFactsRecord {
+        DeviceFactsRecord {
+            address,
+            read_at: String::new(),
+            mask: String::new(),
+            application_object: None,
+            application_id: None,
+            max_apdu: None,
+            max_apdu_absent: false,
+            authorize: None,
+            object_table_source: ObjectTableSource::Walk,
+            objects: Vec::new(),
+            knxnet: None,
+            no_knxnet: false,
+            go_security_flags: None,
+        }
+    }
+
+    /// Replaces the objects with `table` (`(index, object type)` pairs, no
+    /// property descriptions) and names the application object it carries.
+    pub fn set_object_table(&mut self, table: &[(u8, u16)]) {
+        self.objects = table
+            .iter()
+            .map(|&(index, object_type)| ObjectFacts {
+                index,
+                object_type,
+                properties: None,
+            })
+            .collect();
+        self.application_object = table
+            .iter()
+            .find(|(_, ot)| *ot == OT_APPLICATION_PROGRAM)
+            .map(|(index, _)| *index);
+    }
+
     /// The mask as a number, when [`mask`](Self::mask) parses.
     pub fn mask_value(&self) -> Option<u16> {
         u16::from_str_radix(self.mask.trim(), 16).ok()
@@ -325,6 +372,7 @@ mod tests {
             application_object: Some(3),
             application_id: Some(format_application_id(&[0x00, 0x04, 0xD1, 0x42, 0x21])),
             max_apdu: Some(233),
+            max_apdu_absent: false,
             authorize: Some(AuthorizeVerdict::Granted),
             go_security_flags: None,
             object_table_source: ObjectTableSource::IoList,

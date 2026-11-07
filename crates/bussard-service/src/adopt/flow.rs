@@ -16,7 +16,7 @@ use bussard_model::{Dpt, Flags, GroupAddress, IndividualAddress, LoadedDevice, M
 use bussard_prod::{ApplicationProgram, IndexEntry, ProductData, ResolvedComObject};
 use bussard_secure::SequenceHighWater;
 
-use super::{SecureAdoption, SecureDeviceFacts};
+use super::SecureAdoption;
 use crate::assign::{Verified, empty_model};
 use crate::params::ProductSource;
 use crate::secure::{SecureKeyError, SecureMaterial, ToolKeys};
@@ -688,10 +688,6 @@ pub fn record_secured(
             })
             .collect()
     });
-    let facts = SecureDeviceFacts {
-        sequence_number: material.device_sequences.get(&current).copied(),
-        senders: senders.clone().unwrap_or_default(),
-    };
     let link_count = links.len();
     if !links.is_empty() {
         out.links.links.insert(target, links);
@@ -703,7 +699,14 @@ pub fn record_secured(
             file_stem: target.to_string(),
         },
     );
-    super::apply_secure_adoption(&mut out, target, &adoption, &facts, placeholder);
+    super::apply_secure_adoption(
+        &mut out,
+        target,
+        &adoption,
+        material.device_sequences.get(&current).copied(),
+        senders.as_deref().unwrap_or_default(),
+        placeholder,
+    );
     let device = out
         .devices
         .remove(&target)
