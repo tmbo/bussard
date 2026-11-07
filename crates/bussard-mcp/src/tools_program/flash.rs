@@ -32,7 +32,8 @@ use bussard_service::flash_flow::ReadbackInputs;
 use bussard_service::program::{self, flash::FlashImage};
 use serde_json::{Value, json};
 
-use super::{JobObserver, ProgrammingTier, chain};
+use super::{ProgrammingTier, chain};
+use crate::jobs::JobSink;
 use crate::server::BussardMcp;
 
 /// What a flash job needs besides the image.
@@ -88,7 +89,7 @@ impl BussardMcp {
         if ctx.readback.is_none() {
             tracing::warn!("{target}: the flash runs without its read-back inputs");
         }
-        let mut observer = JobObserver::download(&tier.jobs, job, "download", target);
+        let mut observer = JobSink::new(&tier.jobs, job).download("download", target);
         // The download `bussard flash --yes` runs, with its read-back on the
         // flash's last connection (issues #319, #349) and the lock update:
         // the same function. The yes is the plan digest.
@@ -106,6 +107,7 @@ impl BussardMcp {
             readback: ctx.readback,
             senders: image.senders.as_deref(),
             question: program::Question {
+                kind: bussard_service::observer::Ask::Write,
                 prompt: format!("flash {target}"),
                 action: format!("flash {target}"),
             },

@@ -29,9 +29,9 @@ use std::sync::{Arc, OnceLock};
 use bussard_bus::BusHandle;
 use bussard_model::Model;
 use bussard_service::BusService;
+use bussard_service::observer::{Answer, Collected, ProgressSink, Prompt, Question};
 use bussard_service::setup::{
-    self, Collected, DownloadAnswer, DownloadPrompt, Output, SetupError, SetupHooks, SetupOutcome,
-    SetupRequest, TargetState,
+    self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
 use bussard_transport::ConnectionConfig;
 use bussard_transport::knxnet::GatewayInfo;
@@ -210,13 +210,13 @@ struct Chat {
     question: Option<String>,
 }
 
-impl DownloadPrompt for Chat {
-    fn download(&mut self, _question: &str, _files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(if self.download {
-            DownloadAnswer::Yes
+impl Prompt for Chat {
+    fn ask(&mut self, _question: &Question) -> Answer {
+        if self.download {
+            Answer::Yes
         } else {
-            DownloadAnswer::No
-        })
+            Answer::No
+        }
     }
 }
 
@@ -232,7 +232,7 @@ impl SetupHooks for Chat {
         Ok(false)
     }
 
-    fn no_gateway(&mut self, _out: &mut dyn Output) -> bool {
+    fn no_gateway(&mut self, _out: &mut dyn ProgressSink) -> bool {
         self.question = Some(
             "No KNXnet/IP gateway answered discovery on this computer's networks (discovery is \
              multicast and does not cross subnets). Nothing was written. Ask the owner for the \
@@ -246,7 +246,7 @@ impl SetupHooks for Chat {
     fn choose_gateway(
         &mut self,
         found: &[GatewayInfo],
-        _out: &mut dyn Output,
+        _out: &mut dyn ProgressSink,
     ) -> Result<Option<usize>, SetupError> {
         let list: Vec<String> = found.iter().map(setup::gateway::describe_gateway).collect();
         self.question = Some(format!(
@@ -257,7 +257,12 @@ impl SetupHooks for Chat {
         Ok(None)
     }
 
-    fn several_projects(&mut self, _dir: &Path, found: &[PathBuf], _out: &mut dyn Output) -> bool {
+    fn several_projects(
+        &mut self,
+        _dir: &Path,
+        found: &[PathBuf],
+        _out: &mut dyn ProgressSink,
+    ) -> bool {
         let list: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
         self.question = Some(format!(
             "Several ETS projects lie next to the model directory: {}. Nothing was written. Ask \

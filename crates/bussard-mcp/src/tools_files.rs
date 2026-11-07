@@ -21,12 +21,13 @@ use std::path::{Path, PathBuf};
 use bussard_model::Model;
 use bussard_project::keystore::SaveOutcome;
 use bussard_service::files::export::GroupFormat;
-use bussard_service::files::import::{ConflictChoice, ImportOutcome, NoPrompt};
+use bussard_service::files::import::{ConflictChoice, ImportOutcome};
 use bussard_service::files::products::OrderImport;
 use bussard_service::files::{FileKind, export, import, keyring, products};
+use bussard_service::observer::{Answer, Collected, Prompt, Question};
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::setup::products::error_chain;
-use bussard_service::setup::{self, Collected, DownloadAnswer, DownloadPrompt, SetupError};
+use bussard_service::setup::{self, SetupError};
 use std::sync::Arc;
 
 use rmcp::handler::server::tool::{InputResponses, RequestState};
@@ -56,18 +57,18 @@ struct ChatDownload {
     download: bool,
 }
 
-impl DownloadPrompt for ChatDownload {
-    fn download(&mut self, _question: &str, files: usize) -> Result<DownloadAnswer, SetupError> {
-        Ok(if self.download {
-            DownloadAnswer::Yes
-        } else {
-            let what = if files == 1 {
-                "this file".to_string()
-            } else {
-                format!("{files} file(s)")
-            };
-            DownloadAnswer::Refused(format!("not downloading {what}: {CONSENT_HINT}"))
-        })
+impl Prompt for ChatDownload {
+    fn ask(&mut self, question: &Question) -> Answer {
+        if self.download {
+            return Answer::Yes;
+        }
+        // The question's action counts the archives (`2 file(s)`); one is
+        // "this file" in chat.
+        let what = match question.action.as_str() {
+            "1 file(s)" => "this file",
+            other => other,
+        };
+        Answer::Refused(format!("not downloading {what}: {CONSENT_HINT}"))
     }
 }
 
@@ -304,7 +305,7 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
                     }
                 }
                 Some(FileKind::Bundle) => {
-                    match import::import_bundle(&path, dir, choice(args), &mut NoPrompt, &mut out) {
+                    match import::import_bundle(&path, dir, choice(args), &mut (), &mut out) {
                         Ok(outcome) => Ok(model_result("bundle", &path, dir, &outcome, &out)),
                         Err(err) => Err(refused(error_chain(&err), &out)),
                     }
@@ -508,7 +509,7 @@ fn import_project(
         "project",
         Some(prompt),
         project,
-        &mut NoPrompt,
+        &mut (),
         out,
     );
     match written {

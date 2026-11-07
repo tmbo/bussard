@@ -104,7 +104,7 @@ use bussard_service::program::flash::{FlashFor, FlashImage, FlashNeed};
 use bussard_service::program::plan::put;
 use bussard_service::program::plan::{PlanInputs, Planned};
 use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
-use bussard_service::program::{self as program, Observer, Step};
+use bussard_service::program::{self as program};
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use bussard_transport::ConnectionConfig;
@@ -116,6 +116,7 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+use crate::jobs::{JobSink, PARAMETER_DOWNLOAD};
 use crate::server::BussardMcp;
 use crate::state::ConnState;
 
@@ -969,7 +970,7 @@ impl BussardMcp {
         }
         let dir = self.state().dir.clone();
         let mut edited = (*model).clone();
-        let mut out = bussard_service::setup::Collected::default();
+        let mut out = bussard_service::observer::Collected::default();
         let added = bussard_service::declare::declare_used(&dir, &mut edited, verb, &mut out)
             .map_err(|err| {
                 format!(
@@ -2133,13 +2134,10 @@ impl BussardMcp {
              writing it is safe (the tables are rewritten wholesale); do not assume the device \
              works until a new plan reports nothing to do."
         );
-        let mut observer = JobObserver {
-            jobs: &tier.jobs,
-            job,
-            what: PARAMETER_DOWNLOAD,
-            target,
+        let mut observer = JobSink {
             truth: origin.truth(),
             parameter_octets: built.plan.writes.parameter_octets,
+            ..JobSink::new(&tier.jobs, job).download(PARAMETER_DOWNLOAD, target)
         };
         // Authorize (free access) best-effort, as the read did.
         let options = L4Options::secured(source, tool_key.clone(), high_water.clone());
@@ -2501,139 +2499,6 @@ impl Origin {
         match self {
             Origin::Model => "knx_plan_device",
             Origin::Backup => "knx_restore_tables (without plan_digest)",
-        }
-    }
-}
-
-/// [`JobObserver::what`] of a parameter-only write.
-const PARAMETER_DOWNLOAD: &str = "parameter download";
-
-/// Reports a programming flow into its job: the steps, the download's
-/// progress, and the human's yes, which the plan digest already carried.
-struct JobObserver<'a> {
-    /// The job table.
-    jobs: &'a crate::jobs::JobTable,
-    /// The job.
-    job: &'a str,
-    /// What downloads: `"parameter download"` for a parameter-only write,
-    /// `"download"` for a flash (issue #303).
-    what: &'static str,
-    /// The device.
-    target: IndividualAddress,
-    /// What the read-back compares with.
-    truth: &'static str,
-    /// The parameter octets the write streams.
-    parameter_octets: usize,
-}
-
-impl Observer for JobObserver<'_> {
-    fn step(&mut self, step: Step<'_>) {
-        let target = self.target;
-        let text = match step {
-            Step::WriteTables => {
-                "writing the group-address and association tables, then reading them back"
-                    .to_string()
-            }
-            Step::WaitRestart => "waiting for the device to restart".to_string(),
-            Step::WriteParameters { .. } => {
-                format!("writing {} parameter octet(s)", self.parameter_octets)
-            }
-            Step::Download { .. } => format!(
-                "flashing {target}: the full application download, then the restart (the device \
-                 is offline for {} to {} s) and the read-back",
-                bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
-                bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
-            ),
-            Step::ReadBack => format!(
-                "reading {target} back (tables, parameters, security object) to compare it with \
-                 {}",
-                self.truth
-            ), // The addressing steps report through their own observer.
-            _ => return,
-        };
-        self.jobs.step(self.job, text);
-    }
-
-    fn done(&mut self, step: Step<'_>, verified: bool) {
-        if let Step::WriteTables = step {
-            self.jobs.progress(
-                self.job,
-                "tables",
-                json!(if verified { "verified" } else { "failed" }),
-            );
-        }
-    }
-
-    fn progress(&mut self, event: bussard_download::Progress) {
-        match event {
-            bussard_download::Progress::Step {
-                index,
-                total,
-                label,
-            } => {
-                self.jobs.step(
-                    self.job,
-                    format!("{} step {index} of {total}: {label}", self.what),
-                );
-                self.jobs
-                    .progress(self.job, "download_step", json!(format!("{index}/{total}")));
-            }
-            bussard_download::Progress::Bytes { written, total } => {
-                // How far the segment walk got (a read-compare compares
-                // most chunks and writes few): not the octets written.
-                self.jobs.progress(
-                    self.job,
-                    "segment",
-                    json!({"position": written, "total": total}),
-                );
-            }
-            bussard_download::Progress::Written { written, writable } => {
-                // The octets the last System 7 segment stream wrote (issue
-                // #320).
-                self.jobs.progress(
-                    self.job,
-                    "octets",
-                    json!({"written": written, "writable": writable}),
-                );
-            }
-        }
-    }
-
-    fn finished(&mut self, verified: bool) {
-        self.jobs.progress(
-            self.job,
-            "download",
-            json!(if verified { "verified" } else { "failed" }),
-        );
-        if verified && self.what == PARAMETER_DOWNLOAD {
-            self.jobs
-                .step(self.job, "reading the parameter memory back to verify");
-        }
-    }
-
-    /// The human's yes is the plan digest `knx_apply_device` was called with
-    /// (the three-step chat contract, `dev/chat-parity.md`), checked before
-    /// any flow runs.
-    fn confirm(&mut self, _question: &program::Question) -> program::Answer {
-        program::Answer::Yes
-    }
-}
-
-impl<'a> JobObserver<'a> {
-    /// The observer of a download or a parameter write that names no plan.
-    fn download(
-        jobs: &'a crate::jobs::JobTable,
-        job: &'a str,
-        what: &'static str,
-        target: IndividualAddress,
-    ) -> Self {
-        JobObserver {
-            jobs,
-            job,
-            what,
-            target,
-            truth: "the model",
-            parameter_octets: 0,
         }
     }
 }
