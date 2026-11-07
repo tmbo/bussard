@@ -1,12 +1,12 @@
-//! The lock-side facts of one device, derived from its application program
+//! The lock keys of one device, derived from its application program
 //! and parameter values: channel handles, object keys, parameter keys and the
 //! channel labels `bussard.lock` records (see "Key derivation" in
 //! `docs/reference/files/`).
 //!
 //! `bussard import` derives them from the ETS project's values and `bussard
 //! adopt` from the vendor defaults, through the same two calls:
-//! [`derive_facts`] evaluates the application's Dynamic section and names what
-//! it shows, and [`apply_facts`] writes the result into a [`Device`] so a save
+//! [`derive_lock_keys`] evaluates the application's Dynamic section and names what
+//! it shows, and [`apply_lock_keys`] writes the result into a [`Device`] so a save
 //! produces the readable device file and its lock entry.
 //!
 //! The rules, in short:
@@ -60,9 +60,9 @@ const RESERVED: [&str; 3] = ["name", "send", "listen"];
 pub type ModuleArgs = HashMap<String, HashMap<String, String>>;
 
 /// Everything `bussard.lock` records about one device's channels, objects and
-/// parameters, before it is written into a [`Device`] by [`apply_facts`].
+/// parameters, before it is written into a [`Device`] by [`apply_lock_keys`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct DeviceFacts {
+pub struct LockKeys {
     /// The channels the evaluated configuration shows, in walk order.
     pub channels: Vec<ChannelFact>,
     /// The com-objects the configuration instantiates, by number.
@@ -141,16 +141,16 @@ pub struct ParameterFact {
     pub shown: bool,
 }
 
-/// Derives the lock-side facts of a device running `app` with parameter
+/// Derives the lock keys of a device running `app` with parameter
 /// `values` (keyed by app-relative ref with the module-instance selector, the
 /// form ETS projects and device files use; empty for the vendor defaults).
 /// `module_args` supplies text arguments for `{{Arg…}}` placeholders; the
 /// application's own numeric `<Module>` arguments fill in what it lacks.
-pub fn derive_facts(
+pub fn derive_lock_keys(
     app: &ApplicationProgram,
     values: &BTreeMap<String, String>,
     module_args: &ModuleArgs,
-) -> DeviceFacts {
+) -> LockKeys {
     let config = if app.dynamic.is_empty() {
         everything_shown(app)
     } else {
@@ -180,7 +180,7 @@ pub fn derive_facts(
             c
         })
         .collect();
-    DeviceFacts {
+    LockKeys {
         channels,
         objects,
         parameters,
@@ -206,10 +206,10 @@ pub fn derive_facts(
 ///
 /// `_app` is the program the facts were derived from. Everything this needs
 /// from it is in `facts` now; the argument stays so callers do not change.
-pub fn apply_facts(
+pub fn apply_lock_keys(
     device: &mut Device,
     _app: &ApplicationProgram,
-    facts: &DeviceFacts,
+    facts: &LockKeys,
     stored: &BTreeMap<String, String>,
 ) {
     for ch in &facts.channels {
@@ -319,7 +319,7 @@ fn locked_parameter(p: &ParameterFact) -> LockedParameter {
     }
 }
 
-/// Brings the lock-side facts of `device` up to date after a parameter edit,
+/// Brings the lock keys of `device` up to date after a parameter edit,
 /// from `facts` derived with the device file's current values (issue #276).
 ///
 /// A parameter that enables a block or chooses a data length shows, hides or
@@ -332,7 +332,7 @@ fn locked_parameter(p: &ParameterFact) -> LockedParameter {
 /// it (its links stay valid in the file and validation reports them). An
 /// object whose ref changed (another data length) takes the new ref, size,
 /// DPT and flags. The parameter values are not touched.
-pub fn refresh_facts(device: &mut Device, facts: &DeviceFacts, linked: &BTreeSet<u16>) {
+pub fn refresh_lock_keys(device: &mut Device, facts: &LockKeys, linked: &BTreeSet<u16>) {
     let mut handles: BTreeSet<String> = device
         .channels
         .values()
