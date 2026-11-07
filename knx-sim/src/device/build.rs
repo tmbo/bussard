@@ -1162,6 +1162,31 @@ mod tests {
     }
 
     #[test]
+    fn test_build_system_b_empty_object_has_an_empty_mcb() -> Result<(), Box<dyn std::error::Error>>
+    {
+        // Bussard issue #422: the Schneider STYAS608D (`M-0009_A-E807-10`) has
+        // no code segment; ETS loads object 4 empty and reads its PID 27
+        // `[d5 04 1b 10 01]`. The zero-count answer made ETS report a read of
+        // a protected memory area (ETS sweep, 2026-11-06).
+        let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        pd.mask_version = "MV-07B0".into();
+        pd.objects.retain(|o| o.lsm_index != 4);
+        let mut dev = connected_device(&pd)?;
+        for event in [0x04u8, 0x01, 0x02] {
+            let mut write = vec![4, 5, 0x10, 0x01, event];
+            write.extend_from_slice(&[0; 9]);
+            dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        }
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 27, 0x10, 0x01]))?;
+        // Size 0, the CRC of no octets (CRC-16/AUG-CCITT initial value 1D0F).
+        assert_eq!(
+            prop_response_value(&r),
+            vec![0, 0, 0, 0, 0x00, 0xFF, 0x1D, 0x0F]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_build_system_b_application_object_with_a_load_state_machine()
     -> Result<(), Box<dyn std::error::Error>> {
         // Bussard issue #422: the Jung Sonos gateway (`M-0004_A-B015-21`)
