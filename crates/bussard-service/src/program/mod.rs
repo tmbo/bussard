@@ -10,7 +10,9 @@
 //! code (CLAUDE.md "Device Writes"). The bytes the flows write are the
 //! offline oracle's (`scripts/campaign/95-offline-oracle.sh`).
 
+pub mod adopt;
 pub mod apply;
+pub mod assign;
 pub mod dump;
 pub mod flash;
 pub mod observer;
