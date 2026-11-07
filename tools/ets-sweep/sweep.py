@@ -427,6 +427,75 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
     return out
 
 
+def compare_properties(knxprod: Path, app: str) -> list[dict]:
+    """The device-object properties the application's load procedure compares
+    against a range (`LdCtrlCompareProp ObjIdx="0" Range=...`), with a value
+    that passes the compare: the lower bound (the upper one when there is no
+    lower bound) at the octets the range's widest bound needs. The Jung F50
+    Secure room controller compares PID 201 against `[281492156579840,]`; a sim
+    without that property answers ETS's description read with "no such
+    property" and ETS gives up before loading anything (#966).
+
+    An `InlineData` compare is left to knx-sim, which serves every
+    device-object one and picks among alternatives by the parameters' choose
+    blocks; a seed would override that pick (757 applications of the corpus
+    would change seed, 2026-11-08)."""
+    import zipfile
+
+    try:
+        z = zipfile.ZipFile(knxprod)
+        name = next((n for n in z.namelist() if n.endswith(f"{app}.xml")), None)
+        if not name:
+            return []
+        xml = z.read(name).decode("utf-8", "replace")
+    except (OSError, zipfile.BadZipFile):
+        return []
+    out: list[dict] = []
+    for m in re.finditer(r"<LdCtrlCompareProp\s[^>]*>", xml):
+        value = compare_value(m.group(0))
+        pid = re.search(r'\bPropId="(\d+)"', m.group(0))
+        ranged = re.search(r'\bRange="', m.group(0)) and not re.search(r'\bInlineData="', m.group(0))
+        if ranged and value is not None and pid and re.search(r'\bObjIdx="0"', m.group(0)):
+            prop = {"object": 0, "pid": int(pid.group(1)), "value": value.hex()}
+            if prop not in out:
+                out.append(prop)
+    return out
+
+
+def compare_value(tag: str) -> bytes | None:
+    """A value an `LdCtrlCompareProp` element accepts, or None when it names
+    another element than the first (knx-sim merges those, #422) or carries
+    neither `InlineData` nor a usable `Range`."""
+    def attr(key: str) -> str | None:
+        m = re.search(rf'\b{key}="([^"]*)"', tag)
+        return m.group(1) if m else None
+
+    if int(attr("StartElement") or "1") > 1:
+        return None
+    inline = attr("InlineData")
+    if inline:
+        try:
+            data = bytes.fromhex(inline)
+        except ValueError:
+            return None
+        # As knx-sim reads it: InlineData longer than the Count elements it
+        # can hold keeps its last Count octets (Gira IR-Gateway, 2026-11-06).
+        count = int(attr("Count") or "0")
+        if count and len(data) > count and len(data) % count:
+            data = data[-count:]
+        return data or None
+    rng = re.fullmatch(r"\s*([\[(])\s*(-?\d*)\s*,\s*(-?\d*)\s*([\])])\s*", attr("Range") or "")
+    if not rng:
+        return None
+    lo = int(rng.group(2)) + (rng.group(1) == "(") if rng.group(2) else None
+    hi = int(rng.group(3)) - (rng.group(4) == ")") if rng.group(3) else None
+    value = lo if lo is not None else hi
+    if value is None or value < 0 or (hi is not None and value > hi):
+        return None
+    width = max(max(b.bit_length() for b in (lo or 0, hi or 0, 1)) + 7, 8) // 8
+    return value.to_bytes(width, "big")
+
+
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
