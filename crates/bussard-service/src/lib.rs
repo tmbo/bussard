@@ -99,6 +99,7 @@ pub mod history;
 pub mod identity;
 pub mod ip_secure;
 pub mod knxnet;
+pub mod learn;
 pub mod limit;
 pub mod line;
 pub mod model_handle;
