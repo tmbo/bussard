@@ -9,6 +9,19 @@ use crate::wire::{CemiLData, IndividualAddress};
 use super::{Device, DeviceError, DeviceReaction, FREE_ACCESS_KEY, SYS7_MAX_MEMORY_CHUNK};
 
 impl Device {
+    /// The most data octets a System 7 memory op may carry: 12 on a standard
+    /// frame, or what the device's `PID_MAX_APDU_LENGTH` leaves after the
+    /// three octets of APCI, count and address when it advertises a longer
+    /// APDU (bussard issue #996), at most the 63 the count field holds.
+    pub(super) fn sys7_memory_chunk(&self) -> usize {
+        self.objects
+            .get(&0)
+            .and_then(|o| o.property(super::build::PID_MAX_APDU_LENGTH))
+            .and_then(|p| <[u8; 2]>::try_from(p.value.as_slice()).ok())
+            .map(|v| usize::from(u16::from_be_bytes(v)).saturating_sub(3).min(63))
+            .map_or(SYS7_MAX_MEMORY_CHUNK, |n| n.max(SYS7_MAX_MEMORY_CHUNK))
+    }
+
     /// Handle a management APDU, applying the KNX Data Secure interception before
     /// ordinary dispatch (spec §5, §6, §12.2). On an activated device:
     ///  - A_SecureData (APCI 0x3F1) → unwrap (verify MAC + sequence), dispatch the
@@ -127,20 +140,23 @@ impl Device {
         // device must ride a STANDARD frame and carry at most 12 data octets. An
         // extended cEMI frame or a >12-octet memory op is exactly the trap that
         // catches a tool wrongly sending 63-byte chunks; a real device refuses it.
+        // A device that advertises a longer APDU in PID 56 (bussard issue #996)
+        // takes the longer memory op that APDU carries, on an extended frame.
         if self.profile.is_system7()
             && matches!(apdu.apci, Apci::MemoryRead(_) | Apci::MemoryWrite(_))
         {
             let count = apdu.memory_count() as usize;
-            if !cemi.is_standard_frame() {
+            let ceiling = self.sys7_memory_chunk();
+            if !cemi.is_standard_frame() && ceiling <= SYS7_MAX_MEMORY_CHUNK {
                 return Err(DeviceError::WireStrictness {
                     detail: "System 7 memory op on an extended frame".into(),
                 });
             }
-            if count > SYS7_MAX_MEMORY_CHUNK {
+            if count > ceiling {
                 return Err(DeviceError::WireStrictness {
                     detail: format!(
-                        "System 7 memory op count {count} exceeds the {SYS7_MAX_MEMORY_CHUNK}-octet \
-                         standard-frame ceiling"
+                        "System 7 memory op count {count} exceeds the {ceiling}-octet \
+                         ceiling of the device's max APDU"
                     ),
                 });
             }
