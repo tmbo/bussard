@@ -682,7 +682,7 @@ mod tests {
         assert!(report.have_model);
         assert!(
             report.not_in_model.is_empty(),
-            "the sole responder is in the model, so nothing is unexpected"
+            "the sole responder is in your project, so nothing is unexpected"
         );
         assert_eq!(
             report.missing.len(),

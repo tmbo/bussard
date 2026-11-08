@@ -320,19 +320,19 @@ pub fn occupied_status(target: &Target, occupant: &Occupant) -> Status {
             Status::AlreadyPresent
         }
         (Some(expected), Some(read)) => Status::Failed(format!(
-            "the address is in use by another device ({}), not the modelled {expected:?} \
+            "the address is in use by another device ({}), not the {expected:?} in your project \
              (it reports {read:?}); nothing was written. Re-address or remove that device, \
              then re-run",
             occupant.describe()
         )),
         (Some(expected), None) => Status::Failed(format!(
             "the address is in use ({}) and the device there did not report an order number, \
-             so it cannot be told from the modelled {expected:?}; nothing was written",
+             so it cannot be told from the {expected:?} in your project; nothing was written",
             occupant.describe()
         )),
         (None, _) => Status::Failed(format!(
-            "the address is in use ({}) and the model has no order number to tell whether \
-             that is the modelled device; nothing was written",
+            "the address is in use ({}) and your project has no order number to tell whether \
+             that is the device in your project; nothing was written",
             occupant.describe()
         )),
     }
@@ -367,8 +367,8 @@ pub fn check_order_number(target: &Target, identified: &Verified) -> OrderCheck 
     let Some(read) = identified.order.as_deref() else {
         return OrderCheck::Refused(format!(
             "the device in programming mode did not answer an order-number read, so it cannot be \
-             verified against the model's {expected:?} for {}; nothing was written. Read it with \
-             `bussard scan`, or clear the model's order number if this device cannot report one",
+             verified against your project's {expected:?} for {}; nothing was written. Read it with \
+             `bussard scan`, or clear your project's order number if this device cannot report one",
             target.address
         ));
     };
@@ -376,7 +376,7 @@ pub fn check_order_number(target: &Target, identified: &Verified) -> OrderCheck 
         return OrderCheck::Matches;
     }
     OrderCheck::Refused(format!(
-        "the device in programming mode reports order number {read:?}, but the model expects \
+        "the device in programming mode reports order number {read:?}, but your project expects \
          {expected:?} for {} ({}); nothing was written. Leave programming mode on this device and \
          press the right one, then re-run",
         target.address, target.name
@@ -386,7 +386,7 @@ pub fn check_order_number(target: &Target, identified: &Verified) -> OrderCheck 
 /// The warning for a device the model has no order number for.
 pub fn unchecked_warning(target: &Target) -> String {
     format!(
-        "warning: the model has no order number for {}, so the pressed device was not \
+        "warning: your project has no order number for {}, so the pressed device was not \
          verified against it",
         target.address
     )
@@ -643,7 +643,7 @@ impl CommissionReadback {
         let mut notes = crate::program::assign::assigned_notes(&labelled.assigned);
         if matches!(identified.check, OrderCheck::NoModelNumber) {
             notes.push(format!(
-                "Assigned on the human's word: the model has no order number for {}.",
+                "Assigned on the human's word: your project has no order number for {}.",
                 target.name
             ));
         }

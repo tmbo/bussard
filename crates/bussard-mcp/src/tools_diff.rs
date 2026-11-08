@@ -96,13 +96,12 @@ impl BussardMcp {
 
 /// Diffs the working model in `dir` against the project or bundle at `path`.
 fn diff_against(dir: &Path, path: &Path) -> Result<Value, String> {
-    let working =
-        Model::load(dir).map_err(|err| format!("the working model does not load: {err}"))?;
+    let working = Model::load(dir).map_err(|err| format!("project files do not load: {err}"))?;
     let (other, source) = load_other(path)?;
     let mut changes = describe(&working, &other);
     name_parameters(&mut changes, [&other, &working], &ProductModels::load(dir));
     let mut report =
-        ProjectDiffReport::new("the working model", path.display().to_string(), &changes);
+        ProjectDiffReport::new("the project files", path.display().to_string(), &changes);
     report.source = Some(source);
     Ok(crate::reply::report(&report, &working))
 }

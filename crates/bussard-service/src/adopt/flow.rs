@@ -454,7 +454,7 @@ pub fn adopt_target(
         None => target_address(
             None,
             model,
-            "re-run with a modelled line or pass the target ADDRESS",
+            "re-run with a line in your project or pass the target ADDRESS",
         )?,
     };
     if secured && target != current {

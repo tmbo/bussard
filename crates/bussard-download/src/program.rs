@@ -129,7 +129,7 @@ pub async fn read_live_tables<Ch: L4Channel>(
 /// The model has no links for the device, so its desired tables would be empty.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error(
-    "the model has no links for {0}; refusing to plan an empty table set, which would \
+    "your project has no links for {0}; refusing to plan an empty table set, which would \
      remove every link the device has (add links to the device file \
      (devices/<address>.toml), or check the device address; `bussard flash` loads \
      empty tables, as ETS does, when the device should react to no group telegram)"

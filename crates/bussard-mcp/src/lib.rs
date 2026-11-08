@@ -287,13 +287,17 @@ impl McpConfig {
 pub fn build_state(config: &McpConfig) -> anyhow::Result<Arc<SharedState>> {
     if !config.dir.exists() {
         anyhow::bail!(
-            "model directory {} not found; the MCP server needs a loaded model (pass --dir)",
+            "project folder {} not found; the MCP server needs a loaded project (pass --dir)",
             config.dir.display()
         );
     }
     bussard_service::complete_product_models(&config.dir);
-    let model = Model::load(&config.dir)
-        .map_err(|e| anyhow::anyhow!("failed to load model from {}: {e}", config.dir.display()))?;
+    let model = Model::load(&config.dir).map_err(|e| {
+        anyhow::anyhow!(
+            "failed to load the project from {}: {e}",
+            config.dir.display()
+        )
+    })?;
 
     build_state_from_model(model, config)
 }

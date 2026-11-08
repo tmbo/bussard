@@ -41,7 +41,7 @@ impl TargetState {
         };
         if self.nested_model {
             out.push_str(&format!(
-                ", a model exists in {}/",
+                ", a project exists in {}/",
                 bussard_model::NESTED_MODEL_DIR
             ));
         }
@@ -354,9 +354,9 @@ const GITIGNORE: &str = "\
 
 /// `knx/README.md`: onboarding orientation.
 const README_MD: &str = "\
-# KNX model (bussard)
+# KNX project (bussard)
 
-This directory is your KNX installation as a model. bussard reads it to decode
+This directory is your bussard project: your KNX installation as files. bussard reads it to decode
 the bus and to program your devices. The files are plain TOML, but you never
 have to edit them by hand: bussard and an assistant driving it write them for
 you.
@@ -364,7 +364,7 @@ you.
 ## History and undo are built in
 
 bussard keeps its own history in `.bussard/history/`. Before bussard writes the
-model or a device, it saves a full copy of these files, with a note saying which
+project or a device, it saves a full copy of these files, with a note saying which
 command did it and when.
 
 - `bussard status`: what has changed since the last save, in plain sentences.
@@ -384,7 +384,7 @@ them as an `external edit` save first, so nothing is lost.
 - `bussard backup`: read every device's tables into `captures/backups/`
   before your first change. It only reads, so it is safe on a live house.
 - `bussard restore <backup-dir> <device>`: write one device back from a backup.
-- `bussard export house.bussard`: the whole model and its history as one file.
+- `bussard export house.bussard`: the whole project and its history as one file.
   Keep a copy on a USB stick in the cabinet. `bussard import house.bussard`
   brings it back on another computer.
 
@@ -392,7 +392,7 @@ them as an `external edit` save first, so nothing is lost.
 
     claude mcp add knx -- bussard mcp --dir <this directory>
 
-The assistant can read the model, watch the bus, and edit the model; every edit
+The assistant can read the project, watch the bus, and edit the project; every edit
 is saved to the history first. Only you program devices, with `plan` and `apply`.
 
 The assistant can also set an installation up from nothing: register the server
@@ -403,7 +403,7 @@ house. It starts with `knx_setup`, which does what `bussard init` did here.
 
 1. You have an ETS export: `bussard import project.knxproj --dir .`
 2. No ETS project: `bussard reconstruct --line 1.1 --out <new directory>` reads
-   what the devices carry into a fresh model. Then ask the assistant to help
+   what the devices carry into a fresh project. Then ask the assistant to help
    you name the group addresses as you press buttons (`bussard learn` does the
    same in a terminal).
 3. `bussard audit` reports what you have and what bussard can do with it.

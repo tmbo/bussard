@@ -245,7 +245,7 @@ impl BussardMcp {
         if prepared.digest.as_deref() != Some(digest) {
             tier.plans.retire(digest);
             return Err(
-                "the plan is stale: the model, ha.toml or the file changed since \
+                "the plan is stale: your project, ha.toml or the file changed since \
                         knx_ha_plan. Nothing was written. Run knx_ha_plan again, show the new \
                         sentences to the human and ask again"
                     .to_string(),

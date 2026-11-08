@@ -226,7 +226,7 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
                 let Some(order) = device_product.as_ref().and_then(|p| p.order_number.clone())
                 else {
                     bail!(
-                        "no --product given and the model names no product for {target} (the \
+                        "no --product given and your project names no product for {target} (the \
                          `product` order number in devices/{target}.toml); pass --product <FILE>"
                     );
                 };
@@ -450,12 +450,24 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             report::flash_timing(&plan.identity.id, planned.preflight, &written)
         );
     }
-    Ok(render_outcome(target, &plan.identity.id, &written))
+    let links_note = bussard_service::flash_flow::links_left_note(plan, target);
+    Ok(render_outcome(
+        target,
+        &plan.identity.id,
+        &written,
+        links_note.as_deref(),
+    ))
 }
 
 /// Prints how the download ended and what it recorded in the lock; the exit
-/// code says whether the device holds the model.
-fn render_outcome(target: IndividualAddress, id: &str, written: &flow::FlashWritten) -> ExitCode {
+/// code says whether the device holds the model. `links_note` is said after a
+/// verified download that wrote no link table (issue #779).
+fn render_outcome(
+    target: IndividualAddress,
+    id: &str,
+    written: &flow::FlashWritten,
+    links_note: Option<&str>,
+) -> ExitCode {
     let flashed = &written.flashed;
     let readback = flashed.readback.as_ref();
     let verify = match &flashed.outcome {
@@ -485,7 +497,7 @@ fn render_outcome(target: IndividualAddress, id: &str, written: &flow::FlashWrit
         eprintln!("\nERROR: flash {target}: {failure}");
         eprintln!(
             "the application program {id} is {} on {target}, but the device does not hold the \
-             model's configuration; run `bussard plan {target}` to see what is left",
+             configuration in your project; run `bussard plan {target}` to see what is left",
             verify.load_state,
         );
     } else if verify.property_only {
@@ -524,6 +536,9 @@ fn render_outcome(target: IndividualAddress, id: &str, written: &flow::FlashWrit
                 readback.summary()
             );
         }
+    }
+    if let (None, Some(note)) = (&params_failure, links_note) {
+        println!("{note}");
     }
     // Advisory findings (issue #145) do not fail the flash.
     for warning in &verify.warnings {

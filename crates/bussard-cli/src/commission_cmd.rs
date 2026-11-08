@@ -117,7 +117,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             "{}",
             crate::conn_cmd::no_model(
                 dir,
-                &format!("`bussard commission` walks the devices the model has on line {line}")
+                &format!("`bussard commission` walks the devices your project has on line {line}")
             )
         );
     };
@@ -129,7 +129,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let mut walk = LineRun::new(&model, area, line_no);
     if walk.targets().is_empty() {
         bail!(
-            "the model has no devices on line {line} (looked in {}/devices)",
+            "your project has no devices on line {line} (looked in {}/devices)",
             dir.display()
         );
     }
@@ -192,7 +192,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
 
     let pending = walk.pending();
     if pending == 0 {
-        eprintln!("every device the model has on line {line} already answers at its address.");
+        eprintln!("every device your project has on line {line} already answers at its address.");
     } else if !confirm(&line, pending, &gateway, options.consent.yes)? {
         eprintln!("aborted — nothing was written.");
         return Ok(ExitCode::FAILURE);
@@ -352,7 +352,7 @@ fn commission_one(
             Some(order) => order.clone(),
             None => {
                 return fail(
-                    "--flash needs an order number in the model's product block to resolve the \
+                    "--flash needs an order number in the product block of its device file to resolve the \
                      application program"
                         .to_string(),
                 );
@@ -381,7 +381,7 @@ fn commission_one(
     }
 
     if options.apply {
-        eprintln!("  applying the model's links");
+        eprintln!("  applying the links in your project");
         let applied = ApplyArgs {
             address: Some(target.address.to_string()),
             consent: Consent { yes: true },
@@ -415,7 +415,7 @@ async fn assign_on_bus(
     let order = target
         .order_number
         .clone()
-        .unwrap_or_else(|| "no order number in the model".to_string());
+        .unwrap_or_else(|| "no order number in your project".to_string());
     let bench = &mut Terminal::new(true, false).indent("  ").press(format!(
         "  press the programming button on {} ({order})",
         target.name

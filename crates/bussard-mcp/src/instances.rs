@@ -31,7 +31,7 @@ pub fn register(dir: &Path) -> Option<HostLock> {
     };
     for holder in host_lock::live_holders(&instances_dir(dir), PREFIX, Some(&lock)) {
         tracing::warn!(
-            "another bussard mcp (pid {}) serves the model directory {} on this host; both \
+            "another bussard mcp (pid {}) serves the project folder {} on this host; both \
              hold their own bus connection. That is expected when the client starts two \
              servers for one entry; each picks a different tunnelling user from the key \
              store when it lists several",

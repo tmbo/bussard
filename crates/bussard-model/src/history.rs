@@ -156,7 +156,7 @@ pub struct Manifest {
 }
 
 /// The summary of the very first snapshot, which has nothing to compare with.
-pub const FIRST_SNAPSHOT_SUMMARY: &str = "the first snapshot of the model";
+pub const FIRST_SNAPSHOT_SUMMARY: &str = "the first snapshot of your project";
 
 /// The reason to record with a snapshot, built fluently at the call site.
 ///
@@ -595,7 +595,7 @@ impl History {
         };
         let old = self.load(&latest.id)?;
         let new = self.working_model().map_err(|source| HistoryError::Load {
-            id: "working model".to_string(),
+            id: "(the project files)".to_string(),
             source,
         })?;
         Ok(Pending {
@@ -615,7 +615,7 @@ impl History {
     /// `None` when every snapshot matches the working model (nothing to undo).
     pub fn undo_target(&self) -> Result<Option<Snapshot>, HistoryError> {
         let working = self.working_model().map_err(|source| HistoryError::Load {
-            id: "working model".to_string(),
+            id: "(the project files)".to_string(),
             source,
         })?;
         for snapshot in self.list()?.into_iter().rev() {
@@ -648,7 +648,7 @@ impl History {
                     return Ok(None);
                 }
                 let reason = SnapshotReason::new("external edit")
-                    .with_result("model files changed outside bussard");
+                    .with_result("project files changed outside bussard");
                 let summary = describe(&old, &working).summary();
                 Ok(Some(self.write_snapshot(reason, Some(summary))?))
             }
@@ -966,7 +966,7 @@ mod tests {
         );
         assert!(
             !dir.join("tests.toml").exists(),
-            "a model file the snapshot did not have must be removed"
+            "a project file the snapshot did not have must be removed"
         );
         assert!(dir.join("bussard.lock").is_file(), "the lock comes back");
         assert_eq!(history.list()?.len(), 2, "the undo itself is a snapshot");
@@ -1067,7 +1067,7 @@ mod tests {
         let history = History::open(&dir);
         assert!(!history.has_model_files());
         assert!(history.snapshot_if_changed_externally()?.is_none());
-        assert!(!dir.exists(), "a hook must not create a model directory");
+        assert!(!dir.exists(), "a hook must not create a project folder");
         Ok(())
     }
 

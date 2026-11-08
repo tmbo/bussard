@@ -308,7 +308,7 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
         );
         if !export.omitted_group_addresses.is_empty() {
             println!(
-                "  group addresses omitted (secure in the model or the store, no key in the \
+                "  group addresses omitted (secure in your project or the store, no key in the \
                  export): {}",
                 joined(&export.omitted_group_addresses)
             );
@@ -321,7 +321,7 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
                 eprintln!("{}", style.error_line(leftover));
             }
         }
-        println!("  keep it out of git: the model's .gitignore lists *.knxkeys");
+        println!("  keep it out of git: the project's .gitignore lists *.knxkeys");
     }
     if !export.verified {
         eprintln!(

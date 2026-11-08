@@ -144,7 +144,7 @@ impl BussardMcp {
                 return ok(json!({
                     "ok": false,
                     "reason": format!(
-                        "no {} in the model directory {}; write one first (see `bussard test` in \
+                        "no {} in the project folder {}; write one first (see `bussard test` in \
                          the reference)",
                         tests_schema::TESTS_FILE,
                         state.dir.display()

@@ -212,7 +212,7 @@ impl SetupHooks for Chat {
     ) -> bool {
         let list: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
         self.question = Some(format!(
-            "Several ETS projects lie next to the model directory: {}. Nothing was written. Ask \
+            "Several ETS projects lie next to the project folder: {}. Nothing was written. Ask \
              the owner which one is current, then call knx_setup again with project_file.",
             list.join(", ")
         ));
@@ -233,13 +233,13 @@ impl BussardMcp {
         InputResponses(input_responses): InputResponses,
     ) -> Result<CallToolResponse, ErrorData> {
         let Some(setup) = self.setup.clone() else {
-            return Ok(failure("The model is already set up.".to_string(), Vec::new()).into());
+            return Ok(failure("Your project is already set up.".to_string(), Vec::new()).into());
         };
         let _one = setup.setup_lock.lock().await;
         if !self.before_setup() {
             return Ok(CallToolResult::structured(json!({
                 "done": true,
-                "summary": "The model is already set up; the full tool set is registered.",
+                "summary": "Your project is already set up; the full tool set is registered.",
             }))
             .into());
         }
@@ -298,8 +298,8 @@ impl BussardMcp {
             "state": "no_model",
             "connected": false,
             "reason": format!(
-                "There is no model in {} yet, so there is no bus connection. Call knx_setup: \
-                 it finds the gateway and writes the model.",
+                "There is no project in {} yet, so there is no bus connection. Call knx_setup: \
+                 it finds the gateway and writes your project.",
                 self.state().dir.display()
             ),
         })))
@@ -311,7 +311,7 @@ impl BussardMcp {
 fn password_required(log: Vec<String>) -> CallToolResult {
     failure(
         "The project is password-protected. Nothing was written. Ask the owner to put \
-         BUSSARD_PROJECT_PASSWORD=<password> in the .env next to the model directory (the \
+         BUSSARD_PROJECT_PASSWORD=<password> in the .env next to the project folder (the \
          server reads it), or pass the password as `password`."
             .to_string(),
         log,
@@ -484,7 +484,7 @@ impl BussardMcp {
                     None => format!(
                         "Set up {} without an ETS project. The server now has its full tool \
                          set ({tools} tools); continue with knx_project_summary, then build the \
-                         model with the edit tools or import an export at the terminal \
+                         project with the edit tools or import an export at the terminal \
                          (`bussard import <project.knxproj> --dir {}`).",
                         dir.display(),
                         dir.display()
@@ -510,7 +510,7 @@ impl BussardMcp {
             }
             Err(reason) => failure(
                 format!(
-                    "The model was written to {}, but the server could not load it: {reason}. \
+                    "Your project was written to {}, but the server could not load it: {reason}. \
                      Restart the server (the MCP client reconnects it) to use it.",
                     dir.display()
                 ),
@@ -523,10 +523,10 @@ impl BussardMcp {
     /// policy, wires the ring feeder and serves the full tool set from now
     /// on. Returns the tunnel sentence for the summary.
     async fn activate(&self) -> Result<Option<String>, String> {
-        let setup = self.setup.as_ref().ok_or("the server has a model")?;
+        let setup = self.setup.as_ref().ok_or("the server has a project")?;
         let onboarding = &setup.onboarding;
         let dir = onboarding.config.dir.clone();
-        let model = Model::load(&dir).map_err(|e| format!("the model does not load: {e}"))?;
+        let model = Model::load(&dir).map_err(|e| format!("your project does not load: {e}"))?;
         let ResolvedConnection {
             connection,
             keyring,
@@ -587,11 +587,11 @@ impl Setup {
     /// The onboarding server instructions.
     pub(crate) fn instructions(&self) -> String {
         format!(
-            "bussard: KNX as code over MCP. There is no model in {} yet, so only knx_setup and \
+            "bussard: KNX as code over MCP. There is no project in {} yet, so only knx_setup and \
              knx_bus_status are registered. To set the house up, ask the human whether they \
              have an ETS project export (.knxproj) and where it lies, then call knx_setup \
-             (with project_file when it is not next to the model directory). knx_setup finds \
-             the gateway on the local network, writes the model and imports the export. \
+             (with project_file when it is not next to the project folder). knx_setup finds \
+             the gateway on the local network, writes your project and imports the export. \
              When knx_setup returns a question, nothing was written: relay it and call \
              again. After it succeeds the server registers its full tool set and its result \
              carries the instructions for it; start with knx_project_summary.",
@@ -629,7 +629,7 @@ mod tests {
         let model = dir.join("model");
         std::fs::create_dir_all(&model)?;
         std::fs::write(model.join("bussard.toml"), "[connection]\n")?;
-        assert!(!is_onboarding_dir(&model), "a model directory");
+        assert!(!is_onboarding_dir(&model), "a project folder");
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
     }

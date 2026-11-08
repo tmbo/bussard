@@ -44,7 +44,7 @@ pub use crate::scan::PER_ADDRESS_ESTIMATE;
 pub const RECONSTRUCT_BANNER: &str = "\
 # ⚠ RECONSTRUCTED from on-device table read-back (`bussard reconstruct --line`).
 #
-# This model was synthesized WITHOUT an ETS project, by reading each System B
+# This project was synthesized WITHOUT an ETS project, by reading each System B
 # device's group-address and association tables over the bus. It is a scaffold,
 # not ground truth:
 #   • GA and com-object names are placeholders — annotate them (watch the bus
@@ -52,7 +52,7 @@ pub const RECONSTRUCT_BANNER: &str = "\
 #   • DPTs are unknown (groups.toml carries no `dpt`; validation warns W011).
 #   • send/listen DIRECTION is not recoverable from these tables (the transmit
 #     flag lives in the group object table), so every GA is recorded as `listen`.
-#   • com-object flags are placeholder `CW` stubs so the model validates.
+#   • com-object flags are placeholder `CW` stubs so your project validates.
 # Verify against reality before treating this as the source of truth.
 #
 ";
@@ -428,10 +428,10 @@ impl crate::report::Report for LineSummary {
     fn next_step(&self) -> Option<String> {
         Some(format!(
             "Tell the human {} device(s) answered on line {}: {} read, {} recorded as stubs \
-             (name each stub with its skip_reason), and that the model in {} is a scaffold \
+             (name each stub with its skip_reason), and that the project in {} is a scaffold \
              synthesized from the tables: group names and DPTs are placeholders and every group \
              address is recorded as listen, so it needs naming (watch the bus) before it is \
-             treated as the truth. It was written to its own directory; the model this server \
+             treated as the truth. It was written to its own directory; the project this server \
              serves is unchanged.",
             self.devices_found, self.line, self.devices_read, self.devices_skipped, self.out
         ))

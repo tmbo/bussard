@@ -779,7 +779,7 @@ fn parameter_items(
         {
             let mut note = Item::note(change);
             note.text = format!(
-                "{label} on {ia}: the model stores the vendor default ({}) explicitly; \
+                "{label} on {ia}: your project stores the vendor default ({}) explicitly; \
                  ETS already shows it, nothing to do.",
                 value_text(def, b)
             );

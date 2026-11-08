@@ -442,7 +442,7 @@ pub fn record_serials(
     serials: &[(IndividualAddress, SerialNumber)],
 ) -> Result<Vec<(IndividualAddress, SerialRecord)>, crate::ServiceError> {
     let mut model = bussard_model::Model::load(dir).map_err(|e| {
-        crate::ServiceError::because("loading the model to record serial numbers", e)
+        crate::ServiceError::because("loading the project to record serial numbers", e)
     })?;
     let records: Vec<(IndividualAddress, SerialRecord)> = serials
         .iter()

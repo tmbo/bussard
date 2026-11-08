@@ -128,7 +128,7 @@ pub fn validate_explicit_address(
         if !lines.is_empty() && !lines.contains(&(addr.area(), addr.line())) {
             let known: Vec<String> = lines.iter().map(|(a, l)| format!("{a}.{l}")).collect();
             return Err(ServiceError::Refused(format!(
-                "address {addr} is on line {}.{}, which the model does not use (known lines: {}); \
+                "address {addr} is on line {}.{}, which your project does not use (known lines: {}); \
                  double-check the address",
                 addr.area(),
                 addr.line(),

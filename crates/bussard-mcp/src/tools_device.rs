@@ -183,7 +183,7 @@ impl BussardMcp {
         let model = state.model.reload();
         let targets = select_targets(&model, &addresses, None).map_err(|e| e.to_string())?;
         if targets.is_empty() {
-            return Err("no devices to back up: the model has no device files".into());
+            return Err("no devices to back up: your project has no device files".into());
         }
         let gateway = state
             .bus
@@ -322,7 +322,7 @@ fn reconstruct_out(
             });
             if escapes {
                 return Err(format!(
-                    "out {out:?} must be a relative path inside the model directory, without \
+                    "out {out:?} must be a relative path inside the project folder, without \
                      `..`"
                 ));
             }
@@ -375,7 +375,7 @@ impl BussardMcp {
             }
             OutDir::NotEmpty => {
                 return Err(format!(
-                    "out {} is not empty; reconstruction never merges into an existing model \
+                    "out {} is not empty; reconstruction never merges into an existing project \
                      (choose a fresh directory)",
                     out.display()
                 ));
@@ -475,7 +475,7 @@ impl BussardMcp {
             drop(warm);
             found
         };
-        state.jobs.step(job, "writing the reconstructed model");
+        state.jobs.step(job, "writing the reconstructed project");
         let config = bussard_model::schema::BussardConfig {
             connection: model.config.connection.clone(),
             lint: None,
@@ -484,9 +484,12 @@ impl BussardMcp {
             enroll: None,
         };
         let synthesized = synthesize_model(&found, config);
-        synthesized
-            .save(out)
-            .map_err(|e| format!("writing the reconstructed model to {}: {e}", out.display()))?;
+        synthesized.save(out).map_err(|e| {
+            format!(
+                "writing the reconstructed project to {}: {e}",
+                out.display()
+            )
+        })?;
         inject_reconstruct_banners(out).map_err(|e| {
             let cause = std::error::Error::source(&e)
                 .map(|c| format!(": {c}"))
@@ -501,7 +504,7 @@ impl BussardMcp {
             && let Err(err) = out_history.snapshot(
                 bussard_model::history::SnapshotReason::new("mcp knx_reconstruct_device")
                     .with_args(["--line".to_string(), line.to_string()])
-                    .with_result("the model reconstructed from the line sweep"),
+                    .with_result("the project reconstructed from the line sweep"),
             )
         {
             tracing::warn!("could not record a history snapshot: {err}");

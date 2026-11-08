@@ -279,7 +279,7 @@ pub async fn post_reload(State(state): State<AppState>) -> Result<Json<Value>, A
     // Re-read the model directory. A failure leaves the current snapshot intact.
     bussard_service::complete_product_models(&state.dir);
     let model = Model::load(&state.dir)
-        .map_err(|e| ApiError::ModelInvalid(format!("model reload failed: {e}")))?;
+        .map_err(|e| ApiError::ModelInvalid(format!("project reload failed: {e}")))?;
 
     // Install it as the next version (current + 1).
     state.model.install(model);

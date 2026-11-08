@@ -286,10 +286,11 @@ impl AddressOutcome {
         let target = &self.address;
         let how = match (&self.write, self.flashed) {
             (None, _) => {
-                "it already held the model's application, parameters and links".to_string()
+                "it already held the application, parameters and links in your project".to_string()
             }
             (Some(_), Some(true)) => {
-                "the application was loaded with the model's parameters and links".to_string()
+                "the application was loaded with the parameters and links in your project"
+                    .to_string()
             }
             (Some(_), _) => "the parameters and links in your project were written".to_string(),
         };
@@ -300,7 +301,7 @@ impl AddressOutcome {
             if self.recorded.is_some() {
                 "; the replacement is recorded in the device file and bussard.lock"
             } else {
-                ", but the record in the model failed (see notes)"
+                ", but the record in your project failed (see notes)"
             }
         )
     }
@@ -326,7 +327,7 @@ impl Report for AddressOutcome {
         match self.flow {
             AddressFlow::Add if self.step.is_some() => Some(match (&self.secure, &self.product) {
                 (Some(_), _) => format!(
-                    "Tell the human the summary. Its links and parameters are in the model \
+                    "Tell the human the summary. Its links and parameters are in your project \
                      now; knx_plan_device for {target} should report nothing to do."
                 ),
                 (None, Some(_)) => format!(

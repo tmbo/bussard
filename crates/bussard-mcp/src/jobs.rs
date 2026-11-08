@@ -1275,7 +1275,7 @@ impl JobStatus {
             JobState::Running if self.question.is_some() => format!(
                 "Relay `question` to the human word for word: the job waits up to 30 s for the \
                  named device to enter programming mode, then identifies it and assigns its \
-                 address without asking again when it is the product the model expects. Call \
+                 address without asking again when it is the product your project expects. Call \
                  knx_job_status with job {job} again in a few seconds; progress.devices lists \
                  each device's outcome and label as it ends."
             ),
@@ -1338,7 +1338,7 @@ impl<'a> JobSink<'a> {
             job,
             what: "download",
             target: None,
-            truth: "the model",
+            truth: "your project",
             parameter_octets: 0,
             press: String::new(),
             check_gone: false,

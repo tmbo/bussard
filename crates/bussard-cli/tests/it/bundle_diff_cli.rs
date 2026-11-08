@@ -145,7 +145,7 @@ fn test_import_bundle_conflicts_mine_and_theirs() -> TestResult {
     assert!(
         out.contains(
             "Group address Light Kitchen (1/0/1): the name is \"Light Kitchen\" here and \
-             \"Kitchen ceiling\" in the bundle. Kept this model's value."
+             \"Kitchen ceiling\" in the bundle. Kept this project's value."
         ),
         "{out}"
     );

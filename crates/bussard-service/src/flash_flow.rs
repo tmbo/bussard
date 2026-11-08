@@ -524,8 +524,8 @@ pub fn decide_freshness(
                  NOTE: re-flashing the SAME application is allowed without --force — it is\n\
                  the documented recovery path for an interrupted flash. It is still a full\n\
                  rewrite and takes no backup: the parameters are reset to the vendor\n\
-                 defaults plus this model's parameter overrides, and the address,\n\
-                 association and group-object tables are rewritten from the model's links."
+                 defaults plus this project's parameter overrides, and the address,\n\
+                 association and group-object tables are rewritten from the links in your project."
             ),
             Some(format!(
                 "{target} currently has {resident} Loaded; re-flashing the same application \
@@ -562,7 +562,7 @@ pub fn decide_freshness(
                          Two ways forward:\n\
                          \x20 1. Capture what is on the device first: `bussard reconstruct {target} \
                          --dir {dir}`\n\
-                         \x20    writes its links into the model, and `bussard apply {target}` backs \
+                         \x20    writes its links into your project, and `bussard apply {target}` backs \
                          the tables\n\
                          \x20    up to {dir}/captures/backups/ before it writes.\n\
                          \x20 2. Re-run with --force to overwrite it anyway (destructive, no backup).\n\
@@ -588,7 +588,7 @@ pub fn decide_freshness(
                     format!(
                         "\nREFUSING to flash {target}: {reason}.\n\
                          Nothing was unloaded or written. Check that the address names the \
-                         device the model means,\n\
+                         device your project means,\n\
                          or re-run with --force to flash anyway."
                     ),
                     None,
@@ -871,6 +871,25 @@ pub fn loads_lsm(plan: &FlashPlan, lsm: u32) -> bool {
 /// leaves them as the device holds them.
 pub fn loads_link_tables(plan: &FlashPlan) -> bool {
     loads_lsm(plan, 1) && loads_lsm(plan, 2)
+}
+
+/// The sentence a plain `bussard flash` ends with when its download wrote no
+/// link table (issue #779): a self-contained application's load procedure
+/// leaves the address and association tables as the device holds them, so
+/// the links in the project reach the device only with `bussard apply`.
+/// `None` when the download writes them, and for a property-only procedure,
+/// which loads no object at all.
+///
+/// The chat path (`knx_apply_device`) does not print it: it writes the
+/// links after such a download itself when they differ (PR #828).
+pub fn links_left_note(plan: &FlashPlan, target: IndividualAddress) -> Option<String> {
+    (!plan.is_property_only() && !loads_link_tables(plan)).then(|| {
+        format!(
+            "note: this download did not write the link tables (the application's load \
+             procedure leaves them as {target} holds them); `bussard apply {target}` writes the \
+             links in your project."
+        )
+    })
 }
 
 /// The recovery advice after a failed first flash.
@@ -1409,5 +1428,99 @@ mod tests {
             decision.message
         );
         assert!(decision.prompt_note.is_some());
+    }
+
+    /// A self-contained load procedure: LSM 4 only.
+    const PROCEDURE: &str = r#"<LoadProcedures>
+                <LoadProcedure>
+                 <LdCtrlConnect />
+                 <LdCtrlUnload LsmIdx="4" />
+                 <LdCtrlLoad LsmIdx="4" />
+                 <LdCtrlRelSegment LsmIdx="4" Size="1" AppliesTo="full" />
+                 <LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="1" AppliesTo="full" />
+                 <LdCtrlLoadCompleted LsmIdx="4" />
+                 <LdCtrlRestart />
+                 <LdCtrlDisconnect />
+                </LoadProcedure>
+               </LoadProcedures>"#;
+
+    /// The merged procedure of the same application, spliced into the
+    /// built-in 07B0 template.
+    const MERGED: &str = r#"<LoadProcedures>
+                <LoadProcedure MergeId="2"><LdCtrlRelSegment LsmIdx="4" Size="1" Mode="0" Fill="0" /></LoadProcedure>
+                <LoadProcedure MergeId="4"><LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="1" Verify="false" /></LoadProcedure>
+               </LoadProcedures>"#;
+
+    /// The plan of a synthetic application (bussard's own work, no vendor
+    /// data) for mask 07B0. With no master template the plan follows the
+    /// application's own load procedure, which touches LSM 4 only; the
+    /// built-in 07B0 template loads the address and association tables too.
+    fn synthetic_plan(template: bool) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let id = "M-00FA_A-0002-01-0000";
+        // A merged procedure is spliced into the built-in template.
+        let (style, procedure) = if template {
+            ("MergedProcedure", MERGED)
+        } else {
+            ("ProductDefault", PROCEDURE)
+        };
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+             <ApplicationProgram Id="{id}" ApplicationNumber="2" ApplicationVersion="1"
+                MaskVersion="MV-07B0" Name="Fab" LoadProcedureStyle="{style}">
+              <Static>
+               <Code>
+                <RelativeSegment Id="{id}_RS-1" Size="1" LoadStateMachine="4" Offset="0"><Data>AA==</Data></RelativeSegment>
+               </Code>
+               {procedure}
+              </Static>
+             </ApplicationProgram></KNX>"#
+        );
+        let app = bussard_product::parse_application_program(id, xml.as_bytes())?;
+        let template = if template {
+            Some(
+                bussard_product::MasterTemplate::builtin_for_mask("07B0")
+                    .ok_or("a built-in 07B0 template")?
+                    .ops,
+            )
+        } else {
+            None
+        };
+        let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+        let none = std::collections::BTreeMap::new();
+        let tables = bussard_download::build_table_images(None, target()?, &app, &none, &memo);
+        Ok(bussard_download::plan_flash(
+            &app,
+            "1.1.7",
+            0x07B0,
+            &none,
+            &std::collections::BTreeMap::new(),
+            template.as_deref(),
+            &tables,
+            &std::collections::BTreeMap::new(),
+            &memo,
+        )?)
+    }
+
+    #[test]
+    fn test_links_left_note_self_contained_download_points_at_apply()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = synthetic_plan(false)?;
+        assert!(!loads_link_tables(&plan));
+        let note = links_left_note(&plan, target()?).ok_or("a note")?;
+        assert!(
+            note.contains("did not write the link tables")
+                && note.contains("`bussard apply 1.1.7` writes the links in your project"),
+            "{note}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_links_left_note_none_when_the_download_writes_the_tables()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let plan = synthetic_plan(true)?;
+        assert!(loads_link_tables(&plan));
+        assert_eq!(links_left_note(&plan, target()?), None);
+        Ok(())
     }
 }

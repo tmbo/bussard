@@ -1,1 +1,1 @@
-Device Bathroom thermostat is gone from the model.
+Device Bathroom thermostat is gone from your project.

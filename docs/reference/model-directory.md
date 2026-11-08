@@ -42,7 +42,7 @@ Without `--dir` and `BUSSARD_DIR`, a command that reads an existing project look
 `bussard -v` logs the directory it chose. A directory without a project file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no project, and a command that needs one says so:
 
 ```
-no model in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <model directory>
+no project in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <project folder>
 ```
 
 `init` and `import` create or update the project in `--dir`, `BUSSARD_DIR` or the current directory, and never search upward.

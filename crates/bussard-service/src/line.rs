@@ -831,7 +831,7 @@ async fn verify_after_restart(
         if let Some(flag) = writes.first() {
             return Err(format!(
                 "read back after the restart: object {}'s communication flag reads {:02X}, \
-                 the model needs {:02X}",
+                 your project needs {:02X}",
                 flag.object, flag.from, flag.to
             ));
         }
@@ -1136,7 +1136,7 @@ impl crate::report::Report for LineReport {
         Some(if self.approval.plan_digest.is_none() {
             format!(
                 "nothing to write on line {line}: every device that answered already holds the \
-                 model's links (see devices for any skipped or failed one).{failed_note}"
+                 links in your project (see devices for any skipped or failed one).{failed_note}"
             )
         } else {
             format!(

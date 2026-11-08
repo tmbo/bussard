@@ -59,7 +59,7 @@ fn run(options: AuditArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let (dir, overrides) = (g.dir(), g.mgmt());
     let Some(model) = load_model_required(dir)? else {
         bail!(
-            "`bussard audit` needs a model; none was found at {} (run `bussard init` or \
+            "`bussard audit` needs a project; none was found at {} (run `bussard init` or \
              `bussard import` first)",
             dir.display()
         );
@@ -159,7 +159,7 @@ async fn live_report(
     )
     .await;
     eprintln!(
-        "\rprobed {} modelled device(s)          ",
+        "\rprobed {} device(s) of your project    ",
         model.devices.len()
     );
     let _ = handle.close().await;

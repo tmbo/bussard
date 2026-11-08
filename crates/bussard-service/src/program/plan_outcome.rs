@@ -373,7 +373,7 @@ impl Report for PlanOutcome {
             what.push_str(&format!("; and {more} more change(s)"));
         }
         let mut out = if what.is_empty() {
-            format!("Writing {device} brings it in line with the model.")
+            format!("Writing {device} brings it in line with your project.")
         } else {
             format!("Writing {device}: {what}.")
         };
@@ -419,11 +419,11 @@ impl Report for PlanOutcome {
                  yes to loading it; that one call runs the load and the write as one job.",
                 load.why,
                 if flash.links_after_download {
-                    "the model's parameters are written with it and read back; then the links \
+                    "the parameters in your project are written with it and read back; then the links \
                      are written by a table write (this application's download does not write \
                      them) and read back."
                 } else {
-                    "the model's parameters and links are written with it and read back."
+                    "the parameters and links in your project are written with it and read back."
                 }
             )
         } else if self.flash.is_some() {

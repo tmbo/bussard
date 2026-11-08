@@ -1013,15 +1013,15 @@ impl BussardMcp {
                 out.sentences = if f.links_after {
                     format!(
                         "! {target} must have its application program loaded: {why}. The yes \
-                         loads {} with the model's parameters and reads it back, then writes \
-                         the model's links (the download of this application does not write \
+                         loads {} with the parameters in your project and reads it back, then writes \
+                         the links in your project (the download of this application does not write \
                          the link tables) and reads them back, as one job.\n{}",
                         f.plan.identity.id, out.sentences
                     )
                 } else {
                     format!(
                         "! {target} must have its application program loaded: {why}. The yes \
-                         loads {} and writes the model's parameters and links with it.\n{}",
+                         loads {} and writes the parameters and links in your project with it.\n{}",
                         f.plan.identity.id, out.sentences
                     )
                 };
@@ -1452,10 +1452,10 @@ impl BussardMcp {
             model: model_fingerprint(&ctx, security.as_ref(), &built, flash.as_ref()),
         };
         let moved = match (now.live != planned.live, now.model != planned.model) {
-            (true, true) => Some("the device's live state and the model both changed"),
+            (true, true) => Some("the device's live state and your project both changed"),
             (true, false) => Some("the device's live tables changed (or its parameter memory)"),
             (false, true) => Some(
-                "the model's links or parameter values for the device (or its Data Secure \
+                "the links or parameter values in your project for the device (or its Data Secure \
                  inputs, or its product data) changed",
             ),
             (false, false) => None,
@@ -2030,7 +2030,7 @@ impl Origin {
     /// What the read-back compares with.
     fn truth(self) -> &'static str {
         match self {
-            Origin::Model => "the model",
+            Origin::Model => "your project",
             Origin::Backup => "the backup",
         }
     }
@@ -2317,7 +2317,7 @@ fn refuse_insecure_links(model: &Model, target: IndividualAddress) -> Result<(),
         Ok(())
     } else {
         Err(format!(
-            "refusing to plan {target}: its links would not work. {}. Fix the model \
+            "refusing to plan {target}: its links would not work. {}. Fix your project \
              (knx_remove_link, or the ways out above) and plan again",
             found.join("; ")
         ))
@@ -2699,18 +2699,18 @@ fn load_note(
     if links_after {
         return format!(
             "method: flash. The application program must be loaded: {why}. {target} gets {} \
-             with the model's parameters as `bussard flash {target} --yes` writes them{reset}, \
+             with the parameters in your project as `bussard flash {target} --yes` writes them{reset}, \
              restarts, and is offline for {min} to {max} s; the download is read back and \
-             compared with the model. {}",
+             compared with your project. {}",
             plan.identity.id,
             links_after_note(target, plan)
         );
     }
     format!(
         "method: flash. The application program must be loaded: {why}. {target} gets {} with \
-         the model's parameters and tables as `bussard flash {target} --yes` writes them{reset}, \
+         the parameters and tables in your project as `bussard flash {target} --yes` writes them{reset}, \
          restarts, and is offline for {min} to {max} s; the result is read back and compared \
-         with the model.",
+         with your project.",
         plan.identity.id,
     )
 }
@@ -2724,7 +2724,7 @@ fn links_after_note(
     format!(
         "The download of {} does not write the link tables, so once it verified the same job \
          writes {target}'s links as `bussard apply {target}` does and reads them back; the \
-         result is verified only when that read-back matches the model.",
+         result is verified only when that read-back matches your project.",
         plan.identity.id
     )
 }
@@ -2738,9 +2738,9 @@ fn load_question(
 ) -> String {
     let (min, max) = bussard_service::flash::DEVICE_OFFLINE_SECONDS;
     let what = if links_after {
-        "with the model's parameters, then write its links"
+        "with the parameters in your project, then write its links"
     } else {
-        "and write the model's parameters and links with it"
+        "and write the parameters and links in your project with it"
     };
     format!(
         "load application {} into {target} through {gateway} {what}? The device restarts and is \

@@ -597,7 +597,7 @@ async fn test_knx_find_devices_lists_the_line_names_first() -> anyhow::Result<()
     assert!(
         summary.starts_with(
             "2 device(s) answered on line 1.1 (11 addresses probed): \
-             Jalousie Wohnen (1.1.4), 1.1.7 (not in the model)."
+             Jalousie Wohnen (1.1.4), 1.1.7 (not in your project)."
         ),
         "{summary}"
     );

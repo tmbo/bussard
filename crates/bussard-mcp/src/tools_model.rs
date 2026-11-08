@@ -240,7 +240,7 @@ impl BussardMcp {
             },
             None => match Model::load(&dir) {
                 Ok(model) => model,
-                Err(err) => return refusal(format!("the working model does not load: {err}")),
+                Err(err) => return refusal(format!("project files do not load: {err}")),
             },
         };
 
@@ -395,7 +395,7 @@ impl BussardMcp {
             let insecure_before = bussard_model::secure_link_conflicts(model);
             if !model.devices.contains_key(&ia) {
                 return Err(format!(
-                    "{ia} is not a device in this model; add its device file first"
+                    "{ia} is not a device in this project; add its device file first"
                 ));
             }
             // Read what the com object already binds before taking a mutable
@@ -469,11 +469,11 @@ impl BussardMcp {
         self.edit("knx_remove_link", label, move |model| {
             refuse_protected(model, ga)?;
             let Some(links) = model.links.links.get_mut(&ia) else {
-                return Err(format!("{ia} has no links in this model"));
+                return Err(format!("{ia} has no links in this project"));
             };
             let Some(link) = links.iter_mut().find(|l| l.object == object) else {
                 return Err(format!(
-                    "com object {object} on {ia} has no links in this model"
+                    "com object {object} on {ia} has no links in this project"
                 ));
             };
             match role {
@@ -520,7 +520,7 @@ impl BussardMcp {
 
         self.edit("knx_set_device", vec![ia.to_string()], move |model| {
             let Some(loaded) = model.devices.get_mut(&ia) else {
-                return Err(format!("{ia} is not a device in this model"));
+                return Err(format!("{ia} is not a device in this project"));
             };
             if let Some(name) = name {
                 if name.trim().is_empty() {
@@ -576,7 +576,7 @@ impl BussardMcp {
             let products = ProductModels::load_apps(&dir, app.iter().map(String::as_str));
             let keys = KeyContext::new(model, &products, ia);
             let Some(loaded) = model.devices.get_mut(&ia) else {
-                return Err(format!("{ia} is not a device in this model"));
+                return Err(format!("{ia} is not a device in this project"));
             };
             let key = resolve_parameter_key(&loaded.device, &keys, &wanted, channel.as_deref())?;
             // Issue #712: a calculation output is the calculation's to set,
@@ -633,11 +633,11 @@ impl BussardMcp {
         self.edit_with_note("knx_set_interface", vec![ia.to_string()], move |model| {
             let devices: Vec<IndividualAddress> = model.devices.keys().copied().collect();
             let Some(loaded) = model.devices.get_mut(&ia) else {
-                return Err(format!("{ia} is not a device in this model"));
+                return Err(format!("{ia} is not a device in this project"));
             };
             let Some(table) = loaded.device.knxnet.as_mut() else {
                 return Err(format!(
-                    "devices/{ia}.toml has no [knxnet] table: {ia} is not modelled as a KNX IP \
+                    "devices/{ia}.toml has no [knxnet] table: {ia} is not described as a KNX IP \
                      interface (import the project or adopt the interface to write one)"
                 ));
             };
@@ -687,7 +687,7 @@ impl BussardMcp {
             }
             Ok(UndoOutcome::NothingToUndo) => {
                 return refusal(
-                    "the model files already match every snapshot, so there is nothing to undo",
+                    "the project files already match every snapshot, so there is nothing to undo",
                 );
             }
             Err(err) => return refusal(err.to_string()),
@@ -766,7 +766,7 @@ impl BussardMcp {
             Ok(model) => model,
             Err(err) => {
                 return refusal(format!(
-                    "the model at {} does not load: {err}",
+                    "the project at {} does not load: {err}",
                     dir.display()
                 ));
             }
@@ -777,7 +777,7 @@ impl BussardMcp {
         let Some(first) = pending.first() else {
             return refusal(format!(
                 "this session has no unapplied edits of {subject}, so there is nothing to \
-                 discard. knx_undo rolls the whole model back to a snapshot."
+                 discard. knx_undo rolls the whole project back to a snapshot."
             ));
         };
         let (baseline, base) = (&first.base, &first.model);
@@ -789,7 +789,7 @@ impl BussardMcp {
                 let Some(device) = base.devices.get(&ia) else {
                     return refusal(format!(
                         "{ia} is not in snapshot {baseline}, so its edits cannot be discarded \
-                         here; knx_undo rolls the whole model back"
+                         here; knx_undo rolls the whole project back"
                     ));
                 };
                 edited.devices.insert(ia, device.clone());
@@ -866,7 +866,7 @@ impl BussardMcp {
             }
         };
         if let Err(err) = edited.save(&dir) {
-            return refusal(format!("the model could not be saved: {err}"));
+            return refusal(format!("your project could not be saved: {err}"));
         }
         // A group address whose Data Secure state the discard flips gets its
         // key back from the baseline snapshot's key store copy, or loses it,
@@ -996,7 +996,7 @@ impl BussardMcp {
             Ok(model) => model,
             Err(err) => {
                 return Err(format!(
-                    "the model at {} does not load: {err}",
+                    "the project at {} does not load: {err}",
                     dir.display()
                 ));
             }
@@ -1018,7 +1018,7 @@ impl BussardMcp {
 
         let reason = SnapshotReason::new(format!("mcp {tool}"))
             .with_args(args)
-            .with_result("before an MCP model edit");
+            .with_result("before an MCP project edit");
         let history = History::open(&dir);
         let snapshot = match history.snapshot(reason) {
             Ok(id) => id,
@@ -1034,7 +1034,7 @@ impl BussardMcp {
         };
 
         if let Err(err) = edited.save(&dir) {
-            return Err(format!("the model could not be saved: {err}"));
+            return Err(format!("your project could not be saved: {err}"));
         }
         // The handle debounces its directory check; force it so the very next
         // tool call sees what we just wrote.
@@ -1311,7 +1311,7 @@ fn edit_group_fields(
         None => {
             let Some(name) = name else {
                 return Err(format!(
-                    "{ga} is not in the model yet; pass `name` to create it"
+                    "{ga} is not in your project yet; pass `name` to create it"
                 ));
             };
             model.groups.groups.insert(

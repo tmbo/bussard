@@ -60,7 +60,7 @@ pub fn edit_summary(changes: &ChangeSet, models: [&Model; 2]) -> String {
     out.push(' ');
     if devices.is_empty() {
         out.push_str(
-            "Nothing to push: this only changes names, rooms or notes in the model, which no \
+            "Nothing to push: this only changes names, rooms or notes in your project, which no \
              device stores.",
         );
     } else {
@@ -214,18 +214,18 @@ impl Validation {
 pub fn for_the_human(errors: usize, new_warnings: usize) -> String {
     match (errors, new_warnings) {
         (0, 0) => "No problems.".to_string(),
-        (0, 1) => "One new note about the model (types or naming); harmless, it can be \
+        (0, 1) => "One new note about your project (types or naming); harmless, it can be \
                    tidied later."
             .to_string(),
         (0, n) => format!(
-            "{n} new notes about the model (types or naming); harmless, they can be tidied \
+            "{n} new notes about your project (types or naming); harmless, they can be tidied \
              later."
         ),
-        (1, _) => "The model has one problem that has to be fixed before a device can be \
+        (1, _) => "Your project has one problem that has to be fixed before a device can be \
                    written."
             .to_string(),
         (n, _) => format!(
-            "The model has {n} problems that have to be fixed before a device can be written."
+            "Your project has {n} problems that have to be fixed before a device can be written."
         ),
     }
 }
@@ -289,7 +289,7 @@ impl EditOutcome {
     pub fn unchanged() -> EditOutcome {
         EditOutcome {
             ok: true,
-            note: Some("the model already said that; nothing was written".to_string()),
+            note: Some("your project already said that; nothing was written".to_string()),
             ..EditOutcome::default()
         }
     }
@@ -379,7 +379,7 @@ impl ChangeReport {
             sentences: capped.sentences,
             changes: capped.detail,
             truncated: capped.truncated,
-            note: "Nothing here has reached any device: these are model files only.".to_string(),
+            note: "Nothing here has reached any device: these are project files only.".to_string(),
             ..ChangeReport::default()
         }
     }

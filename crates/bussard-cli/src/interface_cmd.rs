@@ -432,7 +432,7 @@ pub(crate) fn apply(
         None => {
             println!(
                 "\napply verified: {} propert{} written to {target}, read back and compared \
-                 with the model: {}",
+                 with your project: {}",
                 applied.written,
                 if applied.written == 1 { "y" } else { "ies" },
                 applied.readback.summary()

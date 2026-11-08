@@ -277,7 +277,7 @@ pub fn compute_parameter_image_placed_with(
     if let Some(calc) = crate::dynamic::calculation_triggered_by(app, overrides) {
         return Err(ProductError::ParameterImage {
             parameter: calc.id.clone(),
-            reason: "is a parameter calculation whose input the model sets, which bussard \
+            reason: "is a parameter calculation whose input your project sets, which bussard \
                      runs only for an application whose Dynamic section it evaluates; this \
                      one it does not"
                 .to_string(),
@@ -751,7 +751,7 @@ fn dynamic_image(
             app,
             &o.param_ref,
             &format!(
-                "is computed by calculation {} as {:?}, but the model sets {:?}: remove it from \
+                "is computed by calculation {} as {:?}, but your project sets {:?}: remove it from \
                  the device file, or change the parameters the calculation reads",
                 o.calculation, o.computed, o.overridden
             ),

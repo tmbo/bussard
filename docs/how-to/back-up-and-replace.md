@@ -138,7 +138,7 @@ Mount a new device of the same product and connect it to the bus.
     device in programming mode: 15.15.255
       mask: 07B0 (System B)
       order number: MDT-JAL-0410.02
-    replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the model's tables, via 192.0.2.10:3671? [y/N] y
+    replace 1.1.4: address 15.15.255 → 1.1.4, flash the application and apply the tables in your project, via 192.0.2.10:3671? [y/N] y
     ...
     replaced 1.1.4 via 192.0.2.10:3671
     ```

@@ -61,7 +61,7 @@ fn run(
         .parse()
         .with_context(|| format!("parsing device address {address:?}"))?;
     let model =
-        Model::load(dir).with_context(|| format!("loading the model in {}", dir.display()))?;
+        Model::load(dir).with_context(|| format!("loading the project in {}", dir.display()))?;
     let app = model
         .devices
         .get(&target)

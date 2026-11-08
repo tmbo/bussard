@@ -150,7 +150,7 @@ The table layout is in the [JSON and capture reference](../reference/json-output
       1/0/1  sender 1.1.30 Schaltaktor (Kitchen)
       com object 3 Kanal A - Schalten, channel Ceiling light, declares 1.001
       payload 01 (1 byte(s))
-        1. 1.001 [high] the sending com object declares DPT 1.001 in the model
+        1. 1.001 [high] the sending com object declares DPT 1.001 in your project
       proposed name: Kitchen ceiling light, schalten
       accept as "Kitchen ceiling light, schalten" / 1.001? [a]ccept, [e]dit name, [d]pt, [s]kip, [q]uit:
     ```

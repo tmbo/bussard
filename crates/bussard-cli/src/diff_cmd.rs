@@ -169,7 +169,7 @@ fn products(a: &Side, b: &Side) -> ProductModels {
 pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
     if path.is_dir() {
         let model = Model::load(path)
-            .with_context(|| format!("loading the model in {}", path.display()))?;
+            .with_context(|| format!("loading the project in {}", path.display()))?;
         let files = texts(bundle::model_files(path)?)?;
         return Ok(Side {
             model,

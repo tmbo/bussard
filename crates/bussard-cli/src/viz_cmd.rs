@@ -70,14 +70,14 @@ fn run(options: VizArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let (listen, dir, overrides) = (options.listen, g.dir(), g.group());
     if !dir.exists() {
         anyhow::bail!(
-            "model directory {} not found; the viz server needs a loaded model (pass --dir)",
+            "project folder {} not found; the viz server needs a loaded project (pass --dir)",
             dir.display()
         );
     }
     // Load the model here to resolve the connection config. A present-but-broken
     // model is a hard error: the write gate must not fail open.
     let model = Model::load(dir)
-        .map_err(|e| anyhow::anyhow!("failed to load model from {}: {e}", dir.display()))?;
+        .map_err(|e| anyhow::anyhow!("failed to load the project from {}: {e}", dir.display()))?;
 
     // Resolve the connection; on failure degrade to model-only mode.
     let connection = match resolve_config(Some(&model), &overrides) {
@@ -110,7 +110,7 @@ fn run(options: VizArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         eprintln!(
             "warning: binding {listen}, which is reachable from the network. \
              The port is unauthenticated: anyone who can reach it can read the \
-             whole model{}.",
+             whole project{}.",
             if options.allow_writes {
                 " and write to the bus"
             } else {

@@ -528,7 +528,7 @@ impl crate::report::Report for ScanOutcome {
             .iter()
             .map(|d| match &d.name {
                 Some(name) => format!("{name} ({})", d.address),
-                None => format!("{} (not in the model)", d.address),
+                None => format!("{} (not in your project)", d.address),
             })
             .collect();
         let mut out = if answered.is_empty() {
@@ -553,7 +553,7 @@ impl crate::report::Report for ScanOutcome {
                 })
                 .collect();
             out.push_str(&format!(
-                " {} model device(s) in the scanned range did not answer: {}.",
+                " {} device(s) of your project in the scanned range did not answer: {}.",
                 names.len(),
                 names.join(", ")
             ));

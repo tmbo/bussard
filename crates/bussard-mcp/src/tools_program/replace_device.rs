@@ -177,7 +177,7 @@ impl BussardMcp {
         let replacement = Replacement::from_model(&model, &dir, target, false)?;
         if bussard_service::secure::model_activated(Some(&model), target) {
             return Err(format!(
-                "{target} is KNX Data Secure-activated in the model. A replacement arrives \
+                "{target} is KNX Data Secure-activated in your project. A replacement arrives \
                  factory-fresh, and its Secure activation (the FDSK step) stays with ETS: \
                  download the replacement with ETS, export the project and keyring again and \
                  import them. Nothing was written."
@@ -239,7 +239,7 @@ impl BussardMcp {
                     identified_detail(&model, &replacement, &pressed, &source, &digest, tier);
                 let question = format!(
                     "Replace {} ({}): give the device at {} the address {}, load the \
-                     application and write the model's parameters and links? Say yes.",
+                     application and write the parameters and links in your project? Say yes.",
                     replacement.name, replacement.target, pressed.address, replacement.target
                 );
                 let target = replacement.target;
@@ -313,7 +313,7 @@ impl BussardMcp {
         let work = async move { me.replace_write_job(&id, pending).await };
         let next_step = format!(
             "The device is being replaced in the server as job {job}: the address, the \
-             application and the model's parameters and links, each read back. Call \
+             application and the parameters and links in your project, each read back. Call \
              knx_job_status with job {job} every few seconds until `done` is true; its `result` \
              is the outcome."
         );
@@ -480,8 +480,8 @@ impl BussardMcp {
             }),
             Err(err) => {
                 notes.push(format!(
-                    "The replacement is on the bus and verified, but it was not recorded in the \
-                     model: {}",
+                    "The replacement is on the bus and verified, but it was not recorded in your \
+                     project: {}",
                     chain(&err)
                 ));
                 None
@@ -518,8 +518,8 @@ impl BussardMcp {
         let model = state.model.reload();
         if replace_digest(&model, r, &fresh, &p.source) != p.digest {
             return Err(
-                "a fresh read no longer produces the plan the human answered (the device, the \
-                 model or its product data changed). Call knx_replace_device again for a new \
+                "a fresh read no longer produces the plan the human answered (the device, your \
+                 project or its product data changed). Call knx_replace_device again for a new \
                  plan. Nothing was written."
                     .into(),
             );
@@ -658,7 +658,7 @@ fn pinned_source(dir: &std::path::Path, model: &Model, r: &Replacement) -> Resul
         .devices
         .get(&r.target)
         .map(|d| &d.device)
-        .ok_or_else(|| format!("the model has no device file for {}", r.target))?;
+        .ok_or_else(|| format!("your project has no device file for {}", r.target))?;
     let archive = device
         .lock
         .product_entry
@@ -717,7 +717,7 @@ fn backup(dir: &std::path::Path, model: &Model, r: &Replacement) -> Result<Repla
     Ok(ReplaceBackup {
         sentence: match &snapshot {
             Some(id) => format!(
-                "The model as it is now, {relative} and its bussard.lock record included, is \
+                "Your project as it is now, {relative} and its bussard.lock record included, is \
                  kept as history snapshot {id}; `bussard history` puts it back."
             ),
             None => format!("{relative} has no history to snapshot into yet."),
@@ -752,7 +752,7 @@ fn mismatch_refusal(target: IndividualAddress, problem: &str) -> String {
         "refusing to replace {target}: {problem}. A different product means a different \
          application, and flashing it would load the wrong image. Use the right spare or fix \
          the device file; `bussard replace --force {target}` at the terminal overrides this \
-         when the model is out of date. Nothing was written."
+         when your project is out of date. Nothing was written."
     )
 }
 
@@ -818,7 +818,7 @@ fn identified_detail(
     };
     sentences.push(format!(
         "Then bussard loads {application} into it when it does not run it loaded (the device \
-         restarts and is offline for {} to {} s), writes the model's parameters and links, \
+         restarts and is offline for {} to {} s), writes the parameters and links in your project, \
          reads it back, and records the replacement in {} and its serial in bussard.lock.",
         bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
         bussard_service::flash::DEVICE_OFFLINE_SECONDS.1,
@@ -942,7 +942,7 @@ fn after_assign_failure(
     AddressOutcome {
         verdict: Verdict {
             recovery: Some(format!(
-                "{target} has the right address but not yet the model's application and links. \
+                "{target} has the right address but not yet the application and links in your project. \
                  Call knx_plan_device for {target}, show the plan to the human and apply it with \
                  knx_apply_device after a yes; the replacement is recorded only by a complete run \
                  (`bussard replace {target}` at the terminal)."

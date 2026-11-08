@@ -455,7 +455,7 @@ impl BussardMcp {
         if add_digest(&fresh, &state.model.reload()) != p.digest {
             return Err(
                 "a fresh read no longer produces the plan the human answered (the device, its \
-                 product data or the model changed). Call knx_add_device again for a new plan. \
+                 product data or your project changed). Call knx_add_device again for a new plan. \
                  Nothing was written."
                     .into(),
             );
@@ -676,14 +676,14 @@ fn identified_detail(
     let (product_data, download_needed) = match (&id.order, &id.product) {
         (_, Some(ProductPlan::Cached { path })) if id.from_file => (
             format!(
-                "the file you gave, imported into the model's product store ({})",
+                "the file you gave, imported into your project's product store ({})",
                 file_name(path)
             ),
             false,
         ),
         (Some(order), Some(ProductPlan::Cached { path })) => (
             format!(
-                "{order}: in the model's product store ({})",
+                "{order}: in your project's product store ({})",
                 file_name(path)
             ),
             false,

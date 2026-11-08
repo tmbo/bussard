@@ -742,7 +742,7 @@ pub fn flash_image(ctx: &FlashFor<'_>, need: FlashNeed<'_>) -> Result<FlashImage
         &match &need {
             FlashNeed::Load(_) => why.clone(),
             FlashNeed::Parameters(_) => format!(
-                "the model's parameter values change {target}'s group-object table ({why}), \
+                "the parameter values in your project change {target}'s group-object table ({why}), \
                  which needs a full download"
             ),
         },

@@ -114,7 +114,7 @@ pub enum VizError {
 
     /// The model failed to load. The server must not start without one: the
     /// protected-GA gate would otherwise fail open.
-    #[error("failed to load model from {dir}: {source}")]
+    #[error("failed to load the project from {dir}: {source}")]
     ModelLoad {
         /// The directory that failed to load.
         dir: String,

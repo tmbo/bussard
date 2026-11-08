@@ -170,12 +170,12 @@ bussard saves a copy of the project files before every command that writes them 
       > bussard undo
         puts the files back as they were at the snapshot
     $ bussard history
-      1  20260922T100000Z-001  import home.knxproj (before writing the imported model)
-         the first snapshot of the model
+      1  20260922T100000Z-001  import home.knxproj (before writing the imported project)
+         the first snapshot of your project
       2  20260922T101112Z-001  apply 1.1.5 → 192.0.2.10:3671 (before writing the device tables)
          Rocker 1 on Hallway push button now switches Porch light and 1 more
     $ bussard undo
-    Restored the model files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
+    Restored the project files to snapshot 20260922T100000Z-001 (2026-09-22T10:00:00Z).
     The state before this undo is kept as snapshot 20260922T103000Z-001.
 
     Rocker 1 on Hallway push button (1.1.5) no longer switches Porch light (0/0/4).

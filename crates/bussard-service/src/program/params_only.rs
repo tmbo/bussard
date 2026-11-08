@@ -187,7 +187,7 @@ pub async fn sys7_table_change<Ch: L4Channel>(
                 _ => "link table",
             };
             return Some(format!(
-                "the model's links differ from the device's {table} (LSM {lsm} at {address:#06X})"
+                "the links in your project differ from the device's {table} (LSM {lsm} at {address:#06X})"
             ));
         }
     }

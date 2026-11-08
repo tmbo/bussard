@@ -124,7 +124,7 @@ pub enum BundleError {
         model_version: u32,
     },
     /// The zip holds an entry outside the bundle layout.
-    #[error("bundle: unexpected entry {name:?}; a bundle holds only model files and history")]
+    #[error("bundle: unexpected entry {name:?}; a bundle holds only project files and history")]
     UnexpectedEntry {
         /// The offending entry name.
         name: String,
@@ -142,7 +142,7 @@ pub enum BundleError {
         path: String,
     },
     /// The model digest does not match the manifest, or a listed file is missing.
-    #[error("bundle: the model files do not match the manifest digest; the file is damaged")]
+    #[error("bundle: the project files do not match the manifest digest; the file is damaged")]
     ModelDigest,
     /// A model file is not UTF-8 text.
     #[error("bundle: {path} is not UTF-8 text")]
@@ -151,16 +151,16 @@ pub enum BundleError {
         path: String,
     },
     /// The model files did not load.
-    #[error("bundle: the model does not load: {0}")]
+    #[error("bundle: your project does not load: {0}")]
     Load(#[from] LoadError),
     /// The directory holds no model files to export.
-    #[error("bundle: no model files in {}", dir.display())]
+    #[error("bundle: no project files in {}", dir.display())]
     NoModel {
         /// The model directory.
         dir: PathBuf,
     },
     /// Extraction was asked to write over an existing model.
-    #[error("bundle: {} already holds a model; import merges instead", dir.display())]
+    #[error("bundle: {} already holds a project; import merges instead", dir.display())]
     TargetHasModel {
         /// The target directory.
         dir: PathBuf,

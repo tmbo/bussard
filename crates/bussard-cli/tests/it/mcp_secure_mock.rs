@@ -226,7 +226,7 @@ fn ext_header(data: &[u8]) -> Option<(u16, u16)> {
 /// secured download, recording them in `log`.
 fn secure_device(log: Arc<Mutex<SecurityLog>>) -> TestResult<MockDevice> {
     // The synthetic application, Loaded, with its parameter segment holding
-    // threshold 7 (the model asks for 12) and the switch off.
+    // threshold 7 (your project asks for 12) and the switch off.
     secure_device_with(log, &["1/2/0"], &[(1, 20)], &[7, 0], &[])
 }
 

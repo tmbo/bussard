@@ -76,7 +76,7 @@ Without `--dir` and `BUSSARD_DIR`, a command that reads an existing project look
 3. each parent directory, nearest first: the parent when it holds `bussard.toml`, else its `knx/` when that holds `bussard.toml`;
 4. otherwise the current directory.
 
-A directory without a project file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no project. A command that needs one says `no model in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <model directory>`.
+A directory without a project file (`bussard.toml`, `groups.toml`, `bussard.lock` or `devices/`) is no project. A command that needs one says `no project in the current directory <path>: ...; run `bussard init` or `bussard import <export>` there, or pass --dir <project folder>`.
 
 `init` and `import` create or update the project in `--dir`, `BUSSARD_DIR` or the current directory, and never search upward.
 

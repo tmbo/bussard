@@ -130,7 +130,7 @@ fn run_line(
             crate::conn_cmd::no_model(
                 dir,
                 &format!(
-                    "`bussard {} --line` visits the devices the model has on the line",
+                    "`bussard {} --line` visits the devices your project has on the line",
                     mode.verb()
                 )
             )
@@ -159,7 +159,7 @@ fn run_line(
     let targets = targets_on_line(&model, area, line_no);
     if targets.is_empty() {
         bail!(
-            "the model has no devices on line {line} (looked in {}/devices)",
+            "your project has no devices on line {line} (looked in {}/devices)",
             dir.display()
         );
     }
@@ -399,7 +399,9 @@ fn open_state(path: &Path, line: &str, gateway: &str, resume: bool) -> LineState
 fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Result<bool> {
     crate::confirm::confirm(
         yes,
-        &format!("apply the model's links to {devices} device(s) on line {line} via {gateway}?"),
+        &format!(
+            "apply the links in your project to {devices} device(s) on line {line} via {gateway}?"
+        ),
         &format!("apply line {line} ({devices} device(s)) via {gateway}"),
     )
 }

@@ -78,7 +78,7 @@ impl Bench {
     /// (issue #391).
     fn start_with(com_object: bool, knxnet: bool) -> Result<Bench, Box<dyn std::error::Error>> {
         let rt = tokio::runtime::Runtime::new()?;
-        // The device holds the timeout the model asks for and another rate.
+        // The device holds the timeout your project asks for and another rate.
         let device = MockDevice::new(device_ia()?)
             .with_mask(0x0021)
             .with_manufacturer(0x0004)
@@ -202,11 +202,11 @@ fn test_plan_property_only_device_without_links_reads_its_properties() -> TestRe
     assert!(!stderr.contains("empty table set"), "{stderr}");
     assert!(stdout.contains("property-only load procedure"), "{stdout}");
     assert!(
-        stdout.contains("object type 11 PID 204: holds 0A, as the model asks"),
+        stdout.contains("object type 11 PID 204: holds 0A, as your project asks"),
         "{stdout}"
     );
     assert!(
-        stdout.contains("object type 50001 PID 211: holds 05, the model asks for 32"),
+        stdout.contains("object type 50001 PID 211: holds 05, your project asks for 32"),
         "{stdout}"
     );
     assert!(stdout.contains("bussard flash 1.1.200"), "{stdout}");
@@ -254,7 +254,7 @@ fn test_plan_interface_with_a_property_procedure_shows_both() -> TestResult {
         "{stdout}"
     );
     assert!(
-        stdout.contains("object type 50001 PID 211: holds 05, the model asks for 32"),
+        stdout.contains("object type 50001 PID 211: holds 05, your project asks for 32"),
         "{stdout}"
     );
     assert!(stdout.contains("bussard flash 1.1.200"), "{stdout}");

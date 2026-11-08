@@ -143,13 +143,13 @@ pub(crate) fn load_model_optional(
     if !bussard_model::discover::is_model_dir(dir) {
         if have_explicit_address {
             eprintln!(
-                "warning: no model in {}; continuing because an explicit address was given",
+                "warning: no project in {}; continuing because an explicit address was given",
                 crate::conn_cmd::describe_dir(dir)
             );
             return Ok(None);
         }
         return Err(anyhow!(
-            "no model in {}: {command} picks a free address from the devices the model \
+            "no project in {}: {command} picks a free address from the devices your project \
              lists; {missing_hint}",
             crate::conn_cmd::describe_dir(dir)
         ));
@@ -160,8 +160,8 @@ pub(crate) fn load_model_optional(
         // address: never run a management command against a model that failed to
         // parse.
         Err(err) => Err(anyhow!(
-            "could not load model from {}: {err}\n\
-             refusing to run {command} against a model that failed to parse; fix the model files first",
+            "could not load the project from {}: {err}\n\
+             refusing to run {command} against a project that failed to parse; fix the project files first",
             dir.display()
         )),
     }

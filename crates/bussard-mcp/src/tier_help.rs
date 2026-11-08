@@ -79,8 +79,8 @@ pub fn allow_programming_help() -> String {
 /// Help for `--no-model-edits`.
 pub fn no_model_edits_help() -> String {
     format!(
-        "Refuse model edits: omits {}. The read tools stay available. Model edits only touch \
-         the model files and the key store (never the bus), so they are on by default.",
+        "Refuse project edits: omits {}. The read tools stay available. Project edits only touch \
+         the project files and the key store (never the bus), so they are on by default.",
         code_list(&no_model_edits_omitted())
     )
 }
@@ -102,7 +102,7 @@ pub fn tier_counts_help() -> String {
         "Tools: {} with --passive, {} by default, {} with --allow-writes. --no-model-edits \
          removes {}, --allow-programming adds {} to any tier but --passive, and \
          --allow-home-assistant adds {}. On a missing or empty --dir the server starts with \
-         {} only and registers its tier's tools once `knx_setup` has written the model.",
+         {} only and registers its tier's tools once `knx_setup` has written your project.",
         c.passive,
         c.default,
         c.writes,

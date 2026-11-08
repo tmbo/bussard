@@ -1710,7 +1710,7 @@ mod tests {
         let device = model
             .devices
             .get_mut(&ia("1.1.5")?)
-            .ok_or("1.1.5 in the model")?;
+            .ok_or("1.1.5 in your project")?;
         let security = device.device.security.as_mut().ok_or("security")?;
         security.secure_senders = vec![
             bussard_model::schema::SecureSender {

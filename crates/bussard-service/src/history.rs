@@ -233,7 +233,7 @@ pub fn follow_keys(
                 ok: false,
                 sentences: None,
                 reason: Some(format!(
-                    "the model files are restored, but the key store did not follow: {err}. Fix \
+                    "the project files are restored, but the key store did not follow: {err}. Fix \
                      that and run `bussard groups secure <GA> on|off` for the group addresses \
                      whose security the {what} changed."
                 )),
