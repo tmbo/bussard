@@ -19,8 +19,7 @@
 //! ([`plain_view`] and friends); `technical: true` returns the payload
 //! exactly as before.
 
-use bussard_model::{IndividualAddress, Model};
-use serde_json::{Map, Value, json};
+use serde_json::Value;
 
 pub use bussard_service::report::{device_phrase, object_phrase, room_of};
 
@@ -72,49 +71,19 @@ pub fn plain_view(value: &mut Value) {
     }
 }
 
-/// `knx_get_group`'s default payload: each link with the device's room and
-/// the object's channel, and the last telegram without its wire detail.
-pub fn plain_group(value: &mut Value, model: &Model) {
-    if let Some(links) = value["links"].as_array_mut() {
-        for link in links {
-            let ia = link["device_ia"]
-                .as_str()
-                .and_then(|a| a.parse::<IndividualAddress>().ok());
-            let object = link["object"].as_u64().and_then(|n| u16::try_from(n).ok());
-            if let (Some(ia), Some(map)) = (ia, link.as_object_mut()) {
-                if let Some(room) = room_of(model, ia) {
-                    map.insert("room".to_string(), json!(room));
-                }
-                if let Some(object) = object {
-                    map.insert("what".to_string(), json!(object_phrase(model, ia, object)));
-                }
-                drop_nulls(map);
-            }
-        }
-    }
-    if let Some(last) = value["last_telegram"].as_object_mut() {
-        for key in [
-            "apci",
-            "payload",
-            "dest_type",
-            "secure_seq",
-            "secure_raw",
-            "secure_status",
-        ] {
-            last.remove(key);
-        }
-        drop_nulls(last);
-    }
-}
-
 /// `knx_model_lookup`'s default payload: every match without null or empty
 /// fields, the capability matches without the ETS references a key names.
 pub fn plain_lookup(value: &mut Value) {
     for kind in ["groups", "devices", "objects", "channels", "capabilities"] {
-        if let Some(items) = value[kind].as_array_mut() {
+        if let Some(items) = value.get_mut(kind).and_then(Value::as_array_mut) {
             for item in items {
                 if let Some(map) = item.as_object_mut() {
-                    drop_nulls(map);
+                    map.retain(|_, v| match v {
+                        Value::Null => false,
+                        Value::String(s) => !s.is_empty(),
+                        Value::Array(a) => !a.is_empty(),
+                        _ => true,
+                    });
                 }
                 plain_view(item);
             }
@@ -122,19 +91,10 @@ pub fn plain_lookup(value: &mut Value) {
     }
 }
 
-/// Removes the null, empty-string and empty-array fields of `map`.
-fn drop_nulls(map: &mut Map<String, Value>) {
-    map.retain(|_, v| match v {
-        Value::Null => false,
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        _ => true,
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_plain_view_drops_ets_ids_and_keeps_keys() {

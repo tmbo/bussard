@@ -36,6 +36,7 @@ use crate::reply::{invalid, ok, ok_report};
 use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
 use bussard_service::group_report::{GroupReadReport, GroupWriteReport};
+use bussard_service::project_view::{DeviceInfo, ProjectSummary};
 
 /// How long `knx_bus_reconnect` waits for its connect attempt: the secure
 /// probe, the TCP connect and the session handshake each have their own
@@ -333,16 +334,14 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_project_summary.md")]
     #[tool]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
-        let mut summary = tools::project_summary(&self.state.model.current(), &self.state.bus);
+        let model = self.state.model.current();
         let tiers = crate::guidance::Tiers::of(&self.state);
-        if let Some(map) = summary.as_object_mut() {
-            map.insert("server".to_string(), tiers.summary_json());
-            map.insert(
-                "capabilities".to_string(),
-                Value::String(tiers.capabilities()),
-            );
-        }
-        ok(summary)
+        let summary = ProjectSummary {
+            server: Some(tiers.summary_json()),
+            capabilities: Some(tiers.capabilities()),
+            ..ProjectSummary::of(&model, self.state.bus.to_json())
+        };
+        ok_report(&summary, &model)
     }
 
     // `knx_model_lookup`.
@@ -356,7 +355,8 @@ impl BussardMcp {
         let tiers = crate::guidance::Tiers::of(&self.state);
         let model = self.state.model.current();
         let capabilities = Some((self.state.dir.as_path(), tiers));
-        let mut value = tools::model_lookup(&model, &args.query, limit, capabilities);
+        let report = tools::lookup_report(&model, &args.query, limit, capabilities);
+        let mut value = crate::reply::report(&report, &model);
         if !args.technical {
             crate::everyday::plain_lookup(&mut value);
         }
@@ -375,11 +375,11 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
         let model = self.state.model.current();
-        let mut value = tools::get_group(&model, &self.state.ring, ga);
+        let mut view = tools::group_view(&model, &self.state.ring, ga);
         if !args.technical {
-            crate::everyday::plain_group(&mut value, &model);
+            view = view.plain(&model);
         }
-        ok(value)
+        ok_report(&view, &model)
     }
 
     // `knx_get_device`.
@@ -403,7 +403,10 @@ impl BussardMcp {
             &self.state.dir,
             app.iter().map(String::as_str),
         );
-        ok(tools::get_device(&model, &products, ia, args.technical))
+        ok_report(
+            &DeviceInfo::of(&model, &products, ia, args.technical),
+            &model,
+        )
     }
 
     // `knx_show_device`.

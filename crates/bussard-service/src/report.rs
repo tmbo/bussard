@@ -39,8 +39,6 @@ pub trait Report: Serialize {
 /// The version of each `--json` shape that has no [`Report`] struct yet,
 /// one constant per shape (see the CLI's `output` module for the rules).
 pub mod schema {
-    /// `bussard audit --json`.
-    pub const AUDIT: u32 = 1;
     /// `bussard device --json`.
     pub const DEVICE: u32 = 1;
     /// `bussard diff --json`.
@@ -63,8 +61,6 @@ pub mod schema {
     pub const SECURE_DIAG: u32 = 1;
     /// `bussard test --secure-idle --json`.
     pub const TEST_SECURE_IDLE: u32 = 1;
-    /// `bussard validate --json`: `{ "diagnostics": [...] }`.
-    pub const VALIDATE: u32 = 1;
 }
 
 /// A device as the human knows it: `Hallway push button in Hallway`, its

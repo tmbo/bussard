@@ -150,6 +150,36 @@ pub struct SecureCoverageRow {
     pub keyring_entry: Option<bool>,
 }
 
+impl crate::report::Report for AuditReport {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, _model: &Model) -> Option<String> {
+        let devices: usize = self.masks.iter().map(|m| m.devices.len()).sum();
+        let unsupported = self
+            .masks
+            .iter()
+            .filter(|m| m.plan_apply != Some(true))
+            .map(|m| m.devices.len())
+            .sum::<usize>();
+        let secure = self.secure.devices.iter().filter(|d| d.activated).count();
+        let mut out = format!(
+            "Your project has {devices} device(s) of {} kind(s); {} of them bussard can plan \
+             and write, {secure} run KNX Data Secure.",
+            self.masks.len(),
+            devices - unsupported
+        );
+        if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
+            out.push_str(&format!(
+                " {missing} secured device(s) have no tool key in the keyring."
+            ));
+        }
+        if self.live.is_some() {
+            out.push_str(" The live part read the interface and the bus.");
+        }
+        Some(out)
+    }
+}
+
 impl AuditReport {
     /// Builds the static (model-only) audit; `live` is `None`.
     ///

@@ -8,12 +8,11 @@
 
 use std::time::SystemTime;
 
-use bussard_model::param_model::ProductModels;
-use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
+use bussard_model::{Dpt, GroupAddress, Model};
 use bussard_service::monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
+use bussard_service::project_view::{GroupView, LookupReport};
+use bussard_service::validate_report::ValidateReport;
 use serde_json::{Value, json};
-
-use crate::state::BusStatus;
 
 /// Serializes one decoded telegram to the same JSON object the monitor's JSON
 /// Lines format uses, so telegrams look identical across the CLI and MCP.
@@ -21,71 +20,6 @@ pub fn telegram_json(t: &DecodedTelegram) -> Value {
     // `json_line` is the single source of truth for the telegram schema; parse
     // its output back into a `Value` so we never drift from the monitor format.
     serde_json::from_str(&json_line(t)).unwrap_or_else(|_| json!({}))
-}
-
-/// `knx_project_summary`: project name, counts, rooms, GA ranges, bus status,
-/// validation counts.
-pub fn project_summary(model: &Model, bus: &BusStatus) -> Value {
-    let device_count = model.devices.len();
-    let ga_count = model.groups.groups.len();
-    let link_count: usize = model.links.links.values().map(|v| v.len()).sum();
-
-    // Floors/rooms with device counts, derived from device locations.
-    let mut locations: std::collections::BTreeMap<(String, String), usize> =
-        std::collections::BTreeMap::new();
-    for loaded in model.devices.values() {
-        if let Some(loc) = &loaded.device.location {
-            let floor = loc.floor.clone().unwrap_or_default();
-            let room = loc.room.clone().unwrap_or_default();
-            if !floor.is_empty() || !room.is_empty() {
-                *locations.entry((floor, room)).or_insert(0) += 1;
-            }
-        }
-    }
-    let rooms: Vec<Value> = locations
-        .into_iter()
-        .map(
-            |((floor, room), count)| json!({ "floor": floor, "room": room, "device_count": count }),
-        )
-        .collect();
-
-    // GA main-range names from groups.toml `ranges` (keyed "3" or "3/2").
-    let mut main_ranges: Vec<Value> = model
-        .groups
-        .ranges
-        .iter()
-        .filter(|(k, _)| !k.contains('/'))
-        .map(|(k, r)| json!({ "main": k, "name": r.name }))
-        .collect();
-    main_ranges.sort_by(|a, b| a["main"].as_str().cmp(&b["main"].as_str()));
-
-    // Validation error/warning counts.
-    let diags = bussard_model::validate(model);
-    let errors = diags
-        .iter()
-        .filter(|d| d.severity == bussard_model::Severity::Error)
-        .count();
-    let warnings = diags
-        .iter()
-        .filter(|d| d.severity == bussard_model::Severity::Warning)
-        .count();
-
-    json!({
-        "project": model.groups.project,
-        "imported_from": model.groups.imported_from,
-        "counts": {
-            "devices": device_count,
-            "group_addresses": ga_count,
-            "links": link_count,
-        },
-        "rooms": rooms,
-        "ga_main_ranges": main_ranges,
-        "bus": bus.to_json(),
-        "validation": {
-            "errors": errors,
-            "warnings": warnings,
-        },
-    })
 }
 
 /// `knx_model_lookup`: case-insensitive substring search over GA names +
@@ -106,150 +40,17 @@ pub fn model_lookup(
     limit: usize,
     capabilities: Option<(&std::path::Path, crate::guidance::Tiers)>,
 ) -> Value {
-    let q = query.to_lowercase();
-    let hit = |s: &str| s.to_lowercase().contains(&q);
-    let hit_opt = |s: Option<&str>| s.is_some_and(|s| !s.is_empty() && hit(s));
+    serde_json::to_value(lookup_report(model, query, limit, capabilities)).unwrap_or_default()
+}
 
-    // Group addresses.
-    let mut groups = Vec::new();
-    for (ga, group) in &model.groups.groups {
-        if hit(&group.name) || hit(&ga.to_string()) {
-            // Check the limit *before* pushing, so `limit == 0` yields zero
-            // results rather than one (issue #39 off-by-one).
-            if groups.len() >= limit {
-                break;
-            }
-            groups.push(json!({
-                "address": ga.to_string(),
-                "name": group.name,
-                "dpt": group.dpt.map(|d| d.to_string()),
-            }));
-        }
-    }
-
-    // Devices (by name, IA, or room).
-    let mut devices = Vec::new();
-    for (ia, loaded) in &model.devices {
-        let dev = &loaded.device;
-        let room = dev
-            .location
-            .as_ref()
-            .and_then(|l| l.room.clone())
-            .unwrap_or_default();
-        let floor = dev
-            .location
-            .as_ref()
-            .and_then(|l| l.floor.clone())
-            .unwrap_or_default();
-        if hit(&dev.name) || hit(&ia.to_string()) || (!room.is_empty() && hit(&room)) {
-            if devices.len() >= limit {
-                break;
-            }
-            devices.push(json!({
-                "ia": ia.to_string(),
-                "name": dev.name,
-                "floor": floor,
-                "room": room,
-            }));
-        }
-    }
-
-    // Com objects, per device in object-number order: every object the lock
-    // lists (linked or not) and every linked number, matched on the link
-    // name (the device file's, issue #19), the vendor text and function, and
-    // the key, with the GAs each is linked to.
-    let mut objects = Vec::new();
-    let mut ias: Vec<&bussard_model::IndividualAddress> = model
-        .devices
-        .keys()
-        .chain(model.links.links.keys())
-        .collect();
-    ias.sort();
-    ias.dedup();
-    'outer: for ia in ias {
-        let device = model.devices.get(ia).map(|d| &d.device);
-        let links = model.links.links.get(ia).map(Vec::as_slice).unwrap_or(&[]);
-        let mut numbers: Vec<u16> = device
-            .map(|d| d.com_objects.keys().copied().collect())
-            .unwrap_or_default();
-        numbers.extend(links.iter().map(|l| l.object));
-        numbers.sort_unstable();
-        numbers.dedup();
-        for number in numbers {
-            let co = device.and_then(|d| d.com_objects.get(&number));
-            let link = links.iter().find(|l| l.object == number);
-            let name = link.and_then(|l| l.name.as_deref());
-            let text = co.and_then(|c| c.text.as_deref());
-            let function = co.and_then(|c| c.function.as_deref());
-            let key = co.and_then(|c| c.key.as_deref());
-            if !(hit_opt(name) || hit_opt(text) || hit_opt(function) || hit_opt(key)) {
-                continue;
-            }
-            if objects.len() >= limit {
-                break 'outer;
-            }
-            let mut linked: Vec<String> = Vec::new();
-            if let Some(link) = link {
-                if let Some(send) = &link.send {
-                    linked.push(send.to_string());
-                }
-                linked.extend(link.listen.iter().map(|g| g.to_string()));
-            }
-            let channel = co
-                .and_then(|c| c.channel.as_deref())
-                .zip(device)
-                .map(|(id, d)| d.channel_handle(id));
-            objects.push(json!({
-                "device_ia": ia.to_string(),
-                "device_name": device.map(|d| d.name.clone()),
-                "channel": channel,
-                "object": number,
-                "key": key,
-                "name": name.unwrap_or_default(),
-                "text": text,
-                "function": function,
-                "linked_gas": linked,
-            }));
-        }
-    }
-
-    // Channels (by vendor text, user name or handle), with their objects.
-    let mut channels = Vec::new();
-    'channels: for (ia, loaded) in &model.devices {
-        let dev = &loaded.device;
-        for (id, ch) in &dev.channels {
-            let handle = dev.channel_handle(id);
-            if !(hit_opt(ch.text.as_deref()) || hit_opt(Some(&ch.name)) || hit(&handle)) {
-                continue;
-            }
-            if channels.len() >= limit {
-                break 'channels;
-            }
-            let numbers: Vec<u16> = dev
-                .com_objects
-                .iter()
-                .filter(|(_, o)| o.channel.as_deref() == Some(id.as_str()))
-                .map(|(n, _)| *n)
-                .collect();
-            channels.push(json!({
-                "device_ia": ia.to_string(),
-                "device_name": dev.name,
-                "channel": handle,
-                "number": ch.number,
-                "text": ch.text,
-                "name": ch.name,
-                "objects": numbers,
-            }));
-        }
-    }
-
-    let mut out = json!({
-        "query": query,
-        "groups": groups,
-        "devices": devices,
-        "objects": objects,
-        "channels": channels,
-    });
+/// [`model_lookup`] typed.
+pub fn lookup_report(
+    model: &Model,
+    query: &str,
+    limit: usize,
+    capabilities: Option<(&std::path::Path, crate::guidance::Tiers)>,
+) -> LookupReport {
+    let mut out = LookupReport::search(model, query, limit);
     if let Some((dir, tiers)) = capabilities {
         let mut found = bussard_model::capabilities::capability_lookup(model, dir, query, limit);
         for c in &mut found {
@@ -257,7 +58,7 @@ pub fn model_lookup(
                 c.needs = Some(tiers.needs_how(&needs, c.device_ia.parse().ok()));
             }
         }
-        out["capabilities"] = serde_json::to_value(found).unwrap_or_else(|_| json!([]));
+        out.capabilities = Some(found);
     }
     out
 }
@@ -265,167 +66,18 @@ pub fn model_lookup(
 /// `knx_get_group`: the group entry, every link touching it, and the last seen
 /// telegram from the ring (if any).
 pub fn get_group(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value {
-    let group = model.groups.groups.get(&ga);
+    serde_json::to_value(group_view(model, ring, ga)).unwrap_or_default()
+}
 
-    // Every link that sends or listens on this GA. The com-object name lives in
-    // the device file's links only (issue #19).
-    let mut links = Vec::new();
-    for (ia, dev_links) in &model.links.links {
-        let dev = model.devices.get(ia);
-        for link in dev_links {
-            let sends = link.send == Some(ga);
-            let listens = link.listen.contains(&ga);
-            if !sends && !listens {
-                continue;
-            }
-            let role = if sends { "send" } else { "listen" };
-            links.push(json!({
-                "device_ia": ia.to_string(),
-                "device_name": dev.map(|d| d.device.name.clone()),
-                "object": link.object,
-                "object_name": link.name.clone(),
-                "role": role,
-            }));
-        }
-    }
-
-    // Last seen telegram for this GA from the ring.
+/// [`get_group`] typed.
+pub fn group_view(model: &Model, ring: &TelegramRing, ga: GroupAddress) -> GroupView {
     let filter = Filter::parse(&ga.to_string()).unwrap_or_default();
     let last = ring
         .recent(&filter, Some(1))
         .into_iter()
         .find(|t| matches!(t.destination, DestinationRef::Group(g) if g == ga))
         .map(|t| telegram_json(&t));
-
-    json!({
-        "address": ga.to_string(),
-        "found": group.is_some(),
-        "group": group.map(|g| json!({
-            "name": g.name,
-            "dpt": g.dpt.map(|d| d.to_string()),
-            "description": g.description,
-        })),
-        "links": links,
-        "last_telegram": last,
-    })
-}
-
-/// Whether a device-file parameter key is an ETS-internal value the device
-/// file does not show: a stored value of a ref the configuration hides
-/// (`hidden@<ref>`) or a channel's label parameter (`label@<ref>`, the
-/// channel `name`).
-fn technical_param_key(key: &str) -> bool {
-    bussard_model::is_hidden_mem_key(key) || key.starts_with(&bussard_model::label_mem_key(""))
-}
-
-/// The calculation outputs of `device` with their computed values, as
-/// `{key, value, computed_by}` (issue #712). The values come from
-/// [`bussard_model::device_view::Evaluated`], one Dynamic evaluation with the
-/// trigger rule of the write path: empty while every input holds its
-/// default. Without `technical` the ETS-internal keys are left out, as from
-/// `parameters`.
-fn computed_parameters(
-    device: &bussard_model::schema::Device,
-    products: &ProductModels,
-    technical: bool,
-) -> Vec<Value> {
-    let Some(product) = device
-        .product
-        .as_ref()
-        .and_then(|p| p.application_ref.as_deref())
-        .and_then(|app| products.get(app))
-        .filter(|p| !p.calculations.is_empty())
-    else {
-        return Vec::new();
-    };
-    bussard_model::device_view::Evaluated::of_device(product, device)
-        .computed_parameters()
-        .into_iter()
-        .map(|(reference, (calc, value))| {
-            let key = match device.lock.parameters.get(&reference) {
-                Some(locked) if locked.key.contains('@') => locked.key.clone(),
-                Some(locked) => format!("{}@{reference}", locked.key),
-                None => reference,
-            };
-            (key, calc, value)
-        })
-        .filter(|(key, ..)| technical || !technical_param_key(key))
-        .map(|(key, calc, value)| json!({"key": key, "value": value, "computed_by": calc}))
-        .collect()
-}
-
-/// `knx_get_device`: the full device definition plus its links. Without
-/// `technical` the `parameters` map keeps the keyed values only and
-/// `hidden_parameters` counts the ETS-internal ones it leaves out (issue
-/// #311). `computed_parameters` lists the outputs of the product model's
-/// `<ParameterCalculation>`s that a calculation computes under this
-/// configuration, with the value a download writes and the calculation's id
-/// (issue #712): the same Dynamic evaluation the write path runs.
-pub fn get_device(
-    model: &Model,
-    products: &ProductModels,
-    ia: IndividualAddress,
-    technical: bool,
-) -> Value {
-    let Some(loaded) = model.devices.get(&ia) else {
-        return json!({
-            "address": ia.to_string(),
-            "found": false,
-        });
-    };
-    let dev = &loaded.device;
-
-    // Serialize the whole device via serde (identity, product, location,
-    // channels, com_objects) — the schema is already the on-disk shape.
-    let mut device_value = serde_json::to_value(dev).unwrap_or_else(|_| json!({}));
-    let mut hidden = 0usize;
-    if let Some(params) = device_value
-        .get_mut("parameters")
-        .and_then(Value::as_object_mut)
-    {
-        let before = params.len();
-        if !technical {
-            params.retain(|k, _| !technical_param_key(k));
-        }
-        hidden = if technical {
-            params.keys().filter(|k| technical_param_key(k)).count()
-        } else {
-            before - params.len()
-        };
-    }
-
-    let links: Vec<Value> = model
-        .links
-        .links
-        .get(&ia)
-        .map(|dev_links| {
-            dev_links
-                .iter()
-                .map(|link| {
-                    json!({
-                        "object": link.object,
-                        "name": link.name,
-                        "send": link.send.map(|g| g.to_string()),
-                        "listen": link.listen.iter().map(|g| g.to_string()).collect::<Vec<_>>(),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    let computed = computed_parameters(dev, products, technical);
-    let mut out = json!({
-        "address": ia.to_string(),
-        "found": true,
-        "file_stem": loaded.file_stem,
-        "device": device_value,
-        "hidden_parameters": hidden,
-        "links": links,
-    });
-    if !computed.is_empty() {
-        out["computed_parameters"] = Value::Array(computed);
-    }
-    out
+    GroupView::of(model, ga, last)
 }
 
 /// `knx_recent_telegrams`: recent telegrams from the ring, filtered, oldest→newest.
@@ -550,38 +202,7 @@ pub fn show_device_result(
     Ok(value)
 }
 
-/// Which diagnostics `knx_validate` returns (issue #304).
-#[derive(Debug, Clone, Default)]
-pub struct ValidateFilter {
-    /// The least severe diagnostic returned; `None` means warnings (errors
-    /// and warnings).
-    pub severity: Option<bussard_model::Severity>,
-    /// Only diagnostics about this device (`"1.1.4"`), or a line when it
-    /// ends with a dot (`"1.1."`).
-    pub address: Option<String>,
-    /// Only diagnostics about this group address (`"3/2/0"`), or a range
-    /// when it ends with a slash (`"3/"`).
-    pub group: Option<String>,
-}
-
-/// Parses `knx_validate`'s `severity` argument.
-pub fn parse_severity(text: &str) -> Option<bussard_model::Severity> {
-    match text.trim().to_ascii_lowercase().as_str() {
-        "error" | "errors" => Some(bussard_model::Severity::Error),
-        "warning" | "warnings" => Some(bussard_model::Severity::Warning),
-        "info" | "infos" => Some(bussard_model::Severity::Info),
-        _ => None,
-    }
-}
-
-/// How severe `s` is, most severe highest.
-fn rank(s: bussard_model::Severity) -> u8 {
-    match s {
-        bussard_model::Severity::Error => 2,
-        bussard_model::Severity::Warning => 1,
-        bussard_model::Severity::Info => 0,
-    }
-}
+pub use bussard_service::validate_report::{ValidateFilter, parse_severity};
 
 /// `knx_validate` (issue #304): the diagnostics `filter` selects (by default
 /// errors and warnings), with `counts` per severity over the whole model,
@@ -593,69 +214,7 @@ pub fn validate_filtered(
 ) -> Value {
     let mut diags = bussard_model::validate(model);
     diags.extend(extra);
-    diags.sort_by(|a, b| a.location.cmp(&b.location).then(a.code.cmp(b.code)));
-    let mut errors = 0usize;
-    let mut warnings = 0usize;
-    let mut infos = 0usize;
-    for d in &diags {
-        match d.severity {
-            bussard_model::Severity::Error => errors += 1,
-            bussard_model::Severity::Warning => warnings += 1,
-            bussard_model::Severity::Info => infos += 1,
-        }
-    }
-    let floor = rank(filter.severity.unwrap_or(bussard_model::Severity::Warning));
-    let items: Vec<Value> = diags
-        .iter()
-        .filter(|d| rank(d.severity) >= floor)
-        .filter(|d| {
-            filter
-                .address
-                .as_deref()
-                .is_none_or(|a| d.mentions_device(a))
-        })
-        .filter(|d| filter.group.as_deref().is_none_or(|g| d.mentions_group(g)))
-        .map(|d| {
-            json!({
-                "code": d.code,
-                "severity": d.severity.to_string(),
-                "message": d.message,
-                "location": d.location,
-            })
-        })
-        .collect();
-    let shown = items.len();
-    let mut out = json!({
-        "diagnostics": items,
-        "counts": {
-            "errors": errors,
-            "warnings": warnings,
-            "infos": infos,
-            "total": diags.len(),
-        },
-        "shown": shown,
-        "ok": errors == 0,
-    });
-    if shown < diags.len()
-        && let Some(map) = out.as_object_mut()
-    {
-        let mut why = Vec::new();
-        if floor > 0 {
-            why.push("pass `severity: \"info\"` for the infos".to_string());
-        }
-        if filter.address.is_some() || filter.group.is_some() {
-            why.push("drop `address`/`group` for the whole model".to_string());
-        }
-        map.insert(
-            "note".to_string(),
-            json!(format!(
-                "{shown} of {} diagnostics shown; `counts` covers all of them; {}",
-                diags.len(),
-                why.join(", ")
-            )),
-        );
-    }
-    out
+    crate::reply::report(&ValidateReport::new(diags, filter), model)
 }
 
 /// Decodes a raw payload against a GA's DPT into a display string + typed JSON,
@@ -855,7 +414,31 @@ mod tests {
     use super::test_fixtures::*;
     use super::*;
     use crate::state::BusStatus;
+    use bussard_model::IndividualAddress;
+    use bussard_model::param_model::ProductModels;
+    use bussard_service::project_view::{DeviceInfo, ProjectSummary};
     use bussard_service::transport::TransportKind;
+
+    /// `value` as JSON.
+    fn json_of(value: impl serde::Serialize) -> Value {
+        serde_json::to_value(value).unwrap_or_default()
+    }
+
+    fn project_summary(m: &Model, bus: &BusStatus) -> Value {
+        json_of(ProjectSummary::of(m, bus.to_json()))
+    }
+
+    fn lookup(m: &Model, q: &str, limit: usize) -> Value {
+        model_lookup(m, q, limit, None)
+    }
+
+    fn group(m: &Model, ring: &TelegramRing, ga: GroupAddress) -> Value {
+        get_group(m, ring, ga)
+    }
+
+    fn get_device(m: &Model, p: &ProductModels, ia: IndividualAddress, t: bool) -> Value {
+        json_of(DeviceInfo::of(m, p, ia, t))
+    }
 
     #[test]
     fn summary_counts_and_ranges() -> TestResult {
@@ -881,19 +464,19 @@ mod tests {
     fn lookup_matches_across_kinds() -> TestResult {
         let m = model()?;
         // "wind" hits the GA name and the object name.
-        let v = model_lookup(&m, "wind", 50, None);
+        let v = lookup(&m, "wind", 50);
         assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["groups"][0]["address"], "3/2/0");
         assert_eq!(v["objects"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["objects"][0]["linked_gas"][0], "3/2/0");
 
         // A room-name match returns the device.
-        let v = model_lookup(&m, "wohnzimmer", 50, None);
+        let v = lookup(&m, "wohnzimmer", 50);
         assert_eq!(v["devices"].as_array().ok_or("not an array")?.len(), 1);
         assert_eq!(v["devices"][0]["ia"], "1.1.4");
 
         // An address substring match.
-        let v = model_lookup(&m, "3/0/4", 50, None);
+        let v = lookup(&m, "3/0/4", 50);
         assert_eq!(v["groups"][0]["address"], "3/0/4");
         Ok(())
     }
@@ -902,7 +485,7 @@ mod tests {
     fn lookup_respects_limit() -> TestResult {
         let m = model()?;
         // Both GAs contain "3/" — limit to 1.
-        let v = model_lookup(&m, "3/", 1, None);
+        let v = lookup(&m, "3/", 1);
         assert_eq!(v["groups"].as_array().ok_or("not an array")?.len(), 1);
         Ok(())
     }
@@ -911,7 +494,7 @@ mod tests {
     fn get_group_assembles_links_and_last_telegram() -> TestResult {
         let m = model()?;
         let ring = ring_with(&[("3/2/0", 100)])?;
-        let v = get_group(&m, &ring, ga("3/2/0")?);
+        let v = group(&m, &ring, ga("3/2/0")?);
         assert_eq!(v["found"], true);
         assert_eq!(v["group"]["name"], "Windalarm");
         // The sending link is present with role "send".
@@ -928,7 +511,7 @@ mod tests {
     fn get_group_listen_role() -> TestResult {
         let m = model()?;
         let ring = TelegramRing::new();
-        let v = get_group(&m, &ring, ga("3/0/4")?);
+        let v = group(&m, &ring, ga("3/0/4")?);
         let links = v["links"].as_array().ok_or("not an array")?;
         assert_eq!(links.len(), 1);
         assert_eq!(links[0]["role"], "listen");
