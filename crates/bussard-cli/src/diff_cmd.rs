@@ -105,12 +105,11 @@ fn run(args: DiffArgs, json: bool) -> anyhow::Result<ExitCode> {
             &products(&side_a, &side_b),
         );
         if json {
-            let mut value = serde_json::to_value(&list)?;
-            if let Some(map) = value.as_object_mut() {
-                map.insert("a".to_string(), a.display().to_string().into());
-                map.insert("b".to_string(), b.display().to_string().into());
-            }
-            crate::output::print(crate::output::schema::DIFF_CHECKLIST, &value)?;
+            crate::output::report(&bussard_service::project_diff::ChecklistReport {
+                from: a.display().to_string(),
+                to: b.display().to_string(),
+                checklist: list,
+            })?;
         } else {
             print!(
                 "{}",
@@ -120,14 +119,11 @@ fn run(args: DiffArgs, json: bool) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if json {
-        let value = serde_json::json!({
-            "a": a.display().to_string(),
-            "b": b.display().to_string(),
-            "summary": changes.summary(),
-            "touches_protected": changes.touches_protected(),
-            "changes": changes.changes,
-        });
-        crate::output::print(crate::output::schema::DIFF, &value)?;
+        crate::output::report(&bussard_service::project_diff::ProjectDiffReport::new(
+            a.display().to_string(),
+            b.display().to_string(),
+            &changes,
+        ))?;
         return Ok(ExitCode::SUCCESS);
     }
     if changes.is_empty() {

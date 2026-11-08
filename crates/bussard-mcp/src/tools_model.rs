@@ -29,7 +29,9 @@ use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_service::history::{UndoOutcome, Undone};
-use bussard_service::model_edit::{Capped, ChangeReport, EditOutcome, HistoryReport, Validation};
+use bussard_service::model_edit::{
+    Capped, ChangeReport, EditOutcome, HistoryReport, KeyStoreChange, SecuritySwitch, Validation,
+};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
@@ -999,14 +1001,31 @@ impl BussardMcp {
     where
         F: FnOnce(&mut Model) -> Result<Option<String>, String>,
     {
+        match self.edit_ladder(tool, args, apply, hook) {
+            Ok(outcome) => ok_report(&outcome, &self.model()),
+            Err(reason) => refusal(reason),
+        }
+    }
+
+    /// The edit ladder of [`Self::edit_with_hook`]; `Err` is the refusal.
+    fn edit_ladder<F>(
+        &self,
+        tool: &str,
+        args: Vec<String>,
+        apply: F,
+        hook: Option<SnapshotHook<'_>>,
+    ) -> Result<EditOutcome, String>
+    where
+        F: FnOnce(&mut Model) -> Result<Option<String>, String>,
+    {
         if self.state().no_model_edits {
-            return refusal("this server was started with --no-model-edits");
+            return Err("this server was started with --no-model-edits".to_string());
         }
         let dir = self.state().dir.clone();
         let before = match Model::load(&dir) {
             Ok(model) => model,
             Err(err) => {
-                return refusal(format!(
+                return Err(format!(
                     "the model at {} does not load: {err}",
                     dir.display()
                 ));
@@ -1015,7 +1034,7 @@ impl BussardMcp {
         let mut edited = before.clone();
         let note = match apply(&mut edited) {
             Ok(note) => note,
-            Err(reason) => return refusal(reason),
+            Err(reason) => return Err(reason),
         };
         // A group address the edit links but groups.toml does not define is
         // declared there, named after the object that uses it first; the
@@ -1027,7 +1046,7 @@ impl BussardMcp {
         let mut changes = describe(&before, &edited);
         settle_changes(&dir, &mut changes, [&edited, &before]);
         if changes.is_empty() && hook.is_none() {
-            return ok_report(&EditOutcome::unchanged(), &self.model());
+            return Ok(EditOutcome::unchanged());
         }
 
         let reason = SnapshotReason::new(format!("mcp {tool}"))
@@ -1037,21 +1056,18 @@ impl BussardMcp {
         let snapshot = match history.snapshot(reason) {
             Ok(id) => id,
             Err(err) => {
-                return refusal(format!(
+                return Err(format!(
                     "refusing to edit: the history snapshot could not be written ({err})"
                 ));
             }
         };
-        let extra = match hook {
-            Some(hook) => match hook(&history.snapshot_dir(&snapshot)) {
-                Ok(extra) => extra,
-                Err(reason) => return refusal(reason),
-            },
-            None => serde_json::Map::new(),
+        let key_store = match hook {
+            Some(hook) => hook(&history.snapshot_dir(&snapshot))?,
+            None => None,
         };
 
         if let Err(err) = edited.save(&dir) {
-            return refusal(format!("the model could not be saved: {err}"));
+            return Err(format!("the model could not be saved: {err}"));
         }
         // The handle debounces its directory check; force it so the very next
         // tool call sees what we just wrote.
@@ -1066,12 +1082,12 @@ impl BussardMcp {
             groups_declared: declared,
             validation: Some(Validation::new(&earlier, &diagnostics)),
             note,
-            extra,
+            key_store,
             said: Some(crate::everyday::edit_summary(&changes, [&edited, &before])),
             next: Some(self.next_step(&changes)),
             ..EditOutcome::new(&snapshot, &changes)
         };
-        ok_report(&outcome, &self.model())
+        Ok(outcome)
     }
 
     /// `knx_set_group` with `secure` (issue #331): the group's and every
@@ -1158,42 +1174,32 @@ impl BussardMcp {
                 gs::save_store(&hook_dir, &store, password)
                     .map_err(|e| format!("{e}; nothing was changed"))?;
             }
-            let mut extra = serde_json::Map::new();
-            extra.insert(
-                "key_store".to_string(),
-                json!({
-                    "group_key": action.label(),
-                    "sentence": action.sentence(ga),
-                    "snapshot_keeps_key_store": kept,
-                    "export_needed": true,
-                }),
-            );
-            Ok(extra)
+            Ok(Some(KeyStoreChange {
+                group_key: action.label().to_string(),
+                sentence: action.sentence(ga),
+                snapshot_keeps_key_store: kept,
+                export_needed: true,
+            }))
         });
-        let mut result = self.edit_with_hook("knx_set_group", vec![summary], apply, Some(hook));
-        if let (Ok(call), Some(edit)) = (&mut result, edited.borrow().as_ref()) {
-            let devices: Vec<Value> = edit
-                .devices
-                .iter()
-                .map(|(ia, objects)| json!({"address": ia.to_string(), "objects": objects}))
-                .collect();
-            if let Some(Value::Object(map)) = call.structured_content.as_mut()
-                && map.get("ok") == Some(&Value::Bool(true))
-            {
-                map.insert(
-                    "security".to_string(),
-                    json!({"ga": ga.to_string(), "secure": secure, "devices": devices}),
-                );
+        match self.edit_ladder("knx_set_group", vec![summary], apply, Some(hook)) {
+            Ok(mut outcome) => {
+                if let Some(edit) = edited.borrow().as_ref() {
+                    outcome.security = Some(SecuritySwitch {
+                        ga: ga.to_string(),
+                        secure,
+                        devices: bussard_service::groups_report::secured_devices(&edit.devices),
+                    });
+                }
+                ok_report(&outcome, &self.model())
             }
+            Err(reason) => refusal(reason),
         }
-        result
     }
 }
 
 /// A step of [`BussardMcp::edit_with_hook`] that runs on the snapshot
 /// directory and returns extra result fields.
-type SnapshotHook<'a> =
-    Box<dyn FnOnce(&Path) -> Result<serde_json::Map<String, Value>, String> + 'a>;
+type SnapshotHook<'a> = Box<dyn FnOnce(&Path) -> Result<Option<KeyStoreChange>, String> + 'a>;
 
 /// Whether two paths name the same file (canonical paths, else as given).
 fn same_file(a: &Path, b: &Path) -> bool {
@@ -1513,39 +1519,6 @@ fn put_changes(result: &mut Value, changes: &ChangeSet) {
             map.insert("truncated".into(), json!(note));
         }
     }
-}
-
-/// The `knxnet` section of `knx_show_device` for an IP interface (issue
-/// #391): the device file's `[knxnet]` table (`model`), what the device's
-/// KNXnet/IP parameter object last reported (`device`, from the device facts
-/// `status` and `describe` keep, with its `read_at`), where the two differ
-/// (`drift`) and how to change it. `None` for a device with neither.
-pub(crate) fn knxnet_section(dir: &Path, model: &Model, ia: IndividualAddress) -> Option<Value> {
-    let config = model.devices.get(&ia).and_then(|d| d.device.knxnet.clone());
-    let facts = bussard_model::facts::load_facts(dir, ia)
-        .ok()
-        .flatten()
-        .and_then(|r| r.knxnet);
-    if config.is_none() && facts.is_none() {
-        return None;
-    }
-    let drift = match (&facts, &config) {
-        (Some(f), Some(c)) => f.drift(c),
-        _ => Vec::new(),
-    };
-    Some(json!({
-        "model": config,
-        "device": facts,
-        "drift": drift,
-        "how_to_change": format!(
-            "The KNXnet/IP settings live in the [knxnet] table of devices/{ia}.toml \
-             (assignment, address, netmask, gateway, friendly_name, tunnels); \
-             knx_set_interface edits them (knx_set_parameter does not), and \
-             knx_plan_device then knx_apply_device write them to the interface's KNXnet/IP \
-             parameter object. `device` is what the interface reported the last time it \
-             was read (`bussard status {ia}`, `describe`, or a plan)."
-        ),
-    }))
 }
 
 /// Settles the parameter changes of `changes` against the product models of

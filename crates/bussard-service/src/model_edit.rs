@@ -256,9 +256,12 @@ pub struct EditOutcome {
     /// What the edit revealed or that nothing was written.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// What a tool adds of its own (the key store of a security change).
-    #[serde(flatten)]
-    pub extra: serde_json::Map<String, serde_json::Value>,
+    /// What a security change did to the key store (issue #331).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_store: Option<KeyStoreChange>,
+    /// The Data Secure switch of a group address and the devices it touches.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security: Option<SecuritySwitch>,
     /// The homeowner's sentence, from [`edit_summary`].
     #[serde(skip)]
     pub said: Option<String>,
@@ -302,6 +305,30 @@ impl Report for EditOutcome {
     fn next_step(&self) -> Option<String> {
         self.next.clone()
     }
+}
+
+/// What a security change did to the key store.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeyStoreChange {
+    /// What happened to the group key.
+    pub group_key: String,
+    /// The same in words.
+    pub sentence: String,
+    /// Whether the snapshot keeps a copy of the key store.
+    pub snapshot_keeps_key_store: bool,
+    /// The ETS keyring needs exporting again.
+    pub export_needed: bool,
+}
+
+/// The Data Secure switch of a group address.
+#[derive(Debug, Clone, Serialize)]
+pub struct SecuritySwitch {
+    /// The group address.
+    pub ga: String,
+    /// Whether it runs secured now.
+    pub secure: bool,
+    /// The devices whose objects change.
+    pub devices: Vec<crate::groups_report::SecuredDevice>,
 }
 
 /// A change set between two states of the project: `bussard status --json`

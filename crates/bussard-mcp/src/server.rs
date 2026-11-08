@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 use crate::reply::{invalid, ok, ok_report};
 use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
+use bussard_service::device_show::{KnxnetSection, UnmodelledLive};
 use bussard_service::group_report::{GroupReadReport, GroupWriteReport};
 use bussard_service::project_view::{DeviceInfo, ProjectSummary};
 
@@ -440,30 +441,26 @@ impl BussardMcp {
             // A live read of a device the model does not have (a scan
             // responder) still answers, with the reason in `model_view`.
             Err(e) if args.live => {
-                return ok(json!({
-                    "address": ia.to_string(),
-                    "model_view": e.to_string(),
-                    "live": self.live_part(ia).await,
-                }));
+                return ok_report(
+                    &UnmodelledLive {
+                        address: ia.to_string(),
+                        model_view: e.to_string(),
+                        live: self.live_part(ia).await,
+                    },
+                    &model,
+                );
             }
             Err(e) => return Err(invalid(e.to_string())),
         };
-        let mut value = tools::show_device_result(
+        let mut show = tools::show_device_result(
             view,
             args.inactive,
             args.toml,
             crate::guidance::Tiers::of(&self.state),
-        )
-        .map_err(|e| {
-            ErrorData::internal_error(format!("serializing the device view: {e}"), None)
-        })?;
+        );
         // An IP interface's KNXnet/IP settings and facts (issue #391).
-        if let (Some(map), Some(knxnet)) = (
-            value.as_object_mut(),
-            crate::tools_model::knxnet_section(&self.state.dir, &model, ia),
-        ) {
-            map.insert("knxnet".to_string(), knxnet);
-        }
+        show.knxnet = KnxnetSection::of(&self.state.dir, &model, ia);
+        let mut value = crate::reply::report(&show, &model);
         if !args.technical {
             crate::everyday::plain_view(&mut value);
         }

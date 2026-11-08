@@ -39,18 +39,8 @@ pub trait Report: Serialize {
 /// The version of each `--json` shape that has no [`Report`] struct yet,
 /// one constant per shape (see the CLI's `output` module for the rules).
 pub mod schema {
-    /// `bussard device --json`.
-    pub const DEVICE: u32 = 1;
-    /// `bussard diff --json`.
-    pub const DIFF: u32 = 1;
-    /// `bussard diff --checklist --json`.
-    pub const DIFF_CHECKLIST: u32 = 1;
     /// `bussard doc --json` (the documentation model).
     pub const DOC: u32 = 1;
-    /// `bussard groups reserve --json`.
-    pub const GROUPS_RESERVE: u32 = 1;
-    /// `bussard groups secure --json`.
-    pub const GROUPS_SECURE: u32 = 1;
     /// `bussard interface secure --json` (issue #398).
     pub const INTERFACE_SECURE: u32 = 1;
     /// `bussard keys show --json`.

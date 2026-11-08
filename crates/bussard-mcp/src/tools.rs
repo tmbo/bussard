@@ -9,6 +9,7 @@
 use std::time::SystemTime;
 
 use bussard_model::{Dpt, GroupAddress, Model};
+use bussard_service::device_show::DeviceShow;
 use bussard_service::monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
 use bussard_service::project_view::{GroupView, LookupReport};
 use bussard_service::validate_report::ValidateReport;
@@ -100,45 +101,15 @@ pub fn recent_telegrams(
     out
 }
 
-/// One page or channel of a scoped `knx_show_device` in one line: handle,
-/// text, state and counts.
-fn compact_row(row: &bussard_model::device_view::BlockRow) -> String {
-    let state = if row.active { "active" } else { "inactive" };
-    let text = row
-        .text
-        .as_deref()
-        .map(|t| format!(" {t:?}"))
-        .unwrap_or_default();
-    format!(
-        "{}{text}: {state}, {}, {}",
-        row.handle,
-        counted(row.parameters, "parameter"),
-        counted(row.objects, "object")
-    )
-}
-
-/// `n` and `noun`, plural unless `n` is 1: "1 parameter", "2 objects".
-fn counted(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
-}
-
-/// `knx_show_device`'s result for `view` (issue #304). Without a scope: the
-/// view with the enable chains that repeat an earlier page's collapsed to
-/// `also_needs`, and `how_to_change`. With one: the scope in detail, the
-/// pages and inactive channels one line each, their `inactive` detail only
-/// with `inactive` (as `inactive_pages`), and no `how_to_change` (the tool
-/// description carries it). `toml` adds the paste-ready snippet. Each
-/// `needs` gets how `tiers` runs that push.
+/// `knx_show_device`'s view of a device: scoped to a channel or page, the
+/// pages and inactive channels in one line each; unscoped, `how_to_change`.
+/// Every inactive row's `needs` says how the server's tiers run that push.
 pub fn show_device_result(
     mut view: bussard_model::device_view::DeviceView,
     inactive: bool,
     toml: bool,
     tiers: crate::guidance::Tiers,
-) -> Result<Value, serde_json::Error> {
+) -> DeviceShow {
     let snippet = toml.then(|| view.render_toml());
     view.collapse_enable_chains();
     let ia = view.address.parse().ok();
@@ -155,51 +126,17 @@ pub fn show_device_result(
         how(row.inactive.as_mut());
     }
     how(view.scope.as_mut().and_then(|s| s.inactive.as_mut()));
-    let scoped = view.scope.is_some();
-    let mut value = if scoped {
-        let blocks = std::mem::take(&mut view.blocks);
-        let channels = std::mem::take(&mut view.inactive_channels);
-        let mut value = serde_json::to_value(&view)?;
-        if let Some(map) = value.as_object_mut() {
-            if !blocks.is_empty() {
-                map.insert(
-                    "blocks".to_string(),
-                    json!(blocks.iter().map(compact_row).collect::<Vec<_>>()),
-                );
-            }
-            if !channels.is_empty() {
-                map.insert(
-                    "inactive_channels".to_string(),
-                    json!(channels.iter().map(compact_row).collect::<Vec<_>>()),
-                );
-            }
-            let detail: Vec<_> = blocks
-                .iter()
-                .chain(&channels)
-                .filter(|r| !r.active)
-                .collect();
-            if inactive && !detail.is_empty() {
-                map.insert("inactive_pages".to_string(), serde_json::to_value(detail)?);
-            }
-        }
-        value
+    let mut show = if view.scope.is_some() {
+        DeviceShow::scoped(view, inactive)
     } else {
-        let mut value = serde_json::to_value(&view)?;
-        if let Some(map) = value.as_object_mut() {
-            map.insert(
-                "how_to_change".to_string(),
-                Value::String(crate::guidance::how_to_change(
-                    view.product_model,
-                    &view.notes,
-                )),
-            );
+        let how_to_change = crate::guidance::how_to_change(view.product_model, &view.notes);
+        DeviceShow {
+            how_to_change: Some(how_to_change),
+            ..DeviceShow::of(view)
         }
-        value
     };
-    if let (Some(map), Some(snippet)) = (value.as_object_mut(), snippet) {
-        map.insert("toml".to_string(), Value::String(snippet));
-    }
-    Ok(value)
+    show.toml = snippet;
+    show
 }
 
 pub use bussard_service::validate_report::{ValidateFilter, parse_severity};
@@ -578,11 +515,11 @@ mod tests {
             includes: Vec::new(),
         };
         assert_eq!(
-            compact_row(&row(1, 1)),
+            bussard_service::device_show::compact_row(&row(1, 1)),
             "logik \"Logik\": inactive, 1 parameter, 1 object"
         );
         assert_eq!(
-            compact_row(&row(2, 0)),
+            bussard_service::device_show::compact_row(&row(2, 0)),
             "logik \"Logik\": inactive, 2 parameters, 0 objects"
         );
     }
