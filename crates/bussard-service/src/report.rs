@@ -43,8 +43,6 @@ pub mod schema {
     pub const AUDIT: u32 = 1;
     /// `bussard backup --json` (the manifest).
     pub const BACKUP: u32 = 1;
-    /// `bussard describe --json`.
-    pub const DESCRIBE: u32 = 1;
     /// `bussard device --json`.
     pub const DEVICE: u32 = 1;
     /// `bussard diff --json`.
@@ -75,8 +73,6 @@ pub mod schema {
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.
     pub const MONITOR: u32 = 1;
-    /// `bussard read --json`.
-    pub const READ: u32 = 1;
     /// `bussard reconstruct --json`.
     pub const RECONSTRUCT: u32 = 1;
     /// `bussard reconstruct --line --json`.
@@ -99,8 +95,6 @@ pub mod schema {
     pub const UNDO: u32 = 1;
     /// `bussard validate --json`: `{ "diagnostics": [...] }`.
     pub const VALIDATE: u32 = 1;
-    /// `bussard write --json`.
-    pub const WRITE: u32 = 1;
 }
 
 /// A device as the human knows it: `Hallway push button in Hallway`, its

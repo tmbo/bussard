@@ -96,6 +96,7 @@ pub mod files;
 pub mod flash;
 pub mod flash_flow;
 pub mod group;
+pub mod group_report;
 pub mod group_security;
 pub mod guidance;
 pub mod history;
