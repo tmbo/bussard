@@ -431,7 +431,7 @@ pub async fn run_onboarding_with_ready(
     onboarding: onboarding::Onboarding,
     on_ready: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    run::serve_onboarding_stdio(onboarding::SetupMcp::new(onboarding), on_ready).await
+    run::serve_onboarding_stdio(BussardMcp::onboarding(onboarding)?, on_ready).await
 }
 
 /// [`run_onboarding_with_ready`] over streamable HTTP (issue #265). The
@@ -442,7 +442,7 @@ pub async fn run_onboarding_http_with_ready(
     on_ready: impl FnOnce(std::net::SocketAddr),
 ) -> anyhow::Result<()> {
     options.check()?;
-    run::serve_onboarding_http(onboarding::SetupMcp::new(onboarding), options, on_ready).await
+    run::serve_onboarding_http(BussardMcp::onboarding(onboarding)?, options, on_ready).await
 }
 
 /// The tier a tool belongs to (issue #905): which server flags register it.

@@ -953,13 +953,35 @@ pub fn dynamic_parameter_slots<'a>(
     app: &'a ApplicationProgram,
     config: &crate::dynamic::DynamicConfig,
 ) -> Result<Vec<ParameterSlot<'a>>> {
+    dynamic_parameter_slots_with(app, config, &union_index(app))
+}
+
+/// The [`UnionIndex`] of `app`: every union member's parameter id.
+fn union_index(app: &ApplicationProgram) -> UnionIndex<'_> {
     let mut union_of = UnionIndex::new();
     for (ui, union) in app.unions.iter().enumerate() {
         for (mi, member) in union.members.iter().enumerate() {
             union_of.insert(member.parameter.as_str(), (ui, mi));
         }
     }
-    dynamic_parameter_slots_with(app, config, &union_of)
+    union_of
+}
+
+/// Whether a parameter the configuration does not show is written at its
+/// default as far as unions go: not a union member, or the union's
+/// `DefaultUnionParameter` in a union none of whose members is shown
+/// (`occupied`). One rule for memory ([`invisible_parameter_slots`]) and
+/// property unions ([`PropertyParameters::resolve`], issue #951).
+fn hidden_union_member_written(
+    app: &ApplicationProgram,
+    union_of: &UnionIndex<'_>,
+    occupied: &HashSet<usize>,
+    param_id: &str,
+) -> bool {
+    match union_of.get(param_id) {
+        None => true,
+        Some(&(ui, mi)) => !occupied.contains(&ui) && app.unions[ui].members[mi].is_default,
+    }
 }
 
 /// [`dynamic_parameter_slots`] with a prebuilt union index.
@@ -1218,9 +1240,7 @@ fn invisible_parameter_slots<'a>(
             if reached.contains(param.id.as_str()) {
                 continue;
             }
-            if let Some(&(ui, mi)) = union_of.get(param.id.as_str())
-                && (occupied.contains(&ui) || !app.unions[ui].members[mi].is_default)
-            {
+            if !hidden_union_member_written(app, union_of, occupied, param.id.as_str()) {
                 continue;
             }
             let Some(at) = location(app, union_of, param) else {
@@ -1287,7 +1307,7 @@ pub fn hidden_slot_value(
 /// union at `Offset="0" BitOffset="4"` whose members sit at `BitOffset="0"`, and
 /// ETS writes them at bits 4-5. Dropping the union's bit offset wrote them at
 /// bits 0-1, over the neighbouring 1-bit parameter (issue #117).
-fn union_member_position(
+pub(crate) fn union_member_position(
     union_offset: u32,
     union_bit_offset: Option<u8>,
     member: &crate::application::UnionMember,
@@ -2445,8 +2465,9 @@ pub type PropertyValues = BTreeMap<(PropertyObjectRef, u32), Vec<u8>>;
 /// offset in the property value, as a memory parameter is placed in its
 /// segment. A parameter the evaluated configuration `config` reaches takes its
 /// effective value (an override, an `<Assign>` result, else the vendor
-/// default); one it does not reach takes its vendor default, since a property
-/// has no template to keep. Module parameters are not modelled here.
+/// default); one it does not reach takes its vendor default (the `Value` its
+/// refs agree on, else its own starting value), since a property has no
+/// template to keep. Module parameters are not modelled here.
 ///
 /// # Errors
 ///
@@ -2490,8 +2511,9 @@ pub fn compose_property_value(
 ///
 /// A parameter the configuration reaches takes its effective value (an
 /// override, an `<Assign>` result, else the vendor default); one it does not
-/// reach takes its vendor default, since a property has no template to keep.
-/// Module parameters are not modelled here.
+/// reach takes its vendor default (the `Value` its refs agree on, else its own
+/// starting value). Union members follow the memory union rule. Module parameters are not
+/// modelled here.
 #[derive(Debug, Clone)]
 pub struct PropertyParameters<'a> {
     /// The program the parameters belong to.
@@ -2545,20 +2567,34 @@ impl<'a> PropertyParameters<'a> {
                     .or_insert(active.param_ref_id.as_str());
             }
         }
-        // The first ref of each parameter, by id, for an unreached parameter's
-        // vendor default (a ref may override the parameter's own `Value`).
-        let mut first_ref: BTreeMap<&str, &str> = BTreeMap::new();
+        // The `Value` each ref gives each parameter, for an unreached
+        // parameter's vendor default (see `unreached_value`).
+        let mut ref_values: BTreeMap<&str, Vec<Option<&str>>> = BTreeMap::new();
         for pref in app.parameter_refs.values() {
-            if let Some(rel) = pref.id.strip_prefix(&prefix) {
-                let entry = first_ref.entry(pref.ref_id.as_str()).or_insert(rel);
-                if rel < *entry {
-                    *entry = rel;
-                }
+            if pref.id.starts_with(&prefix) {
+                ref_values
+                    .entry(pref.ref_id.as_str())
+                    .or_default()
+                    .push(pref.value.as_deref());
             }
         }
+        // A union member placed in a property is written as a memory union's
+        // member is: the member the walk reached, else the union's
+        // `DefaultUnionParameter` when no member is reached, never two
+        // members over one region (issue #951).
+        let union_of = union_index(app);
+        let occupied: HashSet<usize> = reached
+            .keys()
+            .filter_map(|id| union_of.get(id).map(|&(ui, _)| ui))
+            .collect();
+        let union_member_kept = |param: &crate::application::Parameter| -> bool {
+            reached.contains_key(param.id.as_str())
+                || hidden_union_member_written(app, &union_of, &occupied, param.id.as_str())
+        };
         let mut params: Vec<ResolvedPropertyParameter<'a>> = app
             .parameters
             .values()
+            .filter(|param| union_member_kept(param))
             .filter_map(|param| {
                 let loc = param.property.as_ref()?;
                 let object = PropertyObjectRef::of(loc)?;
@@ -2574,10 +2610,7 @@ impl<'a> PropertyParameters<'a> {
                         },
                     ),
                     None => (
-                        first_ref
-                            .get(param.id.as_str())
-                            .and_then(|ref_id| config.vendor_default(app, None, ref_id))
-                            .or_else(|| param.default.clone()),
+                        unreached_value(param, ref_values.get(param.id.as_str())),
                         ValueSource::VendorDefault,
                     ),
                 };
@@ -2659,6 +2692,33 @@ impl<'a> PropertyParameters<'a> {
         }
         Ok(out)
     }
+}
+
+/// The value a property-located parameter the walk does not reach takes: its
+/// `InitialValue` (issue #473), else the `Value` its refs give it when they all
+/// give the same one (the IPS 300 SREG ref of issue #390), else its own
+/// `Value`. Refs that
+/// disagree do not pick one: `CH8_AuthorizationValueAfterInit` of
+/// `M-0009_A-E801-13-F381` (object 16 PID 208, octet 0 bits 5-6) has a shown
+/// ref without a `Value` and a hidden one with `Value="1"`, and ETS wrote the
+/// parameter's own `Value="2"` (`74`, not `72`, in its `plain-defaults`
+/// capture; issue #951).
+fn unreached_value(
+    param: &crate::application::Parameter,
+    ref_values: Option<&Vec<Option<&str>>>,
+) -> Option<String> {
+    // The order of the evaluator's `value_of` (issue #473): the
+    // `InitialValue` first, then the refs' `Value`, then the parameter's own.
+    if let Some(initial) = param.initial_value.as_deref() {
+        return Some(initial.to_string());
+    }
+    if let Some(values) = ref_values
+        && let Some(Some(first)) = values.first()
+        && values.iter().all(|v| *v == Some(*first))
+    {
+        return Some((*first).to_string());
+    }
+    param.starting_value().map(str::to_string)
 }
 
 /// Encodes a `<TypeIPAddress>` property value: an IPv4 address as its four
@@ -5411,6 +5471,88 @@ mod tests {
             values.get(&(PropertyObjectRef::Index(3), 204)),
             Some(&vec![9])
         );
+        Ok(())
+    }
+
+    #[test]
+    fn test_compose_property_value_places_union_members_and_disagreeing_refs()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Issue #951. A union based on a property (the Schneider TXC513
+        // `M-0009_A-E0F1-10-32C4` object 7 PID 208 octets 10-11) places its
+        // members at the union's offset; with none shown, the
+        // `DefaultUnionParameter` `u1` is written, not `u2` over it, as in
+        // memory. And a parameter whose refs disagree on `Value` (the
+        // `M-0009_A-E801-13-F381` `CH8_AuthorizationValueAfterInit`) takes its
+        // own `Value`.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-07B0" Name="P">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Union SizeInBit="8">
+             <Property ObjectIndex="7" PropertyId="208" Offset="1" BitOffset="0" />
+             <Parameter Id="M-4_A-1_UP-1" Name="u1" ParameterType="M-4_A-1_PT-u8" Value="5" Offset="0" BitOffset="0" DefaultUnionParameter="true" />
+             <Parameter Id="M-4_A-1_UP-2" Name="u2" ParameterType="M-4_A-1_PT-u8" Value="9" Offset="0" BitOffset="0" />
+            </Union>
+            <Parameter Id="M-4_A-1_P-1" Name="a" ParameterType="M-4_A-1_PT-u8" Value="2">
+             <Property ObjectIndex="7" PropertyId="208" Offset="0" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_UP-1_R-1" RefId="M-4_A-1_UP-1" />
+            <ParameterRef Id="M-4_A-1_UP-2_R-2" RefId="M-4_A-1_UP-2" />
+            <ParameterRef Id="M-4_A-1_P-1_R-3" RefId="M-4_A-1_P-1" />
+            <ParameterRef Id="M-4_A-1_P-1_R-146" RefId="M-4_A-1_P-1" Value="1" />
+           </ParameterRefs>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let union_member = app
+            .parameters
+            .get("M-4_A-1_UP-2")
+            .and_then(|p| p.property.clone())
+            .ok_or("the union member is placed in the property")?;
+        assert_eq!((union_member.offset, union_member.property_id), (1, 208));
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let value =
+            compose_property_value(&app, &config, PropertyObjectRef::Index(7), 208, vec![0; 3])?;
+        assert_eq!(value, Some(vec![2, 5, 0]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_compose_property_value_takes_the_initial_value_before_a_ref_value()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // Issue #473 order, kept for an unshown property-located parameter: a
+        // `TypeText` `InitialValue` wins over its one ref's `Value`, which
+        // wins over its own `Value`.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-07B0" Name="P">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-t" Name="t"><TypeText SizeInBit="16" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-1" Name="name" ParameterType="M-4_A-1_PT-t" Value="ab" InitialValue="cd">
+             <Property ObjectIndex="7" PropertyId="208" Offset="0" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-2" Name="other" ParameterType="M-4_A-1_PT-t" Value="ab">
+             <Property ObjectIndex="7" PropertyId="208" Offset="2" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" Value="ef" />
+            <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" Value="gh" />
+           </ParameterRefs>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let value =
+            compose_property_value(&app, &config, PropertyObjectRef::Index(7), 208, vec![0; 4])?;
+        assert_eq!(value, Some(b"cdgh".to_vec()));
         Ok(())
     }
 

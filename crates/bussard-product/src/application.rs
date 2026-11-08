@@ -2086,6 +2086,9 @@ pub fn parse_application_program_in(
                 b"Union" => {
                     // Close a union: record its base location and members.
                     if let Some(union) = state.union.take() {
+                        if let Some(base) = state.union_property.take() {
+                            place_union_in_property(&mut app, &union, &base);
+                        }
                         app.unions.push(union);
                     }
                 }
@@ -2138,7 +2141,9 @@ pub fn parse_application_program_in(
                     {
                         // Keep the flattened exact-value view in step: one
                         // entry per listed value (`test="0 2"` yields two).
-                        if let WhenTest::Values(values) = &branch.test {
+                        if let WhenTest::Values(values) | WhenTest::Spelled { values, .. } =
+                            &branch.test
+                        {
                             for v in values {
                                 frame.group.branches.push((*v, branch.members.clone()));
                             }
@@ -2570,9 +2575,10 @@ fn handle_empty(
             }
         }
         // A parameter whose value lives in an interface-object property
-        // (issue #390). A union based on a property is not modelled: its
-        // members keep no location.
+        // (issue #390), or the property a union's members share (issue #951):
+        // the union's own `<Property>` child, before its members.
         b"Property" if state.union.is_none() => attach_property(app, &state.param_id, m),
+        b"Property" if state.param_id.is_none() => state.union_property = property_location(m),
         b"TranslationElement" => translations.enter_element(get(m, b"RefId")),
         b"Translation" => translations.record(m, TRANSLATED),
         // Parameter-type shapes (all self-closing except TypeRestriction).
@@ -2971,20 +2977,48 @@ fn attach_property(app: &mut ApplicationProgram, cur_param_id: &Option<String>, 
     let Some(pid) = cur_param_id else {
         return;
     };
-    let Some(property_id) = get(m, b"PropertyId").and_then(|s| s.parse().ok()) else {
+    let Some(location) = property_location(m) else {
         return;
     };
     if let Some(param) = app.parameters.get_mut(pid) {
-        param.property = Some(PropertyLocation {
-            object_index: get(m, b"ObjectIndex").and_then(|s| s.parse().ok()),
-            object_type: get(m, b"ObjectType").and_then(|s| s.parse().ok()),
-            occurrence: get(m, b"Occurrence").and_then(|s| s.parse().ok()),
-            property_id,
-            offset: get(m, b"Offset").and_then(|s| s.parse().ok()).unwrap_or(0),
-            bit_offset: get(m, b"BitOffset")
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-        });
+        param.property = Some(location);
+    }
+}
+
+/// The location a `<Property>` element names; `None` without a `PropertyId`.
+fn property_location(m: &Attrs) -> Option<PropertyLocation> {
+    let property_id = get(m, b"PropertyId").and_then(|s| s.parse().ok())?;
+    Some(PropertyLocation {
+        object_index: get(m, b"ObjectIndex").and_then(|s| s.parse().ok()),
+        object_type: get(m, b"ObjectType").and_then(|s| s.parse().ok()),
+        occurrence: get(m, b"Occurrence").and_then(|s| s.parse().ok()),
+        property_id,
+        offset: get(m, b"Offset").and_then(|s| s.parse().ok()).unwrap_or(0),
+        bit_offset: get(m, b"BitOffset")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0),
+    })
+}
+
+/// Gives each member of a union whose shared region is the property `base`
+/// its own location in that property: the union's `Offset`/`BitOffset` plus
+/// the member's, as a memory union's members are placed (issue #951). The
+/// Schneider TXC513 programs (`M-0009_A-E0F1-10-32C4`) place sixteen unions in
+/// object 6 and 7 PID 208; ETS writes their members there (object 7 octets 10
+/// and 11: `84 03`, the 900 s overrun time of `UP-189`/`UP-190`, little-endian
+/// as the program's other parameters).
+fn place_union_in_property(app: &mut ApplicationProgram, union: &Union, base: &PropertyLocation) {
+    for member in &union.members {
+        let (offset, bit_offset) =
+            crate::image::union_member_position(base.offset, Some(base.bit_offset), member);
+        let location = PropertyLocation {
+            offset,
+            bit_offset,
+            ..base.clone()
+        };
+        if let Some(param) = app.parameters.get_mut(&member.parameter) {
+            param.property = Some(location);
+        }
     }
 }
 
@@ -3061,6 +3095,9 @@ struct ParseState {
     /// shared base location; member `<Parameter>`s that follow carry
     /// union-relative `Offset`/`BitOffset` attributes.
     union: Option<Union>,
+    /// The `<Property>` child of that union, when the shared region lives in
+    /// an interface-object property instead of memory (issue #951).
+    union_property: Option<PropertyLocation>,
     /// Dynamic-section module-instance / channel-membership accumulation.
     dynamic: DynamicState,
     /// The Dynamic-section tree being built (see [`DynamicNode`]).
@@ -5283,6 +5320,33 @@ mod tests {
                 op: CompareOp::Lt,
                 value: 3
             }
+        );
+        // An `=` before a token (Siemens `07 B0`, #949): matched as exact
+        // values, the vendor's text kept.
+        let spelled = WhenTest::parse(Some("=417"), None);
+        assert_eq!(
+            spelled,
+            WhenTest::Spelled {
+                values: vec![417],
+                text: "=417".to_string()
+            }
+        );
+        assert!(spelled.matches(417) && !spelled.matches(0));
+        assert_eq!(spelled.text().as_deref(), Some("=417"));
+        for (raw, values) in [("=1 =2", vec![1, 2]), ("1 =2", vec![1, 2])] {
+            let t = WhenTest::parse(Some(raw), None);
+            assert_eq!(
+                t,
+                WhenTest::Spelled {
+                    values,
+                    text: raw.to_string()
+                }
+            );
+            assert_eq!(WhenTest::parse(t.text().as_deref(), None), t);
+        }
+        assert_eq!(
+            WhenTest::parse(Some("=x"), None),
+            WhenTest::Unknown("=x".to_string())
         );
         // `default="true"` wins over a test; `default="false"` does not.
         assert_eq!(WhenTest::parse(Some("1"), Some("true")), WhenTest::Default);

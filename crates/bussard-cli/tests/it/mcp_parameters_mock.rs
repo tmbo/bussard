@@ -425,14 +425,13 @@ fn test_mcp_pending_model_changes_lists_only_this_sessions_edits() -> TestResult
 
     let plan = server.plan()?;
     assert_eq!(plan["noop"], false, "plan: {plan}");
-    let pending = plan["pending_model_changes"]
-        .as_array()
-        .ok_or("no pending_model_changes")?;
-    assert_eq!(pending.len(), 1, "plan: {plan}");
-    assert_eq!(pending[0]["tool"], "knx_set_parameter", "plan: {plan}");
     // Only what reaches the device: the group address the edit declared in
     // groups.toml is not pending on 1.1.4.
-    assert_eq!(pending[0]["sentences"], json!([threshold]), "plan: {plan}");
+    assert_eq!(
+        plan["pending_model_changes"],
+        json!([threshold]),
+        "plan: {plan}"
+    );
 
     let applied = server.apply(&plan)?;
     assert_eq!(applied["ok"], true, "apply: {applied}");

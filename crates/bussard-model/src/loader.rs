@@ -171,8 +171,8 @@ pub enum SaveError {
     },
 }
 
-/// The fully loaded KNX model.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The fully loaded KNX model. The default is the empty model.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Model {
     /// Connection configuration from `bussard.toml`.
     pub config: BussardConfig,

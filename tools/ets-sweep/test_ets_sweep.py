@@ -1151,7 +1151,7 @@ class TestCouplerAddress(unittest.TestCase):
         self.assertEqual(sweep.added_address({"added": []}, "1.1.1"), "1.1.1")
         self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.0"}, {"ia": "1.1.2"}]}, "1.1.1"), "1.1.1")
 
-    def run_one(self, added: str, refuse_restart: bool = False):
+    def run_one(self, added: str, refuse_restart: bool = False, catalog_add: dict | None = None):
         """sweep.run_one against a fake driver and sim: ETS adds the device
         at `added`; returns the result, the sims started and the flows."""
         from unittest import mock
@@ -1187,7 +1187,7 @@ class TestCouplerAddress(unittest.TestCase):
             name = path.rsplit("/", 1)[1]
             flows.append((name, body.get("ia")))
             return {"devices": {"devices": []},
-                    "catalog_add": {"added": [{"ia": added}], "row": {"name": "x"}},
+                    "catalog_add": catalog_add or {"added": [{"ia": added}], "row": {"name": "x"}},
                     "history": {"lines": ["Programmieren(Appl.): Abgeschlossen"]}}.get(name, {})
 
         hook_ia = []
@@ -1287,6 +1287,59 @@ class TestOemIdentity(unittest.TestCase):
                 taught = {"object": 0, "pid": 12, "value": "00fc"}
                 self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D",
                                                           {"learned_properties": [taught]}), [taught])
+
+
+
+class TestCatalogManufacturer(unittest.TestCase):
+    """The added catalog row's manufacturer group header is recorded against
+    the product file's manufacturer, not acted on (#881)."""
+
+    TAPKO = {"y": 1507, "name": "Spannungsversorgung IPS640", "order": "IPS 640",
+             "application": "Gerät/Bus-Diagnose", "version": "1.0", "online": False,
+             "manufacturer": "TAPKO Technologies GmbH"}
+    OTHER = dict(TAPKO, y=1560, name="Power Supply 640", manufacturer="Other Brand AG")
+
+    def test_manufacturer_matches_ocr_and_legal_forms(self):
+        import sweep
+
+        self.assertTrue(sweep.manufacturer_matches("TAPKO Technologies GmbH", "TAPKO Technologies"))
+        self.assertTrue(sweep.manufacturer_matches("Hugo Muller GmbH & Co KG", "Hugo Müller GmbH & Co KG"))
+        self.assertFalse(sweep.manufacturer_matches("GEWISS", "Hugo Müller GmbH & Co KG"))
+        self.assertIsNone(sweep.manufacturer_matches("", "TAPKO Technologies"))
+
+    def test_catalog_identity_and_verdict(self):
+        import zipfile
+
+        import sweep
+
+        app = "M-0072_A-3001-10-A7BD"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "TAPKO_ETS4_IPS640_R1-0b_01.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("knx_master.xml", '<KNX><Manufacturer Id="M-0071" KnxManufacturerId="113" Name="Zennio" />'
+                                             '<Manufacturer Id="M-0072" KnxManufacturerId="114" Name="TAPKO Technologies" /></KNX>')
+                z.writestr(f"M-0072/{app}.xml", f'<KNX><ApplicationProgram Id="{app}" Name="Device/Busline Diagnostics" '
+                                                'MaskVersion="MV-0705"></ApplicationProgram></KNX>')
+            identity = sweep.catalog_identity(path, app)
+        self.assertEqual(identity, {"manufacturer": "TAPKO Technologies", "application": "Device/Busline Diagnostics"})
+        # Two manufacturers, same order number: each row gets its verdict.
+        self.assertEqual(sweep.catalog_manufacturer_verdict(self.TAPKO, identity), "same")
+        self.assertEqual(sweep.catalog_manufacturer_verdict(self.OTHER, identity), "other")
+        self.assertEqual(sweep.catalog_manufacturer_verdict({"name": "x"}, identity), "unknown")
+
+    def test_run_one_records_the_rows_manufacturer_and_goes_on(self):
+        from unittest import mock
+
+        import sweep
+
+        add = {"added": [{"ia": "1.1.1"}], "row": self.OTHER}
+        with mock.patch.object(sweep, "catalog_identity", return_value={"manufacturer": "TAPKO Technologies"}):
+            r, _, flows, _ = TestCouplerAddress.run_one(self, "1.1.1", catalog_add=add)
+        # Recorded, not acted on: the download ran.
+        self.assertEqual(r["catalog_manufacturer"], "other")
+        self.assertEqual(r["catalog_row"]["manufacturer"], "Other Brand AG")
+        self.assertIn(("download", "1.1.1"), flows)
+        self.assertEqual(r["outcome"], "captured", r)
 
 
 if __name__ == "__main__":

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use bussard_mcp::McpConfig;
 use bussard_mcp::SharedState;
-use bussard_mcp::onboarding::{Onboarding, SetupMcp};
+use bussard_mcp::onboarding::Onboarding;
 use bussard_mcp::server::BussardMcp;
 use bussard_mcp::state::{BusStatus, ReadLimiter};
 use bussard_model::Model;
@@ -206,7 +206,7 @@ async fn start_setup(
         keyring: None,
         allow_home_assistant: false,
     };
-    let server = SetupMcp::new(Onboarding {
+    let server = BussardMcp::onboarding(Onboarding {
         config,
         resolve: Arc::new(move |_model: &Model| {
             Ok(bussard_mcp::onboarding::ResolvedConnection {
@@ -217,7 +217,7 @@ async fn start_setup(
         }),
         default_gateway: Some(gateway.to_string()),
         routing: false,
-    });
+    })?;
     let (server_io, client_io) = tokio::io::duplex(64 * 1024);
     tokio::spawn(async move {
         if let Ok(running) = server.serve(server_io).await {
