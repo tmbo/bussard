@@ -8,7 +8,7 @@ use std::fmt;
 
 use std::path::Path;
 
-use crate::address::GroupAddress;
+use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::{ApduSize, Dpt};
 use crate::flags::Flags;
 use crate::loader::Model;
@@ -46,12 +46,20 @@ pub struct Diagnostic {
     pub message: String,
     /// Human-readable location (e.g. `links."1.1.4"[2]`).
     pub location: String,
+    /// The device the diagnostic is about, where one rule names it.
+    pub device: Option<IndividualAddress>,
+    /// The com object it is about (with `device`).
+    pub object: Option<u16>,
+    /// The group address it is about.
+    pub group: Option<GroupAddress>,
+    /// The name of the link or group address it is about, when set.
+    pub name: Option<String>,
 }
 
 impl Diagnostic {
-    /// Builds a diagnostic. Crate-internal so every rule pass (including the
-    /// opt-in lints in [`crate::lint`]) constructs them the same way.
-    pub(crate) fn new(
+    /// Builds a diagnostic without structured fields; the `with_*` methods
+    /// add them.
+    pub fn new(
         code: &'static str,
         severity: Severity,
         location: impl Into<String>,
@@ -62,7 +70,23 @@ impl Diagnostic {
             severity,
             message: message.into(),
             location: location.into(),
+            device: None,
+            object: None,
+            group: None,
+            name: None,
         }
+    }
+
+    /// Sets the device and, when given, the com object.
+    pub fn with_device(mut self, device: IndividualAddress, object: Option<u16>) -> Self {
+        (self.device, self.object) = (Some(device), object);
+        self
+    }
+
+    /// Sets the group address and its (or the link's) name.
+    pub fn with_group(mut self, group: Option<GroupAddress>, name: Option<String>) -> Self {
+        (self.group, self.name) = (group, name);
+        self
     }
 
     /// Whether the diagnostic is about device `wanted` (`"1.1.4"`), or a
@@ -396,12 +420,15 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
 
         // E013: link for a device that has no device file.
         if device.is_none() {
-            diags.push(Diagnostic::new(
-                "E013",
-                Severity::Error,
-                format!("links.\"{ia}\""),
-                format!("link references unknown device {ia} (no device file defines it)"),
-            ));
+            diags.push(
+                Diagnostic::new(
+                    "E013",
+                    Severity::Error,
+                    format!("links.\"{ia}\""),
+                    format!("link references unknown device {ia} (no device file defines it)"),
+                )
+                .with_device(*ia, None),
+            );
         }
 
         // Duplicate object numbers within one device's links.
@@ -435,12 +462,16 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
             // apply and the MCP edit tools add such a GA to the plan.
             for (ga, role) in &refs {
                 if !model.groups.groups.contains_key(ga) {
-                    diags.push(Diagnostic::new(
-                        "E001",
-                        Severity::Warning,
-                        loc.clone(),
-                        format!("{role} group address {ga} is not defined in groups.toml"),
-                    ));
+                    diags.push(
+                        Diagnostic::new(
+                            "E001",
+                            Severity::Warning,
+                            loc.clone(),
+                            format!("{role} group address {ga} is not defined in groups.toml"),
+                        )
+                        .with_device(*ia, Some(link.object))
+                        .with_group(Some(**ga), None),
+                    );
                 }
             }
 
@@ -451,29 +482,37 @@ fn check_links(model: &Model, diags: &mut Vec<Diagnostic>) {
                     // imported without product data) cannot have its links
                     // checked; that is a gap to fill, not a contradiction.
                     None if loaded.device.com_objects.is_empty() => {
-                        diags.push(Diagnostic::new(
-                            "E003",
-                            Severity::Warning,
-                            loc.clone(),
-                            format!(
-                                "object {} cannot be checked: device {ia} has no com-object \
+                        diags.push(
+                            Diagnostic::new(
+                                "E003",
+                                Severity::Warning,
+                                loc.clone(),
+                                format!(
+                                    "object {} cannot be checked: device {ia} has no com-object \
                                  table (no product data; `bussard import-product` or a \
                                  re-import adds it)",
-                                link.object
-                            ),
-                        ));
+                                    link.object
+                                ),
+                            )
+                            .with_device(*ia, Some(link.object))
+                            .with_group(None, link.name.clone()),
+                        );
                     }
                     None => {
                         // E003: object absent from the device's com_objects.
-                        diags.push(Diagnostic::new(
-                            "E003",
-                            Severity::Error,
-                            loc.clone(),
-                            format!(
-                                "object {} is not defined in device {ia}'s com_objects",
-                                link.object
-                            ),
-                        ));
+                        diags.push(
+                            Diagnostic::new(
+                                "E003",
+                                Severity::Error,
+                                loc.clone(),
+                                format!(
+                                    "object {} is not defined in device {ia}'s com_objects",
+                                    link.object
+                                ),
+                            )
+                            .with_device(*ia, Some(link.object))
+                            .with_group(None, link.name.clone()),
+                        );
                     }
                     Some(co) => {
                         // E007: linked object without the C flag.
@@ -597,7 +636,7 @@ fn conflicting_subtypes(dpts: &BTreeSet<Dpt>) -> Option<Vec<String>> {
     (mains.len() > 1).then(|| dpts.iter().map(Dpt::to_string).collect())
 }
 
-/// GA-level consistency: E004, W005, I006, W011, I010.
+/// GA-level consistency: E004, W005, I006, I048, I049, W011, I010.
 fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
     // For each GA, collect the sizes and DPT subtypes contributed by the group
     // definition and by every linked object, plus the senders.
@@ -608,6 +647,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
         sizes_only: BTreeSet<SizeInfo>,
         senders: Vec<String>,
         linked: bool,
+        listened: bool,
     }
 
     let mut infos: BTreeMap<GroupAddress, GaInfo> = BTreeMap::new();
@@ -642,6 +682,7 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
             for (ga, is_send) in gas {
                 let info = infos.entry(ga).or_default();
                 info.linked = true;
+                info.listened |= !is_send;
                 if is_send {
                     info.senders.push(format!("{ia}#{}", link.object));
                 }
@@ -710,6 +751,22 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
                 ),
             ));
         }
+
+        // I048/I049: a one-sided link, the wiring half done.
+        let one_sided = match (info.senders.is_empty(), info.listened) {
+            (false, false) => Some(("I048", "has senders but no listener (telegrams go nowhere)")),
+            (true, true) => Some(("I049", "has listeners but no sender (never triggered)")),
+            _ => None,
+        };
+        if let Some((code, what)) = one_sided {
+            let name = (model.groups.groups.get(ga))
+                .map(|g| g.name.clone())
+                .filter(|n| !n.trim().is_empty());
+            diags.push(
+                Diagnostic::new(code, Severity::Info, loc.clone(), format!("{ga} {what}"))
+                    .with_group(Some(*ga), name),
+            );
+        }
     }
 
     // W011 and I010 walk groups.toml directly (so they only apply to defined
@@ -717,21 +774,27 @@ fn check_ga_consistency(model: &Model, diags: &mut Vec<Diagnostic>) {
     for (ga, group) in &model.groups.groups {
         let loc = format!("groups.\"{ga}\"");
         if group.dpt.is_none() {
-            diags.push(Diagnostic::new(
-                "W011",
-                Severity::Warning,
-                loc.clone(),
-                format!("group address {ga} has no DPT; the monitor cannot decode it"),
-            ));
+            diags.push(
+                Diagnostic::new(
+                    "W011",
+                    Severity::Warning,
+                    loc.clone(),
+                    format!("group address {ga} has no DPT; the monitor cannot decode it"),
+                )
+                .with_group(Some(*ga), None),
+            );
         }
         let linked = infos.get(ga).map(|i| i.linked).unwrap_or(false);
         if !linked && !ga.is_reserved() {
-            diags.push(Diagnostic::new(
-                "I010",
-                Severity::Info,
-                loc,
-                format!("group address {ga} is defined but never linked"),
-            ));
+            diags.push(
+                Diagnostic::new(
+                    "I010",
+                    Severity::Info,
+                    loc,
+                    format!("group address {ga} is defined but never linked"),
+                )
+                .with_group(Some(*ga), None),
+            );
         }
     }
 }
@@ -751,12 +814,15 @@ fn check_orphans_and_unlinked(model: &Model, diags: &mut Vec<Diagnostic>) {
             let communicative =
                 co.flags.contains(Flags::TRANSMIT) || co.flags.contains(Flags::WRITE);
             if communicative && !linked.contains(&(*ia, *obj_num)) {
-                diags.push(Diagnostic::new(
-                    "I009",
-                    Severity::Info,
-                    format!("devices/{}.toml object {obj_num}", loaded.file_stem),
-                    format!("com object {obj_num} on {ia} has T/W flags but is not linked"),
-                ));
+                diags.push(
+                    Diagnostic::new(
+                        "I009",
+                        Severity::Info,
+                        format!("devices/{}.toml object {obj_num}", loaded.file_stem),
+                        format!("com object {obj_num} on {ia} has T/W flags but is not linked"),
+                    )
+                    .with_device(*ia, Some(*obj_num)),
+                );
             }
         }
     }
@@ -779,7 +845,7 @@ fn check_protected_gas(model: &Model, diags: &mut Vec<Diagnostic>) {
                     "group address {ga} ({:?}) is protected; writes require --force (CLI) and are refused via MCP",
                     group.name
                 ),
-            ));
+            ).with_group(Some(*ga), Some(group.name.clone())));
         }
     }
 }
@@ -868,7 +934,7 @@ mod tests {
             vec![Link {
                 object: 12,
                 name: None,
-                send: None,
+                send: Some(ga("3/0/4")),
                 listen: vec![ga("3/0/4")],
             }],
         );
@@ -879,7 +945,7 @@ mod tests {
             device(
                 "1.1.4",
                 "1.1.4",
-                vec![(12, com_object("Auf/Ab", Some("1.008"), "CW"))],
+                vec![(12, com_object("Auf/Ab", Some("1.008"), "CWT"))],
             ),
         );
 
@@ -1063,7 +1129,7 @@ mod tests {
         );
         for expected in [
             "E001", "E002", "E003", "E004", "E007", "E012", "E013", "E014", "E024", "E025", "W005",
-            "I006", "W011", "I009", "I010",
+            "I006", "W011", "I009", "I010", "I048",
         ] {
             assert!(
                 found.contains(expected),
