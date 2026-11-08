@@ -1068,8 +1068,11 @@ def search_term(order: str) -> str:
 
 
 def catalog_rows(expand: bool = True) -> list[dict]:
-    """The catalog result rows as {y, name, order, application, version},
-    grouped from OCR lines by height; manufacturer group headers are left out.
+    """The catalog result rows as {y, name, order, application, version,
+    online, manufacturer}, grouped from OCR lines by height. A manufacturer
+    group header is not a row: its text becomes the `manufacturer` of the rows
+    below it (#881); the first header sits just above the scanned area and is
+    read from that band, else the rows above the first header get "".
     A collapsed manufacturer group (ETS keeps a group collapsed across
     searches) is expanded first."""
     dy = catalog_dy()
@@ -1083,6 +1086,9 @@ def catalog_rows(expand: bool = True) -> list[dict]:
             click(707, head["y"] + head["h"] // 2)
             time.sleep(1)
         lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
+    # The first group's header, just above the scanned rows (left column).
+    band = [l for l in ocr((x0, y0 + dy, 1130, y0 + 40 + dy)) if l["y"] > y0 + dy + 5]
+    manufacturer = " ".join(l["text"] for l in sorted(band, key=lambda l: l["x"])).strip()
     rows: list[dict] = []
     for line in sorted(lines, key=lambda l: l["y"]):
         cy = line["y"] + line["h"] // 2
@@ -1105,9 +1111,12 @@ def catalog_rows(expand: bool = True) -> list[dict]:
                 if version:
                     break
         if not version and not order:
-            continue  # a manufacturer group header
+            # A manufacturer group header: it names the rows below it.
+            manufacturer = " ".join(c["text"] for c in sorted(r["cells"], key=lambda c: c["x"])).strip()
+            continue
         out.append({"y": r["y"], "name": cell(1130, 1970), "order": cell(1970, 2240),
-                    "application": cell(2300, 2560), "version": version, "online": row_is_online(r["y"])})
+                    "application": cell(2300, 2560), "version": version, "online": row_is_online(r["y"]),
+                    "manufacturer": manufacturer})
     return out
 
 
@@ -1133,7 +1142,8 @@ def flow_catalog_rows(req: dict) -> dict:
 def flow_catalog_add(req: dict) -> dict:
     """Search the catalog for `search` (an order number), pick the row whose
     order number matches and whose application version is `version` (as ETS
-    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list."""
+    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list
+    and the row added, which carries its manufacturer group header (#881)."""
     require_project(req["project"])
     dismiss_password_dialog(req.get("project_password"))
     wait_busy()

@@ -501,6 +501,8 @@ def main() -> int:
                 # the oracle row takes it.
                 "ia": r.get("ia"),
                 "row": r.get("catalog_row"),
+                # The row's manufacturer group header against the file's (#881).
+                "catalog_manufacturer": r.get("catalog_manufacturer"),
                 "error": r.get("error"),
                 "ets_history": sweep.newest_history_entry(r.get("history")),
                 "ets_log": r.get("ets_log"),

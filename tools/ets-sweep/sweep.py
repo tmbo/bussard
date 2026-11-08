@@ -23,6 +23,7 @@ Outputs: captures/ets-sweep/<app>/<variant>/{sim.yaml,sim.log,ets.pcapng,driver.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -546,6 +547,63 @@ def compare_value(tag: str) -> bytes | None:
     return value.to_bytes(width, "big")
 
 
+# Words a manufacturer's name carries beside the brand ("TAPKO Technologies
+# GmbH"); they do not tell two manufacturers apart.
+_LEGAL_FORMS = {"gmbh", "co", "kg", "ag", "sa", "spa", "srl", "ltd", "inc", "bv", "nv", "sas", "the", "und", "and"}
+
+
+def _ocr_canon(t: str) -> str:
+    """Case-folded letters and digits, OCR's I/l/1/| and O/0 unified."""
+    t = t.lower().translate(str.maketrans({"l": "i", "1": "i", "|": "i", "!": "i", "0": "o"}))
+    return re.sub(r"[^0-9a-z]", "", t)
+
+
+def manufacturer_matches(header: str, manufacturer: str) -> bool | None:
+    """Whether a catalog row's manufacturer group header (OCR) names
+    `manufacturer` (the product file's knx_master name): either is a prefix
+    of the other, or the header starts with the name's first word that is
+    not a legal form. None when either is unknown."""
+    h, m = _ocr_canon(header), _ocr_canon(manufacturer)
+    if not h or not m:
+        return None
+    brand = next((c for c in (_ocr_canon(w) for w in re.split(r"[\s&.,/-]+", manufacturer))
+                  if len(c) >= 2 and c not in _LEGAL_FORMS), m)
+    return h.startswith(m) or m.startswith(h) or h.startswith(brand)
+
+
+def catalog_manufacturer_verdict(row: dict | None, identity: dict) -> str:
+    """`same`, `other` or `unknown`: whether the added catalog row's
+    manufacturer group header names the product file's manufacturer
+    (recorded, not acted on: #881)."""
+    match = manufacturer_matches(str((row or {}).get("manufacturer") or ""), identity.get("manufacturer") or "")
+    return "unknown" if match is None else "same" if match else "other"
+
+
+def catalog_identity(knxprod: Path, app: str) -> dict:
+    """What the catalog row of `app` should show (#881): the manufacturer's
+    name from the file's knx_master.xml (`Manufacturer Id="M-0072"
+    Name="TAPKO Technologies"`) and the application program's name. A part
+    the file does not give is left out."""
+    own = app.split("_", 1)[0]
+    # The application's start tag sits in its file's first lines; the file
+    # itself can run to 100 MB.
+    texts = ((_zip_texts(knxprod, lambda n: n == "knx_master.xml", first=True) or [])
+             + (_zip_texts(knxprod, lambda n: n.endswith(f"/{app}.xml"), first=True, limit=8000) or []))
+    out: dict = {}
+    for name, text in texts:
+        if name == "knx_master.xml":
+            m = re.search(rf'<Manufacturer\s[^>]*\bId="{re.escape(own)}"[^>]*>', text)
+            n = re.search(r'\bName="([^"]*)"', m.group(0)) if m else None
+            if n:
+                out["manufacturer"] = html.unescape(n.group(1))
+        else:
+            m = re.search(r"<ApplicationProgram\s[^>]*>", text)
+            n = re.search(r'\bName="([^"]*)"', m.group(0)) if m else None
+            if n:
+                out["application"] = html.unescape(n.group(1))
+    return out
+
+
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
@@ -665,11 +723,15 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         for d in flow("devices")["devices"]:
             if not flow("delete_device", ia=d["ia"]).get("deleted"):
                 raise RuntimeError(f"could not delete {d['ia']} before the add")
+        # What the catalog row should show, recorded against the row (#881).
+        identity = catalog_identity(knxprod, app)
+        result["catalog_identity"] = identity
         add = flow("catalog_add", search=search, version=version, fallback_search=fallback_search,
                    password_wait=12 if secure_enabled(knxprod, app) else 2)
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
+        result["catalog_manufacturer"] = catalog_manufacturer_verdict(add.get("row"), identity)
         got = added_address(add, ia)
         if got != ia:
             if not is_coupler_address(got):
