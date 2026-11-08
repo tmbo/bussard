@@ -64,7 +64,6 @@ fn imported(tag: &str) -> Result<PathBuf, Box<dyn std::error::Error>> {
     let out = bussard(&[
         "import",
         knxproj.to_str().ok_or("path")?,
-        "--no-download",
         "--dir",
         model.to_str().ok_or("path")?,
     ])?;

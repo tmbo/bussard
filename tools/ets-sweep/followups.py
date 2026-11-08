@@ -39,10 +39,11 @@ def load(path: Path, default):
         return default
 
 
-def diff_excerpt(oracle_dir: Path, lines: int = EXCERPT_LINES) -> str:
-    """The first lines of the row's knxtrace diff, or a note when absent."""
+def diff_excerpt(oracle_dir: Path, lines: int = EXCERPT_LINES, ia: str = "1.1.1") -> str:
+    """The first lines of the row's knxtrace diff (under the device's
+    address: 1.1.0 for a coupler, #876), or a note when absent."""
     try:
-        text = (oracle_dir / "1.1.1" / "diff.txt").read_text().splitlines()
+        text = (oracle_dir / ia / "diff.txt").read_text().splitlines()
     except OSError:
         return f"(no diff.txt under {oracle_dir})"
     more = f"\n... {len(text) - lines} more lines" if len(text) > lines else ""
@@ -68,7 +69,7 @@ def draft(change: dict, oracle: dict, captures: Path, work: Path | None, run: di
         f"- Load control: `{(o.get('loadctl') or {}).get('verdict', '?')}`",
         "",
         "```",
-        diff_excerpt(oracle_dir),
+        diff_excerpt(oracle_dir, ia=str(o.get("ia") or "1.1.1")),
         "```",
         "",
         "## Done when",

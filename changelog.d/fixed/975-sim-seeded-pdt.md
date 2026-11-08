@@ -1,0 +1,1 @@
+- knx-sim: a `properties:` override of a PID the interface object does not model is described with the generic data type of its length (`PDT_GENERIC_07` for 7 octets) instead of variable length, so ETS can judge the Jung F50's range compare on device-object PID 201 (#975).
