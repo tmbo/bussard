@@ -1489,6 +1489,57 @@ fn test_plan_flash_system7_lowers_declared_writes() -> Result<(), Box<dyn std::e
 }
 
 #[test]
+fn test_plan_flash_system7_writes_a_declared_count_past_max_elements()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #972: the Hager 0701 `M-0009_A-20AA-10-E0C0` declares object 6
+    // PID 53 with `MaxElements="16"` and writes it with `Count="17"`; ETS
+    // writes the 17 elements (`count=10 index=1`, `count=7 index=11`, ops 110
+    // and 111 of its `plain-defaults` capture), so the System 7 planner sends
+    // `Count` elements as the System B one does (#962).
+    use bussard_product::application::LoadOp;
+    let mut app = app_with_declared_writes()?;
+    for op in &mut app.load_procedures[0].ops {
+        match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx: Some(6),
+                max_elements,
+                ..
+            } => *max_elements = Some(16),
+            LoadOp::WriteProp {
+                obj_idx: Some(6),
+                inline_data,
+                count,
+                ..
+            } => {
+                *inline_data = Some((1..=17).collect());
+                *count = Some(17);
+            }
+            _ => {}
+        }
+    }
+    let plan = plan_flash_default(
+        &app,
+        "1.1.99",
+        MASK_0705,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(plan.steps.iter().any(|s| *s
+        == FlashStep::WriteProp {
+            object: bussard_download::PropObject::Index(6),
+            prop_id: 52,
+            value: (1..=17).collect(),
+            start_element: 1,
+            count: 17,
+            verify: false,
+            from_parameters: false,
+        }));
+    Ok(())
+}
+
+#[test]
 fn test_parameters_only_refuses_a_function_call() -> Result<(), Box<dyn std::error::Error>> {
     // Issue #946: no capture shows which function calls a parameter-only
     // download makes, so it is refused rather than dropping the call.
