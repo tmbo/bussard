@@ -130,7 +130,7 @@ fn test_plan_flash_partial_segment_writes_the_taken_half() -> TestResult {
     // The read-back and the plan locate the same gap without a plan at hand.
     let app = product.applications.first().ok_or("one application")?;
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
+    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo)?, kept.to_vec());
     Ok(())
 }
 
@@ -144,7 +144,7 @@ fn test_plan_flash_partial_segment_other_branch_writes_the_whole_segment() -> Te
     assert!(plan.kept().is_empty());
     let app = product.applications.first().ok_or("one application")?;
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    assert!(kept_octets(app, &overrides, &memo).is_empty());
+    assert!(kept_octets(app, &overrides, &memo)?.is_empty());
     Ok(())
 }
 
