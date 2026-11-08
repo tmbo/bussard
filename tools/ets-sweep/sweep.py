@@ -427,6 +427,55 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
     return out
 
 
+PID_MANUFACTURER_ID = 12
+
+
+def _brand_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def oem_identity(knxprod: Path, app: str) -> list[dict]:
+    """The manufacturer id (obj0 PID 12) of the brand an OEM hardware names,
+    as a sim property seed (bussard issue #881).
+
+    The Gewiss-branded sensor GW10966 (`GS4x12_v1.1.knxprod`) is hardware
+    `LP-579-401_GEWISS` of Hugo Müller (M-00FC) running an M-00FC program.
+    The sim answered PID 12 `00 fc`, the program's manufacturer, and ETS
+    refused it right after that read as a device "von einem anderen
+    Hersteller als das Applikationsprogramm" (2026-11-06 and 2026-11-08),
+    while the unbranded sibling of the same file passed with the same
+    answer. So the brand is what ETS checks: a hardware whose serial number
+    ends in `_<name>` of another manufacturer of the file's knx_master gets
+    that manufacturer's KNX id. One hardware of the 1491 corpus files matches
+    (2026-11-08), so the rule touches nothing else. Empty when the hardware
+    names no other manufacturer.
+    """
+    import zipfile
+
+    try:
+        z = zipfile.ZipFile(knxprod)
+        master = z.read("knx_master.xml").decode("utf-8", "replace")
+        hardware = [z.read(n).decode("utf-8", "replace") for n in z.namelist() if n.endswith("/Hardware.xml")]
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return []
+    own = app.split("_", 1)[0]
+    brands = {_brand_key(name): (mid, int(knx))
+              for mid, knx, name in re.findall(
+                  r'<Manufacturer Id="(M-[0-9A-F]{4})" KnxManufacturerId="(\d+)" Name="([^"]*)"', master)}
+    for xml in hardware:
+        for m in re.finditer(r"<Hardware\s[^>]*>.*?</Hardware>", xml, flags=re.S):
+            block = m.group(0)
+            if f'RefId="{app}"' not in block:
+                continue
+            serial = re.search(r'\bSerialNumber="([^"]*)"', block[:block.find(">") + 1])
+            if not serial or "_" not in serial.group(1):
+                continue
+            brand = brands.get(_brand_key(serial.group(1).rsplit("_", 1)[1]))
+            if brand and brand[0] != own:
+                return [{"object": 0, "pid": PID_MANUFACTURER_ID, "value": f"{brand[1]:04x}"}]
+    return []
+
+
 def compare_properties(knxprod: Path, app: str) -> list[dict]:
     """The device-object properties the application's load procedure compares
     against a range (`LdCtrlCompareProp ObjIdx="0" Range=...`), with a value
@@ -558,6 +607,19 @@ def save_repair(c, out: Path, error: str, failed: dict | None = None) -> dict:
     return saved
 
 
+def added_address(add: dict, requested: str) -> str:
+    """The individual address ETS gave the device `catalog_add` added
+    (bussard issue #876): the one entry under `added` when there is exactly
+    one, else `requested`.
+
+    ETS puts a product at the next free address of the line, 1.1.1 in the
+    sweep's empty project, but gives a coupler (a media coupler on mask 0701,
+    S85050100 and STR131, 2026-11-05/06) the line's coupler address 1.1.0.
+    """
+    added = [d.get("ia") for d in add.get("added") or [] if isinstance(d, dict) and d.get("ia")]
+    return added[0] if len(added) == 1 else requested
+
+
 def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = None, ia: str = "1.1.1",
             variant: str = "plain-defaults", mode: str = "application", project: str = "ets-sweep",
             connection: str = "knx-sim", sim_port: int = 3672, timeout: int = 900, quiet: int = 45,
@@ -608,6 +670,14 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
+        got = added_address(add, ia)
+        if got != ia:
+            # A coupler at the line's coupler address (#876): restart the sim
+            # where ETS will look for the device, and download that address.
+            result["ia_requested"], result["ia"], ia = ia, got, got
+            sim.stop()
+            sim = RemoteSim(c, knxprod.resolve(), app, ia, sim_port, secure, out / "sim.log", mask=mask,
+                            properties=properties)
         flow("select_connection", name=connection)
         if before_download is not None:
             result["before"] = before_download(flow, out)
@@ -679,6 +749,9 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
+        # The download looked for the device at another address than the one
+        # ETS gave it (#876): not a driver fault, retrying changes nothing.
+        else "skipped-device-address" if re.search(r"device \S+ not in list", err)
         # An exception ETS logged for the download outranks the history pane
         # (the secure run read 'Abgeschlossen' off another project's pane
         # while ETS logged 'Das Gerät ist mit einem in diesem Projekt nicht

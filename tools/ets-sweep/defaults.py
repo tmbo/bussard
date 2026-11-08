@@ -23,6 +23,12 @@ tools/ets-sweep/results/defaults.json, keyed by application id:
     skipped-mask / skipped-no-order / skipped-not-in-catalog
     skipped-older-version   a newer version of the same application on the
                             same hardware runs instead (field `newer`)
+    skipped-device-address  the download looked for the device at another
+                            address than the one ETS gave it (#876)
+
+`ia` is the address ETS gave the added device: 1.1.1, or the line's coupler
+address 1.1.0 for a coupler (#876); the sim runs there and the oracle row
+takes it.
 
 The run directory per application is captures/ets-sweep/<app>/plain-defaults/
 (gitignored): ets.pcapng, sim.log, driver.json, ops.txt.
@@ -195,12 +201,16 @@ def relabel_wrong_rows(results: dict) -> list[str]:
 def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | None:
     """The device properties the sim starts with: those the application binds
     parameters to (the hardware type ETS checks first, PID 78; 78 of 81
-    learned values match), overridden by what a previous run learned from
-    ETS's log, else Zennio's rule for PID 78, and the device-object
-    properties the load procedure compares against a range (#966)."""
+    learned values match) and the brand's manufacturer id of an OEM hardware
+    (#881), overridden by what a previous run learned from ETS's log, else
+    Zennio's rule for PID 78, and the device-object properties the load
+    procedure compares against a range (#966)."""
     # The device object only: its PIDs 78 and 25 are what ETS checks; a
     # property on an object the sim does not build would refuse the config.
     merged = {(p["object"], p["pid"]): p for p in sweep.product_properties(path, app) if p["object"] == 0}
+    # The brand's manufacturer id of an OEM hardware (#881).
+    for p in sweep.oem_identity(path, app):
+        merged.setdefault((p["object"], p["pid"]), p)
     for p in learned_from_ets(path, app, prev):
         merged[(p["object"], p["pid"])] = p
     if (0, 78) not in merged:
@@ -221,7 +231,7 @@ def learned_from_ets(path: Path, app: str, prev: dict | None) -> list[dict]:
     identities); such an entry equals the seed and goes, so a corrected seed
     is not overridden by its stale copy."""
     seeds = ([p for p in sweep.product_properties(path, app) if p["object"] == 0] + (guessed_identity(app) or [])
-             + sweep.compare_properties(path, app))
+             + sweep.compare_properties(path, app) + sweep.oem_identity(path, app))
     return [p for p in (prev or {}).get("learned_properties") or [] if p not in seeds]
 
 
@@ -473,6 +483,9 @@ def main() -> int:
                 "loaded": r.get("loaded_objects"),
                 "seconds": r.get("seconds"),
                 "search": job["order_numbers"][0],
+                # The address ETS gave the device (a coupler gets 1.1.0, #876);
+                # the oracle row takes it.
+                "ia": r.get("ia"),
                 "row": r.get("catalog_row"),
                 "error": r.get("error"),
                 "ets_history": sweep.newest_history_entry(r.get("history")),

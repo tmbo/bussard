@@ -547,6 +547,59 @@ def resident_state(ops: DeviceOps) -> Optional[Dict[str, object]]:
     return out
 
 
+# The object type of an interface object (PID_OBJECT_TYPE, PID 1 of every
+# object) and the device object's list of them (PID_IO_LIST, obj0 PID 71),
+# bussard issue #960.
+PID_OBJECT_TYPE = 1
+PID_IO_LIST = 71
+
+
+def object_types(ops: DeviceOps) -> Dict[int, int]:
+    """The object type at each interface object index, as the device answered
+    the tool (bussard issue #960).
+
+    Two sources: a read of an object's `PID_OBJECT_TYPE` (obj N PID 1, one
+    2-octet element), and the device object's `PID_IO_LIST` (obj0 PID 71),
+    whose element k (from 1) is the type of the object at index k-1. A
+    `PID_OBJECT_TYPE` answer wins over the list. ETS resolves an object it
+    names by type this way and then writes it by index; the dry run has no
+    device and records the write by type, so the property comparison needs
+    the map to pair the two.
+    """
+    listed: Dict[int, int] = {}
+    read: Dict[int, int] = {}
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "res" or apdu is None or not op.data:
+            continue
+        if apdu.name not in ("A_PropertyValue_Response", "A_PropertyExtValue_Response"):
+            continue
+        f = apdu.fields
+        if f.get("truncated") or f.get("error"):
+            continue
+        pid = f.get("pid")
+        start, count = f.get("index"), f.get("count")
+        if not isinstance(start, int) or not isinstance(count, int) or start < 1 or count < 1:
+            continue
+        data = bytes(op.data)
+        if len(data) < 2 * count:
+            continue
+        values = [struct.unpack(">H", data[2 * i:2 * i + 2])[0] for i in range(count)]
+        if "obj_type" in f:
+            on_device_object = f.get("obj_type") == 0
+            obj = None
+        else:
+            obj = f.get("obj")
+            on_device_object = obj == 0
+        if pid == PID_IO_LIST and on_device_object:
+            for i, t in enumerate(values):
+                listed[start - 1 + i] = t
+        elif pid == PID_OBJECT_TYPE and isinstance(obj, int) and start == 1:
+            read[obj] = values[0]
+    listed.update(read)
+    return dict(sorted(listed.items()))
+
+
 # `PID_DEVICE_CONTROL` (obj0 PID 14) and its verify-mode bit (issue #705).
 PID_DEVICE_CONTROL = 14
 VERIFY_MODE_BIT = 0x04
@@ -700,6 +753,7 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         "property_writes": len(props),
         "unload_pass": unload_pass(ops),
         "device_control_reads": device_control_reads(ops),
+        "object_types": {str(k): v for k, v in object_types(ops).items()},
     }
     with open(os.path.join(out_dir, "regions.json"), "w", encoding="utf-8") as fh:
         json.dump(index, fh, indent=2)
@@ -1460,6 +1514,59 @@ def _not_compared_reason(key: list, ours_keys: set) -> Optional[str]:
     return NOT_COMPARED_ETS_WRITES.get(prop)
 
 
+def _captured_object_types(image_dir: str) -> Dict[int, int]:
+    """`object_types` of the image's `regions.json` (index -> type), else {}."""
+    try:
+        with open(os.path.join(image_dir, "regions.json"), encoding="utf-8") as fh:
+            raw = json.load(fh).get("object_types") or {}
+        return {int(k): int(v) for k, v in raw.items()}
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}
+
+
+def resolve_typed_writes(
+    ours: List[Dict[str, object]],
+    ets: List[Dict[str, object]],
+    types: Dict[int, int],
+) -> List[Dict[str, object]]:
+    """bussard's writes by object type, renamed to the index ETS wrote
+    (bussard issue #960).
+
+    The dry run has no device, so a System B write it addresses by type
+    (`type50215.1 PID 205`) stays typed in `plan.json`, while ETS reads the
+    object's type and writes it by index (`obj6 PID 205`). Instance i of type
+    t is the i-th index, in index order, whose captured type is t. A write is
+    renamed only when ETS wrote that index and PID by index and never wrote
+    the type and PID by type, so an extended write ETS also sent by type (the
+    security object, the KNXnet/IP parameter object) keeps its key. The
+    renamed entry keeps its typed label under `by_type`.
+    """
+    if not types:
+        return ours
+    by_type: Dict[int, List[int]] = {}
+    for index in sorted(types):
+        by_type.setdefault(types[index], []).append(index)
+    ets_props = {(_obj_label(e["object"]), int(e["pid"])) for e in ets}
+    out: List[Dict[str, object]] = []
+    for w in ours:
+        obj = w["object"]
+        if "type" not in obj:
+            out.append(w)
+            continue
+        indices = by_type.get(int(obj["type"]), [])
+        instance = int(obj.get("instance", 1))
+        pid = int(w["pid"])
+        if not 1 <= instance <= len(indices):
+            out.append(w)
+            continue
+        index = indices[instance - 1]
+        if ("obj%d" % index, pid) not in ets_props or (_obj_label(obj), pid) in ets_props:
+            out.append(w)
+            continue
+        out.append(dict(w, object={"index": index}, by_type=_obj_label(obj)))
+    return out
+
+
 def compare_properties(
     plan: dict,
     image_dir: str,
@@ -1514,6 +1621,7 @@ def compare_properties(
         if not ("index" in w["object"] and w["pid"] == PID_LOAD_STATE_CONTROL
                 and (w["step"], w["object"]["index"]) in as_load_control)
     ]
+    ours = resolve_typed_writes(ours, ets, _captured_object_types(image_dir))
     ip_secure = plan.get("system") == IP_SECURE_SYSTEM
     if ip_secure:
         # Only the IP Secure properties, and with `phase` only the writes
@@ -1535,10 +1643,11 @@ def compare_properties(
                 if outcome != "differs" and a.get("index") is not None and b.get("index") is not None \
                         and a["index"] != b["index"]:
                     outcome, why = "differs", "start index %s vs %s" % (a["index"], b["index"])
-                matched.append(
-                    {"step": a["step"], "ets_seq": b["seq"], "key": list(_prop_key(a)),
-                     "value": outcome, "why": why, "ets_data": b["data"]}
-                )
+                record = {"step": a["step"], "ets_seq": b["seq"], "key": list(_prop_key(a)),
+                          "value": outcome, "why": why, "ets_data": b["data"]}
+                if a.get("by_type"):
+                    record["by_type"] = a["by_type"]
+                matched.append(record)
             continue
         for a in ours[i1:i2]:
             bussard_only.append({"step": a["step"], "key": list(_prop_key(a))})
@@ -2091,6 +2200,10 @@ def render_properties(props: Optional[Dict[str, object]]) -> List[str]:
             lines.append(
                 "      step %3s %s: %s (%s)" % (m["step"], _key_text(m["key"]), m["value"], m["why"])
             )
+        if m.get("by_type"):
+            # A typed write paired with ETS's index write (#960).
+            lines.append("      step %3s %s: matched as %s (ETS read its object type)"
+                         % (m["step"], _key_text(m["key"]), m["by_type"]))
     gk = props.get("group_key_table")
     if gk and gk["value"] == "differs":
         lines.append(

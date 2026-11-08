@@ -1118,5 +1118,81 @@ class TestCaptureRecapture(unittest.TestCase):
             self.assertEqual(out.read_text(), saved.read_text())
 
 
+
+class TestCouplerAddress(unittest.TestCase):
+    """A coupler product gets the line's coupler address 1.1.0 from ETS, and
+    the sweep follows it (#876, M-0006 S85050100 and M-0009 STR131)."""
+
+    def test_added_address_takes_the_address_ets_gave(self):
+        import sweep
+
+        # The catalog_add result of M-0006_A-E001-10-AE55-O0009, 2026-11-05.
+        add = {"devices": [{"ia": "1.1.0", "y": 287}], "added": [{"ia": "1.1.0", "y": 287}],
+               "row": {"name": "Funk/KNX Gateway AP"}, "ok": True}
+        self.assertEqual(sweep.added_address(add, "1.1.1"), "1.1.0")
+        # The usual case, nothing added, or an ambiguous add keep the address.
+        self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.1"}]}, "1.1.1"), "1.1.1")
+        self.assertEqual(sweep.added_address({"added": []}, "1.1.1"), "1.1.1")
+        self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.0"}, {"ia": "1.1.2"}]}, "1.1.1"), "1.1.1")
+
+    def test_oracle_row_uses_the_recorded_address(self):
+        self.assertEqual(oracle.entry_ia({"ia": "1.1.0"}), "1.1.0")
+        self.assertEqual(oracle.entry_ia({"ia": None}), "1.1.1")
+        self.assertEqual(oracle.entry_ia({}), "1.1.1")
+        row = oracle.row("M-0006_A-E001-10-AE55-O0009", Path("c/ets.pcapng"), Path("p.knxprod"), "0701", ia="1.1.0")
+        self.assertTrue(row.startswith("1.1.0|c/ets.pcapng|p.knxprod|M-0006_A-E001-10-AE55-O0009"))
+        self.assertTrue(row.endswith("state=fresh"))
+
+
+class TestOemIdentity(unittest.TestCase):
+    """The brand's manufacturer id of an OEM hardware is seeded as PID 12
+    (#881, Gewiss GW10966 on Hugo Müller hardware)."""
+
+    MASTER = """<KNX><MasterData><Manufacturers>
+      <Manufacturer Id="M-0019" KnxManufacturerId="25" Name="GEWISS" DefaultLanguage="en-US" />
+      <Manufacturer Id="M-00FC" KnxManufacturerId="252" Name="Hugo M&#252;ller GmbH &amp; Co KG" DefaultLanguage="en-US" />
+      </Manufacturers></MasterData></KNX>"""
+    HARDWARE = """<KNX><ManufacturerData><Manufacturer RefId="M-00FC"><Hardware>
+      <Hardware Id="M-00FC_H-LP.2D579.2D401-0" Name="GS4X_knx" SerialNumber="LP-579-401" VersionNumber="0">
+        <Hardware2Programs><Hardware2Program Id="H1">
+          <ApplicationProgramRef RefId="M-00FC_A-000A-11-5E09" /></Hardware2Program></Hardware2Programs>
+      </Hardware>
+      <Hardware Id="M-00FC_H-LP.2D579.2D401.5FGEWISS-0" Name="GS4X_knx" SerialNumber="LP-579-401_GEWISS" VersionNumber="0">
+        <Hardware2Programs><Hardware2Program Id="H2">
+          <ApplicationProgramRef RefId="M-00FC_A-000C-11-FA2D" /></Hardware2Program></Hardware2Programs>
+      </Hardware>
+      </Hardware></Manufacturer></ManufacturerData></KNX>"""
+
+    def _product(self, tmp: Path) -> Path:
+        import zipfile
+
+        path = tmp / "GS4x12_v1.1.knxprod"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("knx_master.xml", self.MASTER)
+            z.writestr("M-00FC/Hardware.xml", self.HARDWARE)
+        return path
+
+    def test_oem_identity_seeds_the_brand_manufacturer(self):
+        from unittest import mock
+
+        import sweep
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._product(Path(tmp))
+            want = {"object": 0, "pid": 12, "value": "0019"}
+            self.assertEqual(sweep.oem_identity(path, "M-00FC_A-000C-11-FA2D"), [want])
+            # The unbranded sibling of the same file: nothing.
+            self.assertEqual(sweep.oem_identity(path, "M-00FC_A-000A-11-5E09"), [])
+            with mock.patch.object(sweep, "product_properties", return_value=[]), \
+                    mock.patch.object(sweep, "compare_properties", return_value=[]):
+                self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D", None), [want])
+                # A seed is not learned; a value ETS's log taught still wins.
+                self.assertEqual(defaults.learned_from_ets(path, "M-00FC_A-000C-11-FA2D",
+                                                           {"learned_properties": [want]}), [])
+                taught = {"object": 0, "pid": 12, "value": "00fc"}
+                self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D",
+                                                          {"learned_properties": [taught]}), [taught])
+
+
 if __name__ == "__main__":
     unittest.main()
