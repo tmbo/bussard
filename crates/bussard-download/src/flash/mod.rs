@@ -991,6 +991,26 @@ pub enum PlanError {
         lsm: u32,
     },
 
+    /// A System 7 table the model computes does not fit the one-octet form
+    /// (`[CNT:1][TSAP:1][ASAP:1]…`, `dev/system7-spec.md` §7.2): more than 254
+    /// group addresses, more than 255 associations, or a TSAP or ASAP past 255
+    /// (issue #739). Refused at plan time: leaving the table out would stream
+    /// the product's `<Data>` template, the vendor's links, in its place.
+    #[error(
+        "the System 7 {table} {detail}, past the {limit} {field} can hold; refusing to flash \
+         rather than leaving the product's own table on the device"
+    )]
+    Sys7TableOverflow {
+        /// The table ("group-address table", "association table").
+        table: &'static str,
+        /// What overflows (`holds 300 associations`, `names ASAP 300 (…)`).
+        detail: String,
+        /// The largest value the field holds.
+        limit: usize,
+        /// The field (`its one-octet count`, `its one-octet ASAP`).
+        field: &'static str,
+    },
+
     /// A device with a KNX IP interface built in, whose KNXnet/IP parameters
     /// a full download writes (issue #455), lacks a value for one of them in
     /// its device file's `[knxnet]` table.

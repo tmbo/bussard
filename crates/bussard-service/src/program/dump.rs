@@ -624,7 +624,8 @@ pub fn write_dump(
     // The table images, with where they are streamed.
     let mut tables = Vec::new();
     if plan.is_sys7() {
-        let lsm_tables = bussard_download::flash::sys7_tables_from_system_b(table_images);
+        let lsm_tables = bussard_download::flash::sys7_tables_from_system_b(table_images)
+            .map_err(|err| ServiceError::Refused(err.to_string()))?;
         for (lsm, table) in &lsm_tables {
             let stem = format!("table-lsm{lsm}");
             let file = write_file(dir, &mut used, &stem, 0, ".bin", &table.image)?;

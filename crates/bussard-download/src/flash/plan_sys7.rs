@@ -1615,7 +1615,7 @@ pub fn plan_flash_sys7_with_hawk(
             app_mask,
         });
     }
-    let tables = Sys7PlanTables::from_system_b(table_images);
+    let tables = Sys7PlanTables::from_system_b(table_images)?;
     plan_flash_sys7(
         app,
         device_mask,
@@ -1640,11 +1640,16 @@ pub struct Sys7PlanTables {
 
 impl Sys7PlanTables {
     /// Derives both from the System B table images [`plan_flash`](super::plan_flash) receives.
-    pub fn from_system_b(table_images: &BTreeMap<u32, Vec<u8>>) -> Self {
-        Self {
-            tables: sys7_tables_from_system_b(table_images),
+    ///
+    /// # Errors
+    ///
+    /// A table the System 7 one-octet form cannot hold
+    /// ([`sys7_tables_from_system_b`]).
+    pub fn from_system_b(table_images: &BTreeMap<u32, Vec<u8>>) -> Result<Self, PlanError> {
+        Ok(Self {
+            tables: sys7_tables_from_system_b(table_images)?,
             linked_flags: linked_flags_from_system_b(table_images),
-        }
+        })
     }
 }
 
@@ -1710,53 +1715,82 @@ pub struct Sys7TableImage {
 /// associations     [CNT:1][TSAP:1][ASAP:1]…                     CNT = n
 /// ```
 ///
-/// A table that does not fit the one-octet count is left out, and the
-/// lowering then keeps the product's `<Data>`; the segment-size check there
-/// refuses an image longer than its segment.
+/// A table the one-octet form cannot hold is refused (issue #739): more than
+/// 254 group addresses (the count octet also counts the device's own
+/// individual address), more than 255 associations, or an association whose
+/// TSAP or ASAP is past 255. Leaving such a table out used to make the
+/// lowering stream the product's `<Data>` template instead, so the device
+/// kept the vendor's links. A table the model computed fits; the
+/// segment-size check in the lowering still refuses an image longer than its
+/// segment.
+///
+/// # Errors
+///
+/// [`PlanError::Sys7TableOverflow`] naming the table, the count or value and
+/// the one-octet limit.
 pub fn sys7_tables_from_system_b(
     table_images: &BTreeMap<u32, Vec<u8>>,
-) -> BTreeMap<u32, Sys7TableImage> {
+) -> Result<BTreeMap<u32, Sys7TableImage>, PlanError> {
     let mut out = BTreeMap::new();
     if let Some(addr) = table_images.get(&1).filter(|img| img.len() >= 2) {
         let elements = &addr[2..];
         let n = elements.len() / 2;
-        if n < usize::from(u8::MAX) {
-            let mut image = Vec::with_capacity(3 + elements.len());
-            image.push((n + 1) as u8);
-            image.extend_from_slice(&[0, 0]);
-            image.extend_from_slice(&elements[..n * 2]);
-            let mut mask = vec![0xFF; image.len()];
-            mask[1] = 0;
-            mask[2] = 0;
-            out.insert(
-                1,
-                Sys7TableImage {
-                    image,
-                    mask: Some(mask),
-                },
-            );
-        }
+        // The count octet is 1 + n: the device's own address plus every group address.
+        let count = u8::try_from(n + 1).map_err(|_| PlanError::Sys7TableOverflow {
+            table: "group-address table",
+            detail: format!("holds {n} group addresses"),
+            limit: usize::from(u8::MAX) - 1,
+            field: "its one-octet count (which also counts the device's own address)",
+        })?;
+        let mut image = Vec::with_capacity(3 + elements.len());
+        image.push(count);
+        image.extend_from_slice(&[0, 0]);
+        image.extend_from_slice(&elements[..n * 2]);
+        let mut mask = vec![0xFF; image.len()];
+        mask[1] = 0;
+        mask[2] = 0;
+        out.insert(
+            1,
+            Sys7TableImage {
+                image,
+                mask: Some(mask),
+            },
+        );
     }
     if let Some(assoc) = table_images.get(&2).filter(|img| img.len() >= 2) {
-        let elements = &assoc[2..];
-        let n = elements.len() / 4;
-        let fits = n <= usize::from(u8::MAX)
-            && elements
-                .as_chunks::<4>()
-                .0
-                .iter()
-                .all(|e| e[0] == 0 && e[2] == 0);
-        if fits {
-            let mut image = Vec::with_capacity(1 + n * 2);
-            image.push(n as u8);
-            for e in elements.as_chunks::<4>().0 {
-                image.push(e[1]);
-                image.push(e[3]);
+        let entries = assoc[2..].as_chunks::<4>().0;
+        let n = entries.len();
+        let count = u8::try_from(n).map_err(|_| PlanError::Sys7TableOverflow {
+            table: "association table",
+            detail: format!("holds {n} associations"),
+            limit: usize::from(u8::MAX),
+            field: "its one-octet count",
+        })?;
+        let mut image = Vec::with_capacity(1 + n * 2);
+        image.push(count);
+        for e in entries {
+            let tsap = u16::from_be_bytes([e[0], e[1]]);
+            let asap = u16::from_be_bytes([e[2], e[3]]);
+            for (name, value) in [("TSAP", tsap), ("ASAP", asap)] {
+                if value > u16::from(u8::MAX) {
+                    return Err(PlanError::Sys7TableOverflow {
+                        table: "association table",
+                        detail: format!("names {name} {value} (association {tsap} -> {asap})"),
+                        limit: usize::from(u8::MAX),
+                        field: if name == "TSAP" {
+                            "its one-octet TSAP"
+                        } else {
+                            "its one-octet ASAP"
+                        },
+                    });
+                }
             }
-            out.insert(2, Sys7TableImage { image, mask: None });
+            image.push(e[1]);
+            image.push(e[3]);
         }
+        out.insert(2, Sys7TableImage { image, mask: None });
     }
-    out
+    Ok(out)
 }
 
 /// The application identity every System 7 TaskSegment record carries
@@ -4765,6 +4799,105 @@ mod tests {
                 .all(|(_, kept)| kept.as_ref().is_ok_and(|n| *n > 0)),
             "{default_splits:#?}"
         );
+        Ok(())
+    }
+
+    /// A System B address-table image (`[count:2][GA:2]…`) of `n` addresses.
+    fn system_b_addresses(n: u16) -> Vec<u8> {
+        let mut img = n.to_be_bytes().to_vec();
+        for ga in 0..n {
+            img.extend_from_slice(&(0x0800 + ga).to_be_bytes());
+        }
+        img
+    }
+
+    /// A System B association-table image (`[count:2][TSAP:2][ASAP:2]…`).
+    fn system_b_associations(pairs: &[(u16, u16)]) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let mut img = u16::try_from(pairs.len())?.to_be_bytes().to_vec();
+        for (tsap, asap) in pairs {
+            img.extend_from_slice(&tsap.to_be_bytes());
+            img.extend_from_slice(&asap.to_be_bytes());
+        }
+        Ok(img)
+    }
+
+    #[test]
+    fn test_sys7_tables_from_system_b_keeps_tables_at_the_limit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pairs: Vec<(u16, u16)> = (0..255).map(|i| (1 + i % 254, i)).collect();
+        let images = BTreeMap::from([
+            (1, system_b_addresses(254)),
+            (2, system_b_associations(&pairs)?),
+        ]);
+        let tables = sys7_tables_from_system_b(&images)?;
+        assert_eq!(tables.get(&1).map(|t| t.image[0]), Some(255));
+        assert_eq!(tables.get(&2).map(|t| t.image[0]), Some(255));
+        assert_eq!(tables.get(&2).map(|t| t.image.len()), Some(1 + 255 * 2));
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_tables_from_system_b_refuses_address_table_past_254()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let images = BTreeMap::from([(1, system_b_addresses(255))]);
+        let err = sys7_tables_from_system_b(&images)
+            .err()
+            .ok_or("a 255-address table was not refused")?;
+        assert!(matches!(
+            err,
+            PlanError::Sys7TableOverflow {
+                table: "group-address table",
+                limit: 254,
+                ..
+            }
+        ));
+        let msg = err.to_string();
+        assert!(msg.contains("group-address table") && msg.contains("255 group addresses"));
+        assert!(
+            msg.contains("254") && msg.contains("one-octet count"),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_tables_from_system_b_refuses_association_table_past_255()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pairs: Vec<(u16, u16)> = (0..256).map(|i| (1, i % 200)).collect();
+        let images = BTreeMap::from([(2, system_b_associations(&pairs)?)]);
+        let err = sys7_tables_from_system_b(&images)
+            .err()
+            .ok_or("a 256-association table was not refused")?;
+        let msg = err.to_string();
+        assert!(
+            msg.contains("association table") && msg.contains("256 associations"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("255") && msg.contains("one-octet count"),
+            "{msg}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_sys7_tables_from_system_b_refuses_tsap_or_asap_past_255()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (pair, name) in [((1, 256), "ASAP 256"), ((300, 4), "TSAP 300")] {
+            let images = BTreeMap::from([(2, system_b_associations(&[(1, 0), pair])?)]);
+            let err = sys7_tables_from_system_b(&images)
+                .err()
+                .ok_or(format!("{name} was not refused"))?;
+            let msg = err.to_string();
+            assert!(
+                msg.contains("association table") && msg.contains(name),
+                "{msg}"
+            );
+            assert!(
+                msg.contains("past the 255") && msg.contains("one-octet"),
+                "{msg}"
+            );
+        }
         Ok(())
     }
 }

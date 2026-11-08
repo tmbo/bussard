@@ -1002,8 +1002,12 @@ since.
   images in one-octet pairs, 23 with a count over zero-filled pairs, the rest
   empty or erased, and no two-octet layout. Three 0701 applications declare
   more entries than one octet indexes (Jung Smart Panel `M-0004_A-5014-11` /
-  `A-5016-11`, Berker Master Control `M-0006_A-5901-01`); `apply` refuses a
-  count, TSAP or ASAP past 255 and the rest is #739.
+  `A-5016-11`, Berker Master Control `M-0006_A-5901-01`). `apply` and
+  `flash` both refuse a table the form cannot hold: more than 254 group
+  addresses (the address-table count also counts the own address), more than
+  255 associations, or a TSAP or ASAP past 255 (#739; `flash` used to leave
+  such a table out and stream the product's `<Data>`). How ETS links an
+  object past 255 is open (#739, #830).
 
 ### 7.3 Group-object table + descriptors `[Selfbus BIM112 dump, CONFIRMED; Res §4.18.3/§4.18.4 for the octets]`
 

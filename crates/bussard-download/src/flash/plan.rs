@@ -462,7 +462,7 @@ pub fn plan_flash(
     // obj0/PID78 preflight all differ from System B, so it is a separate path
     // rather than a branchy overload of the System B lowering below.
     if profile.is_system_7() {
-        let mut tables = Sys7PlanTables::from_system_b(table_images);
+        let mut tables = Sys7PlanTables::from_system_b(table_images)?;
         tables.linked_flags.extend(object_flags);
         return plan_flash_sys7(
             app,

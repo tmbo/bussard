@@ -1163,7 +1163,7 @@ def _wire_writes(entry: Dict[str, object]) -> List[Dict[str, object]]:
     data = entry.get("data")
     start = int(entry.get("index") or 1)
     for i in range(length // MCB_ENTRY_LEN):
-        chunk = dict(entry, index=start + i, length=MCB_ENTRY_LEN, sha256=None)
+        chunk = dict(entry, index=start + i, count=1, length=MCB_ENTRY_LEN, sha256=None)
         if isinstance(data, str) and not data.startswith("redacted:"):
             chunk["data"] = data[i * 2 * MCB_ENTRY_LEN:(i + 1) * 2 * MCB_ENTRY_LEN]
         else:
@@ -1213,6 +1213,7 @@ def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
                 "object": obj,
                 "pid": int(rec["pid"]),
                 "index": rec.get("start_element"),
+                "count": rec.get("count"),
                 "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
                 "data": data if isinstance(data, str) else None,
                 "sha256": rec.get("sha256"),
@@ -1250,6 +1251,7 @@ def _structured_entry(step: dict, rec: dict) -> Dict[str, object]:
         "object": obj,
         "pid": int(rec["pid"]),
         "index": rec.get("start_element"),
+        "count": rec.get("count"),
         "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
         "data": data if isinstance(data, str) else None,
         "sha256": rec.get("sha256"),
@@ -1573,6 +1575,144 @@ def resolve_index_writes(
     return out
 
 
+def _run_part(entry: Dict[str, object]) -> Dict[str, object]:
+    """One write of an element run, as the diff lists it."""
+    part = {"index": entry.get("index"), "count": entry.get("count"), "length": entry["length"]}
+    if "seq" in entry:
+        part["ets_seq"] = entry["seq"]
+    else:
+        part["step"] = entry.get("step")
+    return part
+
+
+def _mergeable(entry: Dict[str, object]) -> bool:
+    """Whether a write can join an element run: a plain value, a start
+    element and a count that divides its length. The security object's
+    writes never do: their key and sender tables are judged per record."""
+    count, index, data = entry.get("count"), entry.get("index"), entry.get("data")
+    return (
+        not _is_security_object(entry)
+        and isinstance(index, int)
+        and isinstance(count, int)
+        and count > 0
+        and int(entry["length"]) % count == 0
+        and isinstance(data, str)
+        and not data.startswith("redacted:")
+    )
+
+
+def merge_element_runs(writes: List[Dict[str, object]]) -> List[Dict[str, object]]:
+    """Consecutive writes to the same object and PID whose elements follow
+    on (the next starts where the last ended, same element size, same
+    service or phase) as one write (bussard issue #960).
+
+    The request a long property write is split into follows the device's
+    `PID_MAX_APDU_LENGTH`: the dry run splits at its nominal 233 octets,
+    while ETS split at the 66 the captured device answered (C02A PID 69:
+    one 100-octet write against 14 + 11 elements). Comparing element runs
+    makes the verdict independent of the split. A merged run lists its
+    writes under `parts`.
+    """
+    out: List[Dict[str, object]] = []
+    for w in writes:
+        prev = out[-1] if out else None
+        if (
+            prev is not None
+            and _mergeable(w)
+            and _mergeable(prev)
+            and _obj_label(prev["object"]) == _obj_label(w["object"])
+            and int(prev["pid"]) == int(w["pid"])
+            and prev.get("service") == w.get("service")
+            and prev.get("phase") == w.get("phase")
+            and int(prev["index"]) + int(prev["count"]) == int(w["index"])
+            and int(prev["length"]) // int(prev["count"]) == int(w["length"]) // int(w["count"])
+        ):
+            parts = prev.get("parts") or [_run_part(prev)]
+            out[-1] = dict(
+                prev,
+                count=int(prev["count"]) + int(w["count"]),
+                length=int(prev["length"]) + int(w["length"]),
+                data=str(prev["data"]) + str(w["data"]),
+                sha256=None,
+                parts=parts + [_run_part(w)],
+            )
+            continue
+        out.append(w)
+    return out
+
+
+def _matched_record(a: Dict[str, object], b: Dict[str, object]) -> Dict[str, object]:
+    """One aligned pair of writes (or element runs) with its value check."""
+    outcome, why = _value_check(a, b)
+    if outcome != "differs" and a.get("index") is not None and b.get("index") is not None \
+            and a["index"] != b["index"]:
+        outcome, why = "differs", "start index %s vs %s" % (a["index"], b["index"])
+    record = {"step": a["step"], "ets_seq": b["seq"], "key": list(_prop_key(a)),
+              "value": outcome, "why": why, "ets_data": b["data"]}
+    if b.get("by_index") is not None:
+        record["by_index"] = b["by_index"]
+    if a.get("parts") or b.get("parts"):
+        record["bussard_parts"] = a.get("parts") or [_run_part(a)]
+        record["ets_parts"] = b.get("parts") or [_run_part(b)]
+    return record
+
+
+def _align_property_writes(
+    ours: List[Dict[str, object]],
+    ets: List[Dict[str, object]],
+) -> Tuple[List[Dict[str, object]], List[Dict[str, object]], List[Dict[str, object]], int]:
+    """(matched, bussard_only, ets_only, merged runs matched).
+
+    Writes align request by request first. Where they do not, the stretch is
+    aligned again as element runs ([`merge_element_runs`] on both sides,
+    bussard issue #960): the split of a long write follows the device's max
+    APDU, which the dry run does not know. Writes that align as requests
+    keep their per-request records, and a value ETS redacted per request
+    is never merged, so its hash check still applies.
+    """
+    matched: List[Dict[str, object]] = []
+    bussard_only: List[Dict[str, object]] = []
+    ets_only: List[Dict[str, object]] = []
+    runs = 0
+
+    def align(a_list, b_list, top: bool) -> None:
+        nonlocal runs
+        for tag, i1, i2, j1, j2 in _opcodes(a_list, b_list):
+            if tag == "equal":
+                for a, b in zip(a_list[i1:i2], b_list[j1:j2]):
+                    rec = _matched_record(a, b)
+                    runs += 1 if "ets_parts" in rec else 0
+                    matched.append(rec)
+                continue
+            if top and i1 < i2 and j1 < j2:
+                a_runs = merge_element_runs(a_list[i1:i2])
+                b_runs = merge_element_runs(b_list[j1:j2])
+                if len(a_runs) < i2 - i1 or len(b_runs) < j2 - j1:
+                    align(a_runs, b_runs, False)
+                    continue
+            for a in a_list[i1:i2]:
+                rec = {"step": a["step"], "key": list(_prop_key(a))}
+                if a.get("parts"):
+                    rec["parts"] = a["parts"]
+                bussard_only.append(rec)
+            for b in b_list[j1:j2]:
+                rec = {"ets_seq": b["seq"], "service": b["service"], "key": list(_prop_key(b)),
+                       "data": b["data"]}
+                if b.get("parts"):
+                    rec["parts"] = b["parts"]
+                ets_only.append(rec)
+
+    align(ours, ets, True)
+    return matched, bussard_only, ets_only, runs
+
+
+def _opcodes(ours: List[Dict[str, object]], ets: List[Dict[str, object]]) -> list:
+    """`difflib` opcodes of two write lists keyed by object, PID and length."""
+    return difflib.SequenceMatcher(
+        None, [_prop_key(e) for e in ours], [_prop_key(e) for e in ets], autojunk=False
+    ).get_opcodes()
+
+
 def compare_properties(
     plan: dict,
     image_dir: str,
@@ -1636,30 +1776,7 @@ def compare_properties(
         ets = [e for e in ets if _ip_secure_entry(e)]
         if phase:
             ours = [e for e in ours if e.get("phase") == phase]
-    matcher = difflib.SequenceMatcher(
-        None, [_prop_key(e) for e in ours], [_prop_key(e) for e in ets], autojunk=False
-    )
-    matched: List[Dict[str, object]] = []
-    bussard_only: List[Dict[str, object]] = []
-    ets_only: List[Dict[str, object]] = []
-    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
-        if tag == "equal":
-            for a, b in zip(ours[i1:i2], ets[j1:j2]):
-                outcome, why = _value_check(a, b)
-                if outcome != "differs" and a.get("index") is not None and b.get("index") is not None \
-                        and a["index"] != b["index"]:
-                    outcome, why = "differs", "start index %s vs %s" % (a["index"], b["index"])
-                record = {"step": a["step"], "ets_seq": b["seq"], "key": list(_prop_key(a)),
-                          "value": outcome, "why": why, "ets_data": b["data"]}
-                if b.get("by_index") is not None:
-                    record["by_index"] = b["by_index"]
-                matched.append(record)
-            continue
-        for a in ours[i1:i2]:
-            bussard_only.append({"step": a["step"], "key": list(_prop_key(a))})
-        for b in ets[j1:j2]:
-            ets_only.append({"ets_seq": b["seq"], "service": b["service"], "key": list(_prop_key(b)),
-                             "data": b["data"]})
+    matched, bussard_only, ets_only, runs = _align_property_writes(ours, ets)
     group_keys = _group_key_table(ours, ets)
     senders = _sender_table(ours, ets)
     counts: Dict[str, int] = {}
@@ -1713,6 +1830,7 @@ def compare_properties(
         "verdict": verdict,
         "bussard_writes": len(ours),
         "ets_writes": len(ets),
+        "element_runs": runs,
         "ets_load_controls_skipped": len(ets_all) - len(ets),
         "matched": matched,
         "value_counts": counts,
@@ -2206,6 +2324,13 @@ def render_properties(props: Optional[Dict[str, object]]) -> List[str]:
             lines.append(
                 "      step %3s %s: %s (%s)" % (m["step"], _key_text(m["key"]), m["value"], m["why"])
             )
+        bp, ep = m.get("bussard_parts") or [], m.get("ets_parts") or []
+        if [p["count"] for p in bp] != [p["count"] for p in ep]:
+            # One element run split differently (#960): the max APDU.
+            lines.append("      step %3s %s: one element run, bussard %s, ETS %s element(s) per write"
+                         % (m["step"], _key_text(m["key"]),
+                            "+".join(str(p["count"]) for p in bp),
+                            "+".join(str(p["count"]) for p in ep)))
         if m.get("by_index") is not None:
             # A typed write paired with ETS's index write (#960).
             lines.append("      step %3s %s: ETS wrote it as obj%s (ETS read its object type)"
