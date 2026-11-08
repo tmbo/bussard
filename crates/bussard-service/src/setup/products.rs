@@ -1,13 +1,14 @@
 //! The product data of a model: the retained store `<dir>/products/` (issue
 //! #228), the pointer index of vendor downloads, the download step of
-//! `import`, `adopt` and the setup, and the `bussard.lock` pins.
+//! `adopt` and `import-product`, and the `bussard.lock` pins.
 //!
 //! `apply` and `flash` need the vendor's `.knxprod` for a device's order
 //! number, and `validate` reads the product models under
-//! `.bussard/model-cache/`. `import` and `adopt` know the order numbers, so they
-//! look every one without product data up in the pointer index, ask once for
-//! the whole list, download, verify, cache and generate the models, and name
-//! what they could not find with the sentence that says where to get it.
+//! `.bussard/model-cache/`. `import` extracts the application programs from
+//! the ETS export. `adopt` knows the order number of a device the project
+//! does not hold, so it looks it up in the pointer index, asks, downloads,
+//! verifies, caches and generates the models, and names what it could not
+//! find with the sentence that says where to get it.
 //!
 //! The download is injectable for tests: `BUSSARD_PRODUCT_INDEX` points at
 //! another index, whose entries may use `file://` URLs.
@@ -459,42 +460,39 @@ pub fn pin(dir: &Path, entries: &[ProductEntry], out: &mut dyn ProgressSink) {
 /// stored vendor archive keeps, or regains, its link), and each application
 /// the imported devices use that no stored archive carries is extracted once
 /// from the export into `products/` (see [`extract_and_entries`]).
-pub fn pin_import(dir: &Path, project: Option<&Path>, model: &Model, out: &mut dyn ProgressSink) {
+pub fn pin_import(dir: &Path, project: &Path, model: &Model, out: &mut dyn ProgressSink) {
     let mut entries = pinned_archives(dir);
-    if let Some(project) = project {
-        let served: BTreeSet<&String> =
-            entries.iter().flat_map(|e| e.applications.iter()).collect();
-        let missing: BTreeSet<String> = model
-            .devices
-            .values()
-            .filter_map(|d| d.device.product.as_ref()?.application_ref.clone())
-            .filter(|app| !served.contains(app))
-            .collect();
-        if !missing.is_empty() {
-            let catalog = bussard_product::read_knxprod_selected(project, None, None, |_| {
-                bussard_product::AppSelection::Exact(Vec::new())
-            });
-            match catalog.map_err(SetupError::source).and_then(|catalog| {
-                let apps: Vec<String> = missing.into_iter().collect();
-                extract_and_entries(dir, project, &catalog, &apps, out)
-            }) {
-                Ok(extracted) => {
-                    if !extracted.is_empty() {
-                        out.say(&format!(
-                            "extracted {} application program(s) from {} into {}",
-                            extracted.len(),
-                            project.display(),
-                            dir.join(PRODUCTS_DIR).display()
-                        ));
-                    }
-                    entries.extend(extracted);
+    let served: BTreeSet<&String> = entries.iter().flat_map(|e| e.applications.iter()).collect();
+    let missing: BTreeSet<String> = model
+        .devices
+        .values()
+        .filter_map(|d| d.device.product.as_ref()?.application_ref.clone())
+        .filter(|app| !served.contains(app))
+        .collect();
+    if !missing.is_empty() {
+        let catalog = bussard_product::read_knxprod_selected(project, None, None, |_| {
+            bussard_product::AppSelection::Exact(Vec::new())
+        });
+        match catalog.map_err(SetupError::source).and_then(|catalog| {
+            let apps: Vec<String> = missing.into_iter().collect();
+            extract_and_entries(dir, project, &catalog, &apps, out)
+        }) {
+            Ok(extracted) => {
+                if !extracted.is_empty() {
+                    out.say(&format!(
+                        "extracted {} application program(s) from {} into {}",
+                        extracted.len(),
+                        project.display(),
+                        dir.join(PRODUCTS_DIR).display()
+                    ));
                 }
-                Err(err) => out.warn(&format!(
-                    "warning: could not extract the product data from {}: {}",
-                    project.display(),
-                    crate::util::chain(&err)
-                )),
+                entries.extend(extracted);
             }
+            Err(err) => out.warn(&format!(
+                "warning: could not extract the product data from {}: {}",
+                project.display(),
+                crate::util::chain(&err)
+            )),
         }
     }
     if !entries.is_empty() {

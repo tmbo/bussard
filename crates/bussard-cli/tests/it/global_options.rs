@@ -215,11 +215,7 @@ fn test_init_never_discovers_upward() -> TestResult {
     // in the current directory. Without a project, and without a terminal to
     // offer the scan on, it only writes the skeleton; nothing is sent to the
     // (loopback) gateway.
-    let out = bussard(
-        &sub,
-        &["init", "--gateway", "127.0.0.1:9", "--no-download"],
-        &[],
-    )?;
+    let out = bussard(&sub, &["init", "--gateway", "127.0.0.1:9"], &[])?;
     assert!(out.status.success(), "{}", text(&out));
     assert!(sub.join("bussard.toml").exists());
     std::fs::remove_dir_all(&root)?;

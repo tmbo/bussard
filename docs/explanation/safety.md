@@ -45,7 +45,7 @@ the tools of the tier you started.
 - An explicit address or value is not consent. `bussard assign 1.1.47` in a
   script still needs `--yes`.
 - Downloading vendor product data is a separate consent, `--yes-download`
-  (`init`, `import`, `import-product`, `adopt`). Without a terminal and
+  (`import-product`, `adopt`). Without a terminal and
   without it, nothing is downloaded, and `import-product` refuses.
 - `--yes` never lifts the real-gateway gate below. The gate is checked before
   the prompt.

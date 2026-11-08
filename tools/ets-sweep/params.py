@@ -160,12 +160,12 @@ def apply_hook(config: dict):
     parameter pages; what was set and what was unreachable go to
     params.json in the run directory."""
 
-    def hook(flow, out: Path) -> dict:
-        pages = flow("param_pages", ia="1.1.1").get("pages") or []
+    def hook(flow, out: Path, ia: str = "1.1.1") -> dict:
+        pages = flow("param_pages", ia=ia).get("pages") or []
         done = []
         for change in config["changes"]:
             try:
-                r = flow("set_param", ia="1.1.1", text=change["text"], kind=change["kind"], value=change["shown"],
+                r = flow("set_param", ia=ia, text=change["text"], kind=change["kind"], value=change["shown"],
                          pages=pages)
                 done.append({**change, "result": "set" if r.get("set") else "unreachable",
                              "page": r.get("page"), "seen": r.get("seen")})
@@ -237,7 +237,7 @@ def run(args) -> int:
             out = sweep.CAPTURES / job["id"] / name
             entry = {"file": job["file"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat(),
                      "outcome": r["outcome"], "error": r.get("error"), "params": r.get("before"),
-                     "repair": (r.get("repair") or {}).get("dir")}
+                     "repair": (r.get("repair") or {}).get("dir"), "ia": r.get("ia")}
             remote = (r.get("after") or {}).get("export_remote")
             if remote:
                 try:
@@ -279,12 +279,14 @@ def oracle(args) -> int:
         if imp.returncode != 0:
             out[key] = {"verdict": "import-failed", "error": (imp.stderr or imp.stdout)[-300:]}
         else:
-            row = f"1.1.1|{run_dir / 'ets.pcapng'}|{export}|{app}"
+            # The address ETS gave the device (1.1.0 for a coupler, #876).
+            ia = str(entry.get("ia") or "1.1.1")
+            row = f"{ia}|{run_dir / 'ets.pcapng'}|{export}|{app}"
             r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(args.work / app / name / "oracle"),
                                 "--row", row], capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
             text = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
-            summary = next((l for l in text.splitlines() if l.startswith("1.1.1 ")), "")
-            m = re.match(r"1\.1\.1\s+(\S+)\s+(\S+)\s+(\S+)", summary)
+            summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
+            m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)", summary)
             out[key] = {"verdict": m.group(2) if m else "oracle-error", "summary": summary.strip()}
         out[key]["when"] = datetime.now(timezone.utc).isoformat()
         ORACLE_OUT.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
