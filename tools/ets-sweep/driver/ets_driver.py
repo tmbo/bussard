@@ -1835,8 +1835,10 @@ def catalog_import_button() -> dict | None:
     """The Katalog panel's Import button wherever the panel sits."""
     # The first word: OCR joins an enabled 'Herunterladen' next to it into one
     # line ('Import Herunterladen', 2026-10-28).
+    # The first two words: the panel's close icon left of the button joins the
+    # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06).
     hits = [l for l in ocr((680, 200, 1100, 2440))
-            if l["text"].split() and _norm(l["text"].split()[0]) in ("import", "impart", "imp0rt")]
+            if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:2])]
     return min(hits, key=lambda l: abs(l["y"] - 1354)) if hits else None
 
 
