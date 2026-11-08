@@ -34,6 +34,8 @@ Every code `bussard validate` and the `knx_validate` MCP tool report, with its s
 | E026 | warning | Parameter values could not be checked because the product model is missing. The message names `bussard import-product` only when no stored archive carries the application; otherwise the product model regenerates automatically. |
 | E032 | warning | A device's lock entry names a product (`product_sha256`) the lock has no `[[product]]` entry for. |
 | E033 | warning | A `[[product]]` entry names an archive (`file`) the project folder does not hold. The message names the recovery command for its origin. |
+| I048 | info | A group address with a sending object but no listening one: its telegrams go nowhere. `bussard audit` and the viz problems panel list it as a finding. |
+| I049 | info | A group address with a listening object but no sending one: nothing triggers it. Listed as a finding like I048. |
 
 ## `[knxnet]` rules
 

@@ -179,12 +179,7 @@ mod tests {
     use super::*;
 
     fn diag(severity: Severity, code: &'static str) -> Diagnostic {
-        Diagnostic {
-            code,
-            severity,
-            message: "the message".to_string(),
-            location: "devices/1.1.4.toml".to_string(),
-        }
+        Diagnostic::new(code, severity, "devices/1.1.4.toml", "the message")
     }
 
     #[test]

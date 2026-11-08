@@ -375,7 +375,6 @@ fn import_defaults(tmp: &std::path::Path, knx: &std::path::Path) -> TestResult {
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .arg("import")
         .arg(&knxproj)
-        .arg("--no-download")
         .arg("--dir")
         .arg(knx)
         .stdin(Stdio::null())
