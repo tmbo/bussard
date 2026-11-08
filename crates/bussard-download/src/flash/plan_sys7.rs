@@ -749,39 +749,46 @@ pub(super) fn plan_flash_sys7(
     // Every unlinked object's CONFIG (and TYPE) comes from the ComObjectRef the
     // device's parameter values make visible, as in ETS (issue #117).
     let default_flags = sys7_object_defaults(app, &config);
-    // Module instances shift numbers past the declared ones: count those too.
-    // A static `<ComObject>` without any `<ComObjectRef>` counts as declared:
-    // ETS clears C on it like on every object nothing shows (issue #837,
-    // ekinex `A-4743-02`: object 160 `Dummy`, template `df`, ETS `db`).
-    let last_object = app
-        .resolved_com_objects()
-        .iter()
-        .map(|c| c.number())
-        .chain(
-            app.com_objects
-                .values()
-                .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
-                .map(|c| c.number),
-        )
-        .chain(default_flags.keys().copied())
-        .chain(linked.iter().copied())
-        .max();
-    let declared = app.com_object_table.as_ref();
+    // The objects the program declares on the device, computed once: the
+    // static com-objects plus the shown ones with module instances shifted to
+    // their device numbers (`declared_object_numbers`). A static `<ComObject>`
+    // without any `<ComObjectRef>` counts as declared: ETS clears C on it like
+    // on every object nothing shows (issue #837, ekinex `A-4743-02`: object
+    // 160 `Dummy`, template `df`, ETS `db`). A module template's unshifted
+    // `Number` is not a device object and counts for neither rule.
+    let declared_objects =
+        crate::compute::declared_object_numbers(app, default_flags.keys().copied());
     // An application that declares no com-object, no module object and no
     // link has every descriptor past its last declared object: ETS writes the
     // template unchanged (issue #475, COMIP2 `M-00E1_A-A00D-10-12FB-O00C5`,
     // all 8 CONFIG octets kept at `df`). Only a declaration rewrites.
+    let last_object = declared_objects
+        .last()
+        .copied()
+        .into_iter()
+        .chain(linked.last().copied())
+        .max();
     if let Some(last_object) = last_object {
-        apply_sys7_group_object_links(
-            &steps,
-            &mut images,
-            declared,
-            &linked,
-            linked_flags,
-            &default_flags,
-            Some(last_object),
-        );
+        // A program with an ETS download plugin gets C on every object it
+        // declares, linked or not (issue #970, 53 Berker/Hager 0701 sweep
+        // rows: each declared object `b | 04` against the plain rule, the
+        // numbering gaps still cleared); the same set as on System B (issue
+        // #565).
+        let communication_on = if app.ets_download_plugin {
+            declared_objects
+        } else {
+            BTreeSet::new()
+        };
+        let rule = Sys7DescriptorRule {
+            linked,
+            linked_flags: linked_flags.clone(),
+            default_flags,
+            last_object: Some(last_object),
+            communication_on,
+        };
+        apply_sys7_group_object_links(&steps, &mut images, app.com_object_table.as_ref(), &rule);
     }
+    let declared = app.com_object_table.as_ref();
     // A kept octet is written by no step, so it is not placed: the dump's
     // coverage, the parameter-only download and the restore leave it alone,
     // and the read-back reports a parameter there as kept (issue #411).
@@ -1176,6 +1183,24 @@ fn effective_mask(mask: &[u8], placed: Option<&std::collections::BTreeSet<usize>
     out
 }
 
+/// The per-ASAP inputs of the System 7 descriptor post-pass
+/// ([`apply_sys7_group_object_links`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct Sys7DescriptorRule {
+    /// The ASAPs the association table links.
+    pub(super) linked: BTreeSet<u16>,
+    /// The model's flags of a linked ASAP.
+    pub(super) linked_flags: BTreeMap<u16, bussard_model::Flags>,
+    /// What an object the configuration shows writes ([`sys7_object_defaults`]).
+    pub(super) default_flags: BTreeMap<u16, Sys7ObjectDefault>,
+    /// The highest object number the program declares: descriptors past it
+    /// keep the template; `None` rewrites every descriptor.
+    pub(super) last_object: Option<u16>,
+    /// The unlinked ASAPs that get C: the declared objects of a program with
+    /// an ETS download plugin (issue #970), empty otherwise.
+    pub(super) communication_on: BTreeSet<u16>,
+}
+
 /// What the System 7 post-pass writes for one object that the project does not
 /// link: the flags of its ComObjectRef and, when known, its TYPE octet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1310,9 +1335,22 @@ pub(super) fn sys7_linked_asaps(assoc_image: &[u8]) -> BTreeSet<u16> {
 ///
 /// - a linked ASAP takes the model's flags (`linked_flags`), else its default
 ///   flags with C set, else the template with C set;
+/// - an unlinked ASAP in `communication_on` (an object the program declares,
+///   when it has an ETS download plugin) takes its default flags with C set,
+///   else the template with C set;
 /// - every other ASAP takes its default flags (`default_flags`, see
 ///   [`sys7_object_defaults`]) with C cleared, else the template with C
 ///   cleared.
+///
+/// C is the Communication Enable bit (bit 2) of the Config Octet (Resources
+/// 3/5/1 §4.18.3.1.2.1, Group Object Table realisation type 1). The standard
+/// defines what the bit does, not when a tool sets it; the rule above is from
+/// the captures. Issue #970: on all 53 System 7 sweep rows of a program with
+/// `<Extension EtsDownloadPlugin>` (14 Berker `M-0006_A-E0xx`, 39 Hager
+/// `M-0009_A-20xx`/`A-50xx`/`A-E0xx`, no links) ETS wrote every declared
+/// object as the plain rule does plus `04` (Berker `A-E00D`: `1b` became
+/// `1f`, `9b` `9f`) and cleared C on the undeclared gaps (objects 29 and 30);
+/// no row without the plugin had it.
 ///
 /// An ASAP whose default carries a TYPE octet (the visible ref's object size)
 /// takes that too, and its priority goes into bits 1-0: the one its visible
@@ -1349,11 +1387,15 @@ pub(super) fn apply_sys7_group_object_links(
     steps: &[FlashStep],
     images: &mut BTreeMap<String, Vec<u8>>,
     declared: Option<&TableLocation>,
-    linked: &BTreeSet<u16>,
-    linked_flags: &BTreeMap<u16, bussard_model::Flags>,
-    default_flags: &BTreeMap<u16, Sys7ObjectDefault>,
-    last_object: Option<u16>,
+    rule: &Sys7DescriptorRule,
 ) {
+    let Sys7DescriptorRule {
+        linked,
+        linked_flags,
+        default_flags,
+        last_object,
+        communication_on,
+    } = rule;
     let Some((segment, at)) = sys7_object_table_location(steps, images, declared) else {
         return;
     };
@@ -1379,6 +1421,14 @@ pub(super) fn apply_sys7_group_object_links(
                 .or_else(|| default.map(|o| o.flags | Flags::COMMUNICATION))
             {
                 Some(flags) => d[2] = crate::compute_sys7::sys7_config_byte(d[2], flags),
+                None => d[2] |= 0x04,
+            }
+        } else if communication_on.contains(&asap) {
+            match default {
+                Some(o) => {
+                    d[2] =
+                        crate::compute_sys7::sys7_config_byte(d[2], o.flags | Flags::COMMUNICATION)
+                }
                 None => d[2] |= 0x04,
             }
         } else {
@@ -2226,10 +2276,10 @@ mod tests {
                 &steps,
                 &mut images,
                 declared,
-                &BTreeSet::new(),
-                &BTreeMap::new(),
-                defaults,
-                None,
+                &Sys7DescriptorRule {
+                    default_flags: defaults.clone(),
+                    ..Default::default()
+                },
             );
             images.remove(&seg_id).unwrap_or_default()
         };
@@ -2325,15 +2375,7 @@ mod tests {
         let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
 
         // No links: ETS clears the flag everywhere (the 1.1.31 capture).
-        apply_sys7_group_object_links(
-            &steps,
-            &mut images,
-            None,
-            &BTreeSet::new(),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
-        );
+        apply_sys7_group_object_links(&steps, &mut images, None, &Sys7DescriptorRule::default());
         assert_eq!(
             images[&seg_id],
             vec![
@@ -2350,10 +2392,10 @@ mod tests {
             &steps,
             &mut images,
             None,
-            &linked,
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
+            &Sys7DescriptorRule {
+                linked: linked.clone(),
+                ..Default::default()
+            },
         );
         assert_eq!(images[&seg_id][5], 0x13);
         assert_eq!(images[&seg_id][9], 0x4F);
@@ -2376,20 +2418,22 @@ mod tests {
             &steps,
             &mut images_df,
             None,
-            &linked,
-            &flags,
-            &BTreeMap::new(),
-            None,
+            &Sys7DescriptorRule {
+                linked: linked.clone(),
+                linked_flags: flags.clone(),
+                ..Default::default()
+            },
         );
         assert_eq!(images_df[&seg_id][9], 0x4F);
         apply_sys7_group_object_links(
             &steps,
             &mut images,
             None,
-            &linked,
-            &flags,
-            &BTreeMap::new(),
-            None,
+            &Sys7DescriptorRule {
+                linked: linked.clone(),
+                linked_flags: flags.clone(),
+                ..Default::default()
+            },
         );
         assert_eq!(images[&seg_id][9], 0x4F);
 
@@ -2400,10 +2444,10 @@ mod tests {
             &steps,
             &mut images,
             None,
-            &BTreeSet::from([1]),
-            &BTreeMap::new(),
-            &BTreeMap::new(),
-            None,
+            &Sys7DescriptorRule {
+                linked: BTreeSet::from([1]),
+                ..Default::default()
+            },
         );
         assert_eq!(images[&seg_id], odd);
     }
@@ -2519,10 +2563,12 @@ mod tests {
             &steps,
             &mut images,
             None,
-            &BTreeSet::from([0]),
-            &flags,
-            &BTreeMap::new(),
-            Some(0),
+            &Sys7DescriptorRule {
+                linked: BTreeSet::from([0]),
+                linked_flags: flags.clone(),
+                last_object: Some(0),
+                ..Default::default()
+            },
         );
         assert_eq!(
             images[&seg_id],
@@ -2530,6 +2576,86 @@ mod tests {
                 0x03, 0x08, 0x35, 0x07, 0x02, 0x5F, 0x00, 0x08, 0x18, 0x17, 0x00, 0x08, 0x19, 0x17,
                 0x00
             ]
+        );
+    }
+
+    /// Issue #970: a program with an ETS download plugin gets C on every object
+    /// it declares, linked or not. The bytes follow the Berker `A-E00D`
+    /// capture: object 0 shown (R W, `9f` became `1f`), object 1 declared but
+    /// not shown (template `9f` kept), object 2 a numbering gap (`9f` became
+    /// `9b`, as object 29 there), object 3 linked (the model's T C, `cf`
+    /// became `47`). Without the plugin the unlinked ones lose C.
+    #[test]
+    fn test_apply_sys7_group_object_links_download_plugin_sets_communication() {
+        use bussard_model::Flags;
+        let seg_id = "M-0006_A-E00D-01-28AB-O0009_AS-4400".to_string();
+        let steps = vec![
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x0700,
+                size: 97,
+                mem_type: 2,
+                access: 0xF2,
+                seg_flags: 0x00,
+                seg_type: 0,
+                image: None,
+            },
+            FlashStep::Sys7AbsSegment {
+                lsm: 3,
+                address: 0x4400,
+                size: 19,
+                mem_type: 3,
+                access: 0xFF,
+                seg_flags: 0x80,
+                seg_type: 0,
+                image: Some(ImageRef {
+                    segment_id: seg_id.clone(),
+                    kind: ImageKind::Code,
+                    len: 19,
+                    offset: 0,
+                }),
+            },
+        ];
+        // [CNT=4][RAM flags 0x0700][ptr CONFIG TYPE] x4.
+        let template = vec![
+            0x04, 0x07, 0x00, 0x07, 0x2E, 0x9F, 0x00, 0x07, 0x2F, 0x9F, 0x00, 0x07, 0x4A, 0x9F,
+            0x00, 0x07, 0x4B, 0xCF, 0x00,
+        ];
+        let defaults = BTreeMap::from([(
+            0u16,
+            Sys7ObjectDefault {
+                flags: Flags::COMMUNICATION | Flags::READ | Flags::WRITE,
+                type_code: None,
+                priority: bussard_model::Priority::Low,
+            },
+        )]);
+        let linked_flags = BTreeMap::from([(3u16, Flags::TRANSMIT | Flags::COMMUNICATION)]);
+        let run = |communication_on: &BTreeSet<u16>| {
+            let mut images = BTreeMap::from([(seg_id.clone(), template.clone())]);
+            apply_sys7_group_object_links(
+                &steps,
+                &mut images,
+                None,
+                &Sys7DescriptorRule {
+                    linked: BTreeSet::from([3]),
+                    linked_flags: linked_flags.clone(),
+                    default_flags: defaults.clone(),
+                    last_object: Some(3),
+                    communication_on: communication_on.clone(),
+                },
+            );
+            images.remove(&seg_id).unwrap_or_default()
+        };
+        let configs = |image: &[u8]| -> Vec<u8> { (0..4).map(|i| image[5 + 4 * i]).collect() };
+        // With the plugin: objects 0, 1 and 3 are declared.
+        assert_eq!(
+            configs(&run(&BTreeSet::from([0, 1, 3]))),
+            vec![0x1F, 0x9F, 0x9B, 0x47]
+        );
+        // The plain rule: C cleared on every unlinked object.
+        assert_eq!(
+            configs(&run(&BTreeSet::new())),
+            vec![0x1B, 0x9B, 0x9B, 0x47]
         );
     }
 
@@ -2616,10 +2742,10 @@ mod tests {
                 &steps,
                 &mut images,
                 None,
-                &BTreeSet::new(),
-                &BTreeMap::new(),
-                &defaults,
-                None,
+                &Sys7DescriptorRule {
+                    default_flags: defaults.clone(),
+                    ..Default::default()
+                },
             );
             images.remove(&seg_id).unwrap_or_default()
         };
@@ -2710,6 +2836,85 @@ mod tests {
             .image_bytes("A_AS-43FF")
             .map(<[u8]>::to_vec)
             .unwrap_or_default())
+    }
+
+    /// Issue #970, at plan level: the declared set of a program with an ETS
+    /// download plugin is its static objects plus the shown ones at their
+    /// device numbers. Static 0 and 1 are shown (W C, T R C), static 3 is
+    /// declared but not shown, a module instance shifts its template object 2
+    /// to ASAP 5. ASAPs 2 (the template's unshifted number) and 4 are gaps and
+    /// stay cleared; every declared object gets C. Without the plugin every
+    /// unlinked object loses C.
+    #[test]
+    fn test_plan_flash_sys7_download_plugin_sets_communication_on_declared_objects()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let xml = |extension: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram PeiType="0" Id="A" ApplicationNumber="1" ApplicationVersion="16"
+            MaskVersion="MV-0701" Name="Plugin" LoadProcedureStyle="ProductProcedure">
+          <Static>
+           {extension}
+           <Code>
+            <AbsoluteSegment Id="A_AS-43FF" Size="27" Address="17407"><Data>DATA</Data></AbsoluteSegment>
+           </Code>
+           <ComObjects>
+            <ComObject Id="A_O-0" Number="0" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" TransmitFlag="Enabled" ReadFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-3" Number="3" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-0_R-1" RefId="A_O-0" />
+            <ComObjectRef Id="A_O-1_R-2" RefId="A_O-1" />
+            <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" />
+           </ComObjectRefs>
+           <ComObjectTable CodeSegment="A_AS-43FF" Offset="0" />
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlConnect />
+             <LdCtrlLoad LsmIdx="3" />
+             <LdCtrlAbsSegment LsmIdx="3" Address="17407" Size="27" />
+             <LdCtrlLoadCompleted LsmIdx="3" />
+             <LdCtrlDisconnect />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+          <ModuleDefs><ModuleDef Id="A_MD-1">
+           <Arguments><Argument Id="A_MD-1_A-1" Name="obj" /></Arguments>
+           <Static>
+            <ComObjects><ComObject Id="A_MD-1_O-2" Number="2" ObjectSize="1 Bit" BaseNumber="A_MD-1_A-1" /></ComObjects>
+            <ComObjectRefs><ComObjectRef Id="A_MD-1_O-2_R-1" RefId="A_MD-1_O-2" TransmitFlag="Enabled" ReadFlag="Enabled" CommunicationFlag="Enabled" /></ComObjectRefs>
+           </Static>
+           <Dynamic><ParameterBlock Id="A_MD-1_PB-1"><ComObjectRefRef RefId="A_MD-1_O-2_R-1" /></ParameterBlock></Dynamic>
+          </ModuleDef></ModuleDefs>
+          <Dynamic>
+           <ChannelIndependentBlock>
+            <ParameterBlock Id="A_PB-1" Name="main">
+             <ComObjectRefRef RefId="A_O-0_R-1" />
+             <ComObjectRefRef RefId="A_O-1_R-2" />
+            </ParameterBlock>
+           </ChannelIndependentBlock>
+           <Module Id="A_MD-1_M-1" RefId="A_MD-1"><NumericArg RefId="A_MD-1_A-1" Value="3" /></Module>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#
+            )
+            .replace("DATA", "BgcPBwDfAAcB3wAHAt8ABwPfAAcE3wAHBd8A")
+        };
+        let configs = |app: &ApplicationProgram| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+            let image = plan_descriptor_table(app)?;
+            Ok((0..6)
+                .filter_map(|i| image.get(5 + 4 * i).copied())
+                .collect())
+        };
+        let plugin = parse_application_program(
+            "A",
+            xml(r#"<Extension EtsDownloadPlugin="" />"#).as_bytes(),
+        )?;
+        assert!(plugin.ets_download_plugin);
+        assert_eq!(configs(&plugin)?, vec![0x17, 0x4F, 0xDB, 0xDF, 0xDB, 0x4F]);
+        let plain = parse_application_program("A", xml("").as_bytes())?;
+        assert_eq!(configs(&plain)?, vec![0x13, 0x4B, 0xDB, 0xDB, 0xDB, 0x4B]);
+        Ok(())
     }
 
     /// Issue #475 (COMIP2 `M-00E1_A-A00D-10-12FB-O00C5`): an application that
