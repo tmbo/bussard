@@ -440,6 +440,19 @@ pub fn plan_flash(
         });
     }
 
+    // The module definitions' load procedures run once per module instance
+    // the configuration reaches, resolved to that instance's objects and
+    // elements (issue #959); every lowering below sees the resolved ops.
+    let resolved = resolve_module_procedures(app, overrides, memo, template_ops)?;
+    let resolved_memo;
+    let (app, memo) = match &resolved {
+        None => (app, memo),
+        Some(r) => {
+            resolved_memo = r.memo();
+            (&r.app, &resolved_memo)
+        }
+    };
+
     if property_only && !profile.capabilities().flash {
         return super::plan_props::plan_flash_properties(app, device_mask, overrides, memo);
     }
@@ -1783,24 +1796,48 @@ fn kept_from(
 /// ([`super::plan_sys7::sys7_kept_octets`]). Empty for a property-only
 /// application, for a System B procedure without a `<choose>`, and when the load
 /// procedure cannot be decided (the planner refuses such a plan on its own).
+///
+/// # Errors
+///
+/// [`PlanError::ModuleProcedure`] when a module definition's load procedure
+/// cannot be resolved for the reached instances (issue #959): which octets
+/// the download keeps is then not known, and an empty list would read as
+/// "every octet written".
 pub fn kept_octets(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
     memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
-) -> Vec<KeptOctets> {
+) -> Result<Vec<KeptOctets>, PlanError> {
     let Some(profile) = app
         .mask_version
         .as_deref()
         .and_then(|m| u16::from_str_radix(m.trim(), 16).ok())
         .map(bussard_mgmt::MaskProfile::from_mask)
     else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
+    let system_7 = profile.is_system_7();
+    if !system_7
+        && (!profile.capabilities().flash
+            || app.load_procedures.iter().all(|p| p.chooses.is_empty()))
+    {
+        return Ok(Vec::new());
+    }
+    // The procedures the planner runs, module instances resolved.
+    let resolved = resolve_module_procedures(app, overrides, memo, None)?;
+    let resolved_memo;
+    let (app, memo) = match &resolved {
+        None => (app, memo),
+        Some(r) => {
+            resolved_memo = r.memo();
+            (&r.app, &resolved_memo)
+        }
+    };
+    let config = memo.evaluate_for(app, overrides);
     // System 7: a procedure may split a segment outside any `<choose>` too
     // (issue #657, the Jung `A-5015-13`), so the check runs without one.
-    if profile.is_system_7() {
-        let config = memo.evaluate_for(app, overrides);
-        return match super::plan_props::guarded_ops(app, &config) {
+    if system_7 {
+        return Ok(match super::plan_props::guarded_ops(app, &config) {
             Ok(mut ops) => {
                 ops.truncate(super::plan_sys7::sys7_procedure_end(&ops));
                 super::plan_sys7::sys7_kept_octets(app, &ops, |seg| {
@@ -1810,16 +1847,104 @@ pub fn kept_octets(
                 })
             }
             Err(_) => Vec::new(),
-        };
+        });
     }
-    if !profile.capabilities().flash || app.load_procedures.iter().all(|p| p.chooses.is_empty()) {
-        return Vec::new();
-    }
-    let config = memo.evaluate_for(app, overrides);
-    match assemble_ops(app, None, &config) {
+    Ok(match assemble_ops(app, None, &config) {
         Ok((ops, _, gaps)) => kept_from(app, &ops, &gaps),
         Err(_) => Vec::new(),
+    })
+}
+
+/// A program with its module definitions' load procedures resolved for one
+/// set of parameter values (issue #959), and the Dynamic evaluation they
+/// were resolved under.
+pub(super) struct ModuleResolved {
+    /// The program, its load procedures the resolved ones.
+    pub(super) app: ApplicationProgram,
+    /// The values the evaluation was made for.
+    overrides: BTreeMap<String, String>,
+    /// The caller's evaluation of them.
+    config: std::sync::Arc<bussard_product::dynamic::DynamicConfig>,
+}
+
+impl ModuleResolved {
+    /// A memo for the resolved program holding the caller's evaluation, so
+    /// the Dynamic section is not evaluated again for the same values: the
+    /// program's Dynamic section is the original's.
+    pub(super) fn memo(&self) -> bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram> {
+        bussard_product::dynamic::DynamicMemo::seeded(
+            &self.app,
+            &self.overrides,
+            std::sync::Arc::clone(&self.config),
+        )
     }
+}
+
+/// `app` with its module definitions' load procedures resolved for the
+/// module instances `overrides` reach
+/// ([`ApplicationProgram::resolved_load_procedures`], issue #959), `None`
+/// for a program without one: the one resolution both [`plan_flash`] and
+/// [`kept_octets`] run. The evaluation is the caller's `memo`'s.
+///
+/// A block no application marker takes is spliced at the master template's
+/// marker of its `MergeId`, as an application block is; with a template
+/// (`template_ops`) and every block merged, a block the template has no
+/// marker for is refused rather than dropped.
+///
+/// # Errors
+///
+/// [`PlanError::ModuleProcedure`] when the procedures cannot be resolved, or
+/// such a block has no marker in the template.
+pub(super) fn resolve_module_procedures(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    template_ops: Option<&[LoadOp]>,
+) -> Result<Option<ModuleResolved>, PlanError> {
+    if app.module_load_procedures.is_empty()
+        && app
+            .companion_programs
+            .iter()
+            .all(|c| c.module_load_procedures.is_empty())
+    {
+        return Ok(None);
+    }
+    let config = memo.evaluate_for(app, overrides);
+    let Some(resolved) = app.resolved_load_procedures(&config)? else {
+        return Ok(None);
+    };
+    let all_merged = resolved
+        .load_procedures
+        .iter()
+        .filter(|p| !p.ops.is_empty())
+        .all(|p| p.merge_id.is_some());
+    if let Some(template) = template_ops.filter(|_| all_merged) {
+        for (merge, module) in &resolved.unspliced {
+            let marked = template.iter().any(|op| {
+                matches!(op, LoadOp::Merge { merge_id: Some(id) }
+                    if id.parse::<u32>().ok().is_some_and(|n| merge.parse::<u32>().ok() == Some(n)))
+            });
+            if !marked {
+                return Err(PlanError::ModuleProcedure(
+                    bussard_product::application::ModuleProcedureError {
+                        module: module.clone(),
+                        reason: format!(
+                            "neither the application's procedures nor the master template \
+                             have the <LdCtrlMerge MergeId=\"{merge}\"> its MergeId names, so \
+                             bussard does not know where it runs"
+                        ),
+                    },
+                ));
+            }
+        }
+    }
+    let mut resolved_app = app.clone();
+    resolved_app.load_procedures = resolved.load_procedures;
+    Ok(Some(ModuleResolved {
+        app: resolved_app,
+        overrides: overrides.clone(),
+        config,
+    }))
 }
 
 /// The blocks a self-contained download (no master-template splice) runs, in

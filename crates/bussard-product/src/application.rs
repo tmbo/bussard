@@ -976,6 +976,493 @@ pub struct LoadGuard {
     pub branch: usize,
 }
 
+/// The module arguments an op of a module definition's load procedure is
+/// relative to: the `Base*` attributes, each naming a module `<Argument>`
+/// (app-relative id). The op's own `ObjIdx`, `StartElement` or `Occurrence`
+/// is the offset added to the instance's value of that argument
+/// ([`ApplicationProgram::resolved_load_procedures`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct OpBases {
+    /// `BaseObjIdx`: the argument holding the base object index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obj_idx: Option<String>,
+    /// `BaseStartElement`: the argument holding the base start element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_element: Option<String>,
+    /// `BaseOccurrence`: the argument holding the base occurrence of an
+    /// object named by type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<String>,
+    /// Any other `Base*` attribute, by name: bussard does not know which
+    /// field it shifts, so an instance of the procedure is refused.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub other: Vec<String>,
+}
+
+impl OpBases {
+    /// The `Base*` attributes of an op element, ids made app-relative.
+    fn of(m: &Attrs, app_id: &str) -> OpBases {
+        let mut bases = OpBases::default();
+        for (key, value) in m.iter() {
+            let Some(name) = key.strip_prefix(b"Base") else {
+                continue;
+            };
+            let arg = Some(app_relative_id(value, app_id).unwrap_or(value).to_string());
+            match name {
+                b"ObjIdx" => bases.obj_idx = arg,
+                b"StartElement" => bases.start_element = arg,
+                b"Occurrence" => bases.occurrence = arg,
+                _ => bases.other.push(String::from_utf8_lossy(key).into_owned()),
+            }
+        }
+        bases.other.sort();
+        bases
+    }
+
+    /// Whether the op is relative to no argument.
+    pub fn is_empty(&self) -> bool {
+        self.obj_idx.is_none()
+            && self.start_element.is_none()
+            && self.occurrence.is_none()
+            && self.other.is_empty()
+    }
+}
+
+/// A `<LoadProcedure>` of a `<ModuleDef>` (issue #959). It runs once per
+/// module instance the Dynamic section reaches, spliced into the
+/// application's procedure at the `<LdCtrlMerge>` whose `MergeId` it
+/// carries, with its ops' `Base*` attributes resolved against that
+/// instance's arguments ([`ApplicationProgram::resolved_load_procedures`]).
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct ModuleLoadProcedure {
+    /// The module definition it belongs to (app-relative, the innermost
+    /// `<ModuleDef>` for a submodule, e.g. `MD-1`).
+    pub module_def: String,
+    /// The procedure as the module definition writes it, before any
+    /// instance's arguments are applied.
+    pub procedure: LoadProcedure,
+    /// Per op, at the same index as the procedure's ops, the arguments it is
+    /// relative to.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bases: Vec<OpBases>,
+}
+
+/// The load procedures a download of a program runs once its module
+/// definitions' procedures are resolved for the reached module instances
+/// ([`ApplicationProgram::resolved_load_procedures`], issue #959).
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedProcedures {
+    /// The application's procedures with every module procedure an
+    /// application marker takes spliced in, followed by one block per merge
+    /// id no application marker takes.
+    pub load_procedures: Vec<LoadProcedure>,
+    /// The merge id of each of those trailing blocks, in order, with the
+    /// first module instance in it: the master template's `<LdCtrlMerge>` of
+    /// that id takes the block, as it takes an application block. A planner
+    /// that splices into a template refuses one the template has no marker
+    /// for.
+    pub unspliced: Vec<(String, String)>,
+}
+
+impl ApplicationProgram {
+    /// The load procedures a download runs with the load procedures of the
+    /// module definitions run for the module instances `config` reaches
+    /// (issue #959). `None` when neither the program nor a companion has a
+    /// module load procedure, as almost every program: its
+    /// [`Self::load_procedures`] are run as they are.
+    ///
+    /// A `<LoadProcedure MergeId="N">` of a `<ModuleDef>` runs once per
+    /// reached instance of that definition, in the Dynamic walk order, in
+    /// place of the application procedure's `<LdCtrlMerge MergeId="N">`
+    /// (ETS 07B0 programs: the Hager `M-0009_A-E0EE-10-ADF8` ends its
+    /// `MergeId="4"` procedure with one; the Gira `M-0008_A-0004-75-0A9A`
+    /// lists 106 to 109 in its `MergeId="6"` procedure, one per module
+    /// definition). A marker no instance is reached for is dropped. Without
+    /// an application marker the instances' procedures form a block of that
+    /// `MergeId` ([`ResolvedProcedures::unspliced`]), which the master
+    /// template's marker takes as it takes an application block; every
+    /// module procedure of the corpus has an application marker.
+    ///
+    /// An op's `BaseObjIdx`, `BaseStartElement` and `BaseOccurrence` name a
+    /// module argument; the op's `ObjIdx`, `StartElement` and `Occurrence`
+    /// (absent: 0, the first) are offsets from the instance's value of it.
+    /// Neither the KNX Standard nor a schema in the repository defines the
+    /// attributes; the evidence is the sweep capture of
+    /// `M-0009_A-E0EE-10-ADF8` (`plain-defaults`, 2026-11-06, `ops.txt` op
+    /// 35): the module op `ObjIdx="0" PropId="208" BaseObjIdx="MD-1_A-1"`,
+    /// whose one reached instance `MS1` gives `A-1` the value 6, is the
+    /// description read of object 6 PID 208; and the Gira
+    /// `M-0008_A-C02A-21-B6D8-O007C` (same sweep, ops 102 to 112): the
+    /// `StartElement="0"` writes of type 40960 PIDs 64, 66 and 69 with
+    /// `BaseStartElement` went to elements 50 and 26, the allocator-fed
+    /// argument values of its one `ChargingPoint` instance. knx-sim reads
+    /// them the same way (#422).
+    ///
+    /// # Errors
+    ///
+    /// [`ModuleProcedureError`] naming the instance when its procedure cannot
+    /// be resolved: a `Base*` attribute bussard does not know or on an op
+    /// without the field it shifts, an argument the instance has no value
+    /// for, a shifted value out of range, a procedure without a `MergeId`,
+    /// more than one application marker for its `MergeId` (each would run
+    /// every instance), a `<choose>` in it (its parameters would be the
+    /// instance's), or a declaration the shifted op no longer names; and
+    /// naming the companion program when one carries a module load
+    /// procedure (its Dynamic section is not the application's, so its
+    /// instances are not known).
+    pub fn resolved_load_procedures(
+        &self,
+        config: &crate::dynamic::DynamicConfig,
+    ) -> std::result::Result<Option<ResolvedProcedures>, ModuleProcedureError> {
+        if let Some(companion) = self
+            .companion_programs
+            .iter()
+            .find(|c| !c.module_load_procedures.is_empty())
+        {
+            return Err(ModuleProcedureError {
+                module: companion.id.clone(),
+                reason: "the companion program carries a module definition's load procedure; \
+                         its module instances come from its own Dynamic section, which \
+                         bussard does not evaluate"
+                    .to_string(),
+            });
+        }
+        if self.module_load_procedures.is_empty() {
+            return Ok(None);
+        }
+        // The merge ids the module procedures fill, reached or not: their
+        // markers are consumed either way.
+        let module_merges: BTreeSet<&str> = self
+            .module_load_procedures
+            .iter()
+            .filter_map(|p| p.procedure.merge_id.as_deref())
+            .collect();
+        // Each reached instance's procedures, by merge id, in walk order.
+        let mut by_merge: BTreeMap<&str, Vec<(&str, LoadProcedure)>> = BTreeMap::new();
+        for module in &config.modules {
+            for mlp in self
+                .module_load_procedures
+                .iter()
+                .filter(|p| p.module_def == module.module_def && !p.procedure.ops.is_empty())
+            {
+                let refuse = |reason: String| ModuleProcedureError {
+                    module: module.id.clone(),
+                    reason,
+                };
+                let merge = mlp.procedure.merge_id.as_deref().ok_or_else(|| {
+                    refuse("the module definition's procedure has no MergeId".to_string())
+                })?;
+                let procedure = mlp.instantiate(&module.args).map_err(refuse)?;
+                by_merge
+                    .entry(merge)
+                    .or_default()
+                    .push((module.id.as_str(), procedure));
+            }
+        }
+        // One marker per merge id: a second would run every instance again.
+        for (merge, procs) in &by_merge {
+            let markers = self
+                .load_procedures
+                .iter()
+                .flat_map(|lp| lp.ops.iter())
+                .filter(|op| {
+                    matches!(op, LoadOp::Merge { merge_id: Some(id) } if id.as_str() == *merge)
+                })
+                .count();
+            if markers > 1 {
+                return Err(ModuleProcedureError {
+                    module: procs
+                        .first()
+                        .map(|(id, _)| id.to_string())
+                        .unwrap_or_default(),
+                    reason: format!(
+                        "the application's procedures hold {markers} <LdCtrlMerge \
+                         MergeId=\"{merge}\"> markers; bussard does not know which one the \
+                         module procedure runs at"
+                    ),
+                });
+            }
+        }
+        let mut spliced: BTreeSet<&str> = BTreeSet::new();
+        let mut load_procedures: Vec<LoadProcedure> = self
+            .load_procedures
+            .iter()
+            .map(|lp| splice_module_procedures(lp, &module_merges, &by_merge, &mut spliced))
+            .collect();
+        let mut unspliced = Vec::new();
+        for (merge, procs) in by_merge.iter().filter(|(m, _)| !spliced.contains(*m)) {
+            let mut block = LoadProcedure {
+                merge_id: Some(merge.to_string()),
+                ..LoadProcedure::default()
+            };
+            for (_, proc) in procs {
+                for (j, op) in proc.ops.iter().enumerate() {
+                    block.ops.push(op.clone());
+                    block
+                        .applies_to
+                        .push(proc.applies_to_of(j).map(str::to_string));
+                }
+            }
+            if block.applies_to.iter().all(Option::is_none) {
+                block.applies_to.clear();
+            }
+            load_procedures.push(block);
+            let first = procs
+                .first()
+                .map(|(id, _)| id.to_string())
+                .unwrap_or_default();
+            unspliced.push((merge.to_string(), first));
+        }
+        Ok(Some(ResolvedProcedures {
+            load_procedures,
+            unspliced,
+        }))
+    }
+}
+
+/// `lp` with each `<LdCtrlMerge>` naming a module procedure's merge id
+/// (`module_merges`) replaced by the reached instances' procedures of that id
+/// (`by_merge`), recorded in `spliced`. An inserted op keeps its own
+/// `AppliesTo` (the marker's when it has none) and sits in the marker's
+/// `<choose>` branches.
+fn splice_module_procedures<'a>(
+    lp: &LoadProcedure,
+    module_merges: &BTreeSet<&str>,
+    by_merge: &BTreeMap<&'a str, Vec<(&str, LoadProcedure)>>,
+    spliced: &mut BTreeSet<&'a str>,
+) -> LoadProcedure {
+    let is_marker = |op: &LoadOp| matches!(op, LoadOp::Merge { merge_id: Some(id) } if module_merges.contains(id.as_str()));
+    if !lp.ops.iter().any(is_marker) {
+        return lp.clone();
+    }
+    let guarded = !lp.chooses.is_empty();
+    let mut out = LoadProcedure {
+        merge_id: lp.merge_id.clone(),
+        chooses: lp.chooses.clone(),
+        ..LoadProcedure::default()
+    };
+    for (index, op) in lp.ops.iter().enumerate() {
+        let marker_scope = lp.applies_to_of(index).map(str::to_string);
+        let mut push = |op: LoadOp, scope: Option<String>| {
+            out.ops.push(op);
+            out.applies_to.push(scope);
+            if guarded {
+                out.guards.push(lp.guards_of(index).to_vec());
+            }
+        };
+        let LoadOp::Merge { merge_id: Some(id) } = op else {
+            push(op.clone(), marker_scope);
+            continue;
+        };
+        if !module_merges.contains(id.as_str()) {
+            push(op.clone(), marker_scope);
+            continue;
+        }
+        if let Some((key, procs)) = by_merge.get_key_value(id.as_str()) {
+            spliced.insert(*key);
+            for (_, proc) in procs {
+                for (j, op) in proc.ops.iter().enumerate() {
+                    let scope = proc
+                        .applies_to_of(j)
+                        .map(str::to_string)
+                        .or_else(|| marker_scope.clone());
+                    push(op.clone(), scope);
+                }
+            }
+        }
+    }
+    if out.applies_to.iter().all(Option::is_none) {
+        out.applies_to.clear();
+    }
+    out
+}
+
+impl ModuleLoadProcedure {
+    /// The procedure for one module instance whose argument values are
+    /// `args`: every op relative to an argument shifted by its value.
+    ///
+    /// # Errors
+    ///
+    /// The reason when an op cannot be shifted (see
+    /// [`ApplicationProgram::resolved_load_procedures`]).
+    fn instantiate(
+        &self,
+        args: &HashMap<String, i64>,
+    ) -> std::result::Result<LoadProcedure, String> {
+        if !self.procedure.chooses.is_empty() {
+            return Err(
+                "the module definition's procedure holds a <choose>, whose parameters are the \
+                 module instance's; bussard does not evaluate them there"
+                    .to_string(),
+            );
+        }
+        let mut procedure = self.procedure.clone();
+        for (index, op) in procedure.ops.iter_mut().enumerate() {
+            if let Some(bases) = self.bases.get(index).filter(|b| !b.is_empty()) {
+                shift_op(op, bases, args)
+                    .map_err(|reason| format!("op {}: {reason}", index + 1))?;
+            }
+        }
+        self.check_declarations(&procedure)?;
+        Ok(procedure)
+    }
+
+    /// Refuses a write the instance shifted away from the property a
+    /// declaration of the same procedure describes without a base: the
+    /// declaration then describes another object than the one written, and
+    /// which one ETS means is not known (no capture reaches such an
+    /// instance).
+    fn check_declarations(&self, resolved: &LoadProcedure) -> std::result::Result<(), String> {
+        let key = |op: &LoadOp| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id,
+                ..
+            }
+            | LoadOp::WriteProp {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id,
+                ..
+            } => Some((*obj_idx, *obj_type, occurrence.unwrap_or(0), *prop_id)),
+            _ => None,
+        };
+        for (index, op) in self.procedure.ops.iter().enumerate() {
+            if !matches!(op, LoadOp::WriteProp { .. }) {
+                continue;
+            }
+            let (Some(raw), Some(shifted)) = (key(op), resolved.ops.get(index).and_then(key))
+            else {
+                continue;
+            };
+            if raw == shifted {
+                continue;
+            }
+            let declared_unshifted =
+                self.procedure.ops[..index]
+                    .iter()
+                    .enumerate()
+                    .any(|(j, d)| {
+                        matches!(d, LoadOp::DeclarePropDesc { .. })
+                            && key(d) == Some(raw)
+                            && self.bases.get(j).is_none_or(OpBases::is_empty)
+                    });
+            if declared_unshifted {
+                return Err(format!(
+                    "op {}: the write is relative to a module argument, but the property it \
+                     writes is declared without one; bussard does not know which object the \
+                     declaration describes for this instance",
+                    index + 1
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Shifts the fields of `op` its `bases` name by the instance's argument
+/// values (`args`).
+///
+/// # Errors
+///
+/// The reason when a base names a field the op does not carry, a field the
+/// op leaves out where no default is known (`ObjIdx`, `StartElement`), an
+/// argument without a value, or the shifted value leaves `0..=u32::MAX`; and
+/// for any other `Base*` attribute.
+fn shift_op(
+    op: &mut LoadOp,
+    bases: &OpBases,
+    args: &HashMap<String, i64>,
+) -> std::result::Result<(), String> {
+    if let Some(name) = bases.other.first() {
+        return Err(format!(
+            "it carries {name}, which bussard does not know how to resolve"
+        ));
+    }
+    let (obj_idx, start_element, occurrence) = match op {
+        LoadOp::WriteProp {
+            obj_idx,
+            start_element,
+            occurrence,
+            ..
+        }
+        | LoadOp::CompareProp {
+            obj_idx,
+            start_element,
+            occurrence,
+            ..
+        } => (Some(obj_idx), Some(start_element), Some(occurrence)),
+        LoadOp::DeclarePropDesc {
+            obj_idx,
+            occurrence,
+            ..
+        }
+        | LoadOp::InvokeFunctionProp {
+            obj_idx,
+            occurrence,
+            ..
+        }
+        | LoadOp::LoadImageProp {
+            obj_idx,
+            occurrence,
+            ..
+        } => (Some(obj_idx), None, Some(occurrence)),
+        LoadOp::WriteRelMem { obj_idx, .. } | LoadOp::CompareRelMem { obj_idx, .. } => {
+            (Some(obj_idx), None, None)
+        }
+        _ => (None, None, None),
+    };
+    let shift = |attr: &str,
+                 field: Option<&mut Option<u32>>,
+                 base: Option<&String>,
+                 default: Option<u32>|
+     -> std::result::Result<(), String> {
+        let Some(arg) = base else {
+            return Ok(());
+        };
+        let field = field.ok_or_else(|| format!("Base{attr} on an op that has no {attr}"))?;
+        let offset = field
+            .or(default)
+            .ok_or_else(|| format!("Base{attr} without the {attr} it is added to"))?;
+        let value = args.get(arg).ok_or_else(|| {
+            format!("the instance has no value for the argument {arg} of Base{attr}")
+        })?;
+        let shifted = i64::from(offset)
+            .checked_add(*value)
+            .and_then(|v| u32::try_from(v).ok())
+            .ok_or_else(|| {
+                format!("{attr} {offset} plus the argument {arg} ({value}) is out of range")
+            })?;
+        *field = Some(shifted);
+        Ok(())
+    };
+    shift("ObjIdx", obj_idx, bases.obj_idx.as_ref(), None)?;
+    shift(
+        "StartElement",
+        start_element,
+        bases.start_element.as_ref(),
+        None,
+    )?;
+    shift("Occurrence", occurrence, bases.occurrence.as_ref(), Some(0))?;
+    Ok(())
+}
+
+/// Why a module definition's load procedure cannot run for a reached module
+/// instance (issue #959). The download is refused rather than run the
+/// procedure's ops at the offsets the module definition writes.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("the load procedure of module {module} cannot be run: {reason}")]
+pub struct ModuleProcedureError {
+    /// The module instance (app-relative key, e.g. `MD-1_M-5`), or the
+    /// module definition when no instance is involved.
+    pub module: String,
+    /// What cannot be resolved.
+    pub reason: String,
+}
+
 /// A table's place inside a code segment, as `<Static>` declares it
 /// (`<ComObjectTable CodeSegment=… Offset=…>`).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1142,8 +1629,16 @@ pub struct ApplicationProgram {
     pub parameter_refs: HashMap<String, ParameterRef>,
     /// Code segments, keyed by full `Id`.
     pub code_segments: HashMap<String, CodeSegment>,
-    /// Load procedures, in document order.
+    /// The application's own load procedures, in document order. The module
+    /// definitions' procedures are in [`Self::module_load_procedures`]; a
+    /// download runs the procedures of [`Self::resolved_load_procedures`],
+    /// which splices them in.
     pub load_procedures: Vec<LoadProcedure>,
+    /// The load procedures of the `<ModuleDef>`s, in document order (issue
+    /// #959). They address objects and elements relative to a module
+    /// instance, so they run only through [`Self::resolved_load_procedures`].
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub module_load_procedures: Vec<ModuleLoadProcedure>,
     /// Dynamic-section channel definitions, keyed by the app-relative channel id
     /// (e.g. `MD-1_CH-13`, or `CH-2` for a non-module channel).
     pub channels: HashMap<String, ChannelDef>,
@@ -1585,8 +2080,22 @@ pub fn parse_application_program_in(
                 }
                 b"LoadProcedure" => {
                     if let Some(lp) = state.lp.take() {
-                        app.load_procedures.push(lp);
+                        match state.module_lp.take() {
+                            Some((module_def, mut bases)) => {
+                                bases.resize(lp.ops.len(), OpBases::default());
+                                if bases.iter().all(OpBases::is_empty) {
+                                    bases.clear();
+                                }
+                                app.module_load_procedures.push(ModuleLoadProcedure {
+                                    module_def,
+                                    procedure: lp,
+                                    bases,
+                                });
+                            }
+                            None => app.load_procedures.push(lp),
+                        }
                     }
+                    state.module_lp = None;
                     state.lp_frames.clear();
                 }
                 b"when" if state.lp.is_some() => {
@@ -1839,6 +2348,11 @@ fn handle_start(
                 ..LoadProcedure::default()
             });
             state.lp_frames.clear();
+            state.module_lp = state
+                .tree
+                .module_defs
+                .last()
+                .map(|def| (def.clone(), Vec::new()));
         }
         b"Module" => {
             // Begin accumulating a `<Module>` instance's argument values.
@@ -1916,6 +2430,7 @@ fn handle_start(
         name if name.starts_with(b"LdCtrl") => {
             push_load_op(&mut state.lp, e, m);
             record_load_guards(state);
+            record_module_bases(state, m, &app.id);
         }
         _ => {}
     }
@@ -2117,6 +2632,7 @@ fn handle_empty(
         name if name.starts_with(b"LdCtrl") => {
             push_load_op(&mut state.lp, e, m);
             record_load_guards(state);
+            record_module_bases(state, m, &app.id);
         }
         _ => {}
     }
@@ -2512,6 +3028,9 @@ struct ParseState {
     /// The `<choose>`s open inside that procedure, outermost first: the
     /// choose's index and the `<when>` branch open in it.
     lp_frames: Vec<(usize, Option<usize>)>,
+    /// When that procedure belongs to a `<ModuleDef>`: the module
+    /// definition and, per op so far, its `Base*` attributes (issue #959).
+    module_lp: Option<(String, Vec<OpBases>)>,
     /// The `<Parameter>` whose `<Memory>` child we are waiting for.
     param_id: Option<String>,
     /// The `<Union>` currently being built. Its single `<Memory>` child gives the
@@ -3040,6 +3559,17 @@ fn record_load_guards(state: &mut ParseState) {
     let before = lp.ops.len().saturating_sub(1);
     lp.guards.resize(before, Vec::new());
     lp.guards.push(guards);
+}
+
+/// Records the `Base*` attributes of the op just appended to the open
+/// procedure when it belongs to a `<ModuleDef>`, keeping them parallel to its
+/// ops (issue #959).
+fn record_module_bases(state: &mut ParseState, m: &Attrs, app_id: &str) {
+    let (Some(lp), Some((_, bases))) = (state.lp.as_ref(), state.module_lp.as_mut()) else {
+        return;
+    };
+    bases.resize(lp.ops.len().saturating_sub(1), OpBases::default());
+    bases.push(OpBases::of(m, app_id));
 }
 
 /// Parses one `LdCtrl*` element into a typed [`LoadOp`], appending to the
@@ -4908,5 +5438,300 @@ mod tests {
                 ParameterType::Other { ref kind, size_bits: None, unit: None } if kind == "TypeColor"
             ));
         }
+    }
+
+    /// A module program shaped like the Hager `M-0009_A-E0EE-10-ADF8`: the
+    /// application's `MergeId="4"` procedure ends in `{marker}`, the module
+    /// definition's procedure holds `{module_ops}`, and the selector `P-1`
+    /// reaches no instance (0), `M-5` (1, the default) or `M-5` and `M-1`
+    /// (2).
+    fn module_program(
+        marker: &str,
+        module_ops: &str,
+    ) -> std::result::Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+     <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Parameters><Parameter Id="A_P-1" Name="sel" Value="1" /></Parameters>
+       <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+       <LoadProcedures>
+        <LoadProcedure MergeId="2" />
+        <LoadProcedure MergeId="4">
+         <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" StartElement="16" Verify="false" />
+         {marker}
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+      <ModuleDefs>
+       <ModuleDef Id="A_MD-1" Name="m">
+        <Arguments>
+         <Argument Id="A_MD-1_A-1" Name="BaseObjectIndex" />
+         <Argument Id="A_MD-1_A-4" Name="MeteringSensorId" />
+        </Arguments>
+        <Static>
+         <LoadProcedures>
+          <LoadProcedure MergeId="4">{module_ops}</LoadProcedure>
+         </LoadProcedures>
+        </Static>
+        <Dynamic><ParameterBlock Id="A_MD-1_PB-1" /></Dynamic>
+       </ModuleDef>
+      </ModuleDefs>
+      <Dynamic>
+       <ChannelIndependentBlock>
+        <ParameterBlock Id="A_PB-1"><ParameterRefRef RefId="A_P-1_R-1" /></ParameterBlock>
+       </ChannelIndependentBlock>
+       <choose ParamRefId="A_P-1_R-1">
+        <when test="&gt;=1">
+         <Module Id="A_MD-1_M-5" RefId="A_MD-1">
+          <NumericArg RefId="A_MD-1_A-1" Value="6" /><NumericArg RefId="A_MD-1_A-4" Value="0" />
+         </Module>
+        </when>
+        <when test="2">
+         <Module Id="A_MD-1_M-1" RefId="A_MD-1">
+          <NumericArg RefId="A_MD-1_A-1" Value="7" /><NumericArg RefId="A_MD-1_A-4" Value="1" />
+         </Module>
+        </when>
+       </choose>
+      </Dynamic>
+     </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program_str("A", &xml)?)
+    }
+
+    /// The two module ops of `M-0009_A-E0EE-10-ADF8` (lines 1088 and 1089 of
+    /// its application XML).
+    const E0EE_MODULE_OPS: &str = r#"
+          <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="0" PropId="208" Count="164" Verify="false" InlineData="" BaseObjIdx="A_MD-1_A-1" />
+          <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" StartElement="12" Verify="false" BaseStartElement="A_MD-1_A-4" />"#;
+
+    const E0EE_MARKER: &str = r#"<LdCtrlMerge AppliesTo="full,par" MergeId="4" />"#;
+
+    /// The object index and start element of a property write.
+    type Write = (Option<u32>, Option<u32>);
+
+    /// The (object, start element) of every property write of the
+    /// application's `MergeId="4"` procedure after resolution, and whether a
+    /// merge marker is left in it.
+    fn writes_under(
+        app: &ApplicationProgram,
+        sel: &str,
+    ) -> std::result::Result<(Vec<Write>, bool), Box<dyn std::error::Error>> {
+        let overrides = BTreeMap::from([("P-1_R-1".to_string(), sel.to_string())]);
+        let config = crate::dynamic::evaluate_dynamic(app, &overrides);
+        let resolved = app
+            .resolved_load_procedures(&config)?
+            .ok_or("no module procedures")?;
+        let lp = resolved
+            .load_procedures
+            .iter()
+            .find(|p| p.merge_id.as_deref() == Some("4"))
+            .ok_or("no MergeId 4 procedure")?;
+        assert_eq!(lp.applies_to.len(), lp.ops.len());
+        let writes = lp
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                LoadOp::WriteProp {
+                    obj_idx,
+                    start_element,
+                    ..
+                } => Some((*obj_idx, *start_element)),
+                _ => None,
+            })
+            .collect();
+        let marker = lp.ops.iter().any(|op| matches!(op, LoadOp::Merge { .. }));
+        Ok((writes, marker))
+    }
+
+    #[test]
+    fn test_parse_application_program_keeps_module_procedures_apart()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = module_program(E0EE_MARKER, E0EE_MODULE_OPS)?;
+        assert_eq!(app.load_procedures.len(), 1);
+        assert_eq!(app.load_procedures[0].ops.len(), 2);
+        assert_eq!(app.module_load_procedures.len(), 1);
+        let mlp = &app.module_load_procedures[0];
+        assert_eq!(mlp.module_def, "MD-1");
+        assert_eq!(mlp.procedure.merge_id.as_deref(), Some("4"));
+        assert_eq!(mlp.procedure.ops.len(), 2);
+        assert_eq!(mlp.bases.len(), 2);
+        assert_eq!(mlp.bases[0].obj_idx.as_deref(), Some("MD-1_A-1"));
+        assert_eq!(mlp.bases[1].start_element.as_deref(), Some("MD-1_A-4"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_resolves_each_reached_instance()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = module_program(E0EE_MARKER, E0EE_MODULE_OPS)?;
+        // The default reaches `MS1` only: object 0 + 6, element 12 + 0, in
+        // place of the marker (ETS: the description read of obj 6 PID 208).
+        let (writes, marker) = writes_under(&app, "1")?;
+        assert_eq!(
+            writes,
+            [(Some(12), Some(16)), (Some(6), None), (Some(12), Some(12))]
+        );
+        assert!(!marker);
+        // Two instances run in walk order, each with its own arguments.
+        let (writes, _) = writes_under(&app, "2")?;
+        assert_eq!(
+            writes,
+            [
+                (Some(12), Some(16)),
+                (Some(6), None),
+                (Some(12), Some(12)),
+                (Some(7), None),
+                (Some(12), Some(13)),
+            ]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_drops_the_marker_without_an_instance()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = module_program(E0EE_MARKER, E0EE_MODULE_OPS)?;
+        let (writes, marker) = writes_under(&app, "0")?;
+        assert_eq!(writes, [(Some(12), Some(16))]);
+        assert!(!marker);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_is_none_without_module_procedures()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let app = sample()?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        assert!(app.resolved_load_procedures(&config)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_leaves_a_block_without_a_marker()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // No application marker: the instance's procedure becomes a block of
+        // its MergeId, for the master template's marker.
+        let app = module_program("", E0EE_MODULE_OPS)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let resolved = app
+            .resolved_load_procedures(&config)?
+            .ok_or("no module procedures")?;
+        assert_eq!(
+            resolved.unspliced,
+            [("4".to_string(), "MD-1_M-5".to_string())]
+        );
+        assert_eq!(resolved.load_procedures.len(), 2);
+        let block = &resolved.load_procedures[1];
+        assert_eq!(block.merge_id.as_deref(), Some("4"));
+        assert!(matches!(
+            block.ops.first(),
+            Some(LoadOp::WriteProp {
+                obj_idx: Some(6),
+                ..
+            })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_refuses_two_markers_for_one_merge_id()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let markers = format!("{E0EE_MARKER}{E0EE_MARKER}");
+        let app = module_program(&markers, E0EE_MODULE_OPS)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let err = app
+            .resolved_load_procedures(&config)
+            .err()
+            .ok_or("resolved with two markers")?;
+        assert_eq!(err.module, "MD-1_M-5");
+        assert!(err.reason.contains("2 <LdCtrlMerge"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_refuses_a_companion_with_module_procedures()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let mut app = sample()?;
+        let companion = module_program(E0EE_MARKER, E0EE_MODULE_OPS)?;
+        app.companion_programs.push(companion);
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let err = app
+            .resolved_load_procedures(&config)
+            .err()
+            .ok_or("resolved a companion's module procedure")?;
+        assert_eq!(err.module, "A");
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_refuses_an_unknown_base()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ops =
+            r#"<LdCtrlWriteProp ObjIdx="0" PropId="208" Count="1" BaseOffset="A_MD-1_A-1" />"#;
+        let app = module_program(E0EE_MARKER, ops)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let err = app
+            .resolved_load_procedures(&config)
+            .err()
+            .ok_or("resolved an unknown base")?;
+        assert!(err.reason.contains("BaseOffset"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_refuses_an_argument_without_a_value()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ops =
+            r#"<LdCtrlWriteProp ObjIdx="0" PropId="208" Count="1" BaseObjIdx="A_MD-1_A-9" />"#;
+        let app = module_program(E0EE_MARKER, ops)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let err = app
+            .resolved_load_procedures(&config)
+            .err()
+            .ok_or("resolved a missing argument")?;
+        assert!(err.reason.contains("MD-1_A-9"), "{err}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_shifts_an_absent_occurrence_from_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ops = r#"<LdCtrlWriteProp ObjType="50001" PropId="52" BaseOccurrence="A_MD-1_A-1" />"#;
+        let app = module_program(E0EE_MARKER, ops)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let resolved = app
+            .resolved_load_procedures(&config)?
+            .ok_or("no module procedures")?;
+        let occurrences: Vec<Option<u32>> = resolved.load_procedures[0]
+            .ops
+            .iter()
+            .filter_map(|op| match op {
+                LoadOp::WriteProp {
+                    obj_type: Some(50001),
+                    occurrence,
+                    ..
+                } => Some(*occurrence),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(occurrences, [Some(6)]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_resolved_load_procedures_refuses_a_write_shifted_off_its_declaration()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let ops = r#"
+          <LdCtrlDeclarePropDesc ObjType="50001" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="1" />
+          <LdCtrlWriteProp ObjType="50001" PropId="52" BaseOccurrence="A_MD-1_A-1" />"#;
+        let app = module_program(E0EE_MARKER, ops)?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let err = app
+            .resolved_load_procedures(&config)
+            .err()
+            .ok_or("resolved a write off its declaration")?;
+        assert!(err.reason.contains("declared without"), "{err}");
+        Ok(())
     }
 }
