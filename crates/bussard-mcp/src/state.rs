@@ -9,7 +9,7 @@ use bussard_service::BusService;
 use bussard_service::monitor::TelegramRing;
 use bussard_service::transport::TransportKind;
 use bussard_service::transport::bus::{BusDiagnostics, BusHandle, BusState};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::model_handle::ModelHandle;
 
@@ -146,61 +146,37 @@ impl BusStatus {
     /// last transport error and when it happened, the failed attempts since
     /// the last connect and the seconds until the next one.
     pub fn to_json(&self) -> Value {
-        let mut out = json!({
-            "state": self.state().tag(),
-            "transport": self.transport_tag(),
-            "connected": self.state() == ConnState::Connected,
-        });
-        let Some(map) = out.as_object_mut() else {
-            return out;
-        };
+        serde_json::to_value(self.view()).unwrap_or_default()
+    }
+
+    /// The bus status typed ([`BusStatus::to_json`]).
+    pub fn view(&self) -> bussard_service::bus_report::BusView {
         let diag = self.diagnostics();
-        let fatal = self.handle().and_then(BusHandle::fatal_error);
-        let interface = diag
-            .as_ref()
-            .map(|d| d.interface.clone())
-            .or_else(|| self.gateway.map(|g| g.to_string()));
-        map.insert("interface".into(), json!(interface));
-        map.insert(
-            "tunnel_user".into(),
-            json!(diag.as_ref().and_then(|d| d.tunnel_user)),
-        );
-        map.insert(
-            "last_error".into(),
-            json!(diag.as_ref().and_then(|d| d.last_error.clone())),
-        );
-        map.insert(
-            "last_error_at".into(),
-            json!(
-                diag.as_ref()
-                    .and_then(|d| d.last_error_at)
-                    .map(bussard_service::monitor::timefmt::to_rfc3339)
-            ),
-        );
-        map.insert(
-            "attempts".into(),
-            json!(diag.as_ref().map(|d| d.attempts).unwrap_or(0)),
-        );
-        map.insert(
-            "retry_in_seconds".into(),
-            json!(
-                diag.as_ref()
-                    .and_then(|d| d.retry_in)
-                    .map(|r| r.as_secs_f64().ceil() as u64)
-            ),
-        );
-        map.insert(
-            "connected_since".into(),
-            json!(
-                diag.as_ref()
-                    .and_then(|d| d.connected_since)
-                    .map(bussard_service::monitor::timefmt::to_rfc3339)
-            ),
-        );
-        if let Some(fatal) = fatal {
-            map.insert("stopped".into(), json!(fatal));
+        let to_rfc3339 = bussard_service::monitor::timefmt::to_rfc3339;
+        bussard_service::bus_report::BusView {
+            state: self.state().tag().to_string(),
+            transport: self.transport_tag().to_string(),
+            connected: self.state() == ConnState::Connected,
+            interface: diag
+                .as_ref()
+                .map(|d| d.interface.clone())
+                .or_else(|| self.gateway.map(|g| g.to_string())),
+            tunnel_user: diag.as_ref().and_then(|d| d.tunnel_user),
+            last_error: diag.as_ref().and_then(|d| d.last_error.clone()),
+            last_error_at: diag.as_ref().and_then(|d| d.last_error_at).map(to_rfc3339),
+            attempts: diag.as_ref().map(|d| d.attempts).unwrap_or(0),
+            retry_in_seconds: diag
+                .as_ref()
+                .and_then(|d| d.retry_in)
+                .map(|r| r.as_secs_f64().ceil() as u64),
+            connected_since: diag
+                .as_ref()
+                .and_then(|d| d.connected_since)
+                .map(to_rfc3339),
+            stopped: self.handle().and_then(BusHandle::fatal_error),
+            other_instances: None,
+            reason: None,
         }
-        out
     }
 
     /// Why a bus tool is refused while the bus is down, with the last error

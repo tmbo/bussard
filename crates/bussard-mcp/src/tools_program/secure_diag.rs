@@ -7,9 +7,9 @@
 use bussard_model::IndividualAddress;
 use bussard_service::L4Options;
 use bussard_service::program::plan::Fingerprint;
+use bussard_service::report::Approval;
 use bussard_service::secure::SequenceHighWater;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::report::Approval;
 use bussard_service::secure_report::SecureDiagReport;
 use serde_json::Value;
 
@@ -90,8 +90,7 @@ impl BussardMcp {
                  log moved since the plan. Show the human the new lines and ask again"
             ));
         }
-        let report = match bussard_service::security_diag::clear(&service, target, &options).await
-        {
+        let report = match bussard_service::security_diag::clear(&service, target, &options).await {
             Ok(after) => SecureDiagReport {
                 before: Some(read),
                 ..SecureDiagReport::new(target, after, true)

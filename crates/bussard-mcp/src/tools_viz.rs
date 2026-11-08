@@ -21,10 +21,10 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::time::Duration;
 
+use bussard_service::bus_report::VizReport;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::{tool, tool_router};
-use serde_json::json;
 use tokio::sync::Mutex;
 
 use crate::server::BussardMcp;
@@ -179,19 +179,23 @@ impl BussardMcp {
     #[tool]
     async fn knx_viz(&self) -> Result<CallToolResult, ErrorData> {
         let state = self.state();
-        let value = match state.viz.start(state).await {
-            Ok(addr) => json!({
-                "ok": true,
-                "url": page_url(addr),
-                "read_only": true,
-                "live_traffic": state.bus.service().is_some(),
-            }),
-            Err(reason) => json!({
-                "ok": false,
-                "reason": reason,
-            }),
+        let report = match state.viz.start(state).await {
+            Ok(addr) => VizReport {
+                ok: true,
+                url: Some(page_url(addr)),
+                read_only: Some(true),
+                live_traffic: Some(state.bus.service().is_some()),
+                reason: None,
+            },
+            Err(reason) => VizReport {
+                ok: false,
+                url: None,
+                read_only: None,
+                live_traffic: None,
+                reason: Some(reason),
+            },
         };
-        Ok(CallToolResult::structured(value))
+        crate::reply::ok_report(&report, &state.model.current())
     }
 }
 

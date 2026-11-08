@@ -18,7 +18,7 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::Value;
 
 use crate::jobs::{JobStatus, JobTable};
 use crate::server::BussardMcp;
@@ -46,15 +46,12 @@ impl BussardMcp {
         let value = job_status(&state.jobs, &state.dir, job)
             .map(|status| status.chat(&model))
             .unwrap_or_else(|| {
-                json!({
-                    "ok": false,
-                    "refused": true,
-                    "job": job,
-                    "reason": format!(
-                        "no job {job:?} in this session or under .bussard/history; a job id comes \
-                         from a tool that answered `started: true`"
-                    ),
-                })
+                let mut out = crate::reply::refused(format!(
+                    "no job {job:?} in this session or under .bussard/history; a job id comes \
+                     from a tool that answered `started: true`"
+                ));
+                out["job"] = Value::String(job.to_string());
+                out
             });
         Ok(CallToolResult::structured(value))
     }
@@ -104,7 +101,7 @@ mod tests {
             "{waiting}"
         );
 
-        jobs.finish(&id, json!({"ok": true}));
+        jobs.finish(&id, serde_json::json!({"ok": true}));
         let done = status(&jobs)?;
         assert_eq!(done["done"], true, "{done}");
         assert_eq!(done["question"], Value::Null, "{done}");

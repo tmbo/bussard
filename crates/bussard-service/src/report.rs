@@ -45,8 +45,6 @@ pub mod schema {
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.
     pub const MONITOR: u32 = 1;
-    /// `bussard test --secure-idle --json`.
-    pub const TEST_SECURE_IDLE: u32 = 1;
 }
 
 /// A device as the human knows it: `Hallway push button in Hallway`, its

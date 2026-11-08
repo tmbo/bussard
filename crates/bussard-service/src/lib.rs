@@ -84,6 +84,7 @@ pub mod assign;
 pub mod audit;
 pub mod backup;
 pub mod bus;
+pub mod bus_report;
 pub mod commission;
 pub mod declare;
 pub mod describe;

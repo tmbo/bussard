@@ -62,7 +62,6 @@ impl Run for SecureCommand {
     }
 }
 
-
 /// Runs `bussard secure diag`.
 fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let (address, clear, yes) = (args.address.as_str(), args.clear, args.yes);

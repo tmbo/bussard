@@ -16,8 +16,8 @@ use bussard_service::ip_secure::{
 use bussard_service::keys::KeyStore;
 use bussard_service::observer::Event;
 use bussard_service::program::plan::Fingerprint;
-use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::report::Approval;
+use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::secure_report::InterfaceSecureReport;
 use serde_json::Value;
 
@@ -95,7 +95,10 @@ impl BussardMcp {
                 if plan.generated.is_empty() {
                     String::new()
                 } else {
-                    format!(" and first adds to the key store: {}", plan.generated.join(", "))
+                    format!(
+                        " and first adds to the key store: {}",
+                        plan.generated.join(", ")
+                    )
                 }
             );
             let mut report =

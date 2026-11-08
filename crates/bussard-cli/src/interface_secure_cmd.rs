@@ -17,13 +17,13 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
-use bussard_service::secure_report::InterfaceSecureReport;
 use bussard_service::ip_secure::{
     PlanRecordStep, Switch, SwitchContext, SwitchPlan, plan_off, plan_on, probe_gateway,
     run_switch, secured_through,
 };
 use bussard_service::keys::KeyStore;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
+use bussard_service::secure_report::InterfaceSecureReport;
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{enforce_write_gate, gateway_display, resolve_config};
@@ -98,7 +98,6 @@ struct DumpedPlan<'a> {
     /// The steps with their property writes.
     steps: &'a [PlanRecordStep],
 }
-
 
 fn parse_switch(state: &str) -> anyhow::Result<Switch> {
     match state.trim().to_ascii_lowercase().as_str() {

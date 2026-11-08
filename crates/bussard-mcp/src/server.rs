@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 use crate::reply::{invalid, ok, ok_report};
 use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
+use bussard_service::bus_report::{ReconnectReport, TelegramsReport, WaitReport};
 use bussard_service::device_show::{KnxnetSection, UnmodelledLive};
 use bussard_service::group_report::{GroupReadReport, GroupWriteReport};
 use bussard_service::project_view::{DeviceInfo, ProjectSummary};
@@ -531,10 +532,13 @@ impl BussardMcp {
         }
 
         let items: Vec<Value> = telegrams.iter().map(tools::telegram_json).collect();
-        ok(json!({
-            "count": items.len(),
-            "telegrams": items,
-        }))
+        ok_report(
+            &TelegramsReport {
+                count: items.len(),
+                telegrams: items,
+            },
+            &self.model(),
+        )
     }
 
     // `knx_wait_for_telegram`.
@@ -547,53 +551,63 @@ impl BussardMcp {
         let timeout = Duration::from_secs(args.timeout_seconds.clamp(1, 300) as u64);
         let filter = build_filter(args.ga.as_deref(), args.source.as_deref())?;
 
-        match self.state.ring.wait_for(&filter, timeout).await {
-            Some(t) => ok(json!({
-                "matched": true,
-                "telegram": tools::telegram_json(&t),
-            })),
-            None => ok(json!({
-                "matched": false,
-                "timed_out": true,
-                "waited_seconds": timeout.as_secs(),
-            })),
-        }
+        let report = match self.state.ring.wait_for(&filter, timeout).await {
+            Some(t) => WaitReport {
+                matched: true,
+                telegram: Some(tools::telegram_json(&t)),
+                timed_out: false,
+                waited_seconds: None,
+            },
+            None => WaitReport {
+                matched: false,
+                telegram: None,
+                timed_out: true,
+                waited_seconds: Some(timeout.as_secs()),
+            },
+        };
+        ok_report(&report, &self.model())
     }
 
     // `knx_bus_status` (issue #287).
     #[doc = include_str!("../guidance/tools/knx_bus_status.md")]
     #[tool]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
-        let mut out = self.state.bus.to_json();
-        if let Some(map) = out.as_object_mut() {
-            let others: Vec<u32> = crate::instances::other_instances(&self.state.dir);
-            map.insert("other_instances".into(), json!(others));
-            if self.state.bus.state() != ConnState::Connected {
-                map.insert(
-                    "reason".into(),
-                    json!(self.state.bus.not_connected_reason()),
-                );
-            }
+        let mut view = self.state.bus.view();
+        view.other_instances = Some(crate::instances::other_instances(&self.state.dir));
+        if self.state.bus.state() != ConnState::Connected {
+            view.reason = Some(self.state.bus.not_connected_reason());
         }
-        ok(out)
+        ok_report(&view, &self.model())
     }
 
     // `knx_bus_reconnect` (issue #287; omitted in passive mode).
     #[doc = include_str!("../guidance/tools/knx_bus_reconnect.md")]
     #[tool]
     async fn knx_bus_reconnect(&self) -> Result<CallToolResult, ErrorData> {
+        let model = self.model();
         if self.state.passive {
-            return ok(json!({
-                "ok": false,
-                "reason": "server is in passive mode; the bus reconnects on its own",
-            }));
+            return ok_report(
+                &ReconnectReport {
+                    ok: false,
+                    bus: None,
+                    note: None,
+                    reason: Some(
+                        "server is in passive mode; the bus reconnects on its own".to_string(),
+                    ),
+                },
+                &model,
+            );
         }
         let Some(handle) = self.state.bus.handle() else {
-            return ok(json!({
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
-            }));
+            return ok_report(
+                &ReconnectReport {
+                    ok: false,
+                    bus: Some(self.state.bus.view()),
+                    note: None,
+                    reason: Some("bus is not wired".to_string()),
+                },
+                &model,
+            );
         };
         let attempt = tokio::time::timeout(RECONNECT_WAIT, handle.reconnect()).await;
         let note = match attempt {
@@ -607,22 +621,13 @@ impl BussardMcp {
             )),
         };
         let connected = self.state.bus.state() == ConnState::Connected;
-        let mut out = json!({
-            "ok": connected,
-            "bus": self.state.bus.to_json(),
-        });
-        if let Some(map) = out.as_object_mut() {
-            if let Some(note) = note {
-                map.insert("note".into(), json!(note));
-            }
-            if !connected {
-                map.insert(
-                    "reason".into(),
-                    json!(self.state.bus.not_connected_reason()),
-                );
-            }
-        }
-        ok(out)
+        let report = ReconnectReport {
+            ok: connected,
+            bus: Some(self.state.bus.view()),
+            note,
+            reason: (!connected).then(|| self.state.bus.not_connected_reason()),
+        };
+        ok_report(&report, &model)
     }
 
     // `knx_validate`.
