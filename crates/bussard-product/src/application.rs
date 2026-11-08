@@ -1069,8 +1069,12 @@ impl ApplicationProgram {
     /// `M-0009_A-E0EE-10-ADF8` (`plain-defaults`, 2026-11-06, `ops.txt` op
     /// 35): the module op `ObjIdx="0" PropId="208" BaseObjIdx="MD-1_A-1"`,
     /// whose one reached instance `MS1` gives `A-1` the value 6, is the
-    /// description read of object 6 PID 208. knx-sim reads them the same way
-    /// (#422).
+    /// description read of object 6 PID 208; and the Gira
+    /// `M-0008_A-C02A-21-B6D8-O007C` (same sweep, ops 102 to 112): the
+    /// `StartElement="0"` writes of type 40960 PIDs 64, 66 and 69 with
+    /// `BaseStartElement` went to elements 50 and 26, the allocator-fed
+    /// argument values of its one `ChargingPoint` instance. knx-sim reads
+    /// them the same way (#422).
     ///
     /// # Errors
     ///
