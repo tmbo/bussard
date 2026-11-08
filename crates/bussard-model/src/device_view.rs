@@ -100,20 +100,39 @@ pub struct ChannelRow {
     pub objects: usize,
 }
 
-/// One parameter of a scope.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct ParamRow {
+/// One parameter of a device: a row of the device view
+/// (`knx_show_device`), of `bussard doc` and of the lock's parameter index
+/// the product crate derives. A field a source does not know is unset.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub struct ParameterRow {
     /// The key the device file uses.
     pub key: String,
-    /// The app-relative `ParameterRef` id.
+    /// The human part of the key (the slug before `@`, dashes as spaces).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// The app-relative `ParameterRef` id (device form).
     pub reference: String,
+    /// The owning channel id, if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<String>,
+    /// The app-relative parameter id, the memory cell (`MD-3_P-14`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub param: Option<String>,
+    /// Whether the configuration shows it (`false` for a parameter only an
+    /// `<Assign>` reaches); set by the lock's index.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shown: Option<bool>,
+    /// For an enumeration, its `(code, text)` pairs; set by the lock's index.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub enum_labels: Vec<(i64, String)>,
     /// The vendor's text, from the product model.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     /// The value the device file sets, rendered as the file would write it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
-    /// The vendor default, rendered like `value`.
+    /// The vendor default, rendered like `value`. In the lock's index: the
+    /// ref's own default when it overrides the parameter's.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default: Option<String>,
     /// Whether the effective value is the vendor default; `None` when the
@@ -143,7 +162,7 @@ pub struct ParamRow {
     pub computed_by: Option<String>,
 }
 
-impl ParamRow {
+impl ParameterRow {
     /// The value the device ends up with: the computed one, else the file's,
     /// else the vendor default.
     pub fn effective(&self) -> Option<&str> {
@@ -309,7 +328,7 @@ pub struct ScopeView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub inactive: Option<Inactive>,
     /// Its parameters, by key.
-    pub parameters: Vec<ParamRow>,
+    pub parameters: Vec<ParameterRow>,
     /// Its objects, by number.
     pub objects: Vec<ObjectRow>,
 }
@@ -533,7 +552,7 @@ fn param_row(
     entry: &ParamEntry,
     product: Option<&ProductModel>,
     evaluated: Option<&Evaluated<'_>>,
-) -> ParamRow {
+) -> ParameterRow {
     let def = entry
         .param
         .as_deref()
@@ -581,7 +600,7 @@ fn param_row(
         )),
         _ => None,
     });
-    ParamRow {
+    ParameterRow {
         key: entry.key.clone(),
         reference: entry.reference.clone(),
         text: def.and_then(|d| d.text.clone()),
@@ -596,6 +615,7 @@ fn param_row(
         ignored: None,
         computed: computed.as_ref().map(|(_, v)| display_value(def, v)),
         computed_by: computed.map(|(calc, _)| calc),
+        ..ParameterRow::default()
     }
 }
 
@@ -1718,7 +1738,7 @@ fn block_scope(
         .collect();
     let text = pg.blocks[i].text.clone();
     if pg.states[i].active {
-        let mut parameters: Vec<ParamRow> = pg
+        let mut parameters: Vec<ParameterRow> = pg
             .entries
             .iter()
             .filter(|(r, _)| pg.param_block.get(*r).is_some_and(|b| tree.contains(b)))
@@ -1746,7 +1766,7 @@ fn block_scope(
             objects,
         };
     }
-    let parameters: Vec<ParamRow> = pg
+    let parameters: Vec<ParameterRow> = pg
         .held_params(&listed.members)
         .into_iter()
         .map(|(reference, def)| {
@@ -1842,7 +1862,7 @@ impl<'a> DeviceAnalysis<'a> {
     }
 
     /// Analyses `device` (without its links) with `product`.
-    fn of_device(device: &'a Device, product: Option<&'a ProductModel>) -> Self {
+    pub(crate) fn of_device(device: &'a Device, product: Option<&'a ProductModel>) -> Self {
         let params = parameter_entries(device);
         let evaluated = product.map(|p| Evaluated::new(p, device_overrides(device).0));
         let (pages, evaluated) = match evaluated {
@@ -1858,6 +1878,44 @@ impl<'a> DeviceAnalysis<'a> {
             evaluated,
             pages,
         }
+    }
+
+    /// A row per parameter the device file stores (a hidden value aside) or
+    /// a calculation computes, which a download writes either way, with its
+    /// `label`: what `bussard doc` lists.
+    pub fn parameter_rows(&self) -> Vec<ParameterRow> {
+        let stored: BTreeSet<&str> = (self.device.parameters.keys())
+            .filter(|k| !crate::files::is_hidden_mem_key(k))
+            .filter_map(|k| k.split_once('@').map(|(_, r)| r))
+            .collect();
+        let evaluated = self.evaluated();
+        // A computed output neither the lock nor the file names (a hidden one).
+        let known: BTreeSet<&str> = self.params.iter().map(|e| e.reference.as_str()).collect();
+        let outputs = evaluated
+            .map(Evaluated::computed_parameters)
+            .unwrap_or_default();
+        let extra: Vec<ParamEntry> = (outputs.into_keys())
+            .filter(|r| !known.contains(r.as_str()))
+            .map(|reference| ParamEntry {
+                key: reference.clone(),
+                channel: None,
+                param: crate::param_model::key_to_param_id(&format!("@{reference}")),
+                stored: None,
+                reference,
+            })
+            .collect();
+        (self.params.iter().chain(&extra))
+            .map(|entry| param_row(entry, self.product, evaluated))
+            .filter(|row| stored.contains(row.reference.as_str()) || row.computed.is_some())
+            .map(|mut row| {
+                if crate::files::is_hidden_mem_key(&row.key) {
+                    row.key = row.reference.clone();
+                }
+                let slug = row.key.split_once('@').map_or(row.key.as_str(), |(s, _)| s);
+                row.label = Some(slug.replace('-', " "));
+                row
+            })
+            .collect()
     }
 
     /// The evaluation, when the product model is at hand.
@@ -2067,7 +2125,7 @@ fn build_view(
                     }
                 }
             };
-            let parameters: Vec<ParamRow> = params
+            let parameters: Vec<ParameterRow> = params
                 .iter()
                 .filter(|p| p.channel == id)
                 .map(|p| param_row(p, product, evaluated))

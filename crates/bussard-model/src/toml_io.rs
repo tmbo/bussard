@@ -69,7 +69,18 @@ impl std::error::Error for ParseError {}
 
 /// Parses `text` into `T`, rendering any error with its hint.
 pub fn parse<T: DeserializeOwned>(path: &Path, text: &str) -> Result<T, ParseError> {
-    toml::from_str(text).map_err(|e| error_at(path, text, e.span(), e.message()))
+    toml::from_str(text).map_err(|e| {
+        // serde prints a float as parsed (`1.1`); quote it as written (`1.10`).
+        let written = e.span().and_then(|s| text.get(s)).map(str::trim);
+        let message = match (e.message().split_once("floating point `"), written) {
+            (Some((head, rest)), Some(written)) => match rest.split_once('`') {
+                Some((_, tail)) => format!("{head}floating point `{written}`{tail}"),
+                None => e.message().to_string(),
+            },
+            _ => e.message().to_string(),
+        };
+        error_at(path, text, e.span(), &message)
+    })
 }
 
 /// Parses `text` into a span-carrying `toml_edit` document.
