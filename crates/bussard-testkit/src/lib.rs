@@ -135,6 +135,7 @@ mod devmgmt;
 pub mod gateway;
 pub mod ha;
 pub mod secure_gateway;
+pub mod shape;
 pub mod sys7;
 pub mod wire;
 

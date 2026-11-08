@@ -42,6 +42,7 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{ProductPlan, product_plan};
 use bussard_service::assign::hex;
 use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::program::outcome::WriteOutcome;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::replace::{self, Pressed, Replacement};
 use serde_json::{Value, json};
@@ -365,10 +366,10 @@ impl BussardMcp {
                 );
             }
         };
-        let write = if plan["noop"] == true {
+        let write = if plan.noop() {
             None
         } else {
-            let Some(digest) = plan["plan_digest"].as_str().map(str::to_string) else {
+            let Some(digest) = plan.plan_digest() else {
                 return after_assign_failure(
                     &p,
                     &pressed,
@@ -376,7 +377,7 @@ impl BussardMcp {
                     format!(
                         "{target} has its address, but its plan carries nothing to write over \
                          this tool ({}); plan it with knx_plan_device",
-                        plan["method"]
+                        plan.method()
                     ),
                 );
             };
@@ -387,7 +388,7 @@ impl BussardMcp {
                 job,
                 format!(
                     "{} {target}: pre-flight, backups",
-                    if plan["method"] == "flash" {
+                    if plan.method() == "flash" {
                         "flashing"
                     } else {
                         "writing"
@@ -415,7 +416,7 @@ impl BussardMcp {
                     .join(id)
                     .join(crate::jobs::RECORD_FILE)
             });
-            tier.jobs.started(job, prepared.result.clone(), record);
+            tier.jobs.started(job, &prepared.result, record);
             let links_after = super::LinksAfter::of(&prepared);
             let result = self.apply_write(tier, job, prepared).await;
             drop(warm);
@@ -430,13 +431,12 @@ impl BussardMcp {
         };
         let written_ok = write
             .as_ref()
-            .is_none_or(|w| w["ok"] == true && w["verified"] == true);
+            .is_none_or(|w| w.verdict.ok && w.verdict.verified);
         if !written_ok {
             let reason = write
                 .as_ref()
-                .and_then(|w| w["reason"].as_str())
-                .unwrap_or("the write did not verify")
-                .to_string();
+                .and_then(|w| w.verdict.reason.clone())
+                .unwrap_or_else(|| "the write did not verify".to_string());
             let mut result = after_assign_failure(
                 &p,
                 &pressed,
@@ -446,7 +446,7 @@ impl BussardMcp {
                      not verify: {reason}"
                 ),
             );
-            result["write"] = write.unwrap_or(Value::Null);
+            result["write"] = json!(write);
             return result;
         }
 
@@ -878,7 +878,7 @@ fn after_assign_failure(
 fn done_result(
     p: &ReplacePlan,
     pressed: &Pressed,
-    write: Option<Value>,
+    write: Option<WriteOutcome>,
     recorded: Value,
     notes: Vec<String>,
 ) -> Value {
@@ -886,7 +886,7 @@ fn done_result(
     let target = r.target;
     let flashed = write
         .as_ref()
-        .is_some_and(|w| w["method"] == "flash" && w["ok"] == true);
+        .is_some_and(|w| w.method.as_deref() == Some("flash") && w.verdict.ok);
     let how = match &write {
         None => "it already held the model's application, parameters and links".to_string(),
         Some(_) if flashed => {

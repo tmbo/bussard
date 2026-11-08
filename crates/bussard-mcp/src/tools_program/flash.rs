@@ -28,9 +28,10 @@ use std::path::Path;
 use bussard_model::IndividualAddress;
 use bussard_service::BusService;
 use bussard_service::flash_flow::ReadbackInputs;
+use bussard_service::params::ParameterChange;
+use bussard_service::program::outcome::{LoadApplication, ParametersWritten, WriteOutcome};
 use bussard_service::program::{self, flash::FlashImage};
 use bussard_service::secure::{Key16, SequenceHighWater};
-use serde_json::{Value, json};
 
 use super::{ProgrammingTier, chain};
 use crate::jobs::JobSink;
@@ -53,7 +54,7 @@ pub(super) struct FlashJob<'a> {
     /// The send-sequence high-water mark shared by the read and the write.
     pub(super) high_water: SequenceHighWater,
     /// The parameters that differ, as the plan listed them.
-    pub(super) changed: Value,
+    pub(super) changed: Vec<ParameterChange>,
     /// The parameter backup taken before the download.
     pub(super) param_backup: Option<&'a str>,
     /// What the read-back after the flash compares with (issue #319).
@@ -71,8 +72,8 @@ impl BussardMcp {
         job: &str,
         image: &FlashImage,
         ctx: FlashJob<'_>,
-        mut result: Value,
-    ) -> Value {
+        mut result: WriteOutcome,
+    ) -> WriteOutcome {
         let target = ctx.target;
         let backed_up = match ctx.param_backup {
             Some(path) => format!("Its parameter memory before the flash is backed up at {path}."),
@@ -116,9 +117,7 @@ impl BussardMcp {
         let written = match program::flash::execute(execution, &mut observer).await {
             Ok(written) => written,
             Err(declined) => {
-                result["ok"] = json!(false);
-                result["verified"] = json!(false);
-                result["reason"] = json!(declined.to_string());
+                result.fail(declined.to_string());
                 return result;
             }
         };
@@ -138,43 +137,44 @@ impl BussardMcp {
             if verified { "verified" } else { "FAILED" }
         );
         if let Some(why) = &image.load {
-            result["load_application"] = json!({
-                "why": why,
-                "application": image.plan.identity.id,
-                "loaded": verified,
+            result.load_application = Some(LoadApplication {
+                why: why.clone(),
+                application: image.plan.identity.id.clone(),
+                loaded: verified,
             });
         }
         match &flashed.outcome {
             Ok(done) if done.ok() => {
                 let ok = params_differ.is_none() && readback.is_some();
-                result["ok"] = json!(ok);
-                result["verified"] = json!(ok);
+                result.verdict.ok = ok;
+                result.verdict.verified = ok;
                 if done.property_only {
                     // A property-only procedure (issue #390) loads no object.
-                    result["property_procedure"] = json!(true);
+                    result.property_procedure = Some(true);
                 } else {
-                    result["load_state"] = json!(done.load_state.to_string());
+                    result.load_state = Some(done.load_state.to_string());
                 }
-                result["application"] = json!(image.plan.identity.id);
-                result["warnings"] = json!(done.warnings);
-                result["parameters"] = json!({
-                    "written": true,
-                    "verified": params_verified,
-                    "changed": ctx.changed,
-                });
-                if let Some(note) = flashed_params.and_then(|f| f.note.as_ref()) {
-                    result["parameters"]["note"] = json!(format!("not compared: {note}"));
-                }
+                result.application = Some(image.plan.identity.id.clone());
+                result.warnings = Some(done.warnings.clone());
+                let mut parameters = ParametersWritten {
+                    written: true,
+                    verified: Some(params_verified),
+                    changed: Some(ctx.changed),
+                    note: flashed_params
+                        .and_then(|f| f.note.as_ref())
+                        .map(|note| format!("not compared: {note}")),
+                    ..ParametersWritten::default()
+                };
                 if let Some(readback) = readback {
-                    result["readback"] = json!(readback);
+                    result.readback = Some(readback.clone());
                 } else {
                     // A silent success is a P1: no read-back, no "verified".
-                    result["reason"] = json!(format!(
+                    result.verdict.reason = Some(format!(
                         "the download ended with the application {} on {target}, but it was \
                          not read back and compared with your project",
                         done.load_state
                     ));
-                    result["recovery"] = json!(format!(
+                    result.verdict.recovery = Some(format!(
                         "Plan {target} again with knx_plan_device: it reads the device and \
                          says what still differs."
                     ));
@@ -183,29 +183,28 @@ impl BussardMcp {
                     // Issues #319, #349: the application is loaded, but the
                     // device does not hold the model's configuration. Say
                     // that first.
-                    result["reason"] = json!(failure);
-                    result["parameters"]["differences"] = json!(
+                    result.verdict.reason = Some(failure.clone());
+                    parameters.differences = Some(
                         flashed_params
                             .map(|f| f.differences.clone())
-                            .unwrap_or_default()
+                            .unwrap_or_default(),
                     );
-                    result["recovery"] = json!(format!(
+                    result.verdict.recovery = Some(format!(
                         "The application is loaded on {target}, but the items listed still \
                          differ from your project. Plan {target} again with knx_plan_device to \
                          see what is left, and do not report the change as done until a plan \
                          reports nothing to do."
                     ));
                 }
+                result.parameters = Some(parameters);
                 // The verified flash wrote this PID 54 table and these PID 61
                 // flags: recorded in the lock, as `bussard flash` does
                 // (issues #297, #331).
                 if let Some(record) = &written.lock {
-                    super::record_json(&mut result, record);
+                    result.record(record);
                 }
             }
             Ok(done) => {
-                result["ok"] = json!(false);
-                result["verified"] = json!(false);
                 let sequence = if done.property_only {
                     format!(
                         "the property procedure did not verify: {}",
@@ -223,20 +222,18 @@ impl BussardMcp {
                     )
                 };
                 // Issue #349: the read-back names what differs.
-                result["reason"] = json!(match &params_differ {
+                result.fail(match &params_differ {
                     Some(failure) => format!("{sequence}; {failure}"),
                     None => sequence,
                 });
                 if let Some(readback) = readback {
-                    result["readback"] = json!(readback);
+                    result.readback = Some(readback.clone());
                 }
-                result["recovery"] = json!(recovery);
+                result.verdict.recovery = Some(recovery);
             }
             Err(err) => {
-                result["ok"] = json!(false);
-                result["verified"] = json!(false);
-                result["reason"] = json!(format!("the flash failed: {}", chain(err)));
-                result["recovery"] = json!(recovery);
+                result.fail(format!("the flash failed: {}", chain(err)));
+                result.verdict.recovery = Some(recovery);
             }
         }
         result

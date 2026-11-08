@@ -67,10 +67,15 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use bussard_model::IndividualAddress;
+use bussard_model::Model;
 use bussard_model::history::HISTORY_DIR;
+use bussard_model::text::capitalize;
 use bussard_service::download::Progress;
 use bussard_service::observer::{Answer, Event, ProgressSink, Prompt, Question, Step};
-use serde_json::{Map, Value, json};
+use bussard_service::program::outcome::{OutcomeHead, Verdict};
+use bussard_service::report::{Refusal, is_false, subject_phrase};
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
@@ -86,9 +91,12 @@ pub const DEFAULT_REPLY_WAIT: Duration = Duration::from_secs(20);
 pub const RECORD_FILE: &str = "apply-result.json";
 
 /// What a job does.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum JobKind {
     /// A write: `knx_apply_device` or `knx_restore_parameters` with a digest.
+    /// A record that names no kind is one.
+    #[default]
     Apply,
     /// The device read and diff of `knx_plan_device` (issue #332).
     Plan,
@@ -114,17 +122,6 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    /// Every kind.
-    const ALL: [JobKind; 7] = [
-        JobKind::Apply,
-        JobKind::Plan,
-        JobKind::Read,
-        JobKind::Scan,
-        JobKind::Add,
-        JobKind::Replace,
-        JobKind::Commission,
-    ];
-
     /// The kind as `knx_apply_status` reports it.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -136,13 +133,6 @@ impl JobKind {
             JobKind::Replace => "replace",
             JobKind::Commission => "commission",
         }
-    }
-
-    /// The kind a record names (an apply when it names none).
-    fn of(record: &Value) -> JobKind {
-        let named = record["kind"].as_str();
-        let found = JobKind::ALL.into_iter().find(|k| Some(k.as_str()) == named);
-        found.unwrap_or(JobKind::Apply)
     }
 }
 
@@ -169,12 +159,169 @@ pub struct Claim {
 }
 
 /// A job's lifecycle state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum JobState {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum JobState {
     /// The pre-flight passed and the write is running.
     Running,
     /// The write ended (verified or not); the result is final.
     Done,
+    /// A record still marked running after a server restart: the write was
+    /// cut off.
+    Interrupted,
+}
+
+/// A job's progress counters, each there once the job reported it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JobProgress {
+    /// The download step, `3/7`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download_step: Option<String>,
+    /// How far the segment walk got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub segment: Option<SegmentPosition>,
+    /// The octets the last System 7 segment stream wrote (issue #320).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub octets: Option<OctetsWritten>,
+    /// The table write: `verified` or `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tables: Option<String>,
+    /// The download: `verified` or `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub download: Option<String>,
+    /// A scan's addresses to probe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub total: Option<usize>,
+    /// A scan's addresses probed so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probed: Option<usize>,
+    /// A scan's devices found so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub found: Option<usize>,
+    /// A commissioning run's device reports so far.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub devices: Option<Vec<Value>>,
+    /// The address a commissioning run checks now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checking: Option<String>,
+    /// The devices a commissioning run has still to do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending: Option<Value>,
+    /// The device a commissioning run waits for, and where it is in the
+    /// walk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device: Option<Value>,
+    /// The device a commissioning run identified last.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identified: Option<Value>,
+}
+
+/// How far a segment walk got.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SegmentPosition {
+    /// Octets walked.
+    pub position: usize,
+    /// Octets in the segment.
+    pub total: usize,
+}
+
+/// The octets a System 7 segment stream wrote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OctetsWritten {
+    /// Octets written.
+    pub written: usize,
+    /// Octets the stream could write.
+    pub writable: usize,
+}
+
+/// A job as `knx_job_status` and `knx_apply_status` report it, and as its
+/// record under `.bussard/history` holds it (without the envelope).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JobStatus {
+    /// The job id.
+    pub job: String,
+    /// What it does.
+    #[serde(default)]
+    pub kind: JobKind,
+    /// The device, `None` for a job about no one device.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The line of a scan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<String>,
+    /// Where it stands.
+    pub state: JobState,
+    /// Whether it ended.
+    pub done: bool,
+    /// When it started, RFC 3339.
+    pub started_at: String,
+    /// When it ended.
+    #[serde(default)]
+    pub finished_at: Option<String>,
+    /// Seconds since the start (to the end once done).
+    #[serde(default)]
+    pub elapsed_s: f64,
+    /// What it does now, in words.
+    #[serde(default)]
+    pub step: String,
+    /// What the human must do or answer, while it waits on one (`null`
+    /// otherwise).
+    #[serde(default)]
+    pub question: Option<String>,
+    /// The progress counters.
+    #[serde(default)]
+    pub progress: JobProgress,
+    /// The final result once done: the flow's outcome as it serialises.
+    #[serde(default)]
+    pub result: Option<Value>,
+    /// Where the record is persisted.
+    #[serde(default)]
+    pub record: Option<String>,
+    /// Read back from its record (a job of an earlier server).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub from_record: bool,
+    /// What the pre-flight established (gateway, backups, snapshot), or
+    /// what a paused job reports (its plan and question).
+    #[serde(flatten)]
+    pub context: Map<String, Value>,
+}
+
+/// The keys of [`JobStatus`] a context may not shadow.
+const STATUS_KEYS: &[&str] = &[
+    "job",
+    "kind",
+    "address",
+    "line",
+    "state",
+    "done",
+    "started_at",
+    "finished_at",
+    "elapsed_s",
+    "step",
+    "question",
+    "progress",
+    "result",
+    "record",
+    "from_record",
+    "summary",
+    "next_step",
+    // The verdict belongs to the result, not to what the pre-flight found.
+    "ok",
+    "verified",
+    "refused",
+    "reason",
+    "recovery",
+];
+
+/// `value`'s fields, without the ones a [`JobStatus`] has itself.
+fn context_of(value: Value) -> Map<String, Value> {
+    match value {
+        Value::Object(mut map) => {
+            map.retain(|k, _| !STATUS_KEYS.contains(&k.as_str()));
+            map
+        }
+        _ => Map::new(),
+    }
 }
 
 /// One job of this session.
@@ -200,9 +347,11 @@ struct Job {
     /// (issue #746): "press the programming button on the new device".
     question: Option<String>,
     /// Progress counters (download step, octets written, tables outcome).
-    progress: Map<String, Value>,
+    progress: JobProgress,
+    /// The line of a scan.
+    line: Option<String>,
     /// What the pre-flight established (gateway, backups, snapshot).
-    context: Value,
+    context: Map<String, Value>,
     /// The final result once done.
     result: Option<Value>,
     /// Where the record is persisted, when there is an audit snapshot.
@@ -327,7 +476,7 @@ impl JobTable {
         inner.jobs.retain(|job_id, job| {
             let superseded = match kind {
                 JobKind::Plan => job.address == address,
-                JobKind::Scan => job.context["line"].as_str() == line,
+                JobKind::Scan => job.line.as_deref() == line,
                 _ => false,
             };
             *job_id == id || !(job.kind == kind && job.state == JobState::Done && superseded)
@@ -338,10 +487,8 @@ impl JobTable {
     /// Drops `key` from the fields a paused job reported at the top of its
     /// status ([`JobTable::pause`]), once the answer it waited for came.
     pub fn forget(&self, id: &str, key: &str) {
-        if let Some(job) = self.inner().jobs.get_mut(id)
-            && let Value::Object(context) = &mut job.context
-        {
-            context.remove(key);
+        if let Some(job) = self.inner().jobs.get_mut(id) {
+            job.context.remove(key);
         }
     }
 
@@ -369,12 +516,7 @@ impl JobTable {
         if address.is_some() {
             job.address = address;
         }
-        if let Value::Object(detail) = detail {
-            match &mut job.context {
-                Value::Object(context) => context.extend(detail),
-                other => *other = Value::Object(detail),
-            }
-        }
+        job.context.extend(context_of(detail));
     }
 
     /// Takes a paused job up again (issue #749): it holds the slot once more,
@@ -416,12 +558,11 @@ impl JobTable {
         job.finished_at = Some(SystemTime::now());
         job.step = "refused".to_string();
         job.question = None;
-        job.result = Some(json!({
-            "ok": false,
-            "refused": true,
-            "address": job.address.map(|a| a.to_string()),
-            "reason": reason,
-        }));
+        job.result = serde_json::to_value(Refusal {
+            address: job.address.map(|a| a.to_string()),
+            ..Refusal::new(reason)
+        })
+        .ok();
         job.done.send_replace(true);
     }
 }
@@ -521,10 +662,7 @@ fn insert(
         JobKind::Replace => "check_gone",
         JobKind::Commission => "checking which devices already answer",
     };
-    let context = match line {
-        Some(line) => json!({ "line": line }),
-        None => Value::Null,
-    };
+
     inner.jobs.insert(
         id.clone(),
         Job {
@@ -537,8 +675,9 @@ fn insert(
             state: JobState::Running,
             step: step.to_string(),
             question: None,
-            progress: Map::new(),
-            context,
+            progress: JobProgress::default(),
+            line: line.map(str::to_string),
+            context: Map::new(),
             result: None,
             record: None,
             done,
@@ -562,7 +701,8 @@ impl JobTable {
     /// The pre-flight passed: records what it established (`context`: the
     /// gateway, the backups, the snapshot) and persists the running record to
     /// `record` when there is one.
-    pub fn started(&self, id: &str, context: Value, record: Option<PathBuf>) {
+    pub fn started(&self, id: &str, context: &impl Serialize, record: Option<PathBuf>) {
+        let context = context_of(serde_json::to_value(context).unwrap_or_default());
         let status = {
             let mut inner = self.inner();
             let Some(job) = inner.jobs.get_mut(id) else {
@@ -597,16 +737,22 @@ impl JobTable {
         }
     }
 
-    /// Sets one progress counter.
-    pub fn progress(&self, id: &str, key: &str, value: Value) {
+    /// Updates the progress counters.
+    pub fn progress(&self, id: &str, update: impl FnOnce(&mut JobProgress)) {
         if let Some(job) = self.inner().jobs.get_mut(id) {
-            job.progress.insert(key.to_string(), value);
+            update(&mut job.progress);
         }
     }
 
     /// The write ended with `result`: the job is done, the slot is free, and
     /// the final record is persisted.
-    pub fn finish(&self, id: &str, result: Value) {
+    pub fn finish(&self, id: &str, result: impl Serialize) {
+        let result = serde_json::to_value(result).unwrap_or_else(|err| {
+            serde_json::to_value(Verdict::failed(format!(
+                "the result could not be serialised: {err}"
+            )))
+            .unwrap_or_default()
+        });
         let status = {
             let mut inner = self.inner();
             if inner.running.as_deref() == Some(id) {
@@ -652,19 +798,19 @@ impl JobTable {
 
     /// The job's status, from this session or from its record under `dir`'s
     /// history (`None` when neither knows it).
-    pub fn status(&self, dir: &Path, id: &str) -> Option<Value> {
+    pub fn status(&self, dir: &Path, id: &str) -> Option<JobStatus> {
         if let Some(job) = self.inner().jobs.get(id) {
             return Some(job.status(id));
         }
         records(dir)
             .into_iter()
-            .find(|record| record["job"] == id)
+            .find(|record| record.job == id)
             .map(restored)
     }
 
     /// The latest job for `address`: this session's, else the newest record
     /// under `dir`'s history.
-    pub fn last(&self, dir: &Path, address: IndividualAddress) -> Option<Value> {
+    pub fn last(&self, dir: &Path, address: IndividualAddress) -> Option<JobStatus> {
         {
             let inner = self.inner();
             if let Some(job) = inner
@@ -678,7 +824,7 @@ impl JobTable {
         let wanted = address.to_string();
         records(dir)
             .into_iter()
-            .find(|record| record["address"] == wanted.as_str())
+            .find(|record| record.address.as_deref() == Some(wanted.as_str()))
             .map(restored)
     }
 
@@ -687,9 +833,8 @@ impl JobTable {
     /// `what_you_will_notice` (issue #306).
     pub fn last_write_seconds(&self, dir: &Path, address: IndividualAddress) -> Option<f64> {
         let last = self.last(dir, address)?;
-        (last["kind"] == "apply" && last["state"] == "done" && last["result"]["ok"] == true)
-            .then(|| last["elapsed_s"].as_f64())
-            .flatten()
+        (last.kind == JobKind::Apply && last.state == JobState::Done && last.head().verdict.ok)
+            .then_some(last.elapsed_s)
     }
 
     /// The final result of a job of this session, once done.
@@ -710,9 +855,10 @@ impl JobTable {
     /// waiting does not cut it: its value finishes the job, its `Err` is the
     /// refusal ([`JobTable::refuse`]). `verb` names the job when the task
     /// panics.
-    pub fn spawn<F>(self: &Arc<Self>, id: &str, verb: &'static str, work: F)
+    pub fn spawn<F, R>(self: &Arc<Self>, id: &str, verb: &'static str, work: F)
     where
-        F: Future<Output = Result<Value, String>> + Send + 'static,
+        F: Future<Output = Result<R, String>> + Send + 'static,
+        R: Serialize,
     {
         let (jobs, job) = (Arc::clone(self), id.to_string());
         self.watch(
@@ -735,11 +881,7 @@ impl JobTable {
             if let Err(err) = worker.await {
                 jobs.finish(
                     &job,
-                    json!({
-                        "ok": false,
-                        "verified": false,
-                        "reason": format!("the {verb} task stopped unexpectedly: {err}"),
-                    }),
+                    Verdict::failed(format!("the {verb} task stopped unexpectedly: {err}")),
                 );
             }
         });
@@ -756,12 +898,12 @@ pub struct Gate {
     /// The job.
     job: String,
     /// The waiting call, until the pre-flight ended.
-    tx: Arc<std::sync::Mutex<Option<Verdict>>>,
+    tx: Arc<std::sync::Mutex<Option<GateVerdict>>>,
 }
 
 /// Where the pre-flight's verdict goes: `Ok` once it passed, else the
 /// refusal.
-type Verdict = oneshot::Sender<Result<(), String>>;
+type GateVerdict = oneshot::Sender<Result<(), String>>;
 
 impl Gate {
     /// A gate for `job`, and what the call waits on.
@@ -777,7 +919,7 @@ impl Gate {
 
     /// The pre-flight passed: records what it established (`context`, the
     /// record file) and lets the call answer.
-    pub fn pass(&self, context: Value, record: Option<PathBuf>) {
+    pub fn pass(&self, context: &impl Serialize, record: Option<PathBuf>) {
         self.jobs.started(&self.job, context, record);
         self.send(Ok(()));
     }
@@ -814,11 +956,8 @@ pub fn record_file(dir: &Path, snapshot: Option<&str>) -> Option<PathBuf> {
 impl Job {
     /// The job as `knx_apply_status` reports it. `question` is there only
     /// while the job waits on one, so an apply's payload is unchanged.
-    fn status(&self, id: &str) -> Value {
-        let state = match self.state {
-            JobState::Running => "running",
-            JobState::Done => "done",
-        };
+    fn status(&self, id: &str) -> JobStatus {
+        let state = self.state;
         let elapsed = match self.finished_at {
             Some(end) => end
                 .duration_since(self.started_at)
@@ -826,46 +965,38 @@ impl Job {
                 .as_secs_f64(),
             None => self.began.elapsed().as_secs_f64(),
         };
-        let mut status = json!({
-            "job": id,
-            "kind": self.kind.as_str(),
-            "address": self.address.map(|a| a.to_string()),
-            "state": state,
-            "done": self.state == JobState::Done,
-            "started_at": bussard_service::monitor::timefmt::to_rfc3339(self.started_at),
-            "finished_at": self.finished_at.map(bussard_service::monitor::timefmt::to_rfc3339),
-            "elapsed_s": (elapsed * 10.0).round() / 10.0,
-            "step": self.step,
-            "progress": Value::Object(self.progress.clone()),
-            "result": self.result,
-            "record": self.record.as_ref().map(|p| p.display().to_string()),
-        });
-        if let (Some(question), Some(map)) = (&self.question, status.as_object_mut()) {
-            map.insert("question".to_string(), json!(question));
+        JobStatus {
+            job: id.to_string(),
+            kind: self.kind,
+            address: self.address.map(|a| a.to_string()),
+            line: self.line.clone(),
+            state,
+            done: state == JobState::Done,
+            started_at: bussard_service::monitor::timefmt::to_rfc3339(self.started_at),
+            finished_at: self
+                .finished_at
+                .map(bussard_service::monitor::timefmt::to_rfc3339),
+            elapsed_s: (elapsed * 10.0).round() / 10.0,
+            step: self.step.clone(),
+            question: self.question.clone(),
+            progress: self.progress.clone(),
+            result: self.result.clone(),
+            record: self.record.as_ref().map(|p| p.display().to_string()),
+            from_record: false,
+            context: self.context.clone(),
         }
-        if let (Some(status), Value::Object(context)) = (status.as_object_mut(), &self.context) {
-            for (key, value) in context {
-                status.entry(key.clone()).or_insert_with(|| value.clone());
-            }
-        }
-        status["next_step"] = json!(next_step(self.kind, &status));
-        status
     }
 }
 
 /// Writes a job's status to its record file (temp file, then rename, so a
 /// reader never sees half a record). A failure is logged: the job itself
 /// goes on, and its session status stays available.
-fn persist(status: &Value) {
-    let Some(path) = status["record"].as_str().map(PathBuf::from) else {
+fn persist(status: &JobStatus) {
+    let Some(path) = status.record.as_deref().map(PathBuf::from) else {
         return;
     };
-    let mut record = status.clone();
-    if let Some(map) = record.as_object_mut() {
-        map.remove("next_step");
-    }
     let tmp = path.with_extension("json.tmp");
-    let written = serde_json::to_vec_pretty(&record)
+    let written = serde_json::to_vec_pretty(status)
         .map_err(std::io::Error::other)
         .and_then(|bytes| std::fs::write(&tmp, bytes))
         .and_then(|()| std::fs::rename(&tmp, &path));
@@ -878,7 +1009,7 @@ fn persist(status: &Value) {
 }
 
 /// Every job record under `dir`'s history, newest snapshot first.
-fn records(dir: &Path) -> Vec<Value> {
+fn records(dir: &Path) -> Vec<JobStatus> {
     let history = dir.join(HISTORY_DIR);
     let Ok(entries) = std::fs::read_dir(&history) else {
         return Vec::new();
@@ -893,199 +1024,274 @@ fn records(dir: &Path) -> Vec<Value> {
     snapshots
         .into_iter()
         .filter_map(|p| std::fs::read(p.join(RECORD_FILE)).ok())
-        .filter_map(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+        .filter_map(|bytes| serde_json::from_slice::<JobStatus>(&bytes).ok())
         .collect()
 }
 
 /// A record read back from disk: a job no running server holds that is
 /// still marked running was cut off by a server stop (`interrupted`).
-fn restored(mut record: Value) -> Value {
-    if record["state"] == "running" {
-        record["state"] = json!("interrupted");
-        record["step"] = json!("interrupted: the server stopped before the write ended");
+fn restored(mut record: JobStatus) -> JobStatus {
+    if record.state == JobState::Running {
+        record.state = JobState::Interrupted;
+        record.step = "interrupted: the server stopped before the write ended".to_string();
     }
-    record["from_record"] = json!(true);
-    record["next_step"] = json!(next_step(JobKind::of(&record), &record));
+    record.from_record = true;
     record
 }
 
-/// What the assistant does next with a `kind` job in `status`.
-fn next_step(kind: JobKind, status: &Value) -> String {
-    let job = status["job"].as_str().unwrap_or_default();
-    let address = status["address"].as_str().unwrap_or_default();
-    let state = status["state"].as_str();
-    match kind {
-        JobKind::Scan => scan_next_step(status, job),
-        JobKind::Add => add_next_step(status, job),
-        JobKind::Replace => replace_next_step(status, job, address),
-        JobKind::Commission => commission_next_step(status, job),
-        JobKind::Plan => match state {
-            Some("running") => format!(
-                "Still reading {address} for the plan. Call knx_apply_status with job {job} \
-                 again in a few seconds; the read continues in the server whether or not you \
-                 poll. Nothing is written."
+/// What a plan job's result says to the human, read back from the result
+/// it stored (the plan exactly as `knx_plan_device` returns it).
+#[derive(Debug, Default, Deserialize)]
+struct Said {
+    /// The plan's `summary`.
+    #[serde(default)]
+    summary: Option<String>,
+}
+
+impl JobStatus {
+    /// The head of the result: its verdict and what the write was.
+    pub fn head(&self) -> OutcomeHead {
+        self.result
+            .clone()
+            .and_then(|r| serde_json::from_value(r).ok())
+            .unwrap_or_default()
+    }
+
+    /// The job's status as an MCP result: the status plus the chat
+    /// envelope (`summary`, `next_step`).
+    pub fn chat(&self, model: &Model) -> Value {
+        let mut value = serde_json::to_value(self).unwrap_or_default();
+        crate::reply::envelope(&mut value, self.summary(model), Some(self.next_step()));
+        value
+    }
+
+    /// The homeowner's sentence about the job (issue #306); `None` for a
+    /// kind whose result carries its own.
+    pub fn summary(&self, model: &Model) -> Option<String> {
+        let device = subject_phrase(model, self.address.as_deref(), self.line.as_deref());
+        let plan = self.kind == JobKind::Plan;
+        Some(match self.state {
+            JobState::Running if plan => {
+                format!("Still reading {device} for the plan; nothing is written.")
+            }
+            JobState::Running => format!(
+                "{} is still being written; the result follows.",
+                capitalize(&device)
             ),
-            _ if status["result"]["refused"] == true => {
-                format!("The plan for {address} was refused: tell the human result.reason.")
+            JobState::Interrupted => format!(
+                "The write to {device} was cut off when the server stopped; the device may be \
+                 partly written. A new plan shows where it stands; the backup taken before the \
+                 write is kept."
+            ),
+            JobState::Done if plan => self
+                .result
+                .clone()
+                .and_then(|r| serde_json::from_value::<Said>(r).ok())
+                .and_then(|said| said.summary)
+                .unwrap_or_else(|| format!("The plan for {device} is ready.")),
+            JobState::Done => match self.kind {
+                JobKind::Apply | JobKind::Read => {
+                    let mut head = self.head();
+                    if head.address.is_none() {
+                        head.address = self.address.clone();
+                        head.line = self.line.clone();
+                    }
+                    head.summary(model)
+                }
+                _ => return None,
+            },
+        })
+    }
+
+    /// What the assistant does next with this job.
+    pub fn next_step(&self) -> String {
+        let job = self.job.as_str();
+        let address = self.address.as_deref().unwrap_or_default();
+        match self.kind {
+            JobKind::Scan => self.scan_next_step(),
+            JobKind::Add => self.add_next_step(),
+            JobKind::Replace => self.replace_next_step(address),
+            JobKind::Commission => self.commission_next_step(),
+            JobKind::Plan => match self.state {
+                JobState::Running => format!(
+                    "Still reading {address} for the plan. Call knx_apply_status with job {job} \
+                     again in a few seconds; the read continues in the server whether or not \
+                     you poll. Nothing is written."
+                ),
+                _ if self.head().verdict.refused => {
+                    format!("The plan for {address} was refused: tell the human result.reason.")
+                }
+                _ => format!(
+                    "The plan for {address} is ready: `result` is exactly what knx_plan_device \
+                     returns. Follow result.next_step: show the human result.sentences in full \
+                     and ask result.question; knx_apply_device takes result.plan_digest only \
+                     after an explicit yes."
+                ),
+            },
+            JobKind::Apply | JobKind::Read => self.apply_next_step(address),
+        }
+    }
+
+    /// What the assistant does next with a `knx_find_devices` job (issue
+    /// #747).
+    fn scan_next_step(&self) -> String {
+        let (job, line) = (&self.job, self.line.as_deref().unwrap_or_default());
+        match self.state {
+            JobState::Running => format!(
+                "Still scanning line {line} ({}; {} device(s) found so far). Call knx_job_status \
+                 with job {job} again in a few seconds; the scan continues in the server whether \
+                 or not you poll. Nothing is written.",
+                if self.step.is_empty() {
+                    "probing"
+                } else {
+                    &self.step
+                },
+                self.progress.found.unwrap_or(0)
+            ),
+            _ if self.head().verdict.ok => format!(
+                "The scan of line {line} is done: `result` is exactly what knx_find_devices \
+                 returns. Tell the human result.summary and the devices by name."
+            ),
+            _ => format!("The scan of line {line} did not run: tell the human result.reason."),
+        }
+    }
+
+    /// What the assistant does next with an apply job (and a read job).
+    fn apply_next_step(&self, address: &str) -> String {
+        let job = &self.job;
+        let head = self.head();
+        match self.state {
+            JobState::Running => format!(
+                "Still working on {address} ({}). Call knx_apply_status with job {job} again in \
+                 a few seconds; the job continues in the server whether or not you poll.",
+                self.step
+            ),
+            _ if head.verdict.refused => format!(
+                "Job {job} was refused in its pre-flight; nothing was written to {address}. \
+                 Tell the human result.reason, then call knx_plan_device for {address} and ask \
+                 again."
+            ),
+            JobState::Interrupted => format!(
+                "The server stopped while job {job} was writing {address}; the device may be \
+                 partly written. The pre-apply backups are named in this record. Call \
+                 knx_plan_device for {address}, show the new plan to the human and ask again."
+            ),
+            _ if head.verdict.ok => format!(
+                "Done: tell the human the outcome of job {job} on {address} (result.verified, \
+                 result.readback.compared, result.parameters) and the backup paths. A new \
+                 knx_plan_device for {address} reports nothing to do."
+            ),
+            _ => format!(
+                "Job {job} on {address} did not verify: tell the human result.reason or \
+                 result.detail, what result.readback.leftovers still differs, and \
+                 result.recovery, and the backup paths."
+            ),
+        }
+    }
+
+    /// What the assistant does next with a `knx_add_device` job (issue
+    /// #749).
+    fn add_next_step(&self) -> String {
+        let job = &self.job;
+        match (self.state, self.step.as_str()) {
+            (JobState::Running, "press_button") => format!(
+                "Relay `question` to the human word for word: the job waits up to 30 s for a \
+                 device to enter programming mode. Call knx_job_status with job {job} again in a \
+                 few seconds."
+            ),
+            (JobState::Running, "identified") => format!(
+                "The device is identified and nothing was written. Show the human `sentences` \
+                 in full and ask `question`. Only after an explicit yes call knx_add_device with \
+                 job {job}, plan_digest and yes: true, and download: true when \
+                 `download_needed` is true and the human agreed to the download."
+            ),
+            (JobState::Running, step) => format!(
+                "Still working ({step}). Call knx_job_status with job {job} again in a few \
+                 seconds; the job continues in the server whether or not you poll."
+            ),
+            (JobState::Interrupted, _) => format!(
+                "The server stopped while job {job} was adding a device. Call knx_add_device \
+                 again to start over; check the device with knx_show_device {{live: true}} first."
+            ),
+            _ if self.head().verdict.ok => {
+                "Done: tell the human result.summary, then follow result.next_step.".to_string()
             }
             _ => format!(
-                "The plan for {address} is ready: `result` is exactly what knx_plan_device \
-                 returns. Follow result.next_step: show the human result.sentences in full and \
-                 ask result.question; knx_apply_device takes result.plan_digest only after an \
-                 explicit yes."
+                "Job {job} did not add the device: tell the human result.reason. Nothing more is \
+                 written until knx_add_device is called again."
             ),
-        },
-        JobKind::Apply | JobKind::Read => apply_next_step(status, job, address),
-    }
-}
-
-/// What the assistant does next with a `knx_find_devices` job (issue #747).
-fn scan_next_step(status: &Value, job: &str) -> String {
-    let line = status["line"].as_str().unwrap_or_default();
-    match status["state"].as_str() {
-        Some("running") => format!(
-            "Still scanning line {line} ({}; {} device(s) found so far). Call knx_job_status \
-             with job {job} again in a few seconds; the scan continues in the server whether or \
-             not you poll. Nothing is written.",
-            status["step"].as_str().unwrap_or("probing"),
-            status["progress"]["found"].as_u64().unwrap_or(0)
-        ),
-        _ if status["result"]["ok"] == true => format!(
-            "The scan of line {line} is done: `result` is exactly what knx_find_devices returns. \
-             Tell the human result.summary and the devices by name."
-        ),
-        _ => format!("The scan of line {line} did not run: tell the human result.reason."),
-    }
-}
-
-/// What the assistant does next with an apply job (and a read job).
-fn apply_next_step(status: &Value, job: &str, address: &str) -> String {
-    match status["state"].as_str() {
-        Some("running") => format!(
-            "Still working on {address} ({}). Call knx_apply_status with job {job} again in a \
-             few seconds; the job continues in the server whether or not you poll.",
-            status["step"].as_str().unwrap_or("writing")
-        ),
-        _ if status["result"]["refused"] == true => format!(
-            "Job {job} was refused in its pre-flight; nothing was written to {address}. Tell \
-             the human result.reason, then call knx_plan_device for {address} and ask again."
-        ),
-        Some("interrupted") => format!(
-            "The server stopped while job {job} was writing {address}; the device may be partly \
-             written. The pre-apply backups are named in this record. Call knx_plan_device for \
-             {address}, show the new plan to the human and ask again."
-        ),
-        _ if status["result"]["ok"] == true => format!(
-            "Done: tell the human the outcome of job {job} on {address} (result.verified, \
-             result.readback.compared, result.parameters) and the backup paths. A new \
-             knx_plan_device for {address} reports nothing to do."
-        ),
-        _ => format!(
-            "Job {job} on {address} did not verify: tell the human result.reason or \
-             result.detail, what result.readback.leftovers still differs, and \
-             result.recovery, and the backup paths."
-        ),
-    }
-}
-
-/// What the assistant does next with a `knx_add_device` job (issue #749).
-fn add_next_step(status: &Value, job: &str) -> String {
-    match (status["state"].as_str(), status["step"].as_str()) {
-        (Some("running"), Some("press_button")) => format!(
-            "Relay `question` to the human word for word: the job waits up to 30 s for a device \
-             to enter programming mode. Call knx_job_status with job {job} again in a few \
-             seconds."
-        ),
-        (Some("running"), Some("identified")) => format!(
-            "The device is identified and nothing was written. Show the human `sentences` in \
-             full and ask `question`. Only after an explicit yes call knx_add_device with job \
-             {job}, plan_digest and yes: true, and download: true when `download_needed` is \
-             true and the human agreed to the download."
-        ),
-        (Some("running"), _) => format!(
-            "Still working ({}). Call knx_job_status with job {job} again in a few seconds; the \
-             job continues in the server whether or not you poll.",
-            status["step"].as_str().unwrap_or("working")
-        ),
-        (Some("interrupted"), _) => format!(
-            "The server stopped while job {job} was adding a device. Call knx_add_device again \
-             to start over; check the device with knx_show_device {{live: true}} first."
-        ),
-        _ if status["result"]["ok"] == true => {
-            "Done: tell the human result.summary, then follow result.next_step.".to_string()
         }
-        _ => format!(
-            "Job {job} did not add the device: tell the human result.reason. Nothing more is \
-             written until knx_add_device is called again."
-        ),
     }
-}
 
-/// What the assistant does next with a `knx_replace_device` job (issue #751).
-fn replace_next_step(status: &Value, job: &str, address: &str) -> String {
-    match (status["state"].as_str(), status["step"].as_str()) {
-        (Some("running"), Some("check_gone" | "press_button")) => format!(
-            "Relay `question` to the human word for word when there is one: the job checks \
-             that {address} no longer answers, then waits up to 30 s for the replacement to \
-             enter programming mode. Call knx_job_status with job {job} again in a few seconds."
-        ),
-        (Some("running"), Some("identified")) => format!(
-            "The replacement is identified and nothing was written. Show the human `sentences` \
-             in full and ask `question`. Only after an explicit yes call knx_replace_device \
-             with job {job}, plan_digest and yes: true, and download: true when \
-             `download_needed` is true and the human agreed to the download."
-        ),
-        (Some("running"), _) => format!(
-            "Still working on {address} ({}). Call knx_job_status with job {job} again in a few \
-             seconds; the job continues in the server whether or not you poll.",
-            status["step"].as_str().unwrap_or("working")
-        ),
-        (Some("interrupted"), _) => format!(
-            "The server stopped while job {job} was replacing {address}; the device may be \
-             addressed and partly written. Call knx_plan_device for {address}, show the plan \
-             to the human and ask again."
-        ),
-        _ if status["result"]["ok"] == true => {
-            "Done: tell the human result.summary, then follow result.next_step.".to_string()
+    /// What the assistant does next with a `knx_replace_device` job (issue
+    /// #751).
+    fn replace_next_step(&self, address: &str) -> String {
+        let job = &self.job;
+        match (self.state, self.step.as_str()) {
+            (JobState::Running, "check_gone" | "press_button") => format!(
+                "Relay `question` to the human word for word when there is one: the job checks \
+                 that {address} no longer answers, then waits up to 30 s for the replacement to \
+                 enter programming mode. Call knx_job_status with job {job} again in a few \
+                 seconds."
+            ),
+            (JobState::Running, "identified") => format!(
+                "The replacement is identified and nothing was written. Show the human \
+                 `sentences` in full and ask `question`. Only after an explicit yes call \
+                 knx_replace_device with job {job}, plan_digest and yes: true, and download: \
+                 true when `download_needed` is true and the human agreed to the download."
+            ),
+            (JobState::Running, step) => format!(
+                "Still working on {address} ({step}). Call knx_job_status with job {job} again \
+                 in a few seconds; the job continues in the server whether or not you poll."
+            ),
+            (JobState::Interrupted, _) => format!(
+                "The server stopped while job {job} was replacing {address}; the device may be \
+                 addressed and partly written. Call knx_plan_device for {address}, show the plan \
+                 to the human and ask again."
+            ),
+            _ if self.head().verdict.ok => {
+                "Done: tell the human result.summary, then follow result.next_step.".to_string()
+            }
+            _ => format!(
+                "Job {job} did not complete the replacement of {address}: tell the human \
+                 result.reason and result.recovery when there is one."
+            ),
         }
-        _ => format!(
-            "Job {job} did not complete the replacement of {address}: tell the human \
-             result.reason and result.recovery when there is one."
-        ),
     }
-}
 
-/// What the assistant does next with a `knx_commission_line` job (issue
-/// #753).
-fn commission_next_step(status: &Value, job: &str) -> String {
-    let waiting = status["waiting"].is_object();
-    match status["state"].as_str() {
-        Some("running") if waiting => format!(
-            "The job waits for the human's word and nothing more is written until it comes. \
-             Tell the human `waiting.reason`, then ask `question`; pass the answer as \
-             knx_commission_line {{job: {job}, answer}} with answer \"retry\", \"skip\" or \
-             \"stop\" (\"assign\" only where `question` offers it)."
-        ),
-        Some("running") if status["question"].is_string() => format!(
-            "Relay `question` to the human word for word: the job waits up to 30 s for the named \
-             device to enter programming mode, then identifies it and assigns its address \
-             without asking again when it is the product the model expects. Call knx_job_status \
-             with job {job} again in a few seconds; progress.devices lists each device's \
-             outcome and label as it ends."
-        ),
-        Some("running") => format!(
-            "Still working ({}). Call knx_job_status with job {job} again in a few seconds; the \
-             job continues in the server whether or not you poll.",
-            status["step"].as_str().unwrap_or("working")
-        ),
-        Some("interrupted") => format!(
-            "The server stopped while job {job} was commissioning a line. Call \
-             knx_commission_line again for a new plan; devices already commissioned are found \
-             at their address and skipped."
-        ),
-        _ => "Done: tell the human result.summary and read out result.labels so they can label \
-              each device; follow result.next_step."
-            .to_string(),
+    /// What the assistant does next with a `knx_commission_line` job (issue
+    /// #753).
+    fn commission_next_step(&self) -> String {
+        let job = &self.job;
+        let waiting = self.context.get("waiting").is_some_and(Value::is_object);
+        match self.state {
+            JobState::Running if waiting => format!(
+                "The job waits for the human's word and nothing more is written until it comes. \
+                 Tell the human `waiting.reason`, then ask `question`; pass the answer as \
+                 knx_commission_line {{job: {job}, answer}} with answer \"retry\", \"skip\" or \
+                 \"stop\" (\"assign\" only where `question` offers it)."
+            ),
+            JobState::Running if self.question.is_some() => format!(
+                "Relay `question` to the human word for word: the job waits up to 30 s for the \
+                 named device to enter programming mode, then identifies it and assigns its \
+                 address without asking again when it is the product the model expects. Call \
+                 knx_job_status with job {job} again in a few seconds; progress.devices lists \
+                 each device's outcome and label as it ends."
+            ),
+            JobState::Running => format!(
+                "Still working ({}). Call knx_job_status with job {job} again in a few seconds; \
+                 the job continues in the server whether or not you poll.",
+                self.step
+            ),
+            JobState::Interrupted => format!(
+                "The server stopped while job {job} was commissioning a line. Call \
+                 knx_commission_line again for a new plan; devices already commissioned are \
+                 found at their address and skipped."
+            ),
+            JobState::Done => "Done: tell the human result.summary and read out result.labels \
+                               so they can label each device; follow result.next_step."
+                .to_string(),
+        }
     }
 }
 
@@ -1206,23 +1412,31 @@ impl<'a> JobSink<'a> {
                     job,
                     format!("{} step {index} of {total}: {label}", self.what),
                 );
-                jobs.progress(job, "download_step", json!(format!("{index}/{total}")));
+                jobs.progress(job, |p| p.download_step = Some(format!("{index}/{total}")));
             }
             // How far the segment walk got (a read-compare compares most
             // chunks and writes few): not the octets written.
             Progress::Bytes { written, total } => {
-                jobs.progress(job, "segment", json!({"position": written, "total": total}));
+                jobs.progress(job, |p| {
+                    p.segment = Some(SegmentPosition {
+                        position: written,
+                        total,
+                    });
+                });
             }
             // The octets the last System 7 segment stream wrote (issue #320).
             Progress::Written { written, writable } => {
-                jobs.progress(
-                    job,
-                    "octets",
-                    json!({"written": written, "writable": writable}),
-                );
+                jobs.progress(job, |p| {
+                    p.octets = Some(OctetsWritten { written, writable });
+                });
             }
         }
     }
+}
+
+/// `verified` or `failed`.
+fn verdict_word(verified: bool) -> String {
+    if verified { "verified" } else { "failed" }.to_string()
 }
 
 impl ProgressSink for JobSink<'_> {
@@ -1243,18 +1457,10 @@ impl ProgressSink for JobSink<'_> {
             Event::Done {
                 step: Step::WriteTables,
                 verified,
-            } => jobs.progress(
-                job,
-                "tables",
-                json!(if verified { "verified" } else { "failed" }),
-            ),
+            } => jobs.progress(job, |p| p.tables = Some(verdict_word(verified))),
             Event::Progress(progress) => self.progress(progress),
             Event::Finished { verified } => {
-                jobs.progress(
-                    job,
-                    "download",
-                    json!(if verified { "verified" } else { "failed" }),
-                );
+                jobs.progress(job, |p| p.download = Some(verdict_word(verified)));
                 if verified && self.what == PARAMETER_DOWNLOAD {
                     jobs.step(job, "reading the parameter memory back to verify");
                 }
@@ -1273,6 +1479,12 @@ impl Prompt for JobSink<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
+
+    /// `status` as JSON, for the assertions.
+    fn as_json(status: JobStatus) -> Result<Value, String> {
+        serde_json::to_value(status).map_err(|e| e.to_string())
+    }
 
     fn ia() -> Result<IndividualAddress, String> {
         "1.1.4".parse().map_err(|_| "address".to_string())
@@ -1311,17 +1523,18 @@ mod tests {
 
         let jobs = JobTable::new();
         let id = apply(&jobs)?;
-        jobs.started(&id, json!({"backup": "b.json"}), Some(record.clone()));
+        jobs.started(&id, &json!({"backup": "b.json"}), Some(record.clone()));
         // A new server (empty session) reads the running record back.
         let fresh = JobTable::new();
         let cut = fresh
             .last(dir.path(), ia()?)
             .ok_or("no record after restart")?;
+        let cut = as_json(cut)?;
         assert_eq!(cut["state"], "interrupted", "{cut}");
         assert_eq!(cut["backup"], "b.json", "{cut}");
 
         jobs.finish(&id, json!({"ok": true, "verified": true}));
-        let done = fresh.status(dir.path(), &id).ok_or("no record by job")?;
+        let done = as_json(fresh.status(dir.path(), &id).ok_or("no record by job")?)?;
         assert_eq!(done["state"], "done", "{done}");
         assert_eq!(done["result"]["verified"], true, "{done}");
         assert_eq!(done["from_record"], true, "{done}");
@@ -1358,6 +1571,7 @@ mod tests {
         let status = jobs
             .status(Path::new("/nonexistent"), &apply)
             .ok_or("the refused job stays")?;
+        let status = as_json(status)?;
         assert_eq!(status["result"]["refused"], true, "{status}");
         assert!(jobs.running().is_none());
         // A new plan of the device supersedes its finished plan job.
@@ -1381,6 +1595,7 @@ mod tests {
         let status = jobs
             .status(Path::new("/nonexistent"), &add)
             .ok_or("the paused job stays")?;
+        let status = as_json(status)?;
         assert_eq!(status["step"], "identified", "{status}");
         assert_eq!(status["plan_digest"], "abc", "{status}");
         assert_eq!(status["address"], "1.1.4", "{status}");

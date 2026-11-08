@@ -20,7 +20,7 @@ use bussard_model::GroupAddress;
 use crate::compute::DesiredTables;
 
 /// One `(object, GA)` link in the diff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
 pub struct ObjectGa {
     /// The com-object number.
     pub object: u16,

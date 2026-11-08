@@ -117,6 +117,7 @@ pub mod property_plan;
 pub mod reconstruct;
 pub mod reconstruct_line;
 pub mod replace;
+pub mod report;
 pub mod restart;
 pub mod restore;
 pub mod scan;

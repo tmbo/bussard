@@ -36,7 +36,6 @@ use bussard_service::line::{
     DeviceStatus, LineMode as Mode, LineOutcome as Outcome, LineTarget as Target, LineVisit,
     targets_on_line, visit_device,
 };
-use bussard_service::mgmt::system_type;
 use bussard_service::observer::{Event, Note};
 use bussard_service::{BusService, WritePolicy};
 
@@ -45,34 +44,11 @@ use crate::conn_cmd::{
     ConnOverrides, enforce_write_gate, gateway_display, load_model_required, open_checked,
     resolve_config,
 };
+use bussard_service::line::LineReport;
 use bussard_service::secure::ToolKeySource;
 
-/// The stable JSON shape of one device row.
-#[derive(Debug, serde::Serialize)]
-struct DeviceJson {
-    address: String,
-    name: String,
-    mask: Option<String>,
-    system_type: Option<String>,
-    status: &'static str,
-    changes: usize,
-    detail: Option<String>,
-}
-
-/// The stable JSON shape of a whole-line run.
-#[derive(Debug, serde::Serialize)]
-struct LineJson {
-    line: String,
-    mode: &'static str,
-    gateway: String,
-    devices: Vec<DeviceJson>,
-    total: usize,
-    changed: usize,
-    unchanged: usize,
-    skipped: usize,
-    failed: usize,
-    state_file: Option<String>,
-}
+/// Each visited device's outcome with the notes its visit made.
+type Collected = Arc<Mutex<Vec<(Outcome, Vec<String>)>>>;
 
 /// Parses an `area.line` string (e.g. `1.1`) into its two parts
 /// ([`bussard_service::line::parse_line`]).
@@ -229,13 +205,14 @@ fn run_line(
     }
 
     let target_count = targets.len();
-    let outcomes: Arc<Mutex<Vec<Outcome>>> = Arc::new(Mutex::new(Vec::new()));
+    let outcomes: Collected = Arc::new(Mutex::new(Vec::new()));
     let runtime = tokio::runtime::Runtime::new()?;
     let (interrupted, mut state) = {
         let collected = Arc::clone(&outcomes);
         let config = config.clone();
         let state_path = state_path.clone();
         let conn = overrides.clone();
+        let model = &model;
         runtime.block_on(async move {
             let (service, source) = open_checked(config, line_policy, &conn).await?;
             // Guard the run with Ctrl-C (issue #31): the state file is already
@@ -244,7 +221,7 @@ fn run_line(
                 () = visit_all(
                     &service,
                     source,
-                    &model,
+                    model,
                     &targets,
                     mode,
                     dir,
@@ -269,7 +246,7 @@ fn run_line(
 
     let failed = outcomes
         .iter()
-        .filter(|o| matches!(o.status, DeviceStatus::Failed(_)))
+        .filter(|(o, _)| matches!(o.status, DeviceStatus::Failed(_)))
         .count();
 
     // A clean sweep retires the state file; anything left undone keeps it so
@@ -284,9 +261,11 @@ fn run_line(
     }
 
     if options.json {
-        let out = to_json(&line, mode, &gateway, &outcomes, kept_state.clone());
-        crate::output::print(crate::output::schema::LINE, &out)?;
+        let mut out = LineReport::new(&model, &line, mode, &gateway, &outcomes);
+        out.state_file = kept_state.clone();
+        crate::output::report(&out)?;
     } else {
+        let outcomes: Vec<Outcome> = outcomes.into_iter().map(|(o, _)| o).collect();
         print_summary(&line, mode, &gateway, &outcomes);
         if let Some(path) = &kept_state {
             eprintln!(
@@ -322,7 +301,7 @@ async fn visit_all(
     tool_key_source: ToolKeySource<'_>,
     state: &mut Option<LineState>,
     state_path: &Path,
-    collected: &Arc<Mutex<Vec<Outcome>>>,
+    collected: &Collected,
 ) {
     // KNX Data Secure (issue #71): one key per device, since a keyring holds
     // one per address; the admitted tunnelling addresses (issue #297).
@@ -348,12 +327,6 @@ async fn visit_all(
         on_parse: Some(crate::timing::record_product_parse),
         expected: None,
     };
-    // A line about the device goes under it, a warning as is.
-    let mut print_note = |event: Event<'_>| match event {
-        Event::Note(Note::Say(line)) => eprintln!("  {line}"),
-        Event::Note(Note::Warn(line)) => eprintln!("{line}"),
-        _ => {}
-    };
     let total = targets.len();
     for (index, target) in targets.iter().enumerate() {
         eprintln!(
@@ -363,6 +336,20 @@ async fn visit_all(
             target.address,
             target.name
         );
+        // A line about the device goes under it, a warning as is; both
+        // are kept for the JSON row.
+        let mut notes = Vec::new();
+        let mut print_note = |event: Event<'_>| match event {
+            Event::Note(Note::Say(line)) => {
+                eprintln!("  {line}");
+                notes.push(line);
+            }
+            Event::Note(Note::Warn(line)) => {
+                eprintln!("{line}");
+                notes.push(line);
+            }
+            _ => {}
+        };
         let outcome = if is_done(state.as_ref(), target.address) {
             eprintln!("  already done in an earlier run; skipping (--resume)");
             LineState::done_earlier(target)
@@ -377,7 +364,7 @@ async fn visit_all(
             eprintln!("warning: could not update the resume state file: {err}");
         }
         match collected.lock() {
-            Ok(mut v) => v.push(outcome),
+            Ok(mut v) => v.push((outcome, notes)),
             Err(_) => return,
         }
     }
@@ -415,41 +402,6 @@ fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Resu
         &format!("apply the model's links to {devices} device(s) on line {line} via {gateway}?"),
         &format!("apply line {line} ({devices} device(s)) via {gateway}"),
     )
-}
-
-/// Builds the JSON summary.
-fn to_json(
-    line: &str,
-    mode: Mode,
-    gateway: &str,
-    outcomes: &[Outcome],
-    state_file: Option<String>,
-) -> LineJson {
-    let devices: Vec<DeviceJson> = outcomes
-        .iter()
-        .map(|o| DeviceJson {
-            address: o.address.to_string(),
-            name: o.name.clone(),
-            mask: o.mask.map(|m| format!("{m:04X}")),
-            system_type: o.mask.map(|m| system_type(m).to_string()),
-            status: o.status.key(),
-            changes: o.status.changes(),
-            detail: o.status.detail().map(str::to_string),
-        })
-        .collect();
-    let count = |key: &str| devices.iter().filter(|d| d.status == key).count();
-    LineJson {
-        line: line.to_string(),
-        mode: mode.verb(),
-        gateway: gateway.to_string(),
-        total: devices.len(),
-        changed: count("changes") + count("applied"),
-        unchanged: count("unchanged"),
-        skipped: count("skipped"),
-        failed: count("failed"),
-        devices,
-        state_file,
-    }
 }
 
 /// Prints the one summary table the whole run ends with.

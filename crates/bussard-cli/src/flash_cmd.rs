@@ -372,16 +372,13 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         println!("{}", change.line());
     }
     if json {
-        crate::output::print(
-            crate::output::schema::FLASH,
-            &report::flash_plan_json(
-                target,
-                planned.device_mask,
-                plan,
-                &planned.params,
-                planned.security_change.as_ref(),
-            ),
-        )?;
+        crate::output::report(&report::FlashPlanReport::new(
+            target,
+            planned.device_mask,
+            plan,
+            &planned.params,
+            planned.security_change.as_ref(),
+        ))?;
     } else {
         print!(
             "{}",
@@ -630,16 +627,13 @@ fn dry_run(
         }
     }
     if json {
-        crate::output::print(
-            crate::output::schema::FLASH,
-            &report::flash_plan_json(
-                target,
-                offline.device_mask,
-                &offline.plan,
-                &offline.params,
-                None,
-            ),
-        )?;
+        crate::output::report(&report::FlashPlanReport::new(
+            target,
+            offline.device_mask,
+            &offline.plan,
+            &offline.params,
+            None,
+        ))?;
     } else {
         print!(
             "{}",

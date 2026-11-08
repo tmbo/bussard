@@ -19,6 +19,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use bussard_model::knxnet::KnxnetConfig;
 use bussard_model::{IndividualAddress, Model};
+use bussard_service::knxnet::InterfacePlanOutcome;
 use bussard_service::knxnet::{
     self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, SessionLink,
     apply_interface, write_interface_backup,
@@ -66,30 +67,6 @@ pub(crate) struct Procedure<'a> {
     pub app_id: Option<&'a str>,
     /// The property-only download of the application.
     pub plan: Option<&'a bussard_service::download::FlashPlan>,
-}
-
-/// The JSON shape of an interface plan: the device plan every `plan --json`
-/// carries, the question, and the writes on the wire.
-#[derive(Debug, serde::Serialize)]
-struct InterfacePlanJson {
-    #[serde(flatten)]
-    plan: bussard_service::download::DevicePlan,
-    /// The one question `apply` asks, `None` for an empty plan.
-    question: Option<String>,
-    /// Whether nothing would be written.
-    noop: bool,
-    /// The property writes, in order, as they go on the wire.
-    interface_writes: Vec<String>,
-    /// Why `apply` would refuse, when it would.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    refusal: Option<String>,
-    /// The identity verdict against `bussard.lock`.
-    identity: bussard_model::identity::IdentityCheck,
-    /// The application's property-only load procedure, when it has one: each
-    /// property as the device holds it and as the model asks (`bussard flash`
-    /// writes them).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    property_procedure: Option<Vec<PropertyRow>>,
 }
 
 /// What one interface session needs besides the bus.
@@ -242,16 +219,23 @@ pub(crate) fn plan(
         .extend(bussard_service::knxnet::parameters_note(model, target));
     let refusal = plan.refusal(false);
     if json {
-        let out = InterfacePlanJson {
-            question: (!plan.is_empty()).then(|| device_plan.question()),
-            noop: plan.is_empty() && !rows.as_ref().is_some_and(|r| r.iter().any(|r| r.differs())),
-            interface_writes: plan.steps.iter().map(|s| s.wire()).collect(),
-            refusal,
-            identity: read.check,
-            plan: device_plan,
-            property_procedure: rows,
+        let procedure_text = match (&rows, procedure.app_id) {
+            (Some(rows), Some(app_id)) => format!(
+                "\n{}",
+                bussard_service::property_plan::render_text(target, app_id, rows)
+            ),
+            _ => String::new(),
         };
-        crate::output::print(crate::output::schema::PLAN, &out)?;
+        let out = InterfacePlanOutcome::new(
+            &plan,
+            device_plan,
+            read.mask,
+            options.tool_key.is_some(),
+            read.check,
+            rows,
+            &procedure_text,
+        );
+        crate::output::report(&out)?;
         return Ok(ExitCode::SUCCESS);
     }
     println!("{}\n", bussard_service::identity_line(target, &read.check));

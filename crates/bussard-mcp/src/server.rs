@@ -145,6 +145,11 @@ impl BussardMcp {
         &self.warm
     }
 
+    /// The project the server serves now, for a result's `summary`.
+    pub(crate) fn model(&self) -> std::sync::Arc<bussard_model::Model> {
+        self.state.model.current()
+    }
+
     /// This session's unapplied model edits, by device (issue #279).
     pub(crate) fn session_edits(&self) -> &crate::session_edits::SessionEdits {
         &self.session_edits

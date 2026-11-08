@@ -339,7 +339,7 @@ async fn test_knx_apply_device_round_trip_plans_writes_and_verifies() -> anyhow:
         .await?;
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], false);
-    let text = plan["plan"].as_str().unwrap_or_default();
+    let text = plan["table_plan"].as_str().unwrap_or_default();
     assert!(
         text.contains("1 addition(s), 1 removal(s), 2 unchanged:"),
         "{text}"
@@ -652,13 +652,15 @@ async fn test_knx_apply_device_missing_product_data_applies_the_links_only() -> 
         .await?;
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], false, "plan: {plan}");
-    let skipped = plan["parameters"]["skipped"].as_str().unwrap_or_default();
+    let skipped = plan["parameter_plan"]["skipped"]
+        .as_str()
+        .unwrap_or_default();
     assert!(skipped.contains("is missing"), "{plan}");
     assert!(
         skipped.contains("bussard import-product --order-number TST-1"),
         "the recovery line: {plan}"
     );
-    assert_eq!(plan["parameters"]["written"], false, "{plan}");
+    assert_eq!(plan["parameter_plan"]["written"], false, "{plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 0, "{plan}");
     let next = plan["next_step"].as_str().unwrap_or_default();
     assert!(next.contains("only the links are written"), "{next}");
@@ -1021,9 +1023,8 @@ async fn test_knx_job_status_reads_an_apply_job_like_knx_apply_status() -> anyho
     };
     assert_eq!(status["kind"], "apply", "{status}");
     assert_eq!(status["result"]["verified"], true, "{status}");
-    let mut legacy = h.call("knx_apply_status", json!({"job": job})).await?;
-    assert!(legacy.get("question").is_none(), "{legacy}");
-    legacy["question"] = Value::Null;
+    let legacy = h.call("knx_apply_status", json!({"job": job})).await?;
+    assert_eq!(legacy["question"], Value::Null, "{legacy}");
     let (mut a, mut b) = (status.clone(), legacy);
     for v in [&mut a, &mut b] {
         if let Some(map) = v.as_object_mut() {
@@ -1410,7 +1411,7 @@ async fn test_knx_apply_device_line_plans_writes_and_verifies_every_device() -> 
     assert_eq!(row(&plan, "1.1.4")?["status"], "changes", "{plan}");
     assert_eq!(row(&plan, "1.1.5")?["status"], "unchanged", "{plan}");
     assert_eq!(row(&plan, "1.1.6")?["status"], "changes", "{plan}");
-    assert_eq!(plan["totals"]["changed"], 2, "{plan}");
+    assert_eq!(plan["changed"], 2, "{plan}");
     let sentences = plan["sentences"].to_string();
     assert!(
         sentences.contains("Heizung Bad object 31 now on 1/4/1 (Bad mode)"),
@@ -1626,7 +1627,7 @@ async fn test_knx_apply_device_line_without_model_edits_leaves_groups_toml_alone
     )
     .await?;
     assert_eq!(applied["ok"], true, "{applied}");
-    assert_eq!(applied["declared"], json!([]), "{applied}");
+    assert!(applied.get("declared").is_none(), "{applied}");
     assert_eq!(std::fs::read_to_string(&groups)?, text);
     assert_eq!(row(&applied, "1.1.6")?["status"], "applied", "{applied}");
 
@@ -1670,7 +1671,7 @@ async fn test_knx_apply_device_line_does_not_write_a_device_that_changed_since_t
         0,
         "a moved device must not be written"
     );
-    assert_eq!(applied["totals"]["failed"], 1, "{applied}");
+    assert_eq!(applied["failed"], 1, "{applied}");
 
     h.stop().await
 }

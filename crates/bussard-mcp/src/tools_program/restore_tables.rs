@@ -28,14 +28,17 @@ use bussard_service::download::{
 };
 use bussard_service::mgmt::{MaskProfile, system_type};
 use bussard_service::params::BuiltPlan;
+use bussard_service::program::outcome::{SecurityObject, WriteOutcome};
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
+use bussard_service::report::Approval;
+use bussard_service::restore::TableRestorePlan;
 use bussard_service::secure::{Key16, SequenceHighWater};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{
     BussardMcp, DeviceRead, Origin, Prepared, ProgrammingTier, Read, Subject, chain, read_device,
-    refuse_protected, security_for, security_json,
+    refuse_protected, security_for,
 };
 
 /// What a table restore read and planned.
@@ -205,7 +208,8 @@ impl BussardMcp {
                 return Err(refusal);
             }
             let planned = self.on_bus(tier, self.plan_tables(target, &file)).await?;
-            return Ok(self.tables_plan_json(tier, target, &file, &gateway, &planned));
+            let plan = self.tables_plan_json(tier, target, &file, &gateway, &planned);
+            return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
         let digest = digest.to_string();
         self.run_write(
@@ -217,7 +221,7 @@ impl BussardMcp {
                     let prepared = me.tables_preflight(tier, target, &file, &digest).await?;
                     let record =
                         crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
-                    gate.pass(prepared.result.clone(), record);
+                    gate.pass(&prepared.result, record);
                     Ok(me.apply_write(tier, &job, prepared).await)
                 })
                 .await
@@ -319,20 +323,10 @@ impl BussardMcp {
         file: &Path,
         gateway: &str,
         planned: &Planned,
-    ) -> Value {
+    ) -> TableRestorePlan {
         let noop = planned.noop;
-        if !noop {
-            let subject = format!("{target} from {}", file.display());
-            tier.table_restores
-                .insert(planned.digest.clone(), subject, ());
-        }
         let tables = planned.read.live.tables();
         let report = &planned.report;
-        let pairs = |list: &[bussard_service::download::ObjectGa]| -> Vec<Value> {
-            list.iter()
-                .map(|p| json!({"object": p.object, "ga": p.ga.to_string()}))
-                .collect()
-        };
         let mut notes = Vec::new();
         if let Some(parameters) = &planned.backup.parameters {
             notes.push(format!(
@@ -345,44 +339,42 @@ impl BussardMcp {
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default();
-        let now = std::time::SystemTime::now();
-        json!({
-            "ok": true,
-            "method": "restore",
-            "address": target.to_string(),
-            "gateway": gateway,
-            "backup": file.display().to_string(),
-            "backup_read_time": planned.backup.read_time,
-            "backup_mask": planned.backup.mask,
-            "mask": format!("{:04X}", tables.mask),
-            "system_type": system_type(tables.mask),
-            "secured": planned.tool_key.is_some(),
-            "identity": planned.read.check().map(|c| bussard_service::identity_line(target, c)),
-            "noop": noop,
-            "plan": render_plan_text(target, tables, report),
-            "additions": pairs(&report.additions),
-            "removals": pairs(&report.removals),
-            "unchanged": report.unchanged.len(),
-            "current_address_count": report.current_address_count,
-            "resulting_address_count": report.resulting_address_count,
-            "current_association_count": report.current_association_count,
-            "resulting_association_count": report.resulting_association_count,
-            "security_object": security_json(planned.security.as_ref(), &planned.desired, noop),
-            "notes": notes,
-            "question": (!noop).then(|| format!(
-                "restore the link tables of {target} from {name} through {gateway}?"
-            )),
-            "plan_digest": (!noop).then(|| planned.digest.clone()),
-            "expires_at": (!noop).then(|| tier.table_restores.expires_at(now)),
-            "next_step": if noop {
-                format!("nothing to write: {target} already holds the backup's link tables")
-            } else {
-                "Show the plan above to the human (what is added and removed) and ask the \
-                 question. Call knx_restore_tables with this plan_digest only after an explicit \
-                 yes."
-                    .to_string()
-            },
-        })
+        let mut approval = Approval::question((!noop).then(|| {
+            format!("restore the link tables of {target} from {name} through {gateway}?")
+        }));
+        if !noop {
+            let subject = format!("{target} from {}", file.display());
+            tier.table_restores
+                .insert(planned.digest.clone(), subject, ());
+            approval.plan_digest = Some(planned.digest.clone());
+            approval.expires_at =
+                Some(tier.table_restores.expires_at(std::time::SystemTime::now()));
+        }
+        TableRestorePlan {
+            ok: true,
+            method: "restore".to_string(),
+            address: target.to_string(),
+            gateway: gateway.to_string(),
+            backup: file.display().to_string(),
+            backup_read_time: planned.backup.read_time.clone(),
+            backup_mask: planned.backup.mask.clone(),
+            mask: format!("{:04X}", tables.mask),
+            system_type: system_type(tables.mask).to_string(),
+            secured: planned.tool_key.is_some(),
+            identity: planned.read.check().cloned(),
+            noop,
+            table_plan: render_plan_text(target, tables, report),
+            additions: report.additions.clone(),
+            removals: report.removals.clone(),
+            unchanged: report.unchanged.clone(),
+            current_address_count: report.current_address_count,
+            resulting_address_count: report.resulting_address_count,
+            current_association_count: report.current_association_count,
+            resulting_association_count: report.resulting_association_count,
+            security_object: SecurityObject::of(planned.security.as_ref(), &planned.desired, noop),
+            notes,
+            approval,
+        }
     }
 
     /// The pre-flight of a table restore. `Err` is a refusal; nothing was
@@ -430,16 +422,15 @@ impl BussardMcp {
             .map(|p| p.display().to_string())
             .unwrap_or_default();
         let built = tables_only_plan(target, &planned.model, &gateway, &dir, &planned);
-        let result = json!({
-            "method": "restore",
-            "address": target.to_string(),
-            "gateway": gateway,
-            "secured": planned.tool_key.is_some(),
-            "restored_from": file.display().to_string(),
-            "backup": backup_path,
-            "parameter_backup": Value::Null,
-            "snapshot": snapshot,
-        });
+        let result = WriteOutcome {
+            method: Some("restore".to_string()),
+            gateway: Some(gateway.clone()),
+            secured: Some(planned.tool_key.is_some()),
+            restored_from: Some(file.display().to_string()),
+            backup: Some(backup_path.clone()),
+            snapshot: snapshot.clone(),
+            ..WriteOutcome::new(target)
+        };
         Ok(Prepared {
             model: planned.model,
             product: None,

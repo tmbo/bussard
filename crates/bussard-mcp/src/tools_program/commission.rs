@@ -496,7 +496,7 @@ impl BussardMcp {
                 .push(outcome_report(&cur.target, &outcome, None));
             run.walk.record(outcome);
             tier.jobs
-                .progress(job, "devices", Value::Array(run.reports.clone()));
+                .progress(job, |p| p.devices = Some(run.reports.clone()));
         }
         self.spawn_commission(job.to_string(), run, stop);
         Ok(json!({
@@ -560,7 +560,7 @@ impl BussardMcp {
                         },
                     });
                     tier.jobs
-                        .progress(&id, "devices", Value::Array(run.reports.clone()));
+                        .progress(&id, |p| p.devices = Some(run.reports.clone()));
                     if let Some(entry) = tier.commissions().jobs.get_mut(&id) {
                         entry.paused = Some(Paused { run, offers_assign });
                     }
@@ -600,14 +600,15 @@ impl BussardMcp {
             let targets = run.walk.targets().to_vec();
             let mut on_probe = |event: WalkEvent<'_, _>| {
                 if let WalkEvent::Probing { address, .. } = event {
-                    jobs.progress(job, "checking", json!(address.to_string()));
+                    jobs.progress(job, |p| p.checking = Some(address.to_string()));
                 }
             };
             let verdicts = probe_line(&service, source, &targets, &mut on_probe).await;
             run.walk.set_verdicts(verdicts);
             run.probed = true;
-            tier.jobs
-                .progress(job, "pending", json!(run.walk.pending()));
+            tier.jobs.progress(job, |p| {
+                p.pending = serde_json::to_value(run.walk.pending()).ok()
+            });
         }
 
         loop {
@@ -627,7 +628,7 @@ impl BussardMcp {
                             run.reports.push(outcome_report(target, &outcome, None));
                         }
                         tier.jobs
-                            .progress(job, "devices", Value::Array(run.reports.clone()));
+                            .progress(job, |p| p.devices = Some(run.reports.clone()));
                         continue;
                     }
                     Some(Next::Device {
@@ -663,15 +664,13 @@ impl BussardMcp {
             }
 
             // press_button
-            tier.jobs.progress(
-                job,
-                "device",
-                json!({
+            tier.jobs.progress(job, |p| {
+                p.device = Some(json!({
                     "position": cur.position,
                     "total": cur.total,
                     "device": device_json(target),
-                }),
-            );
+                }));
+            });
             let mut observer = JobSink::new(&tier.jobs, job).press(format!(
                 "Device {} of {}: press the programming button on {} (its LED usually lights \
                  up), then say done.",
@@ -737,7 +736,8 @@ impl BussardMcp {
                 }
             };
             let ident = identified_json(&identified);
-            tier.jobs.progress(job, "identified", ident.clone());
+            tier.jobs
+                .progress(job, |p| p.identified = Some(ident.clone()));
             match &identified.check {
                 OrderCheck::Matches => {}
                 OrderCheck::NoModelNumber if cur.accept_unchecked => {}
@@ -819,8 +819,8 @@ impl BussardMcp {
             run.walk.record(outcome);
             run.current = None;
             tier.jobs
-                .progress(job, "devices", Value::Array(run.reports.clone()));
-            tier.jobs.progress(job, "identified", Value::Null);
+                .progress(job, |p| p.devices = Some(run.reports.clone()));
+            tier.jobs.progress(job, |p| p.identified = None);
         }
         Segment::Done(final_result(&run, false, None))
     }

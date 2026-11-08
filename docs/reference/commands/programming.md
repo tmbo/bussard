@@ -46,7 +46,7 @@ Behaviour:
 - Uses a `--product` or `--application` that contradicts the lock, with a warning.
 - Authorizes with the free-access key only, so a device with a BCU key set denies it.
 
-`--json` prints the same plan as data: `address`, `name`, `gateway`, `changes` (`mark`, `subject`, `channel`, `key`, `object`, `sentence`), `unchanged_objects`, `unchanged_parameters`, `writes` (`address_table`, `association_table`, `parameter_octets`), `backup_dir`, `notes`, `question` and `state_hash`. The table detail (`additions`, `removals`, `unchanged`, the table counts, `load_steps`, `noop`) and the parameter read-back (`parameters`) are there too. `state_hash` is the SHA-256 of the device state read: the raw tables, plus the parameter memory when it was read. `apply --plan <hash>` refuses when the device no longer hashes to it.
+`--json` prints the same plan as data (schema 2), the object `knx_plan_device` returns without its chat envelope: `ok`, `method` (`apply` or `flash`), `address`, `name`, `gateway`, `changes` (`mark`, `subject`, `channel`, `key`, `object`, `sentence`), `channels`, `unchanged_objects`, `unchanged_parameters`, `writes` (`address_table`, `association_table`, `parameter_octets`), `backup_dir`, `notes`, `question`, `state_hash`, `mask`, `system_type`, `secured`, `identity` (the verdict against the lock), `noop`, `sentences` and `table_plan` (the text renderings), `parameter_plan` (`compared`, `changed`, `octets`, `octet_ranges`, `written`, `skipped`) and `planned_at`. The table detail (`additions`, `removals`, `unchanged`, each `{object, ga}`, the table counts, `load_steps`) and the parameter read-back (`parameters`) are there too. `state_hash` is the SHA-256 of the device state read: the raw tables, plus the parameter memory when it was read. `apply --plan <hash>` refuses when the device no longer hashes to it.
 
 ### Admitting the tunnel addresses
 
@@ -171,7 +171,7 @@ Behaviour:
 - Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed.
 - `apply --line` asks one confirmation for the whole run, naming the resolved gateway and the device count. Each device then gets what `apply <ADDRESS>` does: plan, back up, write, verify.
 - Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed devices are retried. A run with no failures deletes the file.
-- `--json` prints `{line, mode, gateway, devices: [{address, name, mask, system_type, status, changes, detail}], total, changed, unchanged, skipped, failed, state_file}`; `state_file` is set when the run left one behind.
+- `--json` prints (schema 2) `{ok, verified, line, mode, gateway, noop, devices: [{address, name, mask, system_type, status, changes, detail, verified, sentences, notes, backup}], total, changed, unchanged, skipped, failed, sentences, state_file, planned_at}`, the object `knx_plan_device` and `knx_apply_device` with `line` return; `verified` is there for `apply`, `noop`, `sentences` and `planned_at` for `plan`, and `state_file` when the run left one behind.
 
 ## `bussard flash <ADDRESS>`
 
@@ -206,7 +206,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--keyring <FILE>` | the key store | KNX Data Secure: the tool key and group keys. With it, `flash` also programs the device's security object. |
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`; unsuitable for a real key, because process arguments are visible. Carries no group keys, so it only suits a device without secured group addresses. |
 | `--secure-sender <IA>` | off | Data Secure: also list this address (bussard's tunnel address) with sequence 0 in the security individual address table (PID 54), so the device accepts `write --keyring` from bussard. Without it the table holds only the devices that send on a secured group address the device listens to, as ETS writes it, and the device drops bussard's secured group telegrams. The next ETS download removes it again. |
-| `--json` | off | Print the pre-flight plan as JSON: a `parameters` array (`key`, `name`, `old`, `new`, `unit`; `old` is `null` when unreadable), the application identity, the write summary and the step trace. The confirmation and the flash are unchanged. |
+| `--json` | off | Print the pre-flight plan as JSON (schema 2): `address`, `mask`, `application` (`id`, `name`, `number`, `version`, `mask`), a `parameters` array (`key`, `name`, `device`, `model`, `unit`; `device` is `null` when unreadable), `parameter_note`, `kept_parameters`, `kept_memory`, `security_object`, the write summary (`memory`) and the step trace (`procedure`). The confirmation and the flash are unchanged. |
 | `--dry-run` | off | Build and print the pre-flight plan against the application's own mask, then stop. No gateway is resolved and no connection is opened, so it works with no gateway configured. |
 | `--dump-images <DIR>` | | With `--dry-run`: write `plan.json` and the exact memory images the flash would stream (one `.bin` each, plus the table images) into `DIR`, for offline comparison with an ETS download of the same device. |
 | `--resident <FILE>` | | With `--dry-run`: plan against a recorded device state instead of no device: the application objects' load states, the application id and the MCB entries, as JSON (`knxtrace image` writes `resident.json` from an ETS capture). The plan then takes the shape a live flash takes on that device: the `par` load procedure for a device holding this application, and no re-load of an object whose image already matches. |
@@ -336,7 +336,7 @@ It refuses before any write when:
 - The parameter memory is backed up to `<dir>/captures/backups/parameters/<ia>-<unix time>.json` before the first write, apart from the table backups, so `restore <BACKUP_DIR>` never picks it up.
 - After the restart, the memory is read back and every changed octet compared. A mismatch exits 1 with the backup path and the recovery: re-run the download while the application still reads `Loaded`, otherwise a full `flash --force`.
 - Segments the application rewrites at run time are written but not compared.
-- `--json` prints the plan as JSON (`parameters`, `regions`, `procedure`).
+- `--json` prints the plan as JSON (schema 2: `address`, `mode`, `application`, `parameters` with `device` and `model`, `regions`, `unwritten`, `properties`, `procedure`; `--dry-run` adds `dry_run: true` and has no device read).
 
 **The write set.** Only the octets a parameter is placed in under the current configuration are compared and written: a parameter the Dynamic section reaches, a hidden parameter the application downloads at its default, and the device-managed octets alongside another write. Every other octet keeps the device's value, because ETS's download does not write it either. When such an octet differs from the project's image, the plan lists it as not written (`unwritten` in `--json`, `written: false` in `octet_ranges`) and does not count it. The same rule holds for `apply`, `restore --parameters` and the MCP `knx_apply_device`. A full `flash` still writes the whole image, as an ETS full download does, so a device that needs those octets cleared gets a full flash.
 
@@ -569,7 +569,7 @@ restart 1.1.52 (Presence detector) via 192.0.2.10:3671? [y/N] y
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--keyring <FILE>` | the key store | KNX Data Secure tool keys: a device the key store (or keyring) lists is restarted over a secured session. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
-| `--json` | off | Print `address`, `form` (`confirmed` or `basic`), `form_reason`, `confirmed` (true only when the device answered the confirmed restart with error code 0), `process_time_s` (`null` for the basic form), `mask` and `answered_after_ms`. |
+| `--json` | off | Print (schema 2) `method` (`restart`), `address`, `gateway`, `secured`, `ok`, `verified` (as `confirmed`), `form` (`confirmed` or `basic`), `form_reason`, `confirmed` (true only when the device answered the confirmed restart with error code 0), `process_time_s` (absent for the basic form), `mask` and `answered_after_ms`: the object `knx_restart_device` returns without its chat envelope. |
 
 Behaviour:
 
