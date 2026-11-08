@@ -22,6 +22,13 @@
 //!   unless the object reads `Loaded`, writes only the differing octets when
 //!   the base is the one read before the download, the whole image when the
 //!   device moved the segment, and nothing when the reference reads zero.
+//!   A program whose parameters all live in interface-object properties
+//!   (issue #944, the Hager 07B0 actuators) gets the same bracket on the
+//!   object its `par` allocation names, around every property its parameters
+//!   are placed in (with the property's declaration) instead of a memory
+//!   write; without a `par` allocation of the full allocation's size it is
+//!   refused. Every property a parameter is placed in is written on
+//!   whichever object it sits, for a program with memory parameters too.
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
@@ -53,6 +60,16 @@ pub enum PartialPlanError {
          nothing a parameter-only download could rewrite; use a full `bussard flash`"
     )]
     NoParameterSegment,
+    /// A program whose parameters all live in properties (issue #944) states
+    /// no `AppliesTo="par"` allocation the partial download could open the
+    /// load with, or states it with another size than the full one: the
+    /// property writes would run outside any load state.
+    #[error(
+        "every parameter of the application lives in a property and its load procedure \
+         states no `par` allocation of the size the full download allocates, so a \
+         parameter-only download has no load to write them in; use a full `bussard flash`"
+    )]
+    NoParAllocation,
     /// A parameter segment could not be read back, so its address (System B:
     /// the object's `PID_TABLE_REFERENCE`) or its current content is unknown.
     #[error(
@@ -188,6 +205,7 @@ impl FlashPlan {
             typed_objects_by_list: self.typed_objects_by_list,
             par_allocations: BTreeMap::new(),
             par_procedure: false,
+            parameters_only: true,
             kept: self.kept.clone(),
         })
     }
@@ -330,7 +348,56 @@ impl FlashPlan {
                 _ => {}
             }
         }
-        if writes == 0 {
+        // The properties the parameters are placed in (issue #706): the
+        // writes whose value the parameters compose, by object and PID.
+        let param_props: BTreeSet<(super::PropObject, u32)> = self
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                FlashStep::WriteProp {
+                    object,
+                    prop_id,
+                    from_parameters: true,
+                    ..
+                } => Some((*object, *prop_id)),
+                _ => None,
+            })
+            .collect();
+        // A program whose parameters all live in properties (the Hager 07B0
+        // actuators, issue #944) writes no parameter image. Its `par`
+        // procedure is the same partial download around the property writes:
+        // the allocation the procedure restates for `par` in Mode 0, on the
+        // object it names (`LdCtrlRelSegment AppliesTo="par" LsmIdx="4"
+        // Mode="0"` on `M-0009_A-E804-10-98AD`), whose load the full download
+        // writes the properties inside (the ETS sweep capture of that program).
+        let property_only = writes == 0 && !param_props.is_empty();
+        if property_only {
+            let mut par_alloc: BTreeMap<Option<u32>, usize> = BTreeMap::new();
+            for (i, step) in self.steps.iter().enumerate() {
+                if let FlashStep::AllocateSegment { target, size, .. } = step
+                    && let Some(&(par_size, _)) = self.par_allocations.get(target)
+                {
+                    // The `par` record restates the allocation; one of
+                    // another size is not the same segment (as
+                    // `use_par_procedure` decides).
+                    if par_size != *size {
+                        return Err(PartialPlanError::NoParAllocation);
+                    }
+                    par_alloc.insert(*target, i);
+                }
+            }
+            // Without the bracket the writes would run outside any load
+            // state (and a plan of property writes alone would take the
+            // property-only executor, which has no Loaded gate).
+            if par_alloc.is_empty() {
+                return Err(PartialPlanError::NoParAllocation);
+            }
+            for (target, at) in par_alloc {
+                kept_allocs.insert(at);
+                lsms.insert(target);
+                objects.extend(target);
+            }
+        } else if writes == 0 {
             return Err(PartialPlanError::NoParameterSegment);
         }
 
@@ -385,6 +452,17 @@ impl FlashPlan {
                     object: super::PropObject::Index(obj_idx),
                     ..
                 } if objects.contains(obj_idx) => {
+                    steps.push(step.clone());
+                }
+                // Every property a parameter is placed in, on whichever
+                // object, with its declaration (a property-only program, and
+                // one with memory and property parameters alike).
+                FlashStep::WriteProp {
+                    object, prop_id, ..
+                }
+                | FlashStep::DeclareProp {
+                    object, prop_id, ..
+                } if param_props.contains(&(*object, *prop_id)) => {
                     steps.push(step.clone());
                 }
                 FlashStep::LoadImageProp { obj_idx, .. } if objects.contains(obj_idx) => {

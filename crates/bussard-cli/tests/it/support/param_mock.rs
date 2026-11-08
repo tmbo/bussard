@@ -66,6 +66,10 @@ struct MockDevice {
     memory_writes: Vec<(u32, usize)>,
     /// Every non-load-control property write as `(object, pid)`.
     property_writes: Vec<(u8, u8)>,
+    /// What those writes left, per `(object, pid)`: the element size and the
+    /// elements from element 1, answered by `A_PropertyValue_Read` (the
+    /// property-placed parameters, issue #944).
+    properties: HashMap<(u8, u8), (usize, Vec<u8>)>,
     restarts: usize,
     /// KNX Data Secure (issue #170): an activated device holds its tool key
     /// here, answers the plain descriptor read with mask FFFF (as 1.1.12 does),
@@ -115,6 +119,7 @@ impl MockDevice {
             load_events: Vec::new(),
             memory_writes: Vec::new(),
             property_writes: Vec::new(),
+            properties: HashMap::new(),
             restarts: 0,
             secure: None,
             wire_apcis: Vec::new(),
@@ -329,7 +334,20 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
                     prop_response(oi, pid, want as u8, start, &bytes)
                 }
             }
-            _ => empty,
+            _ => match dev.properties.get(&(oi, pid)) {
+                // A property a write left: the elements asked for.
+                Some((elem, held)) if start > 0 => {
+                    let from = (usize::from(start) - 1) * elem;
+                    let to = (from + usize::from(count) * elem).min(held.len());
+                    match held.get(from..to) {
+                        Some(bytes) if !bytes.is_empty() => {
+                            prop_response(oi, pid, ((to - from) / elem) as u8, start, bytes)
+                        }
+                        _ => empty,
+                    }
+                }
+                _ => empty,
+            },
         };
         return Some((apci::A_PROPERTY_VALUE_RESPONSE, resp));
     }
@@ -353,6 +371,20 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
             ));
         }
         dev.property_writes.push((oi, pid));
+        if count > 0 && start > 0 && !value.is_empty() {
+            let elem = (value.len() / usize::from(count)).max(1);
+            let entry = dev.properties.entry((oi, pid)).or_insert((elem, Vec::new()));
+            // The element size of the latest write: a write of another
+            // count or element size lays the property out anew.
+            if entry.0 != elem {
+                *entry = (elem, Vec::new());
+            }
+            let from = (usize::from(start) - 1) * elem;
+            if entry.1.len() < from + value.len() {
+                entry.1.resize(from + value.len(), 0);
+            }
+            entry.1[from..from + value.len()].copy_from_slice(&value);
+        }
         return Some((
             apci::A_PROPERTY_VALUE_RESPONSE,
             prop_response(oi, pid, count, start, &value),

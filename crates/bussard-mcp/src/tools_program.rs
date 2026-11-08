@@ -1531,6 +1531,16 @@ impl BussardMcp {
         // A flash rewrites the whole parameter memory: it is backed up first,
         // where knx_restore_parameters reads it (issue #303).
         let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
+        // A parameter backup of no memory restores nothing (issue #944); a
+        // full flash rewrites everything and needs none.
+        if flash.is_none()
+            && param_write
+            && let Some(d) = detail
+        {
+            program::apply::check_parameter_backup(d).map_err(|e| {
+                format!("refusing to write {target} without a parameter backup: {e}")
+            })?;
+        }
         let backups = program::apply::back_up(
             &dir,
             target,
@@ -1542,6 +1552,9 @@ impl BussardMcp {
                 format!("refusing to write {target} without a backup: {e}")
             }
             program::apply::BackupError::Parameters(e) => {
+                format!("refusing to write {target} without a parameter backup: {e}")
+            }
+            e @ program::apply::BackupError::NoParameterMemory => {
                 format!("refusing to write {target} without a parameter backup: {e}")
             }
         })?;

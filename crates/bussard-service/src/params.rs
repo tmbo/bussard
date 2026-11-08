@@ -574,7 +574,10 @@ pub async fn read_state<Ch: L4Channel>(
     // (issue #540): a link the last flash did not know left its object's
     // Communication flag off, and `apply` reloads the table to switch it on.
     let object_table = bussard_download::check_object_table(l4, &plan).await;
-    if regions.is_empty() {
+    // A program whose parameters all live in interface-object properties
+    // (the Hager 07B0 actuators, issue #944) has no parameter memory to read:
+    // its parameters are the properties read above, compared on their own.
+    if regions.is_empty() && plan.has_parameter_memory() {
         return ParamState::noted(&app.id, "the parameter memory could not be read".into());
     }
     let Decoded {
@@ -733,16 +736,29 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
         Err(note) => return noted(note),
     };
     let regions = read_parameter_regions(l4, &plan, &[]).await;
-    let expects_parameters = plan.param_images.values().any(|b| !b.is_empty());
-    if regions.is_empty() && expects_parameters {
+    if regions.is_empty() && plan.has_parameter_memory() {
         return noted("the parameter memory could not be read back".into());
     }
     let decoded = decode_regions(app, model, target, &regions, &memo).decoded;
     let device = model
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
+    // The values decoded from memory, plus the parameters placed in the
+    // properties the same verify reads back and compares with the model
+    // (`ExpectedProperty::from_flash_plan`, issue #944): a program whose
+    // parameters all live in properties decodes nothing from memory.
+    let in_memory = if plan.has_parameter_memory() {
+        decoded.values.len().saturating_sub(decoded.kept.len())
+    } else {
+        0
+    };
+    let in_properties: usize = plan
+        .parameter_properties()
+        .iter()
+        .map(|p| p.parameter_names(app).len())
+        .sum();
     FlashedParameters {
-        compared: decoded.values.len().saturating_sub(decoded.kept.len()),
+        compared: in_memory + in_properties,
         kept: with_file_keys(&decoded.kept, device),
         differences: with_file_keys(&decoded.differences, device),
         note: None,
@@ -1214,6 +1230,31 @@ pub fn group_object_refusal(target: IndividualAddress, why: &str) -> String {
     )
 }
 
+/// The refusal of a parameter-only download of a program whose parameters
+/// all live in interface-object properties (issue #944), `None` for any
+/// other download. bussard plans that download (the `par` procedure's
+/// partial download around the property writes) and reads it back, but no
+/// ETS capture confirms the sequence yet (#572 A.4), so `apply` and `flash
+/// --parameters-only` do not send it to a device; a full flash writes the
+/// properties.
+pub fn uncaptured_property_download(
+    target: IndividualAddress,
+    partial: &FlashPlan,
+) -> Option<String> {
+    let property_only = partial.is_parameters_only()
+        && !partial.has_parameter_memory()
+        && !partial.parameter_properties().is_empty();
+    property_only.then(|| {
+        format!(
+            "every parameter of this program lives in an interface-object property, and no ETS \
+             capture confirms the parameter-only download for such a program yet (#572, item \
+             A.4: the parameter download of M-0009_A-E804-10-98AD), so bussard does not send it \
+             until then. A full `bussard flash {target}` writes the properties and reads them \
+             back."
+        )
+    })
+}
+
 /// The refusal of a parameter write whose values make a System 7 load
 /// procedure allocate the segments differently (`why`, from
 /// [`bussard_download::allocation_change`], issue #411): `apply` sends no
@@ -1542,6 +1583,8 @@ pub fn build_device_plan(
                             parameter_properties =
                                 changed_props.iter().map(|p| p.label()).collect();
                             if octets == 0 && !changed_props.is_empty() {
+                                // Issue #944: planned, not yet sent (#572).
+                                refusal = uncaptured_property_download(target, &p);
                                 partial = Some(p);
                             } else if octets > 0 {
                                 if report.is_noop()
