@@ -1032,10 +1032,7 @@ impl BussardMcp {
             }
         };
         let mut edited = before.clone();
-        let note = match apply(&mut edited) {
-            Ok(note) => note,
-            Err(reason) => return Err(reason),
-        };
+        let note = apply(&mut edited)?;
         // A group address the edit links but groups.toml does not define is
         // declared there, named after the object that uses it first; the
         // change set below reports it with the rest.
