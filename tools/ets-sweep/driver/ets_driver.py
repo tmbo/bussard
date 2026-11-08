@@ -52,11 +52,6 @@ except Exception as exc:  # pragma: no cover - startup diagnostics
 
 DESKTOP = Desktop(backend="uia")
 
-# The catalog row rules (#881), shared with the Mac-side tests; `vm.py
-# install` uploads the file next to this one.
-sys.path.insert(0, str(HERE))
-import catalog_pick  # noqa: E402
-
 
 def ets_app() -> Application:
     """Connect to the running ETS 6 (the GUI process is ETS6N.exe)."""
@@ -1147,16 +1142,8 @@ def flow_catalog_rows(req: dict) -> dict:
 def flow_catalog_add(req: dict) -> dict:
     """Search the catalog for `search` (an order number), pick the row whose
     order number matches and whose application version is `version` (as ETS
-    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list.
-
-    Every row carries its manufacturer group header (`manufacturer`). With
-    `require_manufacturer` and `manufacturer` (the product file's
-    manufacturer name) only rows under that manufacturer's group count, and
-    among them those whose application cell matches `application` when any
-    does (catalog_pick.file_rows, #881): a product of another manufacturer
-    that shares the order number is never added; when every row is a
-    stranger's the flow raises 'catalog manufacturer mismatch' with the rows
-    seen."""
+    shows it, e.g. "2.3"), and add it to line 1.1. Returns the device list
+    and the row added, which carries its manufacturer group header (#881)."""
     require_project(req["project"])
     dismiss_password_dialog(req.get("project_password"))
     wait_busy()
@@ -1186,8 +1173,6 @@ def flow_catalog_add(req: dict) -> dict:
     want_version = _digits(req.get("version", ""))
 
     def pick(hits: list[dict], name: str = "") -> dict | None:
-        if req.get("require_manufacturer"):
-            hits = catalog_pick.file_rows(hits, req.get("manufacturer") or "", req.get("application") or "")
         # Imported products first: an online-catalog row would make ETS fetch
         # product data from the internet instead of our corpus file. ETS shows
         # an imported product that also sits in its online catalog at the same

@@ -1,1 +1,1 @@
-- ETS sweep: each catalog row carries its manufacturer group header, and every result records whether it names the product file's manufacturer. A switch (`sweep.REQUIRE_CATALOG_MANUFACTURER`, off) refuses another manufacturer's row with the same order number as `skipped-catalog-manufacturer` (#881).
+- ETS sweep: each catalog row carries its manufacturer group header, and every result records whether the added row's header names the product file's manufacturer (`catalog_manufacturer`), for the analysis of ETS's manufacturer refusals (#881).

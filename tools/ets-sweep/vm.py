@@ -132,9 +132,6 @@ def install(c: paramiko.SSHClient) -> None:
     the first start happens by hand in the VM's desktop session (see README)."""
     src = Path(__file__).resolve().parent / "driver" / "ets_driver.py"
     run(c, f'mkdir "{REMOTE_DIR}"')
-    # The driver's helper module first: the driver re-execs on its own change
-    # and imports the helper then (#881).
-    c.open_sftp().put(str(src.with_name("catalog_pick.py")), REMOTE_DIR.replace("\\", "/") + "/catalog_pick.py")
     c.open_sftp().put(str(src), REMOTE_DIR.replace("\\", "/") + "/ets_driver.py")
     print("uploaded", src.name)
     exe = REPO / "knx-sim" / "target-win" / "x86_64-pc-windows-gnu" / "release" / "knx-sim.exe"

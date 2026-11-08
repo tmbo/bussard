@@ -38,9 +38,6 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vm  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent / "driver"))
-import catalog_pick  # noqa: E402
-
 REPO = Path(__file__).resolve().parents[2]
 SIM_BIN = REPO / "knx-sim" / "target" / "debug" / "knx-sim"
 KNXTRACE = REPO / "tools" / "knxtrace" / "knxtrace.py"
@@ -550,27 +547,43 @@ def compare_value(tag: str) -> bytes | None:
     return value.to_bytes(width, "big")
 
 
-# Whether `catalog_add` refuses a row under another manufacturer's group
-# header (#881). Off until a run has shown what the headers say: the German
-# rows of the three TAPKO failures of 2026-11-08 are the files' own de-DE
-# translations, and the Gewiss GW10966 row that captures may sit under a
-# GEWISS header. Meanwhile every result records the header and its verdict.
-REQUIRE_CATALOG_MANUFACTURER = False
+# Words a manufacturer's name carries beside the brand ("TAPKO Technologies
+# GmbH"); they do not tell two manufacturers apart.
+_LEGAL_FORMS = {"gmbh", "co", "kg", "ag", "sa", "spa", "srl", "ltd", "inc", "bv", "nv", "sas", "the", "und", "and"}
+
+
+def _ocr_canon(t: str) -> str:
+    """Case-folded letters and digits, OCR's I/l/1/| and O/0 unified."""
+    t = t.lower().translate(str.maketrans({"l": "i", "1": "i", "|": "i", "!": "i", "0": "o"}))
+    return re.sub(r"[^0-9a-z]", "", t)
+
+
+def manufacturer_matches(header: str, manufacturer: str) -> bool | None:
+    """Whether a catalog row's manufacturer group header (OCR) names
+    `manufacturer` (the product file's knx_master name): either is a prefix
+    of the other, or the header starts with the name's first word that is
+    not a legal form. None when either is unknown."""
+    h, m = _ocr_canon(header), _ocr_canon(manufacturer)
+    if not h or not m:
+        return None
+    brand = next((c for c in (_ocr_canon(w) for w in re.split(r"[\s&.,/-]+", manufacturer))
+                  if len(c) >= 2 and c not in _LEGAL_FORMS), m)
+    return h.startswith(m) or m.startswith(h) or h.startswith(brand)
 
 
 def catalog_manufacturer_verdict(row: dict | None, identity: dict) -> str:
     """`same`, `other` or `unknown`: whether the added catalog row's
-    manufacturer group header names the product file's manufacturer."""
-    match = catalog_pick.manufacturer_matches(str((row or {}).get("manufacturer") or ""),
-                                              identity.get("manufacturer") or "")
+    manufacturer group header names the product file's manufacturer
+    (recorded, not acted on: #881)."""
+    match = manufacturer_matches(str((row or {}).get("manufacturer") or ""), identity.get("manufacturer") or "")
     return "unknown" if match is None else "same" if match else "other"
 
 
 def catalog_identity(knxprod: Path, app: str) -> dict:
-    """What the catalog row of `app` must show (#881): the manufacturer's
+    """What the catalog row of `app` should show (#881): the manufacturer's
     name from the file's knx_master.xml (`Manufacturer Id="M-0072"
-    Name="TAPKO Technologies"`) and the application program's name, as
-    `catalog_add` takes them. A part the file does not give is left out."""
+    Name="TAPKO Technologies"`) and the application program's name. A part
+    the file does not give is left out."""
     own = app.split("_", 1)[0]
     # The application's start tag sits in its file's first lines; the file
     # itself can run to 100 MB.
@@ -710,13 +723,11 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         for d in flow("devices")["devices"]:
             if not flow("delete_device", ia=d["ia"]).get("deleted"):
                 raise RuntimeError(f"could not delete {d['ia']} before the add")
-        # Only the file's own product: a catalog row of another manufacturer
-        # sharing the order number is never added (#881).
+        # What the catalog row should show, recorded against the row (#881).
         identity = catalog_identity(knxprod, app)
         result["catalog_identity"] = identity
         add = flow("catalog_add", search=search, version=version, fallback_search=fallback_search,
-                   password_wait=12 if secure_enabled(knxprod, app) else 2,
-                   require_manufacturer=REQUIRE_CATALOG_MANUFACTURER, **identity)
+                   password_wait=12 if secure_enabled(knxprod, app) else 2)
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
@@ -814,10 +825,6 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         else "skipped-compat-mode" if "compatibility mode" in err
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
-        # Every catalog row of the search is another manufacturer's product
-        # (a rebranded clone with the same order number, #881); the error
-        # names the rows seen.
-        else "skipped-catalog-manufacturer" if "catalog manufacturer mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
         # The device is not at the address the download looks for (#876): a
         # device left in the project, or an address the sweep did not follow.
