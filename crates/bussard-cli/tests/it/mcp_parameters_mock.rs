@@ -92,6 +92,16 @@ struct Server {
 
 impl Server {
     fn start(dir: &Path, port: u16, edits: bool) -> Result<Server, Box<dyn Error>> {
+        Server::start_with(dir, port, edits, &[])
+    }
+
+    /// [`Server::start`] with `extra` arguments to `bussard mcp`.
+    fn start_with(
+        dir: &Path,
+        port: u16,
+        edits: bool,
+        extra: &[&str],
+    ) -> Result<Server, Box<dyn Error>> {
         let mut command = Command::new(env!("CARGO_BIN_EXE_bussard"));
         command
             .arg("mcp")
@@ -105,6 +115,7 @@ impl Server {
         if !edits {
             command.arg("--no-model-edits");
         }
+        command.args(extra);
         let mut child = command
             .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
             .env_remove("BUSSARD_KEYRING")
@@ -168,6 +179,22 @@ impl Server {
     fn call(&mut self, tool: &str, args: Value) -> Result<Value, Box<dyn Error>> {
         let result = self.request("tools/call", json!({"name": tool, "arguments": args}))?;
         Ok(result["structuredContent"].clone())
+    }
+
+    /// Calls a tool, retried while the server's tunnel comes up.
+    fn call_ready(&mut self, tool: &str, args: Value) -> Result<Value, Box<dyn Error>> {
+        let mut result = Value::Null;
+        for _ in 0..50 {
+            result = self.call(tool, args.clone())?;
+            let waiting = result["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("is not connected"));
+            if !waiting {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        Ok(result)
     }
 
     /// `knx_plan_device` for 1.1.4, retried while the server's tunnel comes up.
@@ -1133,5 +1160,141 @@ fn test_restart_one_shape_cli_json_is_the_mcp_restart_without_its_envelope() -> 
         json!({"address": "1.1.4", "plan_digest": digest}),
     )?;
     bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["answered_after_ms"])?;
+    Ok(())
+}
+
+/// Issue #904: the offline flows (validate, history, pending changes, audit)
+/// answer the same document on both surfaces.
+#[test]
+fn test_offline_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-offline", [7, 0], "\"thr@P-0_R-1\" = \"12\"\n")? else {
+        return Ok(());
+    };
+    let mut server = bench.mcp_with_edits()?;
+    let flows: [(&[&str], &str, Value); 4] = [
+        (
+            &["validate", "--json"],
+            "knx_validate",
+            json!({"severity": "info"}),
+        ),
+        (&["history", "--json"], "knx_history", json!({})),
+        (&["status", "--json"], "knx_describe_change", json!({})),
+        (&["audit", "--json"], "knx_audit", json!({})),
+    ];
+    for (args, tool, call) in flows {
+        let cli = json_out(&bench.bussard(args)?)?;
+        let mcp = server.call(tool, call)?;
+        bussard_testkit::shape::assert_one_shape(&cli, &mcp, &[])
+            .map_err(|e| format!("{tool}: {e}"))?;
+    }
+    Ok(())
+}
+
+/// Issue #904: reserving a room's addresses answers the same document on
+/// both surfaces (two identical projects, one per surface).
+#[test]
+fn test_reserve_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let Some(cli) = pinned("shape-reserve-cli", [7, 0], "")? else {
+        return Ok(());
+    };
+    let Some(mcp) = pinned("shape-reserve-mcp", [7, 0], "")? else {
+        return Ok(());
+    };
+    let cli = json_out(&cli.bussard(&["groups", "reserve", "EG Küche", "light", "--json"])?)?;
+    let mut server = mcp.mcp_with_edits()?;
+    let mcp = server.call(
+        "knx_reserve_groups",
+        json!({"room": "EG Küche", "functions": ["light"]}),
+    )?;
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["file", "snapshot"])?;
+    Ok(())
+}
+
+/// Issue #904: the bus reads (reconstruct, live status, scan,
+/// backup) answer the same document on both surfaces.
+#[test]
+fn test_bus_reads_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-reads", [7, 0], "\"thr@P-0_R-1\" = \"7\"\n")? else {
+        return Ok(());
+    };
+    // Every CLI run first: a CLI connection to the device ends the server's
+    // warm one, as a second tool would on a real bus.
+    let reconstruct = json_out(&bench.bussard(&["reconstruct", "1.1.4", "--json"])?)?;
+    let status = json_out(&bench.bussard(&["status", "1.1.4", "--json"])?)?;
+    let scan = json_out(&bench.bussard(&["scan", "1.1", "--from", "4", "--to", "4", "--json"])?)?;
+    let backup = json_out(&bench.bussard(&["backup", "1.1.4", "--json"])?)?;
+
+    let mut server = bench.mcp()?;
+    let mcp = server.call_ready("knx_reconstruct_device", json!({"address": "1.1.4"}))?;
+    bussard_testkit::shape::assert_one_shape(&reconstruct, &mcp, &[])
+        .map_err(|e| format!("reconstruct: {e}"))?;
+    let mcp = server.call_ready("knx_show_device", json!({"address": "1.1.4", "live": true}))?;
+    bussard_testkit::shape::assert_one_shape(&status, &mcp["live"], &[])
+        .map_err(|e| format!("status: {e}: {}", mcp["live"]))?;
+    let mcp = server.call_ready(
+        "knx_find_devices",
+        json!({"line": "1.1", "from": 4, "to": 4}),
+    )?;
+    bussard_testkit::shape::assert_one_shape(&scan, &mcp, &["timing"])
+        .map_err(|e| format!("scan: {e}"))?;
+    let mcp = server.call_ready("knx_backup_device", json!({"address": "1.1.4"}))?;
+    bussard_testkit::shape::assert_one_shape(
+        &backup,
+        &mcp,
+        &["out_dir", "backup", "manifest", "created", "devices"],
+    )
+    .map_err(|e| format!("backup: {e}"))?;
+    Ok(())
+}
+
+/// Issue #904: a group write answers the same document on both surfaces.
+#[test]
+fn test_group_write_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-write", [7, 0], "")? else {
+        return Ok(());
+    };
+    let cli =
+        json_out(&bench.bussard(&["write", "1/2/0", "on", "--dpt", "1.001", "--json", "--yes"])?)?;
+    let mut server = Server::start_with(&bench.model(), bench.port, false, &["--allow-writes"])?;
+    let mcp = server.call_ready(
+        "knx_write_group",
+        json!({"ga": "1/2/0", "value": "on", "dpt": "1.001"}),
+    )?;
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &[])?;
+    Ok(())
+}
+
+/// Issue #904: the file flows (bundle export, project diff) answer the same
+/// document on both surfaces; the written paths differ.
+#[test]
+fn test_file_flows_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-files", [7, 0], "\"thr@P-0_R-1\" = \"12\"\n")? else {
+        return Ok(());
+    };
+    let path = |name: &str| -> Result<String, Box<dyn Error>> {
+        Ok(bench
+            .tmp
+            .join(name)
+            .to_str()
+            .ok_or("non-UTF-8 temp path")?
+            .to_string())
+    };
+    let mut server = bench.mcp_with_edits()?;
+
+    let cli = json_out(&bench.bussard(&["export", &path("cli.bussard")?, "--json"])?)?;
+    let mcp = server.call("knx_export_bundle", json!({"path": path("mcp.bussard")?}))?;
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["path", "file"])
+        .map_err(|e| format!("export: {e}\n--json: {cli}\nMCP: {mcp}"))?;
+
+    let model = bench.model();
+    let model = model.to_str().ok_or("non-UTF-8 temp path")?;
+    let bundle = path("cli.bussard")?;
+    let cli = json_out(&bench.bussard(&["diff", model, &bundle, "--json"])?)?;
+    let mcp = server.call("knx_diff_project", json!({"path": bundle}))?;
+    // `bussard diff` names its first side by path, the server "the working
+    // model".
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["from"])
+        .map_err(|e| format!("diff: {e}\n--json: {cli}\nMCP: {mcp}"))?;
+
     Ok(())
 }

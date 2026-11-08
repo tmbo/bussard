@@ -32,7 +32,7 @@ pub struct Counts {
 /// A reservation of group addresses for a room or a plan.
 #[derive(Debug, Clone, Serialize)]
 pub struct ReserveReport {
-    /// The room, for a CLI reservation.
+    /// The room, when one room was reserved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
     /// The numbering scheme.

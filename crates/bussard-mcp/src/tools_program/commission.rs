@@ -30,7 +30,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use bussard_model::Model;
 use bussard_model::history::SnapshotReason;
-use bussard_service::assign::hex;
 use bussard_service::commission::{
     CommissionDevice, CommissionReadback, CommissionReport, CommissionTarget, IdentifiedDevice,
     LineRun, Next, OrderCheck, Outcome, Target, assign_pressed, identify_pressed, probe_line,
@@ -42,7 +41,6 @@ use bussard_service::program::plan::Fingerprint;
 use bussard_service::report::{Approval, Report};
 use serde_json::Value;
 
-use super::addressing::assigned_notes;
 use super::{BussardMcp, ProgrammingTier, chain};
 use crate::jobs::{JobKind, JobSink, Subject};
 
@@ -781,23 +779,7 @@ impl BussardMcp {
             let (outcome, readback) =
                 match assign_pressed(&flow, &state.dir, target, &identified, &mut observer).await {
                     Ok(labelled) => {
-                        let mut notes = assigned_notes(&labelled.assigned);
-                        if matches!(identified.check, OrderCheck::NoModelNumber) {
-                            notes.push(format!(
-                                "Assigned on the human's word: the model has no order number \
-                                 for {}.",
-                                target.name
-                            ));
-                        }
-                        let v = &labelled.identity;
-                        let readback = CommissionReadback {
-                            verified: true,
-                            mask: v.mask.map(|m| format!("{m:04X}")),
-                            serial: v.serial.as_deref().map(hex),
-                            order_number: v.order.clone(),
-                            programming_mode_cleared: Some(v.programming_mode_cleared),
-                            notes,
-                        };
+                        let readback = CommissionReadback::of(&labelled, &identified, target);
                         (Outcome::commissioned(target, labelled.label), readback)
                     }
                     Err(e) => (
@@ -805,13 +787,7 @@ impl BussardMcp {
                         CommissionReadback::default(),
                     ),
                 };
-            let report = CommissionDevice {
-                identified: Some(IdentifiedDevice::of(&identified)),
-                step: Some("assigned".to_string()),
-                from: Some(current.to_string()),
-                readback: Some(readback),
-                ..CommissionDevice::of(target, &outcome)
-            };
+            let report = CommissionDevice::assigned(target, &outcome, &identified, readback);
             run.reports.push(report);
             run.walk.record(outcome);
             run.current = None;

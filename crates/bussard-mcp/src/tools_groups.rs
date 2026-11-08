@@ -105,6 +105,11 @@ impl BussardMcp {
         tool: &str,
     ) -> Result<CallToolResult, ErrorData> {
         let state = self.state();
+        // One room is named in the result, as `bussard groups reserve` does.
+        let room = match plan.rooms.as_slice() {
+            [one] => Some(format!("{} {}", one.floor, one.room)),
+            _ => None,
+        };
         let scheme = scheme.unwrap_or_else(|| {
             state
                 .model
@@ -162,6 +167,7 @@ impl BussardMcp {
         };
 
         let reserved = ReserveReport {
+            room,
             snapshot: snapshot.map(|id| id.to_string()),
             ..ReserveReport::new(
                 scheme.as_str(),

@@ -34,6 +34,8 @@ pub struct Side {
     pub products: ProductModels,
     /// The model files as text, for `--raw`.
     pub files: BTreeMap<String, String>,
+    /// What a file side was read from (a bundle's manifest, a `.knxproj`).
+    pub source: Option<bussard_service::project_diff::DiffSource>,
 }
 
 /// `bussard diff`.
@@ -119,11 +121,13 @@ fn run(args: DiffArgs, json: bool) -> anyhow::Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
     if json {
-        crate::output::report(&bussard_service::project_diff::ProjectDiffReport::new(
+        let mut report = bussard_service::project_diff::ProjectDiffReport::new(
             a.display().to_string(),
             b.display().to_string(),
             &changes,
-        ))?;
+        );
+        report.source = side_b.source.clone();
+        crate::output::report(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
     if changes.is_empty() {
@@ -171,6 +175,7 @@ pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
             model,
             products: ProductModels::load(path),
             files,
+            source: None,
         });
     }
     if bundle::is_bundle_path(path) {
@@ -181,6 +186,9 @@ pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
             model,
             products: ProductModels::default(),
             files: texts(bundle.model_files)?,
+            source: Some(bussard_service::project_diff::DiffSource::Bundle {
+                manifest: Box::new(bundle.manifest),
+            }),
         });
     }
     let model = match bussard_product::import(path, password) {
@@ -199,6 +207,7 @@ pub fn load_side(path: &Path, password: Option<&str>) -> anyhow::Result<Side> {
         model,
         products: ProductModels::default(),
         files,
+        source: Some(bussard_service::project_diff::DiffSource::Knxproj),
     })
 }
 

@@ -39,9 +39,10 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
-use bussard_service::commission::{CommissionDevice, CommissionReport};
+use bussard_service::commission::{CommissionDevice, CommissionReadback, CommissionReport};
 use bussard_service::commission::{
-    Labelled, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed, identify_pressed,
+    Identified, Labelled, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed,
+    identify_pressed,
 };
 use bussard_service::program::assign::{AssignFlow, Stop};
 use bussard_service::{BusService, WritePolicy};
@@ -208,7 +209,9 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         );
     }
 
-    // Phase 2: the bench ritual, one device at a time.
+    // Phase 2: the bench ritual, one device at a time. `rows` keeps the
+    // identification and read-back of every device whose address was written.
+    let mut rows: Vec<CommissionDevice> = Vec::new();
     while let Some(next) = walk.advance() {
         let (position, total, target) = match next {
             Next::Settled(outcome) => {
@@ -227,7 +230,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             "\n[{position}/{total}] {} — {}",
             target.address, target.name
         );
-        let outcome = commission_one(
+        let (outcome, row) = commission_one(
             &runtime,
             &config,
             &target,
@@ -247,6 +250,9 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             } else {
                 println!("{label}");
             }
+        }
+        if let Some(row) = row {
+            rows.push(row);
         }
         walk.record(outcome);
     }
@@ -271,7 +277,13 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             .iter()
             .filter_map(|o| {
                 let target = walk.targets().iter().find(|t| t.address == o.address)?;
-                Some(CommissionDevice::of(target, o))
+                let row = rows
+                    .iter()
+                    .find(|r| r.target.address == o.address.to_string());
+                Some(
+                    row.cloned()
+                        .unwrap_or_else(|| CommissionDevice::of(target, o)),
+                )
             })
             .collect();
         let mut out = CommissionReport::new(&walk, &gateway, devices, None, false, None);
@@ -299,9 +311,9 @@ fn commission_one(
     product: Option<PathBuf>,
     options: &CommissionArgs,
     g: &Resolved,
-) -> Outcome {
+) -> (Outcome, Option<CommissionDevice>) {
     let (dir, overrides) = (g.dir(), &g.mgmt());
-    let fail = |detail: String| Outcome::failed(target, detail);
+    let fail = |detail: String| (Outcome::failed(target, detail), None);
 
     // The bus half: wait for the button, read the identity, write the address.
     let assigned = {
@@ -321,9 +333,16 @@ fn commission_one(
             result
         })
     };
-    let assigned = match assigned {
+    let (assigned, identified) = match assigned {
         Ok(assigned) => assigned,
         Err(err) => return fail(one_line(&format!("{err:#}"))),
+    };
+    let readback = CommissionReadback::of(&assigned, &identified, target);
+    // A step after the address write failed: the row keeps what was read.
+    let fail = |detail: String| {
+        let outcome = Outcome::failed(target, detail);
+        let row = CommissionDevice::assigned(target, &outcome, &identified, readback.clone());
+        (outcome, Some(row))
     };
 
     // The optional programming half. Both run on their own tunnels, after the
@@ -379,7 +398,9 @@ fn commission_one(
         }
     }
 
-    Outcome::commissioned(target, assigned.label)
+    let outcome = Outcome::commissioned(target, assigned.label);
+    let row = CommissionDevice::assigned(target, &outcome, &identified, readback);
+    (outcome, Some(row))
 }
 
 /// The bus half of one device: wait for the programming button, check the
@@ -390,7 +411,7 @@ async fn assign_on_bus(
     flow: AssignFlow<'_>,
     dir: &Path,
     target: &Target,
-) -> anyhow::Result<Labelled> {
+) -> anyhow::Result<(Labelled, Identified)> {
     let order = target
         .order_number
         .clone()
@@ -425,7 +446,7 @@ async fn assign_on_bus(
         .await
         .map_err(cli_error)?;
     eprintln!("  assigned {current} → {}", target.address);
-    Ok(labelled)
+    Ok((labelled, identified))
 }
 
 /// A commission step's error as the CLI reports it: an identification that

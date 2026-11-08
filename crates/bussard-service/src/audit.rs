@@ -9,7 +9,7 @@
 //! | `masks` | Devices grouped by mask version with the capability row from [`bussard_mgmt::MaskProfile::capabilities`]. |
 //! | `secure` | KNX Secure devices and, when a keyring was given, whether each has a tool-key entry. |
 //! | `live` | `null` for a static audit; otherwise the gateway description, the scan delta, the traffic sample and `secure`: each Data Secure device probed with its keyring tool key ([`SecureProbe`]). |
-//! | `products` | CLI only (absent from the MCP report): the product data the lock pins ([`ProductsReport`]). |
+//! | `products` | The product data the lock pins ([`ProductsReport`]). |
 //!
 //! The JSON is the serialised struct as a [`serde_json::Value`] (keys sorted),
 //! which is what both surfaces print, so text, `--json` and MCP cannot drift.
@@ -58,7 +58,7 @@ pub struct AuditReport {
     pub secure: SecureCoverage,
     /// The live part; `null` for a static audit.
     pub live: Option<LiveReport>,
-    /// The product data the lock pins (CLI only; absent when `None`).
+    /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
 }

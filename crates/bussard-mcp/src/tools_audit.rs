@@ -74,6 +74,9 @@ impl BussardMcp {
             };
         let keyring_devices = keys.keyring_given().then(|| keys.listed());
         let mut report = AuditReport::from_model(&model, keyring_devices.as_deref());
+        report.products = Some(bussard_service::audit::ProductsReport::from_dir(
+            &model, &state.dir,
+        ));
         if !args.live {
             return structured(&report, &model);
         }

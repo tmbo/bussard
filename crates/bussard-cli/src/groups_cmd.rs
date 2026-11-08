@@ -127,7 +127,7 @@ fn run_reserve(
     crate::history_cmd::capture_external_edit(dir);
     let mut args = vec![format!("{} {}", room.floor, room.room)];
     args.extend(functions.iter().cloned());
-    crate::history_cmd::snapshot(
+    let snapshot = crate::history_cmd::snapshot(
         dir,
         bussard_model::history::SnapshotReason::new("groups reserve")
             .with_args(args)
@@ -149,6 +149,7 @@ fn run_reserve(
     if json {
         crate::output::report(&ReserveReport {
             room: Some(label.clone()),
+            snapshot: snapshot.map(|id| id.to_string()),
             ..ReserveReport::new(
                 scheme.as_str(),
                 &groups_path,

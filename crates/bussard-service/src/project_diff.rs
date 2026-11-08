@@ -31,7 +31,7 @@ pub struct ProjectDiffReport {
     pub from: String,
     /// The second side.
     pub to: String,
-    /// What the second side was read from (chat).
+    /// What the second side was read from, when it is a file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<DiffSource>,
     /// How many changes.

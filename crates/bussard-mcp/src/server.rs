@@ -888,7 +888,9 @@ impl BussardMcp {
             Ok(outcome) => outcome,
             Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
-        let report = GroupWriteReport::of(ga, None, &outcome, |refusal| write_refusal(ga, refusal));
+        let gateway = self.state().bus.diagnostics().map(|d| d.interface);
+        let report =
+            GroupWriteReport::of(ga, gateway, &outcome, |refusal| write_refusal(ga, refusal));
         crate::reply::ok_report(&report, &model)
     }
 }
