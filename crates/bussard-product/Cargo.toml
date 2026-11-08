@@ -14,6 +14,9 @@ bussard-model = { workspace = true }
 bussard-secure = { workspace = true }
 # Code-segment payloads and `TypeRawData` parameter values. MIT OR Apache-2.0.
 base64 = { workspace = true }
+# Inflates the catalogue's `Hardware2Program/@LoadedImage` (raw deflate,
+# issue #949). Already in the tree through bussard-model. MIT OR Apache-2.0.
+flate2 = { workspace = true }
 # The streaming ETS-XML parser (bounded memory, no DOM). MIT.
 quick-xml = { workspace = true }
 # Builds the import's per-device application programs in parallel. MIT OR Apache-2.0.

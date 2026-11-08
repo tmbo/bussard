@@ -425,6 +425,7 @@ dependencies = [
  "base64 0.22.1",
  "bussard-model",
  "bussard-secure",
+ "flate2",
  "quick-xml",
  "rayon",
  "serde",

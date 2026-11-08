@@ -24,7 +24,7 @@
 //! in that block (which could attribute the wrong application to a part when a
 //! block carries several distinct programs).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -66,6 +66,16 @@ pub struct Hardware {
     /// every product's order number maps to every app ref that block's
     /// `Hardware2Program`s declare, in document order.
     pub order_to_apps: HashMap<String, Vec<String>>,
+    /// The application programs a `Hardware2Program` lists whose
+    /// `LoadedImage` holds a memory segment of the group-object table
+    /// (interface object 3, see [`crate::loaded_image`]): one trigger of the
+    /// ETS download-plugin table shape (issue #949,
+    /// [`crate::ApplicationProgram::ets_table_image`]). An application
+    /// several `Hardware2Program`s list is in the set when any of them holds
+    /// the segment; none of the 1950 programs of the ETS sweep corpus is
+    /// listed by two that disagree.
+    #[serde(default)]
+    pub table_image_apps: BTreeSet<String>,
 }
 
 impl Hardware {
@@ -77,6 +87,7 @@ impl Hardware {
         self.products.extend(other.products);
         self.hardware2program.extend(other.hardware2program);
         self.order_to_bus_current.extend(other.order_to_bus_current);
+        self.table_image_apps.extend(other.table_image_apps);
         for (order, apps) in other.order_to_apps {
             self.order_to_apps.entry(order).or_default().extend(apps);
         }
@@ -100,6 +111,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     let mut order_to_bus_current: HashMap<String, u32> = HashMap::new();
 
     let mut current_h2p_id: Option<String> = None;
+    // Whether the current `Hardware2Program`'s `LoadedImage` holds a
+    // group-object-table segment.
+    let mut current_table_image = false;
+    let mut table_image_apps: BTreeSet<String> = BTreeSet::new();
     let mut current_hw_name: Option<String> = None;
 
     // Order numbers and app refs collected within the current <Hardware> block,
@@ -155,6 +170,8 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                 }
                 b"Hardware2Program" => {
                     current_h2p_id = attr_value(&e, b"Id", context)?;
+                    current_table_image = attr_value(&e, b"LoadedImage", context)?
+                        .is_some_and(|image| table_image(current_h2p_id.as_deref(), &image));
                     if let Some(id) = &current_h2p_id {
                         h2p.entry(id.clone()).or_default();
                     }
@@ -163,6 +180,9 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                     if let Some(ref_id) = attr_value(&e, b"RefId", context)? {
                         if let Some(h2p_id) = &current_h2p_id {
                             h2p.entry(h2p_id.clone()).or_default().push(ref_id.clone());
+                        }
+                        if current_table_image {
+                            table_image_apps.insert(ref_id.clone());
                         }
                         block_apps.push(ref_id);
                     }
@@ -189,7 +209,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
             },
             Event::End(e) => match e.local_name().as_ref() {
                 b"Hardware" => current_hw_name = None,
-                b"Hardware2Program" => current_h2p_id = None,
+                b"Hardware2Program" => {
+                    current_h2p_id = None;
+                    current_table_image = false;
+                }
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
                 b"TranslationUnit" => translations.exit_element(),
@@ -221,7 +244,28 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         hardware2program: h2p,
         order_to_bus_current,
         order_to_apps,
+        table_image_apps,
     })
+}
+
+/// Whether a `Hardware2Program`'s `LoadedImage` holds a group-object-table
+/// segment. An empty attribute holds none; one that does not decode counts as
+/// none too, with a warning: the image only selects the table shape, it never
+/// refuses an import.
+fn table_image(h2p_id: Option<&str>, image: &str) -> bool {
+    if image.trim().is_empty() {
+        return false;
+    }
+    match crate::loaded_image::decode_loaded_image(image) {
+        Ok(entries) => crate::loaded_image::has_group_object_table_segment(&entries),
+        Err(err) => {
+            tracing::warn!(
+                hardware2program = h2p_id.unwrap_or("?"),
+                "LoadedImage does not decode ({err}); read as holding no group-object table"
+            );
+            false
+        }
+    }
 }
 
 /// Maps every collected order number in the block to every collected app ref
@@ -455,6 +499,49 @@ mod tests {
                 .ok_or("hw.order_to_apps.get(\"BBB\") missing")?,
             &["M-1_A-2"]
         );
+        Ok(())
+    }
+
+    /// Issue #949: a `Hardware2Program` whose `LoadedImage` holds a
+    /// group-object-table segment marks the programs it lists; one with only
+    /// property values, an empty one or one that does not decode (a warning,
+    /// not a refusal) marks none.
+    #[test]
+    fn test_parse_hardware_table_image_apps() -> std::result::Result<(), Box<dyn std::error::Error>>
+    {
+        use crate::loaded_image::test_support::{attribute, entry, list};
+        let with_table = attribute(&list(&[
+            entry(5, 0, 0xD0, 0, &[0; 4]),
+            entry(12, 3, 7, 0, &[0, 0]),
+        ]))?;
+        let properties_only = attribute(&list(&[entry(5, 0, 0xD0, 0, &[0; 4])]))?;
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23"><Hardware Id="H-1" Name="x">
+            <Products><Product Id="H-1_P-1" OrderNumber="X-1" /></Products>
+            <Hardware2Programs>
+              <Hardware2Program Id="H-1_HP-1" LoadedImage="{with_table}">
+                <ApplicationProgramRef RefId="M-1_A-1" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-2" LoadedImage="{properties_only}">
+                <ApplicationProgramRef RefId="M-1_A-2" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-3" LoadedImage="">
+                <ApplicationProgramRef RefId="M-1_A-3" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-4" LoadedImage="AAAA!">
+                <ApplicationProgramRef RefId="M-1_A-4" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-5">
+                <ApplicationProgramRef RefId="M-1_A-5" />
+              </Hardware2Program>
+            </Hardware2Programs></Hardware></KNX>"#
+        );
+        let hw = parse_hardware(&xml)?;
+        assert_eq!(
+            hw.table_image_apps.iter().collect::<Vec<_>>(),
+            vec!["M-1_A-1"]
+        );
+        assert_eq!(hw.hardware2program.len(), 5);
         Ok(())
     }
 }

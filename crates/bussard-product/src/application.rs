@@ -1550,14 +1550,20 @@ pub struct ApplicationProgram {
     /// manufacturer in the application id.
     #[serde(default)]
     pub legacy_patch_manufacturer_in_task_segment: bool,
-    /// Whether the program declares an ETS download plugin
-    /// (`<Extension EtsDownloadPlugin=...>`, even an empty one). ETS then
-    /// writes the group-object table with the communication flag on every
-    /// declared object, linked or not: on System B (issue #565, the
-    /// Busch-Jaeger DALI gateways) and in the System 7 descriptor post-pass
-    /// (issue #970, the Berker and Hager 0701 programs).
+    /// Whether the program names an ETS download plugin: an
+    /// `<Extension EtsDownloadPlugin="{GUID}">` with a non-empty value. An
+    /// empty `EtsDownloadPlugin=""` names none (issue #949: on the seven
+    /// sweep rows that declare it empty, ETS writes the plain table). One of
+    /// the two triggers of [`Self::ets_download_plugin_shape`].
     #[serde(default)]
     pub ets_download_plugin: bool,
+    /// Whether the catalogue's `Hardware2Program/@LoadedImage` for this
+    /// program holds a memory segment of the group-object table (interface
+    /// object 3, see [`crate::loaded_image`]). Set by the product reader from
+    /// the hardware catalogue, not by the program parser; the other trigger
+    /// of [`Self::ets_download_plugin_shape`] (issue #949).
+    #[serde(default)]
+    pub ets_table_image: bool,
     /// Whether `<Options>` declares `SupportsExtendedMemoryServices="true"`.
     /// ETS reads and writes memory above `0xFFFF` with
     /// `A_MemoryExtended_*` when it does and with `A_UserMemory_*` when it
@@ -1806,6 +1812,27 @@ impl ApplicationProgram {
         self.program_type
             .as_deref()
             .is_some_and(|t| t.eq_ignore_ascii_case("PeiProgram"))
+    }
+
+    /// Whether ETS writes this program's group-object table in the
+    /// download-plugin shape: the communication flag on every declared
+    /// object, linked or not, and `04 00` for a declared object the
+    /// configuration does not show (issues #565, #970, #949).
+    ///
+    /// Two triggers: a non-empty `EtsDownloadPlugin` ([`Self::ets_download_plugin`])
+    /// or a group-object-table segment in the catalogue's `LoadedImage`
+    /// ([`Self::ets_table_image`]). Over the 618 captured System B rows with
+    /// a group-object-table comparison (investigation of 2026-11-08, #949)
+    /// the two together hit 48 of the 48 rows with the shape and none of the
+    /// 570 without; the plugin attribute's mere presence (the rule before)
+    /// hit 10 and 7. This is a correlation over captures, not a confirmed
+    /// mechanism: the segment case of Hager `E0D3` rests on one 2-octet
+    /// segment and the GUID case on two rows (`501A`/`501B`). The synthetic
+    /// capture pair that would settle it (#596): one program with and
+    /// without an object-3 segment in `LoadedImage`, and with a GUID versus
+    /// an empty `EtsDownloadPlugin`.
+    pub fn ets_download_plugin_shape(&self) -> bool {
+        self.ets_download_plugin || self.ets_table_image
     }
 
     /// The program's static com-objects: those declared in `<Static>` with a
@@ -2484,10 +2511,11 @@ fn insert_options(app: &mut ApplicationProgram, m: &Attrs) {
     app.supports_extended_memory_services = flag(b"SupportsExtendedMemoryServices");
 }
 
-/// Reads a `<Extension>` element: whether it names an ETS download plugin
-/// (the attribute's presence counts, the products leave it empty).
+/// Reads a `<Extension>` element: whether it names an ETS download plugin.
+/// Only a non-empty `EtsDownloadPlugin` (a GUID) does; an empty one names
+/// none (issue #949).
 fn insert_extension(app: &mut ApplicationProgram, m: &Attrs) {
-    if get(m, b"EtsDownloadPlugin").is_some() {
+    if get(m, b"EtsDownloadPlugin").is_some_and(|v| !v.trim().is_empty()) {
         app.ets_download_plugin = true;
     }
 }
@@ -4159,14 +4187,19 @@ mod tests {
         Ok(())
     }
 
-    /// `<Extension EtsDownloadPlugin="">` marks the program (issue #565);
-    /// an `<Extension>` without the attribute does not.
+    /// `<Extension EtsDownloadPlugin="{GUID}">` marks the program (issue
+    /// #565); an empty attribute (issue #949) or an `<Extension>` without it
+    /// does not.
     #[test]
     fn test_parse_application_program_ets_download_plugin() -> Result<()> {
         for (extension, expected) in [
             (
-                r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#,
+                r#"<Extension EtsDownloadPlugin="{B385ADFE-A7D2-4503-9657-D49E97FF9FF4}" />"#,
                 true,
+            ),
+            (
+                r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#,
+                false,
             ),
             (r#"<Extension EtsUiPlugin="" />"#, false),
             ("", false),
@@ -4176,6 +4209,37 @@ mod tests {
             );
             let app = parse_application_program_str("M-1_A-1", &xml)?;
             assert_eq!(app.ets_download_plugin, expected, "{extension}");
+        }
+        Ok(())
+    }
+
+    /// Issue #949: the download-plugin table shape follows a plugin GUID or
+    /// a group-object-table segment in `LoadedImage`; an empty
+    /// `EtsDownloadPlugin` alone does not select it.
+    #[test]
+    fn test_ets_download_plugin_shape_triggers() -> Result<()> {
+        let xml = |extension: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20"><ApplicationProgram Id="M-1_A-1" Name="t"><Static>{extension}<Options /></Static></ApplicationProgram></KNX>"#
+            )
+        };
+        let guid = r#"<Extension EtsDownloadPlugin="{B385ADFE-A7D2-4503-9657-D49E97FF9FF4}" />"#;
+        let empty = r#"<Extension EtsDownloadPlugin="" />"#;
+        for (extension, table_image, expected) in [
+            (guid, false, true),
+            (guid, true, true),
+            (empty, true, true),
+            (empty, false, false),
+            ("", true, true),
+            ("", false, false),
+        ] {
+            let mut app = parse_application_program_str("M-1_A-1", &xml(extension))?;
+            app.ets_table_image = table_image;
+            assert_eq!(
+                app.ets_download_plugin_shape(),
+                expected,
+                "{extension} table image {table_image}"
+            );
         }
         Ok(())
     }

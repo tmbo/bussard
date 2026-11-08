@@ -790,12 +790,14 @@ pub(super) fn plan_flash_sys7(
         .chain(linked.last().copied())
         .max();
     if let Some(last_object) = last_object {
-        // A program with an ETS download plugin gets C on every object it
-        // declares, linked or not (issue #970, 53 Berker/Hager 0701 sweep
+        // A program in the ETS download-plugin shape gets C on every object
+        // it declares, linked or not (issue #970, 53 Berker/Hager 0701 sweep
         // rows: each declared object `b | 04` against the plain rule, the
-        // numbering gaps still cleared); the same set as on System B (issue
-        // #565).
-        let communication_on = if app.ets_download_plugin {
+        // numbering gaps still cleared); the same set and the same trigger
+        // as on System B (issues #565, #949). All 53 rows name a plugin
+        // GUID, and no System 7 sweep row has an empty one or a
+        // group-object-table segment in its `LoadedImage`.
+        let communication_on = if app.ets_download_plugin_shape() {
             declared_objects
         } else {
             BTreeSet::new()
@@ -2962,14 +2964,27 @@ mod tests {
                 .filter_map(|i| image.get(5 + 4 * i).copied())
                 .collect())
         };
+        let shape = vec![0x17, 0x4F, 0xDB, 0xDF, 0xDB, 0x4F];
+        let plain = vec![0x13, 0x4B, 0xDB, 0xDB, 0xDB, 0x4B];
         let plugin = parse_application_program(
+            "A",
+            xml(r#"<Extension EtsDownloadPlugin="{B385ADFE-A7D2-4503-9657-D49E97FF9FF4}" />"#)
+                .as_bytes(),
+        )?;
+        assert!(plugin.ets_download_plugin);
+        assert_eq!(configs(&plugin)?, shape);
+        // An empty `EtsDownloadPlugin` names no plugin (issue #949) ...
+        let mut empty = parse_application_program(
             "A",
             xml(r#"<Extension EtsDownloadPlugin="" />"#).as_bytes(),
         )?;
-        assert!(plugin.ets_download_plugin);
-        assert_eq!(configs(&plugin)?, vec![0x17, 0x4F, 0xDB, 0xDF, 0xDB, 0x4F]);
-        let plain = parse_application_program("A", xml("").as_bytes())?;
-        assert_eq!(configs(&plain)?, vec![0x13, 0x4B, 0xDB, 0xDB, 0xDB, 0x4B]);
+        assert!(!empty.ets_download_plugin);
+        assert_eq!(configs(&empty)?, plain);
+        // ... a group-object-table segment in `LoadedImage` selects the shape.
+        empty.ets_table_image = true;
+        assert_eq!(configs(&empty)?, shape);
+        let none = parse_application_program("A", xml("").as_bytes())?;
+        assert_eq!(configs(&none)?, plain);
         Ok(())
     }
 

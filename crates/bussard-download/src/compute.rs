@@ -702,7 +702,7 @@ pub fn dynamic_group_object_table(
 ) -> Option<Vec<u8>> {
     let config = memo.evaluate_for(app, overrides);
     let mut descriptors = dynamic_group_object_descriptors(app, &config, linked);
-    if app.ets_download_plugin {
+    if app.ets_download_plugin_shape() {
         ets_download_plugin_descriptors(app, &mut descriptors);
     }
     let count = group_object_table_count(app, &descriptors);
@@ -728,17 +728,18 @@ pub(crate) fn declared_object_numbers(
         .collect()
 }
 
-/// The group-object table of a program with an ETS download plugin (issue
-/// #565): ETS sets the communication flag on every declared object. A shown
-/// object keeps its flags with C added; a declared object the configuration
-/// does not show gets `04 00` (C only, system priority, size code 0); only
-/// the numbers no object declares stay `00 00`.
+/// The group-object table in the ETS download-plugin shape (issue #565),
+/// for a program [`ApplicationProgram::ets_download_plugin_shape`](bussard_product::ApplicationProgram::ets_download_plugin_shape)
+/// selects (issue #949): ETS sets the communication flag on every declared
+/// object. A shown object keeps its flags with C added; a declared object
+/// the configuration does not show gets `04 00` (C only, system priority,
+/// size code 0); only the numbers no object declares stay `00 00`.
 ///
 /// From the defaults sweep of the four Busch-Jaeger DALI gateways
-/// (`M-0007_A-A0AA`..`A0AD`, `<Extension EtsDownloadPlugin="">`): A0AA's 1058
-/// unshown objects were written `04 00`, its shown unlinked ones `17`, `5f`,
-/// `4f` where the plain rule writes `13`, `5b`, `4b`. The likely writer is the
-/// plugin; what it does in a non-default configuration is not captured.
+/// (`M-0007_A-A0AA`..`A0AD`, a group-object-table segment in `LoadedImage`):
+/// A0AA's 1058 unshown objects were written `04 00`, its shown unlinked ones
+/// `17`, `5f`, `4f` where the plain rule writes `13`, `5b`, `4b`. What ETS
+/// does in a non-default configuration is not captured.
 fn ets_download_plugin_descriptors(
     app: &bussard_product::ApplicationProgram,
     descriptors: &mut Vec<GroupObjectDescriptor>,
@@ -1270,11 +1271,12 @@ mod tests {
         );
     }
 
-    /// Issue #565: a program with `<Extension EtsDownloadPlugin>` (the
+    /// Issues #565, #949: a program in the download-plugin shape (a plugin
+    /// GUID, or a group-object-table segment in `LoadedImage` like the
     /// Busch-Jaeger DALI gateway A0AA) gets C on every declared object: the
     /// shown ones keep their flags with C (`5f 00`, `17 00`), the unshown
-    /// ones `04 00`, the undeclared numbers `00 00`. Without the plugin the
-    /// same program keeps the plain rule.
+    /// ones `04 00`, the undeclared numbers `00 00`. An empty
+    /// `EtsDownloadPlugin=""` without the segment keeps the plain rule.
     #[test]
     fn test_dynamic_group_object_table_ets_download_plugin_sets_c_everywhere()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -1310,33 +1312,43 @@ mod tests {
          </ApplicationProgram></KNX>"#
             )
         };
-        let table = |extension: &str| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-            let app = bussard_product::parse_application_program("A", xml(extension).as_bytes())?;
-            Ok(dynamic_group_object_table(
-                &app,
-                &BTreeMap::new(),
-                &BTreeMap::new(),
-                &bussard_product::dynamic::DynamicMemo::new(&app),
-            )
-            .ok_or("empty table")?)
-        };
-        let plugin =
-            table(r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#)?;
-        assert_eq!(
-            plugin,
-            vec![
-                0x00, 0x07, 0x04, 0x00, 0x5f, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x17, 0x00
-            ]
-        );
-        let plain = table("")?;
-        assert_eq!(
-            plain,
-            vec![
-                0x00, 0x07, 0x00, 0x00, 0x5b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-                0x13, 0x00
-            ]
-        );
+        let table =
+            |extension: &str, table_image: bool| -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+                let mut app =
+                    bussard_product::parse_application_program("A", xml(extension).as_bytes())?;
+                app.ets_table_image = table_image;
+                Ok(dynamic_group_object_table(
+                    &app,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    &bussard_product::dynamic::DynamicMemo::new(&app),
+                )
+                .ok_or("empty table")?)
+            };
+        let shape = vec![
+            0x00, 0x07, 0x04, 0x00, 0x5f, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x17, 0x00,
+        ];
+        let plain = vec![
+            0x00, 0x07, 0x00, 0x00, 0x5b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x13, 0x00,
+        ];
+        let guid = r#"<Extension EtsDownloadPlugin="{B385ADFE-A7D2-4503-9657-D49E97FF9FF4}" />"#;
+        let empty = r#"<Extension EtsDownloadPlugin="" EtsUiPlugin="" EtsDataHandler="" />"#;
+        for (extension, table_image, expected) in [
+            (guid, false, &shape),
+            (guid, true, &shape),
+            (empty, true, &shape),
+            ("", true, &shape),
+            (empty, false, &plain),
+            ("", false, &plain),
+        ] {
+            assert_eq!(
+                &table(extension, table_image)?,
+                expected,
+                "{extension:?} table image {table_image}"
+            );
+        }
         Ok(())
     }
 
