@@ -31,8 +31,9 @@
 //!
 //! A synthetic row of a KNX Data Secure capture (`syn-secure`, issue #423)
 //! decodes it with the keyring committed next to it (`keyring=`), exported
-//! under the public [`SYNTHETIC_KEYRING_PASSWORD`]; the synthetic rows run
-//! with it in `BUSSARD_KEYRING_PASSWORD`.
+//! under the public [`SYNTHETIC_KEYRING_PASSWORD`], and plans with the key
+//! store imported from that keyring (`dir=`, issue #858); the synthetic rows
+//! run with it in `BUSSARD_KEYRING_PASSWORD`.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

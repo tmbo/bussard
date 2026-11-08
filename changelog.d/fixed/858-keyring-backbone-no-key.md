@@ -1,0 +1,1 @@
+- `bussard keys import` and every other load of an ETS `.knxkeys` accept a `<Backbone>` without `Key`, which ETS 6.4.1 writes when the IP backbone is not secured, and read it as no backbone key; the syn-secure oracle row now plans with a key store imported from its keyring and is identical, property writes included (#858).

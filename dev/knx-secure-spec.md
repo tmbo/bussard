@@ -369,7 +369,9 @@ as raw base64 instead of being decrypted.
 ### 4.5 Contents (element/attribute names) `[XKNX keyring.py, CONFIRMED]`
 
 - **Backbone**: `Key` (encrypted key, multicast key), `MulticastAddress`,
-  `Latency` (ms).
+  `Latency` (ms). `Key` is absent when the backbone is not secured: ETS 6.4.1
+  writes `<Backbone MulticastAddress="224.0.23.12" />` for a project with Data
+  Secure devices and plain IP routing. bussard reads that as no backbone (#858).
 - **Interface** (tunnel/USB/backbone): `Type`, `IndividualAddress`, `Host`,
   `UserID`, `Password` (encrypted user password), `Authentication` (encrypted
   device auth password); both are absent on a USB interface. Child `Group`
