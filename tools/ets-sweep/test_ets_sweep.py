@@ -1151,7 +1151,7 @@ class TestCouplerAddress(unittest.TestCase):
         self.assertEqual(sweep.added_address({"added": []}, "1.1.1"), "1.1.1")
         self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.0"}, {"ia": "1.1.2"}]}, "1.1.1"), "1.1.1")
 
-    def run_one(self, added: str, refuse_restart: bool = False):
+    def run_one(self, added: str, refuse_restart: bool = False, catalog_add: dict | None = None):
         """sweep.run_one against a fake driver and sim: ETS adds the device
         at `added`; returns the result, the sims started and the flows."""
         from unittest import mock
@@ -1187,7 +1187,7 @@ class TestCouplerAddress(unittest.TestCase):
             name = path.rsplit("/", 1)[1]
             flows.append((name, body.get("ia")))
             return {"devices": {"devices": []},
-                    "catalog_add": {"added": [{"ia": added}], "row": {"name": "x"}},
+                    "catalog_add": catalog_add or {"added": [{"ia": added}], "row": {"name": "x"}},
                     "history": {"lines": ["Programmieren(Appl.): Abgeschlossen"]}}.get(name, {})
 
         hook_ia = []
@@ -1287,6 +1287,82 @@ class TestOemIdentity(unittest.TestCase):
                 taught = {"object": 0, "pid": 12, "value": "00fc"}
                 self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D",
                                                           {"learned_properties": [taught]}), [taught])
+
+
+
+class TestCatalogManufacturer(unittest.TestCase):
+    """The catalog row must be the product file's, not another manufacturer's
+    product with the same order number (#881)."""
+
+    TAPKO = {"y": 1507, "name": "Spannungsversorgung IPS640", "order": "IPS 640",
+             "application": "Gerät/Bus-Diagnose", "version": "1.0", "online": False,
+             "manufacturer": "TAPKO Technologies GmbH"}
+    CLONE = {"y": 1560, "name": "Power Supply 640", "order": "IPS 640",
+             "application": "Device/Busline Diagn...", "version": "1.0", "online": False,
+             "manufacturer": "Other Brand AG"}
+
+    def test_file_rows_keeps_the_files_manufacturer(self):
+        import catalog_pick
+
+        rows = catalog_pick.file_rows([self.CLONE, self.TAPKO], "TAPKO Technologies")
+        self.assertEqual(rows, [self.TAPKO])
+        # Two rows of the file's manufacturer: the application decides.
+        other_app = dict(self.TAPKO, y=1600, application="Something Else")
+        own_app = dict(self.TAPKO, application="Device/Busline Diagn...")
+        self.assertEqual(catalog_pick.file_rows([other_app, own_app], "TAPKO Technologies",
+                                                "Device/Busline Diagnostics"), [own_app])
+        # No application matches: every row of the manufacturer stays.
+        self.assertEqual(catalog_pick.file_rows([other_app], "TAPKO Technologies", "Device/Busline Diagnostics"),
+                         [other_app])
+        # A header OCR did not read is no evidence of a stranger.
+        unread = dict(self.TAPKO, manufacturer="")
+        self.assertEqual(catalog_pick.file_rows([self.CLONE, unread], "TAPKO Technologies"), [unread])
+        # Without the file's manufacturer nothing is filtered.
+        self.assertEqual(catalog_pick.file_rows([self.CLONE], ""), [self.CLONE])
+
+    def test_file_rows_raises_on_strangers_only(self):
+        import catalog_pick
+
+        with self.assertRaises(catalog_pick.ManufacturerMismatch) as cm:
+            catalog_pick.file_rows([self.CLONE], "TAPKO Technologies")
+        self.assertIn("catalog manufacturer mismatch", str(cm.exception))
+        self.assertIn("Other Brand AG", str(cm.exception))
+
+    def test_manufacturer_matches_ocr_and_legal_forms(self):
+        import catalog_pick
+
+        self.assertTrue(catalog_pick.manufacturer_matches("TAPKO Technologies GmbH", "TAPKO Technologies"))
+        self.assertTrue(catalog_pick.manufacturer_matches("Hugo Muller GmbH & Co KG", "Hugo Müller GmbH & Co KG"))
+        self.assertFalse(catalog_pick.manufacturer_matches("GEWISS", "Hugo Müller GmbH & Co KG"))
+        self.assertIsNone(catalog_pick.manufacturer_matches("", "TAPKO Technologies"))
+
+    def test_catalog_identity_and_verdict(self):
+        import zipfile
+
+        import sweep
+
+        app = "M-0072_A-3001-10-A7BD"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "TAPKO_ETS4_IPS640_R1-0b_01.knxprod"
+            with zipfile.ZipFile(path, "w") as z:
+                z.writestr("knx_master.xml", '<KNX><Manufacturer Id="M-0071" KnxManufacturerId="113" Name="Zennio" />'
+                                             '<Manufacturer Id="M-0072" KnxManufacturerId="114" Name="TAPKO Technologies" /></KNX>')
+                z.writestr(f"M-0072/{app}.xml", f'<KNX><ApplicationProgram Id="{app}" Name="Device/Busline Diagnostics" '
+                                                'MaskVersion="MV-0705"></ApplicationProgram></KNX>')
+            identity = sweep.catalog_identity(path, app)
+        self.assertEqual(identity, {"manufacturer": "TAPKO Technologies", "application": "Device/Busline Diagnostics"})
+        self.assertEqual(sweep.catalog_manufacturer_verdict(self.TAPKO, identity), "same")
+        self.assertEqual(sweep.catalog_manufacturer_verdict(self.CLONE, identity), "other")
+        self.assertEqual(sweep.catalog_manufacturer_verdict({"name": "x"}, identity), "unknown")
+
+    def test_run_one_records_a_manufacturer_mismatch(self):
+        r, sims, flows, _ = TestCouplerAddress.run_one(
+            self, "1.1.1", catalog_add={"ok": False, "error": "catalog manufacturer mismatch: wanted 'TAPKO "
+                                                                "Technologies', rows [('Other Brand AG', ...)]"})
+        self.assertEqual(r["outcome"], "skipped-catalog-manufacturer", r)
+        self.assertNotIn("download", [f for f, _ in flows])
+        # The add was tried; nothing was downloaded into a stranger.
+        self.assertIn(("catalog_add", None), flows)
 
 
 if __name__ == "__main__":

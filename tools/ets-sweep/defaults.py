@@ -21,6 +21,9 @@ tools/ets-sweep/results/defaults.json, keyed by application id:
     sim-refused     knx-sim did not start with this product (its message is kept)
     unknown         neither: look at the run directory
     skipped-mask / skipped-no-order / skipped-not-in-catalog
+    skipped-catalog-manufacturer  every catalog row of the search sits under
+                            another manufacturer (only with
+                            sweep.REQUIRE_CATALOG_MANUFACTURER, #881)
     skipped-older-version   a newer version of the same application on the
                             same hardware runs instead (field `newer`)
     driver-error-address    the device is not at the address the download
@@ -501,6 +504,8 @@ def main() -> int:
                 # the oracle row takes it.
                 "ia": r.get("ia"),
                 "row": r.get("catalog_row"),
+                # The row's manufacturer group header against the file's (#881).
+                "catalog_manufacturer": r.get("catalog_manufacturer"),
                 "error": r.get("error"),
                 "ets_history": sweep.newest_history_entry(r.get("history")),
                 "ets_log": r.get("ets_log"),

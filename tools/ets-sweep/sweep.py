@@ -23,6 +23,7 @@ Outputs: captures/ets-sweep/<app>/<variant>/{sim.yaml,sim.log,ets.pcapng,driver.
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import os
 import re
@@ -36,6 +37,9 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import vm  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "driver"))
+import catalog_pick  # noqa: E402
 
 REPO = Path(__file__).resolve().parents[2]
 SIM_BIN = REPO / "knx-sim" / "target" / "debug" / "knx-sim"
@@ -546,6 +550,47 @@ def compare_value(tag: str) -> bytes | None:
     return value.to_bytes(width, "big")
 
 
+# Whether `catalog_add` refuses a row under another manufacturer's group
+# header (#881). Off until a run has shown what the headers say: the German
+# rows of the three TAPKO failures of 2026-11-08 are the files' own de-DE
+# translations, and the Gewiss GW10966 row that captures may sit under a
+# GEWISS header. Meanwhile every result records the header and its verdict.
+REQUIRE_CATALOG_MANUFACTURER = False
+
+
+def catalog_manufacturer_verdict(row: dict | None, identity: dict) -> str:
+    """`same`, `other` or `unknown`: whether the added catalog row's
+    manufacturer group header names the product file's manufacturer."""
+    match = catalog_pick.manufacturer_matches(str((row or {}).get("manufacturer") or ""),
+                                              identity.get("manufacturer") or "")
+    return "unknown" if match is None else "same" if match else "other"
+
+
+def catalog_identity(knxprod: Path, app: str) -> dict:
+    """What the catalog row of `app` must show (#881): the manufacturer's
+    name from the file's knx_master.xml (`Manufacturer Id="M-0072"
+    Name="TAPKO Technologies"`) and the application program's name, as
+    `catalog_add` takes them. A part the file does not give is left out."""
+    own = app.split("_", 1)[0]
+    # The application's start tag sits in its file's first lines; the file
+    # itself can run to 100 MB.
+    texts = ((_zip_texts(knxprod, lambda n: n == "knx_master.xml", first=True) or [])
+             + (_zip_texts(knxprod, lambda n: n.endswith(f"/{app}.xml"), first=True, limit=8000) or []))
+    out: dict = {}
+    for name, text in texts:
+        if name == "knx_master.xml":
+            m = re.search(rf'<Manufacturer\s[^>]*\bId="{re.escape(own)}"[^>]*>', text)
+            n = re.search(r'\bName="([^"]*)"', m.group(0)) if m else None
+            if n:
+                out["manufacturer"] = html.unescape(n.group(1))
+        else:
+            m = re.search(r"<ApplicationProgram\s[^>]*>", text)
+            n = re.search(r'\bName="([^"]*)"', m.group(0)) if m else None
+            if n:
+                out["application"] = html.unescape(n.group(1))
+    return out
+
+
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
@@ -665,11 +710,17 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         for d in flow("devices")["devices"]:
             if not flow("delete_device", ia=d["ia"]).get("deleted"):
                 raise RuntimeError(f"could not delete {d['ia']} before the add")
+        # Only the file's own product: a catalog row of another manufacturer
+        # sharing the order number is never added (#881).
+        identity = catalog_identity(knxprod, app)
+        result["catalog_identity"] = identity
         add = flow("catalog_add", search=search, version=version, fallback_search=fallback_search,
-                   password_wait=12 if secure_enabled(knxprod, app) else 2)
+                   password_wait=12 if secure_enabled(knxprod, app) else 2,
+                   require_manufacturer=REQUIRE_CATALOG_MANUFACTURER, **identity)
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
+        result["catalog_manufacturer"] = catalog_manufacturer_verdict(add.get("row"), identity)
         got = added_address(add, ia)
         if got != ia:
             if not is_coupler_address(got):
@@ -763,6 +814,10 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         else "skipped-compat-mode" if "compatibility mode" in err
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
+        # Every catalog row of the search is another manufacturer's product
+        # (a rebranded clone with the same order number, #881); the error
+        # names the rows seen.
+        else "skipped-catalog-manufacturer" if "catalog manufacturer mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
         # The device is not at the address the download looks for (#876): a
         # device left in the project, or an address the sweep did not follow.
