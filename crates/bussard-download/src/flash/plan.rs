@@ -1713,9 +1713,9 @@ pub(super) fn assemble_ops(
 /// # Errors
 ///
 /// [`PlanError::UnsupportedOp`] for a control that names both an index and a
-/// type, a type or occurrence past the 16 and 12 bits the extended service
-/// carries, or one an `LdCtrlMapError` is in force over (`mapped`), which
-/// bussard maps over an indexed `LdCtrlUnload` only.
+/// type, a type or occurrence [`super::plan_props::prop_object`] refuses, the
+/// device object (type 0), or one an `LdCtrlMapError` is in force over
+/// (`mapped`), which bussard maps over an indexed `LdCtrlUnload` only.
 fn lower_typed_load_control(
     step: usize,
     op: &LoadOp,
@@ -1776,15 +1776,24 @@ fn lower_typed_load_control(
                 .to_string(),
         ));
     }
-    let object_type = obj_type
-        .and_then(|t| u16::try_from(t).ok())
-        .ok_or_else(|| refuse(format!("ObjType {obj_type:?} past 16 bits")))?;
-    // The extended services carry a 12-bit instance, 1-based.
-    let occurrence = occurrence.unwrap_or(0);
-    let occurrence = u16::try_from(occurrence)
-        .ok()
-        .filter(|o| *o < 0x0FFF)
-        .ok_or_else(|| refuse(format!("Occurrence {occurrence} past the 12-bit instance")))?;
+    // The object by type and occurrence, by the one rule every op naming an
+    // object follows; the device object (type 0) holds no load-state machine.
+    let (object_type, occurrence) =
+        match super::plan_props::prop_object(step, None, *obj_type, *occurrence)
+            .map_err(|e| refuse(e.to_string()))?
+        {
+            PropObject::Type {
+                object_type,
+                occurrence,
+            } => (object_type, occurrence),
+            PropObject::Index(index) => {
+                return Err(refuse(format!(
+                    "naming the device object (ObjType {}, object {index}), which has no \
+                     load-state machine",
+                    obj_type.unwrap_or_default()
+                )));
+            }
+        };
     Ok(FlashStep::TypedLoadControl {
         object_type,
         occurrence,
@@ -1815,6 +1824,28 @@ fn loads_application_program_2(blocks: &BTreeMap<u32, Vec<LoadOp>>) -> bool {
     AP2_MERGE_IDS
         .iter()
         .any(|id| blocks.get(id).is_some_and(|ops| !ops.is_empty()))
+}
+
+/// Whether any load procedure of `app` or its companion program carries a
+/// non-empty block for an Application Program 2 merge point (MergeId 3 or
+/// 5) before the `<choose>` branches are taken: the procedure choice of
+/// [`crate::master_template_ops`]. The planner decides again on the blocks
+/// it takes ([`loads_application_program_2`]).
+pub(crate) fn fills_application_program_2(app: &ApplicationProgram) -> bool {
+    app.load_procedures
+        .iter()
+        .chain(
+            app.companion_programs
+                .iter()
+                .flat_map(|c| c.load_procedures.iter()),
+        )
+        .any(|p| {
+            !p.ops.is_empty()
+                && p.merge_id
+                    .as_deref()
+                    .and_then(|m| m.parse::<u32>().ok())
+                    .is_some_and(|id| AP2_MERGE_IDS.contains(&id))
+        })
 }
 
 /// The complete-download template as ETS runs it when only Application
@@ -4621,6 +4652,87 @@ mod tests {
         Ok(())
     }
 
+    /// Issue #942: a master that ships its own `ap1` is run as shipped for a
+    /// program without Application Program 2, not derived from `all`; a
+    /// program that fills MergeId 3 gets the `all` procedure.
+    #[test]
+    fn test_master_template_ops_selects_the_masters_ap1() -> TestResult {
+        let master_xml = r#"<KNX><ManufacturerData><Manufacturer><MaskVersions>
+          <MaskVersion Id="MV-07B0" MaskVersion="1968">
+           <Procedures>
+            <Procedure ProcedureType="Load" ProcedureSubType="ap1">
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlDelay MilliSeconds="7" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </Procedure>
+            <Procedure ProcedureType="Load" ProcedureSubType="all">
+             <LdCtrlConnect />
+             <LdCtrlUnload LsmIdx="5" />
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="5" />
+             <LdCtrlMerge MergeId="3" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlLoadCompleted LsmIdx="5" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </Procedure>
+           </Procedures>
+          </MaskVersion>
+        </MaskVersions></Manufacturer></ManufacturerData></KNX>"#;
+        let master = bussard_product::parse_master_template(master_xml.as_bytes(), "test")?;
+        let app_xml = |blocks: &str| {
+            format!(
+                r#"<KNX xmlns="http://knx.org/xml/project/20">
+             <ApplicationProgram Id="M-0002_A-2" ApplicationNumber="2" ApplicationVersion="16"
+                MaskVersion="MV-07B0" Name="AP1" LoadProcedureStyle="MergedProcedure">
+              <Static><LoadProcedures>{blocks}</LoadProcedures></Static>
+             </ApplicationProgram></KNX>"#
+            )
+        };
+        let ap1_only = parse_application_program(
+            "M-0002_A-2",
+            app_xml(r#"<LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="4" PropId="27" /></LoadProcedure>"#)
+                .as_bytes(),
+        )?;
+        let ops = crate::master_template_ops(&master, "07B0", &ap1_only).ok_or("a template")?;
+        assert!(
+            ops.contains(&LoadOp::Delay {
+                milliseconds: Some(7)
+            }),
+            "the master's own ap1: {ops:?}"
+        );
+        let with_ap2 = parse_application_program(
+            "M-0002_A-2",
+            app_xml(r#"<LoadProcedure MergeId="3"><LdCtrlRelSegment LsmIdx="5" Size="2" Mode="0" Fill="0" /></LoadProcedure>"#)
+                .as_bytes(),
+        )?;
+        let ops = crate::master_template_ops(&master, "07B0", &with_ap2).ok_or("a template")?;
+        assert!(
+            ops.contains(&LoadOp::Load {
+                lsm_idx: Some(5),
+                obj_type: None,
+                occurrence: None,
+            }),
+            "the all procedure: {ops:?}"
+        );
+        // The planner runs the shipped ap1 as is: its delay, and no object 5.
+        let plan = plan_flash_default(
+            &ap1_only,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&crate::master_template_ops(&master, "07B0", &ap1_only).ok_or("a template")?),
+            &BTreeMap::new(),
+        )?;
+        assert!(plan.steps.contains(&FlashStep::Delay { milliseconds: 7 }));
+        assert!(!load_steps(&plan).iter().any(|(_, t)| *t == Some(5)));
+        Ok(())
+    }
+
     /// Issue #942, the Hager `M-0009_A-E807-10-0EAB` shape: no block for
     /// MergeId 2, 3 or 5. ETS unloads object 5 and loads object 4 without an
     /// allocation, writing its program version (`ops.txt` ops 26, 31, 270,
@@ -4760,6 +4872,12 @@ mod tests {
             occurrence: None,
         };
         assert!(lower_typed_load_control(1, &wide, false).is_err());
+        let device = LoadOp::LoadCompleted {
+            lsm_idx: None,
+            obj_type: Some(0),
+            occurrence: None,
+        };
+        assert!(lower_typed_load_control(1, &device, false).is_err());
         assert!(matches!(
             lower_typed_load_control(1, &typed, false),
             Ok(FlashStep::TypedLoadControl {

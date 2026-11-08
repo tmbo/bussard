@@ -909,7 +909,29 @@ pub async fn load_control_ext<Ch: L4Channel>(
 pub async fn security_load_state<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
 ) -> Result<crate::load::LoadState> {
-    let addr = PropertyExtAddress::security(PID_SECURITY_LOAD_STATE_CONTROL);
+    load_state_ext(
+        l4,
+        PropertyExtAddress::security(PID_SECURITY_LOAD_STATE_CONTROL),
+    )
+    .await
+}
+
+/// Reads the load state of the object `addr` names by type and instance
+/// (its `PID_LOAD_STATE_CONTROL`) without changing it: the security object's
+/// read of [`security_load_state`] on any object type (issue #961).
+///
+/// `A_FunctionPropertyExt_State_Read` first, the service ETS drives these
+/// machines with; a device that declines it is asked with
+/// `A_PropertyExtValue_Read` of element 1, the read access every load-control
+/// property provides (KNX 3/5/1 §4.23.2.3.1).
+///
+/// # Errors
+///
+/// Both reads refused or malformed, or a transport failure.
+pub async fn load_state_ext<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: PropertyExtAddress,
+) -> Result<crate::load::LoadState> {
     let first = declined_as_none(l4, async |l4| {
         function_property_ext_state_read(l4, addr, &[]).await
     })
@@ -922,7 +944,7 @@ pub async fn security_load_state<Ch: L4Channel>(
             value.data.first().copied().ok_or_else(|| {
                 malformed(
                     l4.target(),
-                    "the security object's load state came back empty".to_string(),
+                    format!("the load state of {addr} came back empty"),
                 )
             })?
         }

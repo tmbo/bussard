@@ -61,6 +61,12 @@ pub const A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE: u16 = 0x1CF;
 pub const A_PROPERTY_EXT_DESCRIPTION_READ: u16 = 0x1D2;
 /// `A_PropertyExtDescription_Response`.
 pub const A_PROPERTY_EXT_DESCRIPTION_RESPONSE: u16 = 0x1D3;
+/// `A_FunctionPropertyExt_Command`.
+pub const A_FUNCTION_PROPERTY_EXT_COMMAND: u16 = 0x1D4;
+/// `A_FunctionPropertyExt_State_Read`.
+pub const A_FUNCTION_PROPERTY_EXT_STATE_READ: u16 = 0x1D5;
+/// `A_FunctionPropertyExt_State_Response`.
+pub const A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE: u16 = 0x1D6;
 /// `A_PropertyDescription_Response`.
 pub const A_PROPERTY_DESCRIPTION_RESPONSE: u16 = 0x3D9;
 /// `A_IndividualAddressSerialNumber_Read` (broadcast).
