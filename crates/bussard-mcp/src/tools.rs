@@ -1096,12 +1096,7 @@ mod tests {
         severity: bussard_model::Severity,
         location: &str,
     ) -> bussard_model::Diagnostic {
-        bussard_model::Diagnostic {
-            code,
-            severity,
-            message: format!("{code} test"),
-            location: location.to_string(),
-        }
+        bussard_model::Diagnostic::new(code, severity, location, format!("{code} test"))
     }
 
     fn codes(v: &Value) -> Vec<String> {
