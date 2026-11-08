@@ -9,87 +9,12 @@
 //! changes its type, or changes its meaning. Adding a field does not bump it,
 //! so a consumer must ignore fields it does not know. Every shape starts at 1.
 
+use bussard_service::report::Report;
 use serde::Serialize;
 
-/// The schema version of each `--json` shape, one constant per shape.
-pub mod schema {
-    /// `bussard assign --json`.
-    pub const ASSIGN: u32 = 1;
-    /// `bussard audit --json`.
-    pub const AUDIT: u32 = 1;
-    /// `bussard backup --json` (the manifest).
-    pub const BACKUP: u32 = 1;
-    /// `bussard commission --json`.
-    pub const COMMISSION: u32 = 1;
-    /// `bussard describe --json`.
-    pub const DESCRIBE: u32 = 1;
-    /// `bussard device --json`.
-    pub const DEVICE: u32 = 1;
-    /// `bussard diff --json`.
-    pub const DIFF: u32 = 1;
-    /// `bussard diff --checklist --json`.
-    pub const DIFF_CHECKLIST: u32 = 1;
-    /// `bussard doc --json` (the documentation model).
-    pub const DOC: u32 = 1;
-    /// `bussard export --json`.
-    pub const EXPORT: u32 = 1;
-    /// `bussard flash --json` (plan and result).
-    pub const FLASH: u32 = 1;
-    /// `bussard flash --parameters-only --json` (plan and result).
-    pub const FLASH_PARAMETERS: u32 = 1;
-    /// `bussard groups reserve --json`.
-    pub const GROUPS_RESERVE: u32 = 1;
-    /// `bussard groups secure --json`.
-    pub const GROUPS_SECURE: u32 = 1;
-    /// `bussard history --json`: `{ "snapshots": [...] }`.
-    pub const HISTORY: u32 = 1;
-    /// `bussard interface secure --json` (issue #398).
-    pub const INTERFACE_SECURE: u32 = 1;
-    /// `bussard keys add-certificate --json`.
-    pub const KEYS_ADD_CERTIFICATE: u32 = 1;
-    /// `bussard keys enroll --json`: one object per line (issue #729).
-    pub const KEYS_ENROLL: u32 = 1;
-    /// `bussard keys export --json`.
-    pub const KEYS_EXPORT: u32 = 1;
-    /// `bussard keys import --json`.
-    pub const KEYS_IMPORT: u32 = 1;
-    /// `bussard keys show --json`.
-    pub const KEYS_SHOW: u32 = 1;
-    /// `bussard plan --line --json` and `bussard apply --line --json`.
-    pub const LINE: u32 = 1;
-    /// `bussard monitor --json`: one object per line.
-    pub const MONITOR: u32 = 1;
-    /// `bussard plan --json`.
-    pub const PLAN: u32 = 1;
-    /// `bussard read --json`.
-    pub const READ: u32 = 1;
-    /// `bussard reconstruct --json`.
-    pub const RECONSTRUCT: u32 = 1;
-    /// `bussard reconstruct --line --json`.
-    pub const RECONSTRUCT_LINE: u32 = 1;
-    /// `bussard restart <ADDRESS> --json`.
-    pub const RESTART: u32 = 1;
-    /// `bussard scan --json`.
-    pub const SCAN: u32 = 1;
-    /// `bussard secure diag <ADDRESS> --json` (issue #533).
-    pub const SECURE_DIAG: u32 = 1;
-    /// `bussard show --json`.
-    pub const SHOW: u32 = 1;
-    /// `bussard status --json`.
-    pub const STATUS: u32 = 1;
-    /// `bussard status <ADDRESS> --json`: one device's live state (issue #391).
-    pub const STATUS_DEVICE: u32 = 1;
-    /// `bussard test --json`.
-    pub const TEST: u32 = 1;
-    /// `bussard test --secure-idle --json`.
-    pub const TEST_SECURE_IDLE: u32 = 1;
-    /// `bussard undo --json`.
-    pub const UNDO: u32 = 1;
-    /// `bussard validate --json`: `{ "diagnostics": [...] }`.
-    pub const VALIDATE: u32 = 1;
-    /// `bussard write --json`.
-    pub const WRITE: u32 = 1;
-}
+/// The schema version of each `--json` shape without a typed report yet;
+/// a typed one carries its own ([`Report::SCHEMA`]).
+pub use bussard_service::report::schema;
 
 /// A JSON document: the schema version first, then the body's fields.
 #[derive(Serialize)]
@@ -119,6 +44,16 @@ pub fn render<T: Serialize + ?Sized>(schema: u32, body: &T) -> anyhow::Result<St
 pub fn print<T: Serialize + ?Sized>(schema: u32, body: &T) -> anyhow::Result<()> {
     println!("{}", render(schema, body)?);
     Ok(())
+}
+
+/// Prints a flow's typed outcome (issue #904) as its JSON document, under
+/// the schema version declared next to its struct.
+///
+/// # Errors
+///
+/// As [`render`].
+pub fn report<R: Report>(body: &R) -> anyhow::Result<()> {
+    print(R::SCHEMA, body)
 }
 
 /// Adds `"schema"` as the first field of one JSON Lines object that was

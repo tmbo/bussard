@@ -361,7 +361,7 @@ async fn test_knx_apply_device_flashes_a_parameter_that_shows_a_com_object() -> 
     assert_eq!(flash["product"]["archive"], "products/flash-test.knxprod");
     // Issue #326: the links stay as they are, yet a full download writes
     // the image and the tables; neither text says "nothing".
-    let text = plan["plan"].as_str().unwrap_or_default();
+    let text = plan["table_plan"].as_str().unwrap_or_default();
     assert!(!text.contains("nothing to do"), "{text}");
     assert!(
         text.contains("full download: writes full image (segment")

@@ -222,11 +222,11 @@ fn test_mcp_plan_and_apply_write_the_differing_parameter_octet() -> TestResult {
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], false, "plan: {plan}");
     assert_eq!(
-        plan["parameters"]["changed"],
+        plan["parameter_plan"]["changed"],
         json!([{"key": "thr@P-0_R-1", "name": "Threshold", "device": "7", "model": "12"}]),
         "plan: {plan}"
     );
-    assert_eq!(plan["parameters"]["octets"], 1, "plan: {plan}");
+    assert_eq!(plan["parameter_plan"]["octets"], 1, "plan: {plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 1, "plan: {plan}");
     let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(
@@ -237,12 +237,7 @@ fn test_mcp_plan_and_apply_write_the_differing_parameter_octet() -> TestResult {
         sentences.contains("  writes: 1 parameter octet\n"),
         "{sentences}"
     );
-    assert!(
-        plan["identity"]
-            .as_str()
-            .is_some_and(|l| l.starts_with("identity of 1.1.4: matches your project")),
-        "plan: {plan}"
-    );
+    assert_eq!(plan["identity"]["verdict"], "match", "plan: {plan}");
     assert!(
         bench.device().memory_writes.is_empty(),
         "planning writes nothing"
@@ -280,7 +275,7 @@ fn test_mcp_plan_without_a_parameter_change_is_unchanged() -> TestResult {
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], true, "plan: {plan}");
     assert!(plan["plan_digest"].is_null(), "plan: {plan}");
-    assert_eq!(plan["parameters"]["changed"], json!([]), "plan: {plan}");
+    assert_eq!(plan["parameter_plan"]["changed"], json!([]), "plan: {plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 0, "plan: {plan}");
     assert_eq!(
         plan["next_step"], "nothing to write: the device already matches your project",
@@ -452,7 +447,7 @@ fn test_mcp_plan_attributes_every_written_parameter_octet() -> TestResult {
         let mut server = bench.mcp()?;
         let plan = server.plan()?;
         assert_eq!(plan["ok"], true, "plan: {plan}");
-        let parameters = &plan["parameters"];
+        let parameters = &plan["parameter_plan"];
         assert_eq!(parameters["octets"], 1, "plan: {plan}");
         let keys: Vec<&str> = parameters["changed"]
             .as_array()
@@ -531,7 +526,7 @@ fn test_mcp_plan_attributes_internal_and_hidden_octets() -> TestResult {
         let mut server = bench.mcp()?;
         let plan = server.plan()?;
         assert_eq!(plan["ok"], true, "plan: {plan}");
-        let parameters = &plan["parameters"];
+        let parameters = &plan["parameter_plan"];
         assert_eq!(parameters["changed"], json!([]), "plan: {plan}");
         let ranges = parameters["octet_ranges"]
             .as_array()
@@ -600,7 +595,7 @@ fn flag_bench(tag: &str, params: [u8; 2], model: &str) -> Result<Option<Bench>, 
 
 /// The roles of a plan's parameter octet runs, run by run.
 fn octet_roles(plan: &Value) -> Vec<Vec<String>> {
-    plan["parameters"]["octet_ranges"]
+    plan["parameter_plan"]["octet_ranges"]
         .as_array()
         .map(|runs| {
             runs.iter()
@@ -634,8 +629,8 @@ fn test_download_flag_only_difference_plans_as_noop() -> TestResult {
     assert_eq!(plan["noop"], true, "plan: {plan}");
     assert!(plan["plan_digest"].is_null(), "plan: {plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 0, "plan: {plan}");
-    assert_eq!(plan["parameters"]["written"], false, "plan: {plan}");
-    assert_eq!(plan["parameters"]["changed"], json!([]), "plan: {plan}");
+    assert_eq!(plan["parameter_plan"]["written"], false, "plan: {plan}");
+    assert_eq!(plan["parameter_plan"]["changed"], json!([]), "plan: {plan}");
     assert_eq!(
         octet_roles(&plan),
         vec![vec!["device_managed".to_string()]],
@@ -791,8 +786,8 @@ fn test_partial_write_leaves_an_unreached_octet_alone() -> TestResult {
     assert_eq!(plan["ok"], true, "plan: {plan}");
     assert_eq!(plan["noop"], false, "plan: {plan}");
     assert_eq!(plan["writes"]["parameter_octets"], 1, "plan: {plan}");
-    assert_eq!(plan["parameters"]["octets"], 1, "plan: {plan}");
-    let ranges = plan["parameters"]["octet_ranges"]
+    assert_eq!(plan["parameter_plan"]["octets"], 1, "plan: {plan}");
+    let ranges = plan["parameter_plan"]["octet_ranges"]
         .as_array()
         .ok_or("no octet_ranges")?;
     assert_eq!(ranges.len(), 2, "plan: {plan}");
@@ -851,7 +846,7 @@ fn test_partial_write_leaves_an_unreached_octet_alone() -> TestResult {
     assert_eq!(replan["noop"], true, "replan: {replan}");
     assert!(replan["plan_digest"].is_null(), "replan: {replan}");
     assert_eq!(
-        replan["parameters"]["octet_ranges"][0]["written"], false,
+        replan["parameter_plan"]["octet_ranges"][0]["written"], false,
         "replan: {replan}"
     );
     assert!(
@@ -1062,5 +1057,81 @@ fn test_mcp_restore_parameters_plans_then_writes() -> TestResult {
         json!({"address": "1.1.4", "backup": name, "plan_digest": digest}),
     )?;
     assert_eq!(again["refused"], true, "again: {again}");
+    Ok(())
+}
+
+/// The `--json` document a `bussard` run printed.
+fn json_out(out: &Output) -> Result<Value, Box<dyn Error>> {
+    let (stdout, stderr) = text(out);
+    if !out.status.success() {
+        return Err(format!("bussard failed: {stderr}").into());
+    }
+    Ok(serde_json::from_str(&stdout)?)
+}
+
+#[test]
+fn test_plan_one_shape_cli_json_is_the_mcp_plan_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-plan", [7, 0], "\"thr@P-0_R-1\" = \"12\"\n")? else {
+        return Ok(());
+    };
+    let cli = json_out(&bench.bussard(&["plan", "1.1.4", "--json"])?)?;
+    assert_eq!(cli["schema"], 2, "{cli}");
+    let mut server = bench.mcp()?;
+    let mcp = server.plan()?;
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["planned_at"])?;
+    assert!(
+        mcp["summary"].is_string() && mcp["next_step"].is_string(),
+        "{mcp}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_line_plan_one_shape_cli_json_is_the_mcp_line_plan_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-line", [7, 0], "\"thr@P-0_R-1\" = \"12\"\n")? else {
+        return Ok(());
+    };
+    let cli = json_out(&bench.bussard(&["plan", "--line", "1.1", "--json"])?)?;
+    assert_eq!(cli["schema"], 2, "{cli}");
+    let mut server = bench.mcp()?;
+    let mut mcp = Value::Null;
+    for _ in 0..50 {
+        mcp = server.call("knx_plan_device", json!({"line": "1.1"}))?;
+        if !mcp["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("is not connected"))
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["planned_at"])?;
+    Ok(())
+}
+
+#[test]
+fn test_restart_one_shape_cli_json_is_the_mcp_restart_without_its_envelope() -> TestResult {
+    let Some(bench) = pinned("shape-restart", [7, 0], "\"thr@P-0_R-1\" = \"7\"\n")? else {
+        return Ok(());
+    };
+    let cli = json_out(&bench.bussard(&["restart", "1.1.4", "--json", "--yes"])?)?;
+    assert_eq!(cli["schema"], 2, "{cli}");
+    let mut server = bench.mcp()?;
+    let mut question = Value::Null;
+    for _ in 0..50 {
+        question = server.call("knx_restart_device", json!({"address": "1.1.4"}))?;
+        if question["plan_digest"].is_string() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let digest = question["plan_digest"]
+        .as_str()
+        .ok_or_else(|| format!("no digest: {question}"))?;
+    let mcp = server.call(
+        "knx_restart_device",
+        json!({"address": "1.1.4", "plan_digest": digest}),
+    )?;
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["answered_after_ms"])?;
     Ok(())
 }

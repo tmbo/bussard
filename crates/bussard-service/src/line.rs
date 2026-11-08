@@ -892,6 +892,265 @@ fn session_open_error(err: &ServiceError) -> String {
     }
 }
 
+/// One device's row of a line plan or write (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LineDevice {
+    /// The device.
+    pub address: String,
+    /// Its name in the project.
+    pub name: String,
+    /// The mask it reported, hex, when it answered.
+    pub mask: Option<String>,
+    /// The system the mask names.
+    pub system_type: Option<String>,
+    /// `changes`, `applied`, `unchanged`, `skipped` or `failed`.
+    pub status: String,
+    /// How many links change.
+    pub changes: usize,
+    /// Why it was skipped or failed.
+    pub detail: Option<String>,
+    /// Whether its write read back as the project (`applied`).
+    pub verified: bool,
+    /// Its link plan in the project's words, names first.
+    pub sentences: Vec<String>,
+    /// What its visit noted.
+    pub notes: Vec<String>,
+    /// The pre-write backup.
+    pub backup: Option<String>,
+}
+
+impl LineDevice {
+    /// The row of `o`, with the `notes` its visit made.
+    pub fn of(model: &Model, o: &LineOutcome, notes: &[String]) -> LineDevice {
+        LineDevice {
+            address: o.address.to_string(),
+            name: o.name.clone(),
+            mask: o.mask.map(|m| format!("{m:04X}")),
+            system_type: o.mask.map(|m| system_type(m).to_string()),
+            status: o.status.key().to_string(),
+            changes: o.status.changes(),
+            detail: o.status.detail().map(str::to_string),
+            verified: matches!(o.status, DeviceStatus::Applied(_)),
+            sentences: sentences(model, o),
+            notes: notes.to_vec(),
+            backup: o.backup.as_ref().map(|p| p.display().to_string()),
+        }
+    }
+}
+
+/// A group address in the project's words: `1/2/2 (Blind position)`.
+fn ga_words(model: &Model, ga: bussard_model::GroupAddress) -> String {
+    match model.groups.groups.get(&ga) {
+        Some(group) => format!("{ga} ({})", group.name),
+        None => ga.to_string(),
+    }
+}
+
+/// The sentences of one device's link plan, names first.
+pub fn sentences(model: &Model, o: &LineOutcome) -> Vec<String> {
+    let Some(report) = &o.report else {
+        return Vec::new();
+    };
+    let add = report.additions.iter().map(|p| {
+        format!(
+            "+ {} object {} now on {}",
+            o.name,
+            p.object,
+            ga_words(model, p.ga)
+        )
+    });
+    let remove = report.removals.iter().map(|p| {
+        format!(
+            "- {} object {} no longer on {}",
+            o.name,
+            p.object,
+            ga_words(model, p.ga)
+        )
+    });
+    add.chain(remove).collect()
+}
+
+/// The counts of a line run.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct LineTotals {
+    /// Devices visited.
+    pub total: usize,
+    /// Devices with link changes (planned or written).
+    pub changed: usize,
+    /// Devices that already held the project.
+    pub unchanged: usize,
+    /// Devices skipped (unlinked, unsupported mask).
+    pub skipped: usize,
+    /// Devices that failed.
+    pub failed: usize,
+}
+
+impl LineTotals {
+    /// The counts of `outcomes`.
+    pub fn of(outcomes: &[LineOutcome]) -> LineTotals {
+        let count = |key: &str| outcomes.iter().filter(|o| o.status.key() == key).count();
+        LineTotals {
+            total: outcomes.len(),
+            changed: count("changes") + count("applied"),
+            unchanged: count("unchanged"),
+            skipped: count("skipped"),
+            failed: count("failed"),
+        }
+    }
+}
+
+/// A whole-line plan or write (`bussard plan --line --json`, `apply --line
+/// --json`, `knx_plan_device` and `knx_apply_device` with `line`) in one
+/// shape (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LineReport {
+    /// No device failed.
+    pub ok: bool,
+    /// A write: every device written read back as the project.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub verified: Option<bool>,
+    /// Why the write stopped before the devices.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The line, `1.1`.
+    pub line: String,
+    /// `plan` or `apply`.
+    pub mode: String,
+    /// The resolved gateway.
+    pub gateway: String,
+    /// A plan: nothing to write on the line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub noop: Option<bool>,
+    /// One row per device.
+    pub devices: Vec<LineDevice>,
+    /// The counts.
+    #[serde(flatten)]
+    pub totals: LineTotals,
+    /// A plan: every device's sentences.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<String>>,
+    /// The resume state file a CLI run left behind.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state_file: Option<String>,
+    /// The audit snapshot recorded before a write.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<String>,
+    /// The group addresses declared in `groups.toml` before a write.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub declared: Vec<String>,
+    /// When a plan was made, RFC 3339.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub planned_at: Option<String>,
+    /// A plan's question and, on the MCP surface, its digest.
+    #[serde(flatten)]
+    pub approval: crate::report::Approval,
+}
+
+impl LineReport {
+    /// The run of `mode` over `line` through `gateway`, from each device's
+    /// outcome and its notes.
+    pub fn new(
+        model: &Model,
+        line: &str,
+        mode: LineMode,
+        gateway: &str,
+        visited: &[(LineOutcome, Vec<String>)],
+    ) -> LineReport {
+        let outcomes: Vec<LineOutcome> = visited.iter().map(|(o, _)| o.clone()).collect();
+        let totals = LineTotals::of(&outcomes);
+        let plan = mode == LineMode::Plan;
+        LineReport {
+            ok: totals.failed == 0,
+            verified: (!plan).then_some(totals.failed == 0),
+            reason: None,
+            line: line.to_string(),
+            mode: mode.verb().to_string(),
+            gateway: gateway.to_string(),
+            noop: plan.then(|| {
+                !outcomes
+                    .iter()
+                    .any(|o| matches!(o.status, DeviceStatus::Changes(_)))
+            }),
+            devices: visited
+                .iter()
+                .map(|(o, notes)| LineDevice::of(model, o, notes))
+                .collect(),
+            sentences: plan.then(|| outcomes.iter().flat_map(|o| sentences(model, o)).collect()),
+            totals,
+            state_file: None,
+            snapshot: None,
+            declared: Vec::new(),
+            planned_at: plan
+                .then(|| crate::monitor::timefmt::to_rfc3339(std::time::SystemTime::now())),
+            approval: crate::report::Approval::default(),
+        }
+    }
+}
+
+impl crate::report::Report for LineReport {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, _model: &Model) -> Option<String> {
+        let device = format!("every device on line {}", self.line);
+        let n = self.totals.changed;
+        Some(if self.mode == "plan" {
+            if self.noop == Some(true) {
+                format!(
+                    "{} already matches; nothing to write.",
+                    bussard_model::text::capitalize(&device)
+                )
+            } else {
+                format!(
+                    "A plan for {device}{}. Nothing is written before the human says yes.",
+                    crate::report::counted(n)
+                )
+            }
+        } else if self.ok {
+            format!(
+                "{} is written and checked: it now matches your project. Its previous state is \
+                 backed up, so this can be undone.",
+                bussard_model::text::capitalize(&device)
+            )
+        } else {
+            format!(
+                "Writing {device} did not check out: it may not behave as planned yet (`reason` \
+                 and the read-back say what differs). Its previous state is backed up."
+            )
+        })
+    }
+
+    fn next_step(&self) -> Option<String> {
+        if self.mode != "plan" {
+            return None;
+        }
+        let line = &self.line;
+        let failed_note = if self.totals.failed > 0 {
+            format!(
+                " {} device(s) could not be read (status failed, with the reason in detail): \
+                 name them; they are not written.",
+                self.totals.failed
+            )
+        } else {
+            String::new()
+        };
+        Some(if self.approval.plan_digest.is_none() {
+            format!(
+                "nothing to write on line {line}: every device that answered already holds the \
+                 model's links (see devices for any skipped or failed one).{failed_note}"
+            )
+        } else {
+            format!(
+                "Show the plan to the human: every device with status changes and its \
+                 sentences, and the skipped devices with their reason. Only the link tables are \
+                 written in the line form; a parameter change is planned per device \
+                 (knx_plan_device with address).{failed_note} Ask the question. Call \
+                 knx_apply_device with line {line} and this plan_digest only after an explicit \
+                 yes."
+            )
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

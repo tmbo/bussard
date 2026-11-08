@@ -234,15 +234,21 @@ impl From<&PropertyDesc> for PropertyReport {
     }
 }
 
-/// The `bussard describe` report, the `--json` document.
+/// A describe (issue #904): the `bussard describe --json` document and the
+/// `knx_describe_device` result, one shape.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct DescribeReport {
+    /// The device answered and its interface objects were walked.
+    pub ok: bool,
     /// The device address.
     pub address: String,
-    /// The mask version, formatted `07B0`.
-    pub mask: String,
+    /// The mask version, formatted `07B0`, when the walk read the
+    /// descriptor (`bussard describe`; the chat walk does not).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
     /// Human-readable system type for the mask.
-    pub system_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system_type: Option<String>,
     /// `"refused"` when the device answered the plain descriptor read but
     /// refused the unsecured interface-object walk (issue #155). Absent on a
     /// successful walk.
@@ -254,7 +260,11 @@ pub struct DescribeReport {
     pub secured_management: Option<&'static str>,
     /// Why the run failed, with the KNX Data Secure hint, when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
+    pub reason: Option<String>,
+    /// The device refused plain access and answered under its factory key
+    /// (issue #532).
+    #[serde(skip_serializing_if = "crate::report::is_false")]
+    pub factory_key: bool,
     /// The interface objects and their properties. Absent when the walk was
     /// refused: an empty walk is a failure, not an empty device.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -276,6 +286,35 @@ pub struct DescribeReport {
     /// lowercase hex; recorded in `bussard.lock` (issue #752).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub serial: Option<String>,
+    /// The Data Secure diagnostics of a secured chat walk (issue #533).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_diagnostics: Option<SecurityDiagnostics>,
+}
+
+impl DescribeReport {
+    /// A describe of `target` that failed because `reason`.
+    pub fn failed(target: IndividualAddress, reason: String) -> DescribeReport {
+        DescribeReport {
+            ok: false,
+            address: target.to_string(),
+            mask: None,
+            system_type: None,
+            unsecured_management: None,
+            secured_management: None,
+            reason: Some(reason),
+            factory_key: false,
+            objects: None,
+            secure: None,
+            identity: None,
+            knxnet: None,
+            serial: None,
+            security_diagnostics: None,
+        }
+    }
+}
+
+impl crate::report::Report for DescribeReport {
+    const SCHEMA: u32 = 2;
 }
 
 /// KNX Secure status, split into the imported model's claims and what this run
@@ -539,14 +578,12 @@ pub async fn run(
         identity: None,
         report: None,
     };
-    if let Ok(walked) = &outcome.walk
-        && let Some(mask) = walked.mask
-    {
+    if let Ok(walked) = &outcome.walk {
         let device = req
             .model
             .and_then(|m| m.devices.get(&target))
             .map(|d| &d.device);
-        if !refused {
+        if let (false, Some(mask)) = (refused, walked.mask) {
             outcome.identity = Some(IdentityCheck::compare(
                 device,
                 ReportedIdentity {
@@ -555,7 +592,7 @@ pub async fn run(
                 },
             ));
         }
-        outcome.report = Some(report(&outcome, walked, mask, req));
+        outcome.report = Some(report(&outcome, walked, walked.mask, req));
     }
     outcome
 }
@@ -564,7 +601,7 @@ pub async fn run(
 fn report(
     outcome: &DescribeOutcome,
     walked: &Walked,
-    mask: u16,
+    mask: Option<u16>,
     req: &DescribeRequest<'_>,
 ) -> DescribeReport {
     let loaded = req.model.and_then(|m| m.devices.get(&req.target));
@@ -595,18 +632,32 @@ fn report(
                 secured_management: outcome.secured,
             },
         });
+    let reason = outcome.refusal();
+    let (diagnostics, diagnostics_note) = match &walked.security {
+        Some(Ok(diag)) => (Some(diag.clone()), None),
+        Some(Err(note)) => (None, Some(note.clone())),
+        None => (None, None),
+    };
     DescribeReport {
+        ok: reason.is_none(),
         address: req.target.to_string(),
-        mask: format!("{mask:04X}"),
-        system_type: system_type(mask).to_string(),
+        mask: mask.map(|m| format!("{m:04X}")),
+        system_type: mask.map(|m| system_type(m).to_string()),
         unsecured_management: (refused && !outcome.presented_tool_key).then_some("refused"),
         secured_management: (refused && outcome.presented_tool_key).then_some("unanswered"),
-        error: outcome.refusal(),
+        reason,
+        factory_key: outcome.on_factory_key,
         objects: (!refused).then(|| walked.objects.clone()),
         secure,
         identity: outcome.identity.clone(),
         knxnet: walked.knxnet.clone(),
         serial: walked.serial.as_deref().map(bussard_model::text::hex),
+        security_diagnostics: diagnostics.or_else(|| {
+            diagnostics_note.map(|note| SecurityDiagnostics {
+                notes: vec![note],
+                ..SecurityDiagnostics::default()
+            })
+        }),
     }
 }
 

@@ -87,7 +87,7 @@
 //! flag that moves between plan and apply retires the plan. The gates above
 //! are unchanged.
 
-use crate::reply::{answer_on, merge, ok, refused_on};
+use crate::reply::{answer_chat, answer_on};
 use bussard_service::program::chain;
 use std::time::{Duration, Instant, SystemTime};
 
@@ -95,14 +95,21 @@ use crate::args::Parameters;
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::download::{DesiredTables, LiveTables, PlanReport, SecurityInputs};
+use bussard_service::knxnet::InterfacePlanOutcome;
 use bussard_service::params::{
     BuiltPlan, MissingProduct, ProductSource, Selection, resolve_product,
 };
 use bussard_service::program::apply::{ApplyRequest, TablesWritten};
 use bussard_service::program::flash::{FlashFor, FlashImage, FlashNeed};
+use bussard_service::program::outcome::{
+    ObjectTableWritten, OutcomeHead, ParametersWritten, Restarted, SecurityObject, Verdict,
+    WriteOutcome,
+};
 use bussard_service::program::plan::{PlanInputs, Planned};
+use bussard_service::program::plan_outcome::{PlanOutcome, PlanParts, PropertyPlan};
 use bussard_service::program::read::{FlagsCache, ReadError, ReadRequest};
 use bussard_service::program::{self as program};
+use bussard_service::report::Refusal;
 use bussard_service::secure::{Key16, SequenceHighWater};
 use bussard_service::secure::{SecureMaterial, ToolKeySource};
 use bussard_service::transport::ConnectionConfig;
@@ -436,11 +443,16 @@ impl BussardMcp {
         Parameters(args): Parameters<PlanDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => ok(refused_on("address", "", reason)),
-            Ok(Target::Line(line)) => answer_on("line", line, self.plan_line(line).await),
-            Ok(Target::Device(address)) => {
-                answer_on("address", address, self.plan_device(address).await)
+            Err(reason) => answer_chat("address", "", Err(reason), &self.model()),
+            Ok(Target::Line(line)) => {
+                answer_chat("line", line, self.plan_line(line).await, &self.model())
             }
+            Ok(Target::Device(address)) => answer_chat(
+                "address",
+                address,
+                self.plan_device(address).await,
+                &self.model(),
+            ),
         }
     }
 
@@ -452,13 +464,14 @@ impl BussardMcp {
         Parameters(args): Parameters<ApplyDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => ok(refused_on("address", "", reason)),
-            Ok(Target::Line(line)) => answer_on(
+            Err(reason) => answer_chat("address", "", Err(reason), &self.model()),
+            Ok(Target::Line(line)) => answer_chat(
                 "line",
                 line,
                 self.apply_line(line, args.plan_digest.trim()).await,
+                &self.model(),
             ),
-            Ok(Target::Device(address)) => answer_on(
+            Ok(Target::Device(address)) => answer_chat(
                 "address",
                 address,
                 self.apply_device(
@@ -467,6 +480,7 @@ impl BussardMcp {
                     args.plan_hash.as_deref().map(str::trim),
                 )
                 .await,
+                &self.model(),
             ),
         }
     }
@@ -523,7 +537,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreParametersArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer_on(
+        answer_chat(
             "address",
             &args.address,
             self.restore_parameters(
@@ -532,6 +546,7 @@ impl BussardMcp {
                 args.plan_digest.as_deref().map(str::trim),
             )
             .await,
+            &self.model(),
         )
     }
 
@@ -542,11 +557,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestartDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer_on(
+        answer_chat(
             "address",
             &args.address,
             self.restart_device_tool(&args.address, args.plan_digest.as_deref().map(str::trim))
                 .await,
+            &self.model(),
         )
     }
 
@@ -557,7 +573,7 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<RestoreTablesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer_on(
+        answer_chat(
             "address",
             &args.address,
             self.restore_tables(
@@ -566,6 +582,7 @@ impl BussardMcp {
                 args.plan_digest.as_deref().map(str::trim),
             )
             .await,
+            &self.model(),
         )
     }
 
@@ -610,7 +627,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<ApplyStatusArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer_on("address", &args.job, self.apply_status(&args.job))
+        answer_chat(
+            "address",
+            &args.job,
+            self.apply_status(&args.job),
+            &self.model(),
+        )
     }
 
     // `knx_last_apply` (registered only with `--allow-programming`).
@@ -620,7 +642,12 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<LastApplyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer_on("address", &args.address, self.last_apply(&args.address))
+        answer_chat(
+            "address",
+            &args.address,
+            self.last_apply(&args.address),
+            &self.model(),
+        )
     }
 }
 
@@ -721,10 +748,17 @@ impl BussardMcp {
         refuse_insecure_links(&self.state().model.reload(), target)?;
         let address = address.to_string();
         self.run_plan(Subject::Device(target), |me, _| async move {
-            Ok(me
-                .plan_body(&address)
-                .await
-                .unwrap_or_else(|reason| refused_on("address", &address, reason)))
+            let model = me.state().model.current();
+            Ok(match me.plan_body(&address).await {
+                Ok(plan) => plan.chat(&me, &model),
+                Err(reason) => crate::reply::report(
+                    &Refusal {
+                        address: Some(address.clone()),
+                        ..Refusal::new(reason)
+                    },
+                    &model,
+                ),
+            })
         })
         .await
     }
@@ -754,12 +788,12 @@ impl BussardMcp {
         let wait = tier.jobs.read_wait().saturating_sub(began.elapsed());
         match tier.jobs.outcome(&job, wait).await {
             Some(plan) => Ok(plan),
-            None => Ok(subject.plan_started(&job)),
+            None => Ok(subject.plan_started(&job, &self.model())),
         }
     }
 
     /// The plan itself, run inside the plan job; `Err` is a refusal reason.
-    async fn plan_body(&self, address: &str) -> Result<Value, String> {
+    pub(super) async fn plan_body(&self, address: &str) -> Result<PlanAnswer, String> {
         let target = parse_address(address)?;
         // A link the model itself shows cannot work refuses before the bus is
         // touched (issue #330).
@@ -767,7 +801,10 @@ impl BussardMcp {
         // A KNX IP interface (a `[knxnet]` table, no links) is planned as its
         // KNXnet/IP parameter object (issue #391).
         if bussard_service::knxnet::interface_config(&model, target).is_some() {
-            return self.plan_interface_body(target).await;
+            return self
+                .plan_interface_body(target)
+                .await
+                .map(|plan| PlanAnswer::Interface(Box::new(plan)));
         }
         refuse_insecure_links(&model, target)?;
         let (tier, service, gateway) = self.programming_preflight()?;
@@ -794,19 +831,10 @@ impl BussardMcp {
             warm.release().await;
             let rows = read_property_rows(&service, target, &tool_key, &props).await?;
             drop(warm);
-            let noop = !rows.iter().any(|r| r.differs());
-            return Ok(json!({
-                "ok": true,
-                "method": "flash",
-                "address": target.to_string(),
-                "gateway": gateway,
-                "mask": format!("{:04X}", props.device_mask),
-                "system_type": bussard_service::mgmt::system_type(props.device_mask),
-                "secured": tool_key.is_some(),
-                "noop": noop,
-                "plan": bussard_service::property_plan::render_text(target, &app.id, &rows),
-                "property_procedure": rows,
-            }));
+            let mut plan = PropertyPlan::new(target, props.device_mask, &app.id, &rows);
+            plan.gateway = Some(gateway);
+            plan.secured = Some(tool_key.is_some());
+            return Ok(PlanAnswer::Property(plan));
         }
         // Management calls are sequential (issue #215): this read opens its own
         // lease, so the warm connection is released first. The read budget of
@@ -953,175 +981,64 @@ impl BussardMcp {
                 full.segments = f.plan.written_segments();
             }
         }
-        let plan_text = match device_plan.writes.full_image.as_ref() {
-            Some(full) if flash.is_some() => {
-                bussard_service::download::render_full_image_plan_text(target, tables, report, full)
+        let mut out = PlanOutcome::new(PlanParts {
+            target,
+            live: tables,
+            report,
+            built,
+            device_plan,
+            secured: tool_key.is_some(),
+            identity: read.check().cloned(),
+            parameters: read.params.as_ref().map(|p| p.readback.clone()),
+        });
+        out.noop = noop;
+        out.security_object = SecurityObject::of(security.as_ref(), &desired, tables_noop);
+        out.pending_model_changes = serde_json::to_value(pending).ok();
+        if let Some(f) = &flash {
+            out.method = "flash".to_string();
+            out.flash = Some(f.summary.clone());
+            if let Some(full) = out.plan.writes.full_image.as_ref() {
+                out.table_plan = bussard_service::download::render_full_image_plan_text(
+                    target, tables, report, full,
+                );
             }
-            _ => bussard_service::download::render_plan_text(target, tables, report),
-        };
-        let digest = (!noop).then(|| {
-            tier.remember_plan(
+            out.approval.question = (!noop).then(|| match &f.load {
+                Some(_) => load_question(target, &gateway, &f.plan, f.links_after),
+                None => flash_question(target, &gateway, out.plan.change_count()),
+            });
+            // Issue #750: the sentences say first that the application must
+            // be loaded, so a human who reads only them knows what the yes is
+            // for.
+            if let Some(why) = &f.load {
+                out.sentences = if f.links_after {
+                    format!(
+                        "! {target} must have its application program loaded: {why}. The yes \
+                         loads {} with the model's parameters and reads it back, then writes \
+                         the model's links (the download of this application does not write \
+                         the link tables) and reads them back, as one job.\n{}",
+                        f.plan.identity.id, out.sentences
+                    )
+                } else {
+                    format!(
+                        "! {target} must have its application program loaded: {why}. The yes \
+                         loads {} and writes the model's parameters and links with it.\n{}",
+                        f.plan.identity.id, out.sentences
+                    )
+                };
+            }
+        }
+        if !noop {
+            let digest = tier.remember_plan(
                 target,
                 PlanSides {
                     live: program::plan::live_fingerprint(&read),
                     model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
                 },
-            )
-        });
-        let now = SystemTime::now();
-        let pairs = |list: &[bussard_service::download::ObjectGa]| -> Vec<Value> {
-            list.iter()
-                .map(|p| json!({"object": p.object, "ga": p.ga.to_string()}))
-                .collect()
-        };
-        let parameters_json = parameters_json(built);
-        let facts = crate::everyday::PlanFacts {
-            model: &model,
-            target,
-            additions: report.additions.iter().map(|p| (p.object, p.ga)).collect(),
-            removals: report.removals.iter().map(|p| (p.object, p.ga)).collect(),
-            parameters: built
-                .parameters
-                .iter()
-                .map(|p| (p.name.clone(), p.device.clone(), p.model.clone()))
-                .collect(),
-            flash: flash.is_some(),
-            noop,
-            last_write_s: tier.jobs.last_write_seconds(&self.state().dir, target),
-        };
-        let question = match &flash {
-            _ if noop => None,
-            Some(f) if f.load.is_some() => {
-                Some(load_question(target, &gateway, &f.plan, f.links_after))
-            }
-            Some(_) => Some(flash_question(target, &gateway, device_plan.change_count())),
-            None => Some(device_plan.question()),
-        };
-        // Issue #750: the sentences say first that the application must be
-        // loaded, so a human who reads only them knows what the yes is for.
-        let sentences = match flash
-            .as_ref()
-            .and_then(|f| f.load.as_ref().map(|why| (f, why)))
-        {
-            Some((f, why)) if f.links_after => format!(
-                "! {target} must have its application program loaded: {why}. The yes loads {} \
-                 with the model's parameters and reads it back, then writes the model's links \
-                 (the download of this application does not write the link tables) and reads \
-                 them back, as one job.\n{}",
-                f.plan.identity.id,
-                device_plan.render_text()
-            ),
-            Some((f, why)) => format!(
-                "! {target} must have its application program loaded: {why}. The yes loads {} \
-                 and writes the model's parameters and links with it.\n{}",
-                f.plan.identity.id,
-                device_plan.render_text()
-            ),
-            None => device_plan.render_text(),
-        };
-        Ok(json!({
-            "ok": true,
-            "method": if flash.is_some() { "flash" } else { "apply" },
-            "flash": flash.as_ref().map(|f| json!(f.summary)),
-            "address": target.to_string(),
-            "gateway": gateway,
-            "mask": format!("{:04X}", tables.mask),
-            "system_type": bussard_service::mgmt::system_type(tables.mask),
-            "secured": tool_key.is_some(),
-            "identity": read.check().map(|c| bussard_service::identity_line(target, c)),
-            "security_object": security_json(security.as_ref(), &desired, tables_noop),
-            "noop": noop,
-            "plan": plan_text,
-            "summary": facts.summary(),
-            "what_you_will_notice": facts.what_you_will_notice(),
-            "sentences": sentences,
-            "changes": device_plan.changes,
-            "unchanged_objects": device_plan.unchanged_objects,
-            "unchanged_parameters": device_plan.unchanged_parameters,
-            "parameters": parameters_json,
-            "writes": device_plan.writes,
-            "notes": device_plan.notes,
-            "question": question,
-            "state_hash": device_plan.state_hash,
-            "pending_model_changes": pending,
-            "additions": pairs(&report.additions),
-            "removals": pairs(&report.removals),
-            "unchanged": report.unchanged.len(),
-            "current_address_count": report.current_address_count,
-            "resulting_address_count": report.resulting_address_count,
-            "current_association_count": report.current_association_count,
-            "resulting_association_count": report.resulting_association_count,
-            "load_steps": report.load_steps.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-            "backup_dir": device_plan.backup_dir,
-            "plan_digest": digest,
-            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
-            "next_step": if noop {
-                match &built.parameters_skipped {
-                    Some(why) => format!(
-                        "nothing to write over MCP: the links already match your project, and {why}"
-                    ),
-                    None if built.octet_ranges.iter().any(|r| !r.written) => "nothing to \
-                        write: the device matches your project wherever the configuration places a \
-                        parameter; the parameter octets that differ (parameters.octet_ranges \
-                        with written: false) are ones ETS does not write in a download either, \
-                        so they stay as the device holds them (see notes)"
-                        .to_string(),
-                    None if !built.octet_ranges.is_empty() => "nothing to write: the device \
-                        already matches your project; only device-managed parameter octets differ \
-                        (see notes and parameters.octet_ranges), and those are not written on \
-                        their own"
-                        .to_string(),
-                    None => "nothing to write: the device already matches your project".to_string(),
-                }
-            } else if let Some(why) = flash.as_ref().and_then(|f| f.load.as_ref()) {
-                format!(
-                    "Show the plan above to the human (every sentence, and \
-                     flash.load_application) and say that the application program must be \
-                     loaded first: {why}. Loading it replaces what {target} runs now, \
-                     {target} restarts and is offline for {} to {} s, and {} Ask whether to \
-                     load the application into {target}. Call knx_apply_device with this \
-                     plan_digest only after an explicit yes to loading it; that one call runs \
-                     the load and the write as one job.",
-                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
-                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.1,
-                    if flash.as_ref().is_some_and(|f| f.links_after) {
-                        "the model's parameters are written with it and read back; then the \
-                         links are written by a table write (this application's download does \
-                         not write them) and read back."
-                    } else {
-                        "the model's parameters and links are written with it and read back."
-                    }
-                )
-            } else if flash.is_some() {
-                format!(
-                    "Show the plan above to the human (every sentence, the com-objects in \
-                     flash.objects and the table sizes in flash.tables) and say that this change \
-                     needs a full download: {target} restarts and is offline for {} to {} s, and \
-                     its parameter memory is backed up first. Ask whether to flash {target}. \
-                     Call knx_apply_device with this plan_digest only after an explicit yes to \
-                     flashing it.",
-                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.0,
-                    bussard_service::flash::DEVICE_OFFLINE_SECONDS.1
-                )
-            } else {
-                let skipped = built
-                    .parameters_skipped
-                    .as_ref()
-                    .map(|why| {
-                        format!(
-                            " The parameters are not part of this plan ({why}); tell the human \
-                             that only the links are written."
-                        )
-                    })
-                    .unwrap_or_default();
-                format!(
-                    "Show the plan above to the human (every sentence, links and parameters) \
-                     and ask whether to write it to {target}. Call knx_apply_device with this \
-                     plan_digest only after an explicit yes.{skipped}"
-                )
-            },
-        }))
+            );
+            out.approval.plan_digest = Some(digest);
+            out.approval.expires_at = Some(tier.plans.expires_at(SystemTime::now()));
+        }
+        Ok(PlanAnswer::Device(Box::new(out)))
     }
 
     /// `knx_apply_device`'s body; `Err` is a refusal reason. One job
@@ -1149,7 +1066,7 @@ impl BussardMcp {
                         // parameter object (issue #391), and so is the write.
                         let model = me.state().model.reload();
                         if bussard_service::knxnet::interface_config(&model, target).is_some() {
-                            let result = me
+                            let result: WriteOutcome = me
                                 .apply_interface(
                                     tier,
                                     &job,
@@ -1166,7 +1083,7 @@ impl BussardMcp {
                             .await?;
                         let record =
                             crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
-                        gate.pass(prepared.result.clone(), record);
+                        gate.pass(&prepared.result, record);
                         let links_after = LinksAfter::of(&prepared);
                         Ok::<_, String>((me.apply_write(tier, &job, prepared).await, links_after))
                     })
@@ -1196,7 +1113,7 @@ impl BussardMcp {
     /// bridge on a Data Secure device (issue #332): past the read wait the
     /// call answers `started` and a later refusal ends the job instead.
     /// `verb` names the write in a refusal.
-    async fn run_write<F, Fut>(
+    async fn run_write<F, Fut, R>(
         &self,
         subject: Subject,
         verb: &'static str,
@@ -1204,7 +1121,8 @@ impl BussardMcp {
     ) -> Result<Value, String>
     where
         F: FnOnce(BussardMcp, String, Gate) -> Fut,
-        Fut: std::future::Future<Output = Result<Value, String>> + Send + 'static,
+        Fut: std::future::Future<Output = Result<R, String>> + Send + 'static,
+        R: serde::Serialize + Send + 'static,
     {
         let began = Instant::now();
         let (tier, _, _) = self.programming_preflight()?;
@@ -1241,71 +1159,82 @@ impl BussardMcp {
         let Some(mut result) = tier.jobs.outcome(&job, wait).await else {
             return Ok(self.write_started(tier, &job, &subject));
         };
-        let extra = match &subject {
-            Subject::Device(target) => json!({
-                "record": tier.jobs.status(&self.state().dir, &job).map(|s| s["record"].clone()),
-                "next_step": inline_next_step(&job, *target, &result),
-            }),
-            Subject::Line(..) => json!({
-                "next_step": format!(
-                    "The write finished within this call (job {job}). Tell the human, per \
-                     device, what was written and verified, and name every failed device with \
-                     its detail and backup; knx_job_status with job {job} returns this result \
-                     again.{}",
-                    declared_step(&result)
-                ),
-            }),
+        let mut head: OutcomeHead = serde_json::from_value(result.clone()).unwrap_or_default();
+        let next_step = match &subject {
+            Subject::Device(target) => inline_next_step(&job, *target, &head),
+            Subject::Line(..) => format!(
+                "The write finished within this call (job {job}). Tell the human, per device, \
+                 what was written and verified, and name every failed device with its detail \
+                 and backup; knx_job_status with job {job} returns this result again.{}",
+                declared_step(&head)
+            ),
         };
-        merge(
-            &mut result,
-            json!({"started": false, "done": true, "job": job}),
-        );
-        merge(&mut result, extra);
+        match &subject {
+            Subject::Device(target) => head.address = Some(target.to_string()),
+            Subject::Line(line, _) => head.line = Some(line.clone()),
+        }
+        let record = match &subject {
+            Subject::Device(_) => Some(
+                tier.jobs
+                    .status(&self.state().dir, &job)
+                    .and_then(|s| s.record),
+            ),
+            Subject::Line(..) => None,
+        };
+        crate::reply::with_job(&mut result, &job, false, true);
+        if let (Some(record), Some(map)) = (record, result.as_object_mut()) {
+            map.insert(
+                "record".to_string(),
+                record.map(Value::String).unwrap_or(Value::Null),
+            );
+        }
+        let summary = head.summary(&self.state().model.current());
+        crate::reply::envelope(&mut result, Some(summary), Some(next_step));
         Ok(result)
     }
 
     /// The `started: true` answer of a write job still running.
     fn write_started(&self, tier: &ProgrammingTier, job: &str, subject: &Subject) -> Value {
+        let model = self.state().model.current();
+        let (device, next_step) = match subject {
+            Subject::Device(target) => (
+                crate::everyday::device_phrase(&model, *target),
+                format!(
+                    "The write to {target} continues in the server as job {job}; it is not done \
+                     yet. Tell the human it is running, then call knx_apply_status with job {job} \
+                     every few seconds until `done` is true and report its `result` (the verify \
+                     outcome, the parameters written, the backup paths; or, when result.refused \
+                     is true, the pre-flight's reason: nothing was written). If the reply is \
+                     lost, knx_last_apply with address {target} returns the same job."
+                ),
+            ),
+            Subject::Line(line, _) => (
+                format!("every device on line {line}"),
+                format!(
+                    "The write to line {line} continues in the server as job {job}, one device \
+                     after the other; it is not done yet. Tell the human it is running, then \
+                     call knx_job_status with job {job} every few seconds until `done` is true \
+                     and report its `result` per device (what was written, whether it verified, \
+                     the backups; or, when result.refused is true, the pre-flight's reason: \
+                     nothing was written)."
+                ),
+            ),
+        };
         let mut status = tier
             .jobs
             .status(&self.state().dir, job)
-            .unwrap_or_else(|| json!({}));
-        merge(
+            .map(|s| started_status(s, subject))
+            .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        crate::reply::with_job(&mut status, job, true, false);
+        crate::reply::envelope(
             &mut status,
-            json!({"started": true, "done": false, "job": job}),
+            Some(format!(
+                "{} is being written now; this continues in the background and the result \
+                 follows.",
+                bussard_model::text::capitalize(&device)
+            )),
+            Some(next_step),
         );
-        merge(
-            &mut status,
-            match subject {
-                Subject::Device(target) => json!({
-                    "address": target.to_string(),
-                    "next_step": format!(
-                        "The write to {target} continues in the server as job {job}; it is not done \
-                         yet. Tell the human it is running, then call knx_apply_status with job \
-                         {job} every few seconds until `done` is true and report its `result` (the \
-                         verify outcome, the parameters written, the backup paths; or, when \
-                         result.refused is true, the pre-flight's reason: nothing was written). If \
-                         the reply is lost, knx_last_apply with address {target} returns the same \
-                         job."
-                    ),
-                }),
-                Subject::Line(line, _) => json!({
-                    "line": line,
-                    "next_step": format!(
-                        "The write to line {line} continues in the server as job {job}, one device \
-                         after the other; it is not done yet. Tell the human it is running, then \
-                         call knx_job_status with job {job} every few seconds until `done` is true \
-                         and report its `result` per device (what was written, whether it \
-                         verified, the backups; or, when result.refused is true, the pre-flight's \
-                         reason: nothing was written)."
-                    ),
-                }),
-            },
-        );
-        if let Some(map) = status.as_object_mut() {
-            map.remove("result");
-            map.remove("state");
-        }
         status
     }
 
@@ -1324,33 +1253,35 @@ impl BussardMcp {
         tier: &ProgrammingTier,
         job: &str,
         consent: LinksAfter,
-        mut flashed: Value,
-    ) -> Value {
+        mut flashed: WriteOutcome,
+    ) -> WriteOutcome {
         let target = consent.target;
-        let application = flashed["application"]
-            .as_str()
-            .unwrap_or("the application")
-            .to_string();
-        if !(flashed["ok"] == json!(true) && flashed["verified"] == json!(true)) {
-            flashed["links"] = json!({
-                "written": false,
-                "reason": "not written: the download did not verify",
-            });
+        let application = flashed
+            .application
+            .clone()
+            .unwrap_or_else(|| "the application".to_string());
+        let links = |reason: &str| {
+            Box::new(WriteOutcome {
+                written: Some(false),
+                verdict: Verdict::failed(reason),
+                ..WriteOutcome::new(target)
+            })
+        };
+        if !(flashed.verdict.ok && flashed.verdict.verified) {
+            flashed.links = Some(links("not written: the download did not verify"));
             return flashed;
         }
-        let fail = |mut flashed: Value, reason: String| -> Value {
-            flashed["ok"] = json!(false);
-            flashed["verified"] = json!(false);
-            flashed["reason"] = json!(format!(
+        let fail = |mut flashed: WriteOutcome, reason: String| -> WriteOutcome {
+            flashed.fail(format!(
                 "{application} is loaded on {target} and verified, but its links were not \
                  written: {reason}"
             ));
-            flashed["recovery"] = json!(format!(
+            flashed.verdict.recovery = Some(format!(
                 "Plan {target} again with knx_plan_device: the device runs the application now, \
                  so the plan is the table write of its links. Do not report the change as done \
                  until a plan reports nothing to do."
             ));
-            flashed["links"] = json!({"written": false, "reason": reason});
+            flashed.links = Some(links(&reason));
             flashed
         };
         tier.jobs.step(
@@ -1371,28 +1302,32 @@ impl BussardMcp {
                     .to_string(),
             );
         }
-        if plan["noop"] == json!(true) {
+        if plan.noop() {
             // A fresh read after the load shows the device holds the model:
             // that read is the read-back.
-            flashed["links"] = json!({
-                "written": false,
-                "verified": true,
-                "note": "a fresh read after the download shows the device already holds the \
-                         project's links",
-            });
+            flashed.links = Some(Box::new(WriteOutcome {
+                written: Some(false),
+                verdict: Verdict::verified(),
+                note: Some(
+                    "a fresh read after the download shows the device already holds the \
+                     project's links"
+                        .to_string(),
+                ),
+                ..WriteOutcome::new(target)
+            }));
             self.session_edits().applied(target, true);
             return flashed;
         }
-        if plan["method"] != json!("apply") {
+        if plan.method() != "apply" {
             return fail(
                 flashed,
                 format!(
                     "the plan after the download is method {} rather than the table write",
-                    plan["method"]
+                    plan.method()
                 ),
             );
         }
-        let Some(digest) = plan["plan_digest"].as_str().map(str::to_string) else {
+        let Some(digest) = plan.plan_digest() else {
             return fail(
                 flashed,
                 "the plan after the download has no digest".to_string(),
@@ -1416,21 +1351,21 @@ impl BussardMcp {
         };
         let links = self.apply_write(tier, job, prepared).await;
         drop(warm);
-        let verified = links["ok"] == json!(true) && links["verified"] == json!(true);
-        if !verified {
-            let reason = links["reason"]
-                .as_str()
-                .or_else(|| links["detail"].as_str())
-                .unwrap_or("the table write did not verify")
-                .to_string();
+        if !(links.verdict.ok && links.verdict.verified) {
+            let reason = links
+                .verdict
+                .reason
+                .clone()
+                .or_else(|| links.detail.clone())
+                .unwrap_or_else(|| "the table write did not verify".to_string());
             let mut result = fail(flashed, reason);
-            if let Some(recovery) = links["recovery"].as_str() {
-                result["recovery"] = json!(recovery);
+            if let Some(recovery) = &links.verdict.recovery {
+                result.verdict.recovery = Some(recovery.clone());
             }
-            result["links"] = links;
+            result.links = Some(Box::new(links));
             return result;
         }
-        flashed["links"] = links;
+        flashed.links = Some(Box::new(links));
         flashed
     }
 
@@ -1617,25 +1552,24 @@ impl BussardMcp {
             .unwrap_or_default();
         let param_backup_path = backups.parameters.as_ref().map(|p| p.display().to_string());
 
-        let mut result = json!({
-            "method": if flash.is_some() { "flash" } else { "apply" },
-            "address": target.to_string(),
-            "gateway": gateway,
-            "secured": tool_key.is_some(),
-            "backup": backup_path,
-            "parameter_backup": param_backup_path,
-            "snapshot": snapshot,
-            "declared": declared,
-        });
-        if load.is_some() && param_backup_path.is_none() {
+        let result = WriteOutcome {
+            method: Some(if flash.is_some() { "flash" } else { "apply" }.to_string()),
+            gateway: Some(gateway.clone()),
+            secured: Some(tool_key.is_some()),
+            backup: Some(backup_path.clone()),
+            parameter_backup: param_backup_path.clone(),
             // Issue #750: the device holds no application the pinned
             // product data can read, so there is no parameter memory to
             // keep; the tables are backed up as for any apply.
-            result["parameter_backup_note"] = json!(
+            parameter_backup_note: (load.is_some() && param_backup_path.is_none()).then(|| {
                 "not backed up: the device holds no application whose parameter memory the \
                  pinned product data can read (as `bussard flash`, which takes no backup)"
-            );
-        }
+                    .to_string()
+            }),
+            snapshot: snapshot.clone(),
+            declared,
+            ..WriteOutcome::new(target)
+        };
         Ok(Prepared {
             origin: Origin::Model,
             model: std::sync::Arc::clone(&model),
@@ -1665,7 +1599,7 @@ impl BussardMcp {
     /// independent read-back, through [`program::apply::apply_device`] (the
     /// function `bussard apply` writes with). Never refuses: a failure is the
     /// result (`ok: false` with the reason and the recovery).
-    async fn apply_write(&self, tier: &ProgrammingTier, job: &str, p: Prepared) -> Value {
+    async fn apply_write(&self, tier: &ProgrammingTier, job: &str, p: Prepared) -> WriteOutcome {
         let Prepared {
             origin,
             model,
@@ -1689,10 +1623,7 @@ impl BussardMcp {
             ..
         } = p;
         let Some(service) = self.state().bus.service().cloned() else {
-            merge(
-                &mut result,
-                json!({"ok": false, "verified": false, "reason": "the bus is not wired"}),
-            );
+            result.fail("the bus is not wired");
             return result;
         };
         if let Some(image) = flash {
@@ -1705,14 +1636,14 @@ impl BussardMcp {
                 source,
                 tool_key,
                 high_water,
-                changed: json!(built.parameters),
+                changed: built.parameters.clone(),
                 param_backup: param_backup_path.as_deref(),
                 readback: product.as_ref().and_then(|source| {
                     program::flash::readback_inputs(source, Some(&model), read.live.tables().mask)
                 }),
             };
             let result = self.flash_write(tier, job, &image, ctx, result).await;
-            if result["ok"] == json!(true) {
+            if result.verdict.ok {
                 // The lock may have changed (the PID 54 record): serve it.
                 self.state().model.reload();
                 // With the links still to write (issue #779), the edits are
@@ -1788,65 +1719,62 @@ impl BussardMcp {
                     "FAILED"
                 }
             );
-            merge(
-                &mut result,
-                match tables_written {
-                    TablesWritten::Ran(summary) => json!({
-                        "ok": summary.ok,
-                        "verified": summary.ok,
-                        "security_object": security_json(security.as_ref(), &desired, false),
-                        "address_state": summary.address_state.to_string(),
-                        "association_state": summary.association_state.to_string(),
-                        "resulting_address_count": report.resulting_address_count,
-                        "resulting_association_count": report.resulting_association_count,
-                        "group_object_table": summary.object_table.as_ref().map(|t| json!({
-                            "state": t.state.to_string(),
-                            "entries": t.entries,
-                            "read_back_matches": t.matches,
-                        })),
-                        "detail": if summary.ok { Value::Null } else { Value::String(summary.detail.clone()) },
-                        "recovery": if summary.ok { Value::Null } else { Value::String(recovery.clone()) },
-                    }),
-                    TablesWritten::Lease(err) => json!({
-                        "ok": false,
-                        "verified": false,
-                        "reason": format!("could not lease the bus: {}", match err {
+            match tables_written {
+                TablesWritten::Ran(summary) => {
+                    result.verdict.ok = summary.ok;
+                    result.verdict.verified = summary.ok;
+                    result.security_object = SecurityObject::of(security.as_ref(), &desired, false);
+                    result.address_state = Some(summary.address_state.to_string());
+                    result.association_state = Some(summary.association_state.to_string());
+                    result.resulting_address_count = Some(report.resulting_address_count);
+                    result.resulting_association_count = Some(report.resulting_association_count);
+                    result.group_object_table =
+                        summary.object_table.as_ref().map(|t| ObjectTableWritten {
+                            state: t.state.to_string(),
+                            entries: t.entries,
+                            read_back_matches: t.matches,
+                        });
+                    if !summary.ok {
+                        result.detail = Some(summary.detail.clone());
+                        result.verdict.recovery = Some(recovery.clone());
+                    }
+                }
+                TablesWritten::Lease(err) => {
+                    result.fail(format!(
+                        "could not lease the bus: {}",
+                        match err {
                             ServiceError::Lease(cause) => cause.to_string(),
                             other => other.to_string(),
-                        }),
-                        "recovery": recovery,
-                    }),
-                    TablesWritten::Failed(why) => json!({
-                        "ok": false,
-                        "verified": false,
-                        "reason": format!("the write failed: {why}"),
-                        "recovery": recovery.clone(),
-                    }),
-                },
-            );
+                        }
+                    ));
+                    result.verdict.recovery = Some(recovery.clone());
+                }
+                TablesWritten::Failed(why) => {
+                    result.fail(format!("the write failed: {why}"));
+                    result.verdict.recovery = Some(recovery.clone());
+                }
+            }
             if !tables_written.verified() && param_write.is_some() {
-                result["parameters"] = json!({
-                    "written": false,
-                    "reason": "not written: the table write did not verify",
-                });
+                result.parameters = Some(ParametersWritten::not_written(
+                    "not written: the table write did not verify",
+                ));
             }
         }
         match &written.restarted {
             Some(Ok(after)) => {
-                result["restarted"] = json!({"answered_after_ms": after.as_millis() as u64});
+                result.restarted = Some(Restarted {
+                    answered_after_ms: after.as_millis() as u64,
+                });
             }
-            Some(Err(reason)) => merge(
-                &mut result,
-                json!({
-                    "ok": false,
-                    "verified": false,
-                    "reason": format!("the device did not come back after its restart: {reason}"),
-                    "recovery": recovery.clone(),
-                }),
-            ),
+            Some(Err(reason)) => {
+                result.fail(format!(
+                    "the device did not come back after its restart: {reason}"
+                ));
+                result.verdict.recovery = Some(recovery.clone());
+            }
             None => {}
         }
-        record_json(&mut result, &written.lock);
+        result.record(&written.lock);
         let reached = written.tables.as_ref().is_none_or(TablesWritten::verified)
             && !matches!(written.restarted, Some(Err(_)));
         match &written.parameters {
@@ -1856,30 +1784,25 @@ impl BussardMcp {
                     Ok(bussard_service::download::ParamWriteOutcome::Verified { .. })
                 );
                 audit("parameters", ok);
-                result["parameters"] = match outcome {
+                result.parameters = Some(match outcome {
                     Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => {
-                        json!({
-                            "written": true,
-                            "verified": true,
-                            "octets": octets,
-                            "changed": built.parameters,
-                        })
+                        ParametersWritten {
+                            written: true,
+                            verified: Some(true),
+                            octets: Some(*octets),
+                            changed: Some(built.parameters.clone()),
+                            ..ParametersWritten::default()
+                        }
                     }
-                    Ok(failed) => json!({
-                        "written": false,
-                        "verified": false,
-                        "reason": failed.failure(),
-                    }),
-                    Err(why) => json!({
-                        "written": false,
-                        "verified": false,
-                        "reason": format!("the parameter read-back failed: {why}"),
-                    }),
-                };
-                result["ok"] = json!(ok);
-                result["verified"] = json!(ok);
+                    Ok(failed) => ParametersWritten::failed(failed.failure()),
+                    Err(why) => {
+                        ParametersWritten::failed(format!("the parameter read-back failed: {why}"))
+                    }
+                });
+                result.verdict.ok = ok;
+                result.verdict.verified = ok;
                 if !ok {
-                    result["recovery"] = json!(format!(
+                    result.verdict.recovery = Some(format!(
                         "The parameter memory before the write is backed up at {}. If the \
                          application still reads Loaded, re-planning and re-applying {target} \
                          rewrites only the octets that still differ; otherwise recover with a full \
@@ -1891,7 +1814,7 @@ impl BussardMcp {
             }
             None if reached => {
                 if let Some(why) = &built.parameters_skipped {
-                    result["parameters"] = json!({"written": false, "reason": why});
+                    result.parameters = Some(ParametersWritten::not_written(why.clone()));
                 }
             }
             None => {}
@@ -1899,18 +1822,16 @@ impl BussardMcp {
         // Verified means read back and compared (issues #319, #349).
         if let Some(readback) = &written.readback {
             audit("read-back", readback.verified);
-            result["readback"] = json!(readback);
+            result.readback = Some(readback.clone());
             if let Some(failure) = readback.failure() {
                 // Say what is left first; a write failure already reported
                 // stays in `write_reason`.
-                if let Some(previous) = result.get("reason").filter(|r| !r.is_null()).cloned() {
-                    result["write_reason"] = previous;
+                if let Some(previous) = result.verdict.reason.take() {
+                    result.write_reason = Some(previous);
                 }
-                result["ok"] = json!(false);
-                result["verified"] = json!(false);
-                result["reason"] = json!(failure);
-                if result.get("recovery").is_none_or(Value::is_null) {
-                    result["recovery"] = json!(format!(
+                result.fail(failure);
+                if result.verdict.recovery.is_none() {
+                    result.verdict.recovery = Some(format!(
                         "The items listed still differ from {} on {target}. The pre-write \
                          state is backed up at {backup_path}. Plan {target} again with \
                          {planner} and write it again; do not report the change as done until \
@@ -1920,13 +1841,20 @@ impl BussardMcp {
                 }
             }
         }
-        if result.get("ok").is_none() {
-            result["ok"] = json!(true);
-            result["verified"] = json!(true);
+        // Nothing above decided the verdict: every step that ran verified.
+        let decided = written.tables.is_some()
+            || matches!(written.restarted, Some(Err(_)))
+            || written.parameters.is_some()
+            || written
+                .readback
+                .as_ref()
+                .is_some_and(|r| r.failure().is_some());
+        if !decided {
+            result.verify();
         }
         // A restore writes a backup, not the model: the session's model
         // edits are still pending on the device after it.
-        if result["ok"] == json!(true) && origin == Origin::Model {
+        if result.verdict.ok && origin == Origin::Model {
             self.session_edits()
                 .applied(target, built.parameters_skipped.is_none());
         }
@@ -1937,34 +1865,40 @@ impl BussardMcp {
     fn apply_status(&self, job: &str) -> Result<Value, String> {
         let tier = self.tier()?;
         let job = job.trim();
-        tier.jobs.status(&self.state().dir, job).ok_or_else(|| {
+        let status = tier.jobs.status(&self.state().dir, job).ok_or_else(|| {
             format!(
                 "no job {job:?} in this session or under .bussard/history; \
                  knx_last_apply with the device's address returns its latest job"
             )
-        })
+        })?;
+        Ok(status.chat(&self.state().model.current()))
     }
 
     /// `knx_last_apply`'s body; `Err` is a refusal reason.
     fn last_apply(&self, address: &str) -> Result<Value, String> {
         let target = parse_address(address)?;
         let tier = self.tier()?;
-        Ok(match tier.jobs.last(&self.state().dir, target) {
-            Some(status) => {
-                let mut status = status;
-                status["found"] = json!(true);
-                status
+        let found = tier.jobs.last(&self.state().dir, target);
+        let mut out = match &found {
+            Some(status) => status.chat(&self.state().model.current()),
+            None => {
+                let mut out = json!({ "address": target.to_string() });
+                crate::reply::envelope(
+                    &mut out,
+                    None,
+                    Some(format!(
+                        "no apply of {target} is recorded in this session or under \
+                         .bussard/history; call knx_plan_device for {target} to see what the \
+                         device holds"
+                    )),
+                );
+                out
             }
-            None => json!({
-                "found": false,
-                "address": target.to_string(),
-                "next_step": format!(
-                    "no apply of {target} is recorded in this session or under \
-                     .bussard/history; call knx_plan_device for {target} to see what the device \
-                     holds"
-                ),
-            }),
-        })
+        };
+        if let Some(map) = out.as_object_mut() {
+            map.insert("found".to_string(), Value::Bool(found.is_some()));
+        }
+        Ok(out)
     }
 }
 
@@ -2057,7 +1991,7 @@ struct Prepared {
     /// The full download, when the plan says `method: flash` (issue #303).
     flash: Option<FlashImage>,
     /// The result so far (address, gateway, backups, snapshot).
-    result: Value,
+    result: WriteOutcome,
 }
 
 /// Where a write's desired tables came from: the model's device file
@@ -2098,7 +2032,7 @@ impl Origin {
 }
 
 /// The `next_step` of an apply that finished within its call.
-fn inline_next_step(job: &str, target: IndividualAddress, result: &Value) -> String {
+fn inline_next_step(job: &str, target: IndividualAddress, result: &OutcomeHead) -> String {
     format!(
         "{}{}",
         inline_outcome_step(job, target, result),
@@ -2108,21 +2042,20 @@ fn inline_next_step(job: &str, target: IndividualAddress, result: &Value) -> Str
 
 /// The sentence naming the group addresses an apply declared in
 /// `groups.toml` (issue #779), empty when it declared none.
-fn declared_step(result: &Value) -> &'static str {
-    match result["declared"].as_array() {
-        Some(declared) if !declared.is_empty() => {
-            " Before writing, it added to groups.toml the group addresses the device files use \
-             but did not define (result.declared); name each one to the human."
-        }
-        _ => "",
+fn declared_step(result: &OutcomeHead) -> &'static str {
+    if result.declared.is_empty() {
+        ""
+    } else {
+        " Before writing, it added to groups.toml the group addresses the device files use but \
+         did not define (result.declared); name each one to the human."
     }
 }
 
 /// The outcome half of [`inline_next_step`].
-fn inline_outcome_step(job: &str, target: IndividualAddress, result: &Value) -> String {
-    if result["ok"] == true {
+fn inline_outcome_step(job: &str, target: IndividualAddress, result: &OutcomeHead) -> String {
+    if result.verdict.ok {
         // The table backup taken before the write (issue #717): the way back.
-        let undo = if result["backup"].is_string() {
+        let undo = if result.backup.is_some() {
             format!(
                 " To undo it, knx_restore_tables with address {target} (no backup argument) \
                  plans writing those pre-write tables back."
@@ -2144,26 +2077,85 @@ fn inline_outcome_step(job: &str, target: IndividualAddress, result: &Value) -> 
     }
 }
 
-/// The `security_object` field of a plan or apply result: what the security
-/// object receives, or `null` on the plain path and for a plan with nothing
-/// to write. Addresses and object numbers only, never a key.
-fn security_json(security: Option<&SecurityInputs>, desired: &DesiredTables, noop: bool) -> Value {
-    match security {
-        Some(inputs) if !noop => json!({
-            "summary": inputs.describe(&desired.addresses),
-            "secure_senders": inputs
-                .senders
-                .iter()
-                .map(|e| json!({"address": e.address.to_string(), "sequence": e.sequence}))
-                .collect::<Vec<_>>(),
-            "keyed_groups": inputs
-                .keyed(&desired.addresses)
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
-            "secured_objects": inputs.secure_objects.iter().collect::<Vec<_>>(),
-        }),
-        _ => Value::Null,
+/// A write job still running, as its call answers: the job's status
+/// without `state` and `result`, for the device or the line.
+fn started_status(mut status: crate::jobs::JobStatus, subject: &Subject) -> Value {
+    match subject {
+        Subject::Device(target) => status.address = Some(target.to_string()),
+        Subject::Line(line, _) => status.line = Some(line.clone()),
+    }
+    let mut value = serde_json::to_value(status).unwrap_or_default();
+    if let Some(map) = value.as_object_mut() {
+        map.remove("result");
+        map.remove("state");
+    }
+    value
+}
+
+/// What `knx_plan_device` planned for one device: the device plan, the
+/// property-only plan of a load procedure (issue #390), or an IP
+/// interface's KNXnet/IP parameter object (issue #391).
+pub(super) enum PlanAnswer {
+    /// The table and parameter write, or a full download.
+    Device(Box<PlanOutcome>),
+    /// The properties a load procedure writes.
+    Property(PropertyPlan),
+    /// An IP interface's `[knxnet]` table.
+    Interface(Box<InterfacePlanOutcome>),
+}
+
+impl PlanAnswer {
+    /// Whether nothing is to be written.
+    pub(super) fn noop(&self) -> bool {
+        match self {
+            PlanAnswer::Device(p) => p.noop,
+            PlanAnswer::Property(p) => p.noop,
+            PlanAnswer::Interface(p) => p.noop,
+        }
+    }
+
+    /// `apply` or `flash`.
+    pub(super) fn method(&self) -> &str {
+        match self {
+            PlanAnswer::Device(p) => &p.method,
+            PlanAnswer::Property(p) => &p.method,
+            PlanAnswer::Interface(p) => &p.method,
+        }
+    }
+
+    /// The digest a write takes, when the plan writes anything.
+    pub(super) fn plan_digest(&self) -> Option<String> {
+        match self {
+            PlanAnswer::Device(p) => p.approval.plan_digest.clone(),
+            PlanAnswer::Property(_) => None,
+            PlanAnswer::Interface(p) => p.approval.plan_digest.clone(),
+        }
+    }
+
+    /// The plan as `knx_plan_device` answers: the plan plus the chat
+    /// envelope (`summary`, `what_you_will_notice`, `next_step`).
+    pub(super) fn chat(&self, server: &BussardMcp, model: &Model) -> Value {
+        match self {
+            PlanAnswer::Device(p) => {
+                let mut out = crate::reply::report(p.as_ref(), model);
+                let last = p.plan.address.parse().ok().and_then(|ia| {
+                    server
+                        .tier()
+                        .ok()?
+                        .jobs
+                        .last_write_seconds(&server.state().dir, ia)
+                });
+                if let (Some(notice), Some(map)) = (p.notice(model, last), out.as_object_mut()) {
+                    map.insert(
+                        "what_you_will_notice".to_string(),
+                        serde_json::to_value(notice).unwrap_or_default(),
+                    );
+                }
+                out
+            }
+            PlanAnswer::Property(p) => crate::reply::report(p, model),
+            PlanAnswer::Interface(p) => crate::reply::report(p.as_ref(), model),
+        }
     }
 }
 
@@ -2211,11 +2203,11 @@ impl Subject {
     }
 
     /// The `started: true` answer of a plan job still reading.
-    fn plan_started(&self, job: &str) -> Value {
-        let (key, value, step, read, poll) = match self {
+    fn plan_started(&self, job: &str, model: &Model) -> Value {
+        let (address, line, step, read, poll) = match self {
             Subject::Device(target) => (
-                "address",
-                target.to_string(),
+                Some(target.to_string()),
+                None,
                 "reading the device",
                 format!(
                     "Reading {target} takes longer than this call may wait (a Data Secure \
@@ -2224,8 +2216,8 @@ impl Subject {
                 "knx_apply_status",
             ),
             Subject::Line(line, _) => (
-                "line",
-                line.clone(),
+                None,
+                Some(line.clone()),
                 "reading the devices on the line",
                 format!("Reading every device on line {line} takes longer than this call may wait"),
                 "knx_job_status",
@@ -2235,22 +2227,46 @@ impl Subject {
             Subject::Device(_) => "plan",
             Subject::Line(..) => "line plan",
         };
-        json!({
-            "started": true,
-            "done": false,
-            "kind": "plan",
-            "job": job,
-            key: value,
-            "step": step,
-            "next_step": format!(
+        let device =
+            bussard_service::report::subject_phrase(model, address.as_deref(), line.as_deref());
+        let mut out = serde_json::to_value(PlanStarted {
+            kind: JobKind::Plan,
+            address,
+            line,
+            step,
+        })
+        .unwrap_or_default();
+        crate::reply::with_job(&mut out, job, true, false);
+        crate::reply::envelope(
+            &mut out,
+            Some(format!(
+                "Reading {device} to prepare the plan; nothing is written."
+            )),
+            Some(format!(
                 "{read}; the plan is computed in the server as job {job}, and nothing is \
                  written. Tell the human the read is running, then call {poll} with job {job} \
                  every few seconds until `done` is true. Its `result` is the {what}: show it to \
                  the human and follow result.next_step. Do not call knx_apply_device before you \
                  have shown that plan."
-            ),
-        })
+            )),
+        );
+        out
     }
+}
+
+/// A plan job still reading, as its call answers.
+#[derive(serde::Serialize)]
+struct PlanStarted {
+    /// Always a plan.
+    kind: JobKind,
+    /// The device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    address: Option<String>,
+    /// The line.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    line: Option<String>,
+    /// What it does now.
+    step: &'static str,
 }
 
 /// The one target of a call that takes `address` or `line`; `Err` when it
@@ -2605,32 +2621,6 @@ fn model_fingerprint(
     flash.map_or(model, |image| image.fingerprint(model))
 }
 
-/// The lock records of a verified secured write, as result fields.
-fn record_json(result: &mut Value, record: &bussard_service::flash_flow::LockRecord) {
-    for (recorded, key, note) in [
-        (
-            &record.senders,
-            "secure_senders_recorded",
-            "secure_senders_note",
-        ),
-        (
-            &record.flags,
-            "security_flags_recorded",
-            "security_flags_note",
-        ),
-    ] {
-        match recorded {
-            Some((Ok(recorded), _)) => result[key] = json!(recorded),
-            Some((Err(err), _)) => {
-                tracing::warn!("{err}");
-                result[key] = json!(false);
-                result[note] = json!(err);
-            }
-            None => {}
-        }
-    }
-}
-
 /// Refuses a device whose identity drifted from the lock, naming the
 /// `bussard flash` it needs (the CLI's `apply` rule). A System 7 device has
 /// no readable application id: code that differs from the pinned product's
@@ -2744,19 +2734,6 @@ fn load_question(
          offline for {min} to {max} s.",
         plan.identity.id
     )
-}
-
-/// The `parameters` field of a plan: what differs, by key, vendor text,
-/// device value and model value, and whether it is written.
-fn parameters_json(built: &BuiltPlan) -> Value {
-    json!({
-        "compared": built.parameters_skipped.is_none() || !built.parameters.is_empty(),
-        "changed": built.parameters,
-        "octets": built.plan.writes.parameter_octets,
-        "octet_ranges": built.octet_ranges,
-        "written": built.partial.is_some(),
-        "skipped": built.parameters_skipped,
-    })
 }
 
 /// The audit line, as `bussard apply` records it: a history snapshot before

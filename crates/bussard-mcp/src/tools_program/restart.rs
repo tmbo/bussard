@@ -15,12 +15,15 @@
 use bussard_model::IndividualAddress;
 use bussard_service::L4Options;
 use bussard_service::download::RestartForm;
+use bussard_service::program::outcome::WriteOutcome;
 use bussard_service::program::plan::Fingerprint;
-use bussard_service::restart::{RestartWait, restart_choice, restart_device};
+use bussard_service::restart::{
+    RestartPlan, RestartWait, restart_choice, restart_device, restart_outcome,
+};
 use bussard_service::secure::SequenceHighWater;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::{BussardMcp, ProgrammingTier, Subject, chain, merge};
+use super::{BussardMcp, ProgrammingTier, Subject};
 
 /// The digest of a restart question: the device and the form.
 fn restart_digest(target: IndividualAddress, form: RestartForm) -> String {
@@ -49,9 +52,9 @@ impl BussardMcp {
             move |me, job, gate| async move {
                 let tier = me.tier()?;
                 me.on_bus(tier, async {
-                    let (service, options, form, why, mut result) =
+                    let (service, options, form, why, result) =
                         me.restart_preflight(tier, target, &digest).await?;
-                    gate.pass(result.clone(), None);
+                    gate.pass(&result, None);
                     tier.jobs.step(
                         &job,
                         format!(
@@ -70,8 +73,7 @@ impl BussardMcp {
                             Err(err) => format!("FAILED: {err}"),
                         }
                     );
-                    merge(&mut result, restart_result(target, &why, outcome));
-                    Ok(result)
+                    Ok(restart_outcome(result, &why, &outcome))
                 })
                 .await
             },
@@ -89,31 +91,13 @@ impl BussardMcp {
     ) -> Value {
         let model = self.state().model.reload();
         let choice = restart_choice(&self.state().dir, Some(&model), target);
-        let name = model
-            .devices
-            .get(&target)
-            .map(|d| format!(" ({})", d.device.name))
-            .unwrap_or_default();
+        let name = model.devices.get(&target).map(|d| d.device.name.as_str());
+        let mut plan = RestartPlan::new(target, name, gateway, &choice);
         let digest = restart_digest(target, choice.form);
         tier.restarts.insert(digest.clone(), target, choice.form);
-        let now = std::time::SystemTime::now();
-        json!({
-            "ok": true,
-            "address": target.to_string(),
-            "gateway": gateway,
-            "form": choice.form.name(),
-            "form_reason": choice.why,
-            "question": format!("restart {target}{name} via {gateway}?"),
-            "plan_digest": digest,
-            "expires_at": tier.restarts.expires_at(now),
-            "next_step": format!(
-                "Nothing was sent. Tell the human {target} restarts ({} form: {}) and does not \
-                 react for a few seconds, and ask the question. Call knx_restart_device with \
-                 this plan_digest only after an explicit yes.",
-                choice.form.name(),
-                choice.why
-            ),
-        })
+        plan.approval.plan_digest = Some(digest);
+        plan.approval.expires_at = Some(tier.restarts.expires_at(std::time::SystemTime::now()));
+        crate::reply::report(&plan, &model)
     }
 
     /// The pre-flight of a restart: the digest names a question of this
@@ -132,7 +116,7 @@ impl BussardMcp {
             L4Options,
             RestartForm,
             String,
-            Value,
+            WriteOutcome,
         ),
         String,
     > {
@@ -156,52 +140,15 @@ impl BussardMcp {
         let source = service.checked_source(false).await?;
         let options =
             L4Options::secured(source, material.tool_key.clone(), SequenceHighWater::new());
-        let result = json!({
-            "method": "restart",
-            "address": target.to_string(),
-            "gateway": gateway,
-            "secured": material.tool_key.is_some(),
-            "form": choice.form.name(),
-        });
+        let result = WriteOutcome {
+            method: Some("restart".to_string()),
+            gateway: Some(gateway),
+            secured: Some(material.tool_key.is_some()),
+            form: Some(choice.form.name().to_string()),
+            ..WriteOutcome::new(target)
+        };
         Ok((service, options, choice.form, choice.why, result))
     }
-}
-
-/// The result fields of a restart's `outcome`.
-fn restart_result(
-    target: IndividualAddress,
-    why: &str,
-    outcome: Result<
-        bussard_service::restart::RestartOutcome,
-        bussard_service::restart::RestartError,
-    >,
-) -> Value {
-    let done = match outcome {
-        Ok(done) => done,
-        Err(err) => return json!({"ok": false, "verified": false, "reason": chain(&err)}),
-    };
-    let after = done.answered_after.as_secs_f64();
-    json!({
-        "ok": true,
-        "verified": done.confirmed,
-        "form_reason": why,
-        "confirmed": done.confirmed,
-        "process_time_s": done.process_time.map(|t| t.as_secs()),
-        "mask": format!("{:04X}", done.mask),
-        "answered_after_ms": done.answered_after.as_millis() as u64,
-        // The technical line; `summary` is the homeowner's (#306).
-        "outcome": if done.confirmed {
-            format!(
-                "{target} restarted: it confirmed the restart (A_Restart_Response) and answered \
-                 again after {after:.1} s"
-            )
-        } else {
-            format!(
-                "{target}: restart sent (a basic A_Restart, which the device does not confirm); \
-                 it answered again after {after:.1} s. The restart itself is not verified."
-            )
-        },
-    })
 }
 
 #[cfg(test)]

@@ -41,7 +41,12 @@ use bussard_mgmt::apci::ERASE_CODE_CONFIRMED_RESTART;
 use bussard_mgmt::load::WriteError;
 use bussard_model::{IndividualAddress, Model};
 
+use bussard_model::text::capitalize;
+use serde::Serialize;
+
 use crate::params::{MissingProduct, Selection, resolve_product};
+use crate::program::outcome::{Verdict, WriteOutcome};
+use crate::report::{Approval, Report, device_phrase};
 use crate::{BusService, L4Options, ServiceError};
 
 /// How long [`restart_device`] waits for the device to come back.
@@ -142,6 +147,100 @@ pub struct RestartOutcome {
     pub mask: u16,
     /// How long after the restart the device answered again.
     pub answered_after: Duration,
+}
+
+/// The question of a restart (`knx_restart_device` without a digest): the
+/// form ETS uses for the device and why. Nothing is sent.
+#[derive(Debug, Clone, Serialize)]
+pub struct RestartPlan {
+    /// Always `true`: the question was made.
+    pub ok: bool,
+    /// The device.
+    pub address: String,
+    /// The resolved gateway.
+    pub gateway: String,
+    /// The restart form: `confirmed` or `basic`.
+    pub form: String,
+    /// Why that form.
+    pub form_reason: String,
+    /// The question and the digest.
+    #[serde(flatten)]
+    pub approval: Approval,
+}
+
+impl RestartPlan {
+    /// The question of restarting `target` (named `name` in the model) in
+    /// `choice`'s form through `gateway`.
+    pub fn new(
+        target: IndividualAddress,
+        name: Option<&str>,
+        gateway: &str,
+        choice: &RestartChoice,
+    ) -> RestartPlan {
+        let name = name.map(|n| format!(" ({n})")).unwrap_or_default();
+        RestartPlan {
+            ok: true,
+            address: target.to_string(),
+            gateway: gateway.to_string(),
+            form: choice.form.name().to_string(),
+            form_reason: choice.why.clone(),
+            approval: Approval::question(Some(format!("restart {target}{name} via {gateway}?"))),
+        }
+    }
+}
+
+impl Report for RestartPlan {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, model: &Model) -> Option<String> {
+        let device = self
+            .address
+            .parse()
+            .map(|ia| device_phrase(model, ia))
+            .unwrap_or_else(|_| "the device".to_string());
+        Some(format!(
+            "{} would restart and not react for a few seconds; nothing else changes. Nothing is \
+             sent before the human says yes.",
+            capitalize(&device)
+        ))
+    }
+
+    fn next_step(&self) -> Option<String> {
+        Some(format!(
+            "Nothing was sent. Tell the human {} restarts ({} form: {}) and does not react for a \
+             few seconds, and ask the question. Call knx_restart_device with this plan_digest \
+             only after an explicit yes.",
+            self.address, self.form, self.form_reason
+        ))
+    }
+}
+
+/// The outcome of a restart (`bussard restart --json`, `knx_restart_device`)
+/// as a [`WriteOutcome`]: `result` is what the restart did, `why` the reason
+/// for its form.
+pub fn restart_outcome(
+    mut result: WriteOutcome,
+    why: &str,
+    outcome: &Result<RestartOutcome, RestartError>,
+) -> WriteOutcome {
+    result.method = Some("restart".to_string());
+    result.form_reason = Some(why.to_string());
+    match outcome {
+        Ok(done) => {
+            result.form = Some(done.form.name().to_string());
+            result.verdict = Verdict {
+                ok: true,
+                verified: done.confirmed,
+                ..Verdict::default()
+            };
+            result.confirmed = Some(done.confirmed);
+            result.process_time_s = done.process_time.map(|t| t.as_secs());
+            result.mask = Some(format!("{:04X}", done.mask));
+            result.answered_after_ms = Some(done.answered_after.as_millis() as u64);
+        }
+        Err(err) => result.fail(crate::util::chain(err)),
+    }
+    result
 }
 
 /// Restarting a device failed.

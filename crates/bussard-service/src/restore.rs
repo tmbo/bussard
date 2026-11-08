@@ -31,7 +31,12 @@ use bussard_download::{FlashPlan, PartialPlanError, attribute_octets, device_man
 use bussard_model::{IndividualAddress, Model};
 use bussard_product::ApplicationProgram;
 
+use bussard_model::identity::IdentityCheck;
+use bussard_model::text::capitalize;
+use serde::Serialize;
+
 use crate::params::{OctetAttribution, ParamDetail, TargetLabel, model_images, octet_ranges};
+use crate::report::{Approval, Report, device_phrase};
 
 /// Why a parameter backup cannot be restored onto a device.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -122,6 +127,185 @@ pub struct RestorePlan {
     pub octet_ranges: Vec<OctetAttribution>,
     /// The plan's notes, ready to print.
     pub notes: Vec<String>,
+}
+
+/// The plan of replaying a parameter backup onto a device
+/// (`knx_restore_parameters` without a digest, issue #904): what is
+/// written, what is left as the device holds it, and the question.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParameterRestorePlan {
+    /// Always `true`: the plan was made.
+    pub ok: bool,
+    /// The device.
+    pub address: String,
+    /// The resolved gateway.
+    pub gateway: String,
+    /// The backup file.
+    pub backup: String,
+    /// The device's identity compared with the lock.
+    pub identity: Option<IdentityCheck>,
+    /// The device already holds the backup's octets.
+    pub noop: bool,
+    /// The plan in words.
+    pub sentences: String,
+    /// How many octets the restore writes.
+    pub octets: usize,
+    /// The runs written and left ([`RestorePlan::octet_ranges`]).
+    pub octet_ranges: Vec<OctetAttribution>,
+    /// The plan's notes.
+    pub notes: Vec<String>,
+    /// The question and, on the MCP surface, the digest.
+    #[serde(flatten)]
+    pub approval: Approval,
+}
+
+impl ParameterRestorePlan {
+    /// The plan of restoring `backup` onto `target` through `gateway`.
+    pub fn new(
+        target: IndividualAddress,
+        gateway: &str,
+        backup: &std::path::Path,
+        identity: Option<IdentityCheck>,
+        plan: &RestorePlan,
+    ) -> ParameterRestorePlan {
+        let noop = plan.partial.is_none();
+        ParameterRestorePlan {
+            ok: true,
+            address: target.to_string(),
+            gateway: gateway.to_string(),
+            backup: backup.display().to_string(),
+            identity,
+            noop,
+            sentences: plan.render_text(target),
+            octets: plan.octets,
+            octet_ranges: plan.octet_ranges.clone(),
+            notes: plan.notes.clone(),
+            approval: Approval::question((!noop).then(|| plan.question(target, gateway))),
+        }
+    }
+}
+
+impl Report for ParameterRestorePlan {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, model: &Model) -> Option<String> {
+        let device = self
+            .address
+            .parse()
+            .map(|ia| device_phrase(model, ia))
+            .unwrap_or_else(|_| "the device".to_string());
+        Some(if self.noop {
+            format!("{} already matches; nothing to write.", capitalize(&device))
+        } else {
+            format!(
+                "Puts the settings of {device} back as the backup holds them. Nothing is \
+                 written before the human says yes."
+            )
+        })
+    }
+
+    fn next_step(&self) -> Option<String> {
+        Some(if self.noop {
+            format!(
+                "nothing to write: {} already holds the backup's parameter octets",
+                self.address
+            )
+        } else {
+            "Show the sentences above to the human in full (what is written, what is left as \
+             the device holds it) and ask the question. Call knx_restore_parameters with this \
+             plan_digest only after an explicit yes."
+                .to_string()
+        })
+    }
+}
+
+/// The plan of writing a backup's link tables back to a device
+/// (`knx_restore_tables` without a digest, issue #717): what the tables gain
+/// and lose against the device, and the question.
+#[derive(Debug, Clone, Serialize)]
+pub struct TableRestorePlan {
+    /// Always `true`: the plan was made.
+    pub ok: bool,
+    /// Always `restore`.
+    pub method: String,
+    /// The device.
+    pub address: String,
+    /// The resolved gateway.
+    pub gateway: String,
+    /// The backup file.
+    pub backup: String,
+    /// When the backup was read.
+    pub backup_read_time: Option<String>,
+    /// The mask the backup records.
+    pub backup_mask: String,
+    /// The device's mask now, hex.
+    pub mask: String,
+    /// The system the mask names.
+    pub system_type: String,
+    /// Whether the device was read under KNX Data Secure.
+    pub secured: bool,
+    /// The device's identity compared with the lock.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityCheck>,
+    /// The device already holds the backup's tables.
+    pub noop: bool,
+    /// The table plan in words.
+    pub table_plan: String,
+    /// The links the restore adds.
+    pub additions: Vec<bussard_download::ObjectGa>,
+    /// The links the restore removes.
+    pub removals: Vec<bussard_download::ObjectGa>,
+    /// The links that stay.
+    pub unchanged: Vec<bussard_download::ObjectGa>,
+    /// The address table's entry count now.
+    pub current_address_count: usize,
+    /// The address table's entry count after the restore.
+    pub resulting_address_count: usize,
+    /// The association table's entry count now.
+    pub current_association_count: usize,
+    /// The association table's entry count after the restore.
+    pub resulting_association_count: usize,
+    /// What the security object receives.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub security_object: Option<crate::program::outcome::SecurityObject>,
+    /// The plan's notes.
+    pub notes: Vec<String>,
+    /// The question and, on the MCP surface, the digest.
+    #[serde(flatten)]
+    pub approval: Approval,
+}
+
+impl Report for TableRestorePlan {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, model: &Model) -> Option<String> {
+        let device = self
+            .address
+            .parse()
+            .map(|ia| device_phrase(model, ia))
+            .unwrap_or_else(|_| "the device".to_string());
+        Some(if self.noop {
+            format!("{} already matches; nothing to write.", capitalize(&device))
+        } else {
+            format!(
+                "Puts the connections of {device} back as the backup holds them. Nothing is \
+                 written before the human says yes."
+            )
+        })
+    }
+
+    fn next_step(&self) -> Option<String> {
+        Some(if self.noop {
+            format!(
+                "nothing to write: {} already holds the backup's link tables",
+                self.address
+            )
+        } else {
+            "Show the plan above to the human (what is added and removed) and ask the question. \
+             Call knx_restore_tables with this plan_digest only after an explicit yes."
+                .to_string()
+        })
+    }
 }
 
 impl RestorePlan {

@@ -215,7 +215,7 @@ fn test_describe_refused_plain_walk_fails_with_hint_and_json_field() -> TestResu
         "a refused walk must not report an empty object list: {stdout}"
     );
     assert!(
-        json["error"]
+        json["reason"]
             .as_str()
             .is_some_and(|e| e.contains("--keyring"))
     );
