@@ -58,7 +58,8 @@ pub(crate) fn is_property_only(app: &ApplicationProgram) -> bool {
 /// `<when default="true">` branches. A load procedure is a device write, so
 /// where the Dynamic walk would quietly fall back to the default branch this
 /// refuses instead: a controlling parameter without a value, a value that is
-/// not a number, and a test bussard does not understand.
+/// not a number, a test bussard does not understand, and an `=`-spelled
+/// test ([`WhenTest::Spelled`]).
 fn branch_taken(
     app: &ApplicationProgram,
     lp: &LoadProcedure,
@@ -89,10 +90,14 @@ fn branch_taken(
                 choose.param_ref_id
             ),
         })?;
-    if let Some(WhenTest::Unknown(test)) = choose
+    // An `=`-spelled test (`=417`, issue #949) is decided by the Dynamic walk
+    // only: no capture shows ETS deciding a load-procedure `<choose>` with
+    // one, so the planner keeps refusing it.
+    if let Some(test) = choose
         .tests
         .iter()
-        .find(|t| matches!(t, WhenTest::Unknown(_)))
+        .find(|t| matches!(t, WhenTest::Unknown(_) | WhenTest::Spelled { .. }))
+        .and_then(WhenTest::text)
     {
         return Err(PlanError::UndecidableCondition {
             step,
@@ -1091,6 +1096,12 @@ mod tests {
     /// `P-18` (`>=3` or default), the inner one on `P-20` inside the `>=3`
     /// branch (`0` writes PID 60, `1` PID 61, default PID 62; a self-closed `<when test="2"/>` takes no op).
     fn nested_app() -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        nested_app_with(r#"<when test="0">"#)
+    }
+
+    /// [`nested_app`] with the inner choose's first `<when>` written as
+    /// `inner_when`.
+    fn nested_app_with(inner_when: &str) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
          <ApplicationProgram PeiType="0" Id="M-0083_A-2" ApplicationNumber="2" ApplicationVersion="1"
             MaskVersion="MV-0705" Name="N">
@@ -1114,7 +1125,7 @@ mod tests {
               <when test="&gt;=3">
                <LdCtrlWriteProp ObjIdx="6" PropId="59" InlineData="01" Verify="false" />
                <choose ParamRefId="M-0083_A-2_P-20_R-9">
-                <when test="0">
+                INNER_WHEN
                  <LdCtrlWriteProp ObjIdx="6" PropId="60" InlineData="00" Verify="false" />
                 </when>
                 <when test="1">
@@ -1135,8 +1146,29 @@ mod tests {
             </LoadProcedure>
            </LoadProcedures>
           </Static>
-         </ApplicationProgram></KNX>"#;
+         </ApplicationProgram></KNX>"#
+            .replace("INNER_WHEN", inner_when);
         Ok(parse_application_program("M-0083_A-2", xml.as_bytes())?)
+    }
+
+    #[test]
+    fn test_guarded_ops_refuses_an_equals_spelled_test() -> TestResult {
+        // `test="=0"` is decided by the Dynamic walk (issue #949), but no
+        // capture shows ETS deciding a load-procedure choose with it: the
+        // planner refuses, naming the test as written.
+        let app = nested_app_with(r#"<when test="=0">"#)?;
+        let memo = DynamicMemo::new(&app);
+        let overrides = BTreeMap::from([
+            ("P-18_R-8".to_string(), "3".to_string()),
+            ("P-20_R-9".to_string(), "0".to_string()),
+        ]);
+        match guarded_ops(&app, &memo.evaluate_for(&app, &overrides)) {
+            Err(PlanError::UndecidableCondition { reason, .. }) => {
+                assert!(reason.contains(r#"test="=0""#), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
+        Ok(())
     }
 
     /// The property ids the taken ops of [`nested_app`] write or compare.
