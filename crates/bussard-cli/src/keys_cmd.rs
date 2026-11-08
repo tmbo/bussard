@@ -20,9 +20,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
-use bussard_service::files::report::FileOutcome;
 use bussard_service::enroll_session::{CertificateOutcome, EnrollTally};
 use bussard_service::files::keyring;
+use bussard_service::files::report::FileOutcome;
 use bussard_service::keys::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
 use bussard_service::setup;
 
@@ -279,7 +279,11 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
             .join(", ")
     }
     if json {
-        crate::output::report(&FileOutcome::keyring_exported(file, export.clone(), Vec::new()))?;
+        crate::output::report(&FileOutcome::keyring_exported(
+            file,
+            export.clone(),
+            Vec::new(),
+        ))?;
     } else {
         println!(
             "wrote {}: {} device(s), {} group key(s), {} interface(s), signed with {KEYRING_PASSWORD_ENV}",

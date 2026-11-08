@@ -26,24 +26,28 @@
 //! process environment or the model's `.env`) and is never part of a result
 //! or a log line.
 
-use crate::reply::answer;
+use crate::reply::answer_said;
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
 use bussard_ha::api::{HaClient, HaStatus};
-use bussard_ha::plan::{EntityChangeKind, EntityDiff, FileState, Layout};
+use bussard_ha::plan::{EntityDiff, FileState, Layout};
 use bussard_model::Model;
 use bussard_model::change::ChangeSet;
 use bussard_model::schema::HomeAssistantConfig;
+use bussard_service::home_assistant::{
+    FileView, HaApplyReport, HaPlanReport, HaStatusReport, Reach, ReachOrStatus, Reload, Running,
+    StatusAfter, UnknownFile,
+};
 use bussard_service::program::plan::Fingerprint;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
-use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::Value;
 
 use crate::confirm::Store;
 use crate::server::BussardMcp;
@@ -103,14 +107,14 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_ha_status.md")]
     #[tool]
     async fn knx_ha_status(&self) -> Result<CallToolResult, ErrorData> {
-        answer(self.ha_status().await)
+        answer_said(self.ha_status().await, &self.model())
     }
 
     // `knx_ha_plan` (registered only with the Home Assistant tier).
     #[doc = include_str!("../guidance/tools/knx_ha_plan.md")]
     #[tool]
     async fn knx_ha_plan(&self) -> Result<CallToolResult, ErrorData> {
-        answer(self.ha_plan().await)
+        answer_said(self.ha_plan().await, &self.model())
     }
 
     // `knx_ha_apply` (registered only with the Home Assistant tier).
@@ -120,58 +124,8 @@ impl BussardMcp {
         &self,
         Parameters(args): Parameters<HaApplyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        answer(self.ha_apply(args.plan_digest.trim()).await)
+        answer_said(self.ha_apply(args.plan_digest.trim()).await, &self.model())
     }
-}
-
-/// `knx_ha_status`'s answer: Home Assistant's status, or why it could not be
-/// read, and the KNX YAML file at `config_path`.
-#[derive(Serialize)]
-struct StatusAnswer<'a> {
-    /// Home Assistant's status.
-    #[serde(flatten)]
-    status: Reach<'a>,
-    /// Whether the status could be read.
-    ok: bool,
-    /// The variable the token comes from (never the token).
-    token_env: &'a str,
-    /// The KNX YAML file.
-    #[serde(flatten)]
-    file: FileAnswer<'a>,
-    /// What bussard does not see: the UI-created entities.
-    ui_entities: &'static str,
-}
-
-/// Home Assistant's status, or why the client could not read it.
-#[derive(Serialize)]
-#[serde(untagged)]
-enum Reach<'a> {
-    /// The status as read.
-    Read(&'a HaStatus),
-    /// No status: the reason in `errors`.
-    Unreachable {
-        url: &'a str,
-        reachable: bool,
-        errors: [&'a str; 1],
-    },
-}
-
-/// The KNX YAML file as `knx_ha_status` reports it.
-#[derive(Serialize)]
-#[serde(untagged)]
-enum FileAnswer<'a> {
-    /// The file and the generated YAML compared.
-    Read {
-        config_path: String,
-        file: &'a FileState,
-        managed: &'static str,
-        generated_entities: usize,
-        file_entities: usize,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        running: Option<Value>,
-    },
-    /// The file could not be read (`file.reason`).
-    Unknown { file: Value },
 }
 
 /// The generated text and its diff against the file, for one plan.
@@ -207,9 +161,9 @@ impl BussardMcp {
         let prepared = prepare(&self.state().dir, &model, &tier.config);
         let status = fetch_status(&tier.config).await;
         let file = match &prepared {
-            Ok(p) => FileAnswer::Read {
+            Ok(p) => FileView::Read {
                 config_path: p.path.display().to_string(),
-                file: &p.file,
+                file: p.file.clone(),
                 managed: if p.file.layout().is_some() {
                     "yaml"
                 } else {
@@ -217,30 +171,30 @@ impl BussardMcp {
                 },
                 generated_entities: p.diff.generated,
                 file_entities: p.diff.current,
-                running: status
-                    .as_ref()
-                    .ok()
-                    .map(|s| running_json(s, &p.desired, s.authorized)),
+                running: status.as_ref().ok().map(|s| Running::of(s, &p.desired)),
             },
-            Err(reason) => FileAnswer::Unknown {
-                file: json!({"state": "unknown", "reason": reason}),
-            },
-        };
-        let answer = StatusAnswer {
-            status: match &status {
-                Ok(status) => Reach::Read(status),
-                Err(reason) => Reach::Unreachable {
-                    url: &tier.config.url,
-                    reachable: false,
-                    errors: [reason],
+            Err(reason) => FileView::Unknown {
+                file: UnknownFile {
+                    state: "unknown",
+                    reason: reason.clone(),
                 },
             },
+        };
+        let report = HaStatusReport {
             ok: status.is_ok(),
-            token_env: &tier.config.token_env,
+            status: match status {
+                Ok(status) => ReachOrStatus::Read(status),
+                Err(reason) => ReachOrStatus::Unreachable {
+                    url: tier.config.url.clone(),
+                    reachable: false,
+                    errors: vec![reason],
+                },
+            },
+            token_env: tier.config.token_env.clone(),
             file,
             ui_entities: UI_NOTE,
         };
-        serde_json::to_value(answer).map_err(|e| e.to_string())
+        Ok(crate::reply::report(&report, &model))
     }
 
     /// `knx_ha_plan`'s body.
@@ -253,32 +207,23 @@ impl BussardMcp {
             tier.plans.insert(digest.clone(), "", ());
         }
         let status = fetch_status(&tier.config).await;
-        let mut out = plan_json(&prepared, &dir);
-        if let Some(map) = out.as_object_mut() {
-            map.insert(
-                "home_assistant".into(),
-                match &status {
-                    Ok(s) => {
-                        let mut v = running_json(s, &prepared.desired, s.authorized);
-                        if let Some(m) = v.as_object_mut() {
-                            m.insert("reachable".into(), json!(s.reachable));
-                            m.insert("authorized".into(), json!(s.authorized));
-                            m.insert("errors".into(), json!(s.errors));
-                        }
-                        v
-                    }
-                    Err(reason) => json!({"reachable": false, "errors": [reason]}),
-                },
+        let mut report = HaPlanReport::new(
+            &prepared.path,
+            prepared.file.clone(),
+            prepared.current.as_deref(),
+            &prepared.desired,
+            &prepared.diff,
+            prepared.digest.clone(),
+            &bussard_ha::apply::backup_dir(&dir),
+        );
+        report.home_assistant = Some(Reach::of(&status, &prepared.desired));
+        report.plan_ttl_minutes = Some(tier.plans.ttl_minutes());
+        if let Ok(s) = &status {
+            report.automations = Some(
+                crate::tools_ha_automation::managed_automations(&tier.config, s, &model).await,
             );
-            map.insert("plan_ttl_minutes".into(), json!(tier.plans.ttl_minutes()));
-            if let Ok(s) = &status {
-                map.insert(
-                    "automations".into(),
-                    crate::tools_ha_automation::managed_automations(&tier.config, s, &model).await,
-                );
-            }
         }
-        Ok(out)
+        Ok(crate::reply::report(&report, &model))
     }
 
     /// `knx_ha_apply`'s body.
@@ -346,27 +291,29 @@ impl BussardMcp {
         );
         let after = fetch_status(&config).await;
         let reload_ok = reload.is_ok();
-        Ok(json!({
-            "ok": reload_ok,
-            "written": true,
-            "config_path": path,
-            "backup": backup_path,
-            "sentences": sentences(&prepared.diff),
-            "reload": match &reload {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => json!({"ok": false, "error": e}),
+        let report = HaApplyReport {
+            ok: reload_ok,
+            written: true,
+            config_path: path.clone(),
+            backup: backup_path.clone(),
+            sentences: prepared
+                .diff
+                .changes
+                .iter()
+                .map(|c| c.sentence.clone())
+                .collect(),
+            reload: Reload::of(&reload),
+            status_after: match after {
+                Ok(s) => StatusAfter::Read {
+                    running: Running::of(&s, &prepared.desired),
+                    status: s,
+                },
+                Err(e) => StatusAfter::Unreachable {
+                    reachable: false,
+                    errors: vec![e],
+                },
             },
-            "status_after": match &after {
-                Ok(s) => {
-                    let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
-                    if let Some(m) = v.as_object_mut() {
-                        m.insert("running".into(), running_json(s, &prepared.desired, s.authorized));
-                    }
-                    v
-                }
-                Err(e) => json!({"reachable": false, "errors": [e]}),
-            },
-            "message": if reload_ok {
+            message: if reload_ok {
                 format!(
                     "Wrote {path} and reloaded Home Assistant's KNX integration. The previous \
                      file is at {backup_path}."
@@ -378,7 +325,8 @@ impl BussardMcp {
                      restart). The previous file is at {backup_path}."
                 )
             },
-        }))
+        };
+        Ok(crate::reply::report(&report, &model))
     }
 }
 
@@ -488,79 +436,6 @@ pub(crate) async fn fetch_status(config: &HomeAssistantConfig) -> Result<HaStatu
         .await
         .map_err(|e| e.to_string())?
         .map_err(|e| e.to_string())
-}
-
-/// Which generated entities Home Assistant runs (by platform and name).
-fn running_json(status: &HaStatus, desired: &str, authorized: bool) -> Value {
-    if !authorized {
-        return json!({"known": false});
-    }
-    let names = bussard_ha::plan::diff(None, desired)
-        .map(|d| d.changes)
-        .unwrap_or_default();
-    let missing: Vec<String> = names
-        .iter()
-        .filter(|c| !status.runs(&c.platform, &c.name))
-        .map(|c| format!("{} \"{}\"", c.platform, c.name))
-        .collect();
-    json!({
-        "known": true,
-        "generated_running": names.len() - missing.len(),
-        "generated_not_running": missing.len(),
-        "not_running": missing.iter().take(20).collect::<Vec<_>>(),
-    })
-}
-
-/// The sentences of a diff.
-fn sentences(diff: &EntityDiff) -> Vec<String> {
-    diff.changes.iter().map(|c| c.sentence.clone()).collect()
-}
-
-/// `knx_ha_plan`'s result without the Home Assistant part.
-fn plan_json(p: &Prepared, dir: &Path) -> Value {
-    let count = |kind| p.diff.changes.iter().filter(|c| c.kind == kind).count();
-    let (added, changed, removed) = (
-        count(EntityChangeKind::Added),
-        count(EntityChangeKind::Changed),
-        count(EntityChangeKind::Removed),
-    );
-    let path = p.path.display().to_string();
-    let noop = p.current.as_deref() == Some(p.desired.as_bytes());
-    let mut lines = sentences(&p.diff);
-    if lines.is_empty() && p.digest.is_some() {
-        lines.push(
-            "~ no entity changes; only the file's comments or formatting change (the \
-             generated-by header and the summary footer)"
-                .to_string(),
-        );
-    }
-    let question = p.digest.as_ref().map(|_| {
-        format!(
-            "Write these {} entity change(s) ({added} added, {changed} changed, {removed} \
-             removed) to {path} and reload Home Assistant's KNX integration?",
-            p.diff.changes.len()
-        )
-    });
-    json!({
-        "ok": true,
-        "config_path": path,
-        "file": p.file,
-        "layout": p.file.layout(),
-        "noop": noop,
-        "sentences": lines,
-        "changes": p.diff.changes,
-        "counts": {
-            "added": added,
-            "changed": changed,
-            "removed": removed,
-            "unchanged": p.diff.unchanged,
-            "generated": p.diff.generated,
-            "file": p.diff.current,
-        },
-        "question": question,
-        "plan_digest": p.digest,
-        "backup_dir": bussard_ha::apply::backup_dir(dir).display().to_string(),
-    })
 }
 
 #[cfg(test)]

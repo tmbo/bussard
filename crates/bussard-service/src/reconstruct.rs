@@ -91,7 +91,11 @@ pub struct DeviceDiff {
 
 impl ReconstructReport {
     /// Adds the diff in the project's words: `model` names the links.
-    pub fn with_differences(mut self, target: IndividualAddress, model: &Model) -> ReconstructReport {
+    pub fn with_differences(
+        mut self,
+        target: IndividualAddress,
+        model: &Model,
+    ) -> ReconstructReport {
         self.differences = self.diff.as_ref().map(|diff| {
             let changes = diff.differences(target, Some(model));
             let extra = changes

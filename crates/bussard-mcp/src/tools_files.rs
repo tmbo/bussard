@@ -29,6 +29,7 @@ use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::setup::{self, SetupError};
 use std::sync::Arc;
 
+use bussard_service::files::report::FileOutcome;
 use rmcp::handler::server::tool::{InputResponses, RequestState};
 use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::schemars::{self, JsonSchema};
@@ -36,7 +37,6 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use bussard_service::files::report::FileOutcome;
 use serde_json::{Value, json};
 
 use crate::args::Parameters;
@@ -629,7 +629,9 @@ fn export_keyring(dir: &Path, out: &Path, args: &ExportArgs) -> Result<Value, Va
                     &none,
                 )
             })?;
-    Ok(file_value(FileOutcome::keyring_exported(out, export, log.lines)))
+    Ok(file_value(FileOutcome::keyring_exported(
+        out, export, log.lines,
+    )))
 }
 
 /// The collected lines trimmed, without the blank ones: the `sentences` of

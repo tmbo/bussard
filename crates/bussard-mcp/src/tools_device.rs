@@ -14,12 +14,14 @@
 //! `bussard restore` read them.
 
 use crate::jobs::{JobKind, Subject};
-use crate::reply::answer_on;
+use crate::reply::{answer_chat, answer_on};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::args::Parameters;
 use bussard_model::IndividualAddress;
+use bussard_service::FactsCache;
+use bussard_service::backup::BackupOutcome;
 use bussard_service::backup::{
     BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
@@ -30,13 +32,11 @@ use bussard_service::reconstruct_line::{
 };
 use bussard_service::scan::LineRange;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::FactsCache;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use bussard_service::backup::BackupOutcome;
 use serde_json::Value;
 
 use crate::guidance::Tiers;
@@ -104,7 +104,12 @@ impl BussardMcp {
         Parameters(args): Parameters<BackupDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let label = args.address.clone().unwrap_or_else(|| "all".to_string());
-        answer_on("address", &label, self.backup_devices(args).await)
+        answer_chat(
+            "address",
+            &label,
+            self.backup_devices(args).await,
+            &self.model(),
+        )
     }
 
     // `knx_reconstruct_device` (omitted in passive mode).
@@ -121,12 +126,18 @@ impl BussardMcp {
                 .map(str::to_string)
         };
         match (given(&args.address), given(&args.line)) {
-            (Some(address), None) => {
-                answer_on("address", &address, self.reconstruct_device(&address).await)
-            }
-            (None, Some(line)) => {
-                answer_on("line", &line, self.reconstruct_line(&line, &args).await)
-            }
+            (Some(address), None) => answer_chat(
+                "address",
+                &address,
+                self.reconstruct_device(&address).await,
+                &self.model(),
+            ),
+            (None, Some(line)) => answer_chat(
+                "line",
+                &line,
+                self.reconstruct_line(&line, &args).await,
+                &self.model(),
+            ),
             (Some(_), Some(_)) => answer_on(
                 "address",
                 "",
@@ -501,4 +512,3 @@ impl BussardMcp {
         Ok(value)
     }
 }
-

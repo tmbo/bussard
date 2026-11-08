@@ -19,20 +19,8 @@
 //! ([`plain_view`] and friends); `technical: true` returns the payload
 //! exactly as before.
 
-
-use bussard_model::text::join_and;
 use bussard_model::{IndividualAddress, Model};
 use serde_json::{Map, Value, json};
-
-/// The tools whose result [`add_result_summary`] gives a `summary` when the
-/// tool did not write one itself.
-pub const SUMMARIZED_TOOLS: &[&str] = &[
-    "knx_ha_plan",
-    "knx_ha_apply",
-    "knx_ha_automation_plan",
-    "knx_ha_automation_apply",
-    "knx_ha_automation_remove",
-];
 
 pub use bussard_service::report::{device_phrase, object_phrase, room_of};
 
@@ -46,157 +34,12 @@ pub fn for_the_human(validation: &Value) -> String {
     bussard_service::model_edit::for_the_human(errors, new_warnings)
 }
 
-
 /// Adds `for_the_human` to an edit result's `validation` object.
 pub fn put_for_the_human(result: &mut Value) {
     let line = for_the_human(&result["validation"]);
     if let Some(map) = result["validation"].as_object_mut() {
         map.insert("for_the_human".to_string(), Value::String(line));
     }
-}
-
-/// The device a result is about, by its `address` field, as a phrase; a
-/// line-form result (`line`, no `address`) is about every device on that line.
-fn result_device(model: &Model, value: &Value) -> String {
-    match value["address"]
-        .as_str()
-        .and_then(|a| a.parse::<IndividualAddress>().ok())
-    {
-        Some(ia) => device_phrase(model, ia),
-        None => match value["line"].as_str() {
-            Some(line) => format!("every device on line {line}"),
-            None => "the device".to_string(),
-        },
-    }
-}
-
-/// Adds a `summary` to the result of `tool` (one of [`SUMMARIZED_TOOLS`])
-/// when the tool did not write one itself. Returns whether it did.
-pub fn add_result_summary(tool: &str, value: &mut Value, model: &Model) -> bool {
-    if !SUMMARIZED_TOOLS.contains(&tool) {
-        return false;
-    }
-    let Some(map) = value.as_object() else {
-        return false;
-    };
-    if map.contains_key("summary") {
-        return false;
-    }
-    let summary = result_summary(tool, value, model);
-    match value.as_object_mut() {
-        Some(map) => {
-            map.insert("summary".to_string(), Value::String(summary));
-            true
-        }
-        None => false,
-    }
-}
-
-/// The `summary` of a programming, device-read or Home Assistant result.
-pub fn result_summary(tool: &str, value: &Value, model: &Model) -> String {
-    let device = result_device(model, value);
-    if value["refused"] == true {
-        return format!(
-            "Nothing was changed: bussard refused this request (`reason` says why){}.",
-            if value["address"].is_string() {
-                format!("; {device} is as it was")
-            } else {
-                String::new()
-            }
-        );
-    }
-    match tool {
-        "knx_ha_plan" => ha_plan_summary(value),
-        "knx_ha_apply" => ha_apply_summary(value),
-        "knx_ha_automation_plan" => automation_plan_summary(value),
-        "knx_ha_automation_apply" | "knx_ha_automation_remove" => automation_apply_summary(value),
-        _ => format!("The request for {device} was handled."),
-    }
-}
-
-/// `knx_ha_plan`: what Home Assistant would gain, change and lose.
-fn ha_plan_summary(value: &Value) -> String {
-    if value["noop"] == true || value["plan_digest"].is_null() {
-        return "Home Assistant already matches your project; nothing to write.".to_string();
-    }
-    let counts = &value["counts"];
-    let n = |k: &str| counts[k].as_u64().unwrap_or(0);
-    let names: Vec<String> = value["changes"]
-        .as_array()
-        .map(|changes| {
-            changes
-                .iter()
-                .filter_map(|c| c["name"].as_str())
-                .map(str::to_string)
-                .take(3)
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = format!(
-        "Home Assistant gets {} new, {} changed and {} removed entities",
-        n("added"),
-        n("changed"),
-        n("removed")
-    );
-    if !names.is_empty() {
-        out.push_str(&format!(" (among them {})", join_and(&names)));
-    }
-    out.push_str(". Nothing is written before the human says yes.");
-    out
-}
-
-/// `knx_ha_apply`: written and reloaded, or written and not reloaded.
-fn ha_apply_summary(value: &Value) -> String {
-    if value["reload"]["ok"] == true {
-        "Home Assistant's KNX setup is updated and reloaded; the previous file is backed up."
-            .to_string()
-    } else {
-        "Home Assistant's KNX file is updated, but the reload failed: the change takes effect \
-         at the next reload or restart of Home Assistant. The previous file is backed up."
-            .to_string()
-    }
-}
-
-/// `knx_ha_automation_plan`: the rule in words and what happens to it.
-fn automation_plan_summary(value: &Value) -> String {
-    let rule = value["sentence"].as_str().unwrap_or("this rule");
-    match value["op"].as_str() {
-        Some("unchanged") => {
-            "Home Assistant already has this automation; nothing to write.".to_string()
-        }
-        Some("remove") => "Removes this bussard automation from Home Assistant. Nothing is \
-                           removed before the human says yes."
-            .to_string(),
-        Some("update") => format!(
-            "Changes the Home Assistant automation to: {rule}. Nothing is written before the \
-             human says yes."
-        ),
-        _ => format!(
-            "Home Assistant would get a new automation: {rule}. Nothing is written before the \
-             human says yes."
-        ),
-    }
-}
-
-/// `knx_ha_automation_apply` and `_remove`: what Home Assistant now does.
-fn automation_apply_summary(value: &Value) -> String {
-    let rule = value["sentences"]
-        .as_array()
-        .and_then(|s| s.first())
-        .and_then(Value::as_str)
-        .and_then(|s| s.split_once(": ").map(|(_, rule)| rule))
-        .and_then(|rule| rule.split(" (changes ").next())
-        .map(str::to_string);
-    let reloaded = value["reload"]["ok"] == true;
-    let mut out = match (value["op"].as_str(), rule) {
-        (Some("remove"), _) => "The automation is removed from Home Assistant.".to_string(),
-        (_, Some(rule)) => format!("Home Assistant now runs the automation: {rule}."),
-        _ => "Home Assistant has the automation.".to_string(),
-    };
-    if !reloaded {
-        out.push_str(" The reload failed, so it takes effect at the next reload or restart.");
-    }
-    out
 }
 
 /// The keys [`plain_view`] drops: ETS ids and what only an integrator reads.

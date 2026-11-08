@@ -286,7 +286,11 @@ impl FileOutcome {
 
     /// A product archive stored (`stored` in words) with its generated
     /// `models`.
-    pub fn product_imported(stored: &str, models: Vec<String>, sentences: Vec<String>) -> FileOutcome {
+    pub fn product_imported(
+        stored: &str,
+        models: Vec<String>,
+        sentences: Vec<String>,
+    ) -> FileOutcome {
         FileOutcome {
             ok: true,
             kind: Some("product".to_string()),

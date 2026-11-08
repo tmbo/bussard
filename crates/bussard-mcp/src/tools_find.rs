@@ -150,10 +150,8 @@ impl BussardMcp {
     pub(crate) async fn live_part(&self, target: IndividualAddress) -> Value {
         match self.live_status(target).await {
             Ok(value) => value,
-            Err(reason) => {
-                serde_json::to_value(bussard_service::report::Refusal::new(reason))
-                    .unwrap_or_default()
-            }
+            Err(reason) => serde_json::to_value(bussard_service::report::Refusal::new(reason))
+                .unwrap_or_default(),
         }
     }
 
@@ -272,7 +270,10 @@ fn scan_result(dir: &std::path::Path, range: LineRange, swept: Sweep, model: &Mo
         let device = model.devices.get(&f.address).map(|d| &d.device);
         f.identity = Some(scan::observe_identity(dir, true, f.address, f.mask, device));
     }
-    crate::reply::report(&ScanOutcome::new(range, &report, timing, Some(model)), model)
+    crate::reply::report(
+        &ScanOutcome::new(range, &report, timing, Some(model)),
+        model,
+    )
 }
 
 #[cfg(test)]

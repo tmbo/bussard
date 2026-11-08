@@ -70,6 +70,7 @@ use std::time::Duration;
 
 use crate::args::Parameters;
 use crate::elicit::{self, Shown, lock};
+use bussard_service::enroll_session::status::{EnrollRefusal, EnrollView};
 use bussard_service::enroll_session::{
     CertificateOutcome, CertificateSink, DOCS_URL, Endpoints, EnrollSession, HttpRelay, RunOptions,
     SessionProgress, SessionStatus, Timeouts, data_path,
@@ -87,7 +88,6 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use bussard_service::enroll_session::status::{EnrollRefusal, EnrollView};
 use serde_json::Value;
 use tokio::sync::watch;
 

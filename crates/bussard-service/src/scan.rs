@@ -488,9 +488,7 @@ impl ScanOutcome {
                     known: report.known(f.address),
                     mask: format!("{:04X}", f.mask),
                     system_type: f.system_type(),
-                    manufacturer: f
-                        .manufacturer_id
-                        .map(bussard_mgmt::manufacturers::display),
+                    manufacturer: f.manufacturer_id.map(bussard_mgmt::manufacturers::display),
                     manufacturer_id: f.manufacturer_id.map(|id| format!("{id:#06X}")),
                     order_number: f.order.clone(),
                     serial: f.serial.as_deref().map(bussard_model::text::hex),
@@ -500,7 +498,11 @@ impl ScanOutcome {
                 })
                 .collect(),
             model_device_count: report.model_device_count,
-            not_in_model: report.not_in_model.iter().map(ToString::to_string).collect(),
+            not_in_model: report
+                .not_in_model
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             missing_from_bus: report
                 .missing
                 .iter()

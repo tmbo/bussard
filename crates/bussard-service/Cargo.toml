@@ -29,6 +29,9 @@ bussard-download = { workspace = true }
 # The DPT inference `learn` and `knx_infer_group` share (issue #903).
 # First-party.
 bussard-monitor = { workspace = true }
+# The Home Assistant tier's result types (issue #904) carry its status and
+# plan types. First-party.
+bussard-ha = { workspace = true }
 # The parameter read-back report is serialized by `plan --json`. Already in
 # the tree. MIT OR Apache-2.0.
 serde = { workspace = true }

@@ -24,15 +24,15 @@ use crate::reply::{invalid, ok, ok_report};
 use bussard_model::GroupAddress;
 use bussard_model::tests_schema;
 use bussard_model::text::from_hex;
+use bussard_service::acceptance::TestRunReport;
 use bussard_service::acceptance::{self, RunOptions, SkipManual};
+use bussard_service::learn::InferReport;
 use bussard_service::monitor::Filter;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use bussard_service::acceptance::TestRunReport;
-use bussard_service::learn::InferReport;
 use serde_json::json;
 
 use crate::server::BussardMcp;

@@ -19,8 +19,8 @@ use bussard_model::Model;
 use bussard_model::change::{ChangeSet, describe, render_text};
 use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotReason};
 
-use bussard_service::model_edit::{ChangeReport, HistoryReport, UndoReport};
 use bussard_service::history::{HistoryFlowError, UndoOutcome};
+use bussard_service::model_edit::{ChangeReport, HistoryReport, UndoReport};
 
 use crate::cli::{Resolved, Run, Spec};
 
@@ -372,7 +372,6 @@ fn print_apply_hint(changes: &ChangeSet) {
         }
     }
 }
-
 
 /// `apply 1.1.4 → 127.0.0.1:3671 (before writing the device tables)`.
 fn reason_line(snapshot: &Snapshot) -> String {

@@ -154,29 +154,6 @@ impl BussardMcp {
     pub(crate) fn session_edits(&self) -> &crate::session_edits::SessionEdits {
         &self.session_edits
     }
-
-    /// Adds the homeowner's `summary` to the result of a programming,
-    /// device-read or Home Assistant tool that did not write one (issue
-    /// #306, [`crate::everyday::add_result_summary`]).
-    fn with_summary(
-        &self,
-        tool: &str,
-        response: rmcp::model::CallToolResponse,
-    ) -> rmcp::model::CallToolResponse {
-        if !crate::everyday::SUMMARIZED_TOOLS.contains(&tool) {
-            return response;
-        }
-        let rmcp::model::CallToolResponse::Complete(mut result) = response else {
-            return response;
-        };
-        if let Some(value) = result.structured_content.as_mut() {
-            let model = self.state.model.current();
-            if crate::everyday::add_result_summary(tool, value, &model) {
-                result.content = vec![rmcp::model::ContentBlock::text(value.to_string())];
-            }
-        }
-        rmcp::model::CallToolResponse::Complete(result)
-    }
 }
 
 /// Arguments for `knx_model_lookup`.
@@ -1109,10 +1086,8 @@ impl ServerHandler for BussardMcp {
                 "tools/call request (string values redacted)"
             );
         }
-        let tool = request.name.to_string();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let response = crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await);
-        Ok(self.with_summary(&tool, response?))
+        crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await)
     }
 
     fn get_info(&self) -> ServerInfo {

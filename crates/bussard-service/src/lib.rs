@@ -100,6 +100,7 @@ pub mod group_report;
 pub mod group_security;
 pub mod guidance;
 pub mod history;
+pub mod home_assistant;
 pub mod identity;
 pub mod ip_secure;
 pub mod keys;

@@ -29,14 +29,12 @@ use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_service::history::{UndoOutcome, Undone};
+use bussard_service::model_edit::{Capped, ChangeReport, EditOutcome, HistoryReport, Validation};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use bussard_service::model_edit::{
-    Capped, ChangeReport, EditOutcome, HistoryReport, Validation,
-};
 use serde_json::{Value, json};
 
 use crate::param_keys::{

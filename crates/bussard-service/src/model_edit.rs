@@ -177,11 +177,15 @@ impl Validation {
             .copied()
             .filter(|d| !earlier.contains(&key(d)))
             .collect();
-        let capped = errors.len() > MAX_RESULT_DIAGNOSTICS
-            || new_warnings.len() > MAX_RESULT_DIAGNOSTICS;
+        let capped =
+            errors.len() > MAX_RESULT_DIAGNOSTICS || new_warnings.len() > MAX_RESULT_DIAGNOSTICS;
         let mut out = Validation {
             ok: errors.is_empty(),
-            errors: errors.iter().take(MAX_RESULT_DIAGNOSTICS).map(row).collect(),
+            errors: errors
+                .iter()
+                .take(MAX_RESULT_DIAGNOSTICS)
+                .map(row)
+                .collect(),
             error_count: errors.len(),
             new_warnings: new_warnings
                 .iter()

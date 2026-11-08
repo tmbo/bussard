@@ -288,7 +288,10 @@ impl InferReport {
                 protected: g.protected,
             }),
             observations: payloads.len(),
-            payloads_hex: payloads.iter().map(|p| bussard_model::text::hex(p)).collect(),
+            payloads_hex: payloads
+                .iter()
+                .map(|p| bussard_model::text::hex(p))
+                .collect(),
             sender: sender.map(|ia| {
                 let device = model.devices.get(&ia).map(|d| &d.device);
                 Sender {

@@ -480,6 +480,7 @@ version = "0.10.0"
 dependencies = [
  "base64 0.22.1",
  "bussard-download",
+ "bussard-ha",
  "bussard-mgmt",
  "bussard-model",
  "bussard-monitor",
