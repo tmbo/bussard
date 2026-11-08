@@ -70,6 +70,22 @@ pub fn back_up_parameters(
         .map_err(BackupError::Parameters)
 }
 
+/// Whether the parameter backup a parameter-only write takes first would
+/// restore anything: a program whose parameters all live in properties
+/// (issue #944) has no memory region, and the backup records no property, so
+/// the write must not start. A full flash rewrites everything and needs no
+/// such check.
+///
+/// # Errors
+///
+/// [`BackupError::NoParameterMemory`] when the backup would be empty.
+pub fn check_parameter_backup(detail: &ParamDetail) -> Result<(), BackupError> {
+    if detail.regions.is_empty() {
+        return Err(BackupError::NoParameterMemory);
+    }
+    Ok(())
+}
+
 /// A backup that could not be written.
 #[derive(Debug, thiserror::Error)]
 pub enum BackupError {
@@ -79,6 +95,14 @@ pub enum BackupError {
     /// The parameter memory backup.
     #[error(transparent)]
     Parameters(backup::BackupError),
+    /// The parameter backup would hold nothing: the parameters live in
+    /// interface-object properties, which the backup does not record.
+    #[error(
+        "the parameter backup would be empty: the device's parameters live in interface-object \
+         properties, which the parameter backup does not record, so nothing could be restored \
+         from it; nothing is written"
+    )]
+    NoParameterMemory,
 }
 
 /// What one write of a device needs.

@@ -811,8 +811,17 @@ fn run_loop(
         "sim-loop: {}: the partial change reloads the group-object table: {reload}",
         app.id
     );
-    bench.apply("apply partial change", reload)?;
-    bench.plan_noop("plan after apply")?;
+    // Issue #944: `apply` refuses the parameter-only download of a program
+    // whose parameters all live in properties until the ETS capture of #572
+    // A.4 confirms it; the full flash below writes the change instead.
+    if bench.apply("apply partial change", reload)? {
+        bench.plan_noop("plan after apply")?;
+    } else {
+        eprintln!(
+            "sim-loop: {}: apply refused the uncaptured property-only parameter download (#572)",
+            app.id
+        );
+    }
     bench.flash("flash after apply")?;
     bench.plan_noop("plan after flash after apply")?;
 
@@ -1797,11 +1806,20 @@ impl Bench<'_> {
 
     /// `apply`; with `reload`, its output must report the group-object
     /// table reloaded and read back (issue #540).
-    fn apply(&self, step: &str, reload: bool) -> Result<(), Stop> {
+    /// `apply --yes`: `Ok(true)` when it wrote, `Ok(false)` when it refused
+    /// the parameter-only download of a property-only program that no ETS
+    /// capture confirms yet (issue #944, #572 A.4).
+    fn apply(&self, step: &str, reload: bool) -> Result<bool, Stop> {
         let run = self
             .bussard(&["apply", DEVICE, "--yes"])
             .map_err(infra(step))?;
         if !run.ok {
+            if run
+                .stderr
+                .contains("no ETS capture confirms the parameter-only download")
+            {
+                return Ok(false);
+            }
             return Err(Stop::Fail(step.to_string(), run.tail()));
         }
         if reload && !run.stdout.contains("group-object table reloaded") {
@@ -1813,7 +1831,7 @@ impl Bench<'_> {
                 ),
             ));
         }
-        Ok(())
+        Ok(true)
     }
 
     /// `plan --json` before an `apply`: whether it reloads the System B

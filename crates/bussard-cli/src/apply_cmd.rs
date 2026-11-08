@@ -599,6 +599,11 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
     }
 
     // Back up the pre-state before writing anything; a restore takes one too.
+    // A parameter backup of no memory restores nothing (issue #944).
+    if let Some(detail) = partial.and(param_detail) {
+        program::apply::check_parameter_backup(detail)
+            .context("writing the parameter backup (refusing to write without a backup)")?;
+    }
     let backups = program::apply::back_up(dir, target, &read.live, partial.and(param_detail));
     let backups = match backups {
         Ok(backups) => backups,

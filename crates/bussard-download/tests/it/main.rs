@@ -22,6 +22,7 @@ mod knxnet_ip_mock;
 mod no_group_objects_mock;
 mod param_readback_roundtrip;
 mod partial_segment;
+mod property_only_partial;
 mod property_procedure;
 mod support;
 mod sweep_fixtures;

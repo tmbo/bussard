@@ -4,8 +4,10 @@
 //! parameter memory, and every parameter placed in a declared property that
 //! an `LdCtrlWriteProp` without `InlineData` writes. After a full flash the
 //! plan reads the properties back and finds nothing to change; one changed
-//! parameter is planned as one property write, and `apply` writes it in the
-//! `par` procedure's partial download and reads it back.
+//! parameter is planned as one property write. `apply` and `flash
+//! --parameters-only` refuse to send that download until the ETS capture of
+//! #572 A.4 confirms it; the download itself is tested on the mock device in
+//! `bussard-download` (`property_only_partial.rs`).
 
 include!("support/param_mock.rs");
 
@@ -151,6 +153,8 @@ fn test_plan_after_flash_of_a_property_only_program_is_clean() -> TestResult {
     let out = bench.bussard(&["flash", "1.1.4", "--product", bench.product()?, "--yes"])?;
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    // The verify counts the two parameters the property read-back compared.
+    assert!(stdout.contains("2 parameters"), "{stdout}");
     // The flash wrote the property the parameters compose: Delay 12 (0C),
     // Level at its default 9.
     let dev = bench.device();
@@ -171,7 +175,7 @@ fn test_plan_after_flash_of_a_property_only_program_is_clean() -> TestResult {
 }
 
 #[test]
-fn test_plan_and_apply_one_changed_property_parameter() -> TestResult {
+fn test_plan_one_changed_property_parameter_and_apply_refuses() -> TestResult {
     let Some(bench) = Bench::start_with_app(
         "prop-only-apply",
         MockDevice::running([0, 0]),
@@ -202,31 +206,48 @@ fn test_plan_and_apply_one_changed_property_parameter() -> TestResult {
     let changes = plan["changes"].as_array().ok_or("no changes")?;
     assert_eq!(changes.len(), 1, "{plan}");
 
+    // No ETS capture confirms the parameter-only download of such a program
+    // yet (#572 A.4): `apply` refuses it, names the capture, writes nothing.
     let flashed = bench.device();
     let out = bench.bussard(&["apply", "1.1.4", "--product", bench.product()?, "--yes"])?;
     let (stdout, stderr) = text(&out);
-    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
-    assert!(stdout.contains("parameters verified"), "{stdout}");
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stderr.contains("refusing to apply to 1.1.4"), "{stderr}");
+    assert!(stderr.contains("#572"), "{stderr}");
     let dev = bench.device();
-    assert_eq!(
-        dev.properties.get(&PARAM_PROPERTY),
-        Some(&(1, vec![0x05, 0x14])),
-        "{stderr}"
-    );
-    // The `par` procedure's partial download on the application object
-    // around the property write: no memory written, no table touched.
+    assert_eq!(dev.property_writes, flashed.property_writes, "{stderr}");
+    assert_eq!(dev.load_events, flashed.load_events, "{stderr}");
     assert_eq!(dev.memory_writes, flashed.memory_writes, "{stderr}");
-    assert_eq!(
-        dev.load_events[flashed.load_events.len()..],
-        PARTIAL_DOWNLOAD_EVENTS,
-        "{stderr}"
+    let out = bench.bussard(&[
+        "flash",
+        "1.1.4",
+        "--product",
+        bench.product()?,
+        "--parameters-only",
+        "--yes",
+    ])?;
+    let (stdout, stderr) = text(&out);
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    assert_eq!(
-        dev.property_writes[flashed.property_writes.len()..],
-        [PARAM_PROPERTY],
-        "{stderr}"
+    assert!(
+        format!("{stdout}{stderr}").contains("#572"),
+        "{stdout}{stderr}"
     );
+    assert_eq!(bench.device().property_writes, flashed.property_writes);
 
+    // A full flash writes the changed property; the plan is clean again.
+    let out = bench.bussard(&["flash", "1.1.4", "--product", bench.product()?, "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert_eq!(
+        bench.device().properties.get(&PARAM_PROPERTY),
+        Some(&(1, vec![0x05, 0x14]))
+    );
     assert_eq!(plan_problems(&plan_json(&bench)?), Vec::<String>::new());
     Ok(())
 }

@@ -290,10 +290,16 @@ pub fn plan_parameters_only(
              flash {target}` instead."
         ));
     }
-    let properties = bussard_download::changed_properties(&read.properties)
+    let properties: Vec<ParamProperty> = bussard_download::changed_properties(&read.properties)
         .into_iter()
         .cloned()
         .collect();
+    // Issue #944: no ETS capture confirms this download yet (#572).
+    if !properties.is_empty()
+        && let Some(why) = crate::params::uncaptured_property_download(target, &partial)
+    {
+        return Err(why);
+    }
     Ok(ParamsPlanned {
         partial,
         regions,
@@ -361,6 +367,11 @@ pub async fn write_parameters_only(
         Err(Declined::Refused(refusal)) => return Err(ParamsWriteError::Refused(refusal)),
     }
     let target = write.session.target;
+    // A backup of no memory (a program whose parameters all live in
+    // properties, issue #944) restores nothing: no write.
+    if planned.regions.is_empty() {
+        return Err(ParamsWriteError::Backup(BackupError::NoParameterMemory));
+    }
     // Back up the parameter memory before the first write; no backup, no
     // write.
     let backup = bussard_download::write_parameter_memory_backup(
@@ -669,5 +680,32 @@ mod tests {
             bussard_download::describe_group_object_change(&change),
             "shows object(s) 7, hides object(s) 3, 4"
         );
+    }
+
+    #[test]
+    fn test_check_parameter_backup_refuses_an_empty_backup()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #944: a program whose parameters all live in properties has
+        // no memory region; a backup of nothing restores nothing, so the
+        // write that needs it does not start.
+        let detail = crate::params::ParamDetail {
+            plan: plan()?,
+            regions: ParamRegions::new(),
+            decoded: bussard_download::DecodedParameters::default(),
+            resident: ResidentState::default(),
+            needs_flash: None,
+            octets: Vec::new(),
+            unwritten: Vec::new(),
+            object_table: None,
+            properties: Vec::new(),
+        };
+        let dir = std::env::temp_dir().join(format!("bussard-empty-backup-{}", std::process::id()));
+        let result = super::super::apply::check_parameter_backup(&detail);
+        assert!(
+            matches!(result, Err(BackupError::NoParameterMemory)),
+            "{result:?}"
+        );
+        assert!(!bussard_download::backup::parameter_backups_dir(&dir).exists());
+        Ok(())
     }
 }

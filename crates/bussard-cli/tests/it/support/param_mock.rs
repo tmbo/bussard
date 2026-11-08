@@ -374,6 +374,11 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
         if count > 0 && start > 0 && !value.is_empty() {
             let elem = (value.len() / usize::from(count)).max(1);
             let entry = dev.properties.entry((oi, pid)).or_insert((elem, Vec::new()));
+            // The element size of the latest write: a write of another
+            // count or element size lays the property out anew.
+            if entry.0 != elem {
+                *entry = (elem, Vec::new());
+            }
             let from = (usize::from(start) - 1) * elem;
             if entry.1.len() < from + value.len() {
                 entry.1.resize(from + value.len(), 0);
