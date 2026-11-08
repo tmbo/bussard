@@ -116,7 +116,7 @@ fn load_other(path: &Path) -> Result<(Model, DiffSource), String> {
         return Ok((
             model,
             DiffSource::Bundle {
-                manifest: bundle.manifest,
+                manifest: Box::new(bundle.manifest),
             },
         ));
     }

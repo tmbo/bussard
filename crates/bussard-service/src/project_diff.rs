@@ -16,7 +16,7 @@ pub enum DiffSource {
     /// A `.bussard` bundle.
     Bundle {
         /// Its manifest.
-        manifest: BundleManifest,
+        manifest: Box<BundleManifest>,
     },
     /// An ETS `.knxproj`.
     Knxproj,
