@@ -212,11 +212,15 @@ pub fn param_plan(
     // Nothing was read: every override that lands in memory is a change to an
     // unknown current value, unless the download keeps its octets (issue
     // #411).
-    let note = (current.is_empty() && !decoded.differences.is_empty()).then(|| {
-        "the device's current parameter memory could not be read, so every value \
-         below is shown as an unknown current value"
-            .to_string()
-    });
+    let note = (current.is_empty() && !decoded.differences.is_empty())
+        .then(|| {
+            "the device's current parameter memory could not be read, so every value \
+             below is shown as an unknown current value"
+                .to_string()
+        })
+        .into_iter()
+        .chain(decoded.incomplete.clone())
+        .reduce(|a, b| format!("{a}; {b}"));
     ParamPlan {
         changes: decoded.differences,
         unknown: decoded.unknown,

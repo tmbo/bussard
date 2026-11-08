@@ -267,6 +267,23 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
         FlashStep::Delay { milliseconds } => {
             format!("wait {milliseconds} ms (LdCtrlDelay), nothing sent")
         }
+        FlashStep::TypedLoadControl {
+            object_type,
+            occurrence,
+            control,
+        } => {
+            let (what, state) = match control {
+                bussard_mgmt::LoadControl::Unload => ("unload", "Unloaded"),
+                bussard_mgmt::LoadControl::StartLoading => ("open for loading", "Loading"),
+                bussard_mgmt::LoadControl::LoadCompleted => ("complete load", "Loaded"),
+                _ => ("load control", "its state"),
+            };
+            let object = super::PropObject::Type {
+                object_type: *object_type,
+                occurrence: *occurrence,
+            };
+            format!("{what} ({object}, A_FunctionPropertyExt_Command PID 5, expect {state})")
+        }
         FlashStep::InvokeFunctionProp {
             object,
             prop_id,

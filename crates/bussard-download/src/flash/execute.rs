@@ -10,7 +10,7 @@ use super::labels::{LabelCtx, step_label};
 use super::session::{
     Connector, MAX_RESUME_RECONNECTS, RestartKind, Session, allocate_with_context_resumable,
     read_load_state_resumable, reconnect_exchange_threshold, resumable_death,
-    start_loading_resumable, write_load_control_resumable,
+    start_loading_resumable, write_load_control_ext_resumable, write_load_control_resumable,
     write_load_control_unless_absent_resumable,
 };
 use super::steps::{Reboot, StepExecutor, run_shared_step, run_steps};
@@ -342,6 +342,10 @@ struct SystemB<'a> {
     // post-flash verify checks every programmed object reached `Loaded` — not
     // only the app object (the verify_outcome bug fix).
     completed_objects: Vec<u8>,
+    // The objects named by type (`(type, occurrence)`) that received a
+    // `LoadCompleted` (issue #961), read back after the flash like
+    // `completed_objects`.
+    completed_typed: Vec<(u16, u16)>,
     // Advisory findings (an MCB check the application's procedure does not
     // declare that did not match), carried into the outcome.
     warnings: Vec<String>,
@@ -1000,6 +1004,26 @@ impl StepExecutor for SystemB<'_> {
             // #705): `write_image` does it there, after the segment's
             // base is known, and only when the write is not extended.
             FlashStep::EnableVerifyMode => session.arm_verify_mode(),
+            // A load-state control to an object named by type (issue #961):
+            // `A_FunctionPropertyExt_Command` PID 5, confirmed like an
+            // indexed object's, resumed after a connection death.
+            FlashStep::TypedLoadControl {
+                object_type,
+                occurrence,
+                control,
+            } => {
+                let addr = super::function_prop::typed_load_state_address(
+                    session.l4().target(),
+                    *object_type,
+                    *occurrence,
+                )?;
+                write_load_control_ext_resumable(session, addr, *control).await?;
+                if *control == bussard_mgmt::LoadControl::LoadCompleted
+                    && !self.completed_typed.contains(&(*object_type, *occurrence))
+                {
+                    self.completed_typed.push((*object_type, *occurrence));
+                }
+            }
             FlashStep::LoadCompleted { target } => {
                 // Skip a completion for an object the device does not expose (a
                 // template LSM5 completion on a device without obj5).
@@ -1210,6 +1234,7 @@ impl StepExecutor for SystemB<'_> {
                             session,
                             post_app_obj,
                             &self.completed_objects,
+                            &self.completed_typed,
                             &self.written_samples,
                             &self.mcb_verified,
                         )
@@ -1223,6 +1248,7 @@ impl StepExecutor for SystemB<'_> {
                             session,
                             app_obj,
                             &self.completed_objects,
+                            &self.completed_typed,
                             &self.written_samples,
                         )
                         .await?,
@@ -1323,6 +1349,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         segment_base: None,
         segment_bases: BTreeMap::new(),
         completed_objects: Vec::new(),
+        completed_typed: Vec::new(),
         warnings: Vec::new(),
         last_alloc_size: None,
         last_alloc_fill: SegmentFill::NONE,
@@ -1348,6 +1375,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
                 session,
                 app_obj,
                 &exec.completed_objects,
+                &exec.completed_typed,
                 &exec.written_samples,
             )
             .await?

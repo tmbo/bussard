@@ -228,18 +228,28 @@ impl IntermediateWait {
         object_index: u8,
         control: LoadControl,
     ) -> Result<Option<std::time::Duration>> {
-        if !state.is_intermediate() {
-            return Ok(None);
-        }
-        let waited = self.started.elapsed();
-        if waited >= self.poll.max_wait {
-            return Err(WriteError::LoadStateTimeout {
+        self.next(state)
+            .map_err(|waited| WriteError::LoadStateTimeout {
                 address,
                 object_index,
                 control,
                 last: state,
                 waited,
-            });
+            })
+    }
+
+    /// [`IntermediateWait::pause`] without naming the object: `Err(waited)`
+    /// when the wait ran out.
+    fn next(
+        &self,
+        state: LoadState,
+    ) -> std::result::Result<Option<std::time::Duration>, std::time::Duration> {
+        if !state.is_intermediate() {
+            return Ok(None);
+        }
+        let waited = self.started.elapsed();
+        if waited >= self.poll.max_wait {
+            return Err(waited);
         }
         Ok(Some(self.poll.period.min(self.poll.max_wait - waited)))
     }
@@ -414,6 +424,51 @@ pub enum WriteError {
         expected: LoadState,
         /// The state the device reported.
         actual: LoadState,
+    },
+
+    /// An interface object a load procedure names by type (`ObjType`) did not
+    /// reach the load state a load-control command should leave it in (issue
+    /// #961).
+    #[error(
+        "{address}: interface object type {object_type} instance {instance} did not reach \
+         {expected} after {control} (device reports {actual})"
+    )]
+    TypedObjectLoadState {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object type.
+        object_type: u16,
+        /// The object's instance (1-based).
+        instance: u16,
+        /// The control event sent.
+        control: LoadControl,
+        /// The state it should have reached.
+        expected: LoadState,
+        /// The state the device reported.
+        actual: LoadState,
+    },
+
+    /// A load event left an object named by type in an intermediate state and
+    /// it was still there when the bounded wait of [`IntermediatePoll`] ran out
+    /// (issue #961, as [`WriteError::LoadStateTimeout`] for an indexed object).
+    #[error(
+        "{address}: interface object type {object_type} instance {instance} still reports \
+         {last} {waited:.1?} after {control}; the device did not finish the load event in time \
+         (KNX 3/5/2 §3.31.4 waits at most 30 s). Check the device and run the download again"
+    )]
+    TypedObjectLoadStateTimeout {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object type.
+        object_type: u16,
+        /// The object's instance (1-based).
+        instance: u16,
+        /// The control event sent.
+        control: LoadControl,
+        /// The intermediate state the last read reported.
+        last: LoadState,
+        /// How long the client re-read the state.
+        waited: std::time::Duration,
     },
 
     /// A write stopped after the security object's `Unload` and before its
@@ -1334,6 +1389,72 @@ async fn confirm_load_control<Ch: L4Channel>(
                 context: LoadStateContext::default(),
             });
         }
+    }
+    Ok(state)
+}
+
+/// Drives the load-state machine of the object `addr` names by type and
+/// instance with `control` (issue #961) and confirms the state it reaches the
+/// way [`write_load_control`] confirms an indexed object's: the state the
+/// device's answer carries, re-read through the intermediate states (KNX
+/// 3/5/1 Table 94) with `poll`, then `Error` refused, `StartLoading`
+/// accepting `Loading` or (a lenient stack) `Loaded`, `LoadCompleted`
+/// requiring `Loaded` ([`LoadControl::expected_state`]), and `Unload`
+/// accepting any settled state but `Error`.
+///
+/// The control goes out as `A_FunctionPropertyExt_Command` PID 5
+/// ([`crate::property_ext::load_control_ext`]), the re-reads as
+/// [`crate::property_ext::load_state_ext`].
+///
+/// # Errors
+///
+/// [`WriteError::TypedObjectLoadState`] for `Error` or a state the control
+/// does not lead to, [`WriteError::TypedObjectLoadStateTimeout`] when the
+/// state stays intermediate past `poll.max_wait`, a refused call, an answer
+/// without a state, or a transport failure.
+pub async fn write_load_control_ext<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    addr: crate::property_ext::PropertyExtAddress,
+    control: LoadControl,
+    poll: IntermediatePoll,
+) -> Result<LoadState> {
+    let address = l4.target();
+    let mut state = crate::property_ext::load_control_ext(l4, addr, control).await?;
+    let wait = IntermediateWait::start(poll);
+    loop {
+        match wait.next(state) {
+            Ok(None) => break,
+            Ok(Some(pause)) => {
+                tokio::time::sleep(pause).await;
+                state = crate::property_ext::load_state_ext(l4, addr).await?;
+            }
+            Err(waited) => {
+                return Err(WriteError::TypedObjectLoadStateTimeout {
+                    address,
+                    object_type: addr.object_type,
+                    instance: addr.object_instance,
+                    control,
+                    last: state,
+                    waited,
+                });
+            }
+        }
+    }
+    let acceptable = match (control, control.expected_state()) {
+        (_, _) if state == LoadState::Error => false,
+        (LoadControl::StartLoading, _) => matches!(state, LoadState::Loading | LoadState::Loaded),
+        (_, Some(expected)) => state == expected,
+        (_, None) => true,
+    };
+    if !acceptable {
+        return Err(WriteError::TypedObjectLoadState {
+            address,
+            object_type: addr.object_type,
+            instance: addr.object_instance,
+            control,
+            expected: control.expected_state().unwrap_or(LoadState::Unloaded),
+            actual: state,
+        });
     }
     Ok(state)
 }

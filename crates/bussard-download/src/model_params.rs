@@ -32,19 +32,41 @@ pub struct OrderNumberError(pub String);
 /// The master-template `Load` procedure for `app`'s mask, if the archive
 /// shipped a `knx_master.xml`. A merged application (e.g. KNX Virtual DA.tp)
 /// only carries its own app-segment blocks; the load-control ops for the table
-/// objects (obj1/obj2/obj3) live in the template and are spliced in.
+/// objects (obj1/obj2/obj3) live in the template and are spliced in. Which of
+/// the mask's procedures is [`master_template_ops`]'s choice.
 pub fn template_ops_for(
     product_data: &ProductData,
     app: &ApplicationProgram,
 ) -> Option<Vec<bussard_product::application::LoadOp>> {
-    app.mask_version
-        .as_deref()
-        .and_then(|mask| {
-            product_data
-                .master
-                .as_ref()
-                .and_then(|m| m.full_load_procedure(mask))
-        })
+    let mask = app.mask_version.as_deref()?;
+    master_template_ops(product_data.master.as_ref()?, mask, app)
+}
+
+/// The complete-download procedure of `master` for `mask` that ETS runs for
+/// `app` (issue #942): the mask's own `ProcedureSubType="ap1"` when the
+/// application loads no Application Program 2 (no block for MergeId 3 or 5,
+/// KNX 3/5/3 §3.9.3.4), else the full download
+/// ([`MasterTemplate::full_load_procedure`], `all` first). A master without an
+/// `ap1` gives `all` too, and the planner drops its object 5 rows itself.
+pub fn master_template_ops(
+    master: &bussard_product::MasterTemplate,
+    mask: &str,
+    app: &ApplicationProgram,
+) -> Option<Vec<bussard_product::application::LoadOp>> {
+    let ap1 = || {
+        master
+            .masks
+            .get(mask)?
+            .iter()
+            .find(|p| p.sub_type.as_deref() == Some("ap1") && !p.ops.is_empty())
+    };
+    let chosen = if crate::flash::fills_application_program_2(app) {
+        None
+    } else {
+        ap1()
+    };
+    chosen
+        .or_else(|| master.full_load_procedure(mask))
         .map(|proc| proc.ops.clone())
 }
 

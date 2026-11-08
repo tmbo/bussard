@@ -1592,6 +1592,43 @@ pub(super) async fn read_load_state_resumable<C: Connector>(
     resume!(session, read_load_state(session.l4(), obj).await)
 }
 
+/// Session-aware, resume-on-drop [`load::write_load_control_ext`] (issue
+/// #961): a load-state control to the `occurrence`-th object of
+/// `object_type`, replayed after a connection death like
+/// [`write_load_control_resumable`]. Replaying is safe for the same reason:
+/// the event moves the machine to the same state whether or not the lost
+/// attempt arrived.
+pub(super) async fn write_load_control_ext_resumable<C: Connector>(
+    session: &mut Session<C>,
+    addr: bussard_mgmt::property_ext::PropertyExtAddress,
+    control: LoadControl,
+) -> Result<LoadState, WriteError> {
+    resume!(
+        session,
+        load::write_load_control_ext(
+            session.l4(),
+            addr,
+            control,
+            load::IntermediatePoll::STANDARD
+        )
+        .await
+    )
+}
+
+/// Session-aware, resume-on-drop [`bussard_mgmt::property_ext::load_state_ext`]:
+/// the post-flash read-back of an object loaded by type (issue #961).
+pub(super) async fn read_load_state_ext_resumable<C: Connector>(
+    session: &mut Session<C>,
+    addr: bussard_mgmt::property_ext::PropertyExtAddress,
+) -> Result<LoadState, WriteError> {
+    resume!(
+        session,
+        bussard_mgmt::property_ext::load_state_ext(session.l4(), addr)
+            .await
+            .map_err(WriteError::from)
+    )
+}
+
 /// Reads `len` octets at `addr`, resuming at read granularity over the session
 /// across an unexpected connection death (like [`read_load_state_resumable`]).
 pub(super) async fn read_memory_resumable<C: Connector>(
