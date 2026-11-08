@@ -615,20 +615,44 @@ pub enum LoadOp {
         /// the whole device in every observed procedure).
         channel_number: Option<u32>,
     },
-    /// `<LdCtrlUnload LsmIdx=…>`.
+    /// `<LdCtrlUnload LsmIdx=…>`, or `ObjType=… Occurrence=…` for an object
+    /// named by type (issue #961).
     Unload {
         /// Load-state-machine index.
         lsm_idx: Option<u32>,
+        /// The interface object type (`ObjType`), when the op names its
+        /// object by type instead of by index.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        obj_type: Option<u32>,
+        /// Which object of `obj_type` (`Occurrence`, 0-based).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<u32>,
     },
-    /// `<LdCtrlLoad LsmIdx=…>`.
+    /// `<LdCtrlLoad LsmIdx=…>`, or `ObjType=… Occurrence=…` for an object
+    /// named by type (issue #961).
     Load {
         /// Load-state-machine index.
         lsm_idx: Option<u32>,
+        /// The interface object type (`ObjType`), when the op names its
+        /// object by type instead of by index.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        obj_type: Option<u32>,
+        /// Which object of `obj_type` (`Occurrence`, 0-based).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<u32>,
     },
-    /// `<LdCtrlLoadCompleted LsmIdx=…>`.
+    /// `<LdCtrlLoadCompleted LsmIdx=…>`, or `ObjType=… Occurrence=…` for an object
+    /// named by type (issue #961).
     LoadCompleted {
         /// Load-state-machine index.
         lsm_idx: Option<u32>,
+        /// The interface object type (`ObjType`), when the op names its
+        /// object by type instead of by index.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        obj_type: Option<u32>,
+        /// Which object of `obj_type` (`Occurrence`, 0-based).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        occurrence: Option<u32>,
     },
     /// `<LdCtrlTaskSegment LsmIdx=… Address=…>`.
     TaskSegment {
@@ -3614,12 +3638,18 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         },
         b"LdCtrlUnload" => LoadOp::Unload {
             lsm_idx: u(b"LsmIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
         },
         b"LdCtrlLoad" => LoadOp::Load {
             lsm_idx: u(b"LsmIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
         },
         b"LdCtrlLoadCompleted" => LoadOp::LoadCompleted {
             lsm_idx: u(b"LsmIdx"),
+            obj_type: u(b"ObjType"),
+            occurrence: u(b"Occurrence"),
         },
         b"LdCtrlTaskSegment" => LoadOp::TaskSegment {
             lsm_idx: u(b"LsmIdx"),
@@ -4366,8 +4396,20 @@ mod tests {
         assert_eq!(app.load_procedures[0].merge_id.as_deref(), Some("1"));
         let ops = &app.load_procedures[0].ops;
         assert!(matches!(ops[0], LoadOp::Connect));
-        assert!(matches!(ops[1], LoadOp::Unload { lsm_idx: Some(1) }));
-        assert!(matches!(ops[2], LoadOp::Load { lsm_idx: Some(2) }));
+        assert!(matches!(
+            ops[1],
+            LoadOp::Unload {
+                lsm_idx: Some(1),
+                ..
+            }
+        ));
+        assert!(matches!(
+            ops[2],
+            LoadOp::Load {
+                lsm_idx: Some(2),
+                ..
+            }
+        ));
         assert!(matches!(
             ops[3],
             LoadOp::TaskSegment {
@@ -4406,7 +4448,13 @@ mod tests {
                 ..
             }
         ));
-        assert!(matches!(ops[9], LoadOp::LoadCompleted { lsm_idx: Some(1) }));
+        assert!(matches!(
+            ops[9],
+            LoadOp::LoadCompleted {
+                lsm_idx: Some(1),
+                ..
+            }
+        ));
         assert!(matches!(ops[10], LoadOp::Restart));
         assert!(matches!(ops[11], LoadOp::Disconnect));
         // LdCtrlLoadImageProp is a typed op carrying its target object + PropId.
@@ -4455,6 +4503,44 @@ mod tests {
             write_access: Some(15),
         }));
         assert!(!ops.iter().any(|op| matches!(op, LoadOp::Raw { .. })));
+        Ok(())
+    }
+
+    #[test]
+    fn test_push_load_op_load_controls_by_type_keep_the_type()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        // The Gira Eco program `M-0008_A-C02A-21-B6D8-O007C` drives its
+        // vendor object's load state by type (issue #961): the type must
+        // survive the parse, or the planner sends the control to no object.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure>
+           <LdCtrlUnload AppliesTo="all" ObjType="40960" />
+           <LdCtrlLoad AppliesTo="all" ObjType="40960" Occurrence="1" />
+           <LdCtrlLoadCompleted LsmIdx="4" />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        assert_eq!(
+            app.load_procedures[0].ops,
+            vec![
+                LoadOp::Unload {
+                    lsm_idx: None,
+                    obj_type: Some(40960),
+                    occurrence: None,
+                },
+                LoadOp::Load {
+                    lsm_idx: None,
+                    obj_type: Some(40960),
+                    occurrence: Some(1),
+                },
+                LoadOp::LoadCompleted {
+                    lsm_idx: Some(4),
+                    obj_type: None,
+                    occurrence: None,
+                },
+            ]
+        );
         Ok(())
     }
 

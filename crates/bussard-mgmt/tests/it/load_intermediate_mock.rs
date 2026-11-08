@@ -291,3 +291,91 @@ async fn test_drive_with_poll_memory_mapped_times_out_on_load_completing() -> Te
         other => Err(format!("expected LoadStateTimeout, got {other:?}").into()),
     }
 }
+
+/// The extended form of an object named by type (issue #961).
+fn typed_addr() -> bussard_mgmt::property_ext::PropertyExtAddress {
+    bussard_mgmt::property_ext::PropertyExtAddress {
+        object_type: 40960,
+        object_instance: 1,
+        property_id: 5,
+    }
+}
+
+#[tokio::test]
+async fn test_write_load_control_ext_reads_through_intermediate_states() -> TestResult {
+    let device = MockDevice::system_b("1.1.4".parse()?)
+        .with_typed_load_object(40960, 1)
+        .with_intermediate_load_states(3);
+    let (gw, mut bus, target) = connect(device).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let addr = typed_addr();
+    let opened =
+        load::write_load_control_ext(&mut l4, addr, LoadControl::StartLoading, FAST).await?;
+    assert_eq!(opened, LoadState::Loading);
+    // The answer and two state reads report LoadCompleting, the third Loaded.
+    let done =
+        load::write_load_control_ext(&mut l4, addr, LoadControl::LoadCompleted, FAST).await?;
+    assert_eq!(done, LoadState::Loaded);
+    let gone = load::write_load_control_ext(&mut l4, addr, LoadControl::Unload, FAST).await?;
+    assert_eq!(gone, LoadState::Unloaded);
+    let _ = l4.disconnect().await;
+    let events = gw.with_device(target, |d| d.typed_load_events.clone())?;
+    assert_eq!(events.len(), 3, "one command per event: {events:?}");
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_write_load_control_ext_times_out_on_load_completing() -> TestResult {
+    let device = MockDevice::system_b("1.1.4".parse()?)
+        .with_typed_load_object(40960, 1)
+        .with_intermediate_load_states(u32::MAX);
+    let (_gw, mut bus, target) = connect(device).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    load::write_load_control_ext(&mut l4, typed_addr(), LoadControl::StartLoading, FAST).await?;
+    let err = load::write_load_control_ext(&mut l4, typed_addr(), LoadControl::LoadCompleted, FAST)
+        .await
+        .err()
+        .ok_or("a machine that never settles must time out")?;
+    let _ = l4.disconnect().await;
+    match err {
+        WriteError::TypedObjectLoadStateTimeout {
+            object_type: 40960,
+            instance: 1,
+            last: LoadState::LoadCompleting,
+            ..
+        } => Ok(()),
+        other => Err(format!("expected TypedObjectLoadStateTimeout, got {other:?}").into()),
+    }
+}
+
+#[tokio::test]
+async fn test_load_state_ext_reads_the_typed_state() -> TestResult {
+    // The state read the post-flash read-back sends (issue #961).
+    let device = MockDevice::system_b("1.1.4".parse()?).with_typed_load_object(40960, 1);
+    let (_gw, mut bus, target) = connect(device).await?;
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        "0.0.255".parse()?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let addr = typed_addr();
+    load::write_load_control_ext(&mut l4, addr, LoadControl::Unload, FAST).await?;
+    let state = bussard_mgmt::property_ext::load_state_ext(&mut l4, addr).await?;
+    assert_eq!(state, LoadState::Unloaded);
+    let _ = l4.disconnect().await;
+    Ok(())
+}

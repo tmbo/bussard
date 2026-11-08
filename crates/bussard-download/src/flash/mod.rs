@@ -132,6 +132,7 @@ pub use labels::trace;
 use labels::{LabelCtx, step_label};
 pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
+pub(crate) use plan::fills_application_program_2;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
 pub use plan::{kept_octets, plan_flash, same_program, select_application};
 pub use plan_sys7::allocation_change;
@@ -468,6 +469,22 @@ pub enum FlashStep {
         prop_id: u32,
         /// The function's input, the op's `InlineData`.
         data: Vec<u8>,
+    },
+    /// A load-state control to an object the procedure names by type
+    /// (`LdCtrlUnload`, `LdCtrlLoad` or `LdCtrlLoadCompleted` with `ObjType`,
+    /// issue #961): the 10-octet `PID_LOAD_STATE_CONTROL` value as one
+    /// `A_FunctionPropertyExt_Command` PID 5 to that type and instance, as ETS
+    /// sends it on the Gira Eco program `M-0008_A-C02A-21-B6D8-O007C`. The
+    /// state the device answers must be the one the control leads to
+    /// (`Unloaded`, `Loading`, `Loaded`); any other state, a non-zero return
+    /// code or no answer fails the flash.
+    TypedLoadControl {
+        /// The interface object type (`ObjType`).
+        object_type: u16,
+        /// Which object of that type, 0 for the first (`Occurrence`).
+        occurrence: u16,
+        /// The control event.
+        control: bussard_mgmt::LoadControl,
     },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
@@ -1810,6 +1827,11 @@ pub struct FlashOutcome {
     /// must be `Loaded` for the flash to have verified — this catches a
     /// multi-object flash where a table object silently failed to load.
     pub object_states: Vec<(u8, LoadState)>,
+    /// The final load state of every object the flash completed by type
+    /// (`ObjType`, issue #961), read back after the flash: `(type,
+    /// occurrence, state)`. Every entry must be `Loaded` for the flash to
+    /// have verified.
+    pub typed_object_states: Vec<(u16, u16, LoadState)>,
     /// Whether the sampled read-backs of written memory matched what was written.
     pub spot_checks_match: bool,
     /// Findings that do not fail the flash: an advisory MCB check that did not
@@ -1841,6 +1863,10 @@ impl FlashOutcome {
         self.object_states
             .iter()
             .all(|(_, state)| *state == LoadState::Loaded)
+            && self
+                .typed_object_states
+                .iter()
+                .all(|(_, _, state)| *state == LoadState::Loaded)
             && self.load_state == LoadState::Loaded
             && self.spot_checks_match
     }

@@ -550,6 +550,7 @@ pub(super) async fn verify_sys7<C: Connector>(
     }
 
     Ok(FlashOutcome {
+        typed_object_states: Vec::new(),
         load_state: if all_loaded {
             LoadState::Loaded
         } else {
