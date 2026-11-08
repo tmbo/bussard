@@ -1728,7 +1728,7 @@ fn parse_store(
                     store.created = attr(&e, b"Created")?.unwrap_or_default();
                 }
                 b"Backbone" => {
-                    store.backbone = Some(parse_backbone(&e, keyring_key, iv)?);
+                    store.backbone = parse_backbone(&e, keyring_key, iv)?;
                 }
                 b"Interface" => {
                     if let Some(done) = current.take() {
@@ -1794,11 +1794,19 @@ fn parse_store(
 }
 
 /// Parses a store `<Backbone>`.
+///
+/// A `<Backbone>` without `Key` is an unsecured backbone: ETS 6.4.1 writes
+/// `<Backbone MulticastAddress="224.0.23.12" />` for a project with Data
+/// Secure devices but no secure IP routing (#858). It yields `None`; a `Key`
+/// that is present but does not decrypt is still an error.
 fn parse_backbone(
     e: &BytesStart,
     keyring_key: &Key16,
     iv: &[u8; KEY_LEN],
-) -> Result<Backbone, KeyringError> {
+) -> Result<Option<Backbone>, KeyringError> {
+    if attr(e, b"Key")?.is_none() {
+        return Ok(None);
+    }
     let key = decrypt_key(e, b"Key", "Backbone/Key", keyring_key, iv)?;
     let multicast = require(e, b"MulticastAddress", "Backbone")?;
     let multicast: Ipv4Addr = multicast
@@ -1808,11 +1816,11 @@ fn parse_backbone(
             reason: format!("not an IPv4 address: {multicast:?}"),
         })?;
     let latency_ms = parse_number(attr(e, b"Latency")?, "Backbone/Latency")?.unwrap_or(0);
-    Ok(Backbone {
+    Ok(Some(Backbone {
         key,
         multicast,
         latency_ms,
-    })
+    }))
 }
 
 /// Parses a store `<Interface>` (its `<Group>` children follow).

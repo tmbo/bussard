@@ -678,6 +678,36 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_keyring_backbone_without_key_is_no_backbone() -> TestResult {
+        // ETS 6.4.1 writes a <Backbone> with only MulticastAddress when the
+        // backbone is not secured (#858); the rest of the keyring still loads.
+        let xml = sign(
+            r#"<Keyring Project="P" Created="2026-03-04T05:06:07"><Backbone MulticastAddress="224.0.23.12" /><Devices><Device IndividualAddress="1.1.10" ToolKey="4KejWFAOVLtfuK2uo4tiyA==" /></Devices></Keyring>"#,
+        )?;
+        let keyring = parse_keyring(&xml, PASSWORD)?;
+        assert!(keyring.backbone.is_none());
+        assert_eq!(keyring.devices.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_keyring_backbone_with_undecryptable_key_is_an_error() -> TestResult {
+        // A Key that is present but not one AES block stays an error.
+        let xml = sign(
+            r#"<Keyring Project="P" Created="2026-03-04T05:06:07"><Backbone MulticastAddress="224.0.23.12" Key="AAAA" /></Keyring>"#,
+        )?;
+        let err = parse_keyring(&xml, PASSWORD).err();
+        assert!(
+            matches!(
+                err,
+                Some(KeyStoreError::Keyring(KeyringError::BadKeyLength { .. }))
+            ),
+            "expected BadKeyLength, got {err:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn test_parse_keyring_usb_interface_without_credentials() -> TestResult {
         let xml = sign(
             r#"<Keyring Project="P" Created="2026-03-04T05:06:07"><Interface Type="USB" IndividualAddress="1.1.254" /></Keyring>"#,

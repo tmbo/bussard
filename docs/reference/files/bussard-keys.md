@@ -27,7 +27,7 @@
 | Key | Type | Meaning |
 |---|---|---|
 | `Keyring` | root element | `Project`, `Created` (fixed when the store is first written; it seeds the attribute IV), `CreatedBy`, `Format = "bussard.keys/1"`, `Signature`. |
-| `Backbone` | element | The multicast (routing) key, address and latency. |
+| `Backbone` | element | The multicast (routing) key, address and latency. Absent when the backbone is not secured; a `keys import` reads an ETS `<Backbone>` without `Key` the same way. |
 | `Interface` | element | A KNXnet/IP Secure tunnelling user or other interface: tunnel address, host, user id, session password, device authentication code, and the group addresses it may send to. |
 | `GroupAddresses/Group` | element | One group key per group address, written three-level (`1/2/3`). |
 | `Devices/Device` | element | Tool key, serial number, factory key (FDSK), management password and authentication code. `ToolKey` is optional: a device can be known by its factory key alone. `SequenceNumber` is the value the last ETS export recorded, carried through for the export and the security individual address table. |

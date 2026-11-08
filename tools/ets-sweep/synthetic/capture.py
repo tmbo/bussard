@@ -324,8 +324,25 @@ def copy_capture(product: str, sid: str, app: str, mask: str = "07B0") -> Path:
     (dst / "sim.yaml").write_text(sim_yaml(product, app, mask))
     if is_secure(product):
         shutil.copyfile(src / KEYRING_FILE, dst / KEYRING_FILE)
+        secure_model(dst)
     write_image(dst, rel)
     return dst
+
+
+def secure_model(dst: Path) -> None:
+    """`model/` of a Data Secure capture: bussard.toml as
+    `captures/synthetic/model` and the key store `bussard.keys` imported from
+    the capture's keyring under the public synthetic password, so the row
+    plans the security object's writes with the keys ETS used (#858)."""
+    import oracle_model
+
+    model = dst / "model"
+    model.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MODEL / "bussard.toml", model / "bussard.toml")
+    (model / "bussard.keys").unlink(missing_ok=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("BUSSARD_KEYRING", "BUSSARD_DIR")}
+    run([str(oracle_model.BUSSARD), "--dir", str(model), "keys", "import", str(dst / KEYRING_FILE)],
+        env={**env, "BUSSARD_NO_DOTENV": "1", "BUSSARD_KEYRING_PASSWORD": SYNTHETIC_KEYRING_PASSWORD})
 
 
 # A path in the VM's sweep directory (`vm.REMOTE_DIR`, the VM user's home).
@@ -402,7 +419,9 @@ def oracle_row(product: str, app: str, coverage: str = "", options: str = "", wh
     state = "" if "state=" in extra or "run=" in extra else device_state(product, variant)
     # A Data Secure capture decodes with the keyring committed next to it.
     keyring = f"keyring={rel}/{KEYRING_FILE}" if is_secure(product) and "keyring=" not in extra else ""
-    options = " ".join(o for o in (options, extra, state, keyring) if o)
+    # ... and plans with the key store imported from it (`secure_model`, #858).
+    model = f"dir={rel}/model" if is_secure(product) and "dir=" not in extra else ""
+    options = " ".join(o for o in (options, extra, state, keyring, model) if o)
     return f"1.1.1|{rel}/ets.pcapng|{xml}|{app}|{note}|{coverage}|{options}".rstrip("|")
 
 
