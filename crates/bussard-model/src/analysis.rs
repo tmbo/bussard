@@ -32,7 +32,7 @@ use serde::Serialize;
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::loader::Model;
-use crate::schema::Link;
+use crate::validate::{Diagnostic, validate};
 
 /// The kind of one-sided link a [`Finding`] reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -149,193 +149,128 @@ pub struct ModelAnalysis {
     pub info: NeutralInfo,
 }
 
-/// Analyses a loaded model.
+/// Analyses a loaded model: [`ModelAnalysis::new`] over [`validate`]'s
+/// diagnostics.
 ///
-/// Pure and allocation-only: safe to call on every request. Every list is sorted
-/// (by address) so the output is stable across runs and diffable.
+/// Every list is sorted (by address) so the output is stable across runs and
+/// diffable.
 pub fn analyze(model: &Model) -> ModelAnalysis {
-    let (senders, listeners) = endpoints(model);
+    ModelAnalysis::new(model, &validate(model))
+}
 
-    // The GA universe is the union of declared GAs and any GA a link mentions;
-    // a link-only GA is exactly the case worth surfacing.
-    let mut addresses: BTreeSet<GroupAddress> = model.groups.groups.keys().copied().collect();
-    addresses.extend(senders.keys().copied());
-    addresses.extend(listeners.keys().copied());
+impl ModelAnalysis {
+    /// The analysis of `model` from its diagnostics (the rules' structured
+    /// fields) plus the counts: one-sided links are I048/I049, unknown
+    /// devices E013, unknown objects E003, GAs without a DPT W011 (and E001
+    /// for the ones only links name), unlinked objects I009, unused GAs I010,
+    /// protected GAs I015.
+    pub fn new(model: &Model, diags: &[Diagnostic]) -> ModelAnalysis {
+        let with =
+            |codes: &'static [&'static str]| diags.iter().filter(move |d| codes.contains(&d.code));
+        let groups =
+            |codes| -> BTreeSet<GroupAddress> { with(codes).filter_map(|d| d.group).collect() };
+        let listed = |set: BTreeSet<GroupAddress>| set.iter().map(ToString::to_string).collect();
+        let link_only = groups(&["E001"]);
+        let mut addresses: BTreeSet<GroupAddress> = model.groups.groups.keys().copied().collect();
+        addresses.extend(&link_only);
+        let mut without_name = link_only;
+        without_name.extend(
+            (model.groups.groups.iter())
+                .filter(|(_, g)| g.name.trim().is_empty())
+                .map(|(ga, _)| *ga),
+        );
+        let mut findings: Vec<(GroupAddress, Finding)> = with(&["I048", "I049"])
+            .filter_map(|d| {
+                let kind = match d.code {
+                    "I048" => FindingKind::GaNoListener,
+                    _ => FindingKind::GaNoSender,
+                };
+                let ga = d.group?;
+                let message = d.message.clone();
+                Some((
+                    ga,
+                    Finding {
+                        kind,
+                        ga: ga.to_string(),
+                        ga_name: d.name.clone(),
+                        message,
+                    },
+                ))
+            })
+            .collect();
+        findings.sort_by_key(|(ga, _)| *ga);
+        let mut unknown_objects: Vec<(IndividualAddress, UnknownObjectLink)> = with(&["E003"])
+            .filter_map(|d| {
+                let link = UnknownObjectLink {
+                    device: d.device?.to_string(),
+                    object: d.object?,
+                    name: d.name.clone(),
+                };
+                Some((d.device?, link))
+            })
+            .collect();
+        unknown_objects.sort_by_key(|(ia, link)| (*ia, link.object));
+        let unknown_devices: BTreeSet<IndividualAddress> =
+            with(&["E013"]).filter_map(|d| d.device).collect();
 
-    let mut findings = Vec::new();
-    let mut without_dpt = Vec::new();
-    let mut without_name = Vec::new();
-    let mut protected = Vec::new();
-    let mut unused_group_addresses = 0usize;
-
-    for ga in &addresses {
-        let group = model.groups.groups.get(ga);
-        let name = group
-            .map(|g| g.name.clone())
-            .filter(|n| !n.trim().is_empty());
-        if name.is_none() {
-            without_name.push(ga.to_string());
-        }
-        if group.and_then(|g| g.dpt).is_none() {
-            without_dpt.push(ga.to_string());
-        }
-        if group.is_some_and(|g| g.protected) {
-            protected.push(ga.to_string());
-        }
-
-        let has_sender = senders.contains_key(ga);
-        let has_listener = listeners.contains_key(ga);
-        match (has_sender, has_listener) {
-            (false, false) => unused_group_addresses += 1,
-            (true, false) => findings.push(Finding {
-                kind: FindingKind::GaNoListener,
-                ga: ga.to_string(),
-                ga_name: name.clone(),
-                message: format!("{ga} has senders but no listener (telegrams go nowhere)"),
-            }),
-            (false, true) => findings.push(Finding {
-                kind: FindingKind::GaNoSender,
-                ga: ga.to_string(),
-                ga_name: name.clone(),
-                message: format!("{ga} has listeners but no sender (never triggered)"),
-            }),
-            (true, true) => {}
-        }
-    }
-
-    // Devices: naming, location, per-line counts, Secure status.
-    let mut per_line: BTreeMap<(u8, u8), usize> = BTreeMap::new();
-    let mut devices_without_name = Vec::new();
-    let mut devices_without_location = Vec::new();
-    let mut secure_devices = Vec::new();
-    let mut unlinked_com_objects = 0usize;
-
-    for (addr, loaded) in &model.devices {
-        let device = &loaded.device;
-        *per_line.entry((addr.area(), addr.line())).or_default() += 1;
-        if device.name.trim().is_empty() {
-            devices_without_name.push(addr.to_string());
-        }
-        let located = device
-            .location
-            .as_ref()
-            .is_some_and(|l| l.floor.is_some() || l.room.is_some());
-        if !located {
-            devices_without_location.push(addr.to_string());
-        }
-        if let Some(security) = &device.security
-            && (security.secure_capable || security.activated)
-        {
-            secure_devices.push(SecureDevice {
-                address: addr.to_string(),
-                name: device.name.clone(),
-                secure_capable: security.secure_capable,
-                activated: security.activated,
-            });
-        }
-
-        // A com-object is "unlinked" when no link on this device gives it a send
-        // or a listen GA. Normal in KNX, so it is counted, never listed.
-        let links = device_links(model, *addr);
-        for number in device.com_objects.keys() {
-            let linked = links
-                .iter()
-                .any(|l| l.object == *number && (l.send.is_some() || !l.listen.is_empty()));
-            if !linked {
-                unlinked_com_objects += 1;
+        // Devices: naming, location, per-line counts, Secure status.
+        let mut per_line: BTreeMap<(u8, u8), usize> = BTreeMap::new();
+        let (mut nameless, mut unlocated, mut secure_devices) =
+            (Vec::new(), Vec::new(), Vec::new());
+        for (addr, loaded) in &model.devices {
+            let device = &loaded.device;
+            *per_line.entry((addr.area(), addr.line())).or_default() += 1;
+            if device.name.trim().is_empty() {
+                nameless.push(addr.to_string());
             }
-        }
-    }
-
-    // Links: count them, and flag the ones pointing at something unknown.
-    let mut link_count = 0usize;
-    let mut links_to_unknown_objects = Vec::new();
-    let mut links_to_unknown_devices = Vec::new();
-    for (addr, links) in &model.links.links {
-        link_count += links.len();
-        let Some(loaded) = model.devices.get(addr) else {
-            links_to_unknown_devices.push(addr.to_string());
-            continue;
-        };
-        for link in links {
-            if !loaded.device.com_objects.contains_key(&link.object) {
-                links_to_unknown_objects.push(UnknownObjectLink {
-                    device: addr.to_string(),
-                    object: link.object,
-                    name: link.name.clone(),
+            let location = device.location.as_ref();
+            if !location.is_some_and(|l| l.floor.is_some() || l.room.is_some()) {
+                unlocated.push(addr.to_string());
+            }
+            if let Some(security) = &device.security
+                && (security.secure_capable || security.activated)
+            {
+                secure_devices.push(SecureDevice {
+                    address: addr.to_string(),
+                    name: device.name.clone(),
+                    secure_capable: security.secure_capable,
+                    activated: security.activated,
                 });
             }
         }
-    }
 
-    ModelAnalysis {
-        project: model.groups.project.clone(),
-        imported_from: model.groups.imported_from.clone(),
-        devices: model.devices.len(),
-        devices_per_line: per_line
-            .into_iter()
-            .map(|((area, line), devices)| LineCount {
-                line: format!("{area}.{line}"),
-                devices,
-            })
-            .collect(),
-        devices_without_name,
-        devices_without_location,
-        group_addresses: addresses.len(),
-        group_addresses_without_dpt: without_dpt,
-        group_addresses_without_name: without_name,
-        links: link_count,
-        links_to_unknown_objects,
-        links_to_unknown_devices,
-        protected_group_addresses: protected,
-        secure_devices,
-        findings,
-        info: NeutralInfo {
-            unlinked_com_objects,
-            unused_group_addresses,
-        },
-    }
-}
-
-/// The links declared for one device (empty when it has none).
-fn device_links(model: &Model, addr: IndividualAddress) -> &[Link] {
-    model
-        .links
-        .links
-        .get(&addr)
-        .map(Vec::as_slice)
-        .unwrap_or(&[])
-}
-
-/// Indexes every GA by the devices sending to it and listening on it.
-///
-/// Only presence matters to the analysis, so the values are the device
-/// addresses; a GA missing from a map has no endpoint of that kind.
-fn endpoints(
-    model: &Model,
-) -> (
-    BTreeMap<GroupAddress, Vec<IndividualAddress>>,
-    BTreeMap<GroupAddress, Vec<IndividualAddress>>,
-) {
-    let mut senders: BTreeMap<GroupAddress, Vec<IndividualAddress>> = BTreeMap::new();
-    let mut listeners: BTreeMap<GroupAddress, Vec<IndividualAddress>> = BTreeMap::new();
-    for (addr, links) in &model.links.links {
-        for link in links {
-            if let Some(send) = link.send {
-                senders.entry(send).or_default().push(*addr);
-            }
-            for ga in &link.listen {
-                listeners.entry(*ga).or_default().push(*addr);
-            }
+        ModelAnalysis {
+            project: model.groups.project.clone(),
+            imported_from: model.groups.imported_from.clone(),
+            devices: model.devices.len(),
+            devices_per_line: (per_line.into_iter())
+                .map(|((area, line), devices)| LineCount {
+                    line: format!("{area}.{line}"),
+                    devices,
+                })
+                .collect(),
+            devices_without_name: nameless,
+            devices_without_location: unlocated,
+            group_addresses: addresses.len(),
+            group_addresses_without_dpt: listed(groups(&["W011", "E001"])),
+            group_addresses_without_name: listed(without_name),
+            links: model.links.links.values().map(Vec::len).sum(),
+            links_to_unknown_objects: unknown_objects.into_iter().map(|(_, l)| l).collect(),
+            links_to_unknown_devices: unknown_devices.iter().map(ToString::to_string).collect(),
+            protected_group_addresses: listed(groups(&["I015"])),
+            secure_devices,
+            findings: findings.into_iter().map(|(_, f)| f).collect(),
+            info: NeutralInfo {
+                unlinked_com_objects: with(&["I009"]).count(),
+                unused_group_addresses: with(&["I010"]).count(),
+            },
         }
     }
-    (senders, listeners)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::flags::Flags;
     use crate::loader::LoadedDevice;
     use crate::schema::{ComObject, Device, Group, Groups, Link, Links, Location};
 
@@ -462,14 +397,15 @@ mod tests {
     }
 
     #[test]
-    fn test_analyze_counts_unlinked_com_objects_as_info() {
+    fn test_analyze_counts_unlinked_com_objects_as_info() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut dev = device("Actuator", "1.1.2");
         dev.com_objects.insert(
             1,
             ComObject {
                 dpt: None,
                 size: None,
-                flags: Flags::default(),
+                flags: "CWT".parse()?,
                 reference: None,
                 channel: None,
                 secure: false,
@@ -483,7 +419,7 @@ mod tests {
             ComObject {
                 dpt: None,
                 size: None,
-                flags: Flags::default(),
+                flags: "CWT".parse()?,
                 reference: None,
                 channel: None,
                 secure: false,
@@ -506,6 +442,7 @@ mod tests {
                 .iter()
                 .all(|f| f.kind != FindingKind::GaNoSender),
         );
+        Ok(())
     }
 
     #[test]

@@ -43,6 +43,7 @@ use crate::dynamic::{
     ActiveComObject, ActiveParameter, DynamicConfig, Placement, evaluate_dynamic, selector_key,
     visible_parameter_refs,
 };
+use bussard_model::device_view::ParameterRow;
 use bussard_model::param_model::enum_label;
 use bussard_model::schema::{Channel, ComObject, Device, LockedParameter, Spelling};
 use bussard_model::{Dpt, Flags, hidden_mem_key, label_mem_key, param_mem_key, slug};
@@ -67,8 +68,10 @@ pub struct LockKeys {
     pub channels: Vec<ChannelFact>,
     /// The com-objects the configuration instantiates, by number.
     pub objects: Vec<ObjectFact>,
-    /// One entry per parameter memory cell, in walk order.
-    pub parameters: Vec<ParameterFact>,
+    /// One entry per parameter memory cell, in walk order: `key`,
+    /// `channel`, `reference`, `param`, `enum_labels`, `default` (the ref's
+    /// own when it overrides the parameter's) and `shown` set.
+    pub parameters: Vec<ParameterRow>,
     /// The memory base offset of every reached module instance that has one,
     /// keyed by module-instance selector (`MD-1_M-3_MI-1`), read from the
     /// application's `<Module>` arguments.
@@ -117,28 +120,6 @@ pub struct ObjectFact {
     pub flags: Flags,
     /// The com-object ref in device form (`MD-1_M-3_MI-1_O-2-0_R-38`).
     pub reference: String,
-}
-
-/// One `parameters[]` entry of the lock.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ParameterFact {
-    /// The key the device file uses (`betriebsart`, `sollwerte.komfort`, or
-    /// the escape hatch `<slug>@<ref>`).
-    pub key: String,
-    /// The owning channel id (a [`ChannelFact::id`]), if any.
-    pub channel: Option<String>,
-    /// The visible ref in device form (`MD-3_M-18_MI-1_P-14_R-14`).
-    pub reference: String,
-    /// The app-relative parameter id, the memory cell (`MD-3_P-14`).
-    pub param: String,
-    /// For an enumeration, its `(code, text)` pairs.
-    pub enum_labels: Vec<(i64, String)>,
-    /// The ref's vendor default when its `Value` overrides the parameter's
-    /// own default, else `None` (the product model's default applies).
-    pub default: Option<String>,
-    /// Whether the configuration shows it (`false` for a parameter only an
-    /// `<Assign>` reaches, which ETS sets and never presents).
-    pub shown: bool,
 }
 
 /// Derives the lock keys of a device running `app` with parameter
@@ -270,7 +251,7 @@ pub fn apply_lock_keys(
     device.lock.parameters = facts
         .parameters
         .iter()
-        .filter(|p| p.shown || stored.contains_key(&p.reference))
+        .filter(|p| p.shown == Some(true) || stored.contains_key(&p.reference))
         .map(|p| (p.reference.clone(), locked_parameter(p)))
         .collect();
 
@@ -279,7 +260,7 @@ pub fn apply_lock_keys(
         .iter()
         .filter_map(|c| c.label_ref.as_deref())
         .collect();
-    let by_ref: BTreeMap<&str, &ParameterFact> = facts
+    let by_ref: BTreeMap<&str, &ParameterRow> = facts
         .parameters
         .iter()
         .map(|p| (p.reference.as_str(), p))
@@ -310,11 +291,11 @@ pub fn apply_lock_keys(
 }
 
 /// The lock's index entry for a derived parameter.
-fn locked_parameter(p: &ParameterFact) -> LockedParameter {
+fn locked_parameter(p: &ParameterRow) -> LockedParameter {
     LockedParameter {
         key: p.key.clone(),
         channel: p.channel.clone(),
-        param: Some(p.param.clone()),
+        param: p.param.clone(),
         default: p.default.clone(),
     }
 }
@@ -404,7 +385,7 @@ pub fn refresh_lock_keys(device: &mut Device, facts: &LockKeys, linked: &BTreeSe
     let derived: BTreeSet<&str> = facts
         .parameters
         .iter()
-        .filter(|p| p.shown)
+        .filter(|p| p.shown == Some(true))
         .map(|p| p.reference.as_str())
         .collect();
     let stored: BTreeSet<&str> = device
@@ -431,7 +412,7 @@ pub fn refresh_lock_keys(device: &mut Device, facts: &LockKeys, linked: &BTreeSe
                 .filter_map(|o| o.key.clone().map(|k| (o.channel.clone(), k))),
         )
         .collect();
-    for p in facts.parameters.iter().filter(|p| p.shown) {
+    for p in facts.parameters.iter().filter(|p| p.shown == Some(true)) {
         if device.lock.parameters.contains_key(&p.reference) {
             continue;
         }
@@ -978,13 +959,11 @@ fn object_candidates(
 
 /// One parameter on its way to a key.
 struct Pending {
-    fact: ParameterFact,
+    fact: ParameterRow,
     /// slug of the parameter text.
     base: String,
     /// Page slugs, innermost block first.
     pages: Vec<String>,
-    /// Whether the evaluated tree shows it (an `<Assign>` target is not).
-    shown: bool,
 }
 
 /// The visible parameters with their keys.
@@ -993,7 +972,7 @@ fn derive_parameters(
     channels: &[ChannelFact],
     objects: &[ObjectFact],
     label_params: &BTreeSet<String>,
-) -> Vec<ParameterFact> {
+) -> Vec<ParameterRow> {
     let app = ctx.app;
     let mut pending: Vec<Pending> = Vec::new();
     for v in visible_parameter_refs(app, ctx.config) {
@@ -1052,11 +1031,10 @@ fn derive_parameters(
             _ => Vec::new(),
         };
         pending.push(Pending {
-            fact: ParameterFact {
-                key: String::new(),
+            fact: ParameterRow {
                 channel,
                 reference: v.ref_key.clone(),
-                param: v.parameter_id.clone(),
+                param: Some(v.parameter_id.clone()),
                 enum_labels,
                 // A ref `Value` overrides the parameter's default: that is
                 // the value ETS shows (and the device holds) when nothing
@@ -1065,11 +1043,11 @@ fn derive_parameters(
                     .value
                     .clone()
                     .filter(|v| param.default.as_ref() != Some(v)),
-                shown: placement.shown,
+                shown: Some(placement.shown),
+                ..ParameterRow::default()
             },
             base: slug(&text),
             pages,
-            shown: placement.shown,
         });
     }
 
@@ -1091,7 +1069,9 @@ fn derive_parameters(
         // take what is left, so they never lengthen a key the user edits.
         let members = |shown: bool| -> Vec<usize> {
             (0..pending.len())
-                .filter(|&i| pending[i].fact.channel == scope && pending[i].shown == shown)
+                .filter(|&i| {
+                    pending[i].fact.channel == scope && pending[i].fact.shown == Some(shown)
+                })
                 .collect()
         };
         let (first, second) = (members(true), members(false));
@@ -1208,18 +1188,14 @@ mod tests {
 
     fn pending(base: &str, pages: &[&str], channel: Option<&str>, reference: &str) -> Pending {
         Pending {
-            fact: ParameterFact {
-                key: String::new(),
+            fact: ParameterRow {
                 channel: channel.map(str::to_string),
                 reference: reference.to_string(),
-                param: String::new(),
-                enum_labels: Vec::new(),
-                default: None,
-                shown: true,
+                shown: Some(true),
+                ..ParameterRow::default()
             },
             base: base.to_string(),
             pages: pages.iter().map(|p| p.to_string()).collect(),
-            shown: true,
         }
     }
 

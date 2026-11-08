@@ -1197,7 +1197,7 @@ fn status_mode3_names(b: u8) -> Vec<&'static str> {
 /// [`TypedValue::Raw`] so the monitor keeps working against an incomplete
 /// model.
 pub fn decode(dpt: &Dpt, payload: &[u8]) -> TypedValue {
-    decode_inner(dpt, payload).unwrap_or_else(|| TypedValue::Raw(payload.to_vec()))
+    decode_inner(dpt, payload, &mut Vec::new()).unwrap_or_else(|| TypedValue::Raw(payload.to_vec()))
 }
 
 /// Why a conforming receiver would drop this payload, or `None` when it is
@@ -1211,7 +1211,8 @@ pub fn decode(dpt: &Dpt, payload: &[u8]) -> TypedValue {
 /// on it. A payload too short for the DPT is the size check's business, not
 /// this one's, and yields `None`.
 pub fn validity_note(dpt: &Dpt, payload: &[u8]) -> Option<String> {
-    let problems = validity_problems(dpt, payload);
+    let mut problems = Vec::new();
+    decode_inner(dpt, payload, &mut problems);
     if problems.is_empty() {
         return None;
     }
@@ -1221,172 +1222,22 @@ pub fn validity_note(dpt: &Dpt, payload: &[u8]) -> Option<String> {
     ))
 }
 
-/// The individual findings behind [`validity_note`].
-fn validity_problems(dpt: &Dpt, payload: &[u8]) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut reserved = |what: &str, value: u8, mask: u8| {
-        if value & mask != 0 {
-            out.push(format!("reserved bits {:#04x} of {what} set", value & mask));
-        }
-    };
-    let byte = |i: usize| payload.get(i).copied();
-    match (dpt.main, dpt.sub) {
-        // 5.006 DPT_Tariff (03_07_02 §3.5.2.2): 255 shall be ignored.
-        (5, Some(6)) => {
-            if byte(0) == Some(255) {
-                return vec!["tariff 255 is reserved".to_string()];
-            }
-        }
-        // 6.020 (§3.7): the mode field is one-hot.
-        (6, Some(20)) => {
-            if let Some(b) = byte(0)
-                && !matches!(b & 0x07, 0b001 | 0b010 | 0b100)
-            {
-                return vec![format!("mode field {:03b}b is not one-hot", b & 0x07)];
-            }
-        }
-        // 10.001 (§3.11): r r in front of minutes and seconds, hour 0..23.
-        (10, _) => {
-            let (Some(b0), Some(b1), Some(b2)) = (byte(0), byte(1), byte(2)) else {
-                return out;
-            };
-            reserved("the minutes octet", b1, 0xC0);
-            reserved("the seconds octet", b2, 0xC0);
-            range(&mut out, "hour", b0 & 0x1F, 0, 23);
-            range(&mut out, "minutes", b1 & 0x3F, 0, 59);
-            range(&mut out, "seconds", b2 & 0x3F, 0, 59);
-        }
-        // 11.001 (§3.12): r3 day, r4 month, r1 year; day 1..31, month 1..12,
-        // year 0..99.
-        (11, _) => {
-            let (Some(b0), Some(b1), Some(b2)) = (byte(0), byte(1), byte(2)) else {
-                return out;
-            };
-            reserved("the day octet", b0, 0xE0);
-            reserved("the month octet", b1, 0xF0);
-            reserved("the year octet", b2, 0x80);
-            range(&mut out, "day", b0 & 0x1F, 1, 31);
-            range(&mut out, "month", b1 & 0x0F, 1, 12);
-            range(&mut out, "year", b2 & 0x7F, 0, 99);
-        }
-        // 16.x (§3.17, §3.4): 16.000 carries no byte above 7Fh, and the octets
-        // after the first 00h are padding, all 00h.
-        (16, sub) => {
-            let text = &payload[..payload.len().min(14)];
-            if sub == Some(0)
-                && let Some(b) = text.iter().find(|b| **b > 0x7F)
-            {
-                out.push(format!("byte {b:#04x} is outside the 16.000 ASCII range"));
-            }
-            if let Some(nul) = text.iter().position(|b| *b == 0)
-                && text[nul..].iter().any(|b| *b != 0)
-            {
-                out.push("a character follows the 00h padding".to_string());
-            }
-        }
-        // 28.001 (§3.27.1): NUL-terminated UTF-8.
-        (28, _) => {
-            if !payload.contains(&0) {
-                out.push("the string has no terminating 00h".to_string());
-            }
-        }
-        // §6.18 251.600: octet 5 reserved, the high nibble of the mask reserved.
-        (251, _) if payload.len() >= 6 => {
-            reserved("the reserved octet", payload[4], 0xFF);
-            reserved("the validity octet", payload[5], 0xF0);
-        }
-        // §6.9 242.600: r6 before C B.
-        (242, _) if payload.len() >= 6 => reserved("the validity octet", payload[5], 0xFC),
-        // §6.16 249.600: mask b7..b3 reserved.
-        (249, _) if payload.len() >= 6 => reserved("the mask", payload[5], 0xF8),
-        // §6.17 250.600: r4 in each step octet, mask b7..b2 reserved.
-        (250, _) if payload.len() >= 3 => {
-            reserved("a step octet", payload[0] | payload[1], 0xF0);
-            reserved("the mask", payload[2], 0xFC);
-        }
-        // §6.19 252.600: r4 in each step octet, mask b7..b4 reserved.
-        (252, _) if payload.len() >= 5 => {
-            reserved(
-                "a step octet",
-                payload[..4].iter().fold(0, |a, b| a | b),
-                0xF0,
-            );
-            reserved("the mask", payload[4], 0xF0);
-        }
-        // §6.21 254.600: r4 in each step octet.
-        (254, _) if payload.len() >= 3 => {
-            reserved(
-                "a step octet",
-                payload[..3].iter().fold(0, |a, b| a | b),
-                0xF0,
-            );
-        }
-        // 17.001 (§3.18): r r SceneNumber.
-        (17, _) => {
-            if let Some(b) = byte(0) {
-                reserved("the scene octet", b, 0xC0);
-            }
-        }
-        // 18.001 (§3.19): C r SceneNumber; bit 6 is the worked example of
-        // 03_07_01 §2.4.
-        (18, _) => {
-            if let Some(b) = byte(0) {
-                reserved("the scene octet", b, 0x40);
-            }
-        }
-        // 19.001 (§3.20 and Notes 11, 15): reserved high bits, hour 24 only as
-        // 24:00:00, the low six bits of the last octet reserved.
-        (19, _) => {
-            if payload.len() < 8 {
-                return out;
-            }
-            let flags = payload[6];
-            reserved("the month octet", payload[1], 0xF0);
-            reserved("the day octet", payload[2], 0xE0);
-            reserved("the minutes octet", payload[4], 0xC0);
-            reserved("the seconds octet", payload[5], 0xC0);
-            reserved("the quality octet", payload[7], 0x3F);
-            if flags & 0x08 == 0 {
-                range(&mut out, "month", payload[1] & 0x0F, 1, 12);
-                range(&mut out, "day", payload[2] & 0x1F, 1, 31);
-            }
-            if flags & 0x02 == 0 {
-                let (h, m, sec) = (payload[3] & 0x1F, payload[4] & 0x3F, payload[5] & 0x3F);
-                range(&mut out, "hour", h, 0, 24);
-                range(&mut out, "minutes", m, 0, 59);
-                range(&mut out, "seconds", sec, 0, 59);
-                if h == 24 && (m != 0 || sec != 0) {
-                    out.push("hour 24 with non-zero minutes or seconds".to_string());
-                }
-            }
-        }
-        // The 20.xxx enumerations: a code outside the value list is reserved
-        // (03_07_01 §2.4 rule 3).
-        (20, Some(sub)) => {
-            if let Some(b) = byte(0)
-                && enum_table(sub).is_some()
-                && enum_label(sub, b).is_none()
-            {
-                return vec![format!("code {b} is reserved")];
-            }
-        }
-        (21, Some(sub)) => {
-            if let Some(b) = byte(0) {
-                // The mask of an 8-bit set fits one octet.
-                let mask = flag_reserved_mask(21, sub).to_be_bytes()[1];
-                reserved("the bit set", b, mask);
-            }
-        }
-        (22, Some(sub)) => {
-            if let (Some(hi), Some(lo)) = (byte(0), byte(1)) {
-                let [mhi, mlo] = flag_reserved_mask(22, sub).to_be_bytes();
-                reserved("the high octet", hi, mhi);
-                reserved("the low octet", lo, mlo);
-            }
-        }
-        _ => {}
+/// Records the bits of `value` under `mask` when any is set: reserved bits
+/// a receiver checks.
+fn reserved(out: &mut Vec<String>, what: &str, value: u8, mask: u8) {
+    if value & mask != 0 {
+        out.push(format!("reserved bits {:#04x} of {what} set", value & mask));
     }
-    out
+}
+
+/// Records a 20.xxx code outside its value list (03_07_01 §2.4 rule 3).
+fn reserved_code(out: &mut Vec<String>, sub: Option<u16>, b: u8) {
+    if let Some(sub) = sub
+        && enum_table(sub).is_some()
+        && enum_label(sub, b).is_none()
+    {
+        out.push(format!("code {b} is reserved"));
+    }
 }
 
 /// Records `name` = `value` when it is outside `lo..=hi`.
@@ -1396,8 +1247,10 @@ fn range(out: &mut Vec<String>, name: &str, value: u8, lo: u8, hi: u8) {
     }
 }
 
-/// The fallible inner decode; `None` means "fall back to raw".
-fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
+/// The fallible inner decode; `None` means "fall back to raw". Records in
+/// `out` why a conforming receiver would drop the payload (see
+/// [`validity_note`]), checked on the fields as they are read.
+fn decode_inner(dpt: &Dpt, payload: &[u8], out: &mut Vec<String>) -> Option<TypedValue> {
     match dpt.main {
         1 => {
             let b = payload.first()?;
@@ -1448,12 +1301,20 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         // (bit 7..3, 0 = set, 1 = clear) and a one-hot mode in bits 2..0.
         6 if dpt.sub == Some(20) => {
             let b = *payload.first()?;
+            // The mode field is one-hot.
+            if !matches!(b & 0x07, 0b001 | 0b010 | 0b100) {
+                out.push(format!("mode field {:03b}b is not one-hot", b & 0x07));
+            }
             Some(TypedValue::Flags {
                 bits: u16::from(b),
                 names: status_mode3_names(b),
             })
         }
         5..=8 | 12 | 13 => {
+            // 5.006 DPT_Tariff (03_07_02 §3.5.2.2): 255 shall be ignored.
+            if dpt.main == 5 && dpt.sub == Some(6) && payload.first() == Some(&255) {
+                out.push("tariff 255 is reserved".to_string());
+            }
             let n = numeric(dpt)?;
             let count = n.read(payload)?;
             match n.scale {
@@ -1493,10 +1354,14 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 unit: float16_unit(dpt.sub),
             })
         }
+        // 10.001 (§3.11): r r in front of minutes and seconds, hour 0..23.
         10 => {
-            let b0 = *payload.first()?;
-            let b1 = *payload.get(1)?;
-            let b2 = *payload.get(2)?;
+            let (b0, b1, b2) = (*payload.first()?, *payload.get(1)?, *payload.get(2)?);
+            reserved(out, "the minutes octet", b1, 0xC0);
+            reserved(out, "the seconds octet", b2, 0xC0);
+            range(out, "hour", b0 & 0x1F, 0, 23);
+            range(out, "minutes", b1 & 0x3F, 0, 59);
+            range(out, "seconds", b2 & 0x3F, 0, 59);
             Some(TypedValue::Time {
                 weekday: (b0 >> 5) & 0x07,
                 hour: b0 & 0x1f,
@@ -1504,10 +1369,17 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
                 second: b2 & 0x3f,
             })
         }
+        // 11.001 (§3.12): r3 day, r4 month, r1 year; day 1..31, month 1..12,
+        // year 0..99.
         11 => {
-            let day = *payload.first()? & 0x1f;
-            let month = *payload.get(1)? & 0x0f;
-            let yy = (*payload.get(2)? & 0x7f) as u16;
+            let (b0, b1, b2) = (*payload.first()?, *payload.get(1)?, *payload.get(2)?);
+            reserved(out, "the day octet", b0, 0xE0);
+            reserved(out, "the month octet", b1, 0xF0);
+            reserved(out, "the year octet", b2, 0x80);
+            let (day, month, yy) = (b0 & 0x1f, b1 & 0x0f, u16::from(b2 & 0x7f));
+            range(out, "day", day, 1, 31);
+            range(out, "month", month, 1, 12);
+            range(out, "year", b2 & 0x7f, 0, 99);
             // DPT 11.001 pivot: 0..=89 -> 2000+, 90..=99 -> 1900+.
             let year = if yy >= 90 { 1900 + yy } else { 2000 + yy };
             Some(TypedValue::Date { day, month, year })
@@ -1531,6 +1403,18 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             // is the code point; a high byte on 16.000 is shown the same way
             // and reported by `validity_note`.
             let text = &payload[..payload.len().min(14)];
+            // 16.000 carries no byte above 7Fh, and the octets after the
+            // first 00h are padding, all 00h (§3.17, §3.4).
+            if dpt.sub == Some(0)
+                && let Some(b) = text.iter().find(|b| **b > 0x7F)
+            {
+                out.push(format!("byte {b:#04x} is outside the 16.000 ASCII range"));
+            }
+            if let Some(nul) = text.iter().position(|b| *b == 0)
+                && text[nul..].iter().any(|b| *b != 0)
+            {
+                out.push("a character follows the 00h padding".to_string());
+            }
             let end = text.iter().rposition(|b| *b != 0).map_or(0, |i| i + 1);
             Some(TypedValue::Text(
                 text[..end].iter().map(|b| char::from(*b)).collect(),
@@ -1538,19 +1422,24 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         28 => {
             // 28.001 DPT_UTF-8 (03_07_02 §3.27.1): UTF-8, terminated by 00h.
-            let end = payload
-                .iter()
-                .position(|b| *b == 0)
-                .unwrap_or(payload.len());
+            let end = payload.iter().position(|b| *b == 0).unwrap_or_else(|| {
+                out.push("the string has no terminating 00h".to_string());
+                payload.len()
+            });
             let text = std::str::from_utf8(&payload[..end]).ok()?;
             Some(TypedValue::Text(text.to_string()))
         }
+        // 17.001 (§3.18): r r SceneNumber.
         17 => {
+            reserved(out, "the scene octet", *payload.first()?, 0xC0);
             let scene = *payload.first()? & 0x3f;
             Some(TypedValue::Scene(scene))
         }
+        // 18.001 (§3.19): C r SceneNumber; bit 6 is the worked example of
+        // 03_07_01 §2.4.
         18 => {
             let b = *payload.first()?;
+            reserved(out, "the scene octet", b, 0x40);
             Some(TypedValue::SceneControl {
                 learn: (b & 0x80) != 0,
                 scene: b & 0x3f,
@@ -1564,6 +1453,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         // code (an unsigned byte) rather than a wrong name.
         20 if dpt.sub == Some(102) => {
             let b = *payload.first()?;
+            reserved_code(out, dpt.sub, b);
             let mode = match b {
                 0 => HvacMode::Auto,
                 1 => HvacMode::Comfort,
@@ -1576,6 +1466,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         20 => {
             let b = *payload.first()?;
+            reserved_code(out, dpt.sub, b);
             if let Some(sub) = dpt.sub
                 && enum_table(sub).is_some()
             {
@@ -1591,13 +1482,28 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         21 => {
             let b = *payload.first()?;
+            if let Some(sub) = dpt.sub {
+                // The mask of an 8-bit set fits one octet.
+                reserved(
+                    out,
+                    "the bit set",
+                    b,
+                    flag_reserved_mask(21, sub).to_be_bytes()[1],
+                );
+            }
             Some(TypedValue::Flags {
                 bits: u16::from(b),
                 names: flag_names(21, dpt.sub, u16::from(b)),
             })
         }
         22 => {
-            let bits = u16::from_be_bytes([*payload.first()?, *payload.get(1)?]);
+            let (hi, lo) = (*payload.first()?, *payload.get(1)?);
+            if let Some(sub) = dpt.sub {
+                let [mhi, mlo] = flag_reserved_mask(22, sub).to_be_bytes();
+                reserved(out, "the high octet", hi, mhi);
+                reserved(out, "the low octet", lo, mlo);
+            }
+            let bits = u16::from_be_bytes([hi, lo]);
             Some(TypedValue::Flags {
                 bits,
                 names: flag_names(22, dpt.sub, bits),
@@ -1621,6 +1527,26 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let b5 = *payload.get(5)?;
             let flags = *payload.get(6)?;
             let quality = *payload.get(7)?;
+            // §3.20 and Notes 11, 15: reserved high bits, hour 24 only as
+            // 24:00:00, the low six bits of the last octet reserved.
+            reserved(out, "the month octet", b1, 0xF0);
+            reserved(out, "the day octet", b2, 0xE0);
+            reserved(out, "the minutes octet", b4, 0xC0);
+            reserved(out, "the seconds octet", b5, 0xC0);
+            reserved(out, "the quality octet", quality, 0x3F);
+            if flags & 0x08 == 0 {
+                range(out, "month", b1 & 0x0F, 1, 12);
+                range(out, "day", b2 & 0x1F, 1, 31);
+            }
+            let (h, m, sec) = (b3 & 0x1F, b4 & 0x3F, b5 & 0x3F);
+            if flags & 0x02 == 0 {
+                range(out, "hour", h, 0, 24);
+                range(out, "minutes", m, 0, 59);
+                range(out, "seconds", sec, 0, 59);
+                if h == 24 && (m != 0 || sec != 0) {
+                    out.push("hour 24 with non-zero minutes or seconds".to_string());
+                }
+            }
             Some(TypedValue::DateTime(DateTime {
                 year: 1900 + b0 as u16,
                 month: b1 & 0x0f,
@@ -1654,8 +1580,10 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let g = *payload.get(1)?;
             let b = *payload.get(2)?;
             let w = *payload.get(3)?;
-            // payload[4] is reserved and ignored on decode.
+            // §6.18: octet 4 reserved, the high nibble of the mask reserved.
             let valid = *payload.get(5)?;
+            reserved(out, "the reserved octet", payload[4], 0xFF);
+            reserved(out, "the validity octet", valid, 0xF0);
             Some(TypedValue::Rgbw(Rgbw {
                 r,
                 g,
@@ -1674,6 +1602,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let y = u16::from_be_bytes([*payload.get(2)?, *payload.get(3)?]);
             let brightness = *payload.get(4)?;
             let valid = *payload.get(5)?;
+            reserved(out, "the validity octet", valid, 0xFC);
             Some(TypedValue::ColourXyY {
                 x,
                 y,
@@ -1690,6 +1619,7 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
             let kelvin = u16::from_be_bytes([*payload.get(2)?, *payload.get(3)?]);
             let brightness = *payload.get(4)?;
             let mask = *payload.get(5)?;
+            reserved(out, "the mask", mask, 0xF8);
             let field = |bit: u8, text: String| {
                 if mask & bit != 0 {
                     text
@@ -1717,6 +1647,8 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         // colour temperature, b0 brightness.
         250 => {
             let (ct, br, mask) = (*payload.first()?, *payload.get(1)?, *payload.get(2)?);
+            reserved(out, "a step octet", ct | br, 0xF0);
+            reserved(out, "the mask", mask, 0xFC);
             Some(TypedValue::Fields(vec![
                 ("colour temperature", relative_step(ct, mask & 0x02 != 0)),
                 ("brightness", relative_step(br, mask & 0x01 != 0)),
@@ -1726,6 +1658,13 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         // B, W, then the mask b3 R, b2 G, b1 B, b0 W.
         252 => {
             let mask = *payload.get(4)?;
+            reserved(
+                out,
+                "a step octet",
+                payload[..4].iter().fold(0, |a, b| a | b),
+                0xF0,
+            );
+            reserved(out, "the mask", mask, 0xF0);
             Some(TypedValue::Fields(vec![
                 ("red", relative_step(*payload.first()?, mask & 0x08 != 0)),
                 ("green", relative_step(*payload.get(1)?, mask & 0x04 != 0)),
@@ -1735,11 +1674,20 @@ fn decode_inner(dpt: &Dpt, payload: &[u8]) -> Option<TypedValue> {
         }
         // 254.600 DPT_Relative_Control_RGB (§6.21): three r4B1U3 steps, no
         // mask.
-        254 => Some(TypedValue::Fields(vec![
-            ("red", relative_step(*payload.first()?, true)),
-            ("green", relative_step(*payload.get(1)?, true)),
-            ("blue", relative_step(*payload.get(2)?, true)),
-        ])),
+        254 => {
+            let steps = payload.get(..3)?;
+            reserved(
+                out,
+                "a step octet",
+                steps.iter().fold(0, |a, b| a | b),
+                0xF0,
+            );
+            Some(TypedValue::Fields(vec![
+                ("red", relative_step(steps[0], true)),
+                ("green", relative_step(steps[1], true)),
+                ("blue", relative_step(steps[2], true)),
+            ]))
+        }
         _ => None,
     }
 }

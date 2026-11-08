@@ -402,10 +402,18 @@ fn test_device_view_synthetic_param_calculation_agrees_with_the_plan() -> TestRe
     let doc_double = doc_device
         .parameters
         .iter()
-        .find(|p| p.key.ends_with("@P-3_R-3"))
+        .find(|p| p.reference == "P-3_R-3")
         .ok_or("prey_double not in the doc")?;
-    assert_eq!(doc_double.value, plan_double);
+    assert_eq!(doc_double.effective(), Some(plan_double.as_str()));
     assert_eq!(doc_double.computed_by.as_deref(), Some("PC-1"));
+    // The hidden output is listed under its ref.
+    assert!(
+        doc_device
+            .parameters
+            .iter()
+            .any(|p| p.key == "P-4_R-4" && p.computed_by.as_deref() == Some("PC-1")),
+        "the hidden output is in the doc"
+    );
 
     // At the defaults no calculation runs, in the view as in the plan.
     let defaults = param_calculation_model(&app.id, None)?;
