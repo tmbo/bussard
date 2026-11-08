@@ -712,8 +712,6 @@ impl BussardMcp {
             settle_changes(&dir, &mut changes, [&restored, b]);
         }
         self.state().model.reload();
-        self.session_edits()
-            .undone(target.id.as_str(), undo_snapshot.as_str(), &changes);
 
         let earlier = before
             .as_ref()
@@ -771,16 +769,7 @@ impl BussardMcp {
                 );
             }
         };
-        let pending = self.session_edits().pending(subject);
-        let Some(baseline) = pending.iter().map(|e| e.snapshot.clone()).min() else {
-            return refusal(format!(
-                "this session has no unapplied edits of {subject}, so there is nothing to \
-                 discard. knx_undo rolls the whole model back to a snapshot."
-            ));
-        };
-
         let dir = self.state().dir.clone();
-        let history = History::open(&dir);
         let before = match Model::load(&dir) {
             Ok(model) => model,
             Err(err) => {
@@ -790,13 +779,17 @@ impl BussardMcp {
                 ));
             }
         };
-        let (base_id, base) = match history
-            .resolve(&baseline)
-            .and_then(|snapshot| history.load(&snapshot.id).map(|model| (snapshot.id, model)))
-        {
-            Ok(found) => found,
-            Err(err) => return refusal(format!("snapshot {baseline} does not load: {err}")),
+        // What is pending on the subject, read from the history (#941); the
+        // oldest baseline is the state before its first pending edit.
+        let pending = self.session_edits().since(subject, &before);
+        let Some(first) = pending.first() else {
+            return refusal(format!(
+                "this session has no unapplied edits of {subject}, so there is nothing to \
+                 discard. knx_undo rolls the whole model back to a snapshot."
+            ));
         };
+        let (baseline, base) = (&first.base, &first.model);
+        let history = History::open(&dir);
         let mut edited = before.clone();
         let mut notes: Vec<String> = Vec::new();
         match subject {
@@ -828,11 +821,11 @@ impl BussardMcp {
                         .flat_map(|l| l.send.into_iter().chain(l.listen.iter().copied()))
                         .collect()
                 };
-                let kept = gas_of(&base);
+                let kept = gas_of(base);
                 let session_groups: Vec<GroupAddress> = gas_of(&before)
                     .into_iter()
                     .filter(|ga| !kept.contains(ga) && before.groups.groups.contains_key(ga))
-                    .filter(|ga| self.created_in_session(&history, *ga))
+                    .filter(|ga| self.created_in_session(*ga, &before))
                     .collect();
                 for ga in session_groups {
                     notes.push(format!(
@@ -866,20 +859,8 @@ impl BussardMcp {
         settle_changes(&dir, &mut changes, [&edited, &before]);
         let dropped_sentences: Vec<String> = pending
             .iter()
-            .flat_map(|e| e.sentences.iter().cloned())
+            .flat_map(|since| since.changes.changes.iter().map(|c| c.sentence.clone()))
             .collect();
-        if changes.is_empty() {
-            // The files already say what the baseline said (a human reverted
-            // them): only the record goes.
-            self.session_edits().discard(subject, None);
-            return ok(json!({
-                "ok": true,
-                "discarded": subject.to_string(),
-                "dropped": dropped_sentences,
-                "changes": [],
-                "note": "the files already matched the state before these edits; nothing was written",
-            }));
-        }
 
         let reason = SnapshotReason::new("mcp knx_discard_edits")
             .with_args(vec![subject.to_string()])
@@ -900,12 +881,10 @@ impl BussardMcp {
         // exactly as knx_undo does (#331, #336). The discard's own snapshot
         // keeps the current store, so an undo of the discard restores it.
         let key_store = bussard_service::history::follow_keys(
-            &dir, &base_id, &snapshot, &before, &edited, "discard",
+            &dir, baseline, &snapshot, &before, &edited, "discard",
         )
         .map(|follow| json!(follow));
         self.state().model.reload();
-        self.session_edits()
-            .discard(subject, Some(snapshot.as_str()));
 
         let earlier = bussard_model::validate_in_dir(&before, &dir);
         let diagnostics = bussard_model::validate_in_dir(&edited, &dir);
@@ -942,22 +921,13 @@ impl BussardMcp {
 }
 
 impl BussardMcp {
-    /// Whether this session created `ga`: it has session edits, and the
-    /// snapshot before the first of them does not define it.
-    fn created_in_session(&self, history: &History, ga: GroupAddress) -> bool {
-        let Some(first) = self
-            .session_edits()
-            .pending(Subject::Group(ga))
-            .into_iter()
-            .map(|e| e.snapshot)
-            .min()
-        else {
-            return false;
-        };
-        history
-            .resolve(&first)
-            .and_then(|snapshot| history.load(&snapshot.id))
-            .is_ok_and(|model| !model.groups.groups.contains_key(&ga))
+    /// Whether this session created `ga`: it is in `current`, and the
+    /// snapshot before the session's first edit does not define it.
+    fn created_in_session(&self, ga: GroupAddress, current: &Model) -> bool {
+        self.session_edits()
+            .since(Subject::Group(ga), current)
+            .first()
+            .is_some_and(|since| !since.model.groups.groups.contains_key(&ga))
     }
 
     /// The `next_step` for an edit that produced `changes`, at this server's
@@ -1070,9 +1040,6 @@ impl BussardMcp {
         // The handle debounces its directory check; force it so the very next
         // tool call sees what we just wrote.
         self.state().model.reload();
-
-        self.session_edits()
-            .record(snapshot.as_str(), tool, &changes);
 
         let earlier = bussard_model::validate_in_dir(&before, &dir);
         let diagnostics = bussard_model::validate_in_dir(&edited, &dir);

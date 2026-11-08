@@ -23,7 +23,7 @@
 //! and runs the setup with it.
 
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use bussard_model::Model;
 use bussard_service::BusService;
@@ -34,22 +34,18 @@ use bussard_service::setup::{
 use bussard_service::transport::ConnectionConfig;
 use bussard_service::transport::bus::BusHandle;
 use bussard_service::transport::knxnet::GatewayInfo;
-use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::tool::{InputResponses, RequestState};
-use rmcp::model::{
-    CallToolResponse, CallToolResult, ListToolsResult, PaginatedRequestParams, ServerCapabilities,
-    ServerInfo, Tool,
-};
+use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::service::RequestContext;
-use rmcp::{ErrorData, RoleServer, ServerHandler, tool, tool_router};
+use rmcp::{ErrorData, RoleServer, tool, tool_router};
 use serde::Deserialize;
 use serde_json::json;
 
 use crate::McpConfig;
 use crate::args::Parameters;
-use crate::password_form::{self, Attempt, PasswordForms, Step};
-use crate::server::BussardMcp;
+use crate::password_form::{self, Attempt, Step};
+use crate::server::{BussardMcp, Live};
 
 /// The tools of the onboarding state, in registration order.
 pub const ONBOARDING_TOOLS: [&str; 2] = ["knx_setup", "knx_bus_status"];
@@ -113,7 +109,7 @@ pub fn is_onboarding_dir(dir: &Path) -> bool {
     setup::skeleton::target_state(dir).is_ok_and(|state| !state.needs_confirmation())
 }
 
-/// The bus and instance marker the full server holds once it is active.
+/// The bus and instance marker of the server `knx_setup` set up.
 struct Running {
     /// The bus handle, closed when the server exits.
     handle: BusHandle,
@@ -123,37 +119,14 @@ struct Running {
     _instance: Option<bussard_service::transport::host_lock::HostLock>,
 }
 
-/// The shared part of every clone of [`SetupMcp`].
-struct Inner {
+/// The onboarding state of a [`BussardMcp`] started without a model.
+pub(crate) struct Setup {
     /// What the full server needs.
     onboarding: Onboarding,
-    /// The full server, once `knx_setup` succeeded.
-    full: OnceLock<BussardMcp>,
     /// The bus of the full server.
     running: std::sync::Mutex<Option<Running>>,
     /// One setup at a time.
     setup_lock: tokio::sync::Mutex<()>,
-    /// The project password form `knx_setup` shows (#818).
-    forms: PasswordForms,
-}
-
-/// The MCP server of the onboarding state: `knx_setup` and `knx_bus_status`
-/// until the model exists, the full [`BussardMcp`] after.
-#[derive(Clone)]
-pub struct SetupMcp {
-    /// The shared state.
-    inner: Arc<Inner>,
-    /// The onboarding tools.
-    tool_router: ToolRouter<SetupMcp>,
-}
-
-impl std::fmt::Debug for SetupMcp {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SetupMcp")
-            .field("dir", &self.inner.onboarding.config.dir)
-            .field("active", &self.inner.full.get().is_some())
-            .finish_non_exhaustive()
-    }
 }
 
 /// Arguments for `knx_setup`. Its `Debug` never shows the password.
@@ -184,12 +157,6 @@ impl std::fmt::Debug for SetupArgs {
             .field("gateway", &self.gateway)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .finish()
-    }
-}
-
-impl std::fmt::Debug for Running {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Running").finish_non_exhaustive()
     }
 }
 
@@ -253,8 +220,8 @@ impl SetupHooks for Chat {
     }
 }
 
-#[tool_router]
-impl SetupMcp {
+#[tool_router(router = setup_router, vis = "pub(crate)")]
+impl BussardMcp {
     // `knx_setup` (issue #745).
     #[doc = include_str!("../guidance/tools/onboarding/knx_setup.md")]
     #[tool]
@@ -265,15 +232,18 @@ impl SetupMcp {
         RequestState(request_state): RequestState,
         InputResponses(input_responses): InputResponses,
     ) -> Result<CallToolResponse, ErrorData> {
-        let _one = self.inner.setup_lock.lock().await;
-        if self.inner.full.get().is_some() {
+        let Some(setup) = self.setup.clone() else {
+            return Ok(failure("The model is already set up.".to_string(), Vec::new()).into());
+        };
+        let _one = setup.setup_lock.lock().await;
+        if !self.before_setup() {
             return Ok(CallToolResult::structured(json!({
                 "done": true,
                 "summary": "The model is already set up; the full tool set is registered.",
             }))
             .into());
         }
-        let onboarding = &self.inner.onboarding;
+        let onboarding = &setup.onboarding;
         let dir = onboarding.config.dir.clone();
         let (gateway, routing) = match args.gateway.as_deref().map(str::trim) {
             Some(g) if g.eq_ignore_ascii_case("routing") => (None, true),
@@ -288,7 +258,7 @@ impl SetupMcp {
             find_project: args.project_file.is_none(),
             password: args.password.clone(),
         };
-        let forms = &self.inner.forms;
+        let forms = &self.password_forms;
         // The client's second round of a 2026-07-28 call: the human's answer
         // to the password form's elicitation (#818).
         if let Some(state) = request_state.filter(|s| password_form::is_form_state(s)) {
@@ -322,15 +292,15 @@ impl SetupMcp {
 
     // `knx_bus_status` before the model exists.
     #[doc = include_str!("../guidance/tools/onboarding/knx_bus_status.md")]
-    #[tool]
-    async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
+    #[tool(name = "knx_bus_status")]
+    async fn knx_bus_status_before_setup(&self) -> Result<CallToolResult, ErrorData> {
         Ok(CallToolResult::structured(json!({
             "state": "no_model",
             "connected": false,
             "reason": format!(
                 "There is no model in {} yet, so there is no bus connection. Call knx_setup: \
                  it finds the gateway and writes the model.",
-                self.inner.onboarding.config.dir.display()
+                self.state().dir.display()
             ),
         })))
     }
@@ -401,19 +371,22 @@ fn failure(sentence: String, log: Vec<String>) -> CallToolResult {
     result
 }
 
-impl SetupMcp {
-    /// The onboarding server for `onboarding.config.dir`.
-    pub fn new(onboarding: Onboarding) -> Self {
-        SetupMcp {
-            inner: Arc::new(Inner {
-                onboarding,
-                full: OnceLock::new(),
-                running: std::sync::Mutex::new(None),
-                setup_lock: tokio::sync::Mutex::new(()),
-                forms: PasswordForms::new(),
-            }),
-            tool_router: Self::tool_router(),
-        }
+impl BussardMcp {
+    /// The server for `onboarding.config.dir`, which has no model yet:
+    /// `knx_setup` and `knx_bus_status` over an empty placeholder model
+    /// until `knx_setup` wrote and loaded the model.
+    pub fn onboarding(onboarding: Onboarding) -> anyhow::Result<Self> {
+        let state = crate::build_state_from_model(Model::default(), &onboarding.config)?;
+        let started = Live {
+            state,
+            router: Self::setup_router(),
+        };
+        let setup = Setup {
+            onboarding,
+            running: std::sync::Mutex::new(None),
+            setup_lock: tokio::sync::Mutex::new(()),
+        };
+        Ok(Self::with_live(started, Some(Arc::new(setup))))
     }
 
     /// Collects the project password from `form` and runs the setup with
@@ -467,7 +440,7 @@ impl SetupMcp {
         log: Vec<String>,
         password: Option<String>,
     ) -> CallToolResult {
-        let dir = self.inner.onboarding.config.dir.clone();
+        let dir = self.state().dir.clone();
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(SetupError::PasswordRequired) => return password_required(log),
@@ -492,9 +465,9 @@ impl SetupMcp {
             }
         };
         match self.activate().await {
-            Ok((full, tunnel_note)) => {
-                let tools = full.tool_count();
-                let instructions = crate::guidance::Tiers::of(full.state()).instructions();
+            Ok(tunnel_note) => {
+                let tools = self.tool_count();
+                let instructions = crate::guidance::Tiers::of(self.state()).instructions();
                 let summary = match &imported {
                     Some((project, 0)) => format!(
                         "Set up {} from {}. The server now has its full tool set ({tools} \
@@ -546,16 +519,12 @@ impl SetupMcp {
         }
     }
 
-    /// The full server, once `knx_setup` succeeded.
-    pub fn full(&self) -> Option<&BussardMcp> {
-        self.inner.full.get()
-    }
-
     /// Loads the written model, opens the bus under the server's write
-    /// policy, wires the ring feeder and registers the full server.
-    /// Returns the full server and the tunnel sentence for the summary.
-    async fn activate(&self) -> Result<(&BussardMcp, Option<String>), String> {
-        let onboarding = &self.inner.onboarding;
+    /// policy, wires the ring feeder and serves the full tool set from now
+    /// on. Returns the tunnel sentence for the summary.
+    async fn activate(&self) -> Result<Option<String>, String> {
+        let setup = self.setup.as_ref().ok_or("the server has a model")?;
+        let onboarding = &setup.onboarding;
         let dir = onboarding.config.dir.clone();
         let model = Model::load(&dir).map_err(|e| format!("the model does not load: {e}"))?;
         let ResolvedConnection {
@@ -578,13 +547,13 @@ impl SetupMcp {
             );
         }
         let (handle, feeder) = crate::run::wire_bus(&state, service);
-        let full = BussardMcp::new(state);
+        let router = Self::full_router(&state);
         tracing::info!(
             "mcp: knx_setup wrote {}; {} tools registered",
             dir.display(),
-            full.tool_count()
+            router.list_all().len()
         );
-        if let Ok(mut running) = self.inner.running.lock() {
+        if let Ok(mut running) = setup.running.lock() {
             *running = Some(Running {
                 handle,
                 feeder,
@@ -592,28 +561,31 @@ impl SetupMcp {
             });
         }
         // `knx_setup` holds the setup lock, so no other call sets it.
-        let _ = self.inner.full.set(full);
-        self.inner
-            .full
-            .get()
-            .map(|full| (full, tunnel_note))
-            .ok_or_else(|| "the full server did not register".to_string())
+        self.set_up
+            .set(Live { state, router })
+            .map_err(|_| "the full server did not register".to_string())?;
+        Ok(tunnel_note)
     }
 
-    /// Closes the bus of the full server, when there is one.
+    /// Closes the bus `knx_setup` opened, when it did.
     pub async fn shutdown(&self) {
-        if let Some(full) = self.inner.full.get() {
-            full.state().viz.stop().await;
+        let Some(setup) = &self.setup else {
+            return;
+        };
+        if let Some(live) = self.set_up.get() {
+            live.state.viz.stop().await;
         }
-        let running = self.inner.running.lock().ok().and_then(|mut r| r.take());
+        let running = setup.running.lock().ok().and_then(|mut r| r.take());
         if let Some(running) = running {
             let _ = running.handle.close().await;
             running.feeder.abort();
         }
     }
+}
 
+impl Setup {
     /// The onboarding server instructions.
-    fn instructions(&self) -> String {
+    pub(crate) fn instructions(&self) -> String {
         format!(
             "bussard: KNX as code over MCP. There is no model in {} yet, so only knx_setup and \
              knx_bus_status are registered. To set the house up, ask the human whether they \
@@ -623,71 +595,8 @@ impl SetupMcp {
              When knx_setup returns a question, nothing was written: relay it and call \
              again. After it succeeds the server registers its full tool set and its result \
              carries the instructions for it; start with knx_project_summary.",
-            self.inner.onboarding.config.dir.display()
+            self.onboarding.config.dir.display()
         )
-    }
-}
-
-impl ServerHandler for SetupMcp {
-    async fn call_tool(
-        &self,
-        request: rmcp::model::CallToolRequestParams,
-        context: RequestContext<RoleServer>,
-    ) -> Result<rmcp::model::CallToolResponse, ErrorData> {
-        if let Some(full) = self.inner.full.get() {
-            return full.call_tool(request, context).await;
-        }
-        tracing::info!(
-            tool = %request.name,
-            arguments_present = request.arguments.is_some(),
-            fields = ?crate::args::field_names(request.arguments.as_ref()),
-            "tools/call"
-        );
-        let peer = context.peer.clone();
-        let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let result = crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await);
-        if self.inner.full.get().is_some()
-            && let Err(err) = peer.notify_tool_list_changed().await
-        {
-            tracing::warn!("failed to send tools/list_changed: {err}");
-        }
-        result
-    }
-
-    async fn list_tools(
-        &self,
-        request: Option<PaginatedRequestParams>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<ListToolsResult, ErrorData> {
-        if let Some(full) = self.inner.full.get() {
-            return full.list_tools(request, context).await;
-        }
-        Ok(ListToolsResult {
-            tools: self.tool_router.list_all(),
-            ..ListToolsResult::default()
-        })
-    }
-
-    fn get_tool(&self, name: &str) -> Option<Tool> {
-        match self.inner.full.get() {
-            Some(full) => full.get_tool(name),
-            None => self.tool_router.get(name).cloned(),
-        }
-    }
-
-    fn get_info(&self) -> ServerInfo {
-        let mut server_info = rmcp::model::Implementation::from_build_env();
-        server_info.name = "bussard".to_string();
-        server_info.version = env!("CARGO_PKG_VERSION").to_string();
-        server_info.title = Some("bussard KNX MCP server".to_string());
-        ServerInfo::new(
-            ServerCapabilities::builder()
-                .enable_tools()
-                .enable_tool_list_changed()
-                .build(),
-        )
-        .with_server_info(server_info)
-        .with_instructions(self.instructions())
     }
 }
 

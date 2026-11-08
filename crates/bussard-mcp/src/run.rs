@@ -83,7 +83,7 @@ pub(crate) fn wire_bus(
 /// disconnects, then closes the bus the full server opened, if it did.
 /// `on_ready` runs right before the server waits for the client.
 pub async fn serve_onboarding_stdio(
-    server: crate::onboarding::SetupMcp,
+    server: BussardMcp,
     on_ready: impl FnOnce(),
 ) -> anyhow::Result<()> {
     tracing::info!("mcp: serving on stdio (onboarding: no model yet)");
@@ -105,7 +105,7 @@ pub async fn serve_onboarding_stdio(
 /// Serves the onboarding server (issue #745) over streamable HTTP on
 /// `options.listen` until Ctrl-C, like [`serve_http_with_ready`].
 pub async fn serve_onboarding_http(
-    server: crate::onboarding::SetupMcp,
+    server: BussardMcp,
     options: &HttpOptions,
     on_ready: impl FnOnce(SocketAddr),
 ) -> anyhow::Result<()> {

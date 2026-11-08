@@ -43,7 +43,8 @@ use std::time::SystemTime;
 
 use serde::{Deserialize, Serialize};
 
-use crate::change::{ChangeSet, describe};
+use crate::address::{GroupAddress, IndividualAddress};
+use crate::change::{Change, ChangeKind, ChangeSet, describe};
 use crate::loader::{LoadError, Model};
 
 /// The directory, relative to the model directory, that holds the history.
@@ -246,6 +247,68 @@ pub struct Pending {
     pub changes: ChangeSet,
 }
 
+/// What a model edit is about: one device or one group address.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Subject {
+    /// A device: its links, parameters, object security and interface.
+    Device(IndividualAddress),
+    /// A group address in `groups.toml`.
+    Group(GroupAddress),
+}
+
+impl std::fmt::Display for Subject {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Subject::Device(ia) => write!(f, "{ia}"),
+            Subject::Group(ga) => write!(f, "{ga}"),
+        }
+    }
+}
+
+impl Subject {
+    /// Whether `change` is about this subject: for a device, a change that
+    /// reaches it over the bus (a link, a parameter, an object's security, its
+    /// interface settings; never its name or room); for a group address, a
+    /// change of its `groups.toml` entry.
+    pub fn is_reached_by(&self, change: &Change) -> bool {
+        match self {
+            Subject::Device(ia) => {
+                matches!(
+                    change.kind,
+                    ChangeKind::ParameterChanged
+                        | ChangeKind::LinkAdded
+                        | ChangeKind::LinkRemoved
+                        | ChangeKind::ObjectSecurityChanged
+                        | ChangeKind::InterfaceChanged
+                ) && change.device.as_deref().and_then(|d| d.parse().ok()) == Some(*ia)
+            }
+            Subject::Group(ga) => {
+                matches!(
+                    change.kind,
+                    ChangeKind::GroupAdded
+                        | ChangeKind::GroupRemoved
+                        | ChangeKind::GroupRenamed
+                        | ChangeKind::GroupDptChanged
+                        | ChangeKind::GroupDescriptionChanged
+                        | ChangeKind::GroupProtectionChanged
+                        | ChangeKind::GroupSecurityChanged
+                ) && change.group.as_deref().and_then(|g| g.parse().ok()) == Some(*ga)
+            }
+        }
+    }
+}
+
+/// A subject's changes since a point in the history ([`History::since`]).
+#[derive(Debug, Clone)]
+pub struct Since {
+    /// The first snapshot after the point: the files as they were then.
+    pub base: SnapshotId,
+    /// The model of that snapshot.
+    pub model: Model,
+    /// The changes from it to the current model that are about the subject.
+    pub changes: ChangeSet,
+}
+
 /// The history of one model directory.
 #[derive(Debug, Clone)]
 pub struct History {
@@ -408,9 +471,20 @@ impl History {
     /// the listing: a half-written snapshot must not break `bussard history`.
     pub fn list(&self) -> Result<Vec<Snapshot>, HistoryError> {
         let mut out = Vec::new();
+        for id in self.ids()? {
+            if let Ok(manifest) = self.read_manifest(&id) {
+                out.push(Snapshot { id, manifest });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The ids of the snapshots that have a manifest, oldest first, without
+    /// reading one.
+    fn ids(&self) -> Result<Vec<SnapshotId>, HistoryError> {
         let entries = match fs::read_dir(&self.history_dir) {
             Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(source) => {
                 return Err(HistoryError::Io {
                     path: self.history_dir.clone(),
@@ -418,19 +492,44 @@ impl History {
                 });
             }
         };
-        let mut ids: Vec<String> = entries
+        let mut ids: Vec<SnapshotId> = entries
             .flatten()
-            .filter(|e| e.path().is_dir())
-            .filter_map(|e| e.file_name().to_str().map(str::to_string))
+            .filter(|e| e.path().join(MANIFEST).is_file())
+            .filter_map(|e| e.file_name().to_str().map(|id| SnapshotId(id.to_string())))
             .collect();
         ids.sort();
-        for id in ids {
-            let id = SnapshotId(id);
-            if let Ok(manifest) = self.read_manifest(&id) {
-                out.push(Snapshot { id, manifest });
-            }
-        }
-        Ok(out)
+        Ok(ids)
+    }
+
+    /// The id of the most recent snapshot, if there is one.
+    pub fn latest_id(&self) -> Result<Option<SnapshotId>, HistoryError> {
+        Ok(self.ids()?.pop())
+    }
+
+    /// What changed for `subject` since `mark` (issue #941): `current`
+    /// against the first snapshot taken after `mark`, or after none when
+    /// `mark` is `None`. Snapshots are taken before every write, so that
+    /// snapshot holds the files as they were at `mark`. `None` when no
+    /// snapshot was taken after `mark`: nothing was written since.
+    pub fn since(
+        &self,
+        mark: Option<&SnapshotId>,
+        current: &Model,
+        subject: Subject,
+    ) -> Result<Option<Since>, HistoryError> {
+        let Some(base) = self.ids()?.into_iter().find(|id| Some(id) > mark) else {
+            return Ok(None);
+        };
+        let model = self.load(&base)?;
+        let mut changes = describe(&model, current);
+        changes
+            .changes
+            .retain(|change| subject.is_reached_by(change));
+        Ok(Some(Since {
+            base,
+            model,
+            changes,
+        }))
     }
 
     /// The most recent snapshot, if there is one.
@@ -747,6 +846,37 @@ mod tests {
             "address = \"1.1.4\"\nname = \"Blind actuator\"\nproduct = \"BA-4\"\n",
         )?;
         Ok(dir)
+    }
+
+    /// `since` compares the first snapshot after the mark with the current
+    /// model and keeps the subject's changes only.
+    #[test]
+    fn test_since_reads_the_subject_changes_after_the_mark()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let dir = model_dir("since")?;
+        let history = History::open(&dir);
+        let blind = Subject::Group("3/0/4".parse()?);
+        let mark = history.latest_id()?;
+        assert!(mark.is_none());
+        let current = Model::load(&dir)?;
+        assert!(
+            history.since(None, &current, blind)?.is_none(),
+            "no snapshot"
+        );
+
+        let first = history.snapshot(SnapshotReason::new("mcp knx_set_group"))?;
+        let text = fs::read_to_string(dir.join("groups.toml"))?.replace("Blind", "Shade");
+        fs::write(dir.join("groups.toml"), text)?;
+        let current = Model::load(&dir)?;
+        let since = history.since(None, &current, blind)?.ok_or("a snapshot")?;
+        assert_eq!(since.base, first);
+        assert_eq!(since.changes.len(), 1, "{:?}", since.changes);
+        let device = Subject::Device("1.1.4".parse()?);
+        let since = history.since(None, &current, device)?.ok_or("a snapshot")?;
+        assert!(since.changes.is_empty(), "a rename is not the device's");
+        assert!(history.since(Some(&first), &current, blind)?.is_none());
+        fs::remove_dir_all(&dir)?;
+        Ok(())
     }
 
     #[test]

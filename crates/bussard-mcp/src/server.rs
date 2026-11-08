@@ -13,7 +13,7 @@
 //! method is a thin adapter: it parses arguments, calls the pure logic in
 //! [`crate::tools`], and boxes the JSON in a `CallToolResult::structured`.
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
@@ -48,8 +48,15 @@ const RECONNECT_WAIT: Duration = Duration::from_secs(20);
 /// behind an `Arc`, so clones are cheap and share one ring + model.
 #[derive(Clone)]
 pub struct BussardMcp {
-    state: Arc<SharedState>,
-    tool_router: ToolRouter<BussardMcp>,
+    /// The state and the tools the server started with: the full set over
+    /// the model, or `knx_setup` and `knx_bus_status` over an empty
+    /// placeholder model when it started without one (issue #745).
+    started: Live,
+    /// What `knx_setup` set up: the loaded model and the full tool set,
+    /// which every clone serves from then on.
+    pub(crate) set_up: Arc<OnceLock<Live>>,
+    /// The onboarding state, when the server started without a model.
+    pub(crate) setup: Option<Arc<crate::onboarding::Setup>>,
     /// The warm management connection shared by every clone (issue #215).
     warm: crate::warm::WarmConnection,
     /// This session's model edits no device has received yet (issue #279).
@@ -67,11 +74,43 @@ pub struct BussardMcp {
     pub(crate) browser: Arc<dyn crate::browser::BrowserOpener>,
 }
 
+/// The state a server serves and the tools it registers over it.
+#[derive(Clone)]
+pub(crate) struct Live {
+    /// The shared state.
+    pub(crate) state: Arc<SharedState>,
+    /// The registered tools.
+    pub(crate) router: ToolRouter<BussardMcp>,
+}
+
 impl BussardMcp {
-    /// Builds the server over `state`. The instance router starts with every
-    /// tool registered, then unregisters the ones whose [`crate::Tier`] this
-    /// mode does not allow ([`crate::TOOLS`]).
+    /// Builds the server over `state` with the tools of its tiers.
     pub fn new(state: Arc<SharedState>) -> Self {
+        let router = Self::full_router(&state);
+        Self::with_live(Live { state, router }, None)
+    }
+
+    /// The server over `started`, with `setup` when it started without a
+    /// model.
+    pub(crate) fn with_live(started: Live, setup: Option<Arc<crate::onboarding::Setup>>) -> Self {
+        let session_edits = crate::session_edits::SessionEdits::new(&started.state.dir);
+        BussardMcp {
+            started,
+            set_up: Arc::default(),
+            setup,
+            warm: crate::warm::WarmConnection::new(),
+            session_edits,
+            admission_tables: Arc::default(),
+            enroll: crate::tools_enroll::EnrollJobs::new(),
+            password_forms: crate::password_form::PasswordForms::new(),
+            browser: Arc::new(crate::browser::SystemBrowser),
+        }
+    }
+
+    /// The tool set over `state`: every tool registered, then the ones
+    /// whose [`crate::Tier`] this mode does not allow ([`crate::TOOLS`])
+    /// unregistered.
+    pub(crate) fn full_router(state: &SharedState) -> ToolRouter<BussardMcp> {
         // The bus tools, the model-edit tools, the group-planning tools, the
         // learn/acceptance tools, the audit tool and the bundle/diff tools live
         // in separate `#[tool_router]` impl blocks (see `crate::tools_model`,
@@ -92,22 +131,24 @@ impl BussardMcp {
             + Self::ha_automation_router()
             + Self::enroll_router()
             + Self::viz_router();
-        let tiers = crate::guidance::Tiers::of(&state);
+        let tiers = crate::guidance::Tiers::of(state);
         for (name, tier) in crate::TOOLS {
             if !tiers.allows(*tier) {
                 tool_router.remove_route(name);
             }
         }
-        BussardMcp {
-            state,
-            tool_router,
-            warm: crate::warm::WarmConnection::new(),
-            session_edits: crate::session_edits::SessionEdits::new(),
-            admission_tables: Arc::default(),
-            enroll: crate::tools_enroll::EnrollJobs::new(),
-            password_forms: crate::password_form::PasswordForms::new(),
-            browser: Arc::new(crate::browser::SystemBrowser),
-        }
+        tool_router
+    }
+
+    /// What the server serves now: the set-up model once `knx_setup`
+    /// succeeded, else what it started with.
+    fn live(&self) -> &Live {
+        self.set_up.get().unwrap_or(&self.started)
+    }
+
+    /// Whether the server still waits for `knx_setup` (issue #745).
+    pub(crate) fn before_setup(&self) -> bool {
+        self.setup.is_some() && self.set_up.get().is_none()
     }
 
     /// This server with `browser` opening the enrolment pairing page
@@ -131,12 +172,12 @@ impl BussardMcp {
 
     /// The shared state (for tests and the runner).
     pub fn state(&self) -> &Arc<SharedState> {
-        &self.state
+        &self.live().state
     }
 
     /// How many tools this server registers.
     pub fn tool_count(&self) -> usize {
-        self.tool_router.list_all().len()
+        self.live().router.list_all().len()
     }
 
     /// The warm management connection (issue #215). Every tool that opens a
@@ -147,7 +188,7 @@ impl BussardMcp {
 
     /// The project the server serves now, for a result's `summary`.
     pub(crate) fn model(&self) -> std::sync::Arc<bussard_model::Model> {
-        self.state.model.current()
+        self.state().model.current()
     }
 
     /// This session's unapplied model edits, by device (issue #279).
@@ -170,7 +211,7 @@ impl BussardMcp {
             return response;
         };
         if let Some(value) = result.structured_content.as_mut() {
-            let model = self.state.model.current();
+            let model = self.state().model.current();
             if crate::everyday::add_result_summary(tool, value, &model) {
                 result.content = vec![rmcp::model::ContentBlock::text(value.to_string())];
             }
@@ -356,8 +397,8 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_project_summary.md")]
     #[tool]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
-        let mut summary = tools::project_summary(&self.state.model.current(), &self.state.bus);
-        let tiers = crate::guidance::Tiers::of(&self.state);
+        let mut summary = tools::project_summary(&self.state().model.current(), &self.state().bus);
+        let tiers = crate::guidance::Tiers::of(self.state());
         if let Some(map) = summary.as_object_mut() {
             map.insert("server".to_string(), tiers.summary_json());
             map.insert(
@@ -376,9 +417,9 @@ impl BussardMcp {
         Parameters(args): Parameters<LookupArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(50).clamp(1, 500) as usize;
-        let tiers = crate::guidance::Tiers::of(&self.state);
-        let model = self.state.model.current();
-        let capabilities = Some((self.state.dir.as_path(), tiers));
+        let tiers = crate::guidance::Tiers::of(self.state());
+        let model = self.state().model.current();
+        let capabilities = Some((self.state().dir.as_path(), tiers));
         let mut value = tools::model_lookup(&model, &args.query, limit, capabilities);
         if !args.technical {
             crate::everyday::plain_lookup(&mut value);
@@ -397,8 +438,8 @@ impl BussardMcp {
             .ga
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
-        let model = self.state.model.current();
-        let mut value = tools::get_group(&model, &self.state.ring, ga);
+        let model = self.state().model.current();
+        let mut value = tools::get_group(&model, &self.state().ring, ga);
         if !args.technical {
             crate::everyday::plain_group(&mut value, &model);
         }
@@ -416,14 +457,14 @@ impl BussardMcp {
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-        let model = self.state.model.current();
+        let model = self.state().model.current();
         let app = model
             .devices
             .get(&ia)
             .and_then(|d| d.device.product.as_ref())
             .and_then(|p| p.application_ref.clone());
         let products = bussard_model::param_model::ProductModels::load_apps(
-            &self.state.dir,
+            &self.state().dir,
             app.iter().map(String::as_str),
         );
         ok(tools::get_device(&model, &products, ia, args.technical))
@@ -440,14 +481,14 @@ impl BussardMcp {
             .address
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
-        let model = self.state.model.current();
+        let model = self.state().model.current();
         let app = model
             .devices
             .get(&ia)
             .and_then(|d| d.device.product.as_ref())
             .and_then(|p| p.application_ref.clone());
         let products = bussard_model::ProductModels::load_apps(
-            &self.state.dir,
+            &self.state().dir,
             app.iter().map(String::as_str),
         );
         let view = match bussard_model::device_view::device_view(
@@ -472,7 +513,7 @@ impl BussardMcp {
             view,
             args.inactive,
             args.toml,
-            crate::guidance::Tiers::of(&self.state),
+            crate::guidance::Tiers::of(self.state()),
         )
         .map_err(|e| {
             ErrorData::internal_error(format!("serializing the device view: {e}"), None)
@@ -480,7 +521,7 @@ impl BussardMcp {
         // An IP interface's KNXnet/IP settings and facts (issue #391).
         if let (Some(map), Some(knxnet)) = (
             value.as_object_mut(),
-            crate::tools_model::knxnet_section(&self.state.dir, &model, ia),
+            crate::tools_model::knxnet_section(&self.state().dir, &model, ia),
         ) {
             map.insert("knxnet".to_string(), knxnet);
         }
@@ -507,7 +548,7 @@ impl BussardMcp {
         };
         let filter = build_filter(args.ga.as_deref(), args.source.as_deref())?;
 
-        let mut telegrams = tools::recent_telegrams(&self.state.ring, &filter, since, limit);
+        let mut telegrams = tools::recent_telegrams(&self.state().ring, &filter, since, limit);
 
         // Fall back to the capture store when the ring window is exceeded: if we
         // got fewer than asked and a DB is configured, top up from it with OLDER
@@ -516,10 +557,10 @@ impl BussardMcp {
         // like "3/" is honoured, not silently dropped) and de-duplicated against
         // the ring rows we already have.
         if telegrams.len() < limit
-            && let Some(db) = self.state.capture_db.clone()
+            && let Some(db) = self.state().capture_db.clone()
         {
             let want = limit - telegrams.len();
-            let state = self.state.clone();
+            let state = Arc::clone(self.state());
             let filter = filter.clone();
             // Push only *exact* terms into SQL; a GA prefix stays out of the
             // query and is enforced by the `Filter` re-check post-decode.
@@ -570,7 +611,7 @@ impl BussardMcp {
         let timeout = Duration::from_secs(args.timeout_seconds.clamp(1, 300) as u64);
         let filter = build_filter(args.ga.as_deref(), args.source.as_deref())?;
 
-        match self.state.ring.wait_for(&filter, timeout).await {
+        match self.state().ring.wait_for(&filter, timeout).await {
             Some(t) => ok(json!({
                 "matched": true,
                 "telegram": tools::telegram_json(&t),
@@ -587,14 +628,14 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_bus_status.md")]
     #[tool]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
-        let mut out = self.state.bus.to_json();
+        let mut out = self.state().bus.to_json();
         if let Some(map) = out.as_object_mut() {
-            let others: Vec<u32> = crate::instances::other_instances(&self.state.dir);
+            let others: Vec<u32> = crate::instances::other_instances(&self.state().dir);
             map.insert("other_instances".into(), json!(others));
-            if self.state.bus.state() != ConnState::Connected {
+            if self.state().bus.state() != ConnState::Connected {
                 map.insert(
                     "reason".into(),
-                    json!(self.state.bus.not_connected_reason()),
+                    json!(self.state().bus.not_connected_reason()),
                 );
             }
         }
@@ -605,17 +646,17 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_bus_reconnect.md")]
     #[tool]
     async fn knx_bus_reconnect(&self) -> Result<CallToolResult, ErrorData> {
-        if self.state.passive {
+        if self.state().passive {
             return ok(json!({
                 "ok": false,
                 "reason": "server is in passive mode; the bus reconnects on its own",
             }));
         }
-        let Some(handle) = self.state.bus.handle() else {
+        let Some(handle) = self.state().bus.handle() else {
             return ok(json!({
                 "ok": false,
                 "reason": "bus is not wired",
-                "bus": self.state.bus.to_json(),
+                "bus": self.state().bus.to_json(),
             }));
         };
         let attempt = tokio::time::timeout(RECONNECT_WAIT, handle.reconnect()).await;
@@ -629,10 +670,10 @@ impl BussardMcp {
                 RECONNECT_WAIT.as_secs()
             )),
         };
-        let connected = self.state.bus.state() == ConnState::Connected;
+        let connected = self.state().bus.state() == ConnState::Connected;
         let mut out = json!({
             "ok": connected,
-            "bus": self.state.bus.to_json(),
+            "bus": self.state().bus.to_json(),
         });
         if let Some(map) = out.as_object_mut() {
             if let Some(note) = note {
@@ -641,7 +682,7 @@ impl BussardMcp {
             if !connected {
                 map.insert(
                     "reason".into(),
-                    json!(self.state.bus.not_connected_reason()),
+                    json!(self.state().bus.not_connected_reason()),
                 );
             }
         }
@@ -668,12 +709,12 @@ impl BussardMcp {
             address: args.address,
             group: args.group,
         };
-        let model = self.state.model.current();
+        let model = self.state().model.current();
         // The keyring rules (issue #205) against the server's keyring: never
         // prompts; without BUSSARD_KEYRING_PASSWORD one info line says the
         // key checks were skipped.
         let facts = self
-            .state
+            .state()
             .keyring
             .as_deref()
             .map(|path| bussard_service::secure::keyring_facts(path, "the server's keyring"));
@@ -691,7 +732,7 @@ impl BussardMcp {
         // W040 (issue #348): keyring exports older than the key store.
         extra.extend(bussard_model::keystore_meta::stale_export_diagnostics(
             &model,
-            &self.state.dir,
+            &self.state().dir,
         ));
         ok(tools::validate_filtered(&model, extra, &filter))
     }
@@ -711,14 +752,14 @@ impl BussardMcp {
         // KNX Data Secure (issue #172): a secured GA (a group key in the
         // server's `--keyring`, or `secure: true` in the model) is read with a
         // secured GroupValueRead; a secured GA without a key is refused.
-        let model = self.state.model.current();
-        let key = match group::read_key(Some(&model), ga, self.state.keyring.as_deref()) {
+        let model = self.state().model.current();
+        let key = match group::read_key(Some(&model), ga, self.state().keyring.as_deref()) {
             Ok(key) => key,
             Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
 
         // Passive mode: the tool is unregistered, but guarded anyway.
-        let service = match self.state.live_service(Need::Read) {
+        let service = match self.state().live_service(Need::Read) {
             Ok(service) => service,
             Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
@@ -759,7 +800,7 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid individual address {:?}", args.address)))?;
         // Passive mode: the tool is unregistered, but guarded anyway.
-        let service = match self.state.live_service(Need::Manage) {
+        let service = match self.state().live_service(Need::Manage) {
             Ok(service) => service,
             Err(reason) => return ok(self.bus_refusal("address", &target.to_string(), reason)),
         };
@@ -770,12 +811,12 @@ impl BussardMcp {
         // model records it as security-activated (issue #189). The device's
         // FDSK rides along: a device reset to default is named, not read under
         // the factory key (issue #532).
-        let model = self.state.model.current();
+        let model = self.state().model.current();
         let keys = match describe::session_keys(
             Some(model.as_ref()),
             target,
             ToolKeySource {
-                keyring: self.state.keyring.as_deref(),
+                keyring: self.state().keyring.as_deref(),
                 tool_key: None,
             },
         ) {
@@ -790,7 +831,7 @@ impl BussardMcp {
         // Rate limit + concurrency cap, shared with the group read/write tools:
         // a full introspection is a burst of management round-trips, so hold the
         // permit across the whole session.
-        let _permit = self.state.read_limiter.acquire().await;
+        let _permit = self.state().read_limiter.acquire().await;
 
         // The warm connection (issue #215): a call to the device the previous
         // call talked to, within the idle window and on the same tunnel, reuses
@@ -856,9 +897,9 @@ impl BussardMcp {
         // Read the model through the handle, so an edit made to `groups.toml`
         // during the session (a `protected:` added, a `dpt:` corrected) is in
         // force on the very next write rather than after a restart.
-        let model = self.state.model.current();
+        let model = self.state().model.current();
         // KNX Data Secure group keys from the server's `--keyring` (issue #172).
-        let keys = match group::load_keys(self.state.keyring.as_deref()) {
+        let keys = match group::load_keys(self.state().keyring.as_deref()) {
             Ok(keys) => keys,
             Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
@@ -892,7 +933,7 @@ impl BussardMcp {
             };
 
         // Writes disabled: the tool is unregistered, but guarded anyway.
-        let service = match self.state.live_service(Need::Write) {
+        let service = match self.state().live_service(Need::Write) {
             Ok(service) => service,
             Err(reason) => return ok(self.bus_refusal("ga", &ga.to_string(), reason)),
         };
@@ -918,17 +959,17 @@ impl BussardMcp {
     /// A bus tool's result when the bus cannot be used: `ok: false`, the
     /// reason and the bus status, about `key: value`.
     fn bus_refusal(&self, key: &str, value: &str, reason: String) -> Value {
-        json!({ key: value, "ok": false, "reason": reason, "bus": self.state.bus.to_json() })
+        json!({ key: value, "ok": false, "reason": reason, "bus": self.state().bus.to_json() })
     }
 
     fn group_context<'a>(&'a self, model: &'a bussard_model::Model) -> group::GroupContext<'a> {
         group::GroupContext {
             model: Some(model),
-            keyring: self.state.keyring.as_deref(),
-            lock_dir: Some(self.state.dir.as_path()),
+            keyring: self.state().keyring.as_deref(),
+            lock_dir: Some(self.state().dir.as_path()),
             live: &self.admission_tables,
             warm: Some(&self.warm),
-            limiter: Some(&self.state.read_limiter),
+            limiter: Some(&self.state().read_limiter),
         }
     }
 }
@@ -1079,7 +1120,7 @@ fn parse_rfc3339(s: &str) -> Result<SystemTime, ErrorData> {
     Ok(ts)
 }
 
-#[tool_handler(router = self.tool_router)]
+#[tool_handler(router = self.live().router)]
 impl ServerHandler for BussardMcp {
     /// Logs the shape of every `tools/call` (issue #269), then dispatches it
     /// through the tool router exactly as the `#[tool_handler]` default does.
@@ -1088,6 +1129,8 @@ impl ServerHandler for BussardMcp {
     /// field names, never values. Debug (`-vv`): the raw request with every
     /// string value redacted. An argument error comes back as a tool result
     /// with `isError` set (see [`crate::args::argument_error_as_tool_result`]).
+    /// The call that ends the onboarding state sends
+    /// `notifications/tools/list_changed` (issue #745).
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
@@ -1110,8 +1153,17 @@ impl ServerHandler for BussardMcp {
             );
         }
         let tool = request.name.to_string();
+        let before_setup = self.before_setup();
+        let peer = context.peer.clone();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        let response = crate::args::argument_error_as_tool_result(self.tool_router.call(tcc).await);
+        let response =
+            crate::args::argument_error_as_tool_result(self.live().router.call(tcc).await);
+        if before_setup
+            && !self.before_setup()
+            && let Err(err) = peer.notify_tool_list_changed().await
+        {
+            tracing::warn!("failed to send tools/list_changed: {err}");
+        }
         Ok(self.with_summary(&tool, response?))
     }
 
@@ -1122,9 +1174,21 @@ impl ServerHandler for BussardMcp {
         server_info.name = "bussard".to_string();
         server_info.version = env!("CARGO_PKG_VERSION").to_string();
         server_info.title = Some("bussard KNX MCP server".to_string());
-
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+        // A server that starts without a model changes its tool list once.
+        let capabilities = if self.setup.is_some() {
+            ServerCapabilities::builder()
+                .enable_tools()
+                .enable_tool_list_changed()
+                .build()
+        } else {
+            ServerCapabilities::builder().enable_tools().build()
+        };
+        let instructions = match &self.setup {
+            Some(setup) if self.before_setup() => setup.instructions(),
+            _ => crate::guidance::Tiers::of(self.state()).instructions(),
+        };
+        ServerInfo::new(capabilities)
             .with_server_info(server_info)
-            .with_instructions(crate::guidance::Tiers::of(&self.state).instructions())
+            .with_instructions(instructions)
     }
 }
