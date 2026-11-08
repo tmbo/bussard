@@ -93,12 +93,13 @@ impl BussardMcp {
     /// The server over `started`, with `setup` when it started without a
     /// model.
     pub(crate) fn with_live(started: Live, setup: Option<Arc<crate::onboarding::Setup>>) -> Self {
+        let session_edits = crate::session_edits::SessionEdits::new(&started.state.dir);
         BussardMcp {
             started,
             set_up: Arc::default(),
             setup,
             warm: crate::warm::WarmConnection::new(),
-            session_edits: crate::session_edits::SessionEdits::new(),
+            session_edits,
             admission_tables: Arc::default(),
             enroll: crate::tools_enroll::EnrollJobs::new(),
             password_forms: crate::password_form::PasswordForms::new(),

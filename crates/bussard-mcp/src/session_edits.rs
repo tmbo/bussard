@@ -1,465 +1,203 @@
-//! The model edits this server session made that no device has received yet
-//! (issue #279).
+//! The model edits this server session made that a device has not received
+//! yet (issues #279, #941).
 //!
-//! `knx_plan_device` used to report `pending_model_changes` as the whole
-//! working model against the latest history snapshot: every device, every
-//! edit since the snapshot, and (before snapshots translated enum labels)
-//! every labelled parameter of the house. The assistant needs something
-//! narrower: what this session changed on the device it is about to program
-//! and has not pushed yet. This module keeps that, per device:
+//! Every write to the model files takes a history snapshot first, so what is
+//! pending on a device is read from the history, not kept in a ledger: the
+//! device's changes from the first snapshot taken after it last held the
+//! model (this session's start, or the last apply or plan that found it
+//! matching) to the files now ([`History::since`]). An undo or a discard
+//! changes the files and so what is pending, with nothing to account for.
 //!
-//! - every successful model edit records the sentences that reach a device
-//!   (links and parameters) under each device they name, with the history
-//!   snapshot taken before it;
-//! - a successful `knx_apply_device`, or a plan that finds the device already
-//!   holding the model, clears the device (only its link sentences when the
-//!   parameters were not compared);
-//! - `knx_undo` to snapshot `S` drops every entry taken at or after `S` (those
-//!   edits are reverted in the files). A device the undo changes that had no
-//!   such entry (its edit was applied already, or predates the session) gets
-//!   the undo itself as its pending edit, because the device now differs from
-//!   the files.
-//!
-//! Group-address edits (`groups.toml`) are kept too, per group address, so
-//! `knx_discard_edits` can drop them; no device stores them, so no apply
-//! clears them and the plan never lists them. A device's name or room is not
-//! recorded: no device stores it.
-//!
-//! `knx_discard_edits` drops one subject's entries (issue #305) and keeps them
-//! aside under the snapshot it took first: a `knx_undo` to that snapshot puts
-//! them back as they were.
+//! A plan that did not compare the parameters marks the links only: the
+//! parameter changes stay pending from the earlier mark. A group address has
+//! no apply, so its edits count from the session's start; no device stores
+//! them, and the plan never lists them.
 
 use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use bussard_model::{ChangeKind, ChangeSet, GroupAddress, IndividualAddress};
-use serde::Serialize;
+use bussard_model::history::{History, Since, SnapshotId};
+use bussard_model::{ChangeKind, IndividualAddress, Model};
 
-/// One unapplied edit of one subject.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PendingEdit {
-    /// The history snapshot taken before the edit (`knx_undo` takes it).
-    pub snapshot: String,
-    /// The tool that made the edit.
-    pub tool: String,
-    /// The edit's sentences about this subject.
-    pub sentences: Vec<String>,
-    /// Per sentence, whether it is a parameter change (a plan that did not
-    /// compare the parameters leaves those pending).
-    #[serde(skip)]
-    parameter: Vec<bool>,
-}
+pub use bussard_model::history::Subject;
 
-/// What a pending edit is about: one device or one group address.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Subject {
-    /// A device (its links and parameters).
-    Device(IndividualAddress),
-    /// A group address in `groups.toml`.
-    Group(GroupAddress),
-}
-
-impl std::fmt::Display for Subject {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Subject::Device(ia) => write!(f, "{ia}"),
-            Subject::Group(ga) => write!(f, "{ga}"),
-        }
-    }
-}
-
-/// Edits `knx_discard_edits` dropped, kept for an undo of the discard.
-#[derive(Debug, Clone)]
-struct Discarded {
-    /// The snapshot the discard took before it wrote.
-    snapshot: String,
-    /// The subject the edits were about.
-    subject: Subject,
-    /// The dropped edits, oldest first.
-    edits: Vec<PendingEdit>,
-}
-
-/// The tables behind [`SessionEdits`].
-#[derive(Debug, Default)]
-struct Table {
-    /// Unapplied edits per device.
-    devices: BTreeMap<IndividualAddress, Vec<PendingEdit>>,
-    /// Edits per group address.
-    groups: BTreeMap<GroupAddress, Vec<PendingEdit>>,
-    /// What discards dropped, newest last.
-    discarded: Vec<Discarded>,
-}
-
-impl Table {
-    /// The entries of `subject`, created on demand.
-    fn entry(&mut self, subject: Subject) -> &mut Vec<PendingEdit> {
-        match subject {
-            Subject::Device(ia) => self.devices.entry(ia).or_default(),
-            Subject::Group(ga) => self.groups.entry(ga).or_default(),
-        }
-    }
-}
-
-/// The unapplied edits of this session, by device and group address. Cheap to
-/// clone; clones share one table.
+/// Where a device last held the model: the newest snapshot then.
 #[derive(Debug, Clone, Default)]
+struct Marks {
+    /// Its links.
+    links: Option<SnapshotId>,
+    /// Its parameters.
+    parameters: Option<SnapshotId>,
+}
+
+/// The session's start and the devices it applied, by the newest snapshot
+/// at the time. Cheap to clone; clones share one table.
+#[derive(Debug, Clone)]
 pub struct SessionEdits {
-    edits: Arc<Mutex<Table>>,
+    /// The model directory.
+    dir: PathBuf,
+    /// The newest snapshot when the session started.
+    start: Option<SnapshotId>,
+    /// Per device, where it last held the model.
+    applied: Arc<Mutex<BTreeMap<IndividualAddress, Marks>>>,
 }
 
 impl SessionEdits {
-    /// An empty table.
-    pub fn new() -> Self {
-        Self::default()
+    /// A session on the model in `dir`, starting now.
+    pub fn new(dir: &Path) -> Self {
+        SessionEdits {
+            dir: dir.to_path_buf(),
+            start: History::open(dir).latest_id().ok().flatten(),
+            applied: Arc::default(),
+        }
     }
 
     /// The table, recovering from a poisoned lock (it holds plain data).
-    fn table(&self) -> MutexGuard<'_, Table> {
-        self.edits
+    fn table(&self) -> MutexGuard<'_, BTreeMap<IndividualAddress, Marks>> {
+        self.applied
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
-    /// Records the edit `tool` made behind `snapshot`: its sentences, under
-    /// each device and group address a change names.
-    pub fn record(&self, snapshot: &str, tool: &str, changes: &ChangeSet) {
-        let mut table = self.table();
-        for (subject, (sentences, parameter)) in by_subject(changes) {
-            table.entry(subject).push(PendingEdit {
-                snapshot: snapshot.to_string(),
-                tool: tool.to_string(),
-                sentences,
-                parameter,
-            });
-        }
-    }
-
-    /// The unapplied edits of `ia`, oldest first.
-    pub fn for_device(&self, ia: IndividualAddress) -> Vec<PendingEdit> {
-        self.pending(Subject::Device(ia))
-    }
-
-    /// The pending edits of `subject`, oldest first.
-    pub fn pending(&self, subject: Subject) -> Vec<PendingEdit> {
-        let table = self.table();
-        let found = match subject {
-            Subject::Device(ia) => table.devices.get(&ia),
-            Subject::Group(ga) => table.groups.get(&ga),
-        };
-        found.cloned().unwrap_or_default()
-    }
-
-    /// Drops every pending edit of `subject`, keeping them aside under
-    /// `snapshot` (the one the discard took first, `None` when it wrote
-    /// nothing) so an undo to it brings them back. Returns the dropped edits.
-    pub fn discard(&self, subject: Subject, snapshot: Option<&str>) -> Vec<PendingEdit> {
-        let mut table = self.table();
-        let edits = match subject {
-            Subject::Device(ia) => table.devices.remove(&ia),
-            Subject::Group(ga) => table.groups.remove(&ga),
-        }
-        .unwrap_or_default();
-        if let (false, Some(snapshot)) = (edits.is_empty(), snapshot) {
-            table.discarded.push(Discarded {
-                snapshot: snapshot.to_string(),
-                subject,
-                edits: edits.clone(),
-            });
-        }
-        edits
-    }
-
-    /// Forgets `ia`'s edits: the device now holds the model's links, and its
-    /// parameters too when `parameters` (else the parameter sentences stay).
+    /// Records that `ia` holds the model's links now, and its parameters too
+    /// when `parameters`.
     pub fn applied(&self, ia: IndividualAddress, parameters: bool) {
+        let now = History::open(&self.dir).latest_id().ok().flatten();
         let mut table = self.table();
+        let marks = table.entry(ia).or_default();
         if parameters {
-            table.devices.remove(&ia);
-            return;
+            marks.parameters = now.clone();
         }
-        if let Some(edits) = table.devices.get_mut(&ia) {
-            for edit in edits.iter_mut() {
-                let kept: Vec<(String, bool)> = edit
-                    .sentences
-                    .drain(..)
-                    .zip(edit.parameter.drain(..))
-                    .filter(|(_, p)| *p)
-                    .collect();
-                (edit.sentences, edit.parameter) = kept.into_iter().unzip();
-            }
-            edits.retain(|e| !e.sentences.is_empty());
-            if edits.is_empty() {
-                table.devices.remove(&ia);
-            }
-        }
+        marks.links = now;
     }
 
-    /// Accounts for an undo that restored `restored` and changed the files by
-    /// `changes`; `undo_snapshot` is the snapshot the undo took first.
-    pub fn undone(&self, restored: &str, undo_snapshot: &str, changes: &ChangeSet) {
-        let mut table = self.table();
-        let mut reverted: Vec<IndividualAddress> = Vec::new();
-        for (ia, edits) in table.devices.iter_mut() {
-            let before = edits.len();
-            // Snapshot ids sort chronologically: an edit behind `restored` or
-            // a later snapshot is reverted by the restore.
-            edits.retain(|e| e.snapshot.as_str() < restored);
-            if edits.len() != before {
-                reverted.push(*ia);
-            }
-        }
-        table.devices.retain(|_, edits| !edits.is_empty());
-        for edits in table.groups.values_mut() {
-            edits.retain(|e| e.snapshot.as_str() < restored);
-        }
-        table.groups.retain(|_, edits| !edits.is_empty());
-
-        // A discard at or after `restored` is reverted: what it dropped is
-        // back in the files, so it is pending again, as it was.
-        let (back, kept): (Vec<Discarded>, Vec<Discarded>) = std::mem::take(&mut table.discarded)
+    /// The sentences of what this session changed on `ia` and the device has
+    /// not received, oldest mark first.
+    pub fn for_device(&self, ia: IndividualAddress) -> Vec<String> {
+        let Ok(current) = Model::load(&self.dir) else {
+            return Vec::new();
+        };
+        self.since(Subject::Device(ia), &current)
             .into_iter()
-            .partition(|d| d.snapshot.as_str() >= restored);
-        table.discarded = kept;
-        for discarded in back {
-            let edits: Vec<PendingEdit> = discarded
-                .edits
-                .into_iter()
-                .filter(|e| e.snapshot.as_str() < restored)
-                .collect();
-            if edits.is_empty() {
-                continue;
-            }
-            if let Subject::Device(ia) = discarded.subject {
-                reverted.push(ia);
-            }
-            let entry = table.entry(discarded.subject);
-            entry.extend(edits);
-            entry.sort_by(|a, b| a.snapshot.cmp(&b.snapshot));
-        }
-
-        for (subject, (sentences, parameter)) in by_subject(changes) {
-            let Subject::Device(ia) = subject else {
-                // No device stores a group address's metadata: an undo of
-                // one leaves nothing to push.
-                continue;
-            };
-            if reverted.contains(&ia) {
-                continue;
-            }
-            table.entry(subject).push(PendingEdit {
-                snapshot: undo_snapshot.to_string(),
-                tool: "knx_undo".to_string(),
-                sentences,
-                parameter,
-            });
-        }
+            .flat_map(|since| since.changes.changes)
+            .map(|change| change.sentence)
+            .collect()
     }
-}
 
-/// The sentences of `changes` by subject: the ones that reach a device (links
-/// and parameters) under the device each names, the `groups.toml` ones under
-/// their group address; each with whether it is a parameter change.
-fn by_subject(changes: &ChangeSet) -> BTreeMap<Subject, (Vec<String>, Vec<bool>)> {
-    let mut out: BTreeMap<Subject, (Vec<String>, Vec<bool>)> = BTreeMap::new();
-    for change in &changes.changes {
-        let subject = match change.kind {
-            ChangeKind::ParameterChanged
-            | ChangeKind::LinkAdded
-            | ChangeKind::LinkRemoved
-            | ChangeKind::ObjectSecurityChanged
-            | ChangeKind::InterfaceChanged => change
-                .device
-                .as_deref()
-                .and_then(|d| d.parse::<IndividualAddress>().ok())
-                .map(Subject::Device),
-            ChangeKind::GroupAdded
-            | ChangeKind::GroupRemoved
-            | ChangeKind::GroupRenamed
-            | ChangeKind::GroupDptChanged
-            | ChangeKind::GroupDescriptionChanged
-            | ChangeKind::GroupProtectionChanged
-            | ChangeKind::GroupSecurityChanged => change
-                .group
-                .as_deref()
-                .and_then(|g| g.parse::<GroupAddress>().ok())
-                .map(Subject::Group),
-            _ => None,
+    /// `subject`'s changes since this session last saw it match: one entry,
+    /// or two for a device whose links were applied later than its
+    /// parameters (the links' entry holds no parameter change, the
+    /// parameters' entry nothing else). Empty when nothing is pending.
+    pub fn since(&self, subject: Subject, current: &Model) -> Vec<Since> {
+        let marks = match subject {
+            Subject::Device(ia) => self.table().get(&ia).cloned(),
+            Subject::Group(_) => None,
         };
-        let Some(subject) = subject else {
-            continue;
+        let (links, parameters) = match marks {
+            Some(Marks { links, parameters }) => (links, parameters.or(self.start.clone())),
+            None => (self.start.clone(), self.start.clone()),
         };
-        let (sentences, kinds) = out.entry(subject).or_default();
-        sentences.push(change.sentence.clone());
-        kinds.push(change.kind == ChangeKind::ParameterChanged);
+        let history = History::open(&self.dir);
+        let found = |mark: Option<&SnapshotId>| -> Option<Since> {
+            let mut since = history.since(mark, current, subject).ok()??;
+            crate::tools_model::settle_changes(
+                &self.dir,
+                &mut since.changes,
+                [current, &since.model],
+            );
+            Some(since)
+        };
+        let mut out: Vec<Since> = Vec::new();
+        if links == parameters {
+            out.extend(found(links.as_ref()));
+        } else {
+            let is_parameter = |kind: ChangeKind| kind == ChangeKind::ParameterChanged;
+            for (mark, parameter) in [(parameters.as_ref(), true), (links.as_ref(), false)] {
+                if let Some(mut since) = found(mark) {
+                    since
+                        .changes
+                        .changes
+                        .retain(|c| is_parameter(c.kind) == parameter);
+                    out.push(since);
+                }
+            }
+            out.sort_by(|a, b| a.base.cmp(&b.base));
+        }
+        out.retain(|since| !since.changes.is_empty());
+        out
     }
-    out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeMap as Map;
+    use bussard_model::history::SnapshotReason;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
-    /// The device file of `ia` with parameter `x` at `value` and, when
+    /// The device file of 1.1.4 with parameter `x` at `value` and, when
     /// `linked`, object 1 listening to 1/2/0.
-    fn file(ia: &str, value: &str, linked: bool) -> String {
+    fn file(value: &str, linked: bool) -> String {
         let links = if linked {
             "\n[links]\n1.listen = [\"1/2/0\"]\n"
         } else {
             ""
         };
         format!(
-            "address = \"{ia}\"\nname = \"Dev\"\n\n[parameters]\n\"x@P-1_R-1\" = \"{value}\"\n{links}"
+            "address = \"1.1.4\"\nname = \"Dev\"\n\n[parameters]\n\"x@P-1_R-1\" = \"{value}\"\n{links}"
         )
     }
 
-    /// The change set from `old` to `new` device files, by address.
-    fn changes(
-        old: &[(&str, String)],
-        new: &[(&str, String)],
-    ) -> Result<ChangeSet, Box<dyn std::error::Error>> {
-        let map = |files: &[(&str, String)]| -> Map<String, String> {
-            files
-                .iter()
-                .map(|(ia, text)| (format!("devices/{ia}.toml"), text.clone()))
-                .collect()
-        };
-        Ok(bussard_model::describe(
-            &bussard_model::Model::from_texts(&map(old))?,
-            &bussard_model::Model::from_texts(&map(new))?,
-        ))
+    /// Writes 1.1.4's file after a snapshot, as every model edit does.
+    fn edit(dir: &Path, text: &str) -> Result<SnapshotId, Box<dyn std::error::Error>> {
+        let id = History::open(dir).snapshot(SnapshotReason::new("mcp knx_set_parameter"))?;
+        std::fs::write(dir.join("devices/1.1.4.toml"), text)?;
+        Ok(id)
+    }
+
+    fn model_dir() -> Result<tempfile::TempDir, Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        std::fs::create_dir_all(dir.path().join("devices"))?;
+        std::fs::write(dir.path().join("devices/1.1.4.toml"), file("1", false))?;
+        Ok(dir)
     }
 
     #[test]
-    fn test_session_edits_record_apply_and_undo() -> TestResult {
-        let edits = SessionEdits::new();
-        let (a, b): (IndividualAddress, IndividualAddress) = ("1.1.4".parse()?, "1.1.5".parse()?);
-        assert!(edits.for_device(a).is_empty());
+    fn test_session_edits_pending_follows_the_history() -> TestResult {
+        let dir = model_dir()?;
+        let edits = SessionEdits::new(dir.path());
+        let ia: IndividualAddress = "1.1.4".parse()?;
+        assert!(edits.for_device(ia).is_empty(), "a fresh session");
 
-        let set = |ia: &str, from: &str, to: &str| {
-            changes(&[(ia, file(ia, from, false))], &[(ia, file(ia, to, false))])
-        };
-        edits.record(
-            "20261001T100000Z-1",
-            "knx_set_parameter",
-            &set("1.1.4", "1", "2")?,
-        );
-        edits.record(
-            "20261001T100100Z-2",
-            "knx_set_parameter",
-            &set("1.1.5", "1", "2")?,
-        );
-        edits.record(
-            "20261001T100200Z-3",
-            "knx_set_parameter",
-            &set("1.1.4", "2", "3")?,
-        );
-        assert_eq!(edits.for_device(a).len(), 2);
-        assert_eq!(edits.for_device(b).len(), 1);
-        assert_eq!(edits.for_device(a)[0].tool, "knx_set_parameter");
-        assert_eq!(edits.for_device(a)[1].sentences, ["X on Dev: 2 to 3."]);
+        edit(dir.path(), &file("2", false))?;
+        let first = edit(dir.path(), &file("3", false))?;
+        assert_eq!(edits.for_device(ia), ["X on Dev: 1 to 3."]);
 
-        // A rename reaches no device and is not recorded.
-        let rename = changes(
-            &[("1.1.4", file("1.1.4", "3", false))],
-            &[(
-                "1.1.4",
-                file("1.1.4", "3", false).replace("\"Dev\"", "\"Hall\""),
-            )],
-        )?;
-        assert_eq!(rename.len(), 1);
-        edits.record("20261001T100250Z-3a", "knx_set_device", &rename);
-        assert_eq!(edits.for_device(a).len(), 2);
+        // Applying clears it; a later edit is pending from there.
+        edits.applied(ia, true);
+        assert!(edits.for_device(ia).is_empty());
+        edit(dir.path(), &file("4", false))?;
+        assert_eq!(edits.for_device(ia), ["X on Dev: 3 to 4."]);
 
-        // Applying 1.1.5 clears it only.
-        edits.applied(b, true);
-        assert!(edits.for_device(b).is_empty());
-        assert_eq!(edits.for_device(a).len(), 2);
-
-        // Undoing the last edit of 1.1.4 drops it and records nothing new.
-        edits.undone(
-            "20261001T100200Z-3",
-            "20261001T100300Z-4",
-            &set("1.1.4", "3", "2")?,
-        );
-        assert_eq!(edits.for_device(a).len(), 1);
-
-        // Undoing the applied edit of 1.1.5 leaves the device behind the
-        // files: the undo is pending.
-        edits.undone(
-            "20261001T100100Z-2",
-            "20261001T100400Z-5",
-            &set("1.1.5", "2", "1")?,
-        );
-        let pending = edits.for_device(b);
-        assert_eq!(pending.len(), 1, "{pending:?}");
-        assert_eq!(pending[0].tool, "knx_undo");
-        assert_eq!(pending[0].snapshot, "20261001T100400Z-5");
+        // Undoing to before the apply leaves the device ahead of the files.
+        History::open(dir.path()).restore(&first)?;
+        assert_eq!(edits.for_device(ia), ["X on Dev: 3 to 2."]);
         Ok(())
     }
 
     /// A plan that did not compare the parameters clears only the links.
     #[test]
     fn test_session_edits_links_only_apply_keeps_parameters() -> TestResult {
-        let edits = SessionEdits::new();
-        let a: IndividualAddress = "1.1.4".parse()?;
-        let both = changes(
-            &[("1.1.4", file("1.1.4", "1", false))],
-            &[("1.1.4", file("1.1.4", "2", true))],
-        )?;
-        assert_eq!(both.len(), 2, "{both:?}");
-        edits.record("20261001T100000Z-1", "knx_set_parameter", &both);
-        edits.applied(a, false);
-        let pending = edits.for_device(a);
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].sentences, ["X on Dev: 1 to 2."]);
-        edits.applied(a, true);
-        assert!(edits.for_device(a).is_empty());
-        Ok(())
-    }
-
-    /// A discard drops one device's edits only; an undo to the discard's
-    /// snapshot puts them back as they were, not as an undo entry.
-    #[test]
-    fn test_session_edits_discard_and_undo_restores() -> TestResult {
-        let edits = SessionEdits::new();
-        let (a, b): (IndividualAddress, IndividualAddress) = ("1.1.4".parse()?, "1.1.5".parse()?);
-        let set = |ia: &str, from: &str, to: &str| {
-            changes(&[(ia, file(ia, from, false))], &[(ia, file(ia, to, false))])
-        };
-        edits.record(
-            "20261001T100000Z-1",
-            "knx_set_parameter",
-            &set("1.1.4", "1", "2")?,
-        );
-        edits.record(
-            "20261001T100100Z-2",
-            "knx_set_parameter",
-            &set("1.1.5", "1", "2")?,
-        );
-
-        let dropped = edits.discard(Subject::Device(a), Some("20261001T100200Z-3"));
-        assert_eq!(dropped.len(), 1);
-        assert!(edits.for_device(a).is_empty());
-        assert_eq!(edits.for_device(b).len(), 1);
-        assert!(
-            edits
-                .discard(Subject::Device(a), Some("20261001T100250Z-3a"))
-                .is_empty()
-        );
-
-        edits.undone(
-            "20261001T100200Z-3",
-            "20261001T100300Z-4",
-            &set("1.1.4", "1", "2")?,
-        );
-        let back = edits.for_device(a);
-        assert_eq!(back.len(), 1, "{back:?}");
-        assert_eq!(back[0].tool, "knx_set_parameter");
-        assert_eq!(back[0].snapshot, "20261001T100000Z-1");
-        assert_eq!(edits.for_device(b).len(), 1);
+        let dir = model_dir()?;
+        let edits = SessionEdits::new(dir.path());
+        let ia: IndividualAddress = "1.1.4".parse()?;
+        edit(dir.path(), &file("2", true))?;
+        assert_eq!(edits.for_device(ia).len(), 2);
+        edits.applied(ia, false);
+        assert_eq!(edits.for_device(ia), ["X on Dev: 1 to 2."]);
+        edits.applied(ia, true);
+        assert!(edits.for_device(ia).is_empty());
         Ok(())
     }
 }

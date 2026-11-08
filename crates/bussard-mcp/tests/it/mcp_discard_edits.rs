@@ -195,7 +195,10 @@ async fn test_knx_discard_edits_one_device_keeps_the_other_and_undo_restores() -
     assert_eq!(plan["noop"], false, "after undo: {plan}");
     let pending = &plan["pending_model_changes"];
     assert_eq!(pending.as_array().map(Vec::len), Some(1), "{plan}");
-    assert_eq!(pending[0]["tool"], "knx_add_link", "{plan}");
+    assert!(
+        pending[0].as_str().is_some_and(|p| p.contains("Light dim")),
+        "{plan}"
+    );
 
     client.cancel().await?;
     task.abort();
