@@ -53,7 +53,7 @@ $ bussard assign 1.1.47
 |---|---|---|
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--json` | off | Print `{"schema", "from", "to", "gateway", "mask", "manufacturer_id", "serial", "secure", "programming_mode_cleared", "device_file"}`. |
+| `--json` | off | Print (schema 2) `{"schema", "ok", "verified", "address", "from", "gateway", "assigned", "readback": {"mask", "manufacturer_id", "serial", "order_number", "secure", "programming_mode_cleared"}, "device_file"}`: the address part of the `knx_add_device`, `knx_replace_device` and `knx_commission_line` results. |
 | `--keyring <FILE>` | the key store | Its tunnelling users open the KNXnet/IP Secure tunnel, and its tool key for the new (else the old) address verifies a secured device. Password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | A raw 16-byte tool key (32 hex characters) for the verification of a secured device. Overrides the device entries of the key store or keyring, which still opens the tunnel. For test or bench devices only: process arguments are visible to other users. |
 | `--force` | off | Write the address although another device already answers at it. |

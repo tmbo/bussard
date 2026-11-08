@@ -502,7 +502,7 @@ impl JobTable {
         step: &str,
         question: String,
         address: Option<IndividualAddress>,
-        detail: Value,
+        detail: impl Serialize,
     ) {
         let mut inner = self.inner();
         if inner.running.as_deref() == Some(id) {
@@ -516,7 +516,8 @@ impl JobTable {
         if address.is_some() {
             job.address = address;
         }
-        job.context.extend(context_of(detail));
+        job.context
+            .extend(context_of(serde_json::to_value(detail).unwrap_or_default()));
     }
 
     /// Takes a paused job up again (issue #749): it holds the slot once more,

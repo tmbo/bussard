@@ -41,6 +41,49 @@ pub fn with_job(value: &mut Value, job: &str, started: bool, done: bool) {
     }
 }
 
+/// A job a call started and left running: `ok`, the job's `step`, what
+/// the start established (`detail`) and the question the job waits on.
+#[derive(serde::Serialize)]
+struct Started<'a, T: serde::Serialize> {
+    /// Always `true`: the job started.
+    ok: bool,
+    /// What the job does now.
+    step: &'a str,
+    /// What the start established.
+    #[serde(flatten)]
+    detail: T,
+    /// What the human must do or answer first.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    question: Option<&'a str>,
+}
+
+/// A job a call started and left running: `ok`, the job fields with
+/// `started: true`, the job's `step` and what to do next.
+pub fn started(job: &str, step: &str, next_step: String) -> Value {
+    started_with(job, step, serde_json::Map::new(), None, next_step)
+}
+
+/// [`started`] with what the start established (`detail`, an object) and
+/// the `question` the job waits on.
+pub fn started_with<T: serde::Serialize>(
+    job: &str,
+    step: &str,
+    detail: T,
+    question: Option<&str>,
+    next_step: String,
+) -> Value {
+    let mut out = serde_json::to_value(Started {
+        ok: true,
+        step,
+        detail,
+        question,
+    })
+    .unwrap_or_default();
+    with_job(&mut out, job, true, false);
+    envelope(&mut out, None, Some(next_step));
+    out
+}
+
 /// [`report`] as a tool result.
 pub fn ok_report<R: Report>(outcome: &R, model: &Model) -> Result<CallToolResult, ErrorData> {
     ok(report(outcome, model))

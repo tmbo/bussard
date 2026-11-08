@@ -87,7 +87,7 @@
 //! flag that moves between plan and apply retires the plan. The gates above
 //! are unchanged.
 
-use crate::reply::{answer_chat, answer_on, merge};
+use crate::reply::{answer_chat, answer_on};
 use bussard_service::program::chain;
 use std::time::{Duration, Instant, SystemTime};
 

@@ -523,6 +523,295 @@ pub fn label_line(target: &Target, identity: &Verified) -> String {
     .join("  ")
 }
 
+/// A model device as a commissioning result lists it (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommissionTarget {
+    /// Its address in the project.
+    pub address: String,
+    /// Its name.
+    pub name: String,
+    /// Its floor.
+    pub floor: Option<String>,
+    /// Its room.
+    pub room: Option<String>,
+    /// The order number its product block names.
+    pub order_number: Option<String>,
+}
+
+impl CommissionTarget {
+    /// `target` as the results list it.
+    pub fn of(target: &Target) -> CommissionTarget {
+        CommissionTarget {
+            address: target.address.to_string(),
+            name: target.name.clone(),
+            floor: target.floor.clone(),
+            room: target.room.clone(),
+            order_number: target.order_number.clone(),
+        }
+    }
+}
+
+/// What the identification of a pressed device read.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct IdentifiedDevice {
+    /// Where it answered the programming-mode broadcast.
+    pub current_address: String,
+    /// Its serial, hex.
+    pub serial: Option<String>,
+    /// Its mask, hex.
+    pub mask: Option<String>,
+    /// Its manufacturer.
+    pub manufacturer: Option<String>,
+    /// Its order number.
+    pub order_number: Option<String>,
+    /// `matches`, `no_model_number` or `refused`.
+    pub order_check: String,
+}
+
+impl IdentifiedDevice {
+    /// What `i` read.
+    pub fn of(i: &Identified) -> IdentifiedDevice {
+        let v = &i.verified;
+        IdentifiedDevice {
+            current_address: i.current.to_string(),
+            serial: v.serial.as_deref().map(crate::assign::hex),
+            mask: v.mask.map(|m| format!("{m:04X}")),
+            manufacturer: v.manufacturer_id.map(manufacturers::display),
+            order_number: v.order.clone(),
+            order_check: match i.check {
+                OrderCheck::Matches => "matches",
+                OrderCheck::NoModelNumber => "no_model_number",
+                OrderCheck::Refused(_) => "refused",
+            }
+            .to_string(),
+        }
+    }
+}
+
+/// The read-back of a commissioned device at its address.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct CommissionReadback {
+    /// Whether it read back as the identified device.
+    pub verified: bool,
+    /// Its mask, hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mask: Option<String>,
+    /// Its serial, hex.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
+    /// Its order number.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_number: Option<String>,
+    /// Whether it confirmed leaving programming mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub programming_mode_cleared: Option<bool>,
+    /// What the human should know.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
+}
+
+/// One device of a commissioning run: the model device, what happened and
+/// its label.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommissionDevice {
+    /// The model device.
+    #[serde(flatten)]
+    pub target: CommissionTarget,
+    /// `commissioned`, `present` or `failed`.
+    pub status: String,
+    /// Why it failed.
+    pub detail: Option<String>,
+    /// The label line.
+    pub label: Option<String>,
+    /// What the identification read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identified: Option<IdentifiedDevice>,
+    /// `assigned` once its address was written.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Where it answered before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    /// The read-back at its address.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub readback: Option<CommissionReadback>,
+}
+
+impl CommissionDevice {
+    /// The row of `outcome` for `target`.
+    pub fn of(target: &Target, outcome: &Outcome) -> CommissionDevice {
+        CommissionDevice {
+            target: CommissionTarget::of(target),
+            status: outcome.status.key().to_string(),
+            detail: outcome.status.detail().map(str::to_string),
+            label: outcome.label.clone(),
+            identified: None,
+            step: None,
+            from: None,
+            readback: None,
+        }
+    }
+}
+
+/// A commissioning run (`bussard commission --json`, the result of a
+/// `knx_commission_line` job) in one shape (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct CommissionReport {
+    /// Every device of the line is at its address and nothing stopped the
+    /// run.
+    pub ok: bool,
+    /// Always `done`.
+    pub step: String,
+    /// The line.
+    pub line: String,
+    /// The resolved gateway.
+    pub gateway: String,
+    /// The human stopped the run.
+    pub stopped: bool,
+    /// Why the run did not go on.
+    pub reason: Option<String>,
+    /// One row per device the run reached.
+    pub devices: Vec<CommissionDevice>,
+    /// The label lines, one per commissioned device.
+    pub labels: Vec<String>,
+    /// The model's devices on the line.
+    pub total: usize,
+    /// Commissioned in this run.
+    pub commissioned: usize,
+    /// Already at their address.
+    pub present: usize,
+    /// Failed or skipped.
+    pub failed: usize,
+    /// The devices the run did not reach.
+    pub not_reached: Vec<CommissionTarget>,
+    /// The labels CSV written, when one was asked for.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels_file: Option<String>,
+    /// The names, for the summary.
+    #[serde(skip)]
+    names: Names,
+}
+
+/// The device names of a run by outcome, for the summary.
+#[derive(Debug, Clone, Default)]
+struct Names {
+    /// Commissioned.
+    commissioned: Vec<String>,
+    /// Already present.
+    present: Vec<String>,
+    /// Failed.
+    failed: Vec<String>,
+}
+
+impl CommissionReport {
+    /// The report of `run` through `gateway` with the per-device rows
+    /// `devices`; `current` is a device the run was on when it ended.
+    pub fn new(
+        run: &LineRun,
+        gateway: &str,
+        devices: Vec<CommissionDevice>,
+        current: Option<&Target>,
+        stopped: bool,
+        reason: Option<String>,
+    ) -> CommissionReport {
+        let totals = run.totals();
+        let mut not_reached: Vec<&Target> = current.into_iter().collect();
+        not_reached.extend(run.remaining());
+        let names = |status: fn(&Status) -> bool| -> Vec<String> {
+            run.outcomes()
+                .iter()
+                .filter(|o| status(&o.status))
+                .map(|o| o.name.clone())
+                .collect()
+        };
+        let ok = reason.is_none() && !stopped && totals.failed == 0 && not_reached.is_empty();
+        CommissionReport {
+            ok,
+            step: "done".to_string(),
+            line: run.line().to_string(),
+            gateway: gateway.to_string(),
+            stopped,
+            reason,
+            devices,
+            labels: run
+                .outcomes()
+                .iter()
+                .filter_map(|o| o.label.clone())
+                .collect(),
+            total: run.targets().len(),
+            commissioned: totals.commissioned,
+            present: totals.present,
+            failed: totals.failed,
+            not_reached: not_reached.into_iter().map(CommissionTarget::of).collect(),
+            labels_file: None,
+            names: Names {
+                commissioned: names(|s| matches!(s, Status::Commissioned)),
+                present: names(|s| matches!(s, Status::AlreadyPresent)),
+                failed: names(|s| matches!(s, Status::Failed(_))),
+            },
+        }
+    }
+}
+
+impl crate::report::Report for CommissionReport {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, _model: &Model) -> Option<String> {
+        let mut summary = format!("Line {}: ", self.line);
+        summary.push_str(&if self.names.commissioned.is_empty() {
+            "no device was commissioned".to_string()
+        } else {
+            format!("commissioned {}", self.names.commissioned.join(", "))
+        });
+        if !self.names.present.is_empty() {
+            summary.push_str(&format!(
+                "; already at their address: {}",
+                self.names.present.join(", ")
+            ));
+        }
+        if !self.names.failed.is_empty() {
+            summary.push_str(&format!(
+                "; not commissioned: {}",
+                self.names.failed.join(", ")
+            ));
+        }
+        if !self.not_reached.is_empty() {
+            let left: Vec<&str> = self.not_reached.iter().map(|t| t.name.as_str()).collect();
+            summary.push_str(&format!(
+                "; {} before: {}",
+                if self.stopped {
+                    "stopped"
+                } else {
+                    "the run ended"
+                },
+                left.join(", ")
+            ));
+        } else if self.stopped {
+            summary.push_str("; stopped");
+        }
+        summary.push('.');
+        if let Some(reason) = &self.reason {
+            summary.push_str(&format!(" The run did not go on: {reason}."));
+        }
+        Some(summary)
+    }
+
+    fn next_step(&self) -> Option<String> {
+        Some(if self.commissioned > 0 {
+            "Tell the human the summary and read out `labels`, one per device to stick on it. \
+             Only addresses were written: push each commissioned device's links and parameters \
+             with knx_plan_device and knx_apply_device (a factory-fresh device needs its \
+             application loaded first; the plan says so). Call knx_commission_line again for \
+             the devices that were not commissioned."
+                .to_string()
+        } else {
+            "Tell the human the summary. Call knx_commission_line again for the devices that \
+             were not commissioned."
+                .to_string()
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

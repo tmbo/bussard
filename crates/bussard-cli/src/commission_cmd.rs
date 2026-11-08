@@ -39,6 +39,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, bail};
 use bussard_model::IndividualAddress;
+use bussard_service::commission::{CommissionDevice, CommissionReport};
 use bussard_service::commission::{
     Labelled, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed, identify_pressed,
 };
@@ -95,30 +96,6 @@ impl Run for CommissionArgs {
     fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
         run(&self, g)
     }
-}
-
-/// The stable JSON shape of one device row.
-#[derive(Debug, serde::Serialize)]
-struct DeviceJson {
-    address: String,
-    name: String,
-    order_number: Option<String>,
-    status: &'static str,
-    detail: Option<String>,
-    label: Option<String>,
-}
-
-/// The stable JSON shape of a commissioning run.
-#[derive(Debug, serde::Serialize)]
-struct CommissionJson {
-    line: String,
-    gateway: String,
-    devices: Vec<DeviceJson>,
-    total: usize,
-    commissioned: usize,
-    present: usize,
-    failed: usize,
-    labels_file: Option<String>,
 }
 
 /// The product archives `--flash` downloads from, by device, resolved before
@@ -290,8 +267,16 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let failed = walk.totals().failed;
 
     if g.json {
-        let out = to_json(&line, &gateway, outcomes, labels_file);
-        crate::output::print(crate::output::schema::COMMISSION, &out)?;
+        let devices = outcomes
+            .iter()
+            .filter_map(|o| {
+                let target = walk.targets().iter().find(|t| t.address == o.address)?;
+                Some(CommissionDevice::of(target, o))
+            })
+            .collect();
+        let mut out = CommissionReport::new(&walk, &gateway, devices, None, false, None);
+        out.labels_file = labels_file;
+        crate::output::report(&out)?;
     } else {
         print_summary(&line, &gateway, outcomes);
         if let Some(path) = options.labels.as_deref() {
@@ -534,37 +519,6 @@ fn one_line(text: &str) -> String {
         .filter(|l| !l.is_empty())
         .collect::<Vec<_>>()
         .join("; ")
-}
-
-/// Builds the JSON summary.
-fn to_json(
-    line: &str,
-    gateway: &str,
-    outcomes: &[Outcome],
-    labels_file: Option<String>,
-) -> CommissionJson {
-    let devices: Vec<DeviceJson> = outcomes
-        .iter()
-        .map(|o| DeviceJson {
-            address: o.address.to_string(),
-            name: o.name.clone(),
-            order_number: o.order_number.clone(),
-            status: o.status.key(),
-            detail: o.status.detail().map(str::to_string),
-            label: o.label.clone(),
-        })
-        .collect();
-    let count = |key: &str| devices.iter().filter(|d| d.status == key).count();
-    CommissionJson {
-        line: line.to_string(),
-        gateway: gateway.to_string(),
-        total: devices.len(),
-        commissioned: count("commissioned"),
-        present: count("present"),
-        failed: count("failed"),
-        devices,
-        labels_file,
-    }
 }
 
 /// Prints the one summary table the run ends with.

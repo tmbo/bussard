@@ -411,7 +411,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--labels <FILE>` | | Append one row per commissioned device, columns `address;name;order_number;floor;room` (header written when the file is new). |
 | `--product <FILE>` | pinned archive | The `.knxprod` to flash from (with `--flash`). Default: the archive `bussard.lock` pins for each device. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--json` | off | Emit the summary as JSON; label lines then go to stderr and into each device's `label` field. |
+| `--json` | off | Emit the summary as JSON (schema 2, the result of a `knx_commission_line` job without its envelope: `ok`, `step`, `line`, `gateway`, `stopped`, `reason`, `devices` (each `address`, `name`, `floor`, `room`, `order_number`, `status`, `detail`, `label`), `labels`, `total`, `commissioned`, `present`, `failed`, `not_reached`, `labels_file`); label lines then go to stderr and into each device's `label` field. |
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key for `--flash` and `--apply`. |
 
 Behaviour:

@@ -39,14 +39,10 @@ pub trait Report: Serialize {
 /// The version of each `--json` shape that has no [`Report`] struct yet,
 /// one constant per shape (see the CLI's `output` module for the rules).
 pub mod schema {
-    /// `bussard assign --json`.
-    pub const ASSIGN: u32 = 1;
     /// `bussard audit --json`.
     pub const AUDIT: u32 = 1;
     /// `bussard backup --json` (the manifest).
     pub const BACKUP: u32 = 1;
-    /// `bussard commission --json`.
-    pub const COMMISSION: u32 = 1;
     /// `bussard describe --json`.
     pub const DESCRIBE: u32 = 1;
     /// `bussard device --json`.
