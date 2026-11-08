@@ -428,7 +428,7 @@ fn ladder_against_thelsing_knx_linux_ip() -> Result<(), Box<dyn std::error::Erro
     eprintln!("--- scan stdout ---\n{out}\n--- scan stderr ---\n{err}");
     assert!(ok, "rung (c): scan should exit 0; stderr:\n{err}");
     let json: serde_json::Value = serde_json::from_str(&out)?;
-    let found = json["found"].as_array().ok_or("found array")?;
+    let found = json["devices"].as_array().ok_or("found array")?;
     let dev = found
         .iter()
         .find(|d| d["address"] == assigned)
