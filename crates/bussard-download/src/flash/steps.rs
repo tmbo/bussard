@@ -243,6 +243,21 @@ pub(super) async fn run_shared_step<C: Connector>(
             super::function_prop::invoke_function_property(session.l4(), *object, *prop_id, data)
                 .await
         }
+        // A load-state control by object type (issue #961): the state the
+        // device answers must be the one the control leads to.
+        FlashStep::TypedLoadControl {
+            object_type,
+            occurrence,
+            control,
+        } => {
+            super::function_prop::typed_load_control(
+                session.l4(),
+                *object_type,
+                *occurrence,
+                *control,
+            )
+            .await
+        }
         // A property declaration (issue #938): the planner sized the write
         // that follows from it; ETS sends nothing for it, and neither does
         // bussard.

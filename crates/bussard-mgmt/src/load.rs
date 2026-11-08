@@ -416,6 +416,28 @@ pub enum WriteError {
         actual: LoadState,
     },
 
+    /// An interface object a load procedure names by type (`ObjType`) did not
+    /// reach the load state a load-control command should leave it in (issue
+    /// #961).
+    #[error(
+        "{address}: interface object type {object_type} instance {instance} did not reach \
+         {expected} after {control} (device reports {actual})"
+    )]
+    TypedObjectLoadState {
+        /// The device.
+        address: IndividualAddress,
+        /// The interface object type.
+        object_type: u16,
+        /// The object's instance (1-based).
+        instance: u16,
+        /// The control event sent.
+        control: LoadControl,
+        /// The state it should have reached.
+        expected: LoadState,
+        /// The state the device reported.
+        actual: LoadState,
+    },
+
     /// A write stopped after the security object's `Unload` and before its
     /// `LoadCompleted` (issue #534). Outside `Loaded` the device treats its
     /// group key and security individual address tables as empty (KNX 3/5/1

@@ -540,37 +540,6 @@ pub fn plan_flash(
     // that already holds this application swaps in these.
     let mut par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)> = BTreeMap::new();
 
-    // The objects worth loading are exactly the ones that receive a segment
-    // (a `RelSegment` allocation). A master template also opens/completes
-    // contentless objects — e.g. an unused "application program 2" at object
-    // index 5 — which some devices (KNX Virtual) refuse to open (StartLoading
-    // leaves them Unloaded). ETS only loads the objects it writes, so skip the
-    // Load/LoadCompleted of any object with no allocation. The Unload still runs
-    // (ETS unloads them too); a `None` index is kept rather than silently dropped.
-    let loadable: std::collections::HashSet<u32> = ops
-        .iter()
-        .filter_map(|op| match op {
-            LoadOp::RelSegment {
-                lsm_idx: Some(idx), ..
-            } => Some(*idx),
-            _ => None,
-        })
-        .collect();
-    let is_loadable = |idx: &Option<u32>| idx.is_none_or(|i| loadable.contains(&i));
-    // The objects the procedure would open but this plan skips (a `Load` with no
-    // allocation, see above). ETS writes an object's PID 13 program version
-    // only when it loads that object: the 07B0 template's
-    // `LdCtrlWriteProp ObjIdx=5 PropId=13` runs on the ABB BE/S16 and the
-    // Busch-Waechter PRO 280, whose object 5 receives a segment, and is skipped
-    // on the Jung actuators, whose object 5 stays unloaded (issue #160).
-    let skipped_objects: std::collections::HashSet<u32> = ops
-        .iter()
-        .filter_map(|op| match op {
-            LoadOp::Load { lsm_idx: Some(idx) } if !loadable.contains(idx) => Some(*idx),
-            _ => None,
-        })
-        .collect();
-
     // The `LdCtrlMapError` rules in force, original code to mapped code (issue
     // #614). Only `MAPPED_UNLOAD_ERROR` to success is lowered, and only over
     // an `Unload`.
@@ -634,7 +603,22 @@ pub fn plan_flash(
                 mapped_error,
             } => lower_map_error(&mut error_maps, *original_error, *mapped_error)?,
 
-            LoadOp::Unload { lsm_idx } => {
+            // A load-state control naming its object by type goes to that
+            // object as ETS sends it (issue #961).
+            LoadOp::Unload {
+                obj_type: Some(_), ..
+            }
+            | LoadOp::Load {
+                obj_type: Some(_), ..
+            }
+            | LoadOp::LoadCompleted {
+                obj_type: Some(_), ..
+            } => steps.push(lower_typed_load_control(
+                step_no,
+                op,
+                !error_maps.is_empty(),
+            )?),
+            LoadOp::Unload { lsm_idx, .. } => {
                 let absent_ok = error_maps.get(&MAPPED_UNLOAD_ERROR) == Some(&0);
                 // A mapped unload goes to the object it names, so it must name
                 // one (1..=255), not the application object by default.
@@ -651,14 +635,23 @@ pub fn plan_flash(
                     absent_ok,
                 });
             }
-            LoadOp::Load { lsm_idx } if is_loadable(lsm_idx) => {
-                steps.push(FlashStep::StartLoading { target: *lsm_idx })
-            }
-            LoadOp::Load { .. } => {}
-            LoadOp::LoadCompleted { lsm_idx } if is_loadable(lsm_idx) => {
-                steps.push(FlashStep::LoadCompleted { target: *lsm_idx })
-            }
-            LoadOp::LoadCompleted { .. } => {}
+            // Every object the procedure opens is opened, allocated or not
+            // (issue #942): which objects ETS loads is the template variant's
+            // choice ([`application_program_1_only`]) and the application's
+            // own blocks', never an allocation's. The Gira
+            // `M-0008_A-0004-75-0A9A-O007C` loads object 5 from its MergeId 6
+            // block without allocating it, and ETS sends both controls
+            // (`ops.txt` ops 60, 61).
+            LoadOp::Load {
+                lsm_idx,
+                obj_type: None,
+                ..
+            } => steps.push(FlashStep::StartLoading { target: *lsm_idx }),
+            LoadOp::LoadCompleted {
+                lsm_idx,
+                obj_type: None,
+                ..
+            } => steps.push(FlashStep::LoadCompleted { target: *lsm_idx }),
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::Delay { milliseconds } => steps.push(lower_delay(*milliseconds)?),
             // A function property call, its return code checked (issue #946).
@@ -1030,14 +1023,6 @@ pub fn plan_flash(
                 last_written_image = Some(image.clone());
                 steps.push(FlashStep::WriteMem { address, image });
             }
-
-            // The program version of an object this plan never loads: ETS does
-            // not write it (see `skipped_objects`).
-            LoadOp::WriteProp {
-                obj_idx: Some(idx),
-                prop_id: Some(prop_id),
-                ..
-            } if *prop_id == PID_PROGRAM_VERSION && skipped_objects.contains(idx) => {}
 
             // A write to a declared property: `Count` elements of the declared
             // type, the value the parameters compose (issue #938), the
@@ -1679,8 +1664,13 @@ pub(super) fn assemble_ops(
                 blocks.entry(id).or_default().extend(p.ops.clone());
             }
         }
+        let template = if loads_application_program_2(&blocks) {
+            template.to_vec()
+        } else {
+            application_program_1_only(template)
+        };
         let mut out = Vec::new();
-        for op in template {
+        for op in &template {
             match op {
                 LoadOp::Merge { merge_id } => {
                     if let Some(ops) = merge_id
@@ -1706,6 +1696,171 @@ pub(super) fn assemble_ops(
     let gaps =
         super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
     Ok((out, false, gaps))
+}
+
+/// Lowers a load-state control naming its object by type (`ObjType`) to
+/// [`FlashStep::TypedLoadControl`] (issue #961).
+///
+/// KNX 3/5/3 §3.9.3.2 addresses every System B load control by object index;
+/// a vendor procedure that names its object by type is outside it, so the
+/// rule is ETS's, from the Gira Eco capture `M-0008_A-C02A-21-B6D8-O007C`
+/// (2026-11-07, `ops.txt` ops 61, 62 and 117): `LdCtrlUnload`, `LdCtrlLoad`
+/// and `LdCtrlLoadCompleted ObjType="40960"` go out as
+/// `A_FunctionPropertyExt_Command` type 40960 instance 1 PID 5 with the
+/// 10-octet control value (KNX 3/3/7 §3.4.8.1), and the device answers the
+/// new load state.
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedOp`] for a control that names both an index and a
+/// type, a type or occurrence past the 16 and 12 bits the extended service
+/// carries, or one an `LdCtrlMapError` is in force over (`mapped`), which
+/// bussard maps over an indexed `LdCtrlUnload` only.
+fn lower_typed_load_control(
+    step: usize,
+    op: &LoadOp,
+    mapped: bool,
+) -> std::result::Result<FlashStep, PlanError> {
+    let (name, control, lsm_idx, obj_type, occurrence) = match op {
+        LoadOp::Unload {
+            lsm_idx,
+            obj_type,
+            occurrence,
+        } => (
+            "LdCtrlUnload",
+            bussard_mgmt::LoadControl::Unload,
+            lsm_idx,
+            obj_type,
+            occurrence,
+        ),
+        LoadOp::Load {
+            lsm_idx,
+            obj_type,
+            occurrence,
+        } => (
+            "LdCtrlLoad",
+            bussard_mgmt::LoadControl::StartLoading,
+            lsm_idx,
+            obj_type,
+            occurrence,
+        ),
+        LoadOp::LoadCompleted {
+            lsm_idx,
+            obj_type,
+            occurrence,
+        } => (
+            "LdCtrlLoadCompleted",
+            bussard_mgmt::LoadControl::LoadCompleted,
+            lsm_idx,
+            obj_type,
+            occurrence,
+        ),
+        other => {
+            return Err(PlanError::UnsupportedOp {
+                op: format!("{other:?} as a load-state control (step {step})"),
+            });
+        }
+    };
+    let refuse = |why: String| PlanError::UnsupportedOp {
+        op: format!("{name} {why} (step {step})"),
+    };
+    if let Some(idx) = lsm_idx {
+        return Err(refuse(format!(
+            "naming both LsmIdx {idx} and ObjType {}",
+            obj_type.unwrap_or_default()
+        )));
+    }
+    if mapped {
+        return Err(refuse(
+            "by ObjType under an LdCtrlMapError; bussard maps over an indexed LdCtrlUnload only"
+                .to_string(),
+        ));
+    }
+    let object_type = obj_type
+        .and_then(|t| u16::try_from(t).ok())
+        .ok_or_else(|| refuse(format!("ObjType {obj_type:?} past 16 bits")))?;
+    // The extended services carry a 12-bit instance, 1-based.
+    let occurrence = occurrence.unwrap_or(0);
+    let occurrence = u16::try_from(occurrence)
+        .ok()
+        .filter(|o| *o < 0x0FFF)
+        .ok_or_else(|| refuse(format!("Occurrence {occurrence} past the 12-bit instance")))?;
+    Ok(FlashStep::TypedLoadControl {
+        object_type,
+        occurrence,
+        control,
+    })
+}
+
+/// The interface object index of Application Program 2 on a System B device
+/// (KNX 3/5/3 §3.9.3.3, `OIDX_APPLICATION_PROGRAM_2`).
+const OIDX_APPLICATION_PROGRAM_2: u32 = 5;
+
+/// The merge points that carry Application Program 2's allocation (3) and
+/// image (5) in the System B complete download (KNX 3/5/3 §3.9.3.1).
+const AP2_MERGE_IDS: [u32; 2] = [3, 5];
+
+/// Whether the download loads Application Program 2: the application or its
+/// companion program fills one of its merge points (issue #942).
+///
+/// The 07B0 complete download marks the object 5 rows (`LdCtrlLoad LsmIdx=5`,
+/// `MergeId=3`, its `PID_PROGRAM_VERSION`, its `LdCtrlLoadCompleted`) as not
+/// executed "if only AP 1 shall be loaded", and ignores errors on its unload
+/// (KNX 3/5/3 §3.9.3.4, rows 03, 08, 09, 24, 26). The sweep captures of
+/// 2026-11-07 show ETS doing exactly that: the Hager `M-0009_A-E807-10-0EAB`
+/// (no block for MergeId 3 or 5) unloads object 5 and loads only object 4
+/// (`ops.txt` ops 26, 31, 270, 271), the ABB `M-0002_A-0806-71-AD30-O0007`,
+/// whose companion program fills MergeId 3 and 5, loads both.
+fn loads_application_program_2(blocks: &BTreeMap<u32, Vec<LoadOp>>) -> bool {
+    AP2_MERGE_IDS
+        .iter()
+        .any(|id| blocks.get(id).is_some_and(|ops| !ops.is_empty()))
+}
+
+/// The complete-download template as ETS runs it when only Application
+/// Program 1 is loaded (the master data's `ProcedureSubType="ap1"`): object
+/// 5's start, allocation and image merge points, program version and
+/// completion are dropped, and its unload is wrapped in the `LdCtrlMapError`
+/// pair the `ap1` procedure carries, so a device without object 5 completes
+/// it (KNX 3/5/3 §3.9.3.4 remarks: errors accessing the AP2 object are
+/// ignored when the product has no AP2). A template without object 5's rows
+/// (an `ap1` procedure already) comes back unchanged.
+fn application_program_1_only(template: &[LoadOp]) -> Vec<LoadOp> {
+    let ap2 = Some(OIDX_APPLICATION_PROGRAM_2);
+    let names_ap2 = |op: &LoadOp| match op {
+        LoadOp::Load { lsm_idx, .. } | LoadOp::LoadCompleted { lsm_idx, .. } => *lsm_idx == ap2,
+        LoadOp::WriteProp {
+            obj_idx, prop_id, ..
+        } => *obj_idx == ap2 && *prop_id == Some(PID_PROGRAM_VERSION),
+        LoadOp::Merge { merge_id } => merge_id
+            .as_deref()
+            .and_then(|m| m.parse::<u32>().ok())
+            .is_some_and(|id| AP2_MERGE_IDS.contains(&id)),
+        _ => false,
+    };
+    if !template
+        .iter()
+        .any(|op| matches!(op, LoadOp::Load { lsm_idx, .. } if *lsm_idx == ap2))
+    {
+        return template.to_vec();
+    }
+    let map = |mapped_error: u32| LoadOp::MapError {
+        original_error: Some(MAPPED_UNLOAD_ERROR),
+        mapped_error: Some(mapped_error),
+    };
+    let mut out = Vec::with_capacity(template.len());
+    for op in template {
+        match op {
+            LoadOp::Unload { lsm_idx, .. } if *lsm_idx == ap2 => {
+                out.push(map(0));
+                out.push(op.clone());
+                out.push(map(MAPPED_UNLOAD_ERROR));
+            }
+            op if names_ap2(op) => {}
+            op => out.push(op.clone()),
+        }
+    }
+    out
 }
 
 /// What [`assemble_ops`] returns: the ops, whether they were spliced into
@@ -4347,5 +4502,271 @@ mod tests {
             }
             other => Err(format!("expected UnsupportedOp, got {other:?}").into()),
         }
+    }
+
+    /// A merged 07B0 program `M-0002_A-2` with the given `LoadProcedure`
+    /// blocks and no code segment, planned against the built-in template.
+    fn plan_merged_blocks(blocks: &str) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-0002_A-2" ApplicationNumber="2" ApplicationVersion="16"
+            MaskVersion="MV-07B0" Name="AP1" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <AddressTable MaxEntries="200" />
+           <AssociationTable MaxEntries="200" />
+           <ComObjectTable />
+           <LoadProcedures>{blocks}</LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        let app = parse_application_program("M-0002_A-2", xml.as_bytes())?;
+        let template = bussard_product::MasterTemplate::builtin_for_mask("07B0")
+            .ok_or("a built-in 07B0 template")?;
+        let tables = BTreeMap::from([(1, vec![0, 0]), (2, vec![0, 0]), (3, vec![0, 0])]);
+        Ok(plan_flash_default(
+            &app,
+            "1.1.1",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            Some(&template.ops),
+            &tables,
+        )?)
+    }
+
+    /// The load-state steps of `plan` on index-addressed objects, in order.
+    fn load_steps(plan: &FlashPlan) -> Vec<(&'static str, Option<u32>)> {
+        plan.steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::Unload {
+                    target,
+                    absent_ok: true,
+                } => Some(("unload-absent-ok", *target)),
+                FlashStep::Unload { target, .. } => Some(("unload", *target)),
+                FlashStep::StartLoading { target } => Some(("start", *target)),
+                FlashStep::LoadCompleted { target } => Some(("complete", *target)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The objects `plan` writes `PID_PROGRAM_VERSION` to, with the value.
+    fn program_versions(plan: &FlashPlan) -> Vec<(u32, Vec<u8>)> {
+        plan.steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteProp {
+                    object: PropObject::Index(idx),
+                    prop_id: PID_PROGRAM_VERSION,
+                    value,
+                    ..
+                } => Some((*idx, value.clone())),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Issue #942: the built-in `all` template without Application Program
+    /// 2 is the master data's `ap1` procedure, op for op (the 07B0 `ap1`
+    /// block of every corpus `knx_master.xml`).
+    #[test]
+    fn test_application_program_1_only_is_the_ap1_procedure() -> TestResult {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-1_A-1" Name="x">
+          <LoadProcedures><LoadProcedure>
+           <LdCtrlConnect />
+           <LdCtrlMerge MergeId="1" />
+           <LdCtrlMapError OriginalError="3221498632" MappedError="0" />
+           <LdCtrlUnload LsmIdx="5" />
+           <LdCtrlMapError OriginalError="3221498632" MappedError="3221498632" />
+           <LdCtrlUnload LsmIdx="4" />
+           <LdCtrlUnload LsmIdx="3" />
+           <LdCtrlUnload LsmIdx="2" />
+           <LdCtrlUnload LsmIdx="1" />
+           <LdCtrlLoad LsmIdx="4" />
+           <LdCtrlMerge MergeId="2" />
+           <LdCtrlLoad LsmIdx="3" />
+           <LdCtrlRelSegment LsmIdx="3" Size="2" Mode="0" Fill="0" />
+           <LdCtrlLoad LsmIdx="1" />
+           <LdCtrlRelSegment LsmIdx="1" Size="2" Mode="0" Fill="0" />
+           <LdCtrlLoad LsmIdx="2" />
+           <LdCtrlRelSegment LsmIdx="2" Size="2" Mode="0" Fill="0" />
+           <LdCtrlMerge MergeId="4" />
+           <LdCtrlWriteRelMem ObjIdx="3" Offset="0" Size="1048576" Verify="true" />
+           <LdCtrlWriteRelMem ObjIdx="2" Offset="0" Size="1048576" Verify="true" />
+           <LdCtrlWriteRelMem ObjIdx="1" Offset="0" Size="1048576" Verify="true" />
+           <LdCtrlWriteProp ObjIdx="4" PropId="13" Verify="true" InlineData="0000000000" />
+           <LdCtrlLoadCompleted LsmIdx="4" />
+           <LdCtrlLoadCompleted LsmIdx="3" />
+           <LdCtrlLoadCompleted LsmIdx="2" />
+           <LdCtrlLoadCompleted LsmIdx="1" />
+           <LdCtrlMerge MergeId="6" />
+           <LdCtrlMerge MergeId="7" />
+           <LdCtrlRestart />
+          </LoadProcedure></LoadProcedures>
+         </ApplicationProgram></KNX>"#;
+        let ap1 = parse_application_program("M-1_A-1", xml.as_bytes())?;
+        let all = bussard_product::MasterTemplate::builtin_for_mask("07B0")
+            .ok_or("a built-in 07B0 template")?;
+        assert_eq!(
+            application_program_1_only(&all.ops),
+            ap1.load_procedures[0].ops
+        );
+        // An `ap1` procedure already has no object 5 rows to drop.
+        assert_eq!(
+            application_program_1_only(&ap1.load_procedures[0].ops),
+            ap1.load_procedures[0].ops
+        );
+        Ok(())
+    }
+
+    /// Issue #942, the Hager `M-0009_A-E807-10-0EAB` shape: no block for
+    /// MergeId 2, 3 or 5. ETS unloads object 5 and loads object 4 without an
+    /// allocation, writing its program version (`ops.txt` ops 26, 31, 270,
+    /// 271); object 5 is never opened.
+    #[test]
+    fn test_plan_flash_loads_object_4_without_an_allocation() -> TestResult {
+        let plan = plan_merged_blocks(
+            r#"<LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="1" PropId="27" /></LoadProcedure>"#,
+        )?;
+        assert_eq!(
+            load_steps(&plan),
+            [
+                ("unload-absent-ok", Some(5)),
+                ("unload", Some(4)),
+                ("unload", Some(3)),
+                ("unload", Some(2)),
+                ("unload", Some(1)),
+                ("start", Some(4)),
+                ("start", Some(3)),
+                ("start", Some(1)),
+                ("start", Some(2)),
+                ("complete", Some(4)),
+                ("complete", Some(3)),
+                ("complete", Some(2)),
+                ("complete", Some(1)),
+            ]
+        );
+        assert_eq!(
+            program_versions(&plan),
+            [(4, vec![0x00, 0x02, 0x00, 0x02, 0x10])]
+        );
+        Ok(())
+    }
+
+    /// Issue #942, the Gira `M-0008_A-0004-75-0A9A-O007C` shape: the
+    /// application's own MergeId 6 block loads object 5 without allocating
+    /// it, and ETS sends both controls (`ops.txt` ops 60, 61). It is not
+    /// Application Program 2, so the template still runs as `ap1`.
+    #[test]
+    fn test_plan_flash_loads_an_object_the_application_opens() -> TestResult {
+        let plan = plan_merged_blocks(
+            r#"<LoadProcedure MergeId="6"><LdCtrlLoad LsmIdx="5" /><LdCtrlLoadCompleted LsmIdx="5" /></LoadProcedure>"#,
+        )?;
+        let steps = load_steps(&plan);
+        assert_eq!(steps.first(), Some(&("unload-absent-ok", Some(5))));
+        assert_eq!(
+            &steps[steps.len() - 2..],
+            [("start", Some(5)), ("complete", Some(5))]
+        );
+        assert_eq!(program_versions(&plan).len(), 1);
+        Ok(())
+    }
+
+    /// Issue #942: Application Program 2 is loaded when a non-empty block
+    /// fills MergeId 3 or 5 (the ABB PEI companion's), and only then.
+    #[test]
+    fn test_loads_application_program_2_needs_a_filled_ap2_block() {
+        for id in [3, 5] {
+            assert!(loads_application_program_2(&BTreeMap::from([(
+                id,
+                vec![LoadOp::Restart]
+            )])));
+        }
+        assert!(!loads_application_program_2(&BTreeMap::from([(
+            3,
+            Vec::new()
+        )])));
+        assert!(!loads_application_program_2(&BTreeMap::from([(
+            6,
+            vec![LoadOp::Restart]
+        )])));
+    }
+
+    /// Issue #961: load-state controls naming their object by type become
+    /// typed controls on that object, in place, never controls to no object.
+    #[test]
+    fn test_plan_flash_sends_load_controls_by_object_type() -> TestResult {
+        let plan = plan_merged_blocks(
+            r#"<LoadProcedure MergeId="6">
+                 <LdCtrlUnload AppliesTo="all" ObjType="40960" />
+                 <LdCtrlLoad AppliesTo="all" ObjType="40960" />
+                 <LdCtrlLoadCompleted AppliesTo="all" ObjType="40960" />
+               </LoadProcedure>"#,
+        )?;
+        let typed: Vec<(u16, u16, bussard_mgmt::LoadControl)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::TypedLoadControl {
+                    object_type,
+                    occurrence,
+                    control,
+                } => Some((*object_type, *occurrence, *control)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            typed,
+            [
+                (40960, 0, bussard_mgmt::LoadControl::Unload),
+                (40960, 0, bussard_mgmt::LoadControl::StartLoading),
+                (40960, 0, bussard_mgmt::LoadControl::LoadCompleted),
+            ]
+        );
+        assert!(
+            !load_steps(&plan).iter().any(|(_, target)| target.is_none()),
+            "no load control to no object"
+        );
+        // The typed controls send no indexed load-control record.
+        for step in &plan.steps {
+            if matches!(step, FlashStep::TypedLoadControl { .. }) {
+                assert!(plan.load_control_records(step).is_empty());
+            }
+        }
+        Ok(())
+    }
+
+    /// Issue #961: a typed control naming an index too, or under an
+    /// `LdCtrlMapError`, is refused.
+    #[test]
+    fn test_lower_typed_load_control_refuses_what_it_cannot_send() {
+        let both = LoadOp::Unload {
+            lsm_idx: Some(4),
+            obj_type: Some(40960),
+            occurrence: None,
+        };
+        assert!(lower_typed_load_control(1, &both, false).is_err());
+        let typed = LoadOp::Unload {
+            lsm_idx: None,
+            obj_type: Some(40960),
+            occurrence: None,
+        };
+        assert!(lower_typed_load_control(1, &typed, true).is_err());
+        let wide = LoadOp::Load {
+            lsm_idx: None,
+            obj_type: Some(0x1_0000),
+            occurrence: None,
+        };
+        assert!(lower_typed_load_control(1, &wide, false).is_err());
+        assert!(matches!(
+            lower_typed_load_control(1, &typed, false),
+            Ok(FlashStep::TypedLoadControl {
+                object_type: 40960,
+                occurrence: 0,
+                control: bussard_mgmt::LoadControl::Unload,
+            })
+        ));
     }
 }

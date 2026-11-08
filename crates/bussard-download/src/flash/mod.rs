@@ -469,6 +469,22 @@ pub enum FlashStep {
         /// The function's input, the op's `InlineData`.
         data: Vec<u8>,
     },
+    /// A load-state control to an object the procedure names by type
+    /// (`LdCtrlUnload`, `LdCtrlLoad` or `LdCtrlLoadCompleted` with `ObjType`,
+    /// issue #961): the 10-octet `PID_LOAD_STATE_CONTROL` value as one
+    /// `A_FunctionPropertyExt_Command` PID 5 to that type and instance, as ETS
+    /// sends it on the Gira Eco program `M-0008_A-C02A-21-B6D8-O007C`. The
+    /// state the device answers must be the one the control leads to
+    /// (`Unloaded`, `Loading`, `Loaded`); any other state, a non-zero return
+    /// code or no answer fails the flash.
+    TypedLoadControl {
+        /// The interface object type (`ObjType`).
+        object_type: u16,
+        /// Which object of that type, 0 for the first (`Occurrence`).
+        occurrence: u16,
+        /// The control event.
+        control: bussard_mgmt::LoadControl,
+    },
     /// Factory-reset the device before the download (issue #117, #89).
     ///
     /// A confirmed master-reset `A_Restart` (APCI `0x381`, `[erase_code, 0]`)

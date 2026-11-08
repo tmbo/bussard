@@ -26,8 +26,10 @@ use super::plan_props::prop_object;
 use super::{FlashStep, PlanError, PropObject};
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::function_property::function_property_command;
-use bussard_mgmt::load::WriteError;
-use bussard_mgmt::property_ext::{PropertyExtAddress, function_property_ext_command};
+use bussard_mgmt::load::{LoadControl, LoadState, PID_LOAD_STATE_CONTROL, WriteError};
+use bussard_mgmt::property_ext::{
+    PropertyExtAddress, function_property_ext_command, load_control_ext,
+};
 use bussard_product::application::LoadOp;
 
 /// The largest PID the extended property services carry (12 bits, KNX 3/3/7
@@ -130,6 +132,55 @@ pub async fn invoke_function_property<Ch: L4Channel>(
             };
             function_property_ext_command(l4, addr, data).await?;
         }
+    }
+    Ok(())
+}
+
+/// Executes a [`FlashStep::TypedLoadControl`]: sends `control` to the
+/// `occurrence`-th object of `object_type` as `A_FunctionPropertyExt_Command`
+/// PID 5 and requires the load state the device answers to be the one the
+/// control leads to (`Unload` to `Unloaded`, `StartLoading` to `Loading`,
+/// `LoadCompleted` to `Loaded`), as on the Gira Eco capture (issue #961).
+///
+/// # Errors
+///
+/// [`WriteError::TargetOutOfRange`] for an occurrence past the 12-bit
+/// instance (nothing is sent); a refused call, an answer without a state, a
+/// transport failure, or [`WriteError::TypedObjectLoadState`] for any other
+/// state. None is retried.
+pub async fn typed_load_control<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    object_type: u16,
+    occurrence: u16,
+    control: LoadControl,
+) -> Result<(), WriteError> {
+    let instance = occurrence
+        .checked_add(1)
+        .filter(|i| *i <= 0x0FFF)
+        .ok_or_else(|| WriteError::TargetOutOfRange {
+            address: l4.target(),
+            detail: format!("occurrence {occurrence} of object type {object_type} (12 bits)"),
+        })?;
+    let expected = match control {
+        LoadControl::Unload => LoadState::Unloaded,
+        LoadControl::StartLoading => LoadState::Loading,
+        _ => LoadState::Loaded,
+    };
+    let addr = PropertyExtAddress {
+        object_type,
+        object_instance: instance,
+        property_id: u16::from(PID_LOAD_STATE_CONTROL),
+    };
+    let actual = load_control_ext(l4, addr, control).await?;
+    if actual != expected {
+        return Err(WriteError::TypedObjectLoadState {
+            address: l4.target(),
+            object_type,
+            instance,
+            control,
+            expected,
+            actual,
+        });
     }
     Ok(())
 }

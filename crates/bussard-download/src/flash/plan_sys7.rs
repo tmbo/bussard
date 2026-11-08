@@ -379,13 +379,34 @@ pub(super) fn plan_flash_sys7(
             LoadOp::Connect | LoadOp::Disconnect => {}
             LoadOp::Restart => steps.push(FlashStep::Restart),
             LoadOp::Delay { milliseconds } => steps.push(super::plan::lower_delay(*milliseconds)?),
-            LoadOp::Unload { lsm_idx } => steps.push(FlashStep::Sys7Unload {
+            // A System 7 load-state machine is named by its LSM index; a
+            // control naming an object by type has no System 7 meaning.
+            LoadOp::Unload {
+                obj_type: Some(object_type),
+                ..
+            }
+            | LoadOp::Load {
+                obj_type: Some(object_type),
+                ..
+            }
+            | LoadOp::LoadCompleted {
+                obj_type: Some(object_type),
+                ..
+            } => {
+                return Err(PlanError::UnsupportedOp {
+                    op: format!(
+                        "load-state control naming interface object type {object_type} on a \
+                         System 7 device (step {step_no})"
+                    ),
+                });
+            }
+            LoadOp::Unload { lsm_idx, .. } => steps.push(FlashStep::Sys7Unload {
                 lsm: check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?,
             }),
-            LoadOp::Load { lsm_idx } => steps.push(FlashStep::Sys7StartLoading {
+            LoadOp::Load { lsm_idx, .. } => steps.push(FlashStep::Sys7StartLoading {
                 lsm: check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?,
             }),
-            LoadOp::LoadCompleted { lsm_idx } => steps.push(FlashStep::Sys7LoadCompleted {
+            LoadOp::LoadCompleted { lsm_idx, .. } => steps.push(FlashStep::Sys7LoadCompleted {
                 lsm: check_sys7_lsm(step_no, lsm_idx.unwrap_or(0))?,
             }),
             LoadOp::AbsSegment {
@@ -3471,7 +3492,11 @@ mod tests {
 
     #[test]
     fn test_sys7_procedure_end_cuts_after_the_last_restart() {
-        let load5 = LoadOp::Load { lsm_idx: Some(5) };
+        let load5 = LoadOp::Load {
+            lsm_idx: Some(5),
+            obj_type: None,
+            occurrence: None,
+        };
         let ops = [
             LoadOp::Connect,
             LoadOp::Restart,
