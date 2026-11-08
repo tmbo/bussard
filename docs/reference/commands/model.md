@@ -9,7 +9,7 @@ The options every command shares are on [Global options](../global-options.md) a
 Create a fresh project: discover the gateway and write the skeleton, then import an ETS project when there is one.
 
 ```console
-$ bussard init [PROJECT] [--scan <LINE>] [--yes-download | --no-download] [--yes]
+$ bussard init [PROJECT] [--scan <LINE>] [--yes]
 ```
 
 With a resolved tunnelling gateway, `init` prints what the interface says about itself:
@@ -24,8 +24,6 @@ Tunnelling: 4 tunnels, 1 in use.
 |---|---|---|
 | `[PROJECT]` | the one `.knxproj` next to `--dir` | The ETS project (a `.knxproj`) to import right after writing the skeleton. |
 | `--password <PASSWORD>` | | Project password, as for `import`. |
-| `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
-| `--no-download` | off | Do not download missing product data; list it instead. |
 | `--scan <LINE>` | | Without an ETS project: scan this line after writing the skeleton, without asking. |
 | `--yes` | off | Skip the confirmation prompt for a non-empty directory. |
 
@@ -34,7 +32,7 @@ Tunnelling: 4 tunnels, 1 in use.
 Behaviour:
 
 - The project folder is `--dir`, `BUSSARD_DIR` or the current directory. `init` never searches upward.
-- With an ETS project, `init` runs [`import`](#bussard-import-project) right after writing `bussard.toml`, product-data download and validation included.
+- With an ETS project, `init` runs [`import`](#bussard-import-project) right after writing `bussard.toml`, product data from the export and validation included.
 - Without an ETS project, on a terminal, it offers to scan line 1.1 and list the devices that answer (see [`scan`](devices.md)). `--scan <LINE>` does that without asking. Off a terminal and without flags it writes the skeleton and stops.
 - A directory that already holds `bussard.toml` is refused.
 - A directory with anything else in it (other than `.git`, `.env`, `.gitignore` and `.bussard/`), or with a project one level down in `knx/`, gets a question first: `the current directory /home/me/house is not empty (12 entries, a model exists in knx/); initialise a model in the current directory? [y/N]`. `--yes` answers it; without a terminal and without `--yes`, `init` refuses.
@@ -49,19 +47,18 @@ Behaviour:
 
 ## `bussard import [PROJECT]`
 
-Import an ETS `.knxproj` or a `.bussard` bundle (see [`export`](#bussard-export-file)) into the project, fetch missing product data, then validate.
+Import an ETS `.knxproj` or a `.bussard` bundle (see [`export`](#bussard-export-file)) into the project with the product data it carries, then validate.
 
 ```console
 $ bussard import <PROJECT> [--password <PASSWORD>] [--mine | --theirs | --interactive]
 ```
 
-When product data is still missing, the summary says where to get it:
-
 ```console
 $ bussard import house.knxproj --dir knx
-1 device(s) written without product data: their files carry identity, location and links by number; `apply` writes their links, not their parameters
-product data still missing:
-  TST-1: not in bussard's product index. Download the product data (.knxprod) from the manufacturer's website (or export it from ETS's catalog), then run `bussard import-product <file> --dir knx`.
+imported 2 group addresses, 1 devices, 2 link entries → knx
+extracted 1 application program(s) from house.knxproj into knx/products
+pinned the product data of 1 device(s) in bussard.lock: 1.1.1
+validation: 0 error(s), 0 warning(s)
 ```
 
 | Flag / arg | Default | Meaning |
@@ -71,8 +68,6 @@ product data still missing:
 | `--mine` | off | On a re-import, keep this project's value for every hand-edited conflict and exit 0. |
 | `--theirs` | off | On a re-import, take the incoming value for every hand-edited conflict. |
 | `--interactive` | off | On a re-import, ask per conflict (`m` keeps mine, `t` takes theirs). Needs a terminal. |
-| `--yes-download` | off | Download missing vendor product data without asking. Without a terminal and without this flag nothing is downloaded; the missing order numbers are listed. |
-| `--no-download` | off | Do not look up or download missing product data; list it instead. |
 | `--yes` | off | Skip the confirmation prompt for a non-empty directory that holds no project yet. |
 
 Behaviour:
@@ -85,14 +80,11 @@ Behaviour:
 - After the write, `import` prints what changed in the project as the sentences `bussard status` uses, validates the written project and prints `validation: N error(s), M warning(s)` with each error. An error does not undo the import.
 - A group address a device uses but the ETS project does not define is added to `groups.toml` (see [`groups reserve`](#bussard-groups-reserve-floor-room-function)).
 
-**Product data.** After the write, `import` looks up every device's order number that `bussard.lock` does not yet pin in `<dir>/products/` in bussard's pointer index, the one `import-product --order-number` uses.
+**Product data.** A `.knxproj` carries the application program of every device it holds, so `import` downloads nothing.
 
-- The downloads it finds are listed with size and origin and fetched after one confirmation for the whole list (`--yes-download` for scripts).
-- Each download is verified against the index checksum, stored under `<dir>/products/`, pinned in the lock and turned into product models under `<dir>/.bussard/model-cache/`.
-- An application program no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod`. See [Product data](../product-data.md).
-- A device without product data still gets its file (identity, location, links by number). `apply` writes its links but not its parameters.
-- `BUSSARD_PRODUCT_INDEX=<file.json>` points at another index of the same shape.
-- A bundle import runs no download step.
+- An application program no stored archive carries is extracted once from the `.knxproj` into `<dir>/products/<application-id>.knxprod`, pinned in the lock and turned into product models under `<dir>/.bussard/model-cache/`. See [Product data](../product-data.md).
+- An export that lacks a device's application program is refused before anything is written: `application program <id> referenced by device <address> was not found in the archive`.
+- A device the project does not hold gets its product data from [`adopt`](devices.md#bussard-adopt-address) or [`import-product`](devices.md#bussard-import-product-file), which can download it.
 
 **Re-import and conflicts.** Re-import is idempotent.
 

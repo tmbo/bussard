@@ -95,9 +95,9 @@ A directory without a project file (`bussard.toml`, `groups.toml`, `bussard.lock
 
 ### `--yes-download`
 
-Downloading vendor product data is a separate question with its own flag, `--yes-download`, on `init`, `import`, `import-product` and `adopt`. `--yes` never answers it.
+Downloading vendor product data is a separate question with its own flag, `--yes-download`, on `import-product` and `adopt`. `--yes` never answers it. `init` and `import` download nothing: a `.knxproj` carries its product data.
 
-Without a terminal and without `--yes-download`, `init`, `import` and `adopt` download nothing and list the missing order numbers; `import-product --order-number` refuses. `--no-download` skips the question.
+Without a terminal and without `--yes-download`, `adopt` downloads nothing and lists the missing order number; `import-product --order-number` refuses. `--no-download` on `adopt` skips the question.
 
 ### `--force` and `--full`
 
