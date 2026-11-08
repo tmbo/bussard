@@ -130,7 +130,7 @@ $ bussard diff <A> <B> [--raw | --checklist] [--password <PASSWORD>] [--password
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `<A>`, `<B>` | | The two sides. |
-| `--json` | off | Emit `{"a", "b", "summary", "touches_protected", "changes": [...]}`, the same change objects as `status --json`. |
+| `--json` | off | Emit (schema 2) `{"ok", "from", "to", "source", "count", "summary", "touches_protected", "sentences", "changes": [...]}`, the same change objects as `status --json`; `source` is the second side's bundle manifest (`kind: "bundle"`) or `kind: "knxproj"`, absent for a project folder. `knx_diff_project` returns the same object with `from: "the working model"`. |
 | `--raw` | off | Print a file-level TOML diff instead of the sentences. |
 | `--checklist` | off | Print a per-device Markdown checklist of the changes to redo by hand in ETS. With `--json`, emit the same structure as JSON. |
 | `--password <PASSWORD>` | `BUSSARD_PROJECT_PASSWORD` | Password for both `.knxproj` sides. |
@@ -152,7 +152,7 @@ Behaviour:
 
 The pages and old values come from the product models of a project-folder side. A cached product model of an older format carries no pages; the checklist says so, and `bussard device <address>` regenerates it.
 
-`--checklist --json` emits `{"schema", "a", "b", "changes", "items", "groups": [...], "devices": [{"address", "name", "room", "device", "parameters", "objects", "security"}], "notes": [...]}`. Each item has `kind`, `text` and, where they apply, `device`, `group`, `object`, `page`, `label`, `value`, `old_value`.
+`--checklist --json` emits `{"schema", "from", "to", "changes", "items", "groups": [...], "devices": [{"address", "name", "room", "device", "parameters", "objects", "security"}], "notes": [...]}`. Each item has `kind`, `text` and, where they apply, `device`, `group`, `object`, `page`, `label`, `value`, `old_value`.
 
 ## `bussard validate`
 
@@ -164,7 +164,7 @@ $ bussard validate
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Print `{"schema", "diagnostics": [...]}`; each diagnostic has `code`, `severity`, `message` and `location`. |
+| `--json` | off | Print (schema 2, the object `knx_validate` returns with `severity: "info"`) `{"schema", "ok", "diagnostics": [...], "counts", "shown", "note"}`; each diagnostic has `code`, `severity`, `message` and `location`. |
 
 Behaviour:
 

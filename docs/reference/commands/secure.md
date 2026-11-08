@@ -42,7 +42,7 @@ The output above is illustrative and abridged.
 
 What each verb does:
 
-- **`import`** takes new devices, rotated tool keys, changed credentials, factory keys and group keys from the export. Entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address. Importing the same export twice changes nothing and writes nothing. `--json` prints `written`, `backup`, `changed` and the `report` object.
+- **`import`** takes new devices, rotated tool keys, changed credentials, factory keys and group keys from the export. Entries the export lacks are kept, and a factory key is never dropped. The report lists what changed by address. Importing the same export twice changes nothing and writes nothing. `--json` prints `ok`, `kind`, `path` (the export read), `store`, `written`, `backup`, `changed`, `warnings` and the `report` object: the object `knx_import_file` returns.
 - **`export`** writes the ETS element and attribute set with a fresh `Created`, signed with the keyring key. A device without a tool key is left out and named.
 - **`show`** prints the backbone, each device with its serial number and which keys it has, each interface with its user id and host, the number of group keys, the serial numbers of certificates without a device, and the devices of your project that support Secure but have no factory key yet, with the next steps. `--json` gives `project`, `created`, `has_backbone_key`, `devices[]` (`address`, `serial`, `has_tool_key`, `has_fdsk`, `has_management_password`, `has_authentication`), `interfaces[]`, `group_keys` (the addresses), `unassigned_certificates` (serial numbers) and `devices_without_fdsk` (addresses).
 - **`add-certificate`** decodes each certificate (36 base32 characters in six dash-separated groups: serial number, factory key and a 4-bit check; spaces and dashes are ignored, and `0`, `1`, `8` are read as `O`, `I`, `B`) and matches its serial number against the devices in the store. It prints one line per certificate: the serial number, the state and a detail. **added**: saved on the device with that serial, named with its address and name. **no device yet**: no device in your project has the serial yet, so the key is kept under it until `bussard scan`, `bussard assign` or `bussard adopt` reads that serial off a device (or a `keys import` brings it). **already known**: nothing changed. **conflict**: the key store holds another factory key for the device; nothing is written. **invalid**: not a certificate, or its check does not match. **failed**: the key store could not be saved; the line says why. The `--json` statuses keep their names (`stored`, `unassigned`, `already_stored`, `conflict`, `invalid`, `error`). A certificate whose check does not match is `invalid` and nothing is written; its serial number is still shown. Every saved certificate is read back from the store before it is reported. The command fails when any certificate was a conflict, invalid or not saved. `--json` prints `store` and `results[]` (`status`, `serial`, `ia`, `name`, `check_ok`, `message`).
@@ -113,7 +113,7 @@ $ bussard interface secure on 1.1.200
 | `--dump-images <DIR>` | none | With `--dry-run`: write the steps' property writes to `DIR/plan.json` (`system: "ip-secure"`, key material as SHA-256 only) for offline comparison with an ETS capture. |
 | `--yes` | off | Skip the confirmation prompt. |
 | `--allow-self-reconfigure` | off | Switch the interface bussard tunnels through over a KNXnet/IP Secure session with that same interface. |
-| `--json` | off | Emit `device`, `switch`, `dry_run`, `steps`, `generated`, `verified` and `mismatches`. |
+| `--json` | off | Emit (schema 2, the object `knx_interface_secure` returns) `ok`, `address`, `switch`, `dry_run`, `steps`, `generated`, `verified`, `mismatches` and, on a failure, `reason`. |
 
 !!! warning
     Both directions write the interface's security setup and end with a master reset, which restarts it.
@@ -149,7 +149,7 @@ $ bussard secure diag 1.1.5 --clear
 | `--clear` | off | After a confirmation, clear the failures log and reset the security report, then read both back. |
 | `--yes` | off | Skip the confirmation of `--clear`. |
 | `--tool-key <HEX>` | none | A raw tool key for a test device; prefer `--keyring`. |
-| `--json` | off | Emit `address`, `cleared` and `diagnostics` (`counters`, `latest`, `report_failure`, `report_broadcast`, `notes`). |
+| `--json` | off | Emit `ok`, `address`, `gateway`, `cleared`, `diagnostics` (`counters`, `latest`, `report_failure`, `report_broadcast`, `notes`), `lines` and, on a failure, `reason`. |
 
 Over MCP the read is part of `knx_describe_device` and the clear is `knx_clear_security_log`, behind the same question (see [MCP tools](../mcp-tools.md)).
 
