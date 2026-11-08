@@ -21,7 +21,8 @@
 //! result lists per device what was written and whether its read-back
 //! verified; `ok` is true only when no device failed.
 
-use crate::reply::refused_on;
+use bussard_service::line::LineReport;
+use bussard_service::report::{Approval, Refusal};
 use std::collections::BTreeMap;
 use std::time::SystemTime;
 
@@ -31,11 +32,10 @@ use bussard_service::line::{
     DeviceStatus, LineMode, LineOutcome, LineTarget, LineVisit, parse_line, targets_digest,
     targets_on_line, visit_device,
 };
-use bussard_service::mgmt::system_type;
 use bussard_service::program::plan::Fingerprint;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::{BussardMcp, ProgrammingTier, Subject, merge, refuse_insecure_links, refuse_protected};
+use super::{BussardMcp, ProgrammingTier, Subject, refuse_insecure_links, refuse_protected};
 
 /// What a line plan this session produced binds, remembered until applied,
 /// refused or expired.
@@ -76,67 +76,6 @@ fn line_digest(line: (u8, u8), model: &str, outcomes: &[LineOutcome]) -> String 
     h.hex()
 }
 
-/// A group address in the model's words: `1/2/2 (Blind position)`.
-fn ga_words(model: &Model, ga: bussard_model::GroupAddress) -> String {
-    match model.groups.groups.get(&ga) {
-        Some(group) => format!("{ga} ({})", group.name),
-        None => ga.to_string(),
-    }
-}
-
-/// The sentences of one device's link plan, names first.
-fn sentences(model: &Model, o: &LineOutcome) -> Vec<String> {
-    let Some(report) = &o.report else {
-        return Vec::new();
-    };
-    let add = report.additions.iter().map(|p| {
-        format!(
-            "+ {} object {} now on {}",
-            o.name,
-            p.object,
-            ga_words(model, p.ga)
-        )
-    });
-    let remove = report.removals.iter().map(|p| {
-        format!(
-            "- {} object {} no longer on {}",
-            o.name,
-            p.object,
-            ga_words(model, p.ga)
-        )
-    });
-    add.chain(remove).collect()
-}
-
-/// One device's row of a line result.
-fn device_json(model: &Model, o: &LineOutcome, notes: &[String]) -> Value {
-    json!({
-        "address": o.address.to_string(),
-        "name": o.name,
-        "mask": o.mask.map(|m| format!("{m:04X}")),
-        "system_type": o.mask.map(|m| system_type(m).to_string()),
-        "status": o.status.key(),
-        "changes": o.status.changes(),
-        "detail": o.status.detail(),
-        "verified": matches!(o.status, DeviceStatus::Applied(_)),
-        "sentences": sentences(model, o),
-        "notes": notes,
-        "backup": o.backup.as_ref().map(|p| p.display().to_string()),
-    })
-}
-
-/// The counts of a line result.
-fn totals(outcomes: &[LineOutcome]) -> Value {
-    let count = |key: &str| outcomes.iter().filter(|o| o.status.key() == key).count();
-    json!({
-        "total": outcomes.len(),
-        "changed": count("changes") + count("applied"),
-        "unchanged": count("unchanged"),
-        "skipped": count("skipped"),
-        "failed": count("failed"),
-    })
-}
-
 impl BussardMcp {
     /// `knx_plan_device` with `line`; `Err` is a refusal reason. Runs as a
     /// plan job, as the device form does (issue #332).
@@ -147,10 +86,17 @@ impl BussardMcp {
         let text = format!("{}.{}", parsed.0, parsed.1);
         let subject = Subject::Line(text.clone(), at);
         self.run_plan(subject, move |me, job| async move {
-            Ok(me
-                .plan_line_body(&job, parsed)
-                .await
-                .unwrap_or_else(|reason| refused_on("line", &text, reason)))
+            let model = me.state().model.current();
+            Ok(match me.plan_line_body(&job, parsed).await {
+                Ok(plan) => crate::reply::report(&plan, &model),
+                Err(reason) => crate::reply::report(
+                    &Refusal {
+                        line: Some(text.clone()),
+                        ..Refusal::new(reason)
+                    },
+                    &model,
+                ),
+            })
         })
         .await
     }
@@ -236,7 +182,7 @@ impl BussardMcp {
     }
 
     /// The line plan itself, run inside the plan job; `Err` is a refusal.
-    async fn plan_line_body(&self, job: &str, line: (u8, u8)) -> Result<Value, String> {
+    async fn plan_line_body(&self, job: &str, line: (u8, u8)) -> Result<LineReport, String> {
         let (model, targets) = self.line_targets(line)?;
         let (tier, _, gateway) = self.programming_preflight()?;
         let _guard = tier.bus_lock.lock().await;
@@ -276,58 +222,18 @@ impl BussardMcp {
                 .insert(digest.clone(), format!("line {line_text}"), plan);
             digest
         });
-        let devices: Vec<Value> = visited
-            .iter()
-            .map(|(o, notes)| device_json(&model, o, notes))
-            .collect();
-        let all_sentences: Vec<String> =
-            outcomes.iter().flat_map(|o| sentences(&model, o)).collect();
-        let failed = outcomes
-            .iter()
-            .filter(|o| matches!(o.status, DeviceStatus::Failed(_)))
-            .count();
-        let now = SystemTime::now();
-        let question = digest.as_ref().map(|_| {
-            format!(
-                "Write the model's links to {changed} device(s) on line {line_text} via {gateway}?"
-            )
-        });
-        let failed_note = if failed > 0 {
-            format!(
-                " {failed} device(s) could not be read (status failed, with the reason in \
-                 detail): name them; they are not written."
-            )
-        } else {
-            String::new()
-        };
-        Ok(json!({
-            "ok": true,
-            "line": line_text,
-            "mode": "plan",
-            "gateway": gateway,
-            "noop": digest.is_none(),
-            "devices": devices,
-            "totals": totals(&outcomes),
-            "sentences": all_sentences,
-            "question": question,
-            "plan_digest": digest,
-            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| tier.line_plans.expires_at(now)),
-            "next_step": match &digest {
-                None => format!(
-                    "nothing to write on line {line_text}: every device that answered already \
-                     holds the model's links (see devices for any skipped or failed one).{failed_note}"
-                ),
-                Some(_) => format!(
-                    "Show the plan to the human: every device with status changes and its \
-                     sentences, and the skipped devices with their reason. Only the link tables \
-                     are written in the line form; a parameter change is planned per device \
-                     (knx_plan_device with address).{failed_note} Ask the question. Call \
-                     knx_apply_device with line {line_text} and this plan_digest only after an \
-                     explicit yes."
-                ),
-            },
-        }))
+        let mut report = LineReport::new(&model, &line_text, LineMode::Plan, &gateway, &visited);
+        if let Some(digest) = digest {
+            report.approval = Approval {
+                question: Some(format!(
+                    "Write the model's links to {changed} device(s) on line {line_text} via \
+                     {gateway}?"
+                )),
+                plan_digest: Some(digest),
+                expires_at: Some(tier.line_plans.expires_at(SystemTime::now())),
+            };
+        }
+        Ok(report)
     }
 
     /// `knx_apply_device` with `line`; `Err` is a refusal reason.
@@ -347,23 +253,20 @@ impl BussardMcp {
             me.on_bus(tier, async {
                 let (model, targets, planned, gateway, snapshot, declared) =
                     me.apply_line_preflight(tier, parsed, &digest)?;
-                let context = json!({
-                    "line": text,
-                    "gateway": gateway,
-                    "snapshot": snapshot,
-                    "declared": declared,
-                });
+                let mut report = LineReport::new(&model, &text, LineMode::Apply, &gateway, &[]);
+                report.snapshot = snapshot.clone();
+                report.declared = declared;
                 let record = crate::jobs::record_file(&me.state().dir, snapshot.as_deref());
-                gate.pass(context.clone(), record);
+                gate.pass(&report, record);
                 let mode = LineMode::Apply;
                 let expected = Some(&planned.devices);
                 let visited = me.visit_line(tier, &job, &model, &targets, mode, expected);
-                let mut result = context;
                 match visited.await {
-                    Err(reason) => merge(
-                        &mut result,
-                        json!({"ok": false, "verified": false, "reason": reason}),
-                    ),
+                    Err(reason) => {
+                        report.ok = false;
+                        report.verified = Some(false);
+                        report.reason = Some(reason);
+                    }
                     Ok(visited) => {
                         for (o, _) in &visited {
                             if matches!(
@@ -375,29 +278,15 @@ impl BussardMcp {
                                 me.session_edits().applied(o.address, false);
                             }
                         }
-                        let outcomes: Vec<LineOutcome> =
-                            visited.iter().map(|(o, _)| o.clone()).collect();
-                        let failed = outcomes
-                            .iter()
-                            .filter(|o| matches!(o.status, DeviceStatus::Failed(_)))
-                            .count();
-                        let devices: Vec<Value> = visited
-                            .iter()
-                            .map(|(o, notes)| device_json(&model, o, notes))
-                            .collect();
-                        merge(
-                            &mut result,
-                            json!({
-                                "ok": failed == 0,
-                                "verified": failed == 0,
-                                "mode": "apply",
-                                "devices": devices,
-                                "totals": totals(&outcomes),
-                            }),
-                        );
+                        let done = LineReport::new(&model, &text, mode, &gateway, &visited);
+                        report = LineReport {
+                            snapshot: report.snapshot,
+                            declared: report.declared,
+                            ..done
+                        };
                     }
                 }
-                Ok(result)
+                Ok(report)
             })
             .await
         })

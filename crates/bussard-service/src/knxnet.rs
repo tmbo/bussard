@@ -1506,3 +1506,138 @@ mod tests {
         Ok(())
     }
 }
+
+/// The plan of writing an IP interface's `[knxnet]` table to its KNXnet/IP
+/// parameter object (issue #391) in one shape (issue #904): `bussard plan
+/// <ia> --json` prints it, `knx_plan_device` returns it with the chat
+/// envelope.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InterfacePlanOutcome {
+    /// Always `true`: the plan was made.
+    pub ok: bool,
+    /// Always `apply`.
+    pub method: String,
+    /// The device plan: `address`, `name`, `gateway`, `changes`,
+    /// `channels`, `unchanged_objects`, `writes`, `backup_dir`, `notes`,
+    /// `state_hash`.
+    #[serde(flatten)]
+    pub plan: DevicePlan,
+    /// The device's mask, hex.
+    pub mask: String,
+    /// Whether the interface was read under KNX Data Secure.
+    pub secured: bool,
+    /// The identity verdict against `bussard.lock`.
+    pub identity: IdentityCheck,
+    /// Nothing would be written (by `apply` or by the load procedure).
+    pub noop: bool,
+    /// The plan in words, the load procedure's properties after it.
+    pub sentences: String,
+    /// The property writes, in order, as they go on the wire.
+    pub interface_writes: Vec<String>,
+    /// Why `apply` would refuse, when it would.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub refusal: Option<String>,
+    /// The application's property-only load procedure, when it has one:
+    /// each property as the device holds it and as the project asks
+    /// (`bussard flash` writes them).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub property_procedure: Option<Vec<crate::property_plan::PropertyRow>>,
+    /// The project edits this server session made to the interface and has
+    /// not written yet (issue #279).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pending_model_changes: Option<serde_json::Value>,
+    /// When the plan was made, RFC 3339.
+    pub planned_at: String,
+    /// The question and, on the MCP surface, the digest.
+    #[serde(flatten)]
+    pub approval: crate::report::Approval,
+}
+
+impl InterfacePlanOutcome {
+    /// The plan of `plan` as `device_plan` words it, from the interface
+    /// `read` (mask `mask`), with the load procedure's `rows` and their
+    /// text `procedure_text`.
+    pub fn new(
+        plan: &InterfacePlan,
+        device_plan: DevicePlan,
+        mask: u16,
+        secured: bool,
+        identity: IdentityCheck,
+        rows: Option<Vec<crate::property_plan::PropertyRow>>,
+        procedure_text: &str,
+    ) -> InterfacePlanOutcome {
+        let procedure_differs = rows
+            .as_ref()
+            .is_some_and(|r| r.iter().any(crate::property_plan::PropertyRow::differs));
+        InterfacePlanOutcome {
+            ok: true,
+            method: "apply".to_string(),
+            mask: format!("{mask:04X}"),
+            secured,
+            identity,
+            noop: plan.is_empty() && !procedure_differs,
+            sentences: format!("{}{procedure_text}", device_plan.render_text()),
+            interface_writes: plan.steps.iter().map(InterfaceStep::wire).collect(),
+            refusal: plan.refusal(false),
+            property_procedure: rows,
+            pending_model_changes: None,
+            planned_at: crate::monitor::timefmt::to_rfc3339(std::time::SystemTime::now()),
+            approval: crate::report::Approval::question(
+                (!plan.is_empty()).then(|| device_plan.question()),
+            ),
+            plan: device_plan,
+        }
+    }
+
+    /// Whether the load procedure's properties differ from the project.
+    fn procedure_differs(&self) -> bool {
+        self.property_procedure
+            .as_ref()
+            .is_some_and(|r| r.iter().any(crate::property_plan::PropertyRow::differs))
+    }
+}
+
+impl crate::report::Report for InterfacePlanOutcome {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, model: &bussard_model::Model) -> Option<String> {
+        let device = self
+            .plan
+            .address
+            .parse()
+            .map(|ia| crate::report::device_phrase(model, ia))
+            .unwrap_or_else(|_| "the device".to_string());
+        Some(if self.noop {
+            format!(
+                "{} already matches; nothing to write.",
+                bussard_model::text::capitalize(&device)
+            )
+        } else {
+            format!(
+                "A plan for {device}{}. Nothing is written before the human says yes.",
+                crate::report::counted(self.plan.changes.len())
+            )
+        })
+    }
+
+    fn next_step(&self) -> Option<String> {
+        let target = &self.plan.address;
+        Some(if self.approval.question.is_none() {
+            if self.procedure_differs() {
+                format!(
+                    "nothing for knx_apply_device to write: the interface matches its [knxnet] \
+                     table. The properties of its load procedure differ (see \
+                     property_procedure); `bussard flash {target}` writes them."
+                )
+            } else {
+                "nothing to write: the interface already matches its [knxnet] table".to_string()
+            }
+        } else {
+            format!(
+                "Show the plan above to the human (every sentence) and ask whether to write it \
+                 to the KNXnet/IP parameter object of {target}. Call knx_apply_device with this \
+                 plan_digest only after an explicit yes."
+            )
+        })
+    }
+}

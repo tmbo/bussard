@@ -1974,6 +1974,22 @@ impl<'a, S: DynamicSource + ?Sized> DynamicMemo<'a, S> {
         }
     }
 
+    /// A memo for `app` that already holds `config` as the evaluation of
+    /// `values`. For a program derived from another with the same Dynamic
+    /// section (the module load procedures resolved, issue #959): it shares
+    /// the evaluation the other program's memo made instead of running it
+    /// again.
+    pub fn seeded(
+        app: &'a S,
+        values: &BTreeMap<String, String>,
+        config: std::sync::Arc<DynamicConfig>,
+    ) -> DynamicMemo<'a, S> {
+        DynamicMemo {
+            app,
+            entries: std::sync::Mutex::new(vec![(values.clone(), config)]),
+        }
+    }
+
     /// [`evaluate_dynamic`] of the memo's program with `values`, evaluated
     /// on the first request for this value map and shared after that.
     pub fn evaluate(&self, values: &BTreeMap<String, String>) -> std::sync::Arc<DynamicConfig> {
@@ -3604,6 +3620,23 @@ mod tests {
             &first
         ));
         assert_eq!(memo.evaluations(), 2);
+    }
+
+    #[test]
+    fn test_dynamic_memo_seeded_shares_the_given_evaluation() {
+        // A derived program (issue #959) answers from the evaluation it was
+        // seeded with, without evaluating its Dynamic section again.
+        let src = source();
+        let derived = source();
+        let on = BTreeMap::from([("P-1_R-1".to_string(), "1".to_string())]);
+        let memo = DynamicMemo::new(&src);
+        let first = memo.evaluate(&on);
+        let seeded = DynamicMemo::seeded(&derived, &on, std::sync::Arc::clone(&first));
+        assert!(std::sync::Arc::ptr_eq(
+            &seeded.evaluate_for(&derived, &on),
+            &first
+        ));
+        assert_eq!(seeded.evaluations(), 1);
     }
 
     #[test]

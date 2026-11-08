@@ -300,7 +300,7 @@ pub fn plan_parameters_only(
         params: ParamPlan {
             changes: decoded.differences,
             unknown: decoded.unknown,
-            note: None,
+            note: decoded.incomplete,
             kept: decoded.kept,
         },
         properties,

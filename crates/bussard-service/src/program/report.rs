@@ -5,7 +5,10 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashPlan, ParamPlan, ParamValue, region_rows, trace};
+use bussard_download::{FlashPlan, ParamChange, ParamPlan, ParamValue, region_rows, trace};
+use serde::Serialize;
+
+use crate::report::Report;
 use bussard_model::IndividualAddress;
 
 use super::params_only::ParamsPlanned;
@@ -62,23 +65,6 @@ fn kept_params_text(out: &mut String, params: &ParamPlan) {
     }
 }
 
-/// The `kept_memory` array of the JSON plan (issue #411).
-fn kept_memory_json(plan: &FlashPlan) -> Vec<serde_json::Value> {
-    plan.kept()
-        .iter()
-        .map(|k| {
-            serde_json::json!({
-                "object": k.object,
-                "segment": k.segment,
-                "allocated": k.allocated,
-                "address": k.address,
-                "ranges": k.ranges.iter().map(|(s, e)| [s, e]).collect::<Vec<_>>(),
-                "label": k.label(),
-            })
-        })
-        .collect()
-}
-
 /// The octet runs the download leaves as the device holds them (issue
 /// #411), one line each: `object 4 octets 128..256 kept`.
 fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
@@ -103,78 +89,191 @@ fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
         .collect()
 }
 
-/// The `flash --json` document (schema `FLASH`): the pre-flight, including
-/// the `parameters` array (issue #109) and, when the pre-flight read PID 61
-/// and a group address leaves or joins Data Secure, the `security_object`
-/// change the text output prints (issue #336): `line` as printed (`- security
-/// object: Data Secure off for …`), with its `mark`, `subject` and
-/// `sentence`.
-pub fn flash_plan_json(
-    target: IndividualAddress,
-    device_mask: u16,
-    plan: &FlashPlan,
-    params: &ParamPlan,
-    security_change: Option<&bussard_download::PlanChange>,
-) -> serde_json::Value {
-    let parameters: Vec<serde_json::Value> = params
-        .changes
-        .iter()
-        .map(|c| {
-            serde_json::json!({
-                "key": c.key,
-                "name": c.name,
-                "old": match &c.old {
-                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                    ParamValue::Unknown => serde_json::Value::Null,
-                },
-                "new": match &c.new {
-                    ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                    ParamValue::Unknown => serde_json::Value::Null,
-                },
-                "unit": c.unit,
-            })
-        })
-        .collect();
-    serde_json::json!({
-        "device": target.to_string(),
-        "device_mask": format!("{device_mask:04X}"),
-        "application": {
-            "id": plan.identity.id,
-            "name": plan.identity.name,
-            "number": plan.identity.application_number,
-            "version": plan.identity.application_version,
-            "mask": plan.identity.mask_version,
-        },
-        "parameters": parameters,
-        "parameter_note": params.note,
-        // Issue #411: the parameters and octets the download keeps on the
-        // device (not written, not verified).
-        "kept_parameters": params.kept.iter().map(|c| serde_json::json!({
-            "key": c.key,
-            "name": c.name,
-            "device": match &c.old {
-                ParamValue::Known(v) => serde_json::Value::String(v.clone()),
-                ParamValue::Unknown => serde_json::Value::Null,
+/// The application a download writes.
+#[derive(Debug, Clone, Serialize)]
+pub struct ApplicationIdentity {
+    /// The application-program id.
+    pub id: String,
+    /// Its display name.
+    pub name: Option<String>,
+    /// The KNX application number.
+    pub number: Option<u32>,
+    /// The application version.
+    pub version: Option<u32>,
+    /// The mask version it is for.
+    pub mask: String,
+}
+
+/// One parameter a download changes: its key, its vendor text, and the
+/// device's and the project's value (`None`: unreadable).
+#[derive(Debug, Clone, Serialize)]
+pub struct ParameterValues {
+    /// The `ParameterRef` id.
+    pub key: String,
+    /// The vendor's text.
+    pub name: String,
+    /// What the device holds.
+    pub device: Option<String>,
+    /// What the project holds.
+    pub model: Option<String>,
+    /// The vendor's unit.
+    pub unit: Option<String>,
+}
+
+impl ParameterValues {
+    /// `change` in words.
+    fn of(change: &ParamChange) -> ParameterValues {
+        let text = |v: &ParamValue| v.known().map(str::to_string);
+        ParameterValues {
+            key: change.key.clone(),
+            name: change.name.clone(),
+            device: text(&change.old),
+            model: text(&change.new),
+            unit: change.unit.clone(),
+        }
+    }
+}
+
+/// One parameter the download keeps on the device (issue #411): not
+/// written, not verified.
+#[derive(Debug, Clone, Serialize)]
+pub struct KeptParameter {
+    /// The parameter and both values.
+    #[serde(flatten)]
+    pub values: ParameterValues,
+    /// Always `false`.
+    pub written: bool,
+    /// Always `false`.
+    pub verified: bool,
+}
+
+/// One octet run the download keeps on the device (issue #411).
+#[derive(Debug, Clone, Serialize)]
+pub struct KeptMemory {
+    /// The load-state machine.
+    pub object: u32,
+    /// The code segment.
+    pub segment: String,
+    /// The octets the allocation holds.
+    pub allocated: usize,
+    /// The segment's base address on System 7.
+    pub address: Option<u32>,
+    /// The `[start, end)` runs kept.
+    pub ranges: Vec<[usize; 2]>,
+    /// `object 4 octets 128..256`.
+    pub label: String,
+}
+
+/// The security-object change of a flash pre-flight (issue #336), with
+/// the line the text output prints.
+#[derive(Debug, Clone, Serialize)]
+pub struct SecurityLine {
+    /// The change.
+    #[serde(flatten)]
+    pub change: bussard_download::PlanChange,
+    /// `- security object: Data Secure off for …`.
+    pub line: String,
+}
+
+/// The size of a download.
+#[derive(Debug, Clone, Serialize)]
+pub struct MemoryPlan {
+    /// Octets written.
+    pub write_bytes: usize,
+    /// Steps of the load procedure.
+    pub steps: usize,
+    /// Telegrams the writes take.
+    pub frames: usize,
+    /// The estimated duration, in seconds.
+    pub estimated_seconds: f64,
+}
+
+/// The `flash --json` pre-flight (issue #904): what the download writes, in
+/// the vendor's words, and the memory-level plan.
+#[derive(Debug, Clone, Serialize)]
+pub struct FlashPlanReport {
+    /// The device.
+    pub address: String,
+    /// The mask the device reported, hex.
+    pub mask: String,
+    /// The application written.
+    pub application: ApplicationIdentity,
+    /// The parameters that change (issue #109).
+    pub parameters: Vec<ParameterValues>,
+    /// Why the parameters were not compared, when they were not.
+    pub parameter_note: Option<String>,
+    /// The parameters the download keeps on the device (issue #411).
+    pub kept_parameters: Vec<KeptParameter>,
+    /// The octets the download keeps on the device (issue #411).
+    pub kept_memory: Vec<KeptMemory>,
+    /// The security-object change (issue #336).
+    pub security_object: Option<SecurityLine>,
+    /// The size of the download.
+    pub memory: MemoryPlan,
+    /// The load procedure, one line per step.
+    pub procedure: Vec<String>,
+}
+
+impl FlashPlanReport {
+    /// The pre-flight of writing `plan` (with the parameter plan `params`)
+    /// to `target`, which reported `device_mask`.
+    pub fn new(
+        target: IndividualAddress,
+        device_mask: u16,
+        plan: &FlashPlan,
+        params: &ParamPlan,
+        security_change: Option<&bussard_download::PlanChange>,
+    ) -> FlashPlanReport {
+        FlashPlanReport {
+            address: target.to_string(),
+            mask: format!("{device_mask:04X}"),
+            application: ApplicationIdentity {
+                id: plan.identity.id.clone(),
+                name: plan.identity.name.clone(),
+                number: plan.identity.application_number,
+                version: plan.identity.application_version,
+                mask: plan.identity.mask_version.clone(),
             },
-            "model": c.new.to_string(),
-            "unit": c.unit,
-            "written": false,
-            "verified": false,
-        })).collect::<Vec<_>>(),
-        "kept_memory": kept_memory_json(plan),
-        "security_object": security_change.map(|change| {
-            let mut value = serde_json::json!(change);
-            value["line"] = serde_json::Value::String(change.line());
-            value
-        }),
-        "memory": {
-            "write_bytes": plan.total_write_bytes(),
-            "steps": plan.steps.len(),
-            "frames": plan.estimated_write_frames(),
-            "estimated_seconds": plan.estimated_duration().as_secs_f64(),
-        },
-        "procedure": trace(plan),
-    })
+            parameters: params.changes.iter().map(ParameterValues::of).collect(),
+            parameter_note: params.note.clone(),
+            kept_parameters: params
+                .kept
+                .iter()
+                .map(|c| KeptParameter {
+                    values: ParameterValues::of(c),
+                    written: false,
+                    verified: false,
+                })
+                .collect(),
+            kept_memory: plan
+                .kept()
+                .iter()
+                .map(|k| KeptMemory {
+                    object: k.object,
+                    segment: k.segment.clone(),
+                    allocated: k.allocated,
+                    address: k.address,
+                    ranges: k.ranges.iter().map(|&(s, e)| [s, e]).collect(),
+                    label: k.label(),
+                })
+                .collect(),
+            security_object: security_change.map(|change| SecurityLine {
+                change: change.clone(),
+                line: change.line(),
+            }),
+            memory: MemoryPlan {
+                write_bytes: plan.total_write_bytes(),
+                steps: plan.steps.len(),
+                frames: plan.estimated_write_frames(),
+                estimated_seconds: plan.estimated_duration().as_secs_f64(),
+            },
+            procedure: trace(plan),
+        }
+    }
+}
+
+impl Report for FlashPlanReport {
+    const SCHEMA: u32 = 2;
 }
 
 /// The `flash` pre-flight in text: the application identity, the mask, the
@@ -339,53 +438,148 @@ fn procedure_summary(partial: &FlashPlan) -> String {
         .join("; ")
 }
 
-/// The `flash --parameters-only --json` document (schema
-/// `FLASH_PARAMETERS`).
-pub fn params_plan_json(target: IndividualAddress, planned: &ParamsPlanned) -> serde_json::Value {
-    let (partial, regions, params) = (&planned.partial, &planned.regions, &planned.params);
-    let properties = &planned.properties;
-    serde_json::json!({
-        "device": target.to_string(),
-        "mode": "parameters-only",
-        "application": partial.identity.id,
-        "parameters": params.changes.iter().map(|c| serde_json::json!({
-            "key": c.key,
-            "name": c.name,
-            "old": c.old.to_string(),
-            "new": c.new.to_string(),
-            "unit": c.unit,
-        })).collect::<Vec<_>>(),
-        "regions": region_rows(partial, regions).into_iter().map(|(segment, address, len, changed)| serde_json::json!({
-            "segment": segment,
-            "address": format!("{address:#08X}"),
-            "octets": len,
-            "changed_octets": changed,
-        })).collect::<Vec<_>>(),
-        "unwritten": partial.unwritten_bits().into_iter().map(|(segment, octets)| serde_json::json!({
-            "segment": segment,
-            "offsets": octets.iter().map(|(i, _)| *i).collect::<Vec<_>>(),
-            "written": false,
-            "reason": "no parameter the configuration reaches is placed there; ETS does not write this octet in a download",
-        })).collect::<Vec<_>>(),
-        "properties": properties.iter().map(|p| serde_json::json!({
-            "property": p.label(),
-            "parameters": p.parameters,
-            "model": p.model.iter().map(|b| format!("{b:02X}")).collect::<String>(),
-            "device": p.device.as_ref().map(|d| d.iter().map(|b| format!("{b:02X}")).collect::<String>()),
-        })).collect::<Vec<_>>(),
-        "procedure": bussard_download::trace(partial),
-    })
+/// One parameter memory region a parameter-only download compares.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegionRow {
+    /// The code segment.
+    pub segment: String,
+    /// Its base address, `0x000000`.
+    pub address: String,
+    /// Its length in octets.
+    pub octets: usize,
+    /// The octets that differ.
+    pub changed_octets: usize,
 }
 
-/// The offline plan of `flash --parameters-only --dry-run` as JSON.
-pub fn params_dry_run_json(target: IndividualAddress, partial: &FlashPlan) -> serde_json::Value {
-    serde_json::json!({
-        "device": target.to_string(),
-        "mode": "parameters-only",
-        "dry_run": true,
-        "application": partial.identity.id,
-        "procedure": bussard_download::trace(partial),
-    })
+/// Octets of a segment no parameter the configuration reaches is placed in.
+#[derive(Debug, Clone, Serialize)]
+pub struct UnwrittenOctets {
+    /// The code segment.
+    pub segment: String,
+    /// The offsets left as the device holds them.
+    pub offsets: Vec<usize>,
+    /// Always `false`.
+    pub written: bool,
+    /// Why.
+    pub reason: String,
+}
+
+/// A property a parameter is placed in (issue #706).
+#[derive(Debug, Clone, Serialize)]
+pub struct PropertyValue {
+    /// `object 0 property 61`.
+    pub property: String,
+    /// The parameters placed in it.
+    pub parameters: Vec<String>,
+    /// The value the project composes, hex.
+    pub model: String,
+    /// What the device holds, hex.
+    pub device: Option<String>,
+}
+
+/// The `flash --parameters-only --json` plan (issue #904); `dry_run` is
+/// the offline plan with no device read.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParamsPlanReport {
+    /// The device.
+    pub address: String,
+    /// Always `parameters-only`.
+    pub mode: String,
+    /// The offline plan: nothing was read.
+    #[serde(skip_serializing_if = "crate::report::is_false")]
+    pub dry_run: bool,
+    /// The application id.
+    pub application: String,
+    /// The parameters that change.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters: Option<Vec<ParameterValues>>,
+    /// The regions compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regions: Option<Vec<RegionRow>>,
+    /// The octets left as the device holds them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unwritten: Option<Vec<UnwrittenOctets>>,
+    /// The properties the parameters are placed in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub properties: Option<Vec<PropertyValue>>,
+    /// The load procedure, one line per step.
+    pub procedure: Vec<String>,
+}
+
+impl Report for ParamsPlanReport {
+    const SCHEMA: u32 = 2;
+}
+
+/// Hex of `bytes`, no separator.
+fn hex_run(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
+}
+
+impl ParamsPlanReport {
+    /// The plan of a parameter-only download to `target`.
+    pub fn new(target: IndividualAddress, planned: &ParamsPlanned) -> ParamsPlanReport {
+        let (partial, regions, params) = (&planned.partial, &planned.regions, &planned.params);
+        ParamsPlanReport {
+            address: target.to_string(),
+            mode: "parameters-only".to_string(),
+            dry_run: false,
+            application: partial.identity.id.clone(),
+            parameters: Some(params.changes.iter().map(ParameterValues::of).collect()),
+            regions: Some(
+                region_rows(partial, regions)
+                    .into_iter()
+                    .map(|(segment, address, octets, changed_octets)| RegionRow {
+                        segment,
+                        address: format!("{address:#08X}"),
+                        octets,
+                        changed_octets,
+                    })
+                    .collect(),
+            ),
+            unwritten: Some(
+                partial
+                    .unwritten_bits()
+                    .into_iter()
+                    .map(|(segment, octets)| UnwrittenOctets {
+                        segment,
+                        offsets: octets.iter().map(|(i, _)| *i).collect(),
+                        written: false,
+                        reason: "no parameter the configuration reaches is placed there; ETS \
+                                 does not write this octet in a download"
+                            .to_string(),
+                    })
+                    .collect(),
+            ),
+            properties: Some(
+                planned
+                    .properties
+                    .iter()
+                    .map(|p| PropertyValue {
+                        property: p.label(),
+                        parameters: p.parameters.clone(),
+                        model: hex_run(&p.model),
+                        device: p.device.as_deref().map(hex_run),
+                    })
+                    .collect(),
+            ),
+            procedure: bussard_download::trace(partial),
+        }
+    }
+
+    /// The offline plan of `flash --parameters-only --dry-run`.
+    pub fn dry_run(target: IndividualAddress, partial: &FlashPlan) -> ParamsPlanReport {
+        ParamsPlanReport {
+            address: target.to_string(),
+            mode: "parameters-only".to_string(),
+            dry_run: true,
+            application: partial.identity.id.clone(),
+            parameters: None,
+            regions: None,
+            unwritten: None,
+            properties: None,
+            procedure: bussard_download::trace(partial),
+        }
+    }
 }
 
 /// The offline plan of `flash --parameters-only --dry-run` in text. With no
@@ -580,7 +774,13 @@ mod tests {
         };
         let target: IndividualAddress = "1.1.10".parse()?;
         let params = ParamPlan::default();
-        let with = flash_plan_json(target, 0x07B0, &plan, &params, Some(&change));
+        let with = serde_json::to_value(FlashPlanReport::new(
+            target,
+            0x07B0,
+            &plan,
+            &params,
+            Some(&change),
+        ))?;
         assert_eq!(with["security_object"]["line"], change.line());
         assert!(
             with["security_object"]["line"]
@@ -589,7 +789,8 @@ mod tests {
             "{with}"
         );
         assert_eq!(with["security_object"]["subject"], "security");
-        let without = flash_plan_json(target, 0x07B0, &plan, &params, None);
+        let without =
+            serde_json::to_value(FlashPlanReport::new(target, 0x07B0, &plan, &params, None))?;
         assert!(without["security_object"].is_null(), "{without}");
         Ok(())
     }

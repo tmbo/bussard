@@ -6,7 +6,10 @@
 //! and an end-of-segment spot check.
 
 use super::execute::resolve_object_target_opt;
-use super::session::{Connector, Session, read_load_state_resumable, read_memory_resumable};
+use super::session::{
+    Connector, Session, read_load_state_ext_resumable, read_load_state_resumable,
+    read_memory_resumable,
+};
 use super::{FlashOutcome, FlashPlan, FlashStep, ImageRef};
 use bussard_mgmt::load::{LoadState, WriteError, read_load_state, read_mcb_table};
 use std::collections::BTreeSet;
@@ -241,6 +244,7 @@ pub(super) async fn verify_outcome<C: Connector>(
     session: &mut Session<C>,
     app_obj: u8,
     completed_objects: &[u8],
+    completed_typed: &[(u16, u16)],
     written_samples: &[WrittenSample],
 ) -> Result<FlashOutcome, WriteError> {
     // The application object's own state (kept as the headline `load_state`).
@@ -264,16 +268,38 @@ pub(super) async fn verify_outcome<C: Connector>(
         object_states.push((obj, state));
     }
 
+    let typed_object_states = read_typed_states(session, completed_typed).await?;
     let spot_checks_match = spot_check(session, written_samples.iter()).await?;
     Ok(FlashOutcome {
         load_state,
         object_states,
+        typed_object_states,
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),
         verify_echoes: None,
         property_only: false,
     })
+}
+
+/// Reads back the load state of every object the flash completed by type
+/// (issue #961) with `A_FunctionPropertyExt_State_Read` PID 5, falling back to
+/// the extended property read; each read is resume-on-drop.
+async fn read_typed_states<C: Connector>(
+    session: &mut Session<C>,
+    completed_typed: &[(u16, u16)],
+) -> Result<Vec<(u16, u16, LoadState)>, WriteError> {
+    let mut states = Vec::with_capacity(completed_typed.len());
+    for &(object_type, occurrence) in completed_typed {
+        let addr = super::function_prop::typed_load_state_address(
+            session.l4().target(),
+            object_type,
+            occurrence,
+        )?;
+        let state = read_load_state_ext_resumable(session, addr).await?;
+        states.push((object_type, occurrence, state));
+    }
+    Ok(states)
 }
 
 /// A post-flash read-back sample: the first octets streamed to `address`.
@@ -334,12 +360,20 @@ pub(super) async fn verify_after_reboot<C: Connector>(
     session: &mut Session<C>,
     app_obj: u8,
     completed_objects: &[u8],
+    completed_typed: &[(u16, u16)],
     written_samples: &[WrittenSample],
     mcb_verified: &BTreeSet<(u8, String)>,
 ) -> Result<FlashOutcome, WriteError> {
     let load_state = read_load_state_resumable(session, app_obj).await?;
     if load_state != LoadState::Loaded {
-        return verify_outcome(session, app_obj, completed_objects, written_samples).await;
+        return verify_outcome(
+            session,
+            app_obj,
+            completed_objects,
+            completed_typed,
+            written_samples,
+        )
+        .await;
     }
     let mut object_states: Vec<(u8, LoadState)> = Vec::new();
     for &obj in completed_objects.iter().chain(std::iter::once(&app_obj)) {
@@ -353,10 +387,14 @@ pub(super) async fn verify_after_reboot<C: Connector>(
             .as_ref()
             .is_some_and(|segment| mcb_verified.contains(segment))
     });
+    // An object loaded by type is read back after the reboot: its
+    // completion's own answer is not the independent read-back (issue #961).
+    let typed_object_states = read_typed_states(session, completed_typed).await?;
     let spot_checks_match = spot_check(session, uncovered).await?;
     Ok(FlashOutcome {
         load_state,
         object_states,
+        typed_object_states,
         spot_checks_match,
         warnings: Vec::new(),
         reboot_readiness: Vec::new(),

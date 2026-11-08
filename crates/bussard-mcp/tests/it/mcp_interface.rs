@@ -206,7 +206,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
         .await?;
     assert_eq!(applied["ok"], true, "{applied}");
     assert_eq!(applied["verified"], true, "{applied}");
-    assert_eq!(applied["written"], 2, "{applied}");
+    assert_eq!(applied["properties_written"], 2, "{applied}");
     let name = h.device(|d| d.knxnet_property(76).map(<[u8]>::to_vec))?;
     assert_eq!(
         name.as_deref().and_then(|n| n.get(..14)),

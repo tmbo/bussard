@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use anyhow::Context;
 use bussard_model::IndividualAddress;
-use bussard_service::restart::{RestartWait, restart_choice, restart_device};
+use bussard_service::program::outcome::WriteOutcome;
+use bussard_service::restart::{RestartWait, restart_choice, restart_device, restart_outcome};
 use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 
 use crate::cli::{BenchToolKey, Consent, Resolved, Run, Spec};
@@ -46,28 +47,6 @@ impl Run for RestartArgs {
     fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
         run(&self, g)
     }
-}
-
-/// The `restart <ADDRESS> --json` report.
-#[derive(Debug, serde::Serialize)]
-struct Report {
-    /// The device address.
-    address: String,
-    /// The restart form sent: `confirmed` (master reset, erase code 1) or
-    /// `basic` (a bare `A_Restart`).
-    form: &'static str,
-    /// Why that form: the application and whether it is secure-capable, or
-    /// the missing product data.
-    form_reason: String,
-    /// Whether the device confirmed the restart itself (`A_Restart_Response`
-    /// with error code 0). Always false for the basic form.
-    confirmed: bool,
-    /// The process time the device reported, in seconds (confirmed form).
-    process_time_s: Option<u64>,
-    /// The mask version the device reported before and after the restart.
-    mask: String,
-    /// How long after the restart the device answered again, in milliseconds.
-    answered_after_ms: u128,
 }
 
 /// Runs `bussard restart <ADDRESS>`.
@@ -129,22 +108,17 @@ fn run(args: &RestartArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         })
         .map_err(|err| crate::secure_key::secure_hint(target, presented_tool_key, err))?;
 
-    match outcome {
+    let secured = presented_tool_key;
+    match &outcome {
         Ok(done) => {
             let mask = format!("{:04X}", done.mask);
             if json {
-                crate::output::print(
-                    crate::output::schema::RESTART,
-                    &Report {
-                        address: target.to_string(),
-                        form: done.form.name(),
-                        form_reason: choice.why,
-                        confirmed: done.confirmed,
-                        process_time_s: done.process_time.map(|t| t.as_secs()),
-                        mask,
-                        answered_after_ms: done.answered_after.as_millis(),
-                    },
-                )?;
+                let result = WriteOutcome {
+                    gateway: Some(gateway.clone()),
+                    secured: Some(secured),
+                    ..WriteOutcome::new(target)
+                };
+                crate::output::report(&restart_outcome(result, &choice.why, &outcome))?;
             } else if done.confirmed {
                 println!(
                     "{target} restarted: it confirmed the restart (A_Restart_Response, process \

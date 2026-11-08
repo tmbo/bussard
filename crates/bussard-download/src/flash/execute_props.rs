@@ -113,6 +113,7 @@ pub(super) async fn flash_properties<C: Connector, F: FnMut(Progress)>(
     }
 
     Ok(FlashOutcome {
+        typed_object_states: Vec::new(),
         load_state: LoadState::Loaded,
         object_states: Vec::new(),
         spot_checks_match: all_match,

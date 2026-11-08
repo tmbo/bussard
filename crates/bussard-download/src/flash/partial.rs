@@ -66,7 +66,8 @@ pub enum PartialPlanError {
     },
     /// The procedure carries a step whose parameter-only form no capture
     /// shows (issue #946): a function property call, of which the full
-    /// procedure makes one per `AppliesTo`, or on System 7 a declared
+    /// procedure makes one per `AppliesTo`, a load-state control naming its
+    /// object by type (issue #961), or on System 7 a declared
     /// property, which holds parameters the System 7 parameter-only download
     /// does not write.
     #[error(
@@ -94,6 +95,20 @@ impl FlashPlan {
                     object, prop_id, ..
                 } => format!(
                     "a function property call on {object} PID {prop_id} (LdCtrlInvokeFunctionProp)"
+                ),
+                // A load-state machine named by type (issue #961): the
+                // parameter-only cut keeps only the indexed objects' load
+                // cycle, and no capture shows ETS's partial download of one.
+                FlashStep::TypedLoadControl {
+                    object_type,
+                    occurrence,
+                    control,
+                } => format!(
+                    "a load-state control {control} on {} (LdCtrl* with ObjType)",
+                    super::PropObject::Type {
+                        object_type: *object_type,
+                        occurrence: *occurrence,
+                    }
                 ),
                 FlashStep::DeclareProp {
                     object, prop_id, ..
@@ -663,6 +678,40 @@ mod tests {
             Err(PartialPlanError::UnreadableSegment { .. })
         ));
         Ok(())
+    }
+
+    /// Issue #961: a plan that drives a load-state machine by object type
+    /// refuses the parameter-only cut, which would drop that object's load
+    /// cycle, until a capture shows ETS's partial download of one.
+    #[test]
+    fn test_parameters_only_refuses_a_typed_load_control() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let app = fabricated_app();
+        let mut full = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        full.steps.insert(
+            0,
+            FlashStep::TypedLoadControl {
+                object_type: 40960,
+                occurrence: 0,
+                control: bussard_mgmt::LoadControl::Unload,
+            },
+        );
+        let regions = ParamRegions::from([region("M-1_A-1_RS-2", 0x4006, &[7])]);
+        match full.parameters_only(&regions) {
+            Err(PartialPlanError::UncapturedStep { what }) => {
+                assert!(what.contains("object type 40960"), "{what}");
+                Ok(())
+            }
+            other => Err(format!("expected UncapturedStep, got {other:?}").into()),
+        }
     }
 
     /// Issue #290: a restore writes the backup's byte on a placed octet,

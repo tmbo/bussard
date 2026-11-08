@@ -19,6 +19,7 @@ mod flash_mock_system7;
 mod golden_images;
 mod golden_tables;
 mod knxnet_ip_mock;
+mod module_procedures;
 mod no_group_objects_mock;
 mod param_readback_roundtrip;
 mod partial_segment;
@@ -30,6 +31,7 @@ mod sys7_jung_m2_plan;
 mod sys7_lsm5_plan;
 mod sys7_split_segment;
 mod sys7_theben_0701_plan;
+mod typed_load_control_mock;
 mod verify_mode_system_b;
 // The fixture applications and the random value sets of bussard-prod's
 // evaluator conformance test, shared with the view acceptance test.

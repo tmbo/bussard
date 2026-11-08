@@ -88,10 +88,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         Err(reason) => return refuse(reason),
     };
     if ctx.json {
-        crate::output::print(
-            crate::output::schema::FLASH_PARAMETERS,
-            &report::params_plan_json(target, &planned),
-        )?;
+        crate::output::report(&report::ParamsPlanReport::new(target, &planned))?;
     } else {
         print!("{}", report::params_plan_text(target, &planned));
     }
@@ -183,10 +180,7 @@ pub(crate) fn dry_run(
         }
     };
     if json {
-        crate::output::print(
-            crate::output::schema::FLASH_PARAMETERS,
-            &report::params_dry_run_json(target, &partial),
-        )?;
+        crate::output::report(&report::ParamsPlanReport::dry_run(target, &partial))?;
     } else {
         print!("{}", report::params_dry_run_text(target, &partial));
     }

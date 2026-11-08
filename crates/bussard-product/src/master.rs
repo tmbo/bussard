@@ -206,9 +206,21 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
     let merge = |id: &str| LoadOp::Merge {
         merge_id: Some(id.to_string()),
     };
-    let unload = |lsm: u32| LoadOp::Unload { lsm_idx: Some(lsm) };
-    let load = |lsm: u32| LoadOp::Load { lsm_idx: Some(lsm) };
-    let completed = |lsm: u32| LoadOp::LoadCompleted { lsm_idx: Some(lsm) };
+    let unload = |lsm: u32| LoadOp::Unload {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
+    let load = |lsm: u32| LoadOp::Load {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
+    let completed = |lsm: u32| LoadOp::LoadCompleted {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
     // A relative allocation of a table object: `Size="2" Mode="0" Fill="0"`
     // (no device-side fill), the size a placeholder the planner replaces.
     let rel_segment = |lsm: u32| LoadOp::RelSegment {

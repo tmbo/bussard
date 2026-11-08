@@ -11,8 +11,9 @@ use bussard_model::IndividualAddress;
 use bussard_service::BusService;
 use bussard_service::assign::{Verified, hex};
 use bussard_service::observer::{Collected, Consented};
+use bussard_service::program::addressed::AddressOutcome;
 use bussard_service::program::assign::{Assigned, Stop};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{BussardMcp, ProgrammingTier, chain};
 
@@ -139,18 +140,8 @@ pub(super) fn assigned_notes(assigned: &Assigned) -> Vec<String> {
 }
 
 /// The result of a job that stopped before anything was written.
-pub(super) fn refused(reason: String) -> Value {
-    json!({ "ok": false, "refused": true, "written": false, "reason": reason })
-}
-
-/// The read-back's mask and serial, as the results report them.
-pub(super) fn readback_json(v: &Verified) -> Value {
-    json!({
-        "mask": v.mask.map(|m| format!("{m:04X}")),
-        "serial": v.serial.as_deref().map(hex),
-        "order_number": v.order,
-        "secure": v.secure.as_str(),
-    })
+pub(super) fn refused(reason: String) -> AddressOutcome {
+    AddressOutcome::refused("", reason)
 }
 
 /// Downloads the product data for `order` (the human agreed): the archive
@@ -271,19 +262,9 @@ impl BussardMcp {
         tier.jobs.spawn(job, verb, async move { Ok(work.await) });
         let wait = tier.jobs.reply_wait().saturating_sub(began.elapsed());
         if let Some(mut result) = tier.jobs.outcome(job, wait).await {
-            super::merge(
-                &mut result,
-                json!({ "started": false, "done": true, "job": job }),
-            );
+            crate::reply::with_job(&mut result, job, false, true);
             return Ok(result);
         }
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "job": job,
-            "step": "writing",
-            "next_step": next_step,
-        }))
+        Ok(crate::reply::started(job, "writing", next_step))
     }
 }

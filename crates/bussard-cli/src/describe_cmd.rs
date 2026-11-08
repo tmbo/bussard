@@ -152,11 +152,11 @@ fn run(args: &DescribeArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         (Ok(_), None) => anyhow::bail!("{target}: the describe read no device descriptor"),
     };
     if json {
-        crate::output::print(crate::output::schema::DESCRIBE, &report)?;
+        crate::output::report(&report)?;
     } else {
         print_text(&report, name.as_deref());
     }
-    if let Some(error) = &report.error {
+    if let Some(error) = &report.reason {
         eprintln!("error: {error}");
         return Ok(ExitCode::FAILURE);
     }
@@ -198,8 +198,8 @@ fn render_text(report: &DescribeReport, name: Option<&str>, style: Style) -> Str
     let mut out = crate::status_cmd::device_heading(
         &report.address,
         name,
-        &report.mask,
-        &report.system_type,
+        report.mask.as_deref().unwrap_or("?"),
+        report.system_type.as_deref().unwrap_or("?"),
         style,
     );
     let label = |text: &str| style.dim(&format!("{text:<22}"));

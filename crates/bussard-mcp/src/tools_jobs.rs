@@ -18,9 +18,9 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 
-use crate::jobs::JobTable;
+use crate::jobs::{JobStatus, JobTable};
 use crate::server::BussardMcp;
 
 /// Arguments for `knx_job_status`.
@@ -42,30 +42,28 @@ impl BussardMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let state = self.state();
         let job = args.job.trim();
-        let value = job_status(&state.jobs, &state.dir, job).unwrap_or_else(|| {
-            json!({
-                "ok": false,
-                "refused": true,
-                "job": job,
-                "reason": format!(
-                    "no job {job:?} in this session or under .bussard/history; a job id comes \
-                     from a tool that answered `started: true`"
-                ),
-            })
-        });
+        let model = state.model.current();
+        let value = job_status(&state.jobs, &state.dir, job)
+            .map(|status| status.chat(&model))
+            .unwrap_or_else(|| {
+                json!({
+                    "ok": false,
+                    "refused": true,
+                    "job": job,
+                    "reason": format!(
+                        "no job {job:?} in this session or under .bussard/history; a job id comes \
+                         from a tool that answered `started: true`"
+                    ),
+                })
+            });
         Ok(CallToolResult::structured(value))
     }
 }
 
-/// `knx_job_status`'s body: the job's status as the table reports it, with
-/// `question` always present (`null` when the job waits on nothing).
+/// `knx_job_status`'s body: the job's status as the table reports it.
 /// `None` when neither the session nor a record under `dir` knows `job`.
-fn job_status(jobs: &JobTable, dir: &Path, job: &str) -> Option<Value> {
-    let mut status = jobs.status(dir, job)?;
-    if let Some(map) = status.as_object_mut() {
-        map.entry("question").or_insert(Value::Null);
-    }
-    Some(status)
+fn job_status(jobs: &JobTable, dir: &Path, job: &str) -> Option<JobStatus> {
+    jobs.status(dir, job)
 }
 
 #[cfg(test)]
@@ -73,6 +71,7 @@ mod tests {
     use super::*;
     use crate::jobs::{JobKind, Subject};
     use bussard_model::IndividualAddress;
+    use serde_json::Value;
 
     #[test]
     fn test_job_status_carries_step_question_done_and_result() -> Result<(), String> {
@@ -81,7 +80,13 @@ mod tests {
         let ia: IndividualAddress = "1.1.42".parse().map_err(|_| "address".to_string())?;
         let id = jobs.claim(JobKind::Apply, Subject::Device(ia))?.id;
 
-        let running = job_status(&jobs, dir, &id).ok_or("job not found")?;
+        let status = |jobs: &JobTable| -> Result<Value, String> {
+            job_status(jobs, dir, &id)
+                .ok_or("job not found")
+                .and_then(|s| serde_json::to_value(s).map_err(|_| "serialise"))
+                .map_err(str::to_string)
+        };
+        let running = status(&jobs)?;
         assert_eq!(running["done"], false, "{running}");
         assert_eq!(running["question"], Value::Null, "{running}");
         assert!(running["step"].is_string(), "{running}");
@@ -92,7 +97,7 @@ mod tests {
             &id,
             Some("Press the programming button on the new device.".into()),
         );
-        let waiting = job_status(&jobs, dir, &id).ok_or("job not found")?;
+        let waiting = status(&jobs)?;
         assert_eq!(waiting["step"], "press_button", "{waiting}");
         assert_eq!(
             waiting["question"], "Press the programming button on the new device.",
@@ -100,7 +105,7 @@ mod tests {
         );
 
         jobs.finish(&id, json!({"ok": true}));
-        let done = job_status(&jobs, dir, &id).ok_or("job not found")?;
+        let done = status(&jobs)?;
         assert_eq!(done["done"], true, "{done}");
         assert_eq!(done["question"], Value::Null, "{done}");
         assert_eq!(done["result"]["ok"], true, "{done}");

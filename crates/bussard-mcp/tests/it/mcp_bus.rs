@@ -266,9 +266,9 @@ async fn write_group_sends_write_and_confirms() -> TestResult {
     )
     .await?;
     assert_eq!(s["ok"], true, "response was {s:?}");
-    assert_eq!(s["written"]["address"], "3/0/4");
-    assert_eq!(s["written"]["value"], "Down");
-    assert_eq!(s["written"]["dpt"], "1.008");
+    assert_eq!(s["ga"], "3/0/4");
+    assert_eq!(s["value"], "Down");
+    assert_eq!(s["dpt"], "1.008");
 
     // The gateway saw the GroupValueWrite to 3/0/4 (down = 1).
     let writes: Vec<CemiFrame> = gw

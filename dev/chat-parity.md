@@ -159,3 +159,44 @@ oracle rows and ends with the read-back. Epic #755 links one issue per item.
 
 Done when the `CLI_ONLY` string in `guidance.rs` is empty and every task page
 carries both tabs.
+
+## One JSON shape per flow (#904)
+
+Decision of 2026-11-08 by the owner: a flow's outcome is one
+`#[derive(Serialize)]` struct in `bussard-service` and that struct is the
+only definition of its keys. Its schema version is declared next to it
+(`bussard_service::report::Report::SCHEMA`). The CLI's `--json` prints the
+plain serialisation under that version; the MCP result is the same object
+plus the chat envelope, produced by the struct's `Report` methods and by the
+job table, never by a second builder:
+
+- `summary` and `next_step` (`Report::summary`, `Report::next_step`), and a
+  plan's `what_you_will_notice`;
+- the job fields `job`, `started`, `done`, `record`;
+- what only a server session has: `plan_digest`, `expires_at`,
+  `pending_model_changes`.
+
+`bussard_testkit::shape::assert_one_shape` checks exactly that: every key of
+the `--json` document is in the MCP result with the same value, and the MCP
+result has no other key. A job record under `.bussard/history` holds the
+serialised outcome; its summary and next step after a restart are derived
+from the typed verdict (`program::outcome::OutcomeHead`), not from string
+keys.
+
+| Flow | Struct | CLI | MCP |
+|---|---|---|---|
+| Device plan | `program::plan_outcome::PlanOutcome` | `plan --json` | `knx_plan_device` |
+| Property-only plan | `program::plan_outcome::PropertyPlan` | `plan --json` | `knx_plan_device` |
+| IP interface plan | `knxnet::InterfacePlanOutcome` | `plan --json` | `knx_plan_device` |
+| Line plan and write | `line::LineReport` | `plan --line`, `apply --line --json` | `knx_plan_device`, `knx_apply_device` with `line` |
+| Device write, flash, restore, restart | `program::outcome::WriteOutcome` | `restart --json` | `knx_apply_device`, `knx_restore_tables`, `knx_restore_parameters`, `knx_restart_device` |
+| Restore plans, restart question | `restore::ParameterRestorePlan`, `restore::TableRestorePlan`, `restart::RestartPlan` | | first call of the tools above |
+| Flash pre-flight | `program::report::FlashPlanReport`, `ParamsPlanReport` | `flash --json`, `flash --parameters-only --json` | (the plan's `flash` field) |
+| Address write | `program::addressed::AddressOutcome` | `assign --json` | `knx_add_device`, `knx_replace_device` results |
+| Commissioning | `commission::CommissionReport` | `commission --json` | `knx_commission_line` job result |
+| Describe | `describe::DescribeReport` | `describe --json` | `knx_describe_device` |
+| Group read, write | `group_report::GroupReadReport`, `GroupWriteReport` | `read --json`, `write --json` | `knx_read_group`, `knx_write_group` |
+
+Still built by hand (#904 status): scan, backup, reconstruct, history and
+undo, learn, keys, import and export, Home Assistant, audit and the model
+edit tools.

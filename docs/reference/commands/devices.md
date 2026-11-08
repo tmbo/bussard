@@ -53,7 +53,7 @@ $ bussard assign 1.1.47
 |---|---|---|
 | `[ADDRESS]` | next free on the line | The address to assign, e.g. `1.1.47`. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--json` | off | Print `{"schema", "from", "to", "gateway", "mask", "manufacturer_id", "serial", "secure", "programming_mode_cleared", "device_file"}`. |
+| `--json` | off | Print (schema 2) `{"schema", "ok", "verified", "address", "from", "gateway", "assigned", "readback": {"mask", "manufacturer_id", "serial", "order_number", "secure", "programming_mode_cleared"}, "device_file"}`: the address part of the `knx_add_device`, `knx_replace_device` and `knx_commission_line` results. |
 | `--keyring <FILE>` | the key store | Its tunnelling users open the KNXnet/IP Secure tunnel, and its tool key for the new (else the old) address verifies a secured device. Password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | A raw 16-byte tool key (32 hex characters) for the verification of a secured device. Overrides the device entries of the key store or keyring, which still opens the tunnel. For test or bench devices only: process arguments are visible to other users. |
 | `--force` | off | Write the address although another device already answers at it. |
@@ -99,11 +99,15 @@ Behaviour:
 
 | JSON field | Present | Meaning |
 |---|---|---|
-| `address`, `mask`, `system_type` | always | The device and its mask version. |
+| `ok` | always | `true` when the walk succeeded (schema 2; the same object `knx_describe_device` returns). |
+| `address`, `mask`, `system_type` | always (`mask`, `system_type` absent from `knx_describe_device`, which does not read the descriptor) | The device and its mask version. |
 | `objects` | on success | The interface objects and their properties. |
 | `unsecured_management` | refused walk, no key | `"refused"`: the device answered the descriptor read but not the plain walk. |
 | `secured_management` | refused walk, with a key | `"unanswered"`: the secured walk returned no interface object. |
-| `error` | refused walk | The error message, with the KNX Secure hint. |
+| `reason` | refused walk | The error message, with the KNX Secure hint. |
+| `factory_key` | answered under the factory key | `true`: the device refused plain access and answered under its factory key. |
+| `identity`, `knxnet`, `serial` | when read | The identity against `bussard.lock`, the KNXnet/IP object of an IP interface, the serial number. |
+| `security_diagnostics` | `knx_describe_device` on a secured session | The security failures log and report (issue #533). |
 | `secure.model` | your project has a security block | What the import recorded: `secure_capable`, `activated`, `has_fdsk_certificate`. An export made before ETS secured the device says `activated: false`. `tables` (a product that supports Data Secure) holds the capacities the product declares: `max_group_key_table_entries`, `max_individual_address_entries`, `max_p2p_key_table_entries`; a download that does not fit is refused before anything is unloaded. |
 | `secure.device` | project security, a tool key, or a refused walk | What the device did in this run: `plain_management` (`answered`, `refused`, or `not_attempted` with a key) and `secured_management` (`used`, `not_attempted` without a key, `unanswered`, or `factory_key` when the device refused plain access and answered under its factory key from the key store). |
 

@@ -18,9 +18,10 @@
 use std::process::ExitCode;
 use std::time::Duration;
 
-use bussard_model::{GroupAddress, IndividualAddress};
+use bussard_model::GroupAddress;
 use bussard_service::admission;
 use bussard_service::group::GroupError;
+use bussard_service::group_report::GroupReadReport;
 use bussard_service::{SecureGroupError, WritePolicy};
 
 use crate::cli::{Resolved, Run, Spec};
@@ -106,27 +107,21 @@ fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
         service.close().await;
         anyhow::Ok(outcome.map_err(group_error)?)
     })?;
+    if json {
+        let report = GroupReadReport::of(ga, ga_name, secured, read_timeout(), &outcome);
+        crate::output::report(&report)?;
+        return Ok(if report.ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
     let source = outcome.sender;
     let outcome_result = match outcome.result {
         Ok(result) => result,
         Err(refused) => {
             let refusal = refused.refusal().unwrap_or_default();
             let hint = refused.admit_hint().unwrap_or_default();
-            if json {
-                crate::output::print(
-                    crate::output::schema::READ,
-                    &serde_json::json!({
-                        "ga": ga.to_string(),
-                        "name": ga_name,
-                        "answered": false,
-                        "secured": true,
-                        "sent": false,
-                        "admission": "refused",
-                        "error": refusal,
-                        "hint": hint,
-                    }),
-                )?;
-            }
             eprintln!("error: {refusal}\n{hint}");
             return Ok(ExitCode::FAILURE);
         }
@@ -134,9 +129,6 @@ fn run(ga_str: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
     let note = outcome.note;
     let outcome = outcome_result;
 
-    if json {
-        return print_json(ga, ga_name.as_deref(), secured, source, &outcome);
-    }
     match outcome {
         Ok(Some(read)) => {
             if let Some(name) = &ga_name {
@@ -195,59 +187,6 @@ pub(crate) fn group_error(err: GroupError) -> anyhow::Error {
         GroupError::ToolKeys(err) => err.into(),
         other => other.into(),
     }
-}
-
-/// `read --json`: one document whether or not the GA answered; the exit code
-/// says the same as the text output's.
-fn print_json(
-    ga: GroupAddress,
-    name: Option<&str>,
-    secured: bool,
-    source: IndividualAddress,
-    outcome: &Result<Option<bussard_service::GroupRead>, bussard_service::GroupSendError>,
-) -> anyhow::Result<ExitCode> {
-    let (body, code) = match outcome {
-        Ok(Some(read)) => {
-            let o = &read.outcome;
-            let raw: String = o.payload.iter().map(|b| format!("{b:02x}")).collect();
-            (
-                serde_json::json!({
-                    "ga": ga.to_string(),
-                    "name": name,
-                    "answered": true,
-                    "value": o.value.as_ref().map(ToString::to_string),
-                    "dpt": o.dpt.as_ref().map(ToString::to_string),
-                    "raw": raw,
-                    "source": o.source.to_string(),
-                    "secured": read.secured,
-                }),
-                ExitCode::SUCCESS,
-            )
-        }
-        Ok(None) => (
-            serde_json::json!({
-                "ga": ga.to_string(),
-                "name": name,
-                "answered": false,
-                "secured": secured,
-                "timeout_seconds": read_timeout().as_secs(),
-                "reason": secured.then(|| admission::secured_read_timeout(ga, source)),
-            }),
-            ExitCode::FAILURE,
-        ),
-        Err(err) => (
-            serde_json::json!({
-                "ga": ga.to_string(),
-                "name": name,
-                "answered": false,
-                "secured": secured,
-                "error": err.to_string(),
-            }),
-            ExitCode::FAILURE,
-        ),
-    };
-    crate::output::print(crate::output::schema::READ, &body)?;
-    Ok(code)
 }
 
 #[cfg(test)]

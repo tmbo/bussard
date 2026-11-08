@@ -31,43 +31,8 @@ use bussard_service::{L4Options, SourcePolicy, WritePolicy};
 use crate::cli::{ProductSelection, Resolved, Run, Spec, ToolKey};
 use crate::conn_cmd::{ConnOverrides, load_model_required, open_service, resolve_config};
 use bussard_service::params::ProductSource;
+use bussard_service::program::plan_outcome::{PlanOutcome, PlanParts, PropertyPlan};
 use bussard_service::secure::ToolKeySource;
-
-/// A serialisable `(object, GA)` pair for the JSON output.
-#[derive(Debug, serde::Serialize)]
-struct ObjectGaJson {
-    object: u16,
-    ga: String,
-}
-
-/// The stable JSON shape of a plan: the device plan (changes in the model's
-/// words, unchanged counts, writes, backup, `state_hash`) plus the table
-/// detail the plan has always carried.
-#[derive(Debug, serde::Serialize)]
-struct PlanJson {
-    #[serde(flatten)]
-    plan: bussard_service::download::DevicePlan,
-    /// The one question `apply` asks, `None` for an empty plan.
-    question: Option<String>,
-    mask: String,
-    system_type: String,
-    unchanged: Vec<ObjectGaJson>,
-    additions: Vec<ObjectGaJson>,
-    removals: Vec<ObjectGaJson>,
-    current_address_count: usize,
-    current_association_count: usize,
-    resulting_address_count: usize,
-    resulting_association_count: usize,
-    load_steps: Vec<String>,
-    noop: bool,
-    /// The parameter read-back (issue #119), when a product file was available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parameters: Option<bussard_service::params::Readback>,
-    /// The device's identity compared with `bussard.lock` (lock v2, issue
-    /// #228), when the device facts were read.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    identity: Option<bussard_model::identity::IdentityCheck>,
-}
 
 /// Prints the friendly refusal for a mask no table reader speaks.
 ///
@@ -368,10 +333,17 @@ fn run(
     let identity = read.check().cloned();
     let params = read.params.as_ref();
     if json {
-        let mut out = to_json(live, report, built.plan.clone());
-        out.parameters = params.map(|p| p.readback.clone());
-        out.identity = identity;
-        crate::output::print(crate::output::schema::PLAN, &out)?;
+        let out = PlanOutcome::new(PlanParts {
+            target,
+            live,
+            report,
+            built,
+            device_plan: built.plan.clone(),
+            secured: material.tool_key.is_some(),
+            identity,
+            parameters: params.map(|p| p.readback.clone()),
+        });
+        crate::output::report(&out)?;
     } else {
         let style = crate::style::Style::stdout();
         if let Some(check) = &identity {
@@ -443,17 +415,8 @@ fn print_property_plan(
     rows: &[bussard_service::property_plan::PropertyRow],
     json: bool,
 ) -> anyhow::Result<ExitCode> {
-    let noop = !rows.iter().any(|r| r.differs());
     if json {
-        let out = serde_json::json!({
-            "address": target.to_string(),
-            "mask": format!("{mask:04X}"),
-            "application": app_id,
-            "method": "flash",
-            "property_procedure": rows,
-            "noop": noop,
-        });
-        println!("{}", serde_json::to_string_pretty(&out)?);
+        crate::output::report(&PropertyPlan::new(target, mask, app_id, rows))?;
     } else {
         print!(
             "{}",
@@ -461,45 +424,6 @@ fn print_property_plan(
         );
     }
     Ok(ExitCode::SUCCESS)
-}
-
-fn to_json(
-    live: &DeviceTables,
-    report: &PlanReport,
-    device_plan: bussard_service::download::DevicePlan,
-) -> PlanJson {
-    let map = |pairs: &[bussard_service::download::ObjectGa]| {
-        pairs
-            .iter()
-            .map(|p| ObjectGaJson {
-                object: p.object,
-                ga: p.ga.to_string(),
-            })
-            .collect()
-    };
-    let question = (!device_plan.is_empty()).then(|| device_plan.question());
-    // The tables are rewritten for a security-object change too (issue #297),
-    // and a System B group-object table that differs is reloaded (issue #540).
-    let noop = report.is_noop()
-        && !device_plan.writes.security_object
-        && device_plan.writes.group_object_table.is_none();
-    PlanJson {
-        plan: device_plan,
-        question,
-        mask: format!("{:04X}", live.mask),
-        system_type: system_type(live.mask).to_string(),
-        unchanged: map(&report.unchanged),
-        additions: map(&report.additions),
-        removals: map(&report.removals),
-        current_address_count: report.current_address_count,
-        current_association_count: report.current_association_count,
-        resulting_address_count: report.resulting_address_count,
-        resulting_association_count: report.resulting_association_count,
-        load_steps: report.load_steps.iter().map(|s| s.to_string()).collect(),
-        noop,
-        parameters: None,
-        identity: None,
-    }
 }
 
 /// Prints the reconstruct-style plan with additions/removals prominent.

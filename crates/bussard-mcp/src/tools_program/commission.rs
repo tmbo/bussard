@@ -32,14 +32,15 @@ use bussard_model::Model;
 use bussard_model::history::SnapshotReason;
 use bussard_service::assign::hex;
 use bussard_service::commission::{
-    Identified, LineRun, Next, OrderCheck, Outcome, Status, Target, assign_pressed,
-    identify_pressed, probe_line,
+    CommissionDevice, CommissionReadback, CommissionReport, CommissionTarget, IdentifiedDevice,
+    LineRun, Next, OrderCheck, Outcome, Target, assign_pressed, identify_pressed, probe_line,
 };
 use bussard_service::line::WalkEvent;
 use bussard_service::observer::Collected;
 use bussard_service::program::assign::{AssignFlow, Stop as FlowStop};
 use bussard_service::program::plan::Fingerprint;
-use serde_json::{Value, json};
+use bussard_service::report::{Approval, Report};
+use serde_json::Value;
 
 use super::addressing::assigned_notes;
 use super::{BussardMcp, ProgrammingTier, chain};
@@ -131,13 +132,13 @@ struct RunState {
     /// The device the run is on.
     current: Option<Current>,
     /// One report per device that ended, in order.
-    reports: Vec<Value>,
+    reports: Vec<CommissionDevice>,
 }
 
 /// How a stretch of the run ended.
 enum Segment {
     /// The run is over; the job's result.
-    Done(Value),
+    Done(Box<CommissionReport>),
     /// The run waits for the human's word.
     Pause(Box<PauseParts>),
 }
@@ -153,7 +154,7 @@ struct PauseParts {
     /// The question for the human.
     question: String,
     /// The identification, when the device was read.
-    identified: Value,
+    identified: Option<IdentifiedDevice>,
     /// The question offers `assign`.
     offers_assign: bool,
 }
@@ -170,34 +171,6 @@ fn who(target: &Target) -> String {
         None => " (no order number in the model)".to_string(),
     };
     format!("{}{room}{order}", target.name)
-}
-
-/// A model device as the results list it.
-fn device_json(target: &Target) -> Value {
-    json!({
-        "address": target.address.to_string(),
-        "name": target.name,
-        "floor": target.floor,
-        "room": target.room,
-        "order_number": target.order_number,
-    })
-}
-
-/// What the identification read, for the `identified` step.
-fn identified_json(i: &Identified) -> Value {
-    let v = &i.verified;
-    json!({
-        "current_address": i.current.to_string(),
-        "serial": v.serial.as_deref().map(hex),
-        "mask": v.mask.map(|m| format!("{m:04X}")),
-        "manufacturer": v.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
-        "order_number": v.order,
-        "order_check": match i.check {
-            OrderCheck::Matches => "matches",
-            OrderCheck::NoModelNumber => "no_model_number",
-            OrderCheck::Refused(_) => "refused",
-        },
-    })
 }
 
 /// The plan digest: the line, the gateway and every model device on it
@@ -306,29 +279,27 @@ impl BussardMcp {
              stop. Only addresses are written: no links, parameters or application programs."
                 .to_string(),
         ];
-        let now = std::time::SystemTime::now();
-        json!({
-            "ok": true,
-            "step": "plan",
-            "line": line,
-            "gateway": gateway,
-            "devices": targets.iter().map(device_json).collect::<Vec<_>>(),
-            "total": n,
-            "sentences": sentences,
-            "summary": format!(
-                "Commissioning line {line} gives its {n} device(s) their addresses, one press \
-                 of a programming button at a time."
-            ),
-            "question": format!(
-                "Commission the {n} device(s) of line {line} via {gateway}? One yes covers every \
-                 device that turns out to be the product the model expects. Say yes."
-            ),
-            "plan_digest": digest,
-            "expires_at": tier.commission_plans.expires_at(now),
-            "next_step": "Say the summary, show the human the sentences in full and ask the \
-                question. Only after an explicit yes call knx_commission_line with line, \
-                plan_digest and yes: true. Nothing is written before that.",
-        })
+        let plan = CommissionPlan {
+            ok: true,
+            step: "plan",
+            line: line.to_string(),
+            gateway: gateway.to_string(),
+            devices: targets.iter().map(CommissionTarget::of).collect(),
+            total: n,
+            sentences,
+            approval: Approval {
+                question: Some(format!(
+                    "Commission the {n} device(s) of line {line} via {gateway}? One yes covers \
+                     every device that turns out to be the product the model expects. Say yes."
+                )),
+                plan_digest: Some(digest),
+                expires_at: Some(
+                    tier.commission_plans
+                        .expires_at(std::time::SystemTime::now()),
+                ),
+            },
+        };
+        crate::reply::report(&plan, &self.model())
     }
 
     /// The yes: checks the digest, claims the job and starts the run.
@@ -385,22 +356,19 @@ impl BussardMcp {
             reports: Vec::new(),
         };
         self.spawn_commission(job.clone(), run, stop);
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "step": "checking which devices already answer",
-            "job": job,
-            "line": line,
-            "gateway": gateway,
-            "next_step": format!(
+        Ok(crate::reply::started_with(
+            &job,
+            "checking which devices already answer",
+            CommissionStarted { line, gateway },
+            None,
+            format!(
                 "The run is job {job}. Call knx_job_status with job {job} every few seconds. \
                  While it waits for a button its `question` names the device: relay it to the \
                  human word for word. When `waiting` is set, tell the human waiting.reason and \
                  ask `question`, then pass the answer as knx_commission_line {{job, answer}}. \
                  The human can stop the run at any time: answer \"stop\"."
             ),
-        }))
+        ))
     }
 
     /// The human's word for a job: `retry`, `skip`, `assign` or `stop`.
@@ -430,17 +398,26 @@ impl BussardMcp {
         let Some(paused) = paused else {
             if answer == "stop" {
                 stop.set();
-                return Ok(json!({
-                    "ok": true,
-                    "job": job,
-                    "stopping": true,
-                    "next_step": format!(
+                let mut out = serde_json::to_value(Answered {
+                    ok: true,
+                    job,
+                    stopping: Some(true),
+                    resumed: None,
+                    answer: None,
+                    step: None,
+                })
+                .unwrap_or_default();
+                crate::reply::envelope(
+                    &mut out,
+                    None,
+                    Some(format!(
                         "The run stops at once while it waits for a button, else after the \
                          device it is on (a write in progress is never cut). Call \
                          knx_job_status with job {job} until `done` is true and tell the human \
                          result.summary."
-                    ),
-                }));
+                    )),
+                );
+                return Ok(out);
             }
             return Err(format!(
                 "job {job} is not waiting for an answer; call knx_job_status with job {job} and \
@@ -449,10 +426,16 @@ impl BussardMcp {
         };
         if answer == "stop" {
             tier.commissions().jobs.remove(job);
-            let result = final_result(&paused.run, true, None);
-            tier.jobs.finish(job, result.clone());
+            let result = crate::reply::report(
+                final_result(&paused.run, true, None).as_ref(),
+                &self.model(),
+            );
+            tier.jobs.finish(job, &result);
             let mut out = result;
-            super::merge(&mut out, json!({ "job": job, "done": true }));
+            if let Some(map) = out.as_object_mut() {
+                map.insert("job".to_string(), Value::String(job.to_string()));
+                map.insert("done".to_string(), Value::Bool(true));
+            }
             return Ok(out);
         }
         if answer == "assign" && !paused.offers_assign {
@@ -493,23 +476,30 @@ impl BussardMcp {
             );
             let outcome = Outcome::failed(&cur.target, detail);
             run.reports
-                .push(outcome_report(&cur.target, &outcome, None));
+                .push(CommissionDevice::of(&cur.target, &outcome));
             run.walk.record(outcome);
             tier.jobs
-                .progress(job, "devices", Value::Array(run.reports.clone()));
+                .progress(job, |p| p.devices = devices_json(&run.reports));
         }
         self.spawn_commission(job.to_string(), run, stop);
-        Ok(json!({
-            "ok": true,
-            "job": job,
-            "resumed": true,
-            "answer": answer,
-            "step": step,
-            "next_step": format!(
+        let mut out = serde_json::to_value(Answered {
+            ok: true,
+            job,
+            stopping: None,
+            resumed: Some(true),
+            answer: Some(&answer),
+            step: Some(step),
+        })
+        .unwrap_or_default();
+        crate::reply::envelope(
+            &mut out,
+            None,
+            Some(format!(
                 "The run goes on as job {job}. Call knx_job_status with job {job} every few \
                  seconds and relay its `question` to the human word for word."
-            ),
-        }))
+            )),
+        );
+        Ok(out)
     }
 
     /// Puts a paused run back after a refused answer.
@@ -534,7 +524,8 @@ impl BussardMcp {
             match segment {
                 Segment::Done(result) => {
                     tier.commissions().jobs.remove(&id);
-                    tier.jobs.finish(&id, result);
+                    tier.jobs
+                        .finish(&id, crate::reply::report(result.as_ref(), &me.model()));
                 }
                 Segment::Pause(parts) => {
                     let PauseParts {
@@ -545,22 +536,25 @@ impl BussardMcp {
                         identified,
                         offers_assign,
                     } = *parts;
-                    let device = run.current.as_ref().map(|c| device_json(&c.target));
+                    let device = run
+                        .current
+                        .as_ref()
+                        .map(|c| CommissionTarget::of(&c.target));
                     let answers: &[&str] = if offers_assign {
                         &["assign", "retry", "skip", "stop"]
                     } else {
                         &["retry", "skip", "stop"]
                     };
-                    let detail = json!({
-                        "waiting": {
-                            "device": device,
-                            "reason": reason,
-                            "identified": identified,
-                            "answers": answers,
+                    let detail = Waiting {
+                        waiting: WaitingFor {
+                            device,
+                            reason,
+                            identified,
+                            answers,
                         },
-                    });
+                    };
                     tier.jobs
-                        .progress(&id, "devices", Value::Array(run.reports.clone()));
+                        .progress(&id, |p| p.devices = devices_json(&run.reports));
                     if let Some(entry) = tier.commissions().jobs.get_mut(&id) {
                         entry.paused = Some(Paused { run, offers_assign });
                     }
@@ -600,14 +594,15 @@ impl BussardMcp {
             let targets = run.walk.targets().to_vec();
             let mut on_probe = |event: WalkEvent<'_, _>| {
                 if let WalkEvent::Probing { address, .. } = event {
-                    jobs.progress(job, "checking", json!(address.to_string()));
+                    jobs.progress(job, |p| p.checking = Some(address.to_string()));
                 }
             };
             let verdicts = probe_line(&service, source, &targets, &mut on_probe).await;
             run.walk.set_verdicts(verdicts);
             run.probed = true;
-            tier.jobs
-                .progress(job, "pending", json!(run.walk.pending()));
+            tier.jobs.progress(job, |p| {
+                p.pending = serde_json::to_value(run.walk.pending()).ok()
+            });
         }
 
         loop {
@@ -624,10 +619,10 @@ impl BussardMcp {
                             .iter()
                             .find(|t| t.address == outcome.address)
                         {
-                            run.reports.push(outcome_report(target, &outcome, None));
+                            run.reports.push(CommissionDevice::of(target, &outcome));
                         }
                         tier.jobs
-                            .progress(job, "devices", Value::Array(run.reports.clone()));
+                            .progress(job, |p| p.devices = devices_json(&run.reports));
                         continue;
                     }
                     Some(Next::Device {
@@ -663,15 +658,14 @@ impl BussardMcp {
             }
 
             // press_button
-            tier.jobs.progress(
-                job,
-                "device",
-                json!({
-                    "position": cur.position,
-                    "total": cur.total,
-                    "device": device_json(target),
-                }),
-            );
+            tier.jobs.progress(job, |p| {
+                p.device = serde_json::to_value(OnDevice {
+                    position: cur.position,
+                    total: cur.total,
+                    device: CommissionTarget::of(target),
+                })
+                .ok();
+            });
             let mut observer = JobSink::new(&tier.jobs, job).press(format!(
                 "Device {} of {}: press the programming button on {} (its LED usually lights \
                  up), then say done.",
@@ -697,7 +691,7 @@ impl BussardMcp {
                         target,
                         &format!("Leave programming mode on all devices but {}.", target.name),
                     );
-                    return pause(run, "press_button", reason, question, Value::Null, false);
+                    return pause(run, "press_button", reason, question, None, false);
                 }
                 Err(FlowStop::Nothing { waited }) => {
                     let reason = format!(
@@ -708,7 +702,7 @@ impl BussardMcp {
                         target,
                         &format!("Press the programming button on {}.", who(target)),
                     );
-                    return pause(run, "press_button", reason, question, Value::Null, false);
+                    return pause(run, "press_button", reason, question, None, false);
                 }
                 Err(e) => {
                     let reason = format!(
@@ -716,7 +710,7 @@ impl BussardMcp {
                         chain(&e)
                     );
                     let question = retry_question(target, "Check the bus connection.");
-                    return pause(run, "press_button", reason, question, Value::Null, false);
+                    return pause(run, "press_button", reason, question, None, false);
                 }
             };
 
@@ -733,11 +727,12 @@ impl BussardMcp {
                         target,
                         &format!("Press the programming button on {} again.", target.name),
                     );
-                    return pause(run, "identified", reason, question, Value::Null, false);
+                    return pause(run, "identified", reason, question, None, false);
                 }
             };
-            let ident = identified_json(&identified);
-            tier.jobs.progress(job, "identified", ident.clone());
+            let ident = IdentifiedDevice::of(&identified);
+            tier.jobs
+                .progress(job, |p| p.identified = serde_json::to_value(&ident).ok());
             match &identified.check {
                 OrderCheck::Matches => {}
                 OrderCheck::NoModelNumber if cur.accept_unchecked => {}
@@ -753,7 +748,7 @@ impl BussardMcp {
                          after pressing another device, skip to leave {} for later, or stop.",
                         target.name, target.name
                     );
-                    return pause(run, "identified", reason, question, ident, true);
+                    return pause(run, "identified", reason, question, Some(ident), true);
                 }
                 OrderCheck::Refused(_) => {
                     let expected = target.order_number.as_deref().unwrap_or_default();
@@ -778,7 +773,7 @@ impl BussardMcp {
                             who(target)
                         ),
                     );
-                    return pause(run, "identified", reason, question, ident, false);
+                    return pause(run, "identified", reason, question, Some(ident), false);
                 }
             }
 
@@ -795,32 +790,34 @@ impl BussardMcp {
                             ));
                         }
                         let v = &labelled.identity;
-                        let readback = json!({
-                            "verified": true,
-                            "mask": v.mask.map(|m| format!("{m:04X}")),
-                            "serial": v.serial.as_deref().map(hex),
-                            "order_number": v.order,
-                            "programming_mode_cleared": v.programming_mode_cleared,
-                            "notes": notes,
-                        });
+                        let readback = CommissionReadback {
+                            verified: true,
+                            mask: v.mask.map(|m| format!("{m:04X}")),
+                            serial: v.serial.as_deref().map(hex),
+                            order_number: v.order.clone(),
+                            programming_mode_cleared: Some(v.programming_mode_cleared),
+                            notes,
+                        };
                         (Outcome::commissioned(target, labelled.label), readback)
                     }
                     Err(e) => (
                         Outcome::failed(target, chain(&e)),
-                        json!({ "verified": false }),
+                        CommissionReadback::default(),
                     ),
                 };
-            let mut report = outcome_report(target, &outcome, Some(ident));
-            super::merge(
-                &mut report,
-                json!({ "step": "assigned", "from": current.to_string(), "readback": readback }),
-            );
+            let report = CommissionDevice {
+                identified: Some(IdentifiedDevice::of(&identified)),
+                step: Some("assigned".to_string()),
+                from: Some(current.to_string()),
+                readback: Some(readback),
+                ..CommissionDevice::of(target, &outcome)
+            };
             run.reports.push(report);
             run.walk.record(outcome);
             run.current = None;
             tier.jobs
-                .progress(job, "devices", Value::Array(run.reports.clone()));
-            tier.jobs.progress(job, "identified", Value::Null);
+                .progress(job, |p| p.devices = devices_json(&run.reports));
+            tier.jobs.progress(job, |p| p.identified = None);
         }
         Segment::Done(final_result(&run, false, None))
     }
@@ -832,7 +829,7 @@ fn pause(
     step: &'static str,
     reason: String,
     question: String,
-    identified: Value,
+    identified: Option<IdentifiedDevice>,
     offers_assign: bool,
 ) -> Segment {
     if let Some(cur) = run.current.as_mut() {
@@ -848,104 +845,130 @@ fn pause(
     }))
 }
 
-/// One device's report in `progress.devices` and the result.
-fn outcome_report(target: &Target, outcome: &Outcome, identified: Option<Value>) -> Value {
-    let mut report = device_json(target);
-    super::merge(
-        &mut report,
-        json!({
-            "status": outcome.status.key(),
-            "detail": outcome.status.detail(),
-            "label": outcome.label,
-        }),
-    );
-    if let Some(identified) = identified {
-        super::merge(&mut report, json!({ "identified": identified }));
-    }
-    report
-}
-
 /// The job's result: per device what happened and its label, the totals,
 /// what the run did not reach, and the summary.
-fn final_result(run: &RunState, stopped: bool, reason: Option<String>) -> Value {
-    let totals = run.walk.totals();
-    let line = run.walk.line();
-    let mut not_reached: Vec<&Target> = run.current.iter().map(|c| &c.target).collect();
-    not_reached.extend(run.walk.remaining());
-    let labels: Vec<&str> = run
-        .walk
-        .outcomes()
+fn final_result(run: &RunState, stopped: bool, reason: Option<String>) -> Box<CommissionReport> {
+    Box::new(CommissionReport::new(
+        &run.walk,
+        &run.gateway,
+        run.reports.clone(),
+        run.current.as_ref().map(|c| &c.target),
+        stopped,
+        reason,
+    ))
+}
+
+/// The device rows as the job's progress holds them.
+fn devices_json(reports: &[CommissionDevice]) -> Option<Vec<Value>> {
+    reports
         .iter()
-        .filter_map(|o| o.label.as_deref())
-        .collect();
-    let names = |status: fn(&Status) -> bool| -> Vec<String> {
-        run.walk
-            .outcomes()
-            .iter()
-            .filter(|o| status(&o.status))
-            .map(|o| o.name.clone())
-            .collect()
-    };
-    let mut summary = format!("Line {line}: ");
-    let commissioned = names(|s| matches!(s, Status::Commissioned));
-    summary.push_str(&if commissioned.is_empty() {
-        "no device was commissioned".to_string()
-    } else {
-        format!("commissioned {}", commissioned.join(", "))
-    });
-    let present = names(|s| matches!(s, Status::AlreadyPresent));
-    if !present.is_empty() {
-        summary.push_str(&format!(
-            "; already at their address: {}",
-            present.join(", ")
-        ));
+        .map(|r| serde_json::to_value(r).ok())
+        .collect()
+}
+
+/// The plan of commissioning a line: the model's devices, the sentences and
+/// the question.
+#[derive(serde::Serialize)]
+struct CommissionPlan {
+    /// Always `true`.
+    ok: bool,
+    /// Always `plan`.
+    step: &'static str,
+    /// The line.
+    line: String,
+    /// The resolved gateway.
+    gateway: String,
+    /// The model's devices on it.
+    devices: Vec<CommissionTarget>,
+    /// How many.
+    total: usize,
+    /// The plan in words.
+    sentences: Vec<String>,
+    /// The question and the digest.
+    #[serde(flatten)]
+    approval: Approval,
+}
+
+impl Report for CommissionPlan {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, _model: &Model) -> Option<String> {
+        Some(format!(
+            "Commissioning line {} gives its {} device(s) their addresses, one press of a \
+             programming button at a time.",
+            self.line, self.total
+        ))
     }
-    let failed = names(|s| matches!(s, Status::Failed(_)));
-    if !failed.is_empty() {
-        summary.push_str(&format!("; not commissioned: {}", failed.join(", ")));
+
+    fn next_step(&self) -> Option<String> {
+        Some(
+            "Say the summary, show the human the sentences in full and ask the question. Only \
+             after an explicit yes call knx_commission_line with line, plan_digest and yes: \
+             true. Nothing is written before that."
+                .to_string(),
+        )
     }
-    if !not_reached.is_empty() {
-        let left: Vec<&str> = not_reached.iter().map(|t| t.name.as_str()).collect();
-        summary.push_str(&format!(
-            "; {} before: {}",
-            if stopped { "stopped" } else { "the run ended" },
-            left.join(", ")
-        ));
-    } else if stopped {
-        summary.push_str("; stopped");
-    }
-    summary.push('.');
-    if let Some(reason) = &reason {
-        summary.push_str(&format!(" The run did not go on: {reason}."));
-    }
-    let ok = reason.is_none() && !stopped && totals.failed == 0 && not_reached.is_empty();
-    let next_step = if totals.commissioned > 0 {
-        "Tell the human the summary and read out `labels`, one per device to stick on it. Only \
-         addresses were written: push each commissioned device's links and parameters with \
-         knx_plan_device and knx_apply_device (a factory-fresh device needs its application \
-         loaded first; the plan says so). Call knx_commission_line again for the devices that \
-         were not commissioned."
-    } else {
-        "Tell the human the summary. Call knx_commission_line again for the devices that were \
-         not commissioned."
-    };
-    json!({
-        "ok": ok,
-        "step": "done",
-        "line": line,
-        "gateway": run.gateway,
-        "stopped": stopped,
-        "reason": reason,
-        "devices": run.reports,
-        "labels": labels,
-        "total": run.walk.targets().len(),
-        "commissioned": totals.commissioned,
-        "present": totals.present,
-        "failed": totals.failed,
-        "not_reached": not_reached.iter().map(|t| device_json(t)).collect::<Vec<_>>(),
-        "summary": summary,
-        "next_step": next_step,
-    })
+}
+
+/// What the start of a commissioning run established.
+#[derive(serde::Serialize)]
+struct CommissionStarted {
+    /// The line.
+    line: String,
+    /// The resolved gateway.
+    gateway: String,
+}
+
+/// The answer to the human's word for a paused run.
+#[derive(serde::Serialize)]
+struct Answered<'a> {
+    /// Always `true`.
+    ok: bool,
+    /// The job.
+    job: &'a str,
+    /// `stop` while the run works: it stops after the device it is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stopping: Option<bool>,
+    /// The run goes on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resumed: Option<bool>,
+    /// The answer taken.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    answer: Option<&'a str>,
+    /// What the run does now.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<&'a str>,
+}
+
+/// What a paused run reports at the top of its status.
+#[derive(serde::Serialize)]
+struct Waiting<'a> {
+    /// The pause.
+    waiting: WaitingFor<'a>,
+}
+
+/// Why a run waits for the human's word, and the answers it takes.
+#[derive(serde::Serialize)]
+struct WaitingFor<'a> {
+    /// The device it is on.
+    device: Option<CommissionTarget>,
+    /// Why, ending with what was written (nothing).
+    reason: String,
+    /// The identification, when the device was read.
+    identified: Option<IdentifiedDevice>,
+    /// The answers the question takes.
+    answers: &'a [&'a str],
+}
+
+/// The device a run waits for and where it is in the walk.
+#[derive(serde::Serialize)]
+struct OnDevice {
+    /// Its 1-based position.
+    position: usize,
+    /// How many devices the line has.
+    total: usize,
+    /// The device.
+    device: CommissionTarget,
 }
 
 impl ProgrammingTier {

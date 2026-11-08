@@ -78,6 +78,11 @@ pub struct DecodedParameters {
     /// when unreadable), `new` the model's. Never in `differences`, sorted
     /// by key.
     pub kept: Vec<ParamChange>,
+    /// Why [`Self::kept`] and the verdicts may be incomplete: the octets the
+    /// download leaves as the device holds them could not be determined
+    /// (issue #959), so every octet was read as written. `None` when they
+    /// were.
+    pub incomplete: Option<String>,
 }
 
 /// Decodes `current` (the parameter segments read off a device, keyed by
@@ -103,7 +108,22 @@ pub fn decode_parameters(
     };
 
     // The octets the download leaves as the device holds them (issue #411).
-    let kept_octets = crate::flash::kept_octets(app, overrides, memo);
+    // When they cannot be known (a module load procedure bussard cannot
+    // resolve, issue #959) the decode says so instead of reading every octet
+    // as written.
+    let (kept_octets, incomplete) = match crate::flash::kept_octets(app, overrides, memo) {
+        Ok(kept) => (kept, None),
+        Err(e) => {
+            tracing::warn!(error = %e, "the octets the download keeps are not known");
+            (
+                Vec::new(),
+                Some(format!(
+                    "which parameter octets a download leaves as the device holds them is not \
+                     known ({e}), so a difference below may be in octets no download writes"
+                )),
+            )
+        }
+    };
     let is_kept = |p: &Placed<'_>| {
         kept_octets
             .iter()
@@ -216,6 +236,7 @@ pub fn decode_parameters(
         unknown,
         unshown: unshown_overrides(app, overrides, &keys, memo),
         kept,
+        incomplete,
     }
 }
 

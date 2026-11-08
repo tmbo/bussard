@@ -41,10 +41,13 @@ use bussard_model::identity::LockIdentity;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::adopt::flow::{ProductPlan, product_plan};
 use bussard_service::assign::hex;
+use bussard_service::program::addressed::{AddressFlow, AddressOutcome, DeviceReadback, Recorded};
 use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::program::outcome::Verdict;
+use bussard_service::program::outcome::WriteOutcome;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::replace::{self, Pressed, Replacement};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::addressing::{Wording, Yes, assigned_notes, found_sentence, refused};
 use super::{BussardMcp, ProgrammingTier, chain, parse_address, product_for};
@@ -198,24 +201,23 @@ impl BussardMcp {
             me.replace_identify_job(&id, replacement, source).await;
         });
         tier.jobs.watch(&job, "replace-device", worker);
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "step": "press_button",
-            "job": job,
-            "address": target.to_string(),
-            "gateway": gateway,
-            "backup": backup,
-            "question": PRESS_BUTTON,
-            "next_step": format!(
+        Ok(crate::reply::started_with(
+            &job,
+            "press_button",
+            ReplaceStarted {
+                address: target.to_string(),
+                gateway,
+                backup,
+            },
+            Some(PRESS_BUTTON),
+            format!(
                 "Tell the human what `backup` kept, then relay `question` word for word. The \
                  server first checks that {target} no longer answers, then waits up to 30 s for \
                  the replacement's programming-mode answer; call knx_job_status with job {job} \
                  every few seconds. When its step is `identified`, show the human its \
                  `sentences` and ask its `question`. Nothing is written before that."
             ),
-        }))
+        ))
     }
 
     /// The first job: the check that the old device is gone, the wait for
@@ -322,9 +324,18 @@ impl BussardMcp {
     /// The write job: the assign half, then the flash and the apply, then
     /// the record. Returns the job's result.
     async fn replace_write_job(&self, job: &str, p: ReplacePlan) -> Value {
+        let outcome = self.replace_write(job, p).await;
+        crate::reply::report(&outcome, &self.model())
+    }
+
+    /// [`BussardMcp::replace_write_job`]'s outcome.
+    async fn replace_write(&self, job: &str, p: ReplacePlan) -> AddressOutcome {
         let state = std::sync::Arc::clone(self.state());
         let Some(tier) = state.programming.as_ref() else {
-            return json!({ "ok": false, "reason": "the programming tier is off" });
+            return AddressOutcome {
+                verdict: Verdict::failed("the programming tier is off"),
+                ..AddressOutcome::default()
+            };
         };
         let target = p.replacement.target;
         // The address, on the bus lock (released before the plan, which takes
@@ -332,14 +343,15 @@ impl BussardMcp {
         let assigned = self.on_bus(tier, self.replace_assign(job, &p)).await;
         let (pressed, mut notes) = match assigned {
             Ok(Swap::Done { pressed, notes }) => (pressed, notes),
-            Ok(Swap::Failed(result)) => return result,
+            Ok(Swap::Failed(result)) => return *result,
             Err(reason) => {
-                return json!({
-                    "ok": false,
-                    "verified": false,
-                    "written": false,
-                    "reason": reason,
-                });
+                return AddressOutcome {
+                    verdict: Verdict::failed(reason),
+                    address: target.to_string(),
+                    written: Some(false),
+                    flow: AddressFlow::Replace,
+                    ..AddressOutcome::default()
+                };
             }
         };
 
@@ -365,10 +377,10 @@ impl BussardMcp {
                 );
             }
         };
-        let write = if plan["noop"] == true {
+        let write = if plan.noop() {
             None
         } else {
-            let Some(digest) = plan["plan_digest"].as_str().map(str::to_string) else {
+            let Some(digest) = plan.plan_digest() else {
                 return after_assign_failure(
                     &p,
                     &pressed,
@@ -376,7 +388,7 @@ impl BussardMcp {
                     format!(
                         "{target} has its address, but its plan carries nothing to write over \
                          this tool ({}); plan it with knx_plan_device",
-                        plan["method"]
+                        plan.method()
                     ),
                 );
             };
@@ -387,7 +399,7 @@ impl BussardMcp {
                 job,
                 format!(
                     "{} {target}: pre-flight, backups",
-                    if plan["method"] == "flash" {
+                    if plan.method() == "flash" {
                         "flashing"
                     } else {
                         "writing"
@@ -415,7 +427,7 @@ impl BussardMcp {
                     .join(id)
                     .join(crate::jobs::RECORD_FILE)
             });
-            tier.jobs.started(job, prepared.result.clone(), record);
+            tier.jobs.started(job, &prepared.result, record);
             let links_after = super::LinksAfter::of(&prepared);
             let result = self.apply_write(tier, job, prepared).await;
             drop(warm);
@@ -430,13 +442,12 @@ impl BussardMcp {
         };
         let written_ok = write
             .as_ref()
-            .is_none_or(|w| w["ok"] == true && w["verified"] == true);
+            .is_none_or(|w| w.verdict.ok && w.verdict.verified);
         if !written_ok {
             let reason = write
                 .as_ref()
-                .and_then(|w| w["reason"].as_str())
-                .unwrap_or("the write did not verify")
-                .to_string();
+                .and_then(|w| w.verdict.reason.clone())
+                .unwrap_or_else(|| "the write did not verify".to_string());
             let mut result = after_assign_failure(
                 &p,
                 &pressed,
@@ -446,7 +457,7 @@ impl BussardMcp {
                      not verify: {reason}"
                 ),
             );
-            result["write"] = write.unwrap_or(Value::Null);
+            result.write = write;
             return result;
         }
 
@@ -457,15 +468,15 @@ impl BussardMcp {
             replace::record(&state.dir, &p.replacement, pressed.serial.as_deref(), &when);
         let _ = state.model.reload();
         let recorded = match recorded {
-            Ok(recorded) => json!({
-                "replaced": when,
-                "device_file": recorded
+            Ok(recorded) => Some(Recorded {
+                replaced: when,
+                device_file: recorded
                     .device_file
                     .strip_prefix(&state.dir)
                     .unwrap_or(&recorded.device_file)
                     .display()
                     .to_string(),
-                "serial_recorded": recorded.serial.as_ref().is_some_and(|s| s.changed()),
+                serial_recorded: recorded.serial.as_ref().is_some_and(|s| s.changed()),
             }),
             Err(err) => {
                 notes.push(format!(
@@ -473,7 +484,7 @@ impl BussardMcp {
                      model: {}",
                     chain(&err)
                 ));
-                Value::Null
+                None
             }
         };
         done_result(&p, &pressed, write, recorded, notes)
@@ -543,21 +554,21 @@ impl BussardMcp {
         }
 
         // The address, and the independent read-back at it.
-        let failed = |assigned: bool, extra: Value, reason: String, recovery: String| {
-            let mut result = json!({
-                "ok": false,
-                "verified": false,
-                "assigned": assigned,
-                "address": target.to_string(),
-                "from": current.to_string(),
-            });
-            super::merge(&mut result, extra);
-            super::merge(
-                &mut result,
-                json!({ "reason": reason, "recovery": recovery }),
-            );
-            Ok(Swap::Failed(result))
-        };
+        let failed =
+            |assigned: bool, readback: Option<DeviceReadback>, reason: String, recovery: String| {
+                Ok(Swap::Failed(Box::new(AddressOutcome {
+                    verdict: Verdict {
+                        recovery: Some(recovery),
+                        ..Verdict::failed(reason)
+                    },
+                    address: target.to_string(),
+                    from: Some(current.to_string()),
+                    assigned: Some(assigned),
+                    readback,
+                    flow: AddressFlow::Replace,
+                    ..AddressOutcome::default()
+                })))
+            };
         match replace::assign_replacement(&flow, &dir, r, p.pressed.clone(), None, true, observer)
             .await
         {
@@ -567,7 +578,7 @@ impl BussardMcp {
             }),
             Err(Stop::Verify(err)) => failed(
                 false,
-                json!({}),
+                None,
                 chain(&err),
                 format!(
                     "The address write to {target} could not be verified. Check the device with \
@@ -576,10 +587,7 @@ impl BussardMcp {
             ),
             Err(Stop::OtherDevice { verified, .. }) => failed(
                 true,
-                json!({ "readback": {
-                    "mask": verified.mask.map(|m| format!("{m:04X}")),
-                    "serial": verified.serial.as_deref().map(hex),
-                }}),
+                Some(DeviceReadback::identity(&verified)),
                 format!(
                     "{target} now answers, but the read-back there does not match the identified \
                      serial or mask: another device may have taken the address. Nothing more was \
@@ -613,7 +621,7 @@ enum Swap {
         notes: Vec<String>,
     },
     /// The address was written but did not verify: the job's result.
-    Failed(Value),
+    Failed(Box<AddressOutcome>),
 }
 
 /// Where the product data for the flash comes from, or the refusal when
@@ -678,7 +686,7 @@ fn pinned_source(dir: &std::path::Path, model: &Model, r: &Replacement) -> Resul
 /// The `backup` step: a history snapshot of the model, whose device file
 /// and lock record of the dead device `bussard history` can put back, and
 /// what they hold.
-fn backup(dir: &std::path::Path, model: &Model, r: &Replacement) -> Result<Value, String> {
+fn backup(dir: &std::path::Path, model: &Model, r: &Replacement) -> Result<ReplaceBackup, String> {
     let device = model.devices.get(&r.target).map(|d| &d.device);
     let lock = device.map(LockIdentity::of).unwrap_or_default();
     let history = History::open(dir);
@@ -706,26 +714,26 @@ fn backup(dir: &std::path::Path, model: &Model, r: &Replacement) -> Result<Value
         .unwrap_or(&r.device_file)
         .display()
         .to_string();
-    Ok(json!({
-        "snapshot": snapshot,
-        "device_file": relative,
-        "name": r.name,
-        "order_number": r.expected.order_number,
-        "mask": r.expected.mask_text,
-        "lock": {
-            "application": lock.application,
-            "application_id": lock.application_id,
-            "product_sha256": lock.product_sha256,
-            "serial_number": device.and_then(|d| d.lock.serial_number.clone()),
-        },
-        "sentence": match &snapshot {
+    Ok(ReplaceBackup {
+        sentence: match &snapshot {
             Some(id) => format!(
                 "The model as it is now, {relative} and its bussard.lock record included, is \
                  kept as history snapshot {id}; `bussard history` puts it back."
             ),
             None => format!("{relative} has no history to snapshot into yet."),
         },
-    }))
+        snapshot,
+        device_file: relative,
+        name: r.name.clone(),
+        order_number: r.expected.order_number.clone(),
+        mask: r.expected.mask_text.clone(),
+        lock: LockFacts {
+            application: lock.application,
+            application_id: lock.application_id,
+            product_sha256: lock.product_sha256,
+            serial_number: device.and_then(|d| d.lock.serial_number.clone()),
+        },
+    })
 }
 
 /// The refusal for an address that still answers.
@@ -756,7 +764,7 @@ fn identified_detail(
     source: &Source,
     digest: &str,
     tier: &ProgrammingTier,
-) -> Value {
+) -> ReplaceIdentified {
     let target = r.target;
     let mask = p.mask.map(|m| format!("{m:04X}"));
     let system = p.mask.map(bussard_service::mgmt::system_type);
@@ -827,23 +835,99 @@ fn identified_detail(
                 .to_string(),
         );
     }
-    let now = std::time::SystemTime::now();
-    json!({
-        "name": r.name,
-        "current_address": p.address.to_string(),
-        "serial": p.serial.as_deref().map(hex),
-        "mask": mask,
-        "system_type": system,
-        "order_number": p.order,
-        "resident_application": p.application,
-        "identity": check.as_ref().map(|c| bussard_service::identity_line(target, c)),
-        "application": application,
-        "product_data": product_data,
-        "download_needed": download_needed,
-        "sentences": sentences,
-        "plan_digest": digest,
-        "expires_at": tier.replaces.expires_at(now),
-    })
+    ReplaceIdentified {
+        name: r.name.clone(),
+        current_address: p.address.to_string(),
+        serial: p.serial.as_deref().map(hex),
+        mask,
+        system_type: system,
+        order_number: p.order.clone(),
+        resident_application: p.application.clone(),
+        identity: check,
+        application,
+        product_data,
+        download_needed,
+        sentences,
+        plan_digest: digest.to_string(),
+        expires_at: tier.replaces.expires_at(std::time::SystemTime::now()),
+    }
+}
+
+/// What the start of `knx_replace_device` established.
+#[derive(serde::Serialize)]
+struct ReplaceStarted {
+    /// The dead device.
+    address: String,
+    /// The resolved gateway.
+    gateway: String,
+    /// What the backup step kept.
+    backup: ReplaceBackup,
+}
+
+/// The `backup` step: the history snapshot that keeps the dead device's
+/// file and lock record, and what they hold.
+#[derive(serde::Serialize)]
+struct ReplaceBackup {
+    /// The snapshot id.
+    snapshot: Option<String>,
+    /// The device file, relative to the project.
+    device_file: String,
+    /// The device's name.
+    name: String,
+    /// The order number the project expects.
+    order_number: Option<String>,
+    /// The mask the project expects.
+    mask: Option<String>,
+    /// The lock record kept.
+    lock: LockFacts,
+    /// The step in words.
+    sentence: String,
+}
+
+/// The lock record of the dead device.
+#[derive(serde::Serialize)]
+struct LockFacts {
+    /// The application.
+    application: Option<String>,
+    /// The application id.
+    application_id: Option<String>,
+    /// The product archive's SHA-256.
+    product_sha256: Option<String>,
+    /// The serial number.
+    serial_number: Option<String>,
+}
+
+/// The fields the `identified` step reports at the top of the job status.
+#[derive(serde::Serialize)]
+struct ReplaceIdentified {
+    /// The device's name in the project.
+    name: String,
+    /// Where the replacement answered.
+    current_address: String,
+    /// Its serial, hex.
+    serial: Option<String>,
+    /// Its mask, hex.
+    mask: Option<String>,
+    /// The system the mask names.
+    system_type: Option<&'static str>,
+    /// Its order number.
+    order_number: Option<String>,
+    /// The application it runs now.
+    resident_application: Option<String>,
+    /// Its identity against the lock.
+    identity: Option<bussard_model::identity::IdentityCheck>,
+    /// The application it gets.
+    application: String,
+    /// Where the product data comes from.
+    product_data: String,
+    /// The product data needs the human's consent to a download.
+    download_needed: bool,
+    /// The plan in words.
+    sentences: Vec<String>,
+    /// The digest the yes presents.
+    plan_digest: String,
+    /// When the digest expires.
+    expires_at: String,
 }
 
 /// The result when the address took but the flash or the apply did not
@@ -853,80 +937,62 @@ fn after_assign_failure(
     pressed: &Pressed,
     notes: Vec<String>,
     reason: String,
-) -> Value {
+) -> AddressOutcome {
     let target = p.replacement.target;
-    json!({
-        "ok": false,
-        "verified": false,
-        "step": "done",
-        "assigned": true,
-        "address": target.to_string(),
-        "from": pressed.address.to_string(),
-        "reason": reason,
-        "recorded": false,
-        "notes": notes,
-        "recovery": format!(
-            "{target} has the right address but not yet the model's application and links. \
-             Call knx_plan_device for {target}, show the plan to the human and apply it with \
-             knx_apply_device after a yes; the replacement is recorded only by a complete run \
-             (`bussard replace {target}` at the terminal)."
-        ),
-    })
+    AddressOutcome {
+        verdict: Verdict {
+            recovery: Some(format!(
+                "{target} has the right address but not yet the model's application and links. \
+                 Call knx_plan_device for {target}, show the plan to the human and apply it with \
+                 knx_apply_device after a yes; the replacement is recorded only by a complete run \
+                 (`bussard replace {target}` at the terminal)."
+            )),
+            ..Verdict::failed(reason)
+        },
+        step: Some("done".to_string()),
+        address: target.to_string(),
+        from: Some(pressed.address.to_string()),
+        assigned: Some(true),
+        notes,
+        flow: AddressFlow::Replace,
+        ..AddressOutcome::default()
+    }
 }
 
 /// The `done` result: names first, one summary sentence.
 fn done_result(
     p: &ReplacePlan,
     pressed: &Pressed,
-    write: Option<Value>,
-    recorded: Value,
+    write: Option<WriteOutcome>,
+    recorded: Option<Recorded>,
     notes: Vec<String>,
-) -> Value {
+) -> AddressOutcome {
     let r = &p.replacement;
-    let target = r.target;
     let flashed = write
         .as_ref()
-        .is_some_and(|w| w["method"] == "flash" && w["ok"] == true);
-    let how = match &write {
-        None => "it already held the model's application, parameters and links".to_string(),
-        Some(_) if flashed => {
-            "the application was loaded with the model's parameters and links".to_string()
-        }
-        Some(_) => "the parameters and links in your project were written".to_string(),
-    };
-    let ok = !recorded.is_null();
-    let summary = format!(
-        "{} ({target}) is replaced: the device that was at {} now answers at {target}, {how}, \
-         and the read-back matches your project{}.",
-        r.name,
-        pressed.address,
-        if ok {
-            "; the replacement is recorded in the device file and bussard.lock"
-        } else {
-            ", but the record in the model failed (see notes)"
-        }
-    );
-    json!({
-        "ok": ok,
-        "verified": true,
-        "step": "done",
-        "name": r.name,
-        "address": target.to_string(),
-        "from": pressed.address.to_string(),
-        "assigned": true,
-        "flashed": flashed,
-        "readback": {
-            "mask": pressed.mask.map(|m| format!("{m:04X}")),
-            "serial": pressed.serial.as_deref().map(hex),
-            "order_number": pressed.order,
+        .is_some_and(|w| w.method.as_deref() == Some("flash") && w.verdict.ok);
+    AddressOutcome {
+        verdict: Verdict {
+            ok: recorded.is_some(),
+            verified: true,
+            ..Verdict::default()
         },
-        "write": write,
-        "recorded": recorded,
-        "notes": notes,
-        "summary": summary,
-        "next_step": format!(
-            "Tell the human the summary. knx_plan_device for {target} should report nothing to \
-             do; a fresh knx_backup_device run keeps the new device's state."
-        ),
-    })
+        step: Some("done".to_string()),
+        name: Some(r.name.clone()),
+        address: r.target.to_string(),
+        from: Some(pressed.address.to_string()),
+        assigned: Some(true),
+        flashed: Some(flashed),
+        readback: Some(DeviceReadback {
+            mask: pressed.mask.map(|m| format!("{m:04X}")),
+            serial: pressed.serial.as_deref().map(hex),
+            order_number: pressed.order.clone(),
+            ..DeviceReadback::default()
+        }),
+        write,
+        recorded,
+        notes,
+        flow: AddressFlow::Replace,
+        ..AddressOutcome::default()
+    }
 }
