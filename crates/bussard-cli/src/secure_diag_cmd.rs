@@ -62,16 +62,6 @@ impl Run for SecureCommand {
     }
 }
 
-/// The `secure diag --json` report.
-#[derive(Debug, serde::Serialize)]
-struct Report<'a> {
-    /// The device address.
-    address: String,
-    /// Whether the log was cleared (and read back clear) by this run.
-    cleared: bool,
-    /// What the device holds.
-    diagnostics: &'a bussard_service::download::SecurityDiagnostics,
-}
 
 /// Runs `bussard secure diag`.
 fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
@@ -136,14 +126,11 @@ fn run(args: &DiagArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         })
         .map_err(|err| crate::secure_key::secure_hint(target, true, err))?;
     if json {
-        crate::output::print(
-            crate::output::schema::SECURE_DIAG,
-            &Report {
-                address: target.to_string(),
-                cleared: clear,
-                diagnostics: &diag,
-            },
-        )?;
+        crate::output::report(&bussard_service::secure_report::SecureDiagReport::new(
+            target,
+            diag.clone(),
+            clear,
+        ))?;
     } else {
         println!("device {target} — KNX Data Secure diagnostics");
         for line in diag.lines() {

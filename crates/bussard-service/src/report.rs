@@ -41,14 +41,10 @@ pub trait Report: Serialize {
 pub mod schema {
     /// `bussard doc --json` (the documentation model).
     pub const DOC: u32 = 1;
-    /// `bussard interface secure --json` (issue #398).
-    pub const INTERFACE_SECURE: u32 = 1;
     /// `bussard keys show --json`.
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.
     pub const MONITOR: u32 = 1;
-    /// `bussard secure diag <ADDRESS> --json` (issue #533).
-    pub const SECURE_DIAG: u32 = 1;
     /// `bussard test --secure-idle --json`.
     pub const TEST_SECURE_IDLE: u32 = 1;
 }

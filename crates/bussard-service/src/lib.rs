@@ -129,6 +129,7 @@ pub mod restart;
 pub mod restore;
 pub mod scan;
 pub mod secure;
+pub mod secure_report;
 pub mod security_change;
 pub mod security_diag;
 pub mod setup;
