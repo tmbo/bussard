@@ -1,7 +1,6 @@
 //! The fresh import of an ETS export into a model directory: the history
-//! snapshot before, the model files, the product data (extracted from the
-//! export, downloaded with consent), the keyring next to the project, and the
-//! validation summary after. `bussard import` into a fresh directory, `init`
+//! snapshot before, the model files, the product data extracted from the
+//! export, the keyring next to the project, and the validation summary after. `bussard import` into a fresh directory, `init`
 //! and the MCP tool `knx_setup` run it.
 
 use std::path::Path;
@@ -13,7 +12,7 @@ use bussard_project::keystore::{ImportReport, KeyStore, SaveOutcome};
 use super::products;
 use super::skeleton::{self, KEYRING_PASSWORD_ENV};
 use super::{Context as _, SetupError};
-use crate::observer::{ProgressSink, Prompt};
+use crate::observer::ProgressSink;
 use crate::util::chain;
 
 /// The environment variable the project password is read from.
@@ -139,17 +138,15 @@ pub struct Written {
 ///
 /// `project` is the ETS export read, which `bussard.lock` pins as the
 /// devices' product source until a vendor archive serves them (lock v2,
-/// issue #228). `fetch` runs the product-data download step for the devices'
-/// order numbers; `None` skips it (and the pins).
+/// issue #228); `None` (a bundle) pins nothing.
 ///
 /// # Errors
 ///
-/// The model files cannot be written, or the download question failed.
+/// The model files cannot be written.
 pub fn write_fresh(
     model: Model,
     dir: &Path,
     project: Option<&Path>,
-    fetch: Option<&mut dyn Prompt>,
     out: &mut dyn ProgressSink,
 ) -> Result<Written, SetupError> {
     let mut to_save = model;
@@ -187,7 +184,7 @@ pub fn write_fresh(
         ));
     }
 
-    let (errors, warnings) = after_write(dir, &to_save, project, fetch, out)?;
+    let (errors, warnings) = after_write(dir, &to_save, project, out);
     Ok(Written {
         groups: to_save.groups.groups.len(),
         devices: to_save.devices.len(),
@@ -198,35 +195,30 @@ pub fn write_fresh(
 }
 
 /// The steps after an import wrote (or found unchanged) the model files: the
-/// lock pins, the download step, the product models, the validation summary.
-/// Returns the error and warning counts of the summary.
+/// lock pins, the product models, the validation summary. Returns the error
+/// and warning counts of the summary.
 ///
-/// # Errors
-///
-/// The download question failed.
+/// A `.knxproj` carries the application program of every device it imports
+/// (an export without one is refused before anything is written), so the
+/// pins name the programs extracted from it and nothing is downloaded here
+/// (issue #923).
 pub fn after_write(
     dir: &Path,
     model: &Model,
     project: Option<&Path>,
-    fetch: Option<&mut dyn Prompt>,
     out: &mut dyn ProgressSink,
-) -> Result<(usize, usize), SetupError> {
-    // The export's manufacturer list names the devices from now on (#788).
+) -> (usize, usize) {
     if let Some(project) = project {
+        // The export's manufacturer list names the devices from now on (#788).
         products::record_manufacturers(dir, project);
-    }
-    // The lock pins where each device's product data comes from.
-    if fetch.is_some() {
+        // The lock pins where each device's product data comes from.
         products::pin_import(dir, project, model, out);
     }
-    // Product data fetches itself: every order number without it is looked up
-    // in the pointer index, with one question for the whole list.
-    fetch_product_data(dir, model, fetch, out)?;
     // The product models of every pinned archive, in the lock's language, so
     // the first command after an import finds them written (issue #255).
     products::complete_all_models(dir, out);
     // Validation is part of import: the summary says what to fix next.
-    Ok(validation_summary(dir, out))
+    validation_summary(dir, out)
 }
 
 /// One line per IP interface whose `[knxnet]` table the model holds (issue
@@ -261,57 +253,6 @@ pub fn knxnet_summary(model: &Model, out: &mut dyn ProgressSink) {
              address in use and the MAC address from the device"
         ));
     }
-}
-
-/// The download step of an import: fetch what is missing, then say how many
-/// devices are written without product data and where to get it.
-///
-/// # Errors
-///
-/// The index does not load, or the question could not be asked.
-pub fn fetch_product_data(
-    dir: &Path,
-    model: &Model,
-    fetch: Option<&mut dyn Prompt>,
-    out: &mut dyn ProgressSink,
-) -> Result<(), SetupError> {
-    let Some(prompt) = fetch else {
-        return Ok(());
-    };
-    let orders: Vec<String> = model
-        .devices
-        .values()
-        .filter_map(|d| d.device.product.as_ref()?.order_number.clone())
-        .collect();
-    let outcome = products::fetch_missing(dir, &orders, prompt, out)?;
-    let missing: std::collections::BTreeSet<String> = outcome
-        .missing()
-        .iter()
-        .map(|o| bussard_product::normalize_order_number(o))
-        .collect();
-    let without = model
-        .devices
-        .values()
-        .filter(|d| {
-            match d
-                .device
-                .product
-                .as_ref()
-                .and_then(|p| p.order_number.as_deref())
-            {
-                Some(order) => missing.contains(&bussard_product::normalize_order_number(order)),
-                None => true,
-            }
-        })
-        .count();
-    if without > 0 {
-        out.say(&format!(
-            "{without} device(s) written without product data: their files carry identity, \
-             location and links by number; `apply` writes their links, not their parameters"
-        ));
-    }
-    products::report_missing(&outcome, dir, out);
-    Ok(())
 }
 
 /// The one-line validation summary an import says after writing:
