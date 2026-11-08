@@ -18,14 +18,12 @@ Nothing on this page writes to a device. Every command here only reads the bus.
 
     ```text
     You:        Set up my house. The ETS export is demo-house.knxproj.
-    Assistant:  May I download the vendor product data the export lacks?
-    You:        Yes.
-    Assistant:  (calls knx_setup with download: true)
+    Assistant:  (calls knx_setup with project_file: demo-house.knxproj)
                 Found the KNX IP Interface at 192.0.2.10. Imported 33
                 group addresses, 10 devices and 55 links.
     ```
 
-    `knx_setup` runs what `bussard init` runs. Without your yes to the download it imports without the missing product data. Afterwards the assistant has its full tool set in the same conversation.
+    `knx_setup` runs what `bussard init` runs, product data from the export included. Afterwards the assistant has its full tool set in the same conversation.
 
 === "At the terminal"
 
