@@ -23,7 +23,7 @@ use anyhow::{Context, bail};
 use bussard_service::observer::{Answer, Ask, Prompt, Question};
 
 /// The flag that consents to downloading vendor product data without asking
-/// (`init`, `import`, `import-product`, `adopt`).
+/// (`import-product`, `adopt`).
 pub const DOWNLOAD_FLAG: &str = "--yes-download";
 
 /// The one refusal for a write command run without a terminal and without

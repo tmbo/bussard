@@ -12,7 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Range;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
+use serde::ser::SerializeMap;
+use serde::{Deserialize, Serialize, de};
 
 use crate::address::{GroupAddress, IndividualAddress};
 use crate::dpt::Dpt;
@@ -26,7 +27,7 @@ use crate::schema::{
     Product, ProductEntry, SecureSender, Spelling,
 };
 use crate::text::slug;
-use crate::toml_io::{self, ParseError};
+use crate::toml_io;
 
 /// The only `bussard.lock` format version this build reads and writes.
 /// bussard is pre-release: another version is refused before the lock is
@@ -245,35 +246,68 @@ pub(crate) struct LockParameter {
 // devices/<address>.toml
 // ---------------------------------------------------------------------------
 
-/// The typed top level of a device file. The scope tables (`[parameters]`,
-/// `[links]`, `[channel.*]`) are accepted as raw tables here and classified
-/// from the span-carrying document by [`scope_entries`].
-#[derive(Debug, Deserialize)]
+/// A device file, as read and as written: the typed top level and the scope
+/// tables (`[parameters]`, `[links]`, `[channel.<handle>]`) with their
+/// entries. The reader keeps each entry's key span for the load errors;
+/// [`crate::file_checks`] takes the spans of its diagnostics from here too.
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct DeviceFileTop {
+pub(crate) struct DeviceFile {
     pub address: IndividualAddress,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub product: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub application: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub replaced: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub location: Option<Location>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<SecurityIntent>,
     /// The `[knxnet]` table of an IP interface (issue #391).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub knxnet: Option<crate::knxnet::KnxnetConfig>,
-    #[serde(default)]
-    #[allow(dead_code)] // Classified from the document, see `scope_entries`.
-    pub parameters: toml::Table,
-    #[serde(default)]
-    #[allow(dead_code)] // Classified from the document, see `scope_entries`.
-    pub links: toml::Table,
-    #[serde(default)]
-    #[allow(dead_code)] // Classified from the document, see `scope_entries`.
-    pub channel: BTreeMap<String, toml::Table>,
+    #[serde(default, skip_serializing_if = "Scope::is_empty")]
+    pub parameters: Scope,
+    #[serde(default, skip_serializing_if = "Scope::is_empty")]
+    pub links: Scope,
+    #[serde(default, skip_serializing_if = "Channels::is_empty")]
+    pub channel: Channels,
+}
+
+impl DeviceFile {
+    /// Every entry of the scope tables, and the channel tables, in file order.
+    pub fn entries(&self) -> DeviceEntries {
+        let mut out = DeviceEntries::default();
+        let scopes = [
+            (TableRef::Parameters, &self.parameters),
+            (TableRef::Links, &self.links),
+        ]
+        .into_iter()
+        .chain(
+            self.channel
+                .0
+                .iter()
+                .map(|(h, _, s)| (TableRef::Channel(h.clone()), s)),
+        );
+        for (table, scope) in scopes {
+            out.entries.extend(scope.entries.iter().map(|e| FileEntry {
+                table: table.clone(),
+                ..e.clone()
+            }));
+        }
+        out.channels = (self.channel.0.iter())
+            .map(|(h, span, s)| (h.clone(), s.name.clone(), span.clone()))
+            .collect();
+        out
+    }
 }
 
 /// The `[security]` table of a device file: intent only.
-#[derive(Debug, Deserialize, Clone, Copy, Default)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SecurityIntent {
     #[serde(default)]
@@ -312,20 +346,24 @@ impl TableRef {
     }
 }
 
-/// The value of one classified device-file entry.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The value of one device-file entry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
 pub(crate) enum EntryValue {
     /// A parameter value, in its string form.
     Param(String),
     /// A com-object entry.
     Object {
+        #[serde(skip_serializing_if = "Option::is_none")]
         send: Option<GroupAddress>,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
         listen: Vec<GroupAddress>,
+        #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
     },
 }
 
-/// One classified entry of a device file's scope tables.
+/// One entry of a device file's scope tables.
 #[derive(Debug, Clone)]
 pub(crate) struct FileEntry {
     /// The table it sits in.
@@ -350,7 +388,7 @@ impl FileEntry {
     }
 }
 
-/// The classified contents of a device file's scope tables.
+/// The entries of a device file's scope tables.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct DeviceEntries {
     /// Every parameter and object entry, in file order.
@@ -359,234 +397,241 @@ pub(crate) struct DeviceEntries {
     pub channels: Vec<(String, Option<String>, Option<Range<usize>>)>,
 }
 
-/// Classifies the scope tables of a parsed device file.
-pub(crate) fn scope_entries(
-    path: &Path,
-    text: &str,
-    doc: &toml_edit::Document<String>,
-) -> Result<DeviceEntries, ParseError> {
-    let mut out = DeviceEntries::default();
-    let root = doc.as_table();
-    for (name, table) in [
-        ("parameters", TableRef::Parameters),
-        ("links", TableRef::Links),
-    ] {
-        if let Some(t) = root.get(name).and_then(toml_edit::Item::as_table_like) {
-            classify_table(path, text, t, &table, None, &mut out.entries)?;
-        }
-    }
-    if let Some(channels) = root.get("channel").and_then(toml_edit::Item::as_table_like) {
-        for (handle, item) in channels.iter() {
-            let span = channels.get_key_value(handle).and_then(|(k, _)| k.span());
-            let Some(t) = item.as_table_like() else {
-                return Err(toml_io::error_at(
-                    path,
-                    text,
-                    item.span().or(span),
-                    &format!("invalid type: `channel.{handle}` must be a table"),
-                ));
-            };
-            let name = match t.get("name") {
-                None => None,
-                Some(item) => match item.as_str() {
-                    Some(s) => Some(s.to_string()),
-                    None => {
-                        return Err(toml_io::error_at(
-                            path,
-                            text,
-                            item.span(),
-                            &format!("invalid type: {}, expected a string", kind_of(item)),
-                        ));
-                    }
-                },
-            };
-            out.channels.push((handle.to_string(), name, span));
-            let table = TableRef::Channel(handle.to_string());
-            classify_table(path, text, t, &table, None, &mut out.entries)?;
-        }
-    }
-    Ok(out)
+/// One scope table: a channel's `name`, and the entries with their pages
+/// (`page` set, `table` unused until [`DeviceFile::entries`]) in file order.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Scope {
+    pub name: Option<String>,
+    pub entries: Vec<FileEntry>,
 }
 
-/// A serde-style description of an item's type, for error messages.
-fn kind_of(item: &toml_edit::Item) -> String {
-    match item {
-        toml_edit::Item::None => "nothing".to_string(),
-        toml_edit::Item::Table(_) => "table".to_string(),
-        toml_edit::Item::ArrayOfTables(_) => "array of tables".to_string(),
-        toml_edit::Item::Value(v) => match v {
-            toml_edit::Value::String(s) => format!("string {:?}", s.value()),
-            toml_edit::Value::Integer(i) => format!("integer `{}`", i.value()),
-            toml_edit::Value::Float(f) => format!("floating point `{}`", f.value()),
-            toml_edit::Value::Boolean(b) => format!("boolean `{}`", b.value()),
-            toml_edit::Value::Datetime(d) => format!("datetime `{}`", d.value()),
-            toml_edit::Value::Array(_) => "sequence".to_string(),
-            toml_edit::Value::InlineTable(_) => "map".to_string(),
-        },
+impl Scope {
+    /// Whether the table holds nothing.
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.entries.is_empty()
+    }
+}
+
+/// The `[channel.<handle>]` tables, with the handle's span, in file order.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct Channels(pub Vec<(String, Option<Range<usize>>, Scope)>);
+
+impl Channels {
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 
 /// The keys an object entry may carry.
-const OBJECT_FIELDS: [&str; 3] = ["send", "listen", "name"];
+const OBJECT_FIELDS: &[&str] = &["send", "listen", "name"];
 
-/// Classifies the entries of one scope table (or page).
-fn classify_table(
-    path: &Path,
-    text: &str,
-    table: &dyn toml_edit::TableLike,
-    at: &TableRef,
-    page: Option<&str>,
-    out: &mut Vec<FileEntry>,
-) -> Result<(), ParseError> {
-    for (key, item) in table.iter() {
-        if page.is_none() && matches!(at, TableRef::Channel(_)) && key == "name" {
-            continue;
-        }
-        let key_span = table.get_key_value(key).and_then(|(k, _)| k.span());
-        let err = |span: Option<Range<usize>>, message: String| {
-            toml_io::error_at(path, text, span.or_else(|| key_span.clone()), &message)
-        };
-        if let Some(sub) = item.as_table_like() {
-            let keys: Vec<&str> = sub.iter().map(|(k, _)| k).collect();
-            let is_object = keys.iter().all(|k| OBJECT_FIELDS.contains(k))
-                || keys.iter().any(|k| *k == "send" || *k == "listen");
-            if is_object {
-                let value = object_value(path, text, sub, key_span.clone())?;
-                out.push(FileEntry {
-                    table: at.clone(),
-                    page: page.map(str::to_string),
-                    key: key.to_string(),
-                    value,
-                    span: key_span,
-                });
-                continue;
-            }
-            if page.is_some() {
-                return Err(err(
-                    item.span(),
-                    format!(
-                        "invalid type: table `{key}` inside a parameter page; pages hold \
-                         parameters one level down only"
-                    ),
-                ));
-            }
-            classify_table(path, text, sub, at, Some(key), out)?;
-            continue;
-        }
-        let value = match item {
-            toml_edit::Item::Value(toml_edit::Value::String(s)) => s.value().clone(),
-            toml_edit::Item::Value(toml_edit::Value::Integer(i)) => i.value().to_string(),
-            toml_edit::Item::Value(toml_edit::Value::Boolean(b)) => b.value().to_string(),
-            toml_edit::Item::Value(toml_edit::Value::Float(_)) => {
-                // Quote the float as written (`1.10`, not `1.1`).
-                let source = item
-                    .span()
-                    .and_then(|s| text.get(s))
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| kind_of(item));
-                return Err(err(
-                    item.span(),
-                    format!("invalid type: floating point `{source}`, expected a string"),
-                ));
-            }
-            _ => {
-                return Err(err(
-                    item.span(),
-                    format!(
-                        "invalid type: {}, expected a string, integer or boolean (a parameter) \
-                         or a table of `send`, `listen`, `name` (an object)",
-                        kind_of(item)
-                    ),
-                ));
-            }
-        };
-        out.push(FileEntry {
-            table: at.clone(),
-            page: page.map(str::to_string),
-            key: key.to_string(),
-            value: EntryValue::Param(value),
-            span: key_span,
-        });
+/// A map serialised from borrowed pairs in their order.
+struct PairMap<'a, V>(Vec<(&'a str, &'a V)>);
+
+impl<V: Serialize> Serialize for PairMap<'_, V> {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(self.0.iter().copied())
     }
-    Ok(())
 }
 
-/// Reads an object entry's `send` / `listen` / `name`.
-fn object_value(
-    path: &Path,
-    text: &str,
-    table: &dyn toml_edit::TableLike,
-    key_span: Option<Range<usize>>,
-) -> Result<EntryValue, ParseError> {
-    let mut send = None;
-    let mut listen = Vec::new();
-    let mut name = None;
-    for (field, item) in table.iter() {
-        let span = item
-            .span()
-            .or_else(|| table.get_key_value(field).and_then(|(k, _)| k.span()))
-            .or_else(|| key_span.clone());
-        let err = |message: String| toml_io::error_at(path, text, span.clone(), &message);
-        let ga = |item: &toml_edit::Item| -> Result<GroupAddress, ParseError> {
-            let Some(s) = item.as_str() else {
-                return Err(err(format!(
-                    "invalid type: {}, expected a string",
-                    kind_of(item)
-                )));
-            };
-            s.parse::<GroupAddress>()
-                .map_err(|e| err(format!("invalid group address {s:?}: {e}")))
-        };
-        match field {
-            "send" => send = Some(ga(item)?),
-            "listen" => {
-                let Some(array) = item.as_array() else {
-                    return Err(err(format!(
-                        "invalid type: {}, expected a sequence",
-                        kind_of(item)
-                    )));
-                };
-                for value in array.iter() {
-                    let span = value.span().or_else(|| span.clone());
-                    let Some(s) = value.as_str() else {
-                        return Err(toml_io::error_at(
-                            path,
-                            text,
-                            span,
-                            "invalid type: expected a group address string",
-                        ));
-                    };
-                    listen.push(s.parse::<GroupAddress>().map_err(|e| {
-                        toml_io::error_at(
-                            path,
-                            text,
-                            span.clone(),
-                            &format!("invalid group address {s:?}: {e}"),
-                        )
-                    })?);
-                }
-            }
-            "name" => match item.as_str() {
-                Some(s) => name = Some(s.to_string()),
-                None => {
-                    return Err(err(format!(
-                        "invalid type: {}, expected a string",
-                        kind_of(item)
-                    )));
-                }
-            },
-            other => {
-                let span = table.get_key_value(other).and_then(|(k, _)| k.span());
-                return Err(toml_io::error_at(
-                    path,
-                    text,
-                    span,
-                    &format!("unknown field `{other}`, expected one of `send`, `listen`, `name`"),
-                ));
+impl Serialize for Scope {
+    /// The name, the entries, then each page as a table.
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let mut top: Vec<(&str, &EntryValue)> = Vec::new();
+        let mut pages: Vec<(&str, PairMap<EntryValue>)> = Vec::new();
+        for e in &self.entries {
+            match &e.page {
+                None => top.push((&e.key, &e.value)),
+                Some(p) => match pages.iter_mut().find(|(k, _)| k == p) {
+                    Some((_, page)) => page.0.push((&e.key, &e.value)),
+                    None => pages.push((p, PairMap(vec![(&e.key, &e.value)]))),
+                },
             }
         }
+        let mut map = s.serialize_map(None)?;
+        if let Some(name) = &self.name {
+            map.serialize_entry("name", name)?;
+        }
+        for (k, v) in top {
+            map.serialize_entry(k, v)?;
+        }
+        for (k, v) in &pages {
+            map.serialize_entry(k, v)?;
+        }
+        map.end()
     }
-    Ok(EntryValue::Object { send, listen, name })
+}
+
+impl Serialize for Channels {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.collect_map(self.0.iter().map(|(h, _, scope)| (h, scope)))
+    }
+}
+
+/// A map key with its span.
+type SpannedKey = toml::Spanned<String>;
+
+/// Reads a scope table; `channel` takes its `name` as the channel's.
+struct ScopeSeed {
+    channel: bool,
+}
+
+impl<'de> de::DeserializeSeed<'de> for ScopeSeed {
+    type Value = Scope;
+    fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<Scope, D::Error> {
+        d.deserialize_map(self)
+    }
+}
+
+impl<'de> de::Visitor<'de> for ScopeSeed {
+    type Value = Scope;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str("a table of parameters and objects")
+    }
+    fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Scope, A::Error> {
+        let mut out = Scope::default();
+        while let Some(key) = map.next_key::<SpannedKey>()? {
+            let span = Some(key.span());
+            let key = key.into_inner();
+            if self.channel && key == "name" {
+                out.name = Some(map.next_value()?);
+                continue;
+            }
+            let entry = |page: Option<&str>, key, span, value| FileEntry {
+                table: TableRef::Parameters,
+                page: page.map(str::to_string),
+                key,
+                value,
+                span,
+            };
+            match map.next_value_seed(ItemSeed { in_page: false })? {
+                Item::Entry(value) => out.entries.push(entry(None, key, span, value)),
+                Item::Page(list) => out
+                    .entries
+                    .extend((list.into_iter()).map(|(k, s, v)| entry(Some(&key), k, Some(s), v))),
+            }
+        }
+        // The deserializer hands keys over sorted; the file's order is the
+        // spans'.
+        out.entries
+            .sort_by_key(|e| e.span.as_ref().map(|s| s.start));
+        Ok(out)
+    }
+}
+
+impl<'de> Deserialize<'de> for Scope {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_map(ScopeSeed { channel: false })
+    }
+}
+
+impl<'de> Deserialize<'de> for Channels {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let map: BTreeMap<SpannedKey, toml::Spanned<ScopeTable>> = BTreeMap::deserialize(d)?;
+        let mut out: Vec<(String, Option<Range<usize>>, Scope)> = (map.into_iter())
+            .map(|(k, v)| (k.span(), k.into_inner(), v.into_inner().0))
+            .map(|(span, handle, scope)| (handle, Some(span), scope))
+            .collect();
+        out.sort_by_key(|(_, span, _)| span.as_ref().map(|s| s.start));
+        Ok(Channels(out))
+    }
+}
+
+/// A `[channel.<handle>]` table.
+struct ScopeTable(Scope);
+
+impl<'de> Deserialize<'de> for ScopeTable {
+    fn deserialize<D: de::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        d.deserialize_map(ScopeSeed { channel: true })
+            .map(ScopeTable)
+    }
+}
+
+/// One value of a scope table: an entry, or a page of entries.
+enum Item {
+    Entry(EntryValue),
+    Page(Vec<(String, Range<usize>, EntryValue)>),
+}
+
+/// Reads one value of a scope table (or, `in_page`, of a page).
+struct ItemSeed {
+    in_page: bool,
+}
+
+impl<'de> de::DeserializeSeed<'de> for ItemSeed {
+    type Value = Item;
+    fn deserialize<D: de::Deserializer<'de>>(self, d: D) -> Result<Item, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> de::Visitor<'de> for ItemSeed {
+    type Value = Item;
+    fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        f.write_str(
+            "a string, integer or boolean (a parameter) or a table of `send`, `listen`, `name` \
+             (an object)",
+        )
+    }
+    fn visit_str<E: de::Error>(self, v: &str) -> Result<Item, E> {
+        Ok(Item::Entry(EntryValue::Param(v.to_string())))
+    }
+    fn visit_i64<E: de::Error>(self, v: i64) -> Result<Item, E> {
+        self.visit_str(&v.to_string())
+    }
+    fn visit_u64<E: de::Error>(self, v: u64) -> Result<Item, E> {
+        self.visit_str(&v.to_string())
+    }
+    fn visit_bool<E: de::Error>(self, v: bool) -> Result<Item, E> {
+        self.visit_str(&v.to_string())
+    }
+    fn visit_f64<E: de::Error>(self, v: f64) -> Result<Item, E> {
+        Err(E::invalid_type(de::Unexpected::Float(v), &"a string"))
+    }
+    /// An object when it holds `send` or `listen`, or nothing but a `name`;
+    /// a page otherwise (one level down only).
+    fn visit_map<A: de::MapAccess<'de>>(self, mut map: A) -> Result<Item, A::Error> {
+        let (mut send, mut listen, mut name, mut linked) = (None, Vec::new(), None, false);
+        let mut others: Vec<(String, Range<usize>, EntryValue)> = Vec::new();
+        while let Some(key) = map.next_key::<SpannedKey>()? {
+            let span = key.span();
+            match key.get_ref().as_str() {
+                "send" => (send, linked) = (Some(map.next_value()?), true),
+                "listen" => (listen, linked) = (map.next_value()?, true),
+                _ => {
+                    let Item::Entry(value) = map.next_value_seed(ItemSeed { in_page: true })?
+                    else {
+                        return Err(de::Error::custom("unreachable: a page inside a page"));
+                    };
+                    if key.get_ref() == "name" {
+                        name = Some((span, value));
+                    } else {
+                        others.push((key.into_inner(), span, value));
+                    }
+                }
+            }
+        }
+        if linked || others.is_empty() {
+            if let Some((key, _, _)) = others.first() {
+                return Err(de::Error::unknown_field(key, OBJECT_FIELDS));
+            }
+            let name = match name {
+                None => None,
+                Some((_, EntryValue::Param(s))) => Some(s),
+                Some(_) => return Err(de::Error::invalid_type(de::Unexpected::Map, &"a string")),
+            };
+            return Ok(Item::Entry(EntryValue::Object { send, listen, name }));
+        }
+        if self.in_page {
+            return Err(de::Error::custom(
+                "invalid type: a table inside a parameter page; pages hold parameters one \
+                 level down only",
+            ));
+        }
+        others.extend(name.map(|(span, v)| ("name".to_string(), span, v)));
+        others.sort_by_key(|(_, span, _)| span.start);
+        Ok(Item::Page(others))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -809,10 +854,9 @@ pub(crate) fn join_device(
     locks: &BTreeMap<IndividualAddress, &LockDevice>,
     models: Option<&ProductModels>,
 ) -> Result<(Device, Vec<Link>), LoadError> {
-    let top: DeviceFileTop = toml_io::parse(path, text)?;
+    let top: DeviceFile = toml_io::parse(path, text)?;
     let lock = locks.get(&top.address).copied();
-    let doc = toml_io::parse_document(path, text)?;
-    let entries = scope_entries(path, text, &doc)?;
+    let entries = top.entries();
     let pinned = top
         .application
         .as_deref()

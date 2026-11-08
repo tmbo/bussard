@@ -784,11 +784,14 @@ pub fn tunnel_gap_diagnostics(
     };
     tunnel_gaps(model, |ga| group_keys.contains(&ga), &evidence, None)
         .into_iter()
-        .map(|gap| bussard_model::Diagnostic {
-            code: "W034",
-            severity: bussard_model::Severity::Warning,
-            location: format!("groups.toml {}", gap.ga),
-            message: gap.message(),
+        .map(|gap| {
+            let location = format!("groups.toml {}", gap.ga);
+            bussard_model::Diagnostic::new(
+                "W034",
+                bussard_model::Severity::Warning,
+                location,
+                gap.message(),
+            )
         })
         .collect()
 }
@@ -842,11 +845,11 @@ pub fn knxnet_tunnel_diagnostics(
                     .join(", ")
             }
         };
-        out.push(bussard_model::Diagnostic {
-            code: "W047",
-            severity: bussard_model::Severity::Warning,
-            location: format!("devices/{ia}.toml [knxnet]"),
-            message: format!(
+        out.push(bussard_model::Diagnostic::new(
+            "W047",
+            bussard_model::Severity::Warning,
+            format!("devices/{ia}.toml [knxnet]"),
+            format!(
                 "the tunnel addresses of {ia} are {} in [knxnet], but the key store lists {} \
                  as its tunnelling addresses (the ones admit_tunnel_senders admits on the \
                  Secure devices); re-export the keyring after changing the tunnels in ETS, or \
@@ -854,7 +857,7 @@ pub fn knxnet_tunnel_diagnostics(
                 list(&model_set),
                 list(&store_set)
             ),
-        });
+        ));
     }
     out
 }

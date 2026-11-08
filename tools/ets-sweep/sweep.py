@@ -114,29 +114,45 @@ def stale_compat_prompt(error: str) -> bool:
     return "compatibility mode before " in error
 
 
+def _zip_texts(knxprod: Path, predicate, *, first: bool = False,
+               limit: int | None = None) -> list[tuple[str, str]] | None:
+    """The members of a product file whose name `predicate` accepts, as
+    (name, text) pairs in archive order: only the first with `first`, only
+    the first `limit` octets of each with `limit`. None when the file cannot
+    be read. The archive is closed on return."""
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(knxprod) as z:
+            out: list[tuple[str, str]] = []
+            for name in z.namelist():
+                if not predicate(name):
+                    continue
+                with z.open(name) as fh:
+                    raw = fh.read() if limit is None else fh.read(limit)
+                out.append((name, raw.decode("utf-8", "replace")))
+                if first:
+                    break
+            return out
+    except (OSError, zipfile.BadZipFile):
+        return None
+
+
 def ip_enabled(knxprod: Path, app: str) -> bool:
     """Whether the hardware that carries `app` declares IsIPEnabled. The
     attribute is an xs:boolean, "true" or "1": the older-schema files write
     "1" (the Jung Sonos gateway `M-0004_A-B015-21` in Gesamt_JUNG_ETS5_EN,
     whose sim then lacked the KNXnet/IP object ETS looks for at index 6,
     2026-11-05), and the start tag can run past 600 characters."""
-    import zipfile
-
     m = re.match(r"(M-[0-9A-F]{4})_A-(.+)$", app)
     if not m:
         return False
     hp = "_HP-" + m.group(2)
-    try:
-        z = zipfile.ZipFile(knxprod)
-        for name in z.namelist():
-            if name.endswith("Hardware.xml"):
-                xml = z.read(name).decode("utf-8", "replace")
-                for hw in re.finditer(r"<Hardware [^>]*>.*?</Hardware>", xml, re.S):
-                    start = re.match(r"<Hardware [^>]*>", hw.group(0))
-                    if hp in hw.group(0) and start and re.search(r'\bIsIPEnabled="(?:true|1)"', start.group(0)):
-                        return True
-    except (OSError, zipfile.BadZipFile):
-        return False
+    for _, xml in _zip_texts(knxprod, lambda n: n.endswith("Hardware.xml")) or []:
+        for hw in re.finditer(r"<Hardware [^>]*>.*?</Hardware>", xml, re.S):
+            start = re.match(r"<Hardware [^>]*>", hw.group(0))
+            if hp in hw.group(0) and start and re.search(r'\bIsIPEnabled="(?:true|1)"', start.group(0)):
+                return True
     return False
 
 
@@ -368,20 +384,14 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
     (Found by the coordinator session, 2026-10-28: 72 of 73 learned PID 78
     values sit in the product's own XML.)"""
     import base64
-    import zipfile
 
-    try:
-        z = zipfile.ZipFile(knxprod)
-        name = next((n for n in z.namelist() if n.endswith(f"{app}.xml")), None)
-        if not name:
-            return []
-        xml = z.read(name).decode("utf-8", "replace")
-        # A module definition's parameters name objects relative to the
-        # module instance's base (the Schneider STXF121's `ObjectIndex="0"`
-        # PID 208 is objects 6 to 9): not the device object (2026-11-06).
-        xml = re.sub(r"<ModuleDefs>.*?</ModuleDefs>", "", xml, flags=re.S)
-    except (OSError, zipfile.BadZipFile):
+    texts = _zip_texts(knxprod, lambda n: n.endswith(f"{app}.xml"), first=True)
+    if not texts:
         return []
+    # A module definition's parameters name objects relative to the
+    # module instance's base (the Schneider STXF121's `ObjectIndex="0"`
+    # PID 208 is objects 6 to 9): not the device object (2026-11-06).
+    xml = re.sub(r"<ModuleDefs>.*?</ModuleDefs>", "", texts[0][1], flags=re.S)
 
     def attr(tag: str, key: str) -> str | None:
         m = re.search(rf'\b{key}="([^"]*)"', tag)
@@ -427,6 +437,52 @@ def product_properties(knxprod: Path, app: str) -> list[dict]:
     return out
 
 
+PID_MANUFACTURER_ID = 12
+
+
+def _brand_key(text: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
+def oem_identity(knxprod: Path, app: str) -> list[dict]:
+    """The manufacturer id (obj0 PID 12) of the brand an OEM hardware names,
+    as a sim property seed (bussard issue #881).
+
+    The Gewiss-branded sensor GW10966 (`GS4x12_v1.1.knxprod`) is hardware
+    `LP-579-401_GEWISS` of Hugo Müller (M-00FC) running an M-00FC program.
+    The sim answered PID 12 `00 fc`, the program's manufacturer, and ETS
+    refused it right after that read as a device "von einem anderen
+    Hersteller als das Applikationsprogramm" (2026-11-06 and 2026-11-08),
+    while the unbranded sibling of the same file passed with the same
+    answer. So the brand is what ETS checks: a hardware whose serial number
+    ends in `_<name>` of another manufacturer of the file's knx_master gets
+    that manufacturer's KNX id. One hardware of the 1491 corpus files matches
+    (2026-11-08), so the rule touches nothing else. Empty when the hardware
+    names no other manufacturer.
+    """
+    texts = _zip_texts(knxprod, lambda n: n == "knx_master.xml" or n.endswith("/Hardware.xml")) or []
+    master = next((t for n, t in texts if n == "knx_master.xml"), None)
+    hardware = [t for n, t in texts if n.endswith("/Hardware.xml")]
+    if master is None:
+        return []
+    own = app.split("_", 1)[0]
+    brands = {_brand_key(name): (mid, int(knx))
+              for mid, knx, name in re.findall(
+                  r'<Manufacturer Id="(M-[0-9A-F]{4})" KnxManufacturerId="(\d+)" Name="([^"]*)"', master)}
+    for xml in hardware:
+        for m in re.finditer(r"<Hardware\s[^>]*>.*?</Hardware>", xml, flags=re.S):
+            block = m.group(0)
+            if f'RefId="{app}"' not in block:
+                continue
+            serial = re.search(r'\bSerialNumber="([^"]*)"', block[:block.find(">") + 1])
+            if not serial or "_" not in serial.group(1):
+                continue
+            brand = brands.get(_brand_key(serial.group(1).rsplit("_", 1)[1]))
+            if brand and brand[0] != own:
+                return [{"object": 0, "pid": PID_MANUFACTURER_ID, "value": f"{brand[1]:04x}"}]
+    return []
+
+
 def compare_properties(knxprod: Path, app: str) -> list[dict]:
     """The device-object properties the application's load procedure compares
     against a range (`LdCtrlCompareProp ObjIdx="0" Range=...`), with a value
@@ -440,16 +496,10 @@ def compare_properties(knxprod: Path, app: str) -> list[dict]:
     device-object one and picks among alternatives by the parameters' choose
     blocks; a seed would override that pick (757 applications of the corpus
     would change seed, 2026-11-08)."""
-    import zipfile
-
-    try:
-        z = zipfile.ZipFile(knxprod)
-        name = next((n for n in z.namelist() if n.endswith(f"{app}.xml")), None)
-        if not name:
-            return []
-        xml = z.read(name).decode("utf-8", "replace")
-    except (OSError, zipfile.BadZipFile):
+    texts = _zip_texts(knxprod, lambda n: n.endswith(f"{app}.xml"), first=True)
+    if not texts:
         return []
+    xml = texts[0][1]
     out: list[dict] = []
     for m in re.finditer(r"<LdCtrlCompareProp\s[^>]*>", xml):
         value = compare_value(m.group(0))
@@ -499,16 +549,9 @@ def compare_value(tag: str) -> bytes | None:
 def secure_enabled(knxprod: Path, app: str) -> bool:
     """Whether the application declares IsSecureEnabled (ETS then asks for a
     project password a few seconds after the device is added)."""
-    import zipfile
-
-    try:
-        z = zipfile.ZipFile(knxprod)
-        for name in z.namelist():
-            if app in name and name.endswith(".xml"):
-                head = z.read(name)[:4000].decode("utf-8", "replace")
-                return 'IsSecureEnabled="true"' in head
-    except (OSError, zipfile.BadZipFile):
-        pass
+    texts = _zip_texts(knxprod, lambda n: app in n and n.endswith(".xml"), first=True, limit=4000)
+    if texts:
+        return 'IsSecureEnabled="true"' in texts[0][1]
     return True  # unknown: keep the wait
 
 
@@ -558,6 +601,25 @@ def save_repair(c, out: Path, error: str, failed: dict | None = None) -> dict:
     return saved
 
 
+def is_coupler_address(ia: str) -> bool:
+    """Whether `ia` is a line's coupler address (device part 0, `1.1.0`)."""
+    parts = ia.split(".")
+    return len(parts) == 3 and parts[2] == "0"
+
+
+def added_address(add: dict, requested: str) -> str:
+    """The individual address ETS gave the device `catalog_add` added
+    (bussard issue #876): the one entry under `added` when there is exactly
+    one, else `requested`.
+
+    ETS puts a product at the next free address of the line, 1.1.1 in the
+    sweep's empty project, but gives a coupler (a media coupler on mask 0701,
+    S85050100 and STR131, 2026-11-05/06) the line's coupler address 1.1.0.
+    """
+    added = [d.get("ia") for d in add.get("added") or [] if isinstance(d, dict) and d.get("ia")]
+    return added[0] if len(added) == 1 else requested
+
+
 def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = None, ia: str = "1.1.1",
             variant: str = "plain-defaults", mode: str = "application", project: str = "ets-sweep",
             connection: str = "knx-sim", sim_port: int = 3672, timeout: int = 900, quiet: int = 45,
@@ -567,7 +629,7 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
     """One ETS download of `app` into a sim inside the VM; returns the result
     and leaves capture, sim log, driver.json and ops.txt in the run directory.
 
-    `before_download(flow, out)` runs after the device is added and the
+    `before_download(flow, out, ia)` runs after the device is added and the
     connection selected (the links variant links objects there, #478);
     `after_download(flow, out)` once the download ended (the secure variant
     exports the keyring, #423). Each returns a dict kept in the result under
@@ -608,9 +670,29 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         if not add.get("added"):
             raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
         result["catalog_row"] = add.get("row")
+        got = added_address(add, ia)
+        if got != ia:
+            if not is_coupler_address(got):
+                # Any other address means a device was left in the project
+                # and pushed the new one along: the clean-up failed.
+                raise RuntimeError(f"ETS added the device at {got}, not {ia}: device {ia} not in list after the clean-up")
+            # A coupler at the line's coupler address (#876): restart the sim
+            # where ETS will look for the device, and download that address.
+            result["ia_requested"], result["ia"], ia = ia, got, got
+            sim.stop()
+            try:
+                # Rebinding `sim` makes the `finally` stop the new process and
+                # fetch its capture; a refused start leaves the old object,
+                # already stopped (stop is idempotent).
+                sim = RemoteSim(c, knxprod.resolve(), app, ia, sim_port, secure, out / "sim.log", mask=mask,
+                                properties=properties)
+            except RuntimeError as exc:
+                result["sim_refused"] = str(exc)[-600:]
+                raise
         flow("select_connection", name=connection)
         if before_download is not None:
-            result["before"] = before_download(flow, out)
+            # The hook gets the address ETS gave the device (#876).
+            result["before"] = before_download(flow, out, ia)
         flow("download", ia=ia, mode=mode)
         # Wait for the end of the download, whichever signal comes first:
         # - success: the device restarted (not a master reset) after its load
@@ -675,10 +757,17 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # previous one (it kept coming back for a device left in the project,
         # 2026-10-29): retry, do not skip.
         "driver-error" if stale_compat_prompt(err)
+        # The sim refused the address ETS gave the device (#876), like a
+        # refused first start.
+        else "sim-refused" if result.get("sim_refused")
         else "skipped-compat-mode" if "compatibility mode" in err
         else "skipped-ets-invalid-product" if "ETS product data invalid" in err
         else "skipped-catalog-version" if "catalog version mismatch" in err
         else "skipped-not-in-catalog" if "not found in catalog search" in err
+        # The device is not at the address the download looks for (#876): a
+        # device left in the project, or an address the sweep did not follow.
+        # Not `skipped-*`, so `--redo-failed` runs it again after a clean-up.
+        else "driver-error-address" if re.search(r"device \S+ not in list", err)
         # An exception ETS logged for the download outranks the history pane
         # (the secure run read 'Abgeschlossen' off another project's pane
         # while ETS logged 'Das Gerät ist mit einem in diesem Projekt nicht

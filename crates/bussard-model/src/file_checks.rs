@@ -24,9 +24,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use crate::address::IndividualAddress;
-use crate::files::{
-    DeviceFileTop, EntryValue, LockDevice, LockFile, Resolver, TableRef, scope_entries,
-};
+use crate::files::{DeviceFile, EntryValue, LockDevice, LockFile, Resolver, TableRef};
 use crate::loader::{DEVICES_DIR, GROUPS_FILE, LOCK_FILE};
 use crate::param_model::ProductModels;
 use crate::toml_io::{self, line_col};
@@ -187,15 +185,13 @@ fn check_device(
     diags: &mut Vec<Diagnostic>,
 ) {
     let path = Path::new(file);
-    let Ok(top) = toml_io::parse::<DeviceFileTop>(path, text) else {
+    let Ok(top) = toml_io::parse::<DeviceFile>(path, text) else {
         return;
     };
     let Ok(doc) = toml_io::parse_document(path, text) else {
         return;
     };
-    let Ok(entries) = scope_entries(path, text, &doc) else {
-        return;
-    };
+    let entries = top.entries();
     let address = top.address;
     let lock = locks.get(&address).copied();
     let product_span = doc

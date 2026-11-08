@@ -92,7 +92,7 @@ fn import_and_validate(project: &Path, work: &Path) -> TestResult<BTreeSet<Strin
     let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
         .arg("import")
         .arg(&copy)
-        .args(["--no-download", "--yes", "--dir"])
+        .args(["--yes", "--dir"])
         .arg(&model)
         .current_dir(work)
         .env_remove("BUSSARD_KEYRING")

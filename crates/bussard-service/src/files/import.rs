@@ -109,7 +109,7 @@ pub fn import_bundle(
             dir.display()
         ));
     }
-    write_model(model, dir, choice, "bundle", None, None, ask, out)
+    write_model(model, dir, choice, "bundle", None, ask, out)
 }
 
 /// Whether `dir` already holds a model to merge into (a `groups.toml`, a
@@ -139,22 +139,17 @@ pub fn has_model(dir: &Path) -> bool {
 ///
 /// `choice` settles hand-authored conflicts (asking `ask` for
 /// [`ConflictChoice::Interactive`]); `source` names the incoming side in
-/// sentences (`"project"` or `"bundle"`). `fetch` runs the product-data
-/// download step for the devices' order numbers; `None` skips it. `project`
-/// is the ETS export read, which `bussard.lock` pins as the devices' product
+/// sentences (`"project"` or `"bundle"`). `project` is the ETS export read, which `bussard.lock` pins as the devices' product
 /// source until a vendor archive serves them (lock v2, issue #228).
 ///
 /// # Errors
 ///
-/// The model cannot be written, a question cannot be answered, or the
-/// download step fails to load the index.
-#[allow(clippy::too_many_arguments)] // The import's inputs, each used once; a struct would only rename them.
+/// The model cannot be written, or a question cannot be answered.
 pub fn write_model(
     model: Model,
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
-    fetch: Option<&mut dyn Prompt>,
     project: Option<&Path>,
     ask: &mut dyn Prompt,
     out: &mut dyn ProgressSink,
@@ -166,7 +161,7 @@ pub fn write_model(
 
     // A re-import is any target that already holds a loadable model.
     let Some(mut ours) = load_existing_model(dir) else {
-        setup::import::write_fresh(model, dir, project, fetch, out)?;
+        setup::import::write_fresh(model, dir, project, out)?;
         return Ok(ImportOutcome {
             written: true,
             ..ImportOutcome::default()
@@ -198,7 +193,7 @@ pub fn write_model(
             dir.display()
         ));
         report_changes(&ours, &to_save, out);
-        setup::import::after_write(dir, &to_save, project, fetch, out)?;
+        setup::import::after_write(dir, &to_save, project, out);
         return Ok(outcome(false, &merge, kept, choice, out));
     }
 
@@ -228,7 +223,7 @@ pub fn write_model(
         ));
     }
 
-    setup::import::after_write(dir, &to_save, project, fetch, out)?;
+    setup::import::after_write(dir, &to_save, project, out);
     // W042 (issue #348): a group address the model ran plain that the
     // project secures again needs an apply on the devices it names.
     setup::import::warn_diagnostics(&bussard_model::resecured_by_import(&ours, &to_save), out);
