@@ -21,6 +21,7 @@ use bussard_model::Model;
 use bussard_service::assign::{VerifyKey, build_stub_device, write_device_file};
 use bussard_service::identity::SecureStatus;
 use bussard_service::mgmt::system_type;
+use bussard_service::program::addressed::AddressOutcome;
 use bussard_service::program::assign::{Assign, AssignFlow};
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::{BusService, WritePolicy};
@@ -211,10 +212,11 @@ async fn assign_flow(
         require_identified: false,
         forget_facts: None,
     };
-    let verified = match flow.assign(&request, bench).await {
-        Ok(assigned) => assigned.verified,
+    let assigned = match flow.assign(&request, bench).await {
+        Ok(assigned) => assigned,
         Err(stop) => return stopped(stop, "assign"),
     };
+    let verified = assigned.verified.clone();
     if key.from_old_address {
         eprintln!(
             "note: the keyring lists this device under its old address {current}; the tool key \
@@ -247,20 +249,11 @@ async fn assign_flow(
     )?;
 
     if json {
-        crate::output::print(
-            crate::output::schema::ASSIGN,
-            &serde_json::json!({
-                "from": current.to_string(),
-                "to": target.to_string(),
-                "gateway": gateway,
-                "mask": verified.mask.map(|m| format!("{m:04X}")),
-                "manufacturer_id": verified.manufacturer_id,
-                "serial": verified.serial.as_deref().map(hex),
-                "secure": verified.secure.as_str(),
-                "programming_mode_cleared": verified.programming_mode_cleared,
-                "device_file": path.display().to_string(),
-            }),
-        )?;
+        crate::output::report(&AddressOutcome {
+            gateway: Some(gateway.to_string()),
+            device_file: Some(path.display().to_string()),
+            ..AddressOutcome::of(&assigned)
+        })?;
         return Ok(ExitCode::SUCCESS);
     }
     println!("assigned {current} → {target}");

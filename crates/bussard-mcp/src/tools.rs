@@ -8,7 +8,6 @@
 
 use std::time::SystemTime;
 
-use bussard_model::codec::TypedValue;
 use bussard_model::param_model::ProductModels;
 use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_service::monitor::{DecodedTelegram, DestinationRef, Filter, TelegramRing, json_line};
@@ -665,7 +664,10 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
     match dpt {
         Some(d) => {
             let value = bussard_model::decode(&d, payload);
-            (Some(value.to_string()), typed_value_json(&value))
+            (
+                Some(value.to_string()),
+                bussard_service::group_report::typed_value(&value),
+            )
         }
         None => (None, Value::Null),
     }
@@ -674,51 +676,6 @@ pub fn decode_for_dpt(dpt: Option<Dpt>, payload: &[u8]) -> (Option<String>, Valu
 /// The object-type and PID name tables, shared with `bussard describe` so the
 /// MCP and CLI surfaces agree (they live in [`bussard_service::describe`]).
 pub use bussard_service::describe::{object_type_name, pid_name};
-
-/// A structured JSON rendering of a [`TypedValue`] for tool responses.
-pub(crate) fn typed_value_json(v: &TypedValue) -> Value {
-    match v {
-        TypedValue::Bool { value, label } => json!({ "bool": value, "label": label }),
-        TypedValue::Control {
-            control,
-            value,
-            label,
-        } => json!({
-            "control": control,
-            "value": value,
-            "label": label,
-            "display": v.to_string(),
-        }),
-        TypedValue::Percent(p) => json!({ "percent": p }),
-        TypedValue::Unsigned { value, unit } => json!({ "unsigned": value, "unit": unit }),
-        TypedValue::Signed { value, unit } => json!({ "signed": value, "unit": unit }),
-        TypedValue::Float { value, unit } => json!({ "float": value, "unit": unit }),
-        TypedValue::Scaled { count, unit, .. } => json!({
-            "scaled": v.scaled_f64(),
-            "count": count,
-            "unit": unit,
-            "display": v.to_string(),
-        }),
-        TypedValue::Enum { code, label } => json!({
-            "enum": code,
-            "label": label,
-            "display": v.to_string(),
-        }),
-        TypedValue::Flags { bits, names } => json!({
-            "bits": bits,
-            "flags": names,
-            "display": v.to_string(),
-        }),
-        TypedValue::Fields(fields) => {
-            let map: serde_json::Map<String, Value> = fields
-                .iter()
-                .map(|(name, value)| ((*name).to_string(), json!(value)))
-                .collect();
-            json!({ "fields": map, "display": v.to_string() })
-        }
-        other => json!({ "display": other.to_string() }),
-    }
-}
 
 #[cfg(test)]
 pub(crate) mod test_fixtures {

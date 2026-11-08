@@ -31,18 +31,20 @@ use bussard_model::history::SnapshotReason;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::ServiceError;
 use bussard_service::adopt::flow::{
-    ProductPlan, SelectedProduct, product_plan, selected_from_archive, useful_objects,
+    ProductPlan, SelectedProduct, product_plan, selected_from_archive,
 };
 use bussard_service::assign::hex;
 use bussard_service::observer::Collected;
 use bussard_service::program::Question;
-use bussard_service::program::adopt::{self, Adopted, Keys, PlanRequest, Planned, RunRequest};
+use bussard_service::program::addressed::AddressOutcome;
+use bussard_service::program::adopt::{self, Keys, PlanRequest, Planned, RunRequest};
 use bussard_service::program::assign::{AssignFlow, Stop};
+use bussard_service::program::outcome::Verdict;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::{ToolKeySource, ToolKeys};
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::addressing::{Wording, Yes, assigned_notes, found_sentence, readback_json, refused};
+use super::addressing::{Wording, Yes, assigned_notes, found_sentence, refused};
 use super::{BussardMcp, ProgrammingTier, chain};
 
 /// The question of the `press_button` step.
@@ -198,23 +200,22 @@ impl BussardMcp {
                     me.add_identify_job(&id, address, order, product_file).await;
                 });
                 tier.jobs.watch(&job, "add-device", worker);
-                Ok(json!({
-                    "ok": true,
-                    "started": true,
-                    "done": false,
-                    "step": "press_button",
-                    "job": job,
-                    "gateway": gateway,
-                    "product_import": product_import,
-                    "question": PRESS_BUTTON,
-                    "next_step": format!(
+                Ok(crate::reply::started_with(
+                    &job,
+                    "press_button",
+                    AddStarted {
+                        gateway,
+                        product_import,
+                    },
+                    Some(PRESS_BUTTON),
+                    format!(
                         "Relay `question` to the human word for word. The server waits up to \
                          30 s for the device's programming-mode answer; call knx_job_status \
                          with job {job} every few seconds. When its step is `identified`, show \
                          the human its `sentences` and ask its `question`. Nothing is written \
                          before that."
                     ),
-                }))
+                ))
             }
             Some(job) => {
                 let job = job.to_string();
@@ -406,21 +407,25 @@ impl BussardMcp {
     /// read-back, the device file. Returns the job's result.
     async fn add_write_job(&self, job: &str, pending: AddPlan) -> Value {
         let state = std::sync::Arc::clone(self.state());
-        let Some(tier) = state.programming.as_ref() else {
-            return json!({ "ok": false, "reason": "the programming tier is off" });
+        let outcome = match state.programming.as_ref() {
+            None => AddressOutcome {
+                verdict: Verdict::failed("the programming tier is off"),
+                ..AddressOutcome::default()
+            },
+            Some(tier) => match self.on_bus(tier, self.add_write(job, &pending)).await {
+                Ok(outcome) => outcome,
+                Err(reason) => AddressOutcome {
+                    verdict: Verdict::failed(reason),
+                    address: pending.id.planned.target.to_string(),
+                    ..AddressOutcome::default()
+                },
+            },
         };
-        match self.on_bus(tier, self.add_write(job, &pending)).await {
-            Ok(value) => value,
-            Err(reason) => json!({
-                "ok": false,
-                "verified": false,
-                "reason": reason,
-            }),
-        }
+        crate::reply::report(&outcome, &state.model.current())
     }
 
     /// The write itself; `Err` is the reason it stopped.
-    async fn add_write(&self, job: &str, p: &AddPlan) -> Result<Value, String> {
+    async fn add_write(&self, job: &str, p: &AddPlan) -> Result<AddressOutcome, String> {
         let state = self.state();
         let tier = self.tier()?;
         let dir = state.dir.clone();
@@ -500,7 +505,7 @@ impl BussardMcp {
             &mut notes,
         );
         let _ = state.model.reload();
-        Ok(done_result(&adopted, &dir, notes))
+        Ok(AddressOutcome::added(&adopted, &dir, notes))
     }
 
     /// The `product` argument: imports the `.knxprod` into the product store
@@ -648,7 +653,7 @@ fn identified_detail(
     model: &Model,
     digest: &str,
     tier: &ProgrammingTier,
-) -> Value {
+) -> AddIdentified {
     let v = id.identified();
     let (current, target) = (id.planned.current, id.planned.target);
     let mut sentences = vec![found_sentence(&v, current, "")];
@@ -716,105 +721,67 @@ fn identified_detail(
         "Then bussard reads the device back at {target} and writes devices/{target}.toml with \
          its bussard.lock entry."
     ));
-    let now = std::time::SystemTime::now();
-    json!({
-        "current_address": current.to_string(),
-        "serial": v.serial.as_deref().map(hex),
-        "mask": v.mask.map(|m| format!("{m:04X}")),
-        "system_type": v.mask.map(bussard_service::mgmt::system_type),
-        "manufacturer": v.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
-        "order_number": v.order,
-        "secure": v.secure.as_str(),
-        "keeps_address": target == current,
-        "product_data": product_data,
-        "download_needed": download_needed,
-        "sentences": sentences,
-        "plan_digest": digest,
-        "model_devices": model.devices.len(),
-        "expires_at": tier.adds.expires_at(now),
-    })
+    AddIdentified {
+        current_address: current.to_string(),
+        serial: v.serial.as_deref().map(hex),
+        mask: v.mask.map(|m| format!("{m:04X}")),
+        system_type: v.mask.map(bussard_service::mgmt::system_type),
+        manufacturer: v
+            .manufacturer_id
+            .map(bussard_service::mgmt::manufacturers::display),
+        order_number: v.order.clone(),
+        secure: v.secure.as_str(),
+        keeps_address: target == current,
+        product_data,
+        download_needed,
+        sentences,
+        plan_digest: digest.to_string(),
+        model_devices: model.devices.len(),
+        expires_at: tier.adds.expires_at(std::time::SystemTime::now()),
+    }
 }
 
-/// The `done` result: names first, one summary sentence.
-fn done_result(adopted: &Adopted, dir: &std::path::Path, notes: Vec<String>) -> Value {
-    let a = &adopted.assigned;
-    let (target, current) = (a.target, a.current);
-    let selected = adopted.selected.as_ref();
-    let name = adopted.device.name.clone();
-    let path = &adopted.path;
-    let relative = path.strip_prefix(dir).unwrap_or(path).display().to_string();
-    let product = selected.map(|s| {
-        json!({
-            "name": s.display_name(),
-            "application": s.application_ref,
-            "com_objects": s.com_objects.len(),
-        })
-    });
-    let objects: Vec<Value> = useful_objects(&adopted.device, selected)
-        .into_iter()
-        .take(8)
-        .map(|o| {
-            json!({
-                "object": o.number,
-                "text": o.text,
-                "dpt": o.dpt.map(|d| d.to_string()),
-                "flags": o.flags.to_string(),
-                "table": o.table,
-                "key": o.key,
-            })
-        })
-        .collect();
-    let what = if a.written {
-        format!("now answers at {target} (was {current})")
-    } else {
-        format!("answers at {target}")
-    };
-    let check = if a.matches_identified {
-        "the read-back there matches the identified serial and mask"
-    } else {
-        "but the read-back there does NOT match the identified serial or mask"
-    };
-    let summary = format!("{name} ({target}) {what}; {check}; its device file is {relative}.");
-    let next_step = match (&adopted.secure, selected) {
-        (Some(_), _) => format!(
-            "Tell the human the summary. Its links and parameters are in the model now; \
-             knx_plan_device for {target} should report nothing to do."
-        ),
-        (None, Some(_)) => format!(
-            "Tell the human the summary, then name the device and its room \
-             (knx_rename_device or the device file) and wire its group objects: `objects` lists \
-             them, transmit-capable first. knx_plan_device and knx_apply_device for {target} \
-             write the links; a factory-fresh device needs its application loaded first (the \
-             plan says so)."
-        ),
-        (None, None) => format!(
-            "Tell the human the summary. It has no product data yet: knx_import_file with its \
-             .knxprod attaches it; then wire its group objects and plan {target}."
-        ),
-    };
-    json!({
-        "ok": a.matches_identified,
-        "step": "done",
-        "name": name,
-        "address": target.to_string(),
-        "from": current.to_string(),
-        "assigned": a.written,
-        "verified": a.matches_identified,
-        "readback": readback_json(&a.verified),
-        "device_file": relative,
-        "product": product,
-        "objects": objects,
-        "secure": adopted.secure.as_ref().map(|s| json!({
-            "links": s.links,
-            "parameters": s.parameters,
-            "secure_objects": s.adoption.secure_objects,
-            "secure_groups": s.adoption.secure_groups.iter().map(ToString::to_string).collect::<Vec<_>>(),
-            "notes": s.notes,
-        })),
-        "notes": notes,
-        "summary": summary,
-        "next_step": next_step,
-    })
+/// What the start of `knx_add_device` established.
+#[derive(serde::Serialize)]
+struct AddStarted {
+    /// The resolved gateway.
+    gateway: String,
+    /// The sentences of the `product` import, when one ran.
+    product_import: Option<Vec<String>>,
+}
+
+/// The fields the `identified` step reports at the top of the job status:
+/// who answered, the product data and the plan the yes is for.
+#[derive(serde::Serialize)]
+struct AddIdentified {
+    /// Where it answered the programming-mode broadcast.
+    current_address: String,
+    /// Its serial, hex.
+    serial: Option<String>,
+    /// Its mask, hex.
+    mask: Option<String>,
+    /// The system the mask names.
+    system_type: Option<&'static str>,
+    /// Its manufacturer.
+    manufacturer: Option<String>,
+    /// Its order number.
+    order_number: Option<String>,
+    /// How it was read with respect to KNX Data Secure.
+    secure: &'static str,
+    /// It keeps the address it has.
+    keeps_address: bool,
+    /// Where its product data comes from.
+    product_data: String,
+    /// The product data needs the human's consent to a download.
+    download_needed: bool,
+    /// The plan in words.
+    sentences: Vec<String>,
+    /// The digest the yes presents.
+    plan_digest: String,
+    /// How many devices the project has.
+    model_devices: usize,
+    /// When the digest expires.
+    expires_at: String,
 }
 
 /// Imports the `.knxprod` at `file` into the product store of `dir` behind a

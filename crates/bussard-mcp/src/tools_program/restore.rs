@@ -20,14 +20,16 @@ use bussard_service::L4Options;
 use bussard_service::download::backup::{
     ParameterBackup, parameter_backups_dir, read_parameter_backup,
 };
+use bussard_service::program::outcome::{ParametersWritten, WriteOutcome};
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::program::{self, read::FlagsCache};
+use bussard_service::restore::ParameterRestorePlan;
 use bussard_service::restore::{RestorePlan, build_restore_plan};
 use bussard_service::secure::SequenceHighWater;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use super::{
-    BussardMcp, DeviceRead, ProgrammingTier, Read, Subject, chain, merge, product_for, read_device,
+    BussardMcp, DeviceRead, ProgrammingTier, Read, Subject, chain, product_for, read_device,
     refuse_drift,
 };
 
@@ -126,7 +128,8 @@ impl BussardMcp {
                 return Err(refusal);
             }
             let planned = self.on_bus(tier, self.plan_restore(target, &file)).await?;
-            return Ok(self.restore_plan_json(tier, target, &file, &gateway, &planned));
+            let plan = self.restore_plan_json(tier, target, &file, &gateway, &planned);
+            return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
         let digest = digest.to_string();
         self.run_write(
@@ -135,14 +138,10 @@ impl BussardMcp {
             move |me, job, gate| async move {
                 let tier = me.tier()?;
                 me.on_bus(tier, async {
-                    let (planned, mut result, record) =
+                    let (planned, result, record) =
                         me.restore_preflight(tier, target, &file, &digest).await?;
-                    gate.pass(result.clone(), record);
-                    merge(
-                        &mut result,
-                        me.restore_write(tier, &job, target, &planned).await,
-                    );
-                    Ok(result)
+                    gate.pass(&result, record);
+                    Ok(me.restore_write(tier, &job, target, &planned, result).await)
                 })
                 .await
             },
@@ -224,38 +223,23 @@ impl BussardMcp {
         file: &Path,
         gateway: &str,
         planned: &Planned,
-    ) -> Value {
-        let plan = &planned.plan;
-        let noop = plan.partial.is_none();
-        if !noop {
+    ) -> ParameterRestorePlan {
+        let mut out = ParameterRestorePlan::new(
+            target,
+            gateway,
+            file,
+            planned.read.check().cloned(),
+            &planned.plan,
+        );
+        if !out.noop {
             let subject = format!("{target} from {}", file.display());
             tier.restore_plans
                 .insert(planned.digest.clone(), subject, ());
+            out.approval.plan_digest = Some(planned.digest.clone());
+            out.approval.expires_at =
+                Some(tier.restore_plans.expires_at(std::time::SystemTime::now()));
         }
-        let now = std::time::SystemTime::now();
-        json!({
-            "ok": true,
-            "address": target.to_string(),
-            "gateway": gateway,
-            "backup": file.display().to_string(),
-            "identity": planned.read.check().map(|c| bussard_service::identity_line(target, c)),
-            "noop": noop,
-            "sentences": plan.render_text(target),
-            "octets": plan.octets,
-            "octet_ranges": plan.octet_ranges,
-            "notes": plan.notes,
-            "question": (!noop).then(|| plan.question(target, gateway)),
-            "plan_digest": (!noop).then(|| planned.digest.clone()),
-            "expires_at": (!noop).then(|| tier.restore_plans.expires_at(now)),
-            "next_step": if noop {
-                format!("nothing to write: {target} already holds the backup's parameter octets")
-            } else {
-                "Show the sentences above to the human in full (what is written, what is \
-                 left as the device holds it) and ask the question. Call \
-                 knx_restore_parameters with this plan_digest only after an explicit yes."
-                    .to_string()
-            },
-        })
+        out
     }
 
     /// The pre-flight of a restore. `Err` is a refusal; nothing was written.
@@ -265,7 +249,7 @@ impl BussardMcp {
         target: IndividualAddress,
         file: &Path,
         digest: &str,
-    ) -> Result<(Planned, Value, Option<PathBuf>), String> {
+    ) -> Result<(Planned, WriteOutcome, Option<PathBuf>), String> {
         let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
         let subject = format!("{target} from {}", file.display());
@@ -299,34 +283,38 @@ impl BussardMcp {
         )
         .map_err(|e| format!("refusing to write {target} without a parameter backup: {e}"))?;
         let record = crate::jobs::record_file(&dir, snapshot.as_deref());
-        let result = json!({
-            "address": target.to_string(),
-            "gateway": gateway,
-            "secured": planned.tool_key.is_some(),
-            "restored_from": file.display().to_string(),
-            "parameter_backup": backup.display().to_string(),
-            "snapshot": snapshot,
-        });
+        let result = WriteOutcome {
+            gateway: Some(gateway),
+            secured: Some(planned.tool_key.is_some()),
+            restored_from: Some(file.display().to_string()),
+            parameter_backup: Some(backup.display().to_string()),
+            snapshot,
+            ..WriteOutcome::new(target)
+        };
         Ok((planned, result, record))
     }
 
-    /// The write of a restore whose pre-flight passed. Never refuses: a
-    /// failure is the result.
+    /// The write of a restore whose pre-flight passed, onto the
+    /// pre-flight's `result`. Never refuses: a failure is the result.
     async fn restore_write(
         &self,
         tier: &ProgrammingTier,
         job: &str,
         target: IndividualAddress,
         planned: &Planned,
-    ) -> Value {
+        mut result: WriteOutcome,
+    ) -> WriteOutcome {
         let (Some(partial), Some(detail)) = (
             planned.plan.partial.as_ref(),
             planned.read.params.as_ref().and_then(|p| p.detail.as_ref()),
         ) else {
-            return json!({"ok": true, "verified": true, "parameters": {"written": false}});
+            result.verify();
+            result.parameters = Some(ParametersWritten::default());
+            return result;
         };
         let Some(service) = self.state().bus.service() else {
-            return json!({"ok": false, "verified": false, "reason": "the bus is not wired"});
+            result.fail("the bus is not wired");
+            return result;
         };
         tier.jobs.step(
             job,
@@ -352,35 +340,39 @@ impl BussardMcp {
             &mut observer,
         )
         .await;
-        let (ok, parameters) = match outcome {
+        let (ok, parameters) = match &outcome {
             Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => (
                 true,
-                json!({"written": true, "verified": true, "octets": octets}),
+                ParametersWritten {
+                    written: true,
+                    verified: Some(true),
+                    octets: Some(*octets),
+                    ..ParametersWritten::default()
+                },
             ),
-            Ok(failed) => (
-                false,
-                json!({"written": false, "verified": false, "reason": failed.failure()}),
-            ),
+            Ok(failed) => (false, ParametersWritten::failed(failed.failure())),
             Err(err) => (
                 false,
-                json!({
-                    "written": false,
-                    "verified": false,
-                    "reason": format!("the parameter read-back failed: {}", chain(&err)),
-                }),
+                ParametersWritten::failed(format!(
+                    "the parameter read-back failed: {}",
+                    chain(&err)
+                )),
             ),
         };
         tracing::info!(
             "audit: knx_restore_parameters {target}: {}",
             if ok { "verified" } else { "FAILED" }
         );
-        let mut result = json!({"ok": ok, "verified": ok, "parameters": parameters});
+        result.verdict.ok = ok;
+        result.verdict.verified = ok;
+        result.parameters = Some(parameters);
         if !ok {
-            result["recovery"] = json!(
+            result.verdict.recovery = Some(
                 "The parameter memory before the restore is backed up (see parameter_backup). If \
                  the application still reads Loaded, planning the restore again rewrites only the \
                  octets that still differ; otherwise recover with a full `bussard flash --force` \
                  at the CLI."
+                    .to_string(),
             );
         }
         result

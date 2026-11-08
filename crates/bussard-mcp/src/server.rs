@@ -18,7 +18,6 @@ use std::time::{Duration, SystemTime};
 
 use crate::args::Parameters;
 use bussard_model::{GroupAddress, IndividualAddress};
-use bussard_service::admission::Admission;
 use bussard_service::monitor::{CaptureStore, Filter, QueryFilter};
 use bussard_service::secure::ToolKeySource;
 use bussard_service::{
@@ -33,9 +32,10 @@ use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::reply::{invalid, ok};
+use crate::reply::{invalid, ok, ok_report};
 use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
+use bussard_service::group_report::{GroupReadReport, GroupWriteReport};
 
 /// How long `knx_bus_reconnect` waits for its connect attempt: the secure
 /// probe, the TCP connect and the session handshake each have their own
@@ -143,6 +143,11 @@ impl BussardMcp {
     /// management connection holds its lock for the session.
     pub(crate) fn warm(&self) -> &crate::warm::WarmConnection {
         &self.warm
+    }
+
+    /// The project the server serves now, for a result's `summary`.
+    pub(crate) fn model(&self) -> std::sync::Arc<bussard_model::Model> {
+        self.state.model.current()
     }
 
     /// This session's unapplied model edits, by device (issue #279).
@@ -709,7 +714,7 @@ impl BussardMcp {
         let model = self.state.model.current();
         let key = match group::read_key(Some(&model), ga, self.state.keyring.as_deref()) {
             Ok(key) => key,
-            Err(err) => return ok(group_error_json(ga, &err)),
+            Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
 
         // Passive mode: the tool is unregistered, but guarded anyway.
@@ -735,47 +740,11 @@ impl BussardMcp {
         .await
         {
             Ok(outcome) => outcome,
-            Err(err) => return ok(group_error_json(ga, &err)),
+            Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
-        let admission = outcome.admission.as_ref();
-        match outcome.result {
-            Err(refused) => ok(admission_refusal_json(ga, &refused)),
-            Ok(Ok(Some(read))) => {
-                let read_outcome = read.outcome;
-                let (display, typed) = match &read_outcome.value {
-                    Some(v) => (Some(v.to_string()), tools::typed_value_json(v)),
-                    None => (None, Value::Null),
-                };
-                ok(json!({
-                    "ga": ga.to_string(),
-                    "ok": true,
-                    "value": display,
-                    "typed": typed,
-                    "dpt": read_outcome.dpt.map(|d| d.to_string()),
-                    "source": read_outcome.source.to_string(),
-                    "secured": read.secured,
-                    "admission": admission.map(Admission::label),
-                }))
-            }
-            Ok(Ok(None)) => ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "timed_out": true,
-                "secured": secured,
-                "reason": if secured {
-                    bussard_service::admission::secured_read_timeout(ga, outcome.sender)
-                } else {
-                    "no response within timeout".to_string()
-                },
-                "admission": admission.map(Admission::label),
-                "note": outcome.note,
-            })),
-            Ok(Err(err)) => ok(json!({
-                "ga": ga.to_string(),
-                "ok": false,
-                "reason": format!("bus send failed: {err}"),
-            })),
-        }
+        let name = model.groups.groups.get(&ga).map(|g| g.name.clone());
+        let report = GroupReadReport::of(ga, name, secured, READ_RESPONSE_TIMEOUT, &outcome);
+        crate::reply::ok_report(&report, &model)
     }
 
     // `knx_describe_device` (omitted in passive mode).
@@ -812,11 +781,9 @@ impl BussardMcp {
         ) {
             Ok(keys) => keys,
             Err(err) => {
-                return ok(json!({
-                    "address": target.to_string(),
-                    "ok": false,
-                    "reason": bussard_service::program::chain(&err),
-                }));
+                let failed =
+                    describe::DescribeReport::failed(target, bussard_service::program::chain(&err));
+                return crate::reply::ok_report(&failed, &model);
             }
         };
 
@@ -843,39 +810,34 @@ impl BussardMcp {
         let mut warm = self.warm.lock().await;
         let outcome = describe::run(service, &request, Some(&mut warm)).await;
         drop(warm);
-        if outcome.on_factory_key {
-            return ok(json!({
-                "address": target.to_string(),
-                "ok": false,
-                "factory_key": true,
-                "reason": bussard_service::identity::factory_key_message(target),
-            }));
-        }
-        let reason = match outcome.walk {
-            Ok(walked) => {
-                let mut out = json!({
-                    "address": target.to_string(),
-                    "ok": true,
-                    "objects": walked.objects,
-                });
-                match walked.security {
-                    Some(Ok(diag)) => out["security_diagnostics"] = json!(diag),
-                    Some(Err(note)) => out["security_diagnostics"] = json!({ "notes": [note] }),
-                    None => {}
-                }
-                return ok(out);
-            }
-            Err(describe::RunError::Session(ServiceError::Lease(err))) => {
-                format!("could not lease the bus: {err}")
-            }
-            Err(describe::RunError::Session(err)) => format!("could not connect: {err}"),
-            Err(err) => bussard_service::program::chain(&err),
+        let report = match (outcome.report, outcome.walk) {
+            (Some(report), _) => report,
+            (None, Ok(_)) => describe::DescribeReport::failed(
+                target,
+                format!("{target}: the describe read nothing"),
+            ),
+            (None, Err(err)) => describe::DescribeReport::failed(
+                target,
+                match err {
+                    describe::RunError::Session(ServiceError::Lease(err)) => {
+                        format!("could not lease the bus: {err}")
+                    }
+                    describe::RunError::Session(err) => format!("could not connect: {err}"),
+                    err => bussard_service::program::chain(&err),
+                },
+            ),
         };
-        ok(json!({
-            "address": target.to_string(),
-            "ok": false,
-            "reason": reason,
-        }))
+        let report = describe::DescribeReport {
+            factory_key: outcome.on_factory_key,
+            reason: if outcome.on_factory_key {
+                Some(bussard_service::identity::factory_key_message(target))
+            } else {
+                report.reason
+            },
+            ok: report.ok && !outcome.on_factory_key,
+            ..report
+        };
+        crate::reply::ok_report(&report, &model)
     }
 
     // `knx_write_group` (registered only with `--allow-writes`, never in passive
@@ -898,7 +860,7 @@ impl BussardMcp {
         // KNX Data Secure group keys from the server's `--keyring` (issue #172).
         let keys = match group::load_keys(self.state.keyring.as_deref()) {
             Ok(keys) => keys,
-            Err(err) => return ok(group_error_json(ga, &err)),
+            Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
 
         // The shared write policy (bussard_service::write). Protected GAs are
@@ -923,7 +885,10 @@ impl BussardMcp {
                 Err(WriteRefusal::InvalidDpt { input, reason }) => {
                     return Err(invalid(format!("invalid dpt {input:?}: {reason}")));
                 }
-                Err(refusal) => return ok(write_refusal_json(ga, &refusal)),
+                Err(refusal) => {
+                    let (refused, reason) = write_refusal(ga, &refusal);
+                    return ok_report(&GroupWriteReport::failed(ga, reason, refused), &model);
+                }
             };
 
         // Writes disabled: the tool is unregistered, but guarded anyway.
@@ -939,34 +904,10 @@ impl BussardMcp {
         // surfaces as ok:false, an honest failure, not a silent success.
         let outcome = match group::write(service, &self.group_context(&model), write).await {
             Ok(outcome) => outcome,
-            Err(err) => return ok(group_error_json(ga, &err)),
+            Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
-        let admission = outcome.admission.as_ref();
-        match outcome.result {
-            Err(refused) => ok(admission_refusal_json(ga, &refused)),
-            Ok(Ok(sent)) => ok(json!({
-                "ga": ga.to_string(),
-                "ok": true,
-                "confirmed": sent.confirmed,
-                // Exactly what KNX confirmed (issue #297): the interface's
-                // L_Data.con at most, never an effect on the device.
-                "result": if sent.confirmed {
-                    bussard_service::admission::WRITE_RESULT
-                } else {
-                    bussard_service::admission::WRITE_RESULT_UNCONFIRMED
-                },
-                "secured": sent.write.is_secured(),
-                "admission": admission.map(Admission::label),
-                "note": outcome.note,
-                "written": {
-                    "address": ga.to_string(),
-                    "name": sent.write.name,
-                    "value": sent.write.value,
-                    "dpt": sent.write.dpt.map(|d| d.to_string()),
-                },
-            })),
-            Ok(Err(refusal)) => ok(write_refusal_json(ga, &refusal)),
-        }
+        let report = GroupWriteReport::of(ga, None, &outcome, |refusal| write_refusal(ga, refusal));
+        crate::reply::ok_report(&report, &model)
     }
 }
 
@@ -992,46 +933,25 @@ impl BussardMcp {
     }
 }
 
-/// The result of a group read or write that could not start: `ok: false`,
-/// the reason, and `refused: true` for a secured GA without a group key.
-fn group_error_json(ga: GroupAddress, err: &group::GroupError) -> Value {
+/// A group read or write that could not start: the reason, and `refused`
+/// for a secured GA without a group key.
+fn group_error(ga: GroupAddress, err: &group::GroupError) -> GroupReadReport {
     match err {
-        group::GroupError::NoKey(err) => json!({
-            "ga": ga.to_string(),
-            "ok": false,
-            "refused": true,
-            "reason": crate::secure_group::no_key_reason(err),
-        }),
-        group::GroupError::Keys { source, .. } | group::GroupError::Evidence { source, .. } => {
-            json!({ "ga": ga.to_string(), "ok": false, "reason": bussard_service::program::chain(source) })
+        group::GroupError::NoKey(err) => {
+            GroupReadReport::failed(ga, crate::secure_group::no_key_reason(err), true)
         }
-        group::GroupError::ToolKeys(err) => json!({
-            "ga": ga.to_string(),
-            "ok": false,
-            "reason": bussard_service::program::chain(err),
-        }),
+        group::GroupError::Keys { source, .. } | group::GroupError::Evidence { source, .. } => {
+            GroupReadReport::failed(ga, bussard_service::program::chain(source), false)
+        }
+        group::GroupError::ToolKeys(err) => {
+            GroupReadReport::failed(ga, bussard_service::program::chain(err), false)
+        }
     }
 }
 
-/// The result of a secured write or read refused for sender admission (issue
-/// #297): `ok: false`, `refused: true`, the refusal and how to admit the
-/// tunnel addresses. Nothing was sent.
-fn admission_refusal_json(ga: GroupAddress, admission: &Admission) -> Value {
-    json!({
-        "ga": ga.to_string(),
-        "ok": false,
-        "refused": true,
-        "sent": false,
-        "admission": admission.label(),
-        "reason": admission.refusal(),
-        "hint": admission.admit_hint(),
-    })
-}
-
-/// Renders a [`WriteRefusal`] as the `knx_write_group` result: `ok: false`, a
-/// reason in MCP words, and `refused: true` for the policy refusals (protected,
-/// DPT mismatch) as opposed to plain failures.
-fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
+/// A [`WriteRefusal`] in MCP words: `true` for the policy refusals
+/// (protected, DPT mismatch) as opposed to plain failures, and the reason.
+fn write_refusal(ga: GroupAddress, refusal: &WriteRefusal) -> (bool, String) {
     let (refused, reason) = match refusal {
         WriteRefusal::Protected { name, .. } => (
             true,
@@ -1069,15 +989,7 @@ fn write_refusal_json(ga: GroupAddress, refusal: &WriteRefusal) -> Value {
         ),
         other => (false, other.to_string()),
     };
-    let mut body = json!({
-        "ga": ga.to_string(),
-        "ok": false,
-        "reason": reason,
-    });
-    if refused {
-        body["refused"] = json!(true);
-    }
-    body
+    (refused, reason)
 }
 
 /// A dedup key for a telegram: the fields that uniquely identify one bus event.

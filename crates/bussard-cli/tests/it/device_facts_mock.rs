@@ -442,6 +442,15 @@ fn test_reconstruct_reuses_facts_with_identical_output() -> TestResult {
     Ok(())
 }
 
+/// A `plan --json` document without its `planned_at` time stamp.
+fn without_planned_at(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value: serde_json::Value = serde_json::from_str(text)?;
+    if let Some(map) = value.as_object_mut() {
+        map.remove("planned_at");
+    }
+    Ok(value)
+}
+
 #[test]
 fn test_plan_uses_facts_and_ignores_a_corrupt_file() -> TestResult {
     let bench = Bench::start("plan", device()?)?;
@@ -452,7 +461,11 @@ fn test_plan_uses_facts_and_ignores_a_corrupt_file() -> TestResult {
     )?;
     bench.take_requests()?;
     let again = ok_stdout(&bench.run(&["plan", "1.1.12", "--json"])?)?;
-    assert_eq!(again, cold, "a corrupt facts file only costs the fast path");
+    assert_eq!(
+        without_planned_at(&again)?,
+        without_planned_at(&cold)?,
+        "a corrupt facts file only costs the fast path"
+    );
     assert!(object_type_reads(&bench.take_requests()?) > 0);
     // ... and is replaced by a valid one.
     assert_eq!(bench.facts()?.objects.len(), TYPES.len());

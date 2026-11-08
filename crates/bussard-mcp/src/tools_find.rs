@@ -78,9 +78,11 @@ impl BussardMcp {
         let jobs = Arc::clone(&state.jobs);
         let id = jobs.claim(JobKind::Scan, Subject::Line(&line))?.id;
         let total = request.range.count();
-        jobs.progress(&id, "total", json!(total));
-        jobs.progress(&id, "probed", json!(0));
-        jobs.progress(&id, "found", json!(0));
+        jobs.progress(&id, |p| {
+            p.total = Some(total);
+            p.probed = Some(0);
+            p.found = Some(0);
+        });
 
         // The sweep continues in a server task, so a client that stops
         // waiting does not cut it; the job holds the result.
@@ -278,8 +280,10 @@ async fn run_scan(
             }
             WalkEvent::Probed { found, .. } => {
                 probed += 1;
-                jobs.progress(id, "probed", json!(probed));
-                jobs.progress(id, "found", json!(found));
+                jobs.progress(id, |p| {
+                    p.probed = Some(probed);
+                    p.found = Some(found);
+                });
             }
         },
     )

@@ -411,7 +411,7 @@ async fn test_knx_restore_tables_puts_a_backup_back_and_reads_it_back() -> anyho
         .await?;
     assert_eq!(restore["ok"], true, "restore plan: {restore}");
     assert_eq!(restore["noop"], false, "{restore}");
-    let text = restore["plan"].as_str().unwrap_or_default();
+    let text = restore["table_plan"].as_str().unwrap_or_default();
     assert!(text.contains("object   59 → 4/2/12"), "{text}");
     assert!(restore["question"].is_string(), "{restore}");
     assert_eq!(h.writes()?, writes, "planning must not write");

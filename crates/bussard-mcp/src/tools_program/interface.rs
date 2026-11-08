@@ -15,14 +15,15 @@ use std::time::SystemTime;
 use bussard_model::IndividualAddress;
 use bussard_model::history::SnapshotReason;
 use bussard_model::knxnet::KnxnetConfig;
+use bussard_service::knxnet::InterfacePlanOutcome;
 use bussard_service::knxnet::{
     self, InterfacePlan, InterfaceRead, InterfaceReadPlan, InterfaceRequest, SessionLink,
     apply_interface, interface_config, write_interface_backup,
 };
+use bussard_service::program::outcome::WriteOutcome;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::{Key16, SequenceHighWater};
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
-use serde_json::{Value, json};
 
 use super::{BussardMcp, PlanSides, ProgrammingTier, chain};
 use crate::jobs::Gate;
@@ -122,7 +123,7 @@ impl BussardMcp {
     pub(super) async fn plan_interface_body(
         &self,
         target: IndividualAddress,
-    ) -> Result<Value, String> {
+    ) -> Result<InterfacePlanOutcome, String> {
         let model = self.state().model.reload();
         let Some(config) = interface_config(&model, target).cloned() else {
             return Err(format!("{target} is not planned as an IP interface"));
@@ -186,9 +187,6 @@ impl BussardMcp {
             ));
         }
         let rows = planned.rows.clone();
-        let procedure_differs = rows
-            .as_ref()
-            .is_some_and(|r| r.iter().any(|row| row.differs()));
         let procedure_text = match (&rows, app) {
             (Some(rows), Some(app)) => format!(
                 "\n{}",
@@ -196,53 +194,25 @@ impl BussardMcp {
             ),
             _ => String::new(),
         };
-        let noop = plan.is_empty();
-        if noop && !procedure_differs {
+        let mut out = InterfacePlanOutcome::new(
+            plan,
+            device_plan,
+            planned.read.mask,
+            tool_key.is_some(),
+            planned.read.check.clone(),
+            rows,
+            &procedure_text,
+        );
+        if out.noop {
             self.session_edits().applied(target, true);
         }
-        let digest = (!noop).then(|| tier.remember_plan(target, sides(plan)));
-        let now = SystemTime::now();
-        Ok(json!({
-            "ok": true,
-            "method": "apply",
-            "address": target.to_string(),
-            "gateway": gateway,
-            "mask": format!("{:04X}", planned.read.mask),
-            "secured": tool_key.is_some(),
-            "identity": bussard_service::identity_line(target, &planned.read.check),
-            "noop": noop && !procedure_differs,
-            "sentences": format!("{}{procedure_text}", device_plan.render_text()),
-            "property_procedure": rows,
-            "changes": device_plan.changes,
-            "writes": device_plan.writes,
-            "interface_writes": plan.steps.iter().map(|s| s.wire()).collect::<Vec<_>>(),
-            "notes": device_plan.notes,
-            "question": (!noop).then(|| device_plan.question()),
-            "state_hash": device_plan.state_hash,
-            "pending_model_changes": self.session_edits().for_device(target),
-            "backup_dir": device_plan.backup_dir,
-            "plan_digest": digest,
-            "planned_at": bussard_service::monitor::timefmt::to_rfc3339(now),
-            "expires_at": digest.as_ref().map(|_| tier.plans.expires_at(now)),
-            "next_step": if noop {
-                if procedure_differs {
-                    format!(
-                        "nothing for knx_apply_device to write: the interface matches its \
-                         [knxnet] table. The properties of its load procedure differ (see \
-                         property_procedure); `bussard flash {target}` writes them."
-                    )
-                } else {
-                    "nothing to write: the interface already matches its [knxnet] table"
-                        .to_string()
-                }
-            } else {
-                format!(
-                    "Show the plan above to the human (every sentence) and ask whether to write \
-                     it to the KNXnet/IP parameter object of {target}. Call knx_apply_device \
-                     with this plan_digest only after an explicit yes."
-                )
-            },
-        }))
+        out.pending_model_changes =
+            serde_json::to_value(self.session_edits().for_device(target)).ok();
+        if !plan.is_empty() {
+            out.approval.plan_digest = Some(tier.remember_plan(target, sides(plan)));
+            out.approval.expires_at = Some(tier.plans.expires_at(SystemTime::now()));
+        }
+        Ok(out)
     }
 
     /// The apply job of an IP interface: the pre-flight (the digest names a
@@ -258,11 +228,11 @@ impl BussardMcp {
         digest: &str,
         plan_hash: Option<&str>,
         gate: &Gate,
-    ) -> Result<Value, String> {
+    ) -> Result<WriteOutcome, String> {
         let (service, config, planned, mut result, tool_key, high_water) = self
             .interface_preflight(tier, target, digest, plan_hash)
             .await?;
-        gate.pass(result.clone(), None);
+        gate.pass(&result, None);
         tier.jobs
             .step(job, "writing the KNXnet/IP parameter object");
         let dir = self.state().dir.clone();
@@ -279,28 +249,32 @@ impl BussardMcp {
             .map_err(|err| session_error(target, &err));
         let failure = match applied {
             Ok(applied) => {
-                result["written"] = json!(applied.written);
-                result["readback"] = json!(applied.readback);
+                result.properties_written = Some(applied.written);
+                result.readback = Some(applied.readback.clone());
                 applied.failure().map(|failure| {
-                    json!({
-                        "reason": failure,
-                        "recovery": format!(
+                    (
+                        failure,
+                        Some(format!(
                             "The values before the apply are in {}. Plan {target} again with \
                              knx_plan_device to see what the interface holds; do not report the \
                              change as done until a plan reports nothing to do.",
-                            result["backup"].as_str().unwrap_or("the backup")
-                        ),
-                    })
+                            result.backup.as_deref().unwrap_or("the backup")
+                        )),
+                    )
                 })
             }
-            Err(reason) => Some(json!({ "reason": reason })),
+            Err(reason) => Some((reason, None)),
         };
         let ok = failure.is_none();
-        result["ok"] = json!(ok);
-        result["verified"] = json!(ok);
         match failure {
-            Some(failure) => super::merge(&mut result, failure),
-            None => self.session_edits().applied(target, true),
+            Some((reason, recovery)) => {
+                result.fail(reason);
+                result.verdict.recovery = recovery;
+            }
+            None => {
+                result.verify();
+                self.session_edits().applied(target, true);
+            }
         }
         tracing::info!(
             "audit: knx_apply_device {target} KNXnet/IP parameter object: {}",
@@ -323,7 +297,7 @@ impl BussardMcp {
             BusService,
             KnxnetConfig,
             Planned,
-            Value,
+            WriteOutcome,
             Option<Key16>,
             SequenceHighWater,
         ),
@@ -395,16 +369,16 @@ impl BussardMcp {
         };
         let backup = write_interface_backup(&dir, target, facts)
             .map_err(|e| format!("refusing to write {target} without a backup: {e}"))?;
-        let result = json!({
-            "method": "apply",
-            "address": target.to_string(),
-            "gateway": gateway,
-            "source": planned.source.to_string(),
-            "secured": tool_key.is_some(),
-            "backup": backup.display().to_string(),
-            "snapshot": snapshot,
-            "interface_writes": planned.plan.steps.iter().map(|s| s.wire()).collect::<Vec<_>>(),
-        });
+        let result = WriteOutcome {
+            method: Some("apply".to_string()),
+            gateway: Some(gateway),
+            source: Some(planned.source.to_string()),
+            secured: Some(tool_key.is_some()),
+            backup: Some(backup.display().to_string()),
+            snapshot,
+            interface_writes: Some(planned.plan.steps.iter().map(|s| s.wire()).collect()),
+            ..WriteOutcome::new(target)
+        };
         Ok((service, config, planned, result, tool_key, high_water))
     }
 }

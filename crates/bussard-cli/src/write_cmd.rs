@@ -21,7 +21,8 @@ use std::process::ExitCode;
 
 use anyhow::anyhow;
 use bussard_model::{GroupAddress, Model};
-use bussard_service::admission::{self, Admission};
+use bussard_service::admission;
+use bussard_service::group_report::GroupWriteReport;
 use bussard_service::transport::TransportError;
 use bussard_service::{
     DptOverridePolicy, PreparedWrite, WriteCheck, WritePolicy, WriteRefusal, WriteValue,
@@ -148,27 +149,27 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
              bussard.lock"
         );
     }
-    let admission = outcome.admission;
+    // A send that failed keeps the error path below (its hints).
+    if json && !matches!(outcome.result, Ok(Err(_))) {
+        let report = GroupWriteReport::of(ga, Some(gateway.to_string()), &outcome, |refusal| {
+            (false, refusal.to_string())
+        });
+        crate::output::report(&report)?;
+        if let Some(reason) = &report.reason {
+            eprintln!("error: {reason}");
+        }
+        return Ok(if report.ok {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        });
+    }
     let outcome_result = match outcome.result {
         Ok(result) => result,
         // Refused before sending: the devices would discard the telegram.
         Err(refused) => {
             let refusal = refused.refusal().unwrap_or_default();
             let hint = refused.admit_hint().unwrap_or_default();
-            if json {
-                crate::output::print(
-                    crate::output::schema::WRITE,
-                    &serde_json::json!({
-                        "ga": ga.to_string(),
-                        "secured": true,
-                        "gateway": gateway,
-                        "sent": false,
-                        "admission": "refused",
-                        "reason": refusal,
-                        "hint": hint,
-                    }),
-                )?;
-            }
             eprintln!("error: {refusal}\n{hint}");
             return Ok(ExitCode::FAILURE);
         }
@@ -183,30 +184,9 @@ fn run(args: &WriteArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             } else {
                 admission::WRITE_RESULT_UNCONFIRMED
             };
-            if json {
-                let w = &sent.write;
-                let payload: String = w.payload.iter().map(|b| format!("{b:02x}")).collect();
-                crate::output::print(
-                    crate::output::schema::WRITE,
-                    &serde_json::json!({
-                        "ga": w.ga.to_string(),
-                        "name": w.name,
-                        "value": w.value,
-                        "dpt": w.dpt.as_ref().map(ToString::to_string),
-                        "payload": payload,
-                        "secured": w.is_secured(),
-                        "gateway": gateway,
-                        "confirmed": sent.confirmed,
-                        "result": result,
-                        "admission": admission.as_ref().map(Admission::label),
-                        "note": note,
-                    }),
-                )?;
-            } else {
-                // Confirmation line, e.g.
-                // `3/0/4 Living Room Blind Move ← Down (1.008)`.
-                println!("{}", write_label(&sent.write));
-            }
+            // Confirmation line, e.g.
+            // `3/0/4 Living Room Blind Move ← Down (1.008)`.
+            println!("{}", write_label(&sent.write));
             // What KNX confirmed, exactly (issue #297): the interface's
             // L_Data.con at most. Not an error when it is missing: group
             // writes are fire-and-forget, so scripts still see success.
