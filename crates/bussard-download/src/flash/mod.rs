@@ -822,6 +822,13 @@ pub enum PlanError {
     #[error("application program {0:?} has no load procedures")]
     NoProcedure(String),
 
+    /// A module definition's load procedure cannot be run for a module
+    /// instance the configuration reaches (issue #959): its ops address
+    /// objects and elements relative to the instance, so they are never run
+    /// at the offsets the module definition writes.
+    #[error("cannot flash: {0}")]
+    ModuleProcedure(#[from] bussard_product::application::ModuleProcedureError),
+
     /// The procedure contains an op this engine cannot execute. The whole
     /// procedure is refused so the device is never left half-flashed.
     #[error(

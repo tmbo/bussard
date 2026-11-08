@@ -412,6 +412,18 @@ pub fn plan_flash(
             device: device.to_string(),
         });
     }
+    // The module definitions' load procedures run once per module instance
+    // the configuration reaches, resolved to that instance's objects and
+    // elements (issue #959); every lowering below sees the resolved ops.
+    let resolved = app.with_module_procedures(&memo.evaluate_for(app, overrides))?;
+    let resolved_memo;
+    let (app, memo) = match &resolved {
+        std::borrow::Cow::Borrowed(app) => (*app, memo),
+        std::borrow::Cow::Owned(own) => {
+            resolved_memo = bussard_product::dynamic::DynamicMemo::new(own);
+            (own, &resolved_memo)
+        }
+    };
     let profile = bussard_mgmt::MaskProfile::from_mask(device_mask);
     // A procedure of property operations only on mask 0021 (the Jung IPS 300
     // SREG, issue #390) loads nothing: the family gate opens for it, and only
@@ -1788,6 +1800,19 @@ pub fn kept_octets(
     overrides: &BTreeMap<String, String>,
     memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> Vec<KeptOctets> {
+    // The procedures the planner runs, module instances resolved (issue
+    // #959); one it cannot resolve the planner refuses on its own.
+    let Ok(resolved) = app.with_module_procedures(&memo.evaluate_for(app, overrides)) else {
+        return Vec::new();
+    };
+    let resolved_memo;
+    let (app, memo) = match &resolved {
+        std::borrow::Cow::Borrowed(app) => (*app, memo),
+        std::borrow::Cow::Owned(own) => {
+            resolved_memo = bussard_product::dynamic::DynamicMemo::new(own);
+            (own, &resolved_memo)
+        }
+    };
     let Some(profile) = app
         .mask_version
         .as_deref()
