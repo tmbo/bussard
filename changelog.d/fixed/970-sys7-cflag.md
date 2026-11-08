@@ -1,0 +1,1 @@
+- System 7 flash: a program with an ETS download plugin (Berker, Hager 0701) gets the communication flag on every group object it declares, linked or not, as ETS writes it; numbering gaps still have it cleared (#970).
