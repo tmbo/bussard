@@ -1065,8 +1065,10 @@ pub struct ApplicationProgram {
     pub legacy_patch_manufacturer_in_task_segment: bool,
     /// Whether the program declares an ETS download plugin
     /// (`<Extension EtsDownloadPlugin=...>`, even an empty one). ETS then
-    /// writes the System B group-object table with the communication flag
-    /// on every declared object (issue #565, the Busch-Jaeger DALI gateways).
+    /// writes the group-object table with the communication flag on every
+    /// declared object, linked or not: on System B (issue #565, the
+    /// Busch-Jaeger DALI gateways) and in the System 7 descriptor post-pass
+    /// (issue #970, the Berker and Hager 0701 programs).
     #[serde(default)]
     pub ets_download_plugin: bool,
     /// Whether `<Options>` declares `SupportsExtendedMemoryServices="true"`.
@@ -1309,6 +1311,16 @@ impl ApplicationProgram {
         self.program_type
             .as_deref()
             .is_some_and(|t| t.eq_ignore_ascii_case("PeiProgram"))
+    }
+
+    /// The program's static com-objects: those declared in `<Static>` with a
+    /// fixed `Number`, not a module template's (no `BaseNumber`, no `_MD-`
+    /// in the id). A module template's `Number` is shifted per instance, so
+    /// it names no device object by itself.
+    pub fn static_com_objects(&self) -> impl Iterator<Item = &ComObject> + '_ {
+        self.com_objects
+            .values()
+            .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
     }
 
     /// Iterates resolved com-objects (ref merged onto base) sorted by number,
