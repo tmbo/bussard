@@ -49,22 +49,12 @@ pub mod schema {
     pub const DIFF_CHECKLIST: u32 = 1;
     /// `bussard doc --json` (the documentation model).
     pub const DOC: u32 = 1;
-    /// `bussard export --json`.
-    pub const EXPORT: u32 = 1;
     /// `bussard groups reserve --json`.
     pub const GROUPS_RESERVE: u32 = 1;
     /// `bussard groups secure --json`.
     pub const GROUPS_SECURE: u32 = 1;
     /// `bussard interface secure --json` (issue #398).
     pub const INTERFACE_SECURE: u32 = 1;
-    /// `bussard keys add-certificate --json`.
-    pub const KEYS_ADD_CERTIFICATE: u32 = 1;
-    /// `bussard keys enroll --json`: one object per line (issue #729).
-    pub const KEYS_ENROLL: u32 = 1;
-    /// `bussard keys export --json`.
-    pub const KEYS_EXPORT: u32 = 1;
-    /// `bussard keys import --json`.
-    pub const KEYS_IMPORT: u32 = 1;
     /// `bussard keys show --json`.
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.

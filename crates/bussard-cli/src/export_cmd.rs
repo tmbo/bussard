@@ -42,8 +42,9 @@ fn run(file: Option<&Path>, dir: &Path, no_history: bool, json: bool) -> anyhow:
     let (out, manifest) = bussard_service::files::export::bundle(dir, file, !no_history)?;
 
     if json {
-        let value = serde_json::json!({ "path": out.display().to_string(), "manifest": manifest });
-        crate::output::print(crate::output::schema::EXPORT, &value)?;
+        crate::output::report(&bussard_service::files::report::FileOutcome::bundle_exported(
+            &out, manifest,
+        ))?;
         return Ok(ExitCode::SUCCESS);
     }
     println!(

@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use anyhow::{Context, bail};
+use bussard_service::files::report::FileOutcome;
 use bussard_service::enroll_session::{CertificateOutcome, EnrollTally};
 use bussard_service::files::keyring;
 use bussard_service::keys::keystore::{BackboneChange, ImportReport, KeyStore, SaveOutcome};
@@ -142,20 +143,9 @@ fn run_import(dir: &Path, file: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let warnings = rekeyed_warnings(dir, &report);
 
     if json {
-        let value = serde_json::json!({
-            "store": path.display().to_string(),
-            "source": file.display().to_string(),
-            "written": matches!(outcome, SaveOutcome::Written { .. }),
-            "backup": matches!(outcome, SaveOutcome::Written { backup: true }),
-            "changed": report.changed(),
-            "report": report,
-            "warnings": warnings.iter().map(|d| serde_json::json!({
-                "code": d.code,
-                "location": d.location,
-                "message": d.message,
-            })).collect::<Vec<_>>(),
-        });
-        crate::output::print(crate::output::schema::KEYS_IMPORT, &value)?;
+        crate::output::report(&FileOutcome::keyring_imported(
+            dir, file, report, outcome, &warnings,
+        ))?;
     } else {
         print_report(&path, file, &report, outcome);
         print_warnings(&warnings);
@@ -289,9 +279,7 @@ fn run_export(dir: &Path, file: &Path, force: bool, json: bool) -> anyhow::Resul
             .join(", ")
     }
     if json {
-        let mut value = serde_json::to_value(&export)?;
-        value["file"] = serde_json::json!(file.display().to_string());
-        crate::output::print(crate::output::schema::KEYS_EXPORT, &value)?;
+        crate::output::report(&FileOutcome::keyring_exported(file, export.clone(), Vec::new()))?;
     } else {
         println!(
             "wrote {}: {} device(s), {} group key(s), {} interface(s), signed with {KEYRING_PASSWORD_ENV}",
@@ -616,13 +604,10 @@ fn run_add_certificate(dir: &Path, from_stdin: bool, json: bool) -> anyhow::Resu
         )
     });
     if json {
-        crate::output::print(
-            crate::output::schema::KEYS_ADD_CERTIFICATE,
-            &serde_json::json!({
-                "store": KeyStore::path(dir).display().to_string(),
-                "results": outcomes,
-            }),
-        )?;
+        crate::output::report(&bussard_service::enroll_session::CertificatesReport {
+            store: KeyStore::path(dir).display().to_string(),
+            results: outcomes.clone(),
+        })?;
     } else {
         let tally = EnrollTally::of(
             &outcomes

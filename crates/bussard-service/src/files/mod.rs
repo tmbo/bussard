@@ -22,6 +22,7 @@ pub mod export;
 pub mod import;
 pub mod keyring;
 pub mod products;
+pub mod report;
 
 use std::path::Path;
 

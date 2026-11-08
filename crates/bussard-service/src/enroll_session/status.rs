@@ -229,6 +229,83 @@ pub struct SessionStatus {
     pub serials: Option<String>,
 }
 
+/// The chat's view of an enrolment session (issue #904): the
+/// [`SessionStatus`] and what the pairing page adds, the result of
+/// `knx_enroll_certificates` and `knx_enroll_status`.
+#[derive(Debug, Clone, Serialize)]
+pub struct EnrollView {
+    /// The session.
+    #[serde(flatten)]
+    pub status: SessionStatus,
+    /// Whether bussard's pairing page was opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pairing_page_opened: Option<bool>,
+    /// The path the certificates travel, while the session runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub data_path: Option<String>,
+    /// Where to read more.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub read_more: Option<String>,
+    /// What the session warned about.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+    /// A note about the key store.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// What the assistant does next.
+    #[serde(skip)]
+    pub next: Option<String>,
+}
+
+impl crate::report::Report for EnrollView {
+    const SCHEMA: u32 = 1;
+
+    fn next_step(&self) -> Option<String> {
+        self.next.clone()
+    }
+}
+
+/// An enrolment the chat could not start or the human declined: nothing
+/// was changed.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct EnrollRefusal {
+    /// Always `false`.
+    pub ok: bool,
+    /// A check refused it.
+    #[serde(skip_serializing_if = "crate::report::is_false")]
+    pub refused: bool,
+    /// The human declined the page.
+    #[serde(skip_serializing_if = "crate::report::is_false")]
+    pub declined: bool,
+    /// Whether the pairing page was opened.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pairing_page_opened: Option<bool>,
+    /// `none` (no session) or `ended`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<&'static str>,
+    /// Why.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// The sentence for the human.
+    #[serde(skip)]
+    pub said: String,
+    /// What the assistant does next.
+    #[serde(skip)]
+    pub next: Option<String>,
+}
+
+impl crate::report::Report for EnrollRefusal {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, _model: &bussard_model::Model) -> Option<String> {
+        Some(self.said.clone())
+    }
+
+    fn next_step(&self) -> Option<String> {
+        self.next.clone()
+    }
+}
+
 /// One certificate as a status reports it: never its code or key.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct CertificateResult {

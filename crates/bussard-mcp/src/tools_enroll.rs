@@ -87,7 +87,8 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use bussard_service::enroll_session::status::{EnrollRefusal, EnrollView};
+use serde_json::Value;
 use tokio::sync::watch;
 
 use crate::server::BussardMcp;
@@ -225,29 +226,41 @@ impl CertificateSink for FreshKeyStore {
 
 /// A refusal: `ok: false` and the reason, as a normal result.
 fn refused(reason: impl Into<String>) -> CallToolResult {
-    CallToolResult::structured(json!({
-        "ok": false,
-        "refused": true,
-        "reason": reason.into(),
-        "summary": "Nothing was changed and no certificate page was opened (`reason` says why).",
-    }))
+    answer(EnrollRefusal {
+        refused: true,
+        reason: Some(reason.into()),
+        said: "Nothing was changed and no certificate page was opened (`reason` says why)."
+            .to_string(),
+        ..EnrollRefusal::default()
+    })
+}
+
+/// `refusal` as a tool result, with its envelope.
+fn answer(refusal: EnrollRefusal) -> CallToolResult {
+    let mut value = serde_json::to_value(&refusal).unwrap_or_default();
+    crate::reply::envelope(&mut value, Some(refusal.said.clone()), refusal.next.clone());
+    CallToolResult::structured(value)
 }
 
 /// The refusal when bussard cannot show its pairing page to the human:
 /// `reason` says why (no display, the opener failed).
 fn no_pairing_page(reason: impl Into<String>) -> CallToolResult {
-    CallToolResult::structured(json!({
-        "ok": false,
-        "refused": true,
-        "pairing_page_opened": false,
-        "reason": reason.into(),
-        "summary": "bussard cannot open its pairing page here. Run `bussard keys enroll` in a \
-                    terminal in your project folder instead; it shows a QR code for your phone \
-                    and the session code.",
-        "next_step": "Tell the human to run `bussard keys enroll` in a terminal in the project \
-                      folder. Do not offer a link or a session code yourself, and never ask \
-                      for a certificate in chat.",
-    }))
+    answer(EnrollRefusal {
+        refused: true,
+        pairing_page_opened: Some(false),
+        reason: Some(reason.into()),
+        said: "bussard cannot open its pairing page here. Run `bussard keys enroll` in a \
+               terminal in your project folder instead; it shows a QR code for your phone and \
+               the session code."
+            .to_string(),
+        next: Some(
+            "Tell the human to run `bussard keys enroll` in a terminal in the project folder. \
+             Do not offer a link or a session code yourself, and never ask for a certificate in \
+             chat."
+                .to_string(),
+        ),
+        ..EnrollRefusal::default()
+    })
 }
 
 /// The host of `link` (`bussard.tmbo.dev`, `127.0.0.1:8123`), for the
@@ -291,10 +304,28 @@ struct Started {
 /// [`SessionStatus`] and what the assistant does next. The pairing page
 /// lists the certificates, so the chat does not (#820).
 fn status_json(job: &EnrollJob, details: bool) -> Value {
+    view_json(&status_view(job, details))
+}
+
+/// The view of `job`'s session, `details` with every certificate.
+fn status_view(job: &EnrollJob, details: bool) -> EnrollView {
     let status = job.progress().status(details);
-    let next_step = next_step(&status);
-    let mut value = json!(status);
-    value["next_step"] = json!(next_step);
+    let next = next_step(&status).to_string();
+    EnrollView {
+        status,
+        pairing_page_opened: None,
+        data_path: None,
+        read_more: None,
+        warnings: Vec::new(),
+        note: None,
+        next: Some(next),
+    }
+}
+
+/// `view` as a tool result, with its envelope.
+fn view_json(view: &EnrollView) -> Value {
+    let mut value = serde_json::to_value(view).unwrap_or_default();
+    crate::reply::envelope(&mut value, None, view.next.clone());
     value
 }
 
@@ -433,12 +464,15 @@ impl BussardMcp {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let Some(job) = self.enroll.current() else {
-            return ok(json!({
-                "ok": true,
-                "session": "none",
-                "summary": "No certificate page is open.",
-                "next_step": "No enrolment session was started; knx_enroll_certificates \
-                              starts one.",
+            return Ok(answer(EnrollRefusal {
+                ok: true,
+                session: Some("none"),
+                said: "No certificate page is open.".to_string(),
+                next: Some(
+                    "No enrolment session was started; knx_enroll_certificates starts one."
+                        .to_string(),
+                ),
+                ..EnrollRefusal::default()
             }));
         };
         if args.stop && job.running() {
@@ -465,13 +499,16 @@ impl BussardMcp {
     /// error is the refusal to return.
     fn start_enrolment(&self, local: bool) -> Result<Started, CallToolResult> {
         if self.enroll.current().is_some_and(|job| job.running()) {
-            return Err(CallToolResult::structured(json!({
-                "ok": false,
-                "refused": true,
-                "reason": "an enrolment session is already running; finish it with \
-                           knx_enroll_status (stop: true) before starting another",
-                "summary": "A certificate page is already open; finish it first.",
-            })));
+            return Err(answer(EnrollRefusal {
+                refused: true,
+                reason: Some(
+                    "an enrolment session is already running; finish it with knx_enroll_status \
+                     (stop: true) before starting another"
+                        .to_string(),
+                ),
+                said: "A certificate page is already open; finish it first.".to_string(),
+                ..EnrollRefusal::default()
+            }));
         }
         let dir = self.state().dir.clone();
         let Ok(password) =
@@ -583,17 +620,21 @@ impl BussardMcp {
     ) -> CallToolResult {
         if action != ElicitationAction::Accept {
             close(job).await;
-            return CallToolResult::structured(json!({
-                "ok": false,
-                "declined": true,
-                "pairing_page_opened": false,
-                "session": "ended",
-                "summary": "You did not open the pairing page, so the session was closed. \
-                            Nothing was changed.",
-                "next_step": "The human declined or dismissed the pairing page. Do not offer a \
-                              link or a session code yourself. Call knx_enroll_certificates \
-                              again only if the human asks to.",
-            }));
+            return answer(EnrollRefusal {
+                declined: true,
+                pairing_page_opened: Some(false),
+                session: Some("ended"),
+                said: "You did not open the pairing page, so the session was closed. Nothing \
+                       was changed."
+                    .to_string(),
+                next: Some(
+                    "The human declined or dismissed the pairing page. Do not offer a link or a \
+                     session code yourself. Call knx_enroll_certificates again only if the human \
+                     asks to."
+                        .to_string(),
+                ),
+                ..EnrollRefusal::default()
+            });
         }
         self.wait_and_report(job, context).await
     }
@@ -632,25 +673,19 @@ impl BussardMcp {
         if wait_for_end(job, context, limit).await == Waited::Cancelled {
             tracing::debug!("enrolment: the call was cancelled; the session keeps running");
         }
-        let mut result = status_json(job, false);
-        result["pairing_page_opened"] = json!(true);
+        let mut view = status_view(job, false);
+        view.pairing_page_opened = Some(true);
         if job.running() {
-            result["data_path"] = json!(data_path(job.progress().local).join(" "));
-            result["read_more"] = json!(DOCS_URL);
-            result["summary"] = json!(format!(
-                "{OPENED_PROGRESS} {}",
-                result["summary"].as_str().unwrap_or_default()
-            ));
-            if result["warning"].is_null() {
-                result["next_step"] = json!(STILL_RUNNING);
+            view.data_path = Some(data_path(job.progress().local).join(" "));
+            view.read_more = Some(DOCS_URL.to_string());
+            view.status.summary = format!("{OPENED_PROGRESS} {}", view.status.summary);
+            if view.status.warning.is_none() {
+                view.next = Some(STILL_RUNNING.to_string());
             }
         }
-        if !job.warnings.is_empty() {
-            result["warnings"] = json!(job.warnings);
-        }
-        if let Some(note) = self.keyring_note() {
-            result["note"] = json!(note);
-        }
+        view.warnings = job.warnings.clone();
+        view.note = self.keyring_note();
+        let result = view_json(&view);
         CallToolResult::structured(result)
     }
 
@@ -829,7 +864,7 @@ mod tests {
         let job = job_with(&[EnrollStatus::Stored, EnrollStatus::Unassigned], None);
         let status = status_json(&job, false);
         assert_eq!(status["certificates"], 2);
-        assert_eq!(status["next_steps"], json!([]));
+        assert_eq!(status["next_steps"], serde_json::json!([]));
         assert!(status.get("results").is_none(), "{status}");
         let next = status["next_step"].as_str().unwrap_or_default();
         assert!(next.contains("do not list them"), "{next}");

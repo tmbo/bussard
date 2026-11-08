@@ -19,13 +19,11 @@
 use crate::reply::{ok, refusal};
 use std::path::{Path, PathBuf};
 
-use bussard_model::Model;
 use bussard_service::chain;
 use bussard_service::files::export::GroupFormat;
 use bussard_service::files::import::{ConflictChoice, ImportOutcome};
 use bussard_service::files::products::OrderImport;
 use bussard_service::files::{FileKind, export, import, keyring, products};
-use bussard_service::keys::keystore::SaveOutcome;
 use bussard_service::observer::{Answer, Collected, Prompt, Question};
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
 use bussard_service::setup::{self, SetupError};
@@ -38,6 +36,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
+use bussard_service::files::report::FileOutcome;
 use serde_json::{Value, json};
 
 use crate::args::Parameters;
@@ -484,38 +483,17 @@ fn model_result(
     outcome: &ImportOutcome,
     out: &Collected,
 ) -> Value {
-    let name = file_name(path);
-    let counts = Model::load(dir)
-        .ok()
-        .map(|m| (m.devices.len(), m.groups.groups.len()));
-    let mut summary = match (outcome.written, counts) {
-        (false, _) => format!("The model already matched {name}; no file was written."),
-        (true, Some((devices, groups))) => format!(
-            "Imported {name} into the model: {devices} device(s), {groups} group address(es)."
-        ),
-        (true, None) => format!("Imported {name} into the model."),
-    };
-    if outcome.unresolved {
-        summary.push_str(&format!(
-            " {} hand-edited field(s) differ from the {source} and were kept; pass theirs: true \
-             to take the {source}'s values.",
-            outcome.kept
-        ));
-    }
-    json!({
-        "ok": true,
-        "kind": source,
-        "path": path.display().to_string(),
-        "summary": summary,
-        "written": outcome.written,
-        "merged": outcome.merged,
-        "conflicts": outcome.conflicts,
-        "kept": outcome.kept,
-        "sentences": sentences(out),
-    })
+    file_value(FileOutcome::model_imported(
+        source,
+        path,
+        dir,
+        outcome,
+        sentences(out),
+    ))
 }
 
-/// The result of a product-data import.
+/// The result of a product-data import, found by `key` (`path` or
+/// `order_number`) `value`.
 fn product_result(
     key: &str,
     value: &str,
@@ -523,18 +501,12 @@ fn product_result(
     models: &[String],
     out: &Collected,
 ) -> Value {
-    json!({
-        "ok": true,
-        "kind": "product",
-        key: value,
-        "summary": format!(
-            "{stored}; generated {} product model(s): {}.",
-            models.len(),
-            models.join(", ")
-        ),
-        "models": models,
-        "sentences": sentences(out),
-    })
+    let mut outcome = FileOutcome::product_imported(stored, models.to_vec(), sentences(out));
+    match key {
+        "order_number" => outcome.order_number = Some(value.to_string()),
+        _ => outcome.path = Some(value.to_string()),
+    }
+    file_value(outcome)
 }
 
 /// Merges a `.knxkeys` into the key store, as `bussard keys import` does
@@ -557,35 +529,10 @@ fn import_keyring(
     };
     let (report, outcome) = setup::import::import_keyring_with(dir, path, &password)
         .map_err(|err| refused(chain(&err), out))?;
-    let warnings: Vec<Value> = setup::import::rekeyed_warnings(dir, &report)
-        .iter()
-        .map(|d| json!({"code": d.code, "location": d.location, "message": d.message}))
-        .collect();
-    let what = match outcome {
-        SaveOutcome::Written { backup: false } => "created",
-        SaveOutcome::Written { backup: true } => "updated",
-        SaveOutcome::Unchanged => "already up to date",
-    };
-    let summary = format!(
-        "Merged the ETS keyring {} into the key store bussard.keys ({what}): {} device(s) \
-         added, {} tool key(s) rotated, {} group key(s) added, {} rotated.",
-        file_name(path),
-        report.devices_added.len(),
-        report.tool_keys_rotated.len(),
-        report.group_keys_added.len(),
-        report.group_keys_rotated.len(),
-    );
-    Ok(json!({
-        "ok": true,
-        "kind": "keyring",
-        "path": path.display().to_string(),
-        "store": bussard_service::keys::KeyStore::path(dir).display().to_string(),
-        "summary": summary,
-        "changed": report.changed(),
-        "report": report,
-        "warnings": warnings,
-        "note": "key material is never returned",
-    }))
+    let warnings = setup::import::rekeyed_warnings(dir, &report);
+    Ok(file_value(FileOutcome::keyring_imported(
+        dir, path, report, outcome, &warnings,
+    )))
 }
 
 /// Runs `knx_export`: the result, or the refusal, as JSON.
@@ -615,19 +562,11 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
             };
             let count =
                 export::groups(dir, format, &out).map_err(|err| refused(chain(&err), &none))?;
-            Ok(json!({
-                "ok": true,
-                "what": "groups",
-                "path": out.display().to_string(),
-                "count": count,
-                "format": format.label(),
-                "summary": format!(
-                    "Wrote {count} group address(es) to {} ({}); in ETS: Group Addresses -> \
-                     Import, then pick this file.",
-                    out.display(),
-                    format.label()
-                ),
-            }))
+            Ok(file_value(FileOutcome::groups_exported(
+                &out,
+                count,
+                format.label(),
+            )))
         }
         "doc" => {
             let out = out_path.ok_or_else(|| needs_out("doc"))?;
@@ -642,18 +581,7 @@ fn export_file(dir: &Path, args: &ExportArgs) -> Result<Value, Value> {
                 ));
             }
             let files = export::doc(dir, &out).map_err(|err| refused(chain(&err), &none))?;
-            Ok(json!({
-                "ok": true,
-                "what": "doc",
-                "path": out.display().to_string(),
-                "files": files,
-                "summary": format!(
-                    "Wrote {} documentation file(s) to {}: {}.",
-                    files.len(),
-                    out.display(),
-                    files.join(", ")
-                ),
-            }))
+            Ok(file_value(FileOutcome::doc_exported(&out, files)))
         }
         "keyring" => {
             let out = out_path.ok_or_else(|| needs_out("keyring"))?;
@@ -679,21 +607,7 @@ pub(crate) fn export_bundle(
 ) -> Result<Value, String> {
     let (path, manifest) = export::bundle(dir, out, include_history)
         .map_err(|err| format!("the export failed: {}", chain(&err)))?;
-    let summary = format!(
-        "Wrote the bundle {}: {} device(s), {} group address(es), {} history snapshot(s); it \
-         never contains vendor product data, keyrings or passwords.",
-        path.display(),
-        manifest.devices,
-        manifest.group_addresses,
-        manifest.history_snapshots
-    );
-    Ok(json!({
-        "ok": true,
-        "what": "bundle",
-        "path": path.display().to_string(),
-        "summary": summary,
-        "manifest": manifest,
-    }))
+    Ok(file_value(FileOutcome::bundle_exported(&path, manifest)))
 }
 
 /// Writes the keyring, as `bussard keys export`.
@@ -715,41 +629,7 @@ fn export_keyring(dir: &Path, out: &Path, args: &ExportArgs) -> Result<Value, Va
                     &none,
                 )
             })?;
-    let summary = if export.verified {
-        format!(
-            "Wrote {}: {} device(s), {} group key(s), {} interface(s), read back and verified; \
-             keep it out of git.",
-            out.display(),
-            export.devices,
-            export.group_keys,
-            export.interfaces
-        )
-    } else {
-        format!(
-            "Wrote {}, but it does not carry the key store's keys: do not hand it on.",
-            out.display()
-        )
-    };
-    let mut value = serde_json::to_value(&export).map_err(|err| refused(err.to_string(), &none))?;
-    for (key, extra) in [
-        ("ok", json!(export.verified)),
-        ("what", json!("keyring")),
-        ("path", json!(out.display().to_string())),
-        ("summary", json!(summary)),
-        ("warnings", json!(log.lines)),
-        ("note", json!("key material is never returned")),
-    ] {
-        value[key] = extra;
-    }
-    Ok(value)
-}
-
-/// The file name of `path`, or the path when it has none.
-fn file_name(path: &Path) -> String {
-    path.file_name().map_or_else(
-        || path.display().to_string(),
-        |n| n.to_string_lossy().into_owned(),
-    )
+    Ok(file_value(FileOutcome::keyring_exported(out, export, log.lines)))
 }
 
 /// The collected lines trimmed, without the blank ones: the `sentences` of
@@ -764,10 +644,13 @@ fn sentences(out: &Collected) -> Vec<String> {
 
 /// A refusal with what the flow said before it stopped.
 fn refused(reason: impl Into<String>, out: &Collected) -> Value {
-    json!({
-        "ok": false,
-        "refused": true,
-        "reason": reason.into(),
-        "sentences": sentences(out),
-    })
+    file_value(FileOutcome::refused(reason, sentences(out)))
+}
+
+/// `outcome` as a tool result: its serialisation plus its `summary`.
+fn file_value(outcome: FileOutcome) -> Value {
+    let said = outcome.said.clone();
+    let mut value = serde_json::to_value(outcome).unwrap_or_default();
+    crate::reply::envelope(&mut value, said, None);
+    value
 }

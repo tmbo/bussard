@@ -45,7 +45,7 @@ use crate::ServiceError;
 use zeroize::{Zeroize, Zeroizing};
 
 pub use relay::{HttpRelay, Relay, RelayError, RelayMessage, RelayPoll};
-pub use report::{DOCS_URL, EnrollTally, NextStep, data_path};
+pub use report::{CertificatesReport, DOCS_URL, EnrollLine, EnrollTally, NextStep, data_path};
 pub use status::{CertificateResult, SessionProgress, SessionStatus, span_words};
 
 /// The enrolment page a link opens unless the surface names another
