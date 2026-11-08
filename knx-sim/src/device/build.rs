@@ -160,6 +160,42 @@ fn procedure_object_type(product: &ProductData, object_index: u8) -> u16 {
     }
 }
 
+/// `PID_MAX_APDU_LENGTH` of the device object (KNX 3/5/1).
+pub(super) const PID_MAX_APDU_LENGTH: u8 = 0x38;
+
+/// The APDU a tool reserves in front of a property value: the APCI's second
+/// octet, the object index, the PID and two octets of count and start index.
+/// ETS reported a 20-octet label write as "benötigt: 25" (bussard issue #996).
+const PROPERTY_WRITE_HEADER: usize = 5;
+
+/// The standard-frame APDU every device takes, and what ETS assumes when a
+/// device has no `PID_MAX_APDU_LENGTH`.
+const STANDARD_MAX_APDU: usize = 15;
+
+/// The `PID_MAX_APDU_LENGTH` a System 7 device answers, or `None` when it has
+/// none.
+///
+/// A real System 7 device has none: the Jung 0705 devices of the house
+/// (1.1.32, 1.1.40, 1.1.46) and the 0701 at 1.1.202 answer the read with no
+/// element (`d6 00 38 00 01`, campaign 2026-09-23, `wire.log` of every device
+/// directory), as the Jung 3361-1M did to ETS in the M2 capture (issue #70,
+/// `jung-1131-download.pcapng`), and the 0705 mask in `knx_master.xml` names
+/// no `MaxApduLength` resource. ETS then assumes 15 octets (its 12-octet
+/// `A_Memory_Write` chunks in the M2 capture).
+///
+/// A product whose procedure writes a property element longer than that
+/// (the MDT BE-BZS86.01 writes 20-octet labels in one `A_PropertyValue_Write`)
+/// runs on hardware that takes the longer frame, so the device answers the
+/// smallest APDU that carries its longest element (bussard issue #996).
+fn system7_max_apdu(objects: &BTreeMap<u8, InterfaceObject>, product: &ProductData) -> Option<u16> {
+    let needed = product
+        .written_props
+        .iter()
+        .filter_map(|&(object, pid, _, _)| objects.get(&object)?.property(pid))
+        .map(|p| PROPERTY_WRITE_HEADER + p.element_size())
+        .max()?;
+    (needed > STANDARD_MAX_APDU).then(|| u16::try_from(needed).unwrap_or(u16::MAX))
+}
 /// Seeds the interface objects and properties the application's own load
 /// procedure addresses by index, beyond the ones the device already models.
 ///
@@ -329,7 +365,7 @@ impl Device {
             Property::read_only(order_info_bytes(&product.application_id)),
         );
         device_object.set_property(0x19, Property::read_only(vec![0x48, 0x00]));
-        device_object.set_property(0x38, Property::read_only(vec![0x00, 0x42]));
+        device_object.set_property(PID_MAX_APDU_LENGTH, Property::read_only(vec![0x00, 0x42]));
         device_object.set_property(
             0x4E,
             Property::read_only(vec![0x00, 0x00, 0x00, 0x00, 0x00, 0x54]),
@@ -554,8 +590,6 @@ impl Device {
         );
         // PID 78 (0x4E) PID_HARDWARE_TYPE: the 10-octet preflight value.
         device_object.set_property(0x4E, Property::read_only(s7.hardware_type.to_vec()));
-        // Max-APDU absent or 15 on System 7 (spec section 6). Report 15.
-        device_object.set_property(0x38, Property::read_only(vec![0x00, 0x0F]));
         // PID 0x0E (PID_ERROR_CODE): the M2 Jung 0705 capture reads it on object 0
         // (`d5 00 0e 10 01` -> 00) and writes it (`d7 00 0e 10 01 04`) during the
         // download housekeeping; seed it writable so that flow is accepted.
@@ -640,6 +674,14 @@ impl Device {
         }
 
         seed_procedure_props(&mut objects, product, 0);
+        if let Some(max_apdu) = system7_max_apdu(&objects, product)
+            && let Some(device_object) = objects.get_mut(&0)
+        {
+            device_object.set_property(
+                PID_MAX_APDU_LENGTH,
+                Property::read_only(max_apdu.to_be_bytes().to_vec()),
+            );
+        }
         // The application object always reports a program id (PID 13,
         // `mfr:2 app:2 version:1`, the BimM112 `ApplicationId`): ETS reads it
         // before a download to check the manufacturer, and an absent property
@@ -731,7 +773,7 @@ impl Device {
         );
         // PID_MAX_APDU_LENGTH: the IPS 300 SREG answers 00F8 (capture of
         // 2026-10-26).
-        device_object.set_property(0x38, Property::read_only(vec![0x00, 0xF8]));
+        device_object.set_property(PID_MAX_APDU_LENGTH, Property::read_only(vec![0x00, 0xF8]));
         for (pid, value) in &product.device_compare_props {
             device_object.set_property(*pid, Property::read_only(value.clone()));
         }
@@ -905,6 +947,7 @@ fn typed_objects_for(
 
 #[cfg(test)]
 mod tests {
+    use super::PID_MAX_APDU_LENGTH;
     use crate::bus::event::RecordingSink;
     use crate::device::profile::LsmAccess;
     use crate::device::test_support::*;
@@ -1117,6 +1160,63 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         // No parameter placed in it: the declaration's PDT_GENERIC_10 sizes it.
         assert_label_property(32, 0x1A, 10)
+    }
+
+    /// Reads object 0's PID 56 on a connected device built from `xml` and
+    /// returns the response's count/start octets and value.
+    fn read_max_apdu(xml: &str) -> Result<(u8, Vec<u8>), Box<dyn std::error::Error>> {
+        let pd = app_product(xml)?;
+        let mut dev = connected_device(&pd)?;
+        assert!(dev.profile().is_system7());
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0, PID_MAX_APDU_LENGTH, 0x10, 0x01]))?;
+        assert_eq!(r.responses[0].tpdu[2..4], [0, PID_MAX_APDU_LENGTH]);
+        Ok((r.responses[0].tpdu[4], prop_response_value(&r)))
+    }
+
+    #[test]
+    fn test_system7_max_apdu_absent_like_a_real_0705() -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #996: the house's Jung 0705 devices answer PID 56 with
+        // no element (`d6 00 38 00 01`). Without the 20-octet label the
+        // longest element the procedure writes is 10 octets, which a
+        // standard frame carries.
+        let xml = LABEL_APP.replace(
+            r#"<LdCtrlWriteProp ObjIdx="6" PropId="31" Verify="false" />"#,
+            "",
+        );
+        let (count_start, value) = read_max_apdu(&xml)?;
+        assert_eq!(count_start >> 4, 0, "no element: the property is absent");
+        assert!(value.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_system7_max_apdu_carries_the_longest_written_element()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #996: the MDT BE-BZS86.01 writes a 20-octet label in
+        // one A_PropertyValue_Write; ETS needs an APDU of 25 for it.
+        let (count_start, value) = read_max_apdu(LABEL_APP)?;
+        assert_eq!(count_start >> 4, 1);
+        assert_eq!(value, vec![0x00, 25]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_system7_max_apdu_sets_the_memory_chunk() -> Result<(), Box<dyn std::error::Error>> {
+        // The APDU of 25 carries 22 octets of A_Memory_Write; without PID 56
+        // the standard-frame 12 stay the ceiling.
+        assert_eq!(
+            connected_device(&app_product(LABEL_APP)?)?.sys7_memory_chunk(),
+            22
+        );
+        let xml = LABEL_APP.replace(
+            r#"<LdCtrlWriteProp ObjIdx="6" PropId="31" Verify="false" />"#,
+            "",
+        );
+        assert_eq!(
+            connected_device(&app_product(&xml)?)?.sys7_memory_chunk(),
+            12
+        );
+        Ok(())
     }
 
     #[test]

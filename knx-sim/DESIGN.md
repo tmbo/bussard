@@ -210,8 +210,11 @@ System 7 differs from System B in four ways the device model reproduces strictly
 - **Wire strictness.** A memory op to a System 7 device must ride a *standard*
   frame and carry at most 12 data octets. An extended cEMI frame or a >12-octet
   memory op is refused — the trap that catches a tool wrongly sending 63-byte
-  chunks. Max-APDU is reported as 15; `A_Authorize` (free-access key, or a
-  configured `bcu_key:`) gates memory access.
+  chunks. The device object has no `PID_MAX_APDU_LENGTH`, as the house's
+  Jung 0705 and 0701 devices; a product whose procedure writes a property
+  element longer than a standard frame carries gets the APDU that element
+  needs, and its memory ops may then fill that APDU (#996). `A_Authorize`
+  (free-access key, or a configured `bcu_key:`) gates memory access.
 
 After Loaded, the System 7 device self-parses its own written address /
 association / group-object tables in the System 7 byte formats
