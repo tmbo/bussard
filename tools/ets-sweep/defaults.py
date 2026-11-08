@@ -23,8 +23,9 @@ tools/ets-sweep/results/defaults.json, keyed by application id:
     skipped-mask / skipped-no-order / skipped-not-in-catalog
     skipped-older-version   a newer version of the same application on the
                             same hardware runs instead (field `newer`)
-    skipped-device-address  the download looked for the device at another
-                            address than the one ETS gave it (#876)
+    driver-error-address    the device is not at the address the download
+                            looks for: a device left in the project pushed it
+                            along (#876); `--redo-failed` runs it again
 
 `ia` is the address ETS gave the added device: 1.1.1, or the line's coupler
 address 1.1.0 for a coupler (#876); the sim runs there and the oracle row
@@ -36,6 +37,7 @@ The run directory per application is captures/ets-sweep/<app>/plain-defaults/
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import re
@@ -198,6 +200,17 @@ def relabel_wrong_rows(results: dict) -> list[str]:
     return changed
 
 
+@functools.lru_cache(maxsize=64)
+def _product_seeds(path: Path, app: str) -> tuple[tuple[dict, ...], tuple[dict, ...], tuple[dict, ...]]:
+    """What the product file seeds for `app`, read once per (file, app):
+    the device-object properties its parameters bind, the OEM brand's
+    manufacturer id (#881) and the range-compared properties (#966). The
+    seed and the learned filter of one job both need them."""
+    return (tuple(p for p in sweep.product_properties(path, app) if p["object"] == 0),
+            tuple(sweep.oem_identity(path, app)),
+            tuple(sweep.compare_properties(path, app)))
+
+
 def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | None:
     """The device properties the sim starts with: those the application binds
     parameters to (the hardware type ETS checks first, PID 78; 78 of 81
@@ -207,10 +220,11 @@ def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | Non
     procedure compares against a range (#966)."""
     # The device object only: its PIDs 78 and 25 are what ETS checks; a
     # property on an object the sim does not build would refuse the config.
-    merged = {(p["object"], p["pid"]): p for p in sweep.product_properties(path, app) if p["object"] == 0}
+    params, oem, compares = _product_seeds(path, app)
+    merged = {(p["object"], p["pid"]): dict(p) for p in params}
     # The brand's manufacturer id of an OEM hardware (#881).
-    for p in sweep.oem_identity(path, app):
-        merged.setdefault((p["object"], p["pid"]), p)
+    for p in oem:
+        merged.setdefault((p["object"], p["pid"]), dict(p))
     for p in learned_from_ets(path, app, prev):
         merged[(p["object"], p["pid"])] = p
     if (0, 78) not in merged:
@@ -219,8 +233,8 @@ def seed_properties(path: Path, app: str, prev: dict | None) -> list[dict] | Non
     # A property the load procedure only compares against a range (Jung F50
     # Secure, PID 201, #966): seeded where nothing above names it, so every
     # earlier seed keeps its value.
-    for p in sweep.compare_properties(path, app):
-        merged.setdefault((p["object"], p["pid"]), p)
+    for p in compares:
+        merged.setdefault((p["object"], p["pid"]), dict(p))
     return list(merged.values()) or None
 
 
@@ -230,8 +244,8 @@ def learned_from_ets(path: Path, app: str, prev: dict | None) -> list[dict]:
     run recorded its whole seed as learned (product parameters, guessed
     identities); such an entry equals the seed and goes, so a corrected seed
     is not overridden by its stale copy."""
-    seeds = ([p for p in sweep.product_properties(path, app) if p["object"] == 0] + (guessed_identity(app) or [])
-             + sweep.compare_properties(path, app) + sweep.oem_identity(path, app))
+    params, oem, compares = _product_seeds(path, app)
+    seeds = list(params) + (guessed_identity(app) or []) + list(compares) + list(oem)
     return [p for p in (prev or {}).get("learned_properties") or [] if p not in seeds]
 
 

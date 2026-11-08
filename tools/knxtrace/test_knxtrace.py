@@ -2519,12 +2519,55 @@ class TestTypedPropertyWrites(unittest.TestCase):
         with open(os.path.join(out, "regions.json")) as fh:
             self.assertEqual(json.load(fh)["object_types"], {"0": 0, "1": 1, "2": 50215, "6": 50215})
 
+    def test_object_types_extended_only_from_the_device_object_list(self):
+        def ext(obj_type, instance, pid, start, count, data):
+            fields = {"obj_type": obj_type, "instance": instance, "pid": pid, "index": start, "count": count}
+            return norm.Op(norm.KIND_PROP_READ, "k", {}, "res", data=data,
+                           apdu=knxip.Apdu(0x1CD, "A_PropertyExtValue_Response", fields, b""))
+
+        ops = norm.DeviceOps("1.1.5")
+        ops.ops = [
+            ext(0, 1, 71, 1, 2, struct.pack(">HH", 0, 1)),  # the device object's list
+            ext(0, 2, 71, 1, 1, struct.pack(">H", 9)),  # not instance 1
+            ext(50215, 1, 1, 1, 1, struct.pack(">H", 50215)),  # by type: names no index
+        ]
+        self.assertEqual(memimage.object_types(ops), {0: 0, 1: 1})
+
     def test_compare_properties_matches_typed_write_to_index(self):
         props = memimage.compare_properties(self.plan(50215), self.image_dir(self.frames()))
         self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
-        self.assertEqual(props["matched"][0]["key"], ["obj6", 205, 1])
-        self.assertEqual(props["matched"][0]["by_type"], "type50215.1")
-        self.assertTrue(any("matched as type50215.1" in l for l in memimage.render_properties(props)))
+        self.assertEqual(props["matched"][0]["key"], ["type50215.1", 205, 1])
+        self.assertEqual(props["matched"][0]["by_index"], 6)
+        self.assertTrue(any("ETS wrote it as obj6" in l for l in memimage.render_properties(props)))
+
+    def test_compare_properties_security_object_by_index_keeps_key_table_check(self):
+        from unittest import mock
+
+        tool, dev = "0.0.0", "1.1.5"
+        keys = struct.pack(">H", 1) + bytes(range(16)) + struct.pack(">H", 2) + bytes(range(16, 32))
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(dev, tool, prop_response(7, 1, 1, 1, b"\x00\x11", seq=0), mc=0x29),
+            cemi_ldata(tool, dev, prop_write(7, 53, 2, 1, keys, seq=0)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        with mock.patch.dict(os.environ, {memimage.ORACLE_SALT_ENV: "run-salt"}):
+            out = self.image_dir(frames)
+        entries = memimage.group_key_entries(keys, "run-salt")
+        plan = {"steps": [{"index": 30, "label": "keys", "properties": [{
+            "object_type": 17, "instance": 1, "pid": 53, "start_element": 1, "length": len(keys),
+            "entries": entries}]}]}
+        props = memimage.compare_properties(plan, out)
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        # The per-entry key check judged it (raw octets would be `no-value`:
+        # the plan carries no value), and the whole-table line exists.
+        self.assertEqual(props["matched"][0]["key"], ["type17.1", 53, 36])
+        self.assertEqual(props["matched"][0]["value"], "hash-equal")
+        self.assertEqual(props["group_key_table"]["value"], "hash-equal")
+        # Another entry order is still named by the key-table check.
+        swapped = dict(plan["steps"][0]["properties"][0], entries=entries[::-1])
+        props = memimage.compare_properties({"steps": [dict(plan["steps"][0], properties=[swapped])]}, out)
+        self.assertEqual(props["matched"][0]["why"], "entry order differs")
 
     def test_compare_properties_keeps_typed_write_without_evidence(self):
         # No type read in the capture, or another type at the index: no pairing.

@@ -154,7 +154,7 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     text = ANSI.sub("", r.stdout + r.stderr)
     summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
     m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)", summary)
-    out = {"exit": r.returncode, "summary": summary.strip()}
+    out = {"exit": r.returncode, "summary": summary.strip(), "ia": ia}
     if m:
         out.update({"system": m.group(1), "verdict": m.group(2), "coverage": m.group(3), "confirmed": m.group(4),
                     "regions": m.group(5).strip()})
