@@ -21,6 +21,7 @@ mod memory;
 mod memory_access;
 pub mod profile;
 mod properties;
+mod refusal;
 mod restart;
 mod secure_group;
 pub mod security_object;
@@ -86,10 +87,10 @@ pub struct DeviceReaction {
     pub did_master_reset: bool,
 }
 
-/// The reason the device rejected a management telegram. A strict device
-/// answers most rejections by simply not responding (as a real device would
-/// drop a malformed or unauthorized request), but the reason is surfaced for
-/// tests and the event log.
+/// The reason the device rejected a management telegram. The reason is
+/// surfaced for tests and the event log; what the device then puts on the
+/// wire (a `T_ACK`, a negative response, or silence) is
+/// [`Device::refusal_answer`], driven by this reason and the service.
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum DeviceError {
     /// A management verb arrived without an open transport connection.

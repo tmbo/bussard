@@ -85,14 +85,18 @@ impl Bus {
             Some(dev) => match dev.handle_cemi(cemi) {
                 Ok(reaction) => reaction.responses,
                 Err(err) => {
-                    // A strict device rejects by not responding; surface the
-                    // reason on the event stream for the observer.
+                    // Surface the reason on the event stream for the observer,
+                    // then answer as a real device does: the transport layer
+                    // still acknowledges an accepted numbered frame, and a
+                    // refused property service gets its zero-count response
+                    // (bussard issue #869; the per-service table is on
+                    // `Device::refusal_answer`).
                     self.events.emit(Event::Telegram {
                         direction: Direction::ToBus,
                         cemi: cemi.encode(),
                         summary: format!("REJECTED by {dest}: {err}"),
                     });
-                    Vec::new()
+                    dev.refusal_answer(cemi, &err)
                 }
             },
             None => Vec::new(),
@@ -787,6 +791,152 @@ mod tests {
         assert_eq!(resp.len(), 2, "authorize should produce T_ACK + response");
         assert_eq!(resp[0].tpdu, vec![0xC2], "T_ACK(seq=0) comes first");
         assert!(!sink.events().is_empty());
+        Ok(())
+    }
+    /// A fixture-free System B device (the synthetic MDT product with mask
+    /// 07B0) at 1.1.1 on a fresh bus, and the bus's event recorder.
+    fn system_b_bus() -> Result<(Bus, Arc<RecordingSink>), String> {
+        let sink = Arc::new(RecordingSink::new());
+        let pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        let dev = Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 1),
+            &pd,
+            LoadState::Loaded,
+            ProfileOverrides {
+                mask: Some("07B0".into()),
+                ..Default::default()
+            },
+            sink.clone(),
+        )?;
+        let mut bus = Bus::new(sink.clone());
+        bus.add_device(dev);
+        Ok((bus, sink))
+    }
+
+    /// A frame from the tool 0.0.255 to 1.1.1.
+    fn to_device(tpdu: Vec<u8>) -> CemiLData {
+        CemiLData {
+            message_code: MessageCode::LDataReq,
+            ctrl1: 0xb0,
+            ctrl2: 0x60,
+            source: IndividualAddress::new(0, 0, 255),
+            dest: IndividualAddress::new(1, 1, 1).raw(),
+            tpdu,
+        }
+    }
+
+    /// The captured `A_PropertyValue_Write` of #869 (`53 d7 08 05 10 01 04
+    /// 00 …`: object 8, PID 5, one element from 1, a 10-octet load event),
+    /// renumbered to sequence `seq`.
+    fn captured_property_write(seq: u8) -> CemiLData {
+        let mut tpdu = vec![
+            0x40 | (seq << 2) | 0x03,
+            0xd7,
+            0x08,
+            0x05,
+            0x10,
+            0x01,
+            0x04,
+            0x00,
+        ];
+        tpdu.extend_from_slice(&[0x00; 8]);
+        to_device(tpdu)
+    }
+
+    /// Connect and authorize (sequence 0), acknowledging the device's answer.
+    fn connect_and_authorize(bus: &mut Bus) {
+        bus.deliver_from_tool(&to_device(vec![0x80]));
+        bus.deliver_from_tool(&to_device(vec![0x43, 0xd1, 0x00, 0xff, 0xff, 0xff, 0xff]));
+        bus.deliver_from_tool(&to_device(vec![0xC2]));
+    }
+
+    /// Whether the recorder holds a `REJECTED` line containing `reason`.
+    fn rejected(sink: &RecordingSink, reason: &str) -> bool {
+        sink.events().iter().any(|e| {
+            matches!(e, Event::Telegram { summary, .. }
+                if summary.starts_with("REJECTED by 1.1.1") && summary.contains(reason))
+        })
+    }
+
+    #[test]
+    fn test_deliver_from_tool_refused_property_write_is_acked_and_answered_zero_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // #869: the write to an absent object draws the T_ACK and the
+        // zero-count A_PropertyValue_Response (KNX 3/3/7 §3.4.4.2), not
+        // silence; the event stream keeps the reason.
+        let (mut bus, sink) = system_b_bus()?;
+        connect_and_authorize(&mut bus);
+        let resp = bus.deliver_from_tool(&captured_property_write(1));
+        assert_eq!(resp.len(), 2, "{resp:?}");
+        assert_eq!(resp[0].tpdu, vec![Tpci::ack_byte(1)], "T_ACK(1) first");
+        // The device's second numbered frame (sequence 1): object 8, PID 5,
+        // nr_of_elem 0, start 1, no data.
+        assert_eq!(resp[1].tpdu, vec![0x47, 0xd6, 0x08, 0x05, 0x00, 0x01]);
+        assert!(rejected(&sink, "no property: object 8 pid 5"));
+        // The tool acknowledges the answer; a repeat of the refused frame is a
+        // duplicate: re-acknowledged, not answered again.
+        bus.deliver_from_tool(&to_device(vec![0xC6]));
+        let again = bus.deliver_from_tool(&captured_property_write(1));
+        assert_eq!(again.len(), 1, "{again:?}");
+        assert_eq!(again[0].tpdu, vec![Tpci::ack_byte(1)]);
+        Ok(())
+    }
+
+    #[test]
+    fn test_deliver_from_tool_refused_property_write_unauthorized_answers_zero_count()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Missing access rights are the other §3.4.4.2 case: no authorize, so
+        // the device sits at access level 15.
+        let (mut bus, sink) = system_b_bus()?;
+        bus.deliver_from_tool(&to_device(vec![0x80]));
+        let resp = bus.deliver_from_tool(&captured_property_write(0));
+        assert_eq!(resp.len(), 2, "{resp:?}");
+        assert_eq!(resp[0].tpdu, vec![Tpci::ack_byte(0)]);
+        assert_eq!(resp[1].tpdu, vec![0x43, 0xd6, 0x08, 0x05, 0x00, 0x01]);
+        assert!(rejected(&sink, "unauthorized"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_deliver_from_tool_refused_memory_write_in_verify_mode_answers_zero_number()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // This device starts in verify mode: a refused A_Memory_Write answers
+        // with number zero and the address (KNX 3/3/7 §3.5.4) after the
+        // T_ACK. Outside verify mode it is the T_ACK alone (unit test in
+        // `device::refusal`).
+        let (mut bus, sink) = system_b_bus()?;
+        bus.deliver_from_tool(&to_device(vec![0x80]));
+        let resp = bus.deliver_from_tool(&to_device(vec![0x42, 0x81, 0x40, 0x00, 0xAA]));
+        assert_eq!(resp.len(), 2, "{resp:?}");
+        assert_eq!(resp[0].tpdu, vec![Tpci::ack_byte(0)]);
+        assert_eq!(resp[1].tpdu, vec![0x42, 0x40, 0x40, 0x00]);
+        assert!(rejected(&sink, "unauthorized"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_deliver_from_tool_refused_frame_without_connection_stays_silent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A numbered frame with no open connection never reached the
+        // transport connection: nothing to acknowledge, nothing to answer.
+        let (mut bus, sink) = system_b_bus()?;
+        let resp = bus.deliver_from_tool(&captured_property_write(4));
+        assert!(resp.is_empty(), "{resp:?}");
+        assert!(rejected(&sink, "no open connection"));
+        Ok(())
+    }
+
+    #[test]
+    fn test_deliver_from_tool_refused_connectionless_property_write_answers_unnumbered()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // T_Data_Individual has no T_ACK; the zero-count answer goes back
+        // connectionless too.
+        let (mut bus, _sink) = system_b_bus()?;
+        let mut frame = captured_property_write(0);
+        frame.tpdu[0] = 0x03;
+        let resp = bus.deliver_from_tool(&frame);
+        assert_eq!(resp.len(), 1, "{resp:?}");
+        assert_eq!(resp[0].tpdu, vec![0x03, 0xd6, 0x08, 0x05, 0x00, 0x01]);
         Ok(())
     }
 }

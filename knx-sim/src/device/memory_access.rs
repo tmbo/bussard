@@ -221,7 +221,7 @@ impl Device {
 
     /// Whether the device is in verify mode (PID_DEVICE_CONTROL bit 2): it then
     /// echoes every write as a read-back response.
-    fn verify_mode(&self) -> bool {
+    pub(super) fn verify_mode(&self) -> bool {
         self.objects
             .get(&0)
             .and_then(|o| o.property(super::interface_object::PID_DEVICE_CONTROL))
