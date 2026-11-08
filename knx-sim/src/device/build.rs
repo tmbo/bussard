@@ -1056,6 +1056,76 @@ mod tests {
         Ok(crate::prod::read_knxprod_bytes(buf.get_ref(), None)?)
     }
 
+    /// A System 7 product (mask 0705) whose load procedure writes object 6's
+    /// PIDs 31, 32 and 33 without `InlineData` (the MDT Central Operation
+    /// Unit Smart shape, `M-0083_A-0054-14-0D63`, bussard issue #980): PID 31
+    /// holds a 20-octet text parameter (`<Property>` placement), PID 32 is
+    /// declared `PDT_GENERIC_10` (`LdCtrlDeclarePropDesc`), PID 33 has
+    /// neither.
+    const LABEL_APP: &str = r#"<KNX><ApplicationProgram Id="M-0083_A-0054-14-0D63" ApplicationNumber="84" ApplicationVersion="20" ProgramType="ApplicationProgram" MaskVersion="MV-0705"><Static>
+          <ParameterTypes><ParameterType Id="M-0083_A-0054-14-0D63_PT-String.5F20Byte" Name="String_20Byte"><TypeText SizeInBit="160" /></ParameterType></ParameterTypes>
+          <Parameters><Parameter Id="M-0083_A-0054-14-0D63_P-832" Name="LabelViewCat" ParameterType="M-0083_A-0054-14-0D63_PT-String.5F20Byte" Text="" Access="None" Value="">
+            <Property ObjectIndex="6" PropertyId="31" Offset="0" BitOffset="0" />
+          </Parameter></Parameters>
+          <AddressTable /><AssociationTable /><ComObjectTable />
+          <LoadProcedures><LoadProcedure>
+            <LdCtrlDeclarePropDesc ObjIdx="6" PropId="32" PropType="PDT_GENERIC_10" MaxElements="1" ReadAccess="3" WriteAccess="2" Writable="true" />
+            <LdCtrlWriteProp ObjIdx="6" PropId="31" Verify="false" />
+            <LdCtrlWriteProp ObjIdx="6" PropId="32" Verify="false" />
+            <LdCtrlWriteProp ObjIdx="6" PropId="33" Verify="false" />
+          </LoadProcedure></LoadProcedures></Static></ApplicationProgram></KNX>"#;
+
+    /// Describes object 6's `pid` on the [`LABEL_APP`] device, checks it is
+    /// one writable element of `pdt` holding `len` zero octets, then writes
+    /// `len` octets and reads them back.
+    fn assert_label_property(
+        pid: u8,
+        pdt: u8,
+        len: usize,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let pd = app_product(LABEL_APP)?;
+        let mut dev = connected_device(&pd)?;
+        assert!(dev.profile().is_system7());
+        let d = describe(&mut dev, 6, pid)?;
+        assert_eq!(d[3], 0x80 | pdt, "writable, PDT 0x{pdt:02X}");
+        assert_eq!(d[4..6], [0, 1], "one element");
+        assert_eq!(d[6], 0x32, "read level 3, write level 2");
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[6, pid, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), vec![0u8; len]);
+        // ETS's write of the whole element (count 1, index 1) is taken.
+        let value: Vec<u8> = (1..=u8::try_from(len)?).collect();
+        let mut write = vec![6, pid, 0x10, 0x01];
+        write.extend_from_slice(&value);
+        let r = dev.handle_cemi(&data(&dev, 0x3D7, &write))?;
+        assert_eq!(prop_response_value(&r), value);
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[6, pid, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_build_system7_placed_text_parameter_sizes_the_property()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #980: a capture taken with a sim that described the
+        // label property as one octet made ETS write one character of it.
+        // The parameter placed in it is 20 octets: one PDT_GENERIC_20 element.
+        assert_label_property(31, 0x24, 20)
+    }
+
+    #[test]
+    fn test_build_system7_declared_property_has_the_declared_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // No parameter placed in it: the declaration's PDT_GENERIC_10 sizes it.
+        assert_label_property(32, 0x1A, 10)
+    }
+
+    #[test]
+    fn test_build_system7_unsized_property_keeps_one_octet()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Neither a placement nor a declaration: one octet, as before.
+        assert_label_property(33, PDT_GENERIC_01, 1)
+    }
+
     #[test]
     fn test_build_counted_write_prop_is_an_array() -> Result<(), Box<dyn std::error::Error>> {
         // Bussard issue #692: `LdCtrlWriteProp Count="2"` with 10 octets of

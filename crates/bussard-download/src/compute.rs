@@ -648,9 +648,7 @@ pub(crate) fn group_object_table_count(
     descriptors: &[GroupObjectDescriptor],
 ) -> usize {
     let declared = app
-        .com_objects
-        .values()
-        .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
+        .static_com_objects()
         .map(|c| c.number)
         .max()
         .unwrap_or(0);
@@ -711,6 +709,25 @@ pub fn dynamic_group_object_table(
     compute_group_object_table_with_count(&descriptors, count)
 }
 
+/// The object numbers a program declares on the device: its static
+/// com-objects ([`ApplicationProgram::static_com_objects`](bussard_product::ApplicationProgram::static_com_objects))
+/// plus the `shown` numbers, the objects the configuration shows with module
+/// instances already shifted to their device numbers. A module template's
+/// unshifted `Number` is not one of them.
+///
+/// The membership both download-plugin rules use: ETS sets the communication
+/// flag on exactly these, on System B ([`ets_download_plugin_descriptors`],
+/// issue #565) and System 7 (the descriptor post-pass, issue #970).
+pub(crate) fn declared_object_numbers(
+    app: &bussard_product::ApplicationProgram,
+    shown: impl IntoIterator<Item = u16>,
+) -> BTreeSet<u16> {
+    app.static_com_objects()
+        .map(|c| c.number)
+        .chain(shown)
+        .collect()
+}
+
 /// The group-object table of a program with an ETS download plugin (issue
 /// #565): ETS sets the communication flag on every declared object. A shown
 /// object keeps its flags with C added; a declared object the configuration
@@ -731,14 +748,11 @@ fn ets_download_plugin_descriptors(
         d.flags |= Flags::COMMUNICATION;
     }
     let shown: BTreeSet<u16> = descriptors.iter().map(|d| d.asap).collect();
-    let declared: BTreeSet<u16> = app
-        .com_objects
-        .values()
-        .filter(|c| c.base_number_ref.is_none() && !c.id.contains("_MD-"))
-        .map(|c| c.number)
+    let unshown: Vec<u16> = declared_object_numbers(app, shown.iter().copied())
+        .into_iter()
         .filter(|&n| n != 0 && !shown.contains(&n))
         .collect();
-    descriptors.extend(declared.into_iter().map(|asap| GroupObjectDescriptor {
+    descriptors.extend(unshown.into_iter().map(|asap| GroupObjectDescriptor {
         asap,
         flags: Flags::COMMUNICATION,
         size_code: 0,

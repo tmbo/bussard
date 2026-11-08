@@ -217,10 +217,7 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
     let project = root.join("tiny.knxproj");
     super::tiny_project::write(&project)?;
     let model = root.join("knx");
-    run(
-        &["import", s(&project)?, "--dir", s(&model)?, "--no-download"],
-        0,
-    )?;
+    run(&["import", s(&project)?, "--dir", s(&model)?], 0)?;
     let groups = std::fs::read_to_string(model.join("groups.toml"))?;
     std::fs::write(
         model.join("groups.toml"),

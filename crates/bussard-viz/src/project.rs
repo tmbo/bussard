@@ -36,7 +36,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use bussard_model::device_view::{DEVICE_SCOPE, ParamRow, device_view};
+use bussard_model::device_view::{DEVICE_SCOPE, ParameterRow, device_view};
 use bussard_model::schema::{ComObject, Device, Link};
 use bussard_model::{
     GroupAddress, IndividualAddress, Model, ProductModels, is_hidden_mem_key, label_mem_key,
@@ -171,7 +171,7 @@ fn project_parameters(
 }
 
 /// One parameter row as the inspector shows it.
-fn project_parameter(p: &ParamRow) -> Value {
+fn project_parameter(p: &ParameterRow) -> Value {
     json!({
         "key": p.key,
         "text": p.text,

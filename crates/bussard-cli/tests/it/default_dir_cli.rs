@@ -57,7 +57,6 @@ fn import_args(extra: &[&'static str]) -> TestResult<Vec<String>> {
     let mut args = vec![
         "import".to_string(),
         fixture.to_str().ok_or("fixture path")?.to_string(),
-        "--no-download".to_string(),
     ];
     args.extend(extra.iter().map(|s| s.to_string()));
     Ok(args)

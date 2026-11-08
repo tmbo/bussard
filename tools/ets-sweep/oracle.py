@@ -117,10 +117,21 @@ def device_state(mask: str, variant: str) -> str:
     return "state=loaded" if variant in LOADED_RUNS else "state=fresh"
 
 
-def row(app: str, capture: Path, product: Path, mask: str, variant: str = "plain-defaults") -> str:
-    """The oracle row of a sweep capture: device 1.1.1, no note, no recorded
-    coverage, and the device state of a System 7 mask (`device_state`)."""
-    return "|".join(["1.1.1", str(capture), str(product), app, "", "", device_state(mask, variant)]).rstrip("|")
+DEFAULT_IA = "1.1.1"
+
+
+def entry_ia(entry: dict) -> str:
+    """The address ETS gave the row's device: the sweep records it (`ia`), a
+    coupler gets the line's coupler address 1.1.0 (#876); 1.1.1 otherwise."""
+    return str(entry.get("ia") or DEFAULT_IA)
+
+
+def row(app: str, capture: Path, product: Path, mask: str, variant: str = "plain-defaults",
+        ia: str = DEFAULT_IA) -> str:
+    """The oracle row of a sweep capture: the device at the address ETS gave
+    it (1.1.1 unless `ia`), no note, no recorded coverage, and the device
+    state of a System 7 mask (`device_state`)."""
+    return "|".join([ia, str(capture), str(product), app, "", "", device_state(mask, variant)]).rstrip("|")
 
 
 def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False,
@@ -134,15 +145,16 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     # the import.
     seed_dir = run_dir / "model" if seed else None
     shared = oracle_model.shared_import(shared_root(captures, work), product, seed=seed_dir)
-    model = oracle_model.build(work_dir / "model", product, app, mask=entry.get("mask", ""),
+    ia = entry_ia(entry)
+    model = oracle_model.build(work_dir / "model", product, app, ia=ia, mask=entry.get("mask", ""),
                                friendly_name=catalog_row_name(run_dir), shared=shared, links=links)
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"),
-                        "--row", row(app, capture, product, entry.get("mask", ""), variant)],
+                        "--row", row(app, capture, product, entry.get("mask", ""), variant, ia)],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
     text = ANSI.sub("", r.stdout + r.stderr)
-    summary = next((l for l in text.splitlines() if l.startswith("1.1.1 ")), "")
-    m = re.match(r"1\.1\.1\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)", summary)
-    out = {"exit": r.returncode, "summary": summary.strip()}
+    summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
+    m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)", summary)
+    out = {"exit": r.returncode, "summary": summary.strip(), "ia": ia}
     if m:
         out.update({"system": m.group(1), "verdict": m.group(2), "coverage": m.group(3), "confirmed": m.group(4),
                     "regions": m.group(5).strip()})
@@ -154,7 +166,7 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     else:
         out["verdict"] = "oracle-error"
         out["tail"] = text.strip().splitlines()[-6:]
-    out["loadctl"] = load_control_summary(work_dir / "oracle" / "1.1.1" / "diff.json")
+    out["loadctl"] = load_control_summary(work_dir / "oracle" / ia / "diff.json")
     return out
 
 

@@ -28,7 +28,7 @@ use std::process::ExitCode;
 
 use anyhow::Context;
 use bussard_model::Model;
-use bussard_service::observer::{Answer, Ask, ProgressSink, Prompt, Question};
+use bussard_service::observer::ProgressSink;
 use bussard_service::setup::gateway::describe_gateway;
 use bussard_service::setup::{
     self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
@@ -61,14 +61,6 @@ pub(crate) struct InitArgs {
     /// Project password (else `BUSSARD_PROJECT_PASSWORD`, else prompt).
     #[arg(long)]
     password: Option<String>,
-    /// Download missing vendor product data without asking. Without a
-    /// terminal and without this flag nothing is downloaded; the missing
-    /// order numbers are listed.
-    #[arg(long, conflicts_with = "no_download")]
-    yes_download: bool,
-    /// Do not download missing product data; list it instead.
-    #[arg(long)]
-    no_download: bool,
     /// Without a project: scan this line after writing the skeleton and
     /// list what answers, without asking (for scripts).
     #[arg(long, value_name = "LINE", conflicts_with = "project")]
@@ -115,22 +107,6 @@ struct Terminal {
     probe: ProbeFn,
     /// `--yes`.
     yes: bool,
-    /// The product-data download answer.
-    consent: crate::confirm::Answers,
-}
-
-impl Prompt for Terminal {
-    fn ask(&mut self, question: &Question) -> Answer {
-        self.consent.ask(question)
-    }
-
-    fn can_ask(&self) -> bool {
-        self.consent.can_ask()
-    }
-
-    fn skips(&self, kind: Ask) -> Option<String> {
-        self.consent.skips(kind)
-    }
 }
 
 impl SetupHooks for Terminal {
@@ -220,15 +196,8 @@ impl SetupHooks for Terminal {
         _out: &mut dyn ProgressSink,
     ) -> Result<u8, SetupError> {
         let choice = crate::import_bundle::ConflictChoice::from_flags(false, false, false);
-        let code = crate::import_cmd::write_model(
-            model,
-            dir,
-            choice,
-            "project",
-            Some(self.consent),
-            project,
-        )
-        .map_err(SetupError::source)?;
+        let code = crate::import_cmd::write_model(model, dir, choice, "project", project)
+            .map_err(SetupError::source)?;
         Ok(if code == ExitCode::SUCCESS {
             0
         } else {
@@ -260,11 +229,6 @@ fn run_setup(
         discover,
         probe,
         yes: first.yes,
-        consent: crate::confirm::Answers {
-            yes_download: first.yes_download,
-            no_download: first.no_download,
-            ..Default::default()
-        },
     };
     let outcome = setup::run(&request, &mut hooks, &mut Console)?;
     let resolution = match outcome {
