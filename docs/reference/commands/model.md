@@ -262,6 +262,7 @@ $ bussard doc [--out <DIR>]
 Behaviour:
 
 - The output is deterministic: two runs on the same project write identical bytes, with no timestamps, so you can commit the folder and review its diff after every change.
+- With `--json`, each device's `parameters` are the parameter rows `bussard device --json` shows (`key`, `reference`, `text`, `value`, `default`, `at_default`, `choices`, `range`, `computed`, `computed_by`), plus `label`, one row per parameter the device file stores or a calculation computes. `value` is the stored value; `computed` is what a download writes for a calculation output.
 
 ## Related
 
