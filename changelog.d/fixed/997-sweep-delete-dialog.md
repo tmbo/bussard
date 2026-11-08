@@ -1,0 +1,1 @@
+- ETS sweep: the delete confirmation's "Ja" is found with the check mark OCR reads in front of it (`v Ja`), a confirmation left open is answered "Nein" before the next import or add, and a device left in the project is deleted before the add or recorded as `driver-error-cleanup`, so one failed delete no longer stops the run (#997).
