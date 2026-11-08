@@ -19,7 +19,7 @@
 //! as `knx_write_group` refuses them: there is no MCP override, and no tool
 //! parameter can set or clear the flag.
 
-use crate::reply::{ok, refusal};
+use crate::reply::{ok, ok_report, refusal};
 use std::path::Path;
 
 use crate::args::Parameters;
@@ -27,13 +27,16 @@ use bussard_model::change::{ChangeKind, ChangeSet, describe, name_parameters};
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::param_model::{ProductModels, key_to_param_id};
 use bussard_model::schema::{Group, Link, Location};
-use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model, Severity};
+use bussard_model::{Dpt, GroupAddress, IndividualAddress, Model};
 use bussard_service::history::{UndoOutcome, Undone};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
+use bussard_service::model_edit::{
+    Capped, ChangeReport, EditOutcome, HistoryReport, Validation,
+};
 use serde_json::{Value, json};
 
 use crate::param_keys::{
@@ -253,32 +256,21 @@ impl BussardMcp {
                         return refusal(format!("snapshot {} does not load: {err}", latest.id));
                     }
                 },
-                Ok(None) => {
-                    return ok(json!({
-                        "ok": true,
-                        "base": Value::Null,
-                        "changes": [],
-                        "sentences": [],
-                        "note": "no history snapshot yet, so there is nothing to compare against",
-                    }));
-                }
+                Ok(None) => return ok_report(&ChangeReport::no_history(), &self.model()),
                 Err(err) => return refusal(format!("the history could not be read: {err}")),
             },
         };
 
         let mut changes = describe(&from_model, &to_model);
         settle_changes(&dir, &mut changes, [&to_model, &from_model]);
-        let mut result = change_json(base, &changes);
-        if let Some(map) = result.as_object_mut() {
-            map.insert(
-                "summary".into(),
-                json!(crate::everyday::edit_summary(
-                    &changes,
-                    [&to_model, &from_model]
-                )),
-            );
-        }
-        ok(result)
+        let report = ChangeReport {
+            said: Some(crate::everyday::edit_summary(
+                &changes,
+                [&to_model, &from_model],
+            )),
+            ..ChangeReport::new(base, &changes, Some(MAX_DESCRIBED_CHANGES))
+        };
+        ok_report(&report, &self.model())
     }
 
     // `knx_history`.
@@ -293,7 +285,7 @@ impl BussardMcp {
             Ok(rows) => rows,
             Err(err) => return refusal(err.to_string()),
         };
-        ok(json!({ "ok": true, "count": rows.len(), "snapshots": rows }))
+        ok_report(&HistoryReport::new(rows), &self.model())
     }
 
     // `knx_set_group`.
@@ -1037,11 +1029,7 @@ impl BussardMcp {
         let mut changes = describe(&before, &edited);
         settle_changes(&dir, &mut changes, [&edited, &before]);
         if changes.is_empty() && hook.is_none() {
-            return ok(json!({
-                "ok": true,
-                "changes": [],
-                "note": "the model already said that; nothing was written",
-            }));
+            return ok_report(&EditOutcome::unchanged(), &self.model());
         }
 
         let reason = SnapshotReason::new(format!("mcp {tool}"))
@@ -1076,24 +1064,16 @@ impl BussardMcp {
 
         let earlier = bussard_model::validate_in_dir(&before, &dir);
         let diagnostics = bussard_model::validate_in_dir(&edited, &dir);
-        let mut result = json!({
-            "ok": true,
-            "snapshot": snapshot,
-            "summary": crate::everyday::edit_summary(&changes, [&edited, &before]),
-            "touches_protected": changes.touches_protected(),
-            "groups_declared": declared,
-            "validation": validation_json(&earlier, &diagnostics),
-            "next_step": self.next_step(&changes),
-        });
-        crate::everyday::put_for_the_human(&mut result);
-        put_changes(&mut result, &changes);
-        if let Some(map) = result.as_object_mut() {
-            if let Some(note) = note {
-                map.insert("note".to_string(), Value::String(note));
-            }
-            map.extend(extra);
-        }
-        ok(result)
+        let outcome = EditOutcome {
+            groups_declared: declared,
+            validation: Some(Validation::new(&earlier, &diagnostics)),
+            note,
+            extra,
+            said: Some(crate::everyday::edit_summary(&changes, [&edited, &before])),
+            next: Some(self.next_step(&changes)),
+            ..EditOutcome::new(&snapshot, &changes)
+        };
+        ok_report(&outcome, &self.model())
     }
 
     /// `knx_set_group` with `secure` (issue #331): the group's and every
@@ -1521,67 +1501,17 @@ fn resolve_model(history: &History, spec: &str) -> Result<Model, String> {
     history.load(&snapshot.id).map_err(|e| e.to_string())
 }
 
-/// The `{base, changes, sentences}` payload `knx_describe_change` returns.
-fn change_json(base: Option<String>, changes: &ChangeSet) -> Value {
-    let mut out = json!({
-        "ok": true,
-        "base": base,
-        "count": changes.len(),
-        "touches_protected": changes.touches_protected(),
-        "note": "Nothing here has reached any device: these are model files only.",
-    });
-    let (sentences, detail, truncated) = capped(changes, MAX_DESCRIBED_CHANGES);
-    if let Some(map) = out.as_object_mut() {
-        map.insert("sentences".into(), json!(sentences));
-        map.insert("changes".into(), json!(detail));
-        if let Some(note) = truncated {
-            map.insert("truncated".into(), json!(note));
-        }
-    }
-    out
-}
-
-/// The most changes an edit or undo result lists (issue #279): a result the
-/// client has to spill to a file helps nobody. `knx_describe_change` lists
-/// up to [`MAX_DESCRIBED_CHANGES`].
-pub const MAX_RESULT_CHANGES: usize = 50;
-
-/// The most changes `knx_describe_change` lists.
-pub const MAX_DESCRIBED_CHANGES: usize = 200;
-
-/// The most diagnostics of one kind a `validation` object lists; the counts
-/// stay exact and `knx_validate` lists them all.
-pub const MAX_RESULT_DIAGNOSTICS: usize = 20;
-
-/// The first `max` sentences and changes of `changes` (protected ones
-/// first, as [`sentences`] orders them), and a note when some were left out.
-fn capped(
-    changes: &ChangeSet,
-    max: usize,
-) -> (Vec<String>, Vec<bussard_model::Change>, Option<String>) {
-    let mut ordered: Vec<&bussard_model::Change> = changes.changes.iter().collect();
-    ordered.sort_by_key(|c| !c.touches_protected);
-    let total = ordered.len();
-    let kept: Vec<bussard_model::Change> = ordered.into_iter().take(max).cloned().collect();
-    let sentences = kept.iter().map(|c| c.sentence.clone()).collect();
-    let note = (total > max).then(|| {
-        format!(
-            "showing {max} of {total} changes; knx_describe_change with this result's \
-             snapshot as `from` lists them"
-        )
-    });
-    (sentences, kept, note)
-}
+pub use bussard_service::model_edit::{MAX_DESCRIBED_CHANGES, MAX_RESULT_CHANGES};
 
 /// Puts `changes` into an edit or undo result as `changes` (sentences) and
 /// `detail` (structured), capped at [`MAX_RESULT_CHANGES`] with a
 /// `truncated` note.
 fn put_changes(result: &mut Value, changes: &ChangeSet) {
-    let (sentences, detail, truncated) = capped(changes, MAX_RESULT_CHANGES);
+    let capped = Capped::of(changes, Some(MAX_RESULT_CHANGES));
     if let Some(map) = result.as_object_mut() {
-        map.insert("changes".into(), json!(sentences));
-        map.insert("detail".into(), json!(detail));
-        if let Some(note) = truncated {
+        map.insert("changes".into(), json!(capped.sentences));
+        map.insert("detail".into(), json!(capped.detail));
+        if let Some(note) = capped.truncated {
             map.insert("truncated".into(), json!(note));
         }
     }
@@ -1652,72 +1582,13 @@ pub(crate) fn settle_changes(dir: &Path, changes: &mut ChangeSet, models: [&Mode
     name_parameters(changes, models, &products);
 }
 
-/// A diagnostic's identity for the before/after comparison.
-fn diagnostic_key(d: &bussard_model::Diagnostic) -> (String, String, String) {
-    (d.code.to_string(), d.location.clone(), d.message.clone())
-}
-
-/// The validation payload every edit tool returns (issue #279):
-/// `{ok, errors, error_count, new_warnings, warning_count}`.
-///
-/// `errors` are the model's errors after the edit; `new_warnings` the
-/// warnings `after` has and `before` did not (same code, location and
-/// message), so an edit that adds none returns none. Each list stops at
-/// [`MAX_RESULT_DIAGNOSTICS`] with a `note`; `knx_validate` lists all.
+/// The validation payload of an undo or a discard (issue #279), as
+/// [`Validation`] serialises it.
 fn validation_json(
     before: &[bussard_model::Diagnostic],
     after: &[bussard_model::Diagnostic],
 ) -> Value {
-    let row = |d: &bussard_model::Diagnostic| {
-        json!({
-            "code": d.code,
-            "message": d.message,
-            "location": d.location,
-        })
-    };
-    let earlier: std::collections::BTreeSet<(String, String, String)> = before
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .map(diagnostic_key)
-        .collect();
-    let errors: Vec<&bussard_model::Diagnostic> = after
-        .iter()
-        .filter(|d| d.severity == Severity::Error)
-        .collect();
-    let warnings: Vec<&bussard_model::Diagnostic> = after
-        .iter()
-        .filter(|d| d.severity == Severity::Warning)
-        .collect();
-    let new_warnings: Vec<&bussard_model::Diagnostic> = warnings
-        .iter()
-        .copied()
-        .filter(|d| !earlier.contains(&diagnostic_key(d)))
-        .collect();
-    let mut out = json!({
-        "ok": errors.is_empty(),
-        "errors": errors.iter().take(MAX_RESULT_DIAGNOSTICS).map(|d| row(d)).collect::<Vec<_>>(),
-        "error_count": errors.len(),
-        "new_warnings": new_warnings
-            .iter()
-            .take(MAX_RESULT_DIAGNOSTICS)
-            .map(|d| row(d))
-            .collect::<Vec<_>>(),
-        "warning_count": warnings.len(),
-    });
-    if (errors.len() > MAX_RESULT_DIAGNOSTICS || new_warnings.len() > MAX_RESULT_DIAGNOSTICS)
-        && let Some(map) = out.as_object_mut()
-    {
-        map.insert(
-            "note".into(),
-            json!(format!(
-                "listing at most {MAX_RESULT_DIAGNOSTICS} errors and {MAX_RESULT_DIAGNOSTICS} new \
-                 warnings ({} errors, {} new warnings in all); knx_validate lists every one",
-                errors.len(),
-                new_warnings.len()
-            )),
-        );
-    }
-    out
+    serde_json::to_value(Validation::new(before, after)).unwrap_or_default()
 }
 
 /// Applies `args` to the `[knxnet]` table: the assignment (dhcp drops the

@@ -55,8 +55,6 @@ pub mod schema {
     pub const GROUPS_RESERVE: u32 = 1;
     /// `bussard groups secure --json`.
     pub const GROUPS_SECURE: u32 = 1;
-    /// `bussard history --json`: `{ "snapshots": [...] }`.
-    pub const HISTORY: u32 = 1;
     /// `bussard interface secure --json` (issue #398).
     pub const INTERFACE_SECURE: u32 = 1;
     /// `bussard keys add-certificate --json`.
@@ -73,16 +71,8 @@ pub mod schema {
     pub const MONITOR: u32 = 1;
     /// `bussard secure diag <ADDRESS> --json` (issue #533).
     pub const SECURE_DIAG: u32 = 1;
-    /// `bussard show --json`.
-    pub const SHOW: u32 = 1;
-    /// `bussard status --json`.
-    pub const STATUS: u32 = 1;
-    /// `bussard test --json`.
-    pub const TEST: u32 = 1;
     /// `bussard test --secure-idle --json`.
     pub const TEST_SECURE_IDLE: u32 = 1;
-    /// `bussard undo --json`.
-    pub const UNDO: u32 = 1;
     /// `bussard validate --json`: `{ "diagnostics": [...] }`.
     pub const VALIDATE: u32 = 1;
 }

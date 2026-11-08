@@ -19,9 +19,7 @@
 //! ([`plain_view`] and friends); `technical: true` returns the payload
 //! exactly as before.
 
-use std::collections::BTreeSet;
 
-use bussard_model::change::{ChangeKind, ChangeSet, summarize};
 use bussard_model::text::join_and;
 use bussard_model::{IndividualAddress, Model};
 use serde_json::{Map, Value, json};
@@ -38,86 +36,16 @@ pub const SUMMARIZED_TOOLS: &[&str] = &[
 
 pub use bussard_service::report::{device_phrase, object_phrase, room_of};
 
-/// The devices a change set needs pushed (its link, device and parameter
-/// changes), by address.
-pub fn devices_to_push(changes: &ChangeSet) -> BTreeSet<IndividualAddress> {
-    changes
-        .changes
-        .iter()
-        .filter(|c| {
-            matches!(
-                c.kind,
-                ChangeKind::LinkAdded
-                    | ChangeKind::LinkRemoved
-                    | ChangeKind::DeviceAdded
-                    | ChangeKind::DeviceProductChanged
-                    | ChangeKind::ObjectSecurityChanged
-                    | ChangeKind::InterfaceChanged
-                    | ChangeKind::ParameterChanged
-            )
-        })
-        .filter_map(|c| c.device.as_deref()?.parse().ok())
-        .collect()
-}
-
-/// The `summary` of a model edit, an undo, a discard or a pending change:
-/// what changes ([`summarize`]), then which devices still need a push.
-/// `models` are the new side, then the old.
-pub fn edit_summary(changes: &ChangeSet, models: [&Model; 2]) -> String {
-    let mut out = summarize(changes, models);
-    if changes.is_empty() {
-        return out;
-    }
-    let devices = devices_to_push(changes);
-    out.push(' ');
-    if devices.is_empty() {
-        out.push_str(
-            "Nothing to push: this only changes names, rooms or notes in the model, which no \
-             device stores.",
-        );
-    } else {
-        let names: Vec<String> = devices
-            .iter()
-            .map(|ia| {
-                let model = if models[0].devices.contains_key(ia) {
-                    models[0]
-                } else {
-                    models[1]
-                };
-                device_phrase(model, *ia)
-            })
-            .collect();
-        let verb = if names.len() == 1 { "needs" } else { "need" };
-        out.push_str(&format!(
-            "No device has it yet: {} {verb} to be written before the house behaves this way.",
-            join_and(&names)
-        ));
-    }
-    out
-}
+pub use bussard_service::model_edit::{devices_to_push, edit_summary};
 
 /// The one line an edit result's `validation` gains for the human: whether
 /// the model has problems that stop a push, and whether the edit added notes.
 pub fn for_the_human(validation: &Value) -> String {
-    let errors = validation["error_count"].as_u64().unwrap_or(0);
+    let errors = validation["error_count"].as_u64().unwrap_or(0) as usize;
     let new_warnings = validation["new_warnings"].as_array().map_or(0, Vec::len);
-    match (errors, new_warnings) {
-        (0, 0) => "No problems.".to_string(),
-        (0, 1) => "One new note about the model (types or naming); harmless, it can be \
-                   tidied later."
-            .to_string(),
-        (0, n) => format!(
-            "{n} new notes about the model (types or naming); harmless, they can be tidied \
-             later."
-        ),
-        (1, _) => "The model has one problem that has to be fixed before a device can be \
-                   written."
-            .to_string(),
-        (n, _) => format!(
-            "The model has {n} problems that have to be fixed before a device can be written."
-        ),
-    }
+    bussard_service::model_edit::for_the_human(errors, new_warnings)
 }
+
 
 /// Adds `for_the_human` to an edit result's `validation` object.
 pub fn put_for_the_human(result: &mut Value) {

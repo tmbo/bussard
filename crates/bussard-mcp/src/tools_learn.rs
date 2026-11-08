@@ -20,10 +20,10 @@
 //!   protected GA, ever.
 
 use crate::args::Parameters;
-use crate::reply::{invalid, ok};
+use crate::reply::{invalid, ok, ok_report};
 use bussard_model::GroupAddress;
 use bussard_model::tests_schema;
-use bussard_model::text::{from_hex, hex};
+use bussard_model::text::from_hex;
 use bussard_service::acceptance::{self, RunOptions, SkipManual};
 use bussard_service::monitor::Filter;
 use rmcp::ErrorData;
@@ -31,6 +31,8 @@ use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
+use bussard_service::acceptance::TestRunReport;
+use bussard_service::learn::InferReport;
 use serde_json::json;
 
 use crate::server::BussardMcp;
@@ -55,17 +57,6 @@ pub struct RunTestsArgs {
     #[serde(default)]
     pub only: Option<Vec<String>>,
 }
-
-/// The guidance `knx_infer_group` returns so the assistant closes the loop with
-/// the human rather than writing a guess into the model.
-const NEXT_STEP: &str = "Tell the human what you think this group address is \
-    (the proposed name and the top DPT candidate, in their words, e.g. \"that looks like the \
-    kitchen ceiling light switch\") and ASK them to confirm or correct it. Only after they \
-    answer, write the result into the model: knx_set_group for the name and DPT, and \
-    knx_add_link (address, com_object, ga, role) for the sending device's com object when a \
-    sender is known. If the candidates \
-    are not confident enough, ask the human to trigger the same object again and call this tool \
-    once more; repeated observations narrow the candidate set.";
 
 #[tool_router(router = learn_router, vis = "pub(crate)")]
 impl BussardMcp {
@@ -120,65 +111,16 @@ impl BussardMcp {
 
         // The sender is the source of the most recent telegram on the GA.
         let sender = seen.last().map(|t| t.source);
-        let bussard_service::learn::Observation {
-            object,
-            candidates,
-            proposed_name,
-        } = bussard_service::learn::observe(&model, ga, sender, &payloads);
-
-        let group = model.groups.groups.get(&ga).map(|g| {
-            json!({
-                "name": g.name,
-                "dpt": g.dpt.map(|d| d.to_string()),
-                "description": g.description,
-                "protected": g.protected,
-            })
-        });
-
-        let sender_json = sender.map(|ia| {
-            let device = model.devices.get(&ia).map(|d| &d.device);
-            json!({
-                "address": ia.to_string(),
-                "name": device.map(|d| d.name.clone()),
-                "location": device.and_then(|d| d.location.as_ref()).map(|l| json!({
-                    "floor": l.floor,
-                    "room": l.room,
-                })),
-                "known_to_the_model": device.is_some(),
-            })
-        });
-
-        ok(json!({
-            "ga": ga.to_string(),
-            "group": group,
-            "observations": payloads.len(),
-            "payloads_hex": payloads.iter().map(|p| hex(p)).collect::<Vec<_>>(),
-            "sender": sender_json,
-            "channel": object.as_ref().map(|o| json!({
-                "key": o.channel_key,
-                "name": o.channel_name,
-            })),
-            "com_object": object.as_ref().map(|o| json!({
-                "index": o.index,
-                "name": o.name,
-                "declared_dpt": o.declared_dpt.map(|d| d.to_string()),
-                "flags": o.flags.map(|f| f.to_string()),
-            })),
-            "candidates": candidates.iter().map(|c| json!({
-                "dpt": c.dpt.to_string(),
-                "confidence": c.confidence.tag(),
-                "reason": c.reason,
-            })).collect::<Vec<_>>(),
-            "proposed_name": proposed_name,
-            "secured": secured,
-            "undecrypted_secured": undecrypted,
-            "secure_note": (undecrypted > 0).then(|| format!(
-                "{undecrypted} secured telegram(s) on {ga} did not decrypt and were left out: \
-                 {} (restart `bussard mcp` with it)",
-                bussard_service::guidance::group_key_hint()
-            )),
-            "next_step": NEXT_STEP,
-        }))
+        let observation = bussard_service::learn::observe(&model, ga, sender, &payloads);
+        let report = InferReport::new(
+            &model,
+            ga,
+            sender,
+            &payloads,
+            observation,
+            (secured, undecrypted),
+        );
+        ok_report(&report, &model)
     }
 
     // `knx_run_tests` (registered only with `--allow-writes`).
@@ -256,10 +198,11 @@ impl BussardMcp {
         let report =
             acceptance::run_suite(&suite, &model, handle, &state.ring, &options, &mut manual).await;
 
-        let mut value = report.to_json();
-        value["ok"] = json!(report.ok());
-        value["refused_protected"] = json!(refused);
-        ok(value)
+        let report = TestRunReport {
+            refused_protected: refused,
+            ..TestRunReport::of(&report)
+        };
+        ok_report(&report, &model)
     }
 }
 
@@ -289,11 +232,5 @@ mod tests {
         assert_eq!(parse_hex("0c 1a"), Some(vec![0x0c, 0x1a]));
         assert_eq!(parse_hex("xyz"), None);
         assert_eq!(parse_hex("1"), None);
-    }
-
-    #[test]
-    fn test_next_step_names_the_model_edit_tools() {
-        assert!(NEXT_STEP.contains("knx_set_group"));
-        assert!(NEXT_STEP.contains("knx_add_link"));
     }
 }

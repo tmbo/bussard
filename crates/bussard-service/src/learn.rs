@@ -165,6 +165,192 @@ pub fn accept(model: &mut Model, ga: GroupAddress, decision: &Decision) {
     }
 }
 
+/// A group address as the project names it, for [`InferReport`].
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct GroupFacts {
+    /// Its name.
+    pub name: String,
+    /// Its DPT.
+    pub dpt: Option<String>,
+    /// Its description.
+    pub description: Option<String>,
+    /// Whether it is protected.
+    pub protected: bool,
+}
+
+/// Where a device is.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Place {
+    /// The floor.
+    pub floor: Option<String>,
+    /// The room.
+    pub room: Option<String>,
+}
+
+/// The device that sent the telegrams.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Sender {
+    /// Its address.
+    pub address: String,
+    /// Its name in the project.
+    pub name: Option<String>,
+    /// Where it is.
+    pub location: Option<Place>,
+    /// Whether the project has it.
+    pub known_to_the_model: bool,
+}
+
+/// The channel of the sending object.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ChannelRef {
+    /// Its key in the device file.
+    pub key: Option<String>,
+    /// Its name.
+    pub name: Option<String>,
+}
+
+/// The com-object that sends the group address.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ObjectRef {
+    /// Its number.
+    pub index: u16,
+    /// Its name.
+    pub name: Option<String>,
+    /// The DPT the device file declares.
+    pub declared_dpt: Option<String>,
+    /// Its flags.
+    pub flags: Option<String>,
+}
+
+/// One DPT candidate.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Candidate {
+    /// The DPT.
+    pub dpt: String,
+    /// `high`, `medium` or `low`.
+    pub confidence: &'static str,
+    /// Why.
+    pub reason: String,
+}
+
+/// What `knx_infer_group` makes of a group address (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct InferReport {
+    /// The group address.
+    pub ga: String,
+    /// What the project says about it.
+    pub group: Option<GroupFacts>,
+    /// How many payloads were reasoned about.
+    pub observations: usize,
+    /// Those payloads, hex.
+    pub payloads_hex: Vec<String>,
+    /// The device that sent the latest one.
+    pub sender: Option<Sender>,
+    /// The sending object's channel.
+    pub channel: Option<ChannelRef>,
+    /// The sending object.
+    pub com_object: Option<ObjectRef>,
+    /// The DPT candidates, best first.
+    pub candidates: Vec<Candidate>,
+    /// A name built from the sender's device, channel and location.
+    pub proposed_name: Option<String>,
+    /// A secured telegram was seen and verified.
+    pub secured: bool,
+    /// Secured telegrams that did not decrypt and were left out.
+    pub undecrypted_secured: usize,
+    /// What to do about them.
+    pub secure_note: Option<String>,
+}
+
+impl InferReport {
+    /// The report of `observation` about `ga` from `payloads` sent by
+    /// `sender`; `secured` and `undecrypted` say what the secured telegrams
+    /// did.
+    pub fn new(
+        model: &Model,
+        ga: GroupAddress,
+        sender: Option<IndividualAddress>,
+        payloads: &[Vec<u8>],
+        observation: Observation,
+        (secured, undecrypted): (bool, usize),
+    ) -> InferReport {
+        let Observation {
+            object,
+            candidates,
+            proposed_name,
+        } = observation;
+        InferReport {
+            ga: ga.to_string(),
+            group: model.groups.groups.get(&ga).map(|g| GroupFacts {
+                name: g.name.clone(),
+                dpt: g.dpt.map(|d| d.to_string()),
+                description: g.description.clone(),
+                protected: g.protected,
+            }),
+            observations: payloads.len(),
+            payloads_hex: payloads.iter().map(|p| bussard_model::text::hex(p)).collect(),
+            sender: sender.map(|ia| {
+                let device = model.devices.get(&ia).map(|d| &d.device);
+                Sender {
+                    address: ia.to_string(),
+                    name: device.map(|d| d.name.clone()),
+                    location: device.and_then(|d| d.location.as_ref()).map(|l| Place {
+                        floor: l.floor.clone(),
+                        room: l.room.clone(),
+                    }),
+                    known_to_the_model: device.is_some(),
+                }
+            }),
+            channel: object.as_ref().map(|o| ChannelRef {
+                key: o.channel_key.clone(),
+                name: o.channel_name.clone(),
+            }),
+            com_object: object.as_ref().map(|o| ObjectRef {
+                index: o.index,
+                name: o.name.clone(),
+                declared_dpt: o.declared_dpt.map(|d| d.to_string()),
+                flags: o.flags.map(|f| f.to_string()),
+            }),
+            candidates: candidates
+                .iter()
+                .map(|c| Candidate {
+                    dpt: c.dpt.to_string(),
+                    confidence: c.confidence.tag(),
+                    reason: c.reason.clone(),
+                })
+                .collect(),
+            proposed_name,
+            secured,
+            undecrypted_secured: undecrypted,
+            secure_note: (undecrypted > 0).then(|| {
+                format!(
+                    "{undecrypted} secured telegram(s) on {ga} did not decrypt and were left out: \
+                     {} (restart `bussard mcp` with it)",
+                    crate::guidance::group_key_hint()
+                )
+            }),
+        }
+    }
+}
+
+impl crate::report::Report for InferReport {
+    const SCHEMA: u32 = 1;
+
+    fn next_step(&self) -> Option<String> {
+        Some(
+            "Tell the human what you think this group address is (the proposed name and the \
+             top DPT candidate, in their words, e.g. \"that looks like the kitchen ceiling \
+             light switch\") and ASK them to confirm or correct it. Only after they answer, \
+             write the result into the model: knx_set_group for the name and DPT, and \
+             knx_add_link (address, com_object, ga, role) for the sending device's com object \
+             when a sender is known. If the candidates are not confident enough, ask the human \
+             to trigger the same object again and call this tool once more; repeated \
+             observations narrow the candidate set."
+                .to_string(),
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

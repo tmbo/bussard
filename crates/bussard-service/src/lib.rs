@@ -108,6 +108,7 @@ pub mod learn;
 pub mod limit;
 pub mod line;
 pub mod mgmt;
+pub mod model_edit;
 pub mod model_handle;
 pub mod monitor;
 pub mod observer;

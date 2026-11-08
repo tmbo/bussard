@@ -137,7 +137,7 @@ fn run(options: &TestArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     )?;
 
     if g.json {
-        crate::output::print(crate::output::schema::TEST, &report.to_json())?;
+        crate::output::report(&bussard_service::acceptance::TestRunReport::of(&report))?;
     } else {
         print!("{}", report.text());
     }
