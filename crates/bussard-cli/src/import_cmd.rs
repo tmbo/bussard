@@ -19,7 +19,6 @@ use std::process::ExitCode;
 
 use bussard_model::Model;
 use bussard_service::files::import::ImportOutcome;
-use bussard_service::observer::Prompt;
 use bussard_service::setup::SetupError;
 
 use crate::cli::{Resolved, Run, Spec};
@@ -46,14 +45,6 @@ pub(crate) struct ImportArgs {
     /// On a re-import, ask per conflict (needs a terminal).
     #[arg(long)]
     interactive: bool,
-    /// Download missing vendor product data without asking. Without a
-    /// terminal and without this flag nothing is downloaded; the missing
-    /// order numbers are listed.
-    #[arg(long, conflicts_with = "no_download")]
-    yes_download: bool,
-    /// Do not look up or download missing product data; list it instead.
-    #[arg(long)]
-    no_download: bool,
     /// Skip the confirmation prompt: import into a non-empty directory
     /// that holds no project yet.
     #[arg(long)]
@@ -72,15 +63,10 @@ impl Run for ImportArgs {
             return Ok(ExitCode::FAILURE);
         }
         let choice = ConflictChoice::from_flags(self.mine, self.theirs, self.interactive);
-        let consent = Answers {
-            yes_download: self.yes_download,
-            no_download: self.no_download,
-            ..Default::default()
-        };
         if bussard_model::bundle::is_bundle_path(&self.project) {
             crate::import_bundle::run_bundle(&self.project, dir, choice)
         } else {
-            run_knxproj(&self.project, dir, self.password, choice, consent)
+            run_knxproj(&self.project, dir, self.password, choice)
         }
     }
 }
@@ -105,10 +91,9 @@ fn run_knxproj(
     dir: &Path,
     password_flag: Option<String>,
     choice: ConflictChoice,
-    consent: Answers,
 ) -> anyhow::Result<ExitCode> {
     let model = load_project(path, dir, password_flag)?;
-    let code = write_model(model, dir, choice, "project", Some(consent), Some(path))?;
+    let code = write_model(model, dir, choice, "project", Some(path))?;
     crate::keys_cmd::import_neighbour(path, dir);
     Ok(code)
 }
@@ -145,26 +130,20 @@ pub(crate) fn ask_password() -> Result<Option<String>, SetupError> {
 ///
 /// `choice` settles hand-authored conflicts (see [`ConflictChoice`]); `source`
 /// names the incoming side in sentences (`"project"` or `"bundle"`).
-/// `fetch` runs the product-data download step for the devices' order
-/// numbers ([`crate::confirm::Answers`]); `None` skips it. `project` is the ETS
-/// export read, which `bussard.lock` pins as the devices' product source
+/// `project` is the ETS export read, which `bussard.lock` pins as the devices' product source
 /// until a vendor archive serves them (lock v2, issue #228).
 pub(crate) fn write_model(
     model: Model,
     dir: &Path,
     choice: ConflictChoice,
     source: &str,
-    fetch: Option<Answers>,
     project: Option<&Path>,
 ) -> anyhow::Result<ExitCode> {
-    let mut fetch = fetch;
-    let prompt = fetch.as_mut().map(|c| c as &mut dyn Prompt);
     let outcome = bussard_service::files::import::write_model(
         model,
         dir,
         choice,
         source,
-        prompt,
         project,
         &mut Answers::default(),
         &mut Console,
