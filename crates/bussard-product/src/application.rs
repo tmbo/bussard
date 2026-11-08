@@ -1605,7 +1605,9 @@ pub fn parse_application_program_in(
                     {
                         // Keep the flattened exact-value view in step: one
                         // entry per listed value (`test="0 2"` yields two).
-                        if let WhenTest::Values(values) = &branch.test {
+                        if let WhenTest::Values(values) | WhenTest::Spelled { values, .. } =
+                            &branch.test
+                        {
                             for v in values {
                                 frame.group.branches.push((*v, branch.members.clone()));
                             }
@@ -4668,11 +4670,29 @@ mod tests {
                 value: 3
             }
         );
-        // An equality written with its operator (Siemens `07 B0`, #949).
+        // An `=` before a token (Siemens `07 B0`, #949): matched as exact
+        // values, the vendor's text kept.
+        let spelled = WhenTest::parse(Some("=417"), None);
         assert_eq!(
-            WhenTest::parse(Some("=417"), None),
-            WhenTest::Values(vec![417])
+            spelled,
+            WhenTest::Spelled {
+                values: vec![417],
+                text: "=417".to_string()
+            }
         );
+        assert!(spelled.matches(417) && !spelled.matches(0));
+        assert_eq!(spelled.text().as_deref(), Some("=417"));
+        for (raw, values) in [("=1 =2", vec![1, 2]), ("1 =2", vec![1, 2])] {
+            let t = WhenTest::parse(Some(raw), None);
+            assert_eq!(
+                t,
+                WhenTest::Spelled {
+                    values,
+                    text: raw.to_string()
+                }
+            );
+            assert_eq!(WhenTest::parse(t.text().as_deref(), None), t);
+        }
         assert_eq!(
             WhenTest::parse(Some("=x"), None),
             WhenTest::Unknown("=x".to_string())

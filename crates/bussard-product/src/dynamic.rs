@@ -614,7 +614,8 @@ mod tests {
     /// `<ParameterRefRef>` anywhere). Reaching the block makes the ref active,
     /// so the default-only choose on it inside the block is taken; a
     /// default-only choose on a virtual parameter that titles nothing still
-    /// selects no branch (#474).
+    /// selects no branch (#474). A `test` choose on a title parameter keeps
+    /// the #839 rule (`title2`, never assigned): no capture decides it.
     const BLOCK_TITLE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
      <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
       <Static>
@@ -624,16 +625,20 @@ mod tests {
        <Parameters>
         <Parameter Id="A_P-1" Name="title" ParameterType="A_PT-empty" Access="Read" Value="" />
         <Parameter Id="A_P-2" Name="virt" Value="0" />
+        <Parameter Id="A_P-3" Name="title2" Value="1" />
        </Parameters>
        <ParameterRefs>
         <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
         <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
+        <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
        </ParameterRefs>
        <ComObjects>
         <ComObject Id="A_O-1" Number="1" /><ComObject Id="A_O-2" Number="2" />
+        <ComObject Id="A_O-3" Number="3" />
        </ComObjects>
        <ComObjectRefs>
         <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
+        <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" />
        </ComObjectRefs>
       </Static>
       <Dynamic><Channel Id="A_CH-0" Name="Generic" Text="">
@@ -645,13 +650,18 @@ mod tests {
          <when default="true"><ComObjectRefRef RefId="A_O-2_R-2" /></when>
         </choose>
        </ParameterBlock>
+       <ParameterBlock Id="A_PB-2" Name="Output 3-4" ParamRefId="A_P-3_R-3">
+        <choose ParamRefId="A_P-3_R-3">
+         <when test="1"><ComObjectRefRef RefId="A_O-3_R-3" /></when>
+        </choose>
+       </ParameterBlock>
       </Channel></Dynamic>
      </ApplicationProgram></KNX>"#;
 
     #[test]
     fn test_evaluate_dynamic_block_title_ref_is_active() -> Result<(), Box<dyn std::error::Error>> {
         let app = parse_application_program_str("A", BLOCK_TITLE_XML)?;
-        assert!(app.is_virtual("A_P-1") && app.is_virtual("A_P-2"));
+        assert!(app.is_virtual("A_P-1") && app.is_virtual("A_P-2") && app.is_virtual("A_P-3"));
         let cfg = evaluate_dynamic(&app, &BTreeMap::new());
         assert_eq!(reached_objects(&cfg), ["O-1_R-1"]);
         // The title is not a shown parameter: nothing is written for it.
@@ -662,6 +672,8 @@ mod tests {
     /// Issue #950: a ref shown only behind chooses on itself (the DALI
     /// `A-DA11` group module's `P-1_R-1`) is active as the source of a
     /// reached `<Assign>`, so a choose on it selects its matching branch.
+    /// The never-shown virtual `steer`, only read by an `<Assign>`, selects
+    /// its matching `test` branch as an assigned one does (#839).
     const ASSIGN_SOURCE_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/20">
      <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="t">
       <Static>
@@ -672,14 +684,20 @@ mod tests {
         </Parameter>
         <Parameter Id="A_P-2" Name="copy" Value="0" />
         <Parameter Id="A_P-3" Name="colour" Value="0" />
+        <Parameter Id="A_P-4" Name="steer" Access="None" Value="1" />
+        <Parameter Id="A_P-5" Name="steered" Value="0" />
        </Parameters>
        <ParameterRefs>
         <ParameterRef Id="A_P-1_R-1" RefId="A_P-1" />
         <ParameterRef Id="A_P-2_R-2" RefId="A_P-2" />
         <ParameterRef Id="A_P-3_R-3" RefId="A_P-3" />
+        <ParameterRef Id="A_P-4_R-4" RefId="A_P-4" />
+        <ParameterRef Id="A_P-5_R-5" RefId="A_P-5" />
        </ParameterRefs>
-       <ComObjects><ComObject Id="A_O-1" Number="1" /></ComObjects>
-       <ComObjectRefs><ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /></ComObjectRefs>
+       <ComObjects><ComObject Id="A_O-1" Number="1" /><ComObject Id="A_O-2" Number="2" /></ComObjects>
+       <ComObjectRefs>
+        <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
+       </ComObjectRefs>
       </Static>
       <Dynamic><Channel Id="A_CH-0" Name="g" Text="">
        <ParameterBlock Id="A_PB-1" Name="group">
@@ -693,6 +711,11 @@ mod tests {
           <ParameterRefRef RefId="A_P-1_R-1" />
          </when>
         </choose>
+        <Assign TargetParamRefRef="A_P-5_R-5" SourceParamRefRef="A_P-4_R-4" />
+        <choose ParamRefId="A_P-4_R-4">
+         <when test="0" />
+         <when test="1"><ComObjectRefRef RefId="A_O-2_R-2" /></when>
+        </choose>
        </ParameterBlock>
       </Channel></Dynamic>
      </ApplicationProgram></KNX>"#;
@@ -701,7 +724,7 @@ mod tests {
     fn test_evaluate_dynamic_assign_source_is_active() -> Result<(), Box<dyn std::error::Error>> {
         let app = parse_application_program_str("A", ASSIGN_SOURCE_XML)?;
         let cfg = evaluate_dynamic(&app, &BTreeMap::new());
-        assert_eq!(reached_objects(&cfg), ["O-1_R-1"]);
+        assert_eq!(reached_objects(&cfg), ["O-1_R-1", "O-2_R-2"]);
         Ok(())
     }
 }

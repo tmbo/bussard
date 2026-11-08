@@ -636,7 +636,7 @@ fn enabling_code(gate: &RefGate, codes: &[i64]) -> Option<i64> {
         .copied()
         .find(|c| gate.holds(Some(*c as f64)))
         .or_else(|| match &gate.test {
-            WhenTest::Values(values) => values.first().copied(),
+            WhenTest::Values(values) | WhenTest::Spelled { values, .. } => values.first().copied(),
             _ => None,
         })
 }

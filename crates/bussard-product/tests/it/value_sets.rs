@@ -101,7 +101,9 @@ pub fn tree_facts(app: &ApplicationProgram) -> TreeFacts {
                     let set = tested.entry(param_ref_id.clone()).or_default();
                     for w in whens {
                         match &w.test {
-                            WhenTest::Values(vs) => set.extend(vs.iter().copied()),
+                            WhenTest::Values(vs) | WhenTest::Spelled { values: vs, .. } => {
+                                set.extend(vs.iter().copied())
+                            }
                             WhenTest::Compare { value, .. } => set.extend([
                                 value.saturating_sub(1),
                                 *value,

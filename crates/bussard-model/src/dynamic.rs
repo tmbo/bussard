@@ -104,22 +104,26 @@
 //! Two more places make a ref active without a `<ParameterRefRef>`:
 //!
 //! - The `ParamRefId` of a reached `<ParameterBlock>`, which titles the block
-//!   (issue #943). The Hager actuators `M-0009_A-E807`/`A-E808` (defaults
-//!   sweep, captured 2026-11-07) title each output block with a `TypeNone`,
-//!   `Access="Read"` parameter (`P-2901` "Output 1-2: Definition") that no
+//!   (issue #943), for a default-only `<choose>` on it and nothing else. The
+//!   Hager actuators `M-0009_A-E807`/`A-E808` (defaults sweep, captured
+//!   2026-11-07) title each output block with a `TypeNone`, `Access="Read"`
+//!   parameter (`P-2901` "Output 1-2: Definition") that no
 //!   `<ParameterRefRef>` shows, and gate the block's objects behind a
 //!   default-only `<choose>` on it; ETS writes those objects (`1b 00`,
-//!   `4b 00`). As a title the parameter is shown, so the #474 rule for
-//!   never-shown parameters does not apply. Across the sweep's 623 System B
-//!   programs this changes the walk of five, all of which differed before.
-//! - The source of a reached `<Assign>` (issue #950). The DALI gateway program
-//!   `A-DA11` (`M-00EF_A-DA11-21-F620` and its OEM copies) gates every group
-//!   module's objects on `MD-2_P-1_R-1`, which is shown only inside chooses on
-//!   itself and on a colour type that is 0 at the defaults, so it is never
-//!   reached; ETS takes its `test="0 1"` branch and writes the six group
-//!   objects of all 16 groups. The ref is the source of an unconditional
-//!   `<Assign>` in the group block (and also an output of a
-//!   `<ParameterCalculation>`); the sweep has no program that separates the
+//!   `4b 00`), where the #474 rule alone takes no branch. A title is not a
+//!   placement: a `<choose>` with `test` branches on a title parameter is
+//!   decided as before (#474, #839), since no capture shows what ETS does
+//!   there.
+//! - The source of a reached `<Assign>` (issue #950), as its target: it is
+//!   active, and a never-shown virtual System B parameter an `<Assign>`
+//!   reads selects its `test` branches as one it targets does (#839). The
+//!   DALI gateway program `A-DA11` (`M-00EF_A-DA11-21-F620` and its OEM
+//!   copies) gates every group module's objects on `MD-2_P-1_R-1`, which is
+//!   shown only inside chooses on itself and on a colour type that is 0 at
+//!   the defaults, so it is never reached; ETS takes its `test="0 1"` branch
+//!   and writes the six group objects of all 16 groups. The ref is the source
+//!   of an unconditional `<Assign>` in the group block (and also an output of
+//!   a `<ParameterCalculation>`); the sweep has no program that separates the
 //!   two readings, both change only the four `A-DA11` rows. The `<Assign>`
 //!   reading is the one kept, as it mirrors the target rule above; a
 //!   synthetic product is needed to tell them apart (issue #950).
@@ -327,8 +331,10 @@ impl CompareOp {
 ///   8.2 M and 492 k occurrences). A value may be negative (`test="-1"`).
 /// * `test="!=0"`, `test=">=2"`, `test="<3"` — a comparison
 ///   ([`WhenTest::Compare`], ~130 k).
-/// * `test="=417"` — one exact value written with its operator, read as
-///   [`WhenTest::Values`] (the Siemens `07 B0` channel functions, issue #949).
+/// * `test="=417"`, `test="1 =2"` — exact values with an `=` before one or
+///   more tokens ([`WhenTest::Spelled`], the Siemens `07 B0` channel
+///   functions, issue #949). They match as [`WhenTest::Values`] do, and keep
+///   the vendor's text.
 /// * `<when default="true">` — the branch taken when no sibling matched
 ///   ([`WhenTest::Default`], 97 k).
 /// * anything else, preserved verbatim ([`WhenTest::Unknown`]) rather than
@@ -338,6 +344,16 @@ pub enum WhenTest {
     /// One or more exact values; the branch applies when the parameter takes any
     /// of them.
     Values(Vec<i64>),
+    /// Exact values as [`WhenTest::Values`], written with an `=` before at
+    /// least one token (`=417`, `1 =2`). `text` keeps the attribute as
+    /// written, so the stored tree and the gate labels show the vendor's
+    /// spelling (issue #949).
+    Spelled {
+        /// The values, in the order written.
+        values: Vec<i64>,
+        /// The `test` attribute as written (trimmed).
+        text: String,
+    },
     /// A comparison against a single value.
     Compare {
         /// The comparison operator.
@@ -383,22 +399,31 @@ impl WhenTest {
                 };
             }
         }
-        // `test="=417"`: an equality written with its operator, one value
-        // (issue #949, the Siemens `07 B0` channel functions).
-        if let Some(rest) = raw.strip_prefix('=') {
-            return match rest.trim().parse::<i64>() {
-                Ok(value) => WhenTest::Values(vec![value]),
-                Err(_) => WhenTest::Unknown(raw.to_string()),
-            };
-        }
+        // A token may carry an `=` (`=417`, `1 =2`; issue #949, the Siemens
+        // `07 B0` channel functions), as knx-sim reads it per token.
         let mut values = Vec::new();
+        let mut spelled = false;
         for token in raw.split_whitespace() {
-            match token.parse::<i64>() {
+            let digits = match token.strip_prefix('=') {
+                Some(rest) => {
+                    spelled = true;
+                    rest
+                }
+                None => token,
+            };
+            match digits.parse::<i64>() {
                 Ok(v) => values.push(v),
                 Err(_) => return WhenTest::Unknown(raw.to_string()),
             }
         }
-        WhenTest::Values(values)
+        if spelled {
+            WhenTest::Spelled {
+                values,
+                text: raw.to_string(),
+            }
+        } else {
+            WhenTest::Values(values)
+        }
     }
 
     /// The `test` text of the branch as ETS writes it (`1 2`, `!=0`, the
@@ -413,6 +438,7 @@ impl WhenTest {
                     .collect::<Vec<_>>()
                     .join(" "),
             ),
+            WhenTest::Spelled { text, .. } => Some(text.clone()),
             WhenTest::Compare { op, value } => {
                 let op = match op {
                     CompareOp::Ne => "!=",
@@ -435,7 +461,7 @@ impl WhenTest {
     /// else matched.
     pub fn matches(&self, value: i64) -> bool {
         match self {
-            WhenTest::Values(vs) => vs.contains(&value),
+            WhenTest::Values(vs) | WhenTest::Spelled { values: vs, .. } => vs.contains(&value),
             WhenTest::Compare { op, value: against } => op.matches(value, *against),
             WhenTest::Default | WhenTest::Unknown(_) => false,
         }
@@ -1289,6 +1315,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
     // order, or only through another gated choose, is taken once a pass has
     // reached that parameter.
     let mut active = HashSet::new();
+    let mut titles = HashSet::new();
     let mut calcs = CalcRuns::default();
     let mut walk = Walk::default();
     let mut settled = false;
@@ -1298,6 +1325,7 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
             placed: Rc::clone(&placed),
             assigned: Rc::clone(&assigned),
             active_before: std::mem::take(&mut active),
+            titles_before: std::mem::take(&mut titles),
             ..Walk::default()
         };
         walk.run(app, &values, app.dynamic(), None, 0);
@@ -1306,6 +1334,8 @@ pub fn evaluate_dynamic<S: DynamicSource + ?Sized>(
         shared = next;
         let now = walk.active_set();
         changed |= now != walk.active_before;
+        changed |= walk.titles_now != walk.titles_before;
+        titles = std::mem::take(&mut walk.titles_now);
         active = now;
         // Calculations before the assigns, so an `<Assign>` to a calculated
         // parameter still wins, as for an override.
@@ -2055,17 +2085,17 @@ fn instance_module_def(instance: &str) -> String {
 
 /// The `Parameter` ids (full) the Dynamic section shows somewhere: every
 /// parameter with a `<ParameterRefRef>` in the application's Dynamic section
-/// or in any `<ModuleDef>`'s, in any branch. A `<choose>` on a parameter
-/// outside this set is never gated by activity (see the module docs).
+/// or in any `<ModuleDef>`'s, in any branch. A block title
+/// (`<ParameterBlock ParamRefId>`) does not count here: it activates its ref
+/// only for a default-only `<choose>` (issue #943, see the module docs). A
+/// `<choose>` on a parameter outside this set is never gated by activity,
+/// except by the #474 rule.
 fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
     let mut out = HashSet::new();
     for_each_node(app, &mut |node| {
-        let shown = match node {
-            DynamicNode::ParameterRefRef(r) => Some(r),
-            DynamicNode::ParameterBlock { param_ref, .. } => param_ref.as_ref(),
-            _ => None,
-        };
-        if let Some(id) = shown.and_then(|r| parameter_id(app, r)) {
+        if let DynamicNode::ParameterRefRef(r) = node
+            && let Some(id) = parameter_id(app, r)
+        {
             out.insert(id.to_string());
         }
     });
@@ -2073,14 +2103,17 @@ fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
 }
 
 /// The `Parameter` ids (full) an `<Assign>` of the application's or any
-/// `<ModuleDef>`'s Dynamic section targets, in any branch (issue #839).
+/// `<ModuleDef>`'s Dynamic section targets or reads, in any branch (issues
+/// #839 and #950).
 fn assigned_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
     let mut out = HashSet::new();
     for_each_node(app, &mut |node| {
-        if let DynamicNode::Assign { target, .. } = node
-            && let Some(id) = parameter_id(app, target)
-        {
-            out.insert(id.to_string());
+        if let DynamicNode::Assign { target, source, .. } = node {
+            for r in std::iter::once(target).chain(source) {
+                if let Some(id) = parameter_id(app, r) {
+                    out.insert(id.to_string());
+                }
+            }
         }
     });
     out
@@ -2365,7 +2398,9 @@ fn when_matches(test: &WhenTest, value: Option<f64>) -> bool {
     let Some(v) = value else { return false };
     match test {
         // Exact values compare as integers; a fractional value matches none.
-        WhenTest::Values(vs) => v.fract() == 0.0 && vs.iter().any(|&x| x as f64 == v),
+        WhenTest::Values(vs) | WhenTest::Spelled { values: vs, .. } => {
+            v.fract() == 0.0 && vs.iter().any(|&x| x as f64 == v)
+        }
         WhenTest::Compare { op, value } => {
             let x = *value as f64;
             match op {
@@ -2422,6 +2457,11 @@ struct Walk {
     active_before: HashSet<(String, String)>,
     /// The parameter refs this pass has reached so far, same keys.
     active_now: HashSet<(String, String)>,
+    /// The refs titling a block (`<ParameterBlock ParamRefId>`) the previous
+    /// pass reached, same keys (issue #943).
+    titles_before: HashSet<(String, String)>,
+    /// The block-title refs this pass has reached so far.
+    titles_now: HashSet<(String, String)>,
     /// The current value of every allocator this pass drew from, keyed by
     /// the instance owning it (`None` for an application allocator, the
     /// instance of the declaring `<ModuleDef>` for a module one) and the
@@ -2584,8 +2624,8 @@ fn get_bits(image: &[u8], pos: u32, bits: u32) -> u64 {
 
 impl Walk {
     /// The active parameter refs this pass reached: every reached
-    /// `<ParameterRefRef>`, every reached block title (`<ParameterBlock
-    /// ParamRefId>`) and the target and source of every reached `<Assign>`.
+    /// `<ParameterRefRef>` and the target and source of every reached
+    /// `<Assign>` (block titles are kept apart, in `titles_now`).
     fn active_set(&self) -> HashSet<(String, String)> {
         let mut out = self.active_now.clone();
         for a in &self.assigns {
@@ -2603,10 +2643,11 @@ impl Walk {
     }
 
     /// Whether the ref `param_ref_id` in `instance` is active, so a
-    /// `<choose>` on it may select a branch (issues #159, #563 and #474, see
-    /// the module docs): the ref itself is reached, or its parameter is never
-    /// shown anywhere, unless the choose is `default_only` on a virtual
-    /// parameter of a System B program.
+    /// `<choose>` on it may select a branch (issues #159, #563, #474 and
+    /// #943, see the module docs): the ref itself is reached, or its
+    /// parameter is never shown anywhere, unless the choose is `default_only`
+    /// on a virtual parameter of a System B program; that one is active only
+    /// while a block it titles is reached.
     fn is_active<S: DynamicSource + ?Sized>(
         &self,
         app: &S,
@@ -2617,11 +2658,22 @@ impl Walk {
         let Some(id) = parameter_id(app, param_ref_id) else {
             return true;
         };
+        let key = (instance.to_string(), param_ref_id.to_string());
+        if default_only && (self.titles_now.contains(&key) || self.titles_before.contains(&key)) {
+            return true;
+        }
         if !self.placed.contains(id) {
             return !(default_only && self.never_shown_virtual_b(app, id));
         }
-        let key = (instance.to_string(), param_ref_id.to_string());
         self.active_now.contains(&key) || self.active_before.contains(&key)
+    }
+
+    /// The key of the ref `r` reached inside `module`: its scope's instance
+    /// and the ref, as [`Self::active_now`] and [`Self::titles_now`] hold it.
+    /// Returns the scope too.
+    fn reach(&self, module: Option<usize>, r: &str) -> (Option<usize>, (String, String)) {
+        let scope = self.scope(module, r);
+        (scope, (self.instance_id(scope).to_string(), r.to_string()))
     }
 
     /// Whether `param_id` is a parameter the Dynamic section never shows and
@@ -2633,7 +2685,7 @@ impl Walk {
 
     /// Whether a `<choose>` on `param_id` selects no `test` branch (issue
     /// #839): a never-shown virtual parameter on System B
-    /// ([`Self::never_shown_virtual_b`]) that no `<Assign>` targets.
+    /// ([`Self::never_shown_virtual_b`]) that no `<Assign>` targets or reads.
     fn selects_no_test_branch<S: DynamicSource + ?Sized>(&self, app: &S, param_id: &str) -> bool {
         self.never_shown_virtual_b(app, param_id) && !self.assigned.contains(param_id)
     }
@@ -2759,9 +2811,8 @@ impl Walk {
         for node in nodes {
             match node {
                 DynamicNode::ParameterRefRef(r) => {
-                    let scope = self.scope(module, r);
-                    self.active_now
-                        .insert((self.instance_id(scope).to_string(), r.clone()));
+                    let (scope, key) = self.reach(module, r);
+                    self.active_now.insert(key);
                     self.parameters.push(ActiveParameter {
                         module: scope,
                         param_ref_id: r.clone(),
@@ -2795,12 +2846,11 @@ impl Walk {
                     ..
                 } => {
                     // A block titled by a `ParamRefId` shows that ref as its
-                    // heading: reaching the block makes the ref active (issue
-                    // #943, see the module docs).
+                    // heading: reaching the block makes the ref active for a
+                    // default-only choose (issue #943, see the module docs).
                     if let Some(r) = param_ref {
-                        let scope = self.scope(module, r);
-                        self.active_now
-                            .insert((self.instance_id(scope).to_string(), r.clone()));
+                        let (_, key) = self.reach(module, r);
+                        self.titles_now.insert(key);
                     }
                     let block = node.block_ref();
                     if let Some(b) = &block {
