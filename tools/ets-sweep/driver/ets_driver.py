@@ -1839,7 +1839,18 @@ def catalog_import_button() -> dict | None:
     # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06).
     hits = [l for l in ocr((680, 200, 1100, 2440))
             if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:2])]
-    return min(hits, key=lambda l: abs(l["y"] - 1354)) if hits else None
+    if not hits:
+        return None
+    hit = dict(min(hits, key=lambda l: abs(l["y"] - 1354)))
+    # Where to click: three characters into the word Import, wherever it sits
+    # in the line ('X Import' put x + 40 on the close icon's gap, and five
+    # imports in a row opened no file dialog, 2026-11-08 04:40).
+    words = hit["text"].split()
+    i = next(k for k, w in enumerate(words) if _norm(w) in ("import", "impart", "imp0rt"))
+    before = len(" ".join(words[:i])) + (1 if i else 0)
+    cw = hit["w"] / max(len(hit["text"]), 1)
+    hit["click_x"] = hit["x"] + int((before + 3) * cw)
+    return hit
 
 
 def type_search(term: str, dy: int) -> None:
@@ -1995,7 +2006,7 @@ def flow_catalog_import(req: dict) -> dict:
             # The click lands on nothing now and then while ETS refreshes the
             # catalog after the previous import (43 of 498 files on the first
             # pass, 2026-10-27): press Import again before giving up.
-            click(btn["x"] + 40, btn["y"] + btn["h"] // 2)  # the word Import, not a joined neighbour
+            click(btn["click_x"], btn["y"] + btn["h"] // 2)  # the word Import, not a joined neighbour
             t0 = time.time()
             while time.time() - t0 < 15:
                 dialog = next((p for p in ets_popups() if "Produktdatei" in p.window_text()), None)
@@ -2243,21 +2254,24 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
             # Not os.execv: on Windows it joins argv without quoting, so the space
             # in "C:\Program Files\Python312" killed the first attempt (2026-10-26).
             log("source changed, restarting")
-            # Stop serving before the socket closes: server_close() under a
-            # running serve_forever made the main thread raise WinError 10038,
-            # the interpreter shut down and killed this thread before the
-            # replacement was spawned, and no driver was left (2026-11-07).
-            srv.shutdown()
-            srv.server_close()
             import subprocess
 
+            # Spawn first, then stop serving. srv.shutdown() returns once
+            # serve_forever() in the main thread has ended; main() then returns
+            # and the interpreter kills this daemon thread, so a Popen placed
+            # after the shutdown never ran and no driver was left (2026-11-07
+            # 16:33 with server_close() first, 2026-11-08 04:09 and 08:43 with
+            # shutdown() first). The replacement retries the bind for 30 s
+            # while this process still holds the port.
             subprocess.Popen(
                 [sys.executable, str(me)],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
                 close_fds=True,
             )
             log("replacement spawned")
-            time.sleep(1)
+            srv.shutdown()
+            srv.server_close()
+            log("old driver exiting")
             os._exit(0)
 
 
@@ -2281,6 +2295,9 @@ def main() -> None:
     threading.Thread(target=_reload_watch, args=(srv,), daemon=True).start()
     log(f"listening on 127.0.0.1:{PORT}")
     srv.serve_forever()
+    # serve_forever() ends only when the reload watcher shut the server down;
+    # give that thread time to finish its log line and exit the process itself.
+    time.sleep(30)
 
 
 if __name__ == "__main__":
