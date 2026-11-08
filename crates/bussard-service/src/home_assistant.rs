@@ -275,7 +275,7 @@ pub enum StatusAfter {
     Read {
         /// The status.
         #[serde(flatten)]
-        status: HaStatus,
+        status: Box<HaStatus>,
         /// What it runs.
         running: Running,
     },
@@ -383,7 +383,7 @@ pub struct HaStatusReport {
 #[serde(untagged)]
 pub enum ReachOrStatus {
     /// As read.
-    Read(HaStatus),
+    Read(Box<HaStatus>),
     /// Not read.
     Unreachable {
         /// The URL tried.

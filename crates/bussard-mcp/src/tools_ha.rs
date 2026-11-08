@@ -183,7 +183,7 @@ impl BussardMcp {
         let report = HaStatusReport {
             ok: status.is_ok(),
             status: match status {
-                Ok(status) => ReachOrStatus::Read(status),
+                Ok(status) => ReachOrStatus::Read(Box::new(status)),
                 Err(reason) => ReachOrStatus::Unreachable {
                     url: tier.config.url.clone(),
                     reachable: false,
@@ -306,7 +306,7 @@ impl BussardMcp {
             status_after: match after {
                 Ok(s) => StatusAfter::Read {
                     running: Running::of(&s, &prepared.desired),
-                    status: s,
+                    status: Box::new(s),
                 },
                 Err(e) => StatusAfter::Unreachable {
                     reachable: false,
