@@ -13,8 +13,9 @@ use std::path::Path;
 use toml_edit::{Array, DocumentMut, InlineTable, Item, Table, TableLike, Value};
 
 use crate::files::{
-    DeviceEntries, EntryValue, LOCK_HEADER, LockDevice, Placement, Resolver, TableRef,
-    channel_label, device_entries, existing_placements, handle_of, ordered_channels, scope_entries,
+    Channels, DeviceEntries, DeviceFile, EntryValue, FileEntry, LOCK_HEADER, LockDevice, Placement,
+    Resolver, Scope, SecurityIntent, TableRef, channel_label, device_entries, existing_placements,
+    handle_of, ordered_channels,
 };
 use crate::loader::SaveError;
 use crate::param_model::ProductModels;
@@ -568,204 +569,125 @@ fn lock_item(item: &Item) -> String {
 // devices/<address>.toml
 // ---------------------------------------------------------------------------
 
-/// The item for one device-file entry.
-fn entry_item(value: &EntryValue) -> Item {
-    match value {
-        EntryValue::Param(v) => string_item(v),
-        EntryValue::Object { send, listen, name } => {
-            let mut t = Table::new();
-            t.set_dotted(true);
-            if let Some(send) = send {
-                t.insert("send", string_item(&send.to_string()));
-            }
-            if !listen.is_empty() {
-                let mut a = Array::new();
-                for ga in listen {
-                    a.push(string_value(&ga.to_string()));
-                }
-                t.insert("listen", Item::Value(Value::Array(a)));
-            }
-            if let Some(name) = name {
-                t.insert("name", string_item(name));
-            }
-            if t.is_empty() {
-                // `144 = {}`: an object entry with nothing linked yet.
-                Item::Value(Value::InlineTable(InlineTable::new()))
-            } else {
-                Item::Table(t)
-            }
-        }
+/// The desired device document: the [`DeviceFile`] of `device` and its
+/// entries, serialised and laid out as a fresh render writes it. Params
+/// (sorted by key) come before objects (in number order, as
+/// `device_entries` produced them), pages last; channels in file order (see
+/// `ordered_channels`), then any handle an entry names that the device does
+/// not define.
+fn desired_device(device: &Device, entries: &[(Placement, EntryValue)]) -> Option<DocumentMut> {
+    let mut sorted: Vec<&(Placement, EntryValue)> = entries.iter().collect();
+    sorted.sort_by_cached_key(|(p, v)| {
+        let object = p.page.is_none() && matches!(v, EntryValue::Object { .. });
+        let key = if object { String::new() } else { p.key.clone() };
+        (p.page.clone(), object, key)
+    });
+    let mut scopes: BTreeMap<TableRef, Scope> = BTreeMap::new();
+    for (p, v) in sorted {
+        scopes
+            .entry(p.table.clone())
+            .or_default()
+            .entries
+            .push(FileEntry {
+                table: p.table.clone(),
+                page: p.page.clone(),
+                key: p.key.clone(),
+                value: v.clone(),
+                span: None,
+            });
     }
-}
-
-/// The `[knxnet]` table of an IP interface (issue #391), keys in the order the
-/// model format documents.
-fn knxnet_table(k: &crate::knxnet::KnxnetConfig) -> Table {
-    let mut t = Table::new();
-    t.insert("assignment", string_item(k.assignment.label()));
-    for (key, value) in [
-        ("address", k.address),
-        ("netmask", k.netmask),
-        ("gateway", k.gateway),
-    ] {
-        if let Some(v) = value {
-            t.insert(key, string_item(&v.to_string()));
-        }
-    }
-    if let Some(name) = &k.friendly_name {
-        t.insert("friendly_name", string_item(name));
-    }
-    if !k.tunnels.is_empty() {
-        let mut a = Array::new();
-        for ia in &k.tunnels {
-            a.push(string_value(&ia.to_string()));
-        }
-        t.insert("tunnels", Item::Value(Value::Array(a)));
-    }
-    t
-}
-
-/// The desired device document, built fresh.
-fn desired_device(device: &Device, entries: &[(Placement, EntryValue)]) -> DocumentMut {
-    let mut doc = DocumentMut::new();
-    doc.insert("address", string_item(&device.address.to_string()));
-    doc.insert("name", string_item(&device.name));
-    if let Some(d) = &device.description {
-        doc.insert("description", string_item(d));
-    }
-    if let Some(p) = device
-        .product
-        .as_ref()
-        .and_then(|p| p.order_number.as_ref())
-    {
-        doc.insert("product", string_item(p));
-    }
-    if let Some(a) = &device.application_override {
-        doc.insert("application", string_item(a));
-    }
-    if let Some(r) = &device.replaced {
-        doc.insert("replaced", string_item(r));
-    }
-    if let Some(loc) = &device.location
-        && (loc.floor.is_some() || loc.room.is_some())
-    {
-        let mut t = Table::new();
-        if let Some(f) = &loc.floor {
-            t.insert("floor", string_item(f));
-        }
-        if let Some(r) = &loc.room {
-            t.insert("room", string_item(r));
-        }
-        doc.insert("location", Item::Table(t));
-    }
-    if let Some(sec) = &device.security
-        && (sec.activated || sec.secure_commissioning)
-    {
-        let mut t = Table::new();
-        t.insert("activated", toml_edit::value(sec.activated));
-        t.insert(
-            "secure_commissioning",
-            toml_edit::value(sec.secure_commissioning),
-        );
-        doc.insert("security", Item::Table(t));
-    }
-    if let Some(knxnet) = &device.knxnet {
-        doc.insert("knxnet", Item::Table(knxnet_table(knxnet)));
-    }
-
-    // Group the entries per table: params (sorted by key) before objects (in
-    // number order, as `device_entries` produced them), pages last.
-    let mut tables: BTreeMap<TableRef, Vec<&(Placement, EntryValue)>> = BTreeMap::new();
-    for e in entries {
-        tables.entry(e.0.table.clone()).or_default().push(e);
-    }
-    let fill = |t: &mut Table, list: &[&(Placement, EntryValue)]| {
-        let mut params: Vec<&(Placement, EntryValue)> = list
-            .iter()
-            .copied()
-            .filter(|(p, v)| p.page.is_none() && matches!(v, EntryValue::Param(_)))
-            .collect();
-        params.sort_by(|a, b| a.0.key.cmp(&b.0.key));
-        for (p, v) in params {
-            t.insert(&p.key, entry_item(v));
-        }
-        for (p, v) in list.iter().copied() {
-            if p.page.is_none() && matches!(v, EntryValue::Object { .. }) {
-                t.insert(&p.key, entry_item(v));
-            }
-        }
-        let mut pages: BTreeMap<&str, Vec<&(Placement, EntryValue)>> = BTreeMap::new();
-        for e in list.iter().copied() {
-            if let Some(page) = &e.0.page {
-                pages.entry(page).or_default().push(e);
-            }
-        }
-        for (page, mut list) in pages {
-            list.sort_by(|a, b| a.0.key.cmp(&b.0.key));
-            let mut pt = Table::new();
-            for (p, v) in list {
-                pt.insert(&p.key, entry_item(v));
-            }
-            t.insert(page, Item::Table(pt));
-        }
-    };
-    for (name, table) in [
-        ("parameters", TableRef::Parameters),
-        ("links", TableRef::Links),
-    ] {
-        if let Some(list) = tables.get(&table) {
-            let mut t = Table::new();
-            fill(&mut t, list);
-            doc.insert(name, Item::Table(t));
-        }
-    }
-
-    // Channels: the device's own, in file order (see `ordered_channels`), then
-    // any handle an entry names that the device does not define.
-    let mut order: Vec<String> = Vec::new();
-    let mut names: BTreeMap<String, String> = BTreeMap::new();
+    let mut channels = Vec::new();
     for (id, ch) in ordered_channels(device) {
         let handle = handle_of(device, id);
         // A renamed channel writes its name; a labelled one otherwise writes
         // its label parameter's value (the two agree after a load).
         let renamed = !ch.name.is_empty() && Some(&ch.name) != ch.text.as_ref();
-        let label = match channel_label(device, id) {
+        let name = match channel_label(device, id) {
             Some(value) if !renamed || ch.name == value => Some(value.to_string()),
             _ => renamed.then(|| ch.name.clone()),
         };
-        if let Some(label) = label {
-            names.insert(handle.clone(), label);
-        }
-        order.push(handle);
+        let mut scope = scopes
+            .remove(&TableRef::Channel(handle.clone()))
+            .unwrap_or_default();
+        scope.name = name;
+        channels.push((handle, None, scope));
     }
-    for table in tables.keys() {
-        if let TableRef::Channel(h) = table
-            && !order.contains(h)
-        {
-            order.push(h.clone());
-        }
+    let mut take = |table: TableRef| scopes.remove(&table).unwrap_or_default();
+    let (parameters, links) = (take(TableRef::Parameters), take(TableRef::Links));
+    channels.extend(scopes.into_iter().filter_map(|(table, scope)| match table {
+        TableRef::Channel(h) => Some((h, None, scope)),
+        _ => None,
+    }));
+    channels.retain(|(_, _, scope)| !scope.is_empty());
+    let file = DeviceFile {
+        address: device.address,
+        name: device.name.clone(),
+        description: device.description.clone(),
+        product: device.product.as_ref().and_then(|p| p.order_number.clone()),
+        application: device.application_override.clone(),
+        replaced: device.replaced.clone(),
+        location: (device.location.clone()).filter(|l| l.floor.is_some() || l.room.is_some()),
+        security: (device.security.as_ref())
+            .filter(|s| s.activated || s.secure_commissioning)
+            .map(|s| SecurityIntent {
+                activated: s.activated,
+                secure_commissioning: s.secure_commissioning,
+            }),
+        knxnet: device.knxnet.clone(),
+        parameters,
+        links,
+        channel: Channels(channels),
+    };
+    // Every field is a string, a bool, an array or a table, all of which
+    // TOML holds, so neither step fails.
+    let doc = toml::to_string(&file).ok()?.parse::<DocumentMut>().ok()?;
+    let mut out = DocumentMut::new();
+    for (key, item) in doc.iter() {
+        out.insert(key, laid_out(key, item, &mut Vec::new()));
     }
-    let mut channel = Table::new();
-    channel.set_implicit(true);
-    for handle in order {
-        let list = tables.get(&TableRef::Channel(handle.clone()));
-        let name = names.get(&handle);
-        if list.is_none() && name.is_none() {
-            continue;
-        }
-        let mut t = Table::new();
-        if let Some(name) = name {
-            t.insert("name", string_item(name));
-        }
-        if let Some(list) = list {
-            fill(&mut t, list);
-        }
-        channel.insert(&handle, Item::Table(t));
+    Some(out)
+}
+
+/// One item of a serialised device file at `path` (the keys above it), laid
+/// out as a fresh render writes it: basic strings, header tables, an object
+/// entry dotted (`{}` when empty), `[channel]` implicit.
+fn laid_out(key: &str, item: &Item, path: &mut Vec<String>) -> Item {
+    let Some(table) = item.as_table_like() else {
+        return match item.as_value() {
+            Some(Value::String(s)) => string_item(s.value()),
+            Some(Value::Array(a)) => {
+                let mut out = Array::new();
+                for v in a.iter() {
+                    out.push_formatted(match v {
+                        Value::String(s) => string_value(s.value()),
+                        v => v.clone(),
+                    });
+                }
+                out.fmt();
+                Item::Value(Value::Array(out))
+            }
+            Some(v) => {
+                let mut v = v.clone();
+                v.decor_mut().clear();
+                Item::Value(v)
+            }
+            None => Item::None,
+        };
+    };
+    let object = is_entry_object(path, item);
+    if object && table.is_empty() {
+        // `144 = {}`: an object entry with nothing linked yet.
+        return Item::Value(Value::InlineTable(InlineTable::new()));
     }
-    if !channel.is_empty() {
-        doc.insert("channel", Item::Table(channel));
+    let mut out = Table::new();
+    out.set_dotted(object);
+    out.set_implicit(path.is_empty() && key == "channel");
+    path.push(key.to_string());
+    for (k, v) in table.iter() {
+        out.insert(k, laid_out(k, v, path));
     }
-    doc
+    path.pop();
+    Item::Table(out)
 }
 
 /// The two lock entries a stale object key of an existing device file is
@@ -837,15 +759,16 @@ pub(crate) fn render_device(
         prior: &prior_resolver,
     };
     let parsed = existing.and_then(|text| {
-        let doc = toml_io::parse_document(path, text).ok()?;
-        let entries = scope_entries(path, text, &doc).ok()?;
+        let entries = toml_io::parse::<DeviceFile>(path, text).ok()?.entries();
         let doc_mut = toml_io::parse_document_mut(path, text).ok()?;
         Some((entries, doc_mut))
     });
     let empty = DeviceEntries::default();
     let placements = existing_placements(parsed.as_ref().map_or(&empty, |(e, _)| e), &resolver);
     let entries = device_entries(device, links, &placements, models);
-    let desired = desired_device(device, &entries);
+    let Some(desired) = desired_device(device, &entries) else {
+        return existing.unwrap_or_default().to_string();
+    };
     match parsed {
         None => desired.to_string(),
         Some((_, mut doc)) => {
