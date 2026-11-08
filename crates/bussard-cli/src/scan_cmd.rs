@@ -25,7 +25,7 @@ use bussard_service::BusService;
 use bussard_service::WritePolicy;
 use bussard_service::identity::SecureStatus;
 use bussard_service::line::WalkEvent;
-use bussard_service::mgmt::{Timeouts, manufacturers, system_type};
+use bussard_service::mgmt::{Timeouts, manufacturers};
 use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
 use bussard_service::secure::Key16;
 use bussard_service::secure::ToolKeys;
@@ -143,7 +143,7 @@ pub(crate) fn run(
         anyhow::Ok(swept)
     })?;
 
-    let timing = swept.timing_json();
+    let timing = scan::ScanTiming::of(&swept);
     let stats = SweepStats::of(&swept);
     let mut report = scan::cross_reference(swept.found, model.as_ref());
     // The identity verdict per device, against the lock and the stored facts
@@ -175,7 +175,12 @@ pub(crate) fn run(
         news.print(true);
         let style = crate::style::Style::stderr();
         eprintln!("{}", stats.summary(report.found.len(), &report, style));
-        print_json(&report, timing)?;
+        crate::output::report(&scan::ScanOutcome::new(
+            range,
+            &report,
+            timing,
+            model.as_ref(),
+        ))?;
     } else {
         news.print_warnings();
         print!(
@@ -456,58 +461,6 @@ fn render_report(
         out.push_str(&block);
     }
     out
-}
-
-/// Prints a stable JSON array of the discovered devices plus the model delta
-/// and the sweep's `timing` (issue #45).
-fn print_json(report: &ScanReport, timing: serde_json::Value) -> anyhow::Result<()> {
-    use serde_json::json;
-    let devices: Vec<_> = report
-        .found
-        .iter()
-        .map(|f| {
-            let status = if !report.have_model {
-                serde_json::Value::Null
-            } else if report.not_in_model.contains(&f.address) {
-                json!("not_in_model")
-            } else {
-                json!("known")
-            };
-            let mut row = json!({
-                "address": f.address.to_string(),
-                "mask": format!("{:04X}", f.mask),
-                "system_type": system_type(f.mask),
-                "manufacturer_id": f.manufacturer_id.map(|id| format!("{id:#06X}")),
-                "manufacturer": f.manufacturer_id.map(manufacturers::display),
-                "serial": f.serial.as_deref().map(hex),
-                "order": f.order,
-                "model_status": status,
-            });
-            // A plain device's row is unchanged; an activated one says how it
-            // was read (issue #203).
-            if f.secure.activated() {
-                row["secure"] = json!(f.secure.as_str());
-            }
-            if let Some(identity) = &f.identity {
-                row["identity"] = json!(identity);
-            }
-            row
-        })
-        .collect();
-
-    let out = json!({
-        "found": devices,
-        "model_device_count": report.model_device_count,
-        "not_in_model": report.not_in_model.iter().map(|a| a.to_string()).collect::<Vec<_>>(),
-        "missing_from_bus": report
-            .missing
-            .iter()
-            .map(|(a, name)| json!({ "address": a.to_string(), "name": name }))
-            .collect::<Vec<_>>(),
-        "timing": timing,
-    });
-    crate::output::print(crate::output::schema::SCAN, &out)?;
-    Ok(())
 }
 
 #[cfg(test)]

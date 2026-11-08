@@ -107,9 +107,9 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let report = status_report(target, device, &read);
+    let report = status_report(target, device, &read, presented_tool_key);
     if json {
-        crate::output::print(crate::output::schema::STATUS_DEVICE, &report)?;
+        crate::output::report(&report)?;
     } else {
         print_text(target, &report, read.knxnet_error.as_deref());
     }

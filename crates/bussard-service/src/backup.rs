@@ -459,6 +459,116 @@ async fn read_application_state<Ch: L4Channel>(
     }
 }
 
+/// A backup run in one shape (issue #904): `bussard backup --json` and
+/// `knx_backup_device`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BackupOutcome {
+    /// No device failed.
+    pub ok: bool,
+    /// The run's directory.
+    pub out_dir: String,
+    /// Its name, which `knx_restore_tables` takes as `backup`.
+    pub backup: String,
+    /// The manifest file.
+    pub manifest: String,
+    /// The manifest: `tool`, `version`, `created`, `gateway`, `devices`.
+    #[serde(flatten)]
+    pub run: bussard_download::backup::BackupManifest,
+    /// How many devices ended in each status.
+    pub totals: std::collections::BTreeMap<&'static str, usize>,
+    /// The programming tier is on (knx_restore_tables is there), for the
+    /// next step.
+    #[serde(skip)]
+    pub programming: bool,
+}
+
+impl BackupOutcome {
+    /// The run written to `out_dir` with `manifest` at `manifest_path`.
+    pub fn new(
+        out_dir: &Path,
+        manifest: bussard_download::backup::BackupManifest,
+        manifest_path: &Path,
+    ) -> BackupOutcome {
+        BackupOutcome {
+            ok: !manifest.any_failed(),
+            out_dir: out_dir.display().to_string(),
+            backup: out_dir
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            manifest: manifest_path.display().to_string(),
+            totals: manifest.totals(),
+            run: manifest,
+            programming: false,
+        }
+    }
+
+    /// How many devices ended as `key`.
+    fn count(&self, key: &str) -> usize {
+        self.totals.get(key).copied().unwrap_or(0)
+    }
+}
+
+impl crate::report::Report for BackupOutcome {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, model: &Model) -> Option<String> {
+        let backed: Vec<String> = self
+            .run
+            .devices
+            .iter()
+            .filter(|d| d.status == bussard_download::backup::BackupStatus::BackedUp)
+            .filter_map(|d| d.address.parse().ok())
+            .map(|ia| crate::report::device_phrase(model, ia))
+            .collect();
+        let mut out = match backed.len() {
+            0 => "No device was backed up.".to_string(),
+            1..=4 => format!("Backed up {}.", bussard_model::text::join_and(&backed)),
+            n => format!("Backed up {n} devices."),
+        };
+        let unreachable = self.count("unreachable");
+        if unreachable > 0 {
+            out.push_str(&format!(
+                " {unreachable} did not answer (switched off or disconnected)."
+            ));
+        }
+        let failed = self.count("failed");
+        if failed > 0 {
+            out.push_str(&format!(
+                " {failed} could not be read (`devices` says why)."
+            ));
+        }
+        if !backed.is_empty() {
+            out.push_str(" The copies let a device's connections be put back later.");
+        }
+        Some(out)
+    }
+
+    fn next_step(&self) -> Option<String> {
+        let name = &self.backup;
+        let restore = if self.programming {
+            format!(
+                "To put a device's link tables back later, knx_restore_tables with backup \
+                 {name:?} (plan, the human's yes, then the write)."
+            )
+        } else {
+            format!(
+                "Restoring a device's link tables needs --allow-programming \
+                 (knx_restore_tables with backup {name:?}) or `bussard restore {} <ia>` at the \
+                 CLI.",
+                self.out_dir
+            )
+        };
+        Some(format!(
+            "Tell the human {} device(s) were backed up to {} (list any skipped, unreachable or \
+             failed device with its detail). {restore}",
+            self.count("backed_up"),
+            self.out_dir
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

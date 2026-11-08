@@ -22,15 +22,13 @@
 use std::collections::BTreeSet;
 
 use bussard_model::change::{ChangeKind, ChangeSet, summarize};
-use bussard_model::text::{capitalize, join_and};
+use bussard_model::text::join_and;
 use bussard_model::{IndividualAddress, Model};
 use serde_json::{Map, Value, json};
 
 /// The tools whose result [`add_result_summary`] gives a `summary` when the
 /// tool did not write one itself.
 pub const SUMMARIZED_TOOLS: &[&str] = &[
-    "knx_backup_device",
-    "knx_reconstruct_device",
     "knx_ha_plan",
     "knx_ha_apply",
     "knx_ha_automation_plan",
@@ -180,70 +178,11 @@ pub fn result_summary(tool: &str, value: &Value, model: &Model) -> String {
         );
     }
     match tool {
-        "knx_backup_device" => backup_summary(model, value),
-        "knx_reconstruct_device" => reconstruct_summary(&device, value),
         "knx_ha_plan" => ha_plan_summary(value),
         "knx_ha_apply" => ha_apply_summary(value),
         "knx_ha_automation_plan" => automation_plan_summary(value),
         "knx_ha_automation_apply" | "knx_ha_automation_remove" => automation_apply_summary(value),
         _ => format!("The request for {device} was handled."),
-    }
-}
-
-/// `knx_backup_device`: which devices were backed up and which could not be.
-fn backup_summary(model: &Model, value: &Value) -> String {
-    let totals = &value["totals"];
-    let count = |k: &str| totals[k].as_u64().unwrap_or(0);
-    let backed: Vec<String> = value["devices"]
-        .as_array()
-        .map(|devices| {
-            devices
-                .iter()
-                .filter(|d| d["status"] == "backed_up")
-                .filter_map(|d| d["address"].as_str()?.parse().ok())
-                .map(|ia| device_phrase(model, ia))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = match backed.len() {
-        0 => "No device was backed up.".to_string(),
-        1..=4 => format!("Backed up {}.", join_and(&backed)),
-        n => format!("Backed up {n} devices."),
-    };
-    let unreachable = count("unreachable");
-    if unreachable > 0 {
-        out.push_str(&format!(
-            " {unreachable} did not answer (switched off or disconnected)."
-        ));
-    }
-    let failed = count("failed");
-    if failed > 0 {
-        out.push_str(&format!(
-            " {failed} could not be read (`devices` says why)."
-        ));
-    }
-    if !backed.is_empty() {
-        out.push_str(" The copies let a device's connections be put back later.");
-    }
-    out
-}
-
-/// `knx_reconstruct_device`: whether the device matches the model.
-fn reconstruct_summary(device: &str, value: &Value) -> String {
-    let n = value["diff"]["count"].as_u64().unwrap_or(0);
-    match n {
-        0 => format!(
-            "{}'s connections match your project; nothing is missing or extra.",
-            capitalize(device)
-        ),
-        1 => format!(
-            "{} differs from your project in one connection (the sentences list it).",
-            capitalize(device)
-        ),
-        n => format!(
-            "{} differs from your project in {n} connections (the sentences list them).",
-            capitalize(device)
-        ),
     }
 }
 

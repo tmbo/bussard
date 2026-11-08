@@ -115,11 +115,16 @@ pub async fn read_live_status<Ch: L4Channel>(
     })
 }
 
-/// The `status <ADDRESS> --json` report.
+/// One device's live state in one shape (issue #904): `bussard status
+/// <ADDRESS> --json` and the `live` part of `knx_show_device {live: true}`.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct StatusReport {
+    /// Always `true`: the device was read.
+    pub ok: bool,
     /// The device address.
     pub address: String,
+    /// Whether it was read under KNX Data Secure.
+    pub secured: bool,
     /// The device's name in the model, when it has one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -144,6 +149,57 @@ pub struct StatusReport {
     /// managed with its tool key (issue #533).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security: Option<bussard_download::SecurityDiagnostics>,
+    /// The state in words, names first.
+    pub sentences: Vec<String>,
+    /// The KNXnet/IP settings, one `label: value` line each.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub knxnet_lines: Vec<String>,
+    /// Why the KNXnet/IP parameter object was not read.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knxnet_error: Option<String>,
+}
+
+impl crate::report::Report for StatusReport {
+    const SCHEMA: u32 = 2;
+}
+
+/// The state of `report` in words, names first.
+fn sentences(target: IndividualAddress, report: &StatusReport) -> Vec<String> {
+    let who = match &report.name {
+        Some(name) => format!("{name} ({target})"),
+        None => target.to_string(),
+    };
+    let mut sentences = vec![format!(
+        "{who} answers with mask {} ({}).",
+        report.mask, report.system_type
+    )];
+    if let Some(check) = &report.identity {
+        sentences.push(format!("{}.", crate::identity_line(target, check)));
+    }
+    match (&report.knxnet, &report.knxnet_error) {
+        (Some(_), _) if report.model_knxnet.is_some() && report.knxnet_drift.is_empty() => {
+            sentences.push(
+                "It is a KNX IP interface; its KNXnet/IP settings match [knxnet] in its device \
+                 file."
+                    .to_string(),
+            )
+        }
+        (Some(_), _) if report.model_knxnet.is_some() => sentences.push(format!(
+            "It is a KNX IP interface; its KNXnet/IP settings differ from [knxnet] in its \
+             device file: {}.",
+            report.knxnet_drift.join("; ")
+        )),
+        (Some(_), _) => sentences.push(
+            "It is a KNX IP interface; `knxnet_lines` lists its IP settings, tunnelling \
+             addresses and state."
+                .to_string(),
+        ),
+        (None, Some(err)) => sentences.push(format!(
+            "Its KNXnet/IP parameter object was not read ({err})."
+        )),
+        (None, None) => {}
+    }
+    sentences
 }
 
 /// Builds the report from what the session read and the device's file
@@ -153,6 +209,7 @@ pub fn status_report(
     target: IndividualAddress,
     device: Option<&Device>,
     read: &LiveStatus,
+    secured: bool,
 ) -> StatusReport {
     let identity = IdentityCheck::compare(
         device,
@@ -166,8 +223,10 @@ pub fn status_report(
         (Some(facts), Some(config)) => facts.drift(config),
         _ => Vec::new(),
     };
-    StatusReport {
+    let mut report = StatusReport {
+        ok: true,
         address: target.to_string(),
+        secured,
         name: device.map(|d| d.name.clone()).filter(|n| !n.is_empty()),
         mask: bussard_model::facts::format_mask(read.mask),
         system_type: bussard_mgmt::system_type(read.mask).to_string(),
@@ -176,5 +235,19 @@ pub fn status_report(
         model_knxnet,
         knxnet_drift,
         security: read.security.clone(),
-    }
+        sentences: Vec::new(),
+        knxnet_lines: read
+            .knxnet
+            .as_ref()
+            .map(|k| {
+                k.lines()
+                    .into_iter()
+                    .map(|(label, value)| format!("{label}: {value}"))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        knxnet_error: read.knxnet_error.clone(),
+    };
+    report.sentences = sentences(target, &report);
+    report
 }

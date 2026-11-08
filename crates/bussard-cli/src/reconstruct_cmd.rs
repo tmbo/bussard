@@ -192,8 +192,17 @@ fn run(
     let mut report = build_report(target, read.live.tables(), model.as_ref());
     report.identity = read.check().cloned();
     report.parameters = read.params.map(|p| p.readback);
+    report.secured = bussard_service::secure::resolve(
+        target,
+        tool_key_source,
+        bussard_service::secure::model_activated(model.as_ref(), target),
+    )
+    .is_ok_and(|key| key.is_some());
+    if let Some(model) = model.as_ref() {
+        report = report.with_differences(target, model);
+    }
     if json {
-        crate::output::print(crate::output::schema::RECONSTRUCT, &report)?;
+        crate::output::report(&report)?;
     } else {
         print_text(&report);
         if let Some(identity) = &report.identity {
@@ -374,7 +383,7 @@ fn run_line(
 
     let summary = build_summary(line, out, &found, &model);
     if json {
-        crate::output::print(crate::output::schema::RECONSTRUCT_LINE, &summary)?;
+        crate::output::report(&summary)?;
     } else {
         print_line_summary(&summary);
     }

@@ -41,8 +41,6 @@ pub trait Report: Serialize {
 pub mod schema {
     /// `bussard audit --json`.
     pub const AUDIT: u32 = 1;
-    /// `bussard backup --json` (the manifest).
-    pub const BACKUP: u32 = 1;
     /// `bussard device --json`.
     pub const DEVICE: u32 = 1;
     /// `bussard diff --json`.
@@ -73,20 +71,12 @@ pub mod schema {
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.
     pub const MONITOR: u32 = 1;
-    /// `bussard reconstruct --json`.
-    pub const RECONSTRUCT: u32 = 1;
-    /// `bussard reconstruct --line --json`.
-    pub const RECONSTRUCT_LINE: u32 = 1;
-    /// `bussard scan --json`.
-    pub const SCAN: u32 = 1;
     /// `bussard secure diag <ADDRESS> --json` (issue #533).
     pub const SECURE_DIAG: u32 = 1;
     /// `bussard show --json`.
     pub const SHOW: u32 = 1;
     /// `bussard status --json`.
     pub const STATUS: u32 = 1;
-    /// `bussard status <ADDRESS> --json`: one device's live state (issue #391).
-    pub const STATUS_DEVICE: u32 = 1;
     /// `bussard test --json`.
     pub const TEST: u32 = 1;
     /// `bussard test --secure-idle --json`.

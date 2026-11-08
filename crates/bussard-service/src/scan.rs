@@ -138,28 +138,6 @@ impl Sweep {
             self.count(ProbeMiss::Timeout)
         )
     }
-
-    /// The `timing` object of `scan --json` (issue #45): the summary counts
-    /// plus one row per swept address with its probe time and outcome.
-    pub fn timing_json(&self) -> serde_json::Value {
-        use serde_json::json;
-        json!({
-            "addresses": self.timings.len(),
-            "total_ms": self.elapsed.as_millis(),
-            "absent_negative_confirmation": self.count(ProbeMiss::NegativeConfirmation),
-            "absent_timeout": self.count(ProbeMiss::Timeout),
-            "refused": self.count(ProbeMiss::Refused),
-            "per_address": self
-                .timings
-                .iter()
-                .map(|t| json!({
-                    "address": t.address.to_string(),
-                    "ms": t.elapsed.as_millis(),
-                    "outcome": t.outcome(),
-                }))
-                .collect::<Vec<_>>(),
-        })
-    }
 }
 
 /// A single discovered device and everything read from it.
@@ -362,6 +340,233 @@ pub fn observe_identity(
             application_id,
         },
     )
+}
+
+/// One probed address of a scan: how long the probe took and its outcome.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AddressRow {
+    /// The address.
+    pub address: String,
+    /// The probe time in milliseconds.
+    pub ms: u128,
+    /// `present`, or why nothing answered.
+    pub outcome: &'static str,
+}
+
+/// The timing of a scan (issue #45): the counts and one row per address.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanTiming {
+    /// Addresses probed.
+    pub addresses: usize,
+    /// The sweep's wall-clock time in milliseconds.
+    pub total_ms: u128,
+    /// Addresses the interface reported absent at once.
+    pub absent_negative_confirmation: usize,
+    /// Addresses that did not answer in time.
+    pub absent_timeout: usize,
+    /// Addresses that refused the connection.
+    pub refused: usize,
+    /// One row per probed address.
+    pub per_address: Vec<AddressRow>,
+}
+
+impl ScanTiming {
+    /// The timing of `swept`.
+    pub fn of(swept: &Sweep) -> ScanTiming {
+        ScanTiming {
+            addresses: swept.timings.len(),
+            total_ms: swept.elapsed.as_millis(),
+            absent_negative_confirmation: swept.count(ProbeMiss::NegativeConfirmation),
+            absent_timeout: swept.count(ProbeMiss::Timeout),
+            refused: swept.count(ProbeMiss::Refused),
+            per_address: swept
+                .timings
+                .iter()
+                .map(|t| AddressRow {
+                    address: t.address.to_string(),
+                    ms: t.elapsed.as_millis(),
+                    outcome: t.outcome(),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One device that answered a scan, name first.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanDevice {
+    /// Its name in the project.
+    pub name: Option<String>,
+    /// Its address.
+    pub address: String,
+    /// Whether the project has it (`None` without a project).
+    pub known: Option<bool>,
+    /// Its mask, hex.
+    pub mask: String,
+    /// The system the mask names.
+    pub system_type: &'static str,
+    /// Its manufacturer.
+    pub manufacturer: Option<String>,
+    /// Its manufacturer id, `0x0083`.
+    pub manufacturer_id: Option<String>,
+    /// Its order number.
+    pub order_number: Option<String>,
+    /// Its serial, hex.
+    pub serial: Option<String>,
+    /// How it was read with respect to KNX Data Secure, for an activated
+    /// device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secure: Option<&'static str>,
+    /// What that means, for an activated device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub secure_note: Option<&'static str>,
+    /// Its identity against `bussard.lock`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<IdentityCheck>,
+}
+
+/// A project device that did not answer.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct Missing {
+    /// Its name.
+    pub name: String,
+    /// Its address.
+    pub address: String,
+}
+
+/// A line scan (`bussard scan --json`, the result of a `knx_find_devices`
+/// job) in one shape (issue #904).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct ScanOutcome {
+    /// Always `true`: the sweep ran.
+    pub ok: bool,
+    /// The line, `1.1`.
+    pub line: String,
+    /// The first device number probed.
+    pub from: u8,
+    /// The last device number probed.
+    pub to: u8,
+    /// The devices that answered.
+    pub devices: Vec<ScanDevice>,
+    /// How many devices the project has (0 without one).
+    pub model_device_count: usize,
+    /// Responders the project does not have.
+    pub not_in_model: Vec<String>,
+    /// Project devices in the probed range that did not answer.
+    pub missing_from_bus: Vec<Missing>,
+    /// The timing.
+    pub timing: ScanTiming,
+}
+
+impl ScanOutcome {
+    /// The scan of `range` that found `report` (identities filled in) in
+    /// `timing`; `model` names the devices.
+    pub fn new(
+        range: LineRange,
+        report: &ScanReport,
+        timing: ScanTiming,
+        model: Option<&bussard_model::Model>,
+    ) -> ScanOutcome {
+        let name_of = |addr: IndividualAddress| -> Option<String> {
+            model?
+                .devices
+                .get(&addr)
+                .map(|d| d.device.name.clone())
+                .filter(|n| !n.is_empty())
+        };
+        ScanOutcome {
+            ok: true,
+            line: format!("{}.{}", range.area, range.line),
+            from: range.from,
+            to: range.to,
+            devices: report
+                .found
+                .iter()
+                .map(|f| ScanDevice {
+                    name: name_of(f.address),
+                    address: f.address.to_string(),
+                    known: report.known(f.address),
+                    mask: format!("{:04X}", f.mask),
+                    system_type: f.system_type(),
+                    manufacturer: f
+                        .manufacturer_id
+                        .map(bussard_mgmt::manufacturers::display),
+                    manufacturer_id: f.manufacturer_id.map(|id| format!("{id:#06X}")),
+                    order_number: f.order.clone(),
+                    serial: f.serial.as_deref().map(bussard_model::text::hex),
+                    secure: f.secure.activated().then(|| f.secure.as_str()),
+                    secure_note: secure_label(f.secure).filter(|_| f.secure.activated()),
+                    identity: f.identity.clone(),
+                })
+                .collect(),
+            model_device_count: report.model_device_count,
+            not_in_model: report.not_in_model.iter().map(ToString::to_string).collect(),
+            missing_from_bus: report
+                .missing
+                .iter()
+                .filter(|(addr, _)| range.contains(*addr))
+                .map(|(addr, name)| Missing {
+                    name: name.clone(),
+                    address: addr.to_string(),
+                })
+                .collect(),
+            timing,
+        }
+    }
+}
+
+impl crate::report::Report for ScanOutcome {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, _model: &bussard_model::Model) -> Option<String> {
+        let line = &self.line;
+        let probed = self.timing.addresses;
+        let answered: Vec<String> = self
+            .devices
+            .iter()
+            .map(|d| match &d.name {
+                Some(name) => format!("{name} ({})", d.address),
+                None => format!("{} (not in the model)", d.address),
+            })
+            .collect();
+        let mut out = if answered.is_empty() {
+            format!("No device answered on line {line} ({probed} addresses probed).")
+        } else {
+            format!(
+                "{} device(s) answered on line {line} ({probed} addresses probed): {}.",
+                answered.len(),
+                answered.join(", ")
+            )
+        };
+        if !self.missing_from_bus.is_empty() {
+            let names: Vec<String> = self
+                .missing_from_bus
+                .iter()
+                .map(|m| {
+                    if m.name.is_empty() {
+                        m.address.clone()
+                    } else {
+                        format!("{} ({})", m.name, m.address)
+                    }
+                })
+                .collect();
+            out.push_str(&format!(
+                " {} model device(s) in the scanned range did not answer: {}.",
+                names.len(),
+                names.join(", ")
+            ));
+        }
+        Some(out)
+    }
+
+    fn next_step(&self) -> Option<String> {
+        Some(
+            "Tell the human the summary and the devices by name. knx_show_device with `live: \
+             true` reads one device's live status (identity, and for an IP interface its IP \
+             settings and tunnels)."
+                .to_string(),
+        )
+    }
 }
 
 #[cfg(test)]

@@ -179,13 +179,18 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let (manifest, manifest_path) = write_backup_run(&out_dir, gateway, started, captured)
         .context("writing the backup (the run is not usable without it)")?;
 
+    let failed = manifest.any_failed();
     if json {
-        crate::output::print(crate::output::schema::BACKUP, &manifest)?;
+        crate::output::report(&bussard_service::backup::BackupOutcome::new(
+            &out_dir,
+            manifest,
+            &manifest_path,
+        ))?;
     } else {
         print_text(&manifest, &out_dir, &manifest_path);
     }
 
-    if manifest.any_failed() {
+    if failed {
         Ok(ExitCode::FAILURE)
     } else {
         Ok(ExitCode::SUCCESS)
