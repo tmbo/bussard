@@ -461,9 +461,23 @@ impl Device {
     /// (hardware type PID 78, order info PID 15, ...) when the product data
     /// does not say what the real hardware answers (the ETS sweep, bussard
     /// epic #419). An unknown object index is ignored.
+    ///
+    /// A PID the object already models keeps the description it had before
+    /// bussard issue #975 (`PDT_VARIABLE_LENGTH`, one element). A PID it does
+    /// not model is described with the generic PDT of the value's length
+    /// ([`Property::sized`], `PDT_GENERIC_07` for 7 octets): ETS judged the
+    /// Jung F50's `LdCtrlCompareProp` range on object 0 PID 201 from the
+    /// description alone and refused a variable-length one (ETS sweep
+    /// 2026-11-08, `M-0004_A-D162-22-D781-O000A`).
     pub fn with_property(mut self, object: u8, pid: u8, value: Vec<u8>) -> Self {
         if let Some(obj) = self.objects.get_mut(&object) {
-            obj.set_property(pid, Property::read_only(value));
+            let prop = Property::read_only(value);
+            let prop = if obj.has_property(pid) {
+                prop
+            } else {
+                prop.sized()
+            };
+            obj.set_property(pid, prop);
         }
         self
     }
@@ -1139,6 +1153,50 @@ mod tests {
         assert_eq!(d[1], 0xD3);
         assert_eq!(d[13] & 0x80, 0x80, "writable");
         assert_eq!(u16::from_be_bytes([d[14], d[15]]), 4);
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_property_unmodelled_pid_is_described_with_its_generic_pdt()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // The ETS sweep's seed for the Jung F50 (bussard issue #975): object 0
+        // PID 201, 7 octets, which the device object does not model.
+        let value = vec![0x01, 0x00, 0x04, 0x00, 0x00, 0x00, 0x00];
+        let dev = system_b_device()?;
+        let modelled = dev.objects.get(&0).is_some_and(|o| o.has_property(201));
+        assert!(!modelled, "the device object does not model PID 201");
+        let mut dev = dev.with_property(0, 201, value.clone());
+        connect(&mut dev)?;
+        // A_PropertyDescription_Read object 0, PID 201.
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 201, 0x00]))?;
+        let d = &r.responses[0].tpdu;
+        assert_eq!(d[1], 0xD9, "A_PropertyDescription_Response");
+        assert_eq!(d[3], 201);
+        assert_eq!(d[5], 0x17, "PDT_GENERIC_07, read-only");
+        assert_eq!(u16::from_be_bytes([d[6], d[7]]), 1, "one element");
+        // A_PropertyValue_Read object 0, PID 201, one element from 1.
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x00, 201, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), value);
+        Ok(())
+    }
+
+    #[test]
+    fn test_with_property_modelled_pid_keeps_its_description()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // An override of a PID the device object models (PID 78, hardware
+        // type) is described as before #975: variable length, one element.
+        let value = vec![0x00, 0x00, 0x12, 0x34, 0x56, 0x78];
+        let dev = system_b_device()?;
+        let modelled = dev.objects.get(&0).is_some_and(|o| o.has_property(78));
+        assert!(modelled, "the device object models PID 78");
+        let mut dev = dev.with_property(0, 78, value.clone());
+        connect(&mut dev)?;
+        let r = dev.handle_cemi(&data(&dev, 0x3D8, &[0x00, 78, 0x00]))?;
+        let d = &r.responses[0].tpdu;
+        assert_eq!(d[5], PDT_VARIABLE_LENGTH, "read-only, variable length");
+        assert_eq!(u16::from_be_bytes([d[6], d[7]]), 1);
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[0x00, 78, 0x10, 0x01]))?;
+        assert_eq!(prop_response_value(&r), value);
         Ok(())
     }
 
