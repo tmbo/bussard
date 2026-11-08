@@ -938,7 +938,9 @@ class TestCaptureSecure(unittest.TestCase):
 
     def test_oracle_row_names_the_keyring_of_a_secure_capture(self):
         row = capture.oracle_row("syn-secure", self.APP, "100.0", "loadctl=identical")
-        self.assertTrue(row.endswith("keyring=captures/synthetic/syn-secure/defaults/project.knxkeys"), row)
+        self.assertIn("keyring=captures/synthetic/syn-secure/defaults/project.knxkeys", row)
+        # A secure product plans with the key store of its model template (#858).
+        self.assertTrue(row.endswith("dir=captures/synthetic/syn-secure/defaults/model"), row)
         self.assertNotIn("keyring=", capture.oracle_row("syn-minimal", "M-00FA_A-2700-10-0000"))
         # Derived on every capture, so a re-capture does not carry an old one.
         self.assertEqual(capture.carried_options("loadctl=identical", "keyring=old.knxkeys scope=par"),
