@@ -109,8 +109,8 @@ impl ReconstructReport {
                 .map(|d| format!("devices/{}.toml", d.file_stem));
             DeviceDiff {
                 from: match file {
-                    Some(file) => format!("the model ({file})"),
-                    None => "the model (no device file for this address)".to_string(),
+                    Some(file) => format!("your project ({file})"),
+                    None => "your project (no device file for this address)".to_string(),
                 },
                 to: format!("{target} as read from the bus"),
                 count: changes.len(),
@@ -118,8 +118,8 @@ impl ReconstructReport {
                     "no differences".to_string()
                 } else {
                     format!(
-                        "{extra} link(s) on the device the model does not have, {missing} \
-                         link(s) in the model the device does not have"
+                        "{extra} link(s) on the device your project does not have, {missing} \
+                         link(s) in your project the device does not have"
                     )
                 },
                 touches_protected: changes.iter().any(|c| c.protected),
@@ -164,13 +164,13 @@ impl crate::report::Report for ReconstructReport {
         } else if self.programming {
             format!(
                 "Quote differences.sentences to the human. knx_plan_device and \
-                 knx_apply_device write the model's links to {target}; knx_restore_tables puts \
+                 knx_apply_device write the links in your project to {target}; knx_restore_tables puts \
                  the link tables of a backup back. Neither runs without the human's yes to its \
                  plan."
             )
         } else {
             format!(
-                "Quote differences.sentences to the human. Writing the model's links to \
+                "Quote differences.sentences to the human. Writing the links in your project to \
                  {target} needs --allow-programming (knx_plan_device, knx_apply_device) or \
                  `bussard plan {target}` and `bussard apply {target}` at the CLI."
             )
@@ -268,7 +268,7 @@ impl Diff {
                 };
                 let sentence = match kind {
                     DifferenceKind::OnDeviceNotInModel => format!(
-                        "Object {} on {target} is linked to {named}, which the model does not \
+                        "Object {} on {target} is linked to {named}, which your project does not \
                          link to it.",
                         pair.object
                     ),

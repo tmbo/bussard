@@ -262,7 +262,7 @@ impl BussardMcp {
         let planned = planned?;
         if planned.digest != digest {
             return Err(format!(
-                "refusing to restore {target}: the device's memory, the backup or the model \
+                "refusing to restore {target}: the device's memory, the backup or your project \
                  changed since the plan was made. Plan again with knx_restore_parameters and \
                  show the new plan to the human."
             ));

@@ -427,7 +427,7 @@ async fn adopt_flow(
             );
             if knxnet.assignment_mode.is_none() {
                 println!(
-                    "  note: {target} reports no IP assignment method the model spells; \
+                    "  note: {target} reports no IP assignment method your project spells; \
                      recorded as dhcp"
                 );
             }

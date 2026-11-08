@@ -234,7 +234,7 @@ fn run_setup(
     let resolution = match outcome {
         SetupOutcome::HasModel => {
             eprintln!(
-                "error: {} already holds a model (bussard.toml).",
+                "error: {} already holds a project (bussard.toml).",
                 crate::conn_cmd::describe_dir(dir)
             );
             eprintln!("Try one of:");
@@ -352,12 +352,12 @@ pub(crate) fn confirm_target(dir: &Path, yes: bool, verb: TargetVerb) -> anyhow:
         None => (place.clone(), format!("the non-empty directory {place}")),
     };
     let question = match verb {
-        TargetVerb::Init => format!("initialise a model in {here}?"),
+        TargetVerb::Init => format!("initialise a project in {here}?"),
         TargetVerb::Import => format!("import into {here}?"),
     };
     let prompt = format!("{place} is not empty ({}); {question}", state.describe());
     let action = match verb {
-        TargetVerb::Init => format!("initialise a model in {non_empty} ({})", state.describe()),
+        TargetVerb::Init => format!("initialise a project in {non_empty} ({})", state.describe()),
         TargetVerb::Import => format!("import into {non_empty} ({})", state.describe()),
     };
     crate::confirm::confirm(yes, &prompt, &action)
@@ -396,7 +396,7 @@ fn print_next_steps(dir: &Path, imported: bool) {
         format!(" --dir {}", dir.display())
     };
     println!();
-    println!("Created a fresh KNX model in {place}.");
+    println!("Created a fresh bussard project in {place}.");
     println!();
     println!("Next steps:");
     println!("  - Watch the bus:            bussard monitor{d}");
@@ -409,7 +409,7 @@ fn print_next_steps(dir: &Path, imported: bool) {
     }
     println!("  - Connect Claude via MCP:   claude mcp add knx -- bussard mcp{d}");
     println!();
-    println!("Check the model any time:     bussard validate{d}");
+    println!("Check your project any time:   bussard validate{d}");
     println!("See what changed, and undo it: bussard status{d} / bussard undo{d}");
     println!("When it works, keep a copy:   bussard export{d} (one file to back up or hand over)");
 }
@@ -513,7 +513,7 @@ mod tests {
             .ok_or("a non-empty dir without --yes must be refused")?;
         let text = format!("{err:#}");
         assert!(
-            text.contains("refusing to initialise a model in the non-empty")
+            text.contains("refusing to initialise a project in the non-empty")
                 && text.contains("pass --yes to confirm non-interactively"),
             "{text}"
         );
@@ -621,7 +621,7 @@ mod tests {
                 nested_model: true
             }
         );
-        assert_eq!(state.describe(), "1 entry, a model exists in knx/");
+        assert_eq!(state.describe(), "1 entry, a project exists in knx/");
         std::fs::remove_dir_all(&dir).ok();
         Ok(())
     }

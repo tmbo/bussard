@@ -145,8 +145,8 @@ impl Replacement {
     ) -> Result<Replacement, ServiceError> {
         let Some(loaded) = model.devices.get(&target) else {
             return Err(ServiceError::Refused(format!(
-                "the model in {} has no device file for {target}; `replace` puts the *same* \
-                 product back at a known address. Use `bussard adopt` for a device the model \
+                "the project in {} has no device file for {target}; `replace` puts the *same* \
+                 product back at a known address. Use `bussard adopt` for a device your project \
                  does not know.",
                 dir.display()
             )));
@@ -313,13 +313,13 @@ pub fn mismatch(expected: &Expected, pressed: &Pressed) -> Option<String> {
             Some(got) if order_matches(got, want) => {}
             Some(got) => {
                 return Some(format!(
-                    "the device reports order number {got:?}, but the model's device file says \
+                    "the device reports order number {got:?}, but the device file says \
                      {want:?}"
                 ));
             }
             None => {
                 return Some(format!(
-                    "the model's device file says order number {want:?}, but the device would \
+                    "the device file says order number {want:?}, but the device would \
                      not report one"
                 ));
             }
@@ -330,7 +330,7 @@ pub fn mismatch(expected: &Expected, pressed: &Pressed) -> Option<String> {
             Some(got) if got == want => {}
             Some(got) => {
                 return Some(format!(
-                    "the device reports mask {got:04X} ({}), but the model's device file says \
+                    "the device reports mask {got:04X} ({}), but the device file says \
                      {want:04X} ({})",
                     system_type(got),
                     system_type(want)
@@ -338,14 +338,14 @@ pub fn mismatch(expected: &Expected, pressed: &Pressed) -> Option<String> {
             }
             None => {
                 return Some(format!(
-                    "the model's device file says mask {want:04X}, but the device would not \
+                    "the device file says mask {want:04X}, but the device would not \
                      report one"
                 ));
             }
         }
     } else if let Some(text) = &expected.mask_text {
         return Some(format!(
-            "the model's device file has an unparseable mask {text:?}; fix it before replacing"
+            "the device file has an unparseable mask {text:?}; fix it before replacing"
         ));
     }
     // With --no-flash the pressed device keeps its application, which must be

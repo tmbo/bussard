@@ -902,7 +902,7 @@ pub fn record_secure_senders(
     entries: &[SecureSenderEntry],
 ) -> Result<bool, crate::ServiceError> {
     let mut model = Model::load(dir).map_err(|e| {
-        crate::ServiceError::because("loading the model to record the secure senders", e)
+        crate::ServiceError::because("loading the project to record the secure senders", e)
     })?;
     let Some(loaded) = model.devices.get_mut(&device) else {
         return Ok(false);

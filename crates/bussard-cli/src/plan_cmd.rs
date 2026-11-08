@@ -205,7 +205,7 @@ fn run(
     // numbers. Text output only — `--json` stays a single JSON document.
     if !json && let Some(pending) = crate::history_cmd::pending_changes(dir) {
         println!(
-            "pending model changes since the last snapshot ({} change(s)):\n",
+            "pending project changes since the last snapshot ({} change(s)):\n",
             pending.changes.len()
         );
         print!("{}", bussard_model::change::render_text(&pending.changes));

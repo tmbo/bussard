@@ -143,7 +143,7 @@ pub enum Sys7ApplyError {
     /// The model needs a count, TSAP or ASAP past the one-octet System 7 table
     /// form (issue #739); nothing was written.
     #[error(
-        "the model needs {what} {value} in the System 7 {table} table, past the one-octet form's 255; nothing was written (issue #739)"
+        "your project needs {what} {value} in the System 7 {table} table, past the one-octet form's 255; nothing was written (issue #739)"
     )]
     IndexOverflow {
         /// Which table (`address`, `association`).

@@ -94,7 +94,7 @@ pub enum LoadError {
     },
     /// The directory holds the retired YAML model and no TOML model.
     #[error(
-        "{dir} holds a YAML model (groups.yaml, links.yaml, devices/*.yaml); bussard now \
+        "{dir} holds a YAML project (groups.yaml, links.yaml, devices/*.yaml); bussard now \
          reads TOML (bussard.toml, groups.toml, devices/<address>.toml, bussard.lock, see \
          docs/reference/files/errors.md). Re-import the project into an empty directory."
     )]

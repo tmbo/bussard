@@ -126,7 +126,7 @@ fn test_import_names_the_nested_model() -> TestResult {
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success(), "{stderr}");
     assert!(
-        stderr.contains("(1 entry, a model exists in knx/)"),
+        stderr.contains("(1 entry, a project exists in knx/)"),
         "{stderr}"
     );
     assert!(!dir.join("groups.toml").exists());
@@ -143,7 +143,7 @@ fn test_init_into_non_empty_cwd_without_terminal_refuses() -> TestResult {
     assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "refusing to initialise a model in the non-empty current directory {} (1 entry)",
+            "refusing to initialise a project in the non-empty current directory {} (1 entry)",
             dir.display()
         )),
         "{stderr}"
@@ -161,7 +161,7 @@ fn test_no_model_error_names_the_current_directory() -> TestResult {
     assert!(!out.status.success(), "{stderr}");
     assert!(
         stderr.contains(&format!(
-            "no model in the current directory {}",
+            "no project in the current directory {}",
             dir.display()
         )) && stderr
             .contains("run `bussard init` or `bussard import <export>` there, or pass --dir"),

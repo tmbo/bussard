@@ -476,7 +476,7 @@ pub fn build_restore_plan(
     if skipped > 0 {
         notes.push(format!(
             "{skipped} octet(s) of the backup differ from the device where the restore leaves \
-             the device's value: no parameter is placed there under the model's configuration \
+             the device's value: no parameter is placed there under the configuration in your project \
              (ETS does not write such an octet in a download), or the application owns the \
              value at runtime"
         ));

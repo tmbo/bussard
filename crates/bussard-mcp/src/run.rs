@@ -86,7 +86,7 @@ pub async fn serve_onboarding_stdio(
     server: BussardMcp,
     on_ready: impl FnOnce(),
 ) -> anyhow::Result<()> {
-    tracing::info!("mcp: serving on stdio (onboarding: no model yet)");
+    tracing::info!("mcp: serving on stdio (onboarding: no project yet)");
     on_ready();
     let running = server
         .clone()
@@ -114,7 +114,7 @@ pub async fn serve_onboarding_http(
         .map_err(|e| anyhow::anyhow!("failed to bind {}: {e}", options.listen))?;
     let addr = listener.local_addr()?;
     tracing::info!(
-        "mcp: serving streamable HTTP on {} (onboarding: no model yet)",
+        "mcp: serving streamable HTTP on {} (onboarding: no project yet)",
         crate::http::url(addr)
     );
     on_ready(addr);

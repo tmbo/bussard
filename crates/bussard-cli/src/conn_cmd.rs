@@ -159,7 +159,7 @@ pub fn resolve_model_dir(flag: Option<&Path>, env: Option<&Path>, creates: bool)
     }
     match bussard_model::discover(Path::new(".")) {
         Some(dir) => {
-            tracing::info!("using the model directory {}", dir.display());
+            tracing::info!("using the project folder {}", dir.display());
             dir
         }
         None => PathBuf::from(bussard_model::DEFAULT_MODEL_DIR),
@@ -346,8 +346,8 @@ pub fn describe_dir(dir: &Path) -> String {
 /// the model for (`why`), and how to get one there.
 pub fn no_model(dir: &Path, why: &str) -> String {
     format!(
-        "no model in {}: {why}; run `bussard init` or `bussard import <export>` there, or pass \
-         --dir <model directory>",
+        "no project in {}: {why}; run `bussard init` or `bussard import <export>` there, or pass \
+         --dir <project folder>",
         describe_dir(dir)
     )
 }
@@ -360,7 +360,7 @@ pub fn no_model(dir: &Path, why: &str) -> String {
 pub fn load_model_optional(dir: &Path) -> Option<Model> {
     if !bussard_model::discover::is_model_dir(dir) {
         tracing::warn!(
-            "model directory {} not found; monitoring without decode (numeric addresses only)",
+            "project folder {} not found; monitoring without decode (numeric addresses only)",
             dir.display()
         );
         return None;
@@ -369,7 +369,7 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
         Ok(model) => Some(model),
         Err(err) => {
             tracing::warn!(
-                "failed to load model from {}: {err}; continuing without decode",
+                "failed to load the project from {}: {err}; continuing without decode",
                 dir.display()
             );
             None
@@ -397,7 +397,7 @@ pub fn load_model_optional(dir: &Path) -> Option<Model> {
 pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
     if !bussard_model::discover::is_model_dir(dir) {
         tracing::warn!(
-            "model directory {} not found; proceeding without a model (fresh project)",
+            "project folder {} not found; proceeding without a project (fresh project)",
             dir.display()
         );
         return Ok(None);
@@ -406,9 +406,9 @@ pub fn load_model_required(dir: &Path) -> anyhow::Result<Option<Model>> {
         .map(Some)
         .map_err(|err| {
             anyhow!(
-                "failed to load model from {}: {err}. Refusing to run a write/management command \
-             against a broken model (a parse error must not silently bypass the protected-GA \
-             gate); fix the model files or pass an explicit path",
+                "failed to load the project from {}: {err}. Refusing to run a write/management command \
+             against a broken project (a parse error must not silently bypass the protected-GA \
+             gate); fix the project files or pass an explicit path",
                 dir.display()
             )
         })
@@ -975,9 +975,9 @@ mod tests {
         )?;
         let err = load_model_required(&dir).expect_err("expected an error");
         let msg = err.to_string();
-        assert!(msg.contains("failed to load model"), "got {msg}");
+        assert!(msg.contains("failed to load the project"), "got {msg}");
         assert!(
-            msg.contains("broken model") || msg.contains("protected"),
+            msg.contains("broken project") || msg.contains("protected"),
             "got {msg}"
         );
         let _ = std::fs::remove_dir_all(&dir);

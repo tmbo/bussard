@@ -56,7 +56,7 @@ fn kept_params_text(out: &mut String, params: &ParamPlan) {
         out,
         "  kept        : {} parameter(s) kept on the device: the load procedure's branch does \
          not write their octets (as ETS's download), so the device keeps what it holds; after a \
-         fresh allocation that is whatever the allocation left, so the model's value is not \
+         fresh allocation that is whatever the allocation left, so your project's value is not \
          verified:",
         params.kept.len()
     );
@@ -313,7 +313,7 @@ pub fn flash_plan_text(
     if verbose > 0 && !overrides.is_empty() {
         w!(
             out,
-            "  overrides   : {} model value(s), keyed by the app-relative ParameterRef id:",
+            "  overrides   : {} project value(s), keyed by the app-relative ParameterRef id:",
             overrides.len()
         );
         for (key, value) in overrides {

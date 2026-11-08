@@ -178,7 +178,7 @@ impl ModelHandle {
                 snapshot.fingerprint = current;
                 snapshot.version += 1;
                 tracing::info!(
-                    "model reloaded from {} (version {})",
+                    "project reloaded from {} (version {})",
                     dir.display(),
                     snapshot.version
                 );
@@ -189,8 +189,8 @@ impl ModelHandle {
                 // next real edit changes it again and we retry.
                 snapshot.fingerprint = current;
                 tracing::warn!(
-                    "model at {} changed but failed to reload ({err}); \
-                     keeping the previously loaded model",
+                    "project at {} changed but failed to reload ({err}); \
+                     keeping the previously loaded project",
                     dir.display()
                 );
             }
@@ -339,7 +339,7 @@ mod tests {
         let model = handle.refresh();
         assert!(
             model.groups.groups.contains_key(&ga),
-            "a broken model on disk must never replace a good one"
+            "a broken project on disk must never replace a good one"
         );
         assert_eq!(handle.version(), 1);
 

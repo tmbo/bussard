@@ -121,7 +121,7 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
         } else {
             println!(
                 "No history yet for {}. bussard records a snapshot the first time it \
-                 writes the model.",
+                 writes your project.",
                 dir.display()
             );
         }
@@ -134,8 +134,8 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
     }
 
     let old = history.load(&latest.id)?;
-    let new = Model::load(dir)
-        .with_context(|| format!("loading the working model from {}", dir.display()))?;
+    let new =
+        Model::load(dir).with_context(|| format!("loading the project from {}", dir.display()))?;
     let changes = describe(&old, &new);
 
     if json {
@@ -197,7 +197,7 @@ fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
 
     if rows.is_empty() {
         println!(
-            "No history yet for {}. bussard records a snapshot the first time it writes the model.",
+            "No history yet for {}. bussard records a snapshot the first time it writes your project.",
             dir.display()
         );
         return Ok(ExitCode::SUCCESS);
@@ -214,7 +214,7 @@ fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
             println!("     {}", row.summary);
         }
     }
-    println!("\nShow one with `bussard show <n>`; put the model back with `bussard undo <n>`.");
+    println!("\nShow one with `bussard show <n>`; put your project back with `bussard undo <n>`.");
     Ok(ExitCode::SUCCESS)
 }
 
@@ -258,7 +258,7 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
     }
     println!("  {}\n", reason_line(to));
     if changes.is_empty() {
-        println!("The model files are identical.");
+        println!("The project files are identical.");
     } else {
         print!("{}", render_text(changes));
     }
@@ -293,11 +293,13 @@ fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<Exit
             return Ok(ExitCode::SUCCESS);
         }
         UndoOutcome::NothingToUndo if json => {
-            nothing("the model files already match every snapshot")?;
+            nothing("the project files already match every snapshot")?;
             return Ok(ExitCode::SUCCESS);
         }
         UndoOutcome::NothingToUndo => {
-            println!("The model files already match every snapshot, so there is nothing to undo.");
+            println!(
+                "The project files already match every snapshot, so there is nothing to undo."
+            );
             println!("`bussard undo <n>` restores a specific one; `bussard history` lists them.");
             return Ok(ExitCode::SUCCESS);
         }
@@ -332,7 +334,7 @@ fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<Exit
         }
     }
     println!(
-        "Restored the model files to snapshot {} ({}).",
+        "Restored the project files to snapshot {} ({}).",
         target.id, target.manifest.created_at
     );
     println!(

@@ -1110,7 +1110,7 @@ fn octet_notes(octets: usize, changed: usize, ranges: &[OctetAttribution]) -> Ve
     let mut notes = vec![if changed == 0 {
         format!(
             "the {octets} parameter octet{} this plan writes change{} no parameter the device \
-             file shows; writing the model's image puts back what follows",
+             file shows; writing your project's image puts back what follows",
             if octets == 1 { "" } else { "s" },
             if octets == 1 { "s" } else { "" }
         )
@@ -1224,7 +1224,7 @@ pub fn unwritten_note_for(ranges: &[OctetAttribution]) -> Option<String> {
 /// group-object table.
 pub fn group_object_refusal(target: IndividualAddress, why: &str) -> String {
     format!(
-        "the model's parameter values change the group-object table ({why}); `apply` rewrites \
+        "the parameter values in your project change the group-object table ({why}); `apply` rewrites \
          parameters in place and cannot do that. A parameter that shows or hides com-objects \
          needs a full `bussard flash {target}`."
     )
@@ -1262,7 +1262,7 @@ pub fn uncaptured_property_download(
 /// layout.
 pub fn allocation_refusal(target: IndividualAddress, why: &str) -> String {
     format!(
-        "the model's parameter values change the memory the load procedure allocates ({why}); \
+        "the parameter values in your project change the memory the load procedure allocates ({why}); \
          `apply` rewrites parameters in place and sends no allocation record. Run a full \
          `bussard flash {target}`."
     )
@@ -1757,7 +1757,7 @@ mod tests {
                 uncovered.clone(),
                 Some(
                     "the 2 parameter octets this plan writes change no parameter the device \
-                     file shows; writing the model's image puts back what follows",
+                     file shows; writing your project's image puts back what follows",
                 ),
             ),
             (
@@ -1766,7 +1766,7 @@ mod tests {
                 hidden.clone(),
                 Some(
                     "the 1 parameter octet this plan writes changes no parameter the device \
-                     file shows; writing the model's image puts back what follows",
+                     file shows; writing your project's image puts back what follows",
                 ),
             ),
             (1, 1, changed.clone(), None),

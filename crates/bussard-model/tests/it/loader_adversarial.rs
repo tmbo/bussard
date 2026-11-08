@@ -284,7 +284,7 @@ fn a_yaml_only_directory_is_refused() {
     let dir = tmp("yaml");
     write(&dir, "groups.yaml", b"groups: {}\n");
     let err = Model::load(&dir).expect_err("the YAML model is not read any more");
-    assert!(err.to_string().contains("YAML model"), "{err}");
+    assert!(err.to_string().contains("YAML project"), "{err}");
     let _ = fs::remove_dir_all(&dir);
 }
 

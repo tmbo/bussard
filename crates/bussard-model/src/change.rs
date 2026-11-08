@@ -1300,7 +1300,7 @@ fn describe_devices(old: &Model, new: &Model, labels: &Labels<'_>, out: &mut Vec
             (Some(_), None) => out.push(
                 Change::new(
                     ChangeKind::DeviceRemoved,
-                    format!("Device {} is gone from the model.", labels.device(ia)),
+                    format!("Device {} is gone from your project.", labels.device(ia)),
                 )
                 .with_device(ia),
             ),
@@ -1419,7 +1419,7 @@ fn describe_knxnet(
         (Some(k), None) => {
             out.push(change(
                 "",
-                "KNXnet/IP settings removed from the model; bussard no longer manages the \
+                "KNXnet/IP settings removed from your project; bussard no longer manages the \
                  interface's IP settings and tunnel addresses"
                     .to_string(),
                 Some(summary(k)),

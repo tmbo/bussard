@@ -346,7 +346,7 @@ impl BussardMcp {
         if planned.digest != digest {
             tier.automation_plans.retire(digest);
             return Err(
-                "the plan is stale: the model or the automation in Home Assistant \
+                "the plan is stale: your project or the automation in Home Assistant \
                         changed since the plan. Nothing was written. Plan again, show it to the \
                         human and ask again"
                     .to_string(),

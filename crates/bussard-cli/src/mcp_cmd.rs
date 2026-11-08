@@ -200,14 +200,14 @@ fn run(
     }
     if !dir.exists() {
         anyhow::bail!(
-            "model directory {} not found; the MCP server needs a loaded model (pass --dir)",
+            "project folder {} not found; the MCP server needs a loaded project (pass --dir)",
             dir.display()
         );
     }
     // Load the model here to resolve the connection config; the server reloads
     // it from the same directory (cheap, and keeps the API uniform).
     let model = Model::load(dir)
-        .map_err(|e| anyhow::anyhow!("failed to load model from {}: {e}", dir.display()))?;
+        .map_err(|e| anyhow::anyhow!("failed to load the project from {}: {e}", dir.display()))?;
     let connection = resolve_config(Some(&model), &overrides)?;
 
     let config = McpConfig {
@@ -361,7 +361,7 @@ fn run_onboarding(
 /// onboarding state.
 fn onboarding_note(dir: &Path) -> String {
     format!(
-        "No model in {} yet: the server starts with knx_setup and knx_bus_status only. Ask          the assistant to set up the house; after knx_setup the full tool set registers.",
+        "No project in {} yet: the server starts with knx_setup and knx_bus_status only. Ask          the assistant to set up the house; after knx_setup the full tool set registers.",
         dir.display()
     )
 }
@@ -654,7 +654,7 @@ impl ConnectHint {
                      \"env\" in the JSON below); it is not printed here.\n"
                 )),
                 SecretSource::DotenvNextToModel => out.push_str(&format!(
-                    "  {name} comes from the .env next to the model, which the server \
+                    "  {name} comes from the .env next to your project, which the server \
                      reads automatically.\n"
                 )),
             }
@@ -943,7 +943,7 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&h.json())?;
         assert!(value["mcpServers"]["knx"].get("env").is_none());
         assert!(h.render().contains(
-            "BUSSARD_KEYRING_PASSWORD comes from the .env next to the model, which the \
+            "BUSSARD_KEYRING_PASSWORD comes from the .env next to your project, which the \
              server reads automatically."
         ));
         Ok(())

@@ -276,6 +276,8 @@ With `--keyring` (or `--tool-key`), `flash` programs the device's security objec
 
 ### Verification and restarts
 
+Some applications load without their link tables: their load procedure writes the application and parameters only. After such a download `flash` ends with a note that it did not write the link tables and that `bussard apply <ADDRESS>` writes the links in your project. Run that `apply` next. In chat, `knx_apply_device` writes the links after the download itself.
+
 ??? note "Details"
     After the terminal restart, `flash` reads the application object's type and load state, plus a sample of each segment whose MCB check did not pass before the restart. An application that is not `Loaded` gets every object's state and every sample read. Each load-state change (unload, open, segment allocation, completion) is confirmed by the state the device returns in its answer; when that answer carries no state octet or not the expected one, `flash` reads the state back.
 

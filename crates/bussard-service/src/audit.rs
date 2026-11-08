@@ -901,7 +901,7 @@ pub struct SilentDevice {
 }
 
 /// The note on [`ScanReport::note`].
-const SCAN_NOTE: &str = "only modelled addresses are probed; devices on the bus but not in the model \
+const SCAN_NOTE: &str = "only addresses in your project are probed; devices on the bus but not in your project \
                  show up as unknown sources in the traffic sample, or with `bussard scan`";
 
 /// Probes every modelled device and reports the delta per line, plus the

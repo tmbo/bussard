@@ -116,12 +116,12 @@ fn device_ia() -> anyhow::Result<IndividualAddress> {
 }
 
 /// The device: runs the application with threshold 9 and object 2 off, and
-/// the links the model asks for (object 1 listens on 1/2/0).
+/// the links your project asks for (object 1 listens on 1/2/0).
 fn device() -> anyhow::Result<MockDevice> {
     device_running(Some([0x00, 0xFA, 0x00, 0x02, 0x01]), LS_LOADED)
 }
 
-/// The device with the links the model asks for, reporting `app_id` (none:
+/// The device with the links your project asks for, reporting `app_id` (none:
 /// no `PID_PROGRAM_VERSION`) and its application object in `load_state`.
 fn device_running(app_id: Option<[u8; 5]>, load_state: u8) -> anyhow::Result<MockDevice> {
     device_at(device_ia()?, app_id, load_state)
@@ -699,7 +699,7 @@ async fn test_knx_apply_device_loads_the_application_then_writes_the_links() -> 
     let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(
         sentences.starts_with("! 1.1.4 must have its application program loaded")
-            && sentences.contains("then writes the model's links"),
+            && sentences.contains("then writes the links in your project"),
         "{sentences}"
     );
     let question = plan["question"].as_str().unwrap_or_default();

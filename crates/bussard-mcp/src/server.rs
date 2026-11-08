@@ -992,7 +992,7 @@ fn write_refusal(ga: GroupAddress, refusal: &WriteRefusal) -> (bool, String) {
             true,
             format!(
                 "group address {ga} is declared as DPT {declared} in your project; refusing to write it \
-                 as {requested}. Correct groups.toml if the model is wrong — the model \
+                 as {requested}. Correct groups.toml if your project is wrong — your project \
                  is the source of truth, not the caller"
             ),
         ),

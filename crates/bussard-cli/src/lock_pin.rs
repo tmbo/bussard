@@ -105,7 +105,7 @@ pub(crate) fn enforce_override(
     if application.is_some() {
         eprintln!(
             "note: bussard.lock still names its application for {}; re-import the project (or \
-             adopt the device again) so the model follows the application you load",
+             adopt the device again) so your project follows the application you load",
             device.address
         );
     }

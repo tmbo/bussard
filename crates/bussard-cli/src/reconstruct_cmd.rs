@@ -244,23 +244,23 @@ fn print_text(report: &ReconstructReport) {
         return;
     };
     println!(
-        "\ndiff against the model ({} match, {} only on device, {} only in model):",
+        "\ndiff against your project ({} match, {} only on device, {} only in your project):",
         diff.matches.len(),
         diff.on_device_not_in_model.len(),
         diff.in_model_not_on_device.len()
     );
     if diff.on_device_not_in_model.is_empty() && diff.in_model_not_on_device.is_empty() {
-        println!("  device tables and model links agree");
+        println!("  device tables and the links in your project agree");
     }
     for pair in &diff.on_device_not_in_model {
         println!(
-            "  + on device, not in model: object {:>4} → {}",
+            "  + on device, not in your project: object {:>4} → {}",
             pair.object, pair.ga
         );
     }
     for pair in &diff.in_model_not_on_device {
         println!(
-            "  - in model, not on device: object {:>4} → {}",
+            "  - in your project, not on device: object {:>4} → {}",
             pair.object, pair.ga
         );
     }
@@ -307,7 +307,7 @@ fn run_line(
     }
     let out = out.ok_or_else(|| {
         anyhow!(
-            "--out <dir> is required in line mode (the fresh model directory to synthesize into)"
+            "--out <dir> is required in line mode (the fresh project folder to synthesize into)"
         )
     })?;
     ensure_empty_out(out)?;
@@ -369,7 +369,7 @@ fn run_line(
     let model = synthesize_model(&found, model_config(&overrides, dir));
     model
         .save(out)
-        .with_context(|| format!("writing the reconstructed model to {}", out.display()))?;
+        .with_context(|| format!("writing the reconstructed project to {}", out.display()))?;
     inject_reconstruct_banners(out)?;
     // `--out` must be empty, so there is no prior state to preserve; the
     // snapshot records the reconstructed model itself as the baseline the next
@@ -378,7 +378,7 @@ fn run_line(
         out,
         bussard_model::history::SnapshotReason::new("reconstruct")
             .with_args([line.to_string()])
-            .with_result("the model reconstructed from the line sweep"),
+            .with_result("the project reconstructed from the line sweep"),
     );
 
     let summary = build_summary(line, out, &found, &model);
@@ -400,7 +400,7 @@ fn ensure_empty_out(out: &Path) -> anyhow::Result<()> {
             out.display()
         )),
         OutDir::NotEmpty => Err(anyhow!(
-            "--out {} is not empty; reconstruction never merges into an existing model \
+            "--out {} is not empty; reconstruction never merges into an existing project \
              (choose a fresh directory)",
             out.display()
         )),

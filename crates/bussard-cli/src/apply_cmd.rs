@@ -99,7 +99,7 @@ impl DesiredSource {
     /// A one-line description of where the desired tables came from.
     fn origin(&self) -> String {
         match self {
-            DesiredSource::Model => "the model's device files".to_string(),
+            DesiredSource::Model => "the device files in your project".to_string(),
             DesiredSource::Backup(path) => format!("the backup {}", path.display()),
         }
     }

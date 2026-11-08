@@ -75,7 +75,7 @@ pub fn groups(dir: &Path, format: GroupFormat, out: &Path) -> Result<usize, Setu
 ///
 /// The model does not load.
 pub fn doc_model(dir: &Path) -> Result<InstallationDoc, SetupError> {
-    let model = Model::load(dir).ctx(|| format!("loading the model from {}", dir.display()))?;
+    let model = Model::load(dir).ctx(|| format!("loading the project from {}", dir.display()))?;
     let products = ProductModels::load(dir);
     Ok(InstallationDoc::build(&model, &products, dir))
 }

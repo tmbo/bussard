@@ -907,7 +907,10 @@ mod tests {
             } => {
                 assert_eq!(count, 2);
                 assert_eq!(value.len(), 10);
-                assert!(!from_parameters, "an InlineData value is not the model's");
+                assert!(
+                    !from_parameters,
+                    "an InlineData value is not your project's"
+                );
             }
             other => return Err(format!("expected WriteProp, got {other:?}").into()),
         }

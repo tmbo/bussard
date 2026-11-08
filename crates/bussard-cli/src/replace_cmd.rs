@@ -123,7 +123,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     };
     let replacement = Replacement::from_model(&model, dir, target, no_flash)?;
     let Some(loaded) = model.devices.get(&target) else {
-        bail!("the model has no device file for {target}");
+        bail!("your project has no device file for {target}");
     };
     // The product data comes from the lock and the store (issue #228, item
     // 4): `--product` overrides, and one that contradicts the lock needs
@@ -217,7 +217,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     }
 
     // Phase 3: the link tables, through `bussard apply`.
-    println!("\napplying the model's link tables…");
+    println!("\napplying the link tables in your project…");
     let code = ApplyArgs {
         address: Some(address.to_string()),
         consent: Consent { yes: true },
@@ -311,7 +311,7 @@ async fn swap_flow(
             eprintln!(
                 "\nrefusing to replace {target}: {problem}\nA different product means a \
                  different application, and flashing it would load the wrong image. Fix the \
-                 device file, use the right spare, or re-run with --force if you know the model \
+                 device file, use the right spare, or re-run with --force if you know your project \
                  is out of date."
             );
             return Ok(None);
@@ -326,7 +326,7 @@ async fn swap_flow(
         kind: bussard_service::observer::Ask::Write,
         prompt: format!(
             "replace {target}: address {current} → {target}, flash the application and apply \
-             the model's tables, via {gateway}?"
+             the tables in your project, via {gateway}?"
         ),
         action: format!("replace {target} via {gateway}"),
     };

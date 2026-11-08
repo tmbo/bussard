@@ -332,7 +332,7 @@ impl BussardMcp {
             .await?;
         let now = sides(&planned.plan);
         let moved = match (now.live != before.live, now.model != before.model) {
-            (true, true) => Some("the interface's values and the model both changed"),
+            (true, true) => Some("the interface's values and your project both changed"),
             (true, false) => Some("the interface's KNXnet/IP values changed"),
             (false, true) => Some("the device file's [knxnet] table changed"),
             (false, false) => None,

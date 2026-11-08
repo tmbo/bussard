@@ -121,10 +121,12 @@ pub fn render_text(target: IndividualAddress, app_id: &str, rows: &[PropertyRow]
     );
     for r in rows {
         let state = match (&r.device, &r.error) {
-            (Some(held), _) if !r.differs() => format!("holds {held}, as the model asks"),
-            (Some(held), _) => format!("holds {held}, the model asks for {}", r.planned),
-            (None, Some(err)) => format!("not readable ({err}), the model asks for {}", r.planned),
-            (None, None) => format!("not read, the model asks for {}", r.planned),
+            (Some(held), _) if !r.differs() => format!("holds {held}, as your project asks"),
+            (Some(held), _) => format!("holds {held}, your project asks for {}", r.planned),
+            (None, Some(err)) => {
+                format!("not readable ({err}), your project asks for {}", r.planned)
+            }
+            (None, None) => format!("not read, your project asks for {}", r.planned),
         };
         out.push_str(&format!("  {}: {state}\n", r.property));
     }
@@ -133,7 +135,7 @@ pub fn render_text(target: IndividualAddress, app_id: &str, rows: &[PropertyRow]
             "`bussard flash {target}` writes these properties and reads them back.\n"
         ));
     } else {
-        out.push_str("nothing to do: the device holds every property the model asks for.\n");
+        out.push_str("nothing to do: the device holds every property your project asks for.\n");
     }
     out
 }
@@ -153,8 +155,8 @@ mod tests {
             row(ip, 211, &[50], Ok(vec![5])),
         ];
         let text = render_text(IndividualAddress::from_raw(0x11C8), "A", &rows);
-        assert!(text.contains("object type 11 PID 204: holds 0A, as the model asks"));
-        assert!(text.contains("object type 11 PID 211: holds 05, the model asks for 32"));
+        assert!(text.contains("object type 11 PID 204: holds 0A, as your project asks"));
+        assert!(text.contains("object type 11 PID 211: holds 05, your project asks for 32"));
         assert!(text.contains("bussard flash 1.1.200"));
         assert!(!rows[0].differs());
         assert!(rows[1].differs());

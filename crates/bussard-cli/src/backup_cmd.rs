@@ -93,13 +93,13 @@ fn run(args: &BackupArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let Some(model) = load_model_required(dir)? else {
         bail!(
             "{}",
-            crate::conn_cmd::no_model(dir, "`bussard backup` reads the devices the model lists")
+            crate::conn_cmd::no_model(dir, "`bussard backup` reads the devices your project lists")
         );
     };
     let targets = select_targets(&model, addresses, line)?;
     if targets.is_empty() {
         bail!(
-            "no devices to back up: the model in {} has no matching device files",
+            "no devices to back up: the project in {} has no matching device files",
             dir.display()
         );
     }

@@ -101,7 +101,7 @@ fn migrate_vendor(dir: &Path, out: &mut dyn ProgressSink) -> Result<(), SetupErr
         let moved = store_file(dir, old)?;
         std::fs::remove_file(old).ctx(|| format!("removing {}", old.display()))?;
         out.warn(&format!(
-            "moved {} to {} (product data is retained model data now)",
+            "moved {} to {} (product data is retained project data now)",
             old.display(),
             moved.display()
         ));
@@ -375,7 +375,7 @@ fn import_from_file(
     }
     out.say("");
     out.say(&format!(
-        "{} holds copyrighted vendor product data and is retained model data: bussard never \
+        "{} holds copyrighted vendor product data and is retained project data: bussard never \
          regenerates it. Whether it is committed is your decision (a private repository is \
          the usual case); the product models under .bussard/ regenerate from it.",
         dir.join(PRODUCTS_DIR).display()

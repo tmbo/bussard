@@ -256,12 +256,12 @@ impl FileOutcome {
             .ok()
             .map(|m| (m.devices.len(), m.groups.groups.len()));
         let mut said = match (outcome.written, counts) {
-            (false, _) => format!("The model already matched {name}; no file was written."),
+            (false, _) => format!("Your project already matched {name}; no file was written."),
             (true, Some((devices, groups))) => format!(
-                "Imported {name} into the model: {devices} device(s), {groups} group \
+                "Imported {name} into your project: {devices} device(s), {groups} group \
                  address(es)."
             ),
-            (true, None) => format!("Imported {name} into the model."),
+            (true, None) => format!("Imported {name} into your project."),
         };
         if outcome.unresolved {
             said.push_str(&format!(

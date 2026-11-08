@@ -214,7 +214,7 @@ fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<E
     // Nothing is written unless the store loads.
     let mut store = gs::load_store(dir, password.as_deref())?;
     let before =
-        Model::load(dir).with_context(|| format!("loading the model in {}", dir.display()))?;
+        Model::load(dir).with_context(|| format!("loading the project in {}", dir.display()))?;
     let mut edited = before.clone();
     let edit = gs::edit_model(&mut edited, ga, secure).map_err(|reason| anyhow::anyhow!(reason))?;
     let action = gs::apply_group_key(&mut store, ga, secure)?;
@@ -255,7 +255,7 @@ fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<E
     }
     edited
         .save(dir)
-        .with_context(|| format!("saving the model in {}", dir.display()))?;
+        .with_context(|| format!("saving the project in {}", dir.display()))?;
     let devices = edit.secure_devices(&edited);
     let note = gs::export_note(ga, secure);
     if json {

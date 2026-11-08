@@ -70,7 +70,7 @@ The export is usually password-protected. At the terminal bussard asks for the p
     Searching for KNXnet/IP gateways on the local network...
     Found gateway: IP Interface (192.0.2.10:3671, IA 1.1.250, 4 tunnels, 1 in use)
 
-    Created a fresh KNX model in the current directory /home/me/house.
+    Created a fresh bussard project in the current directory /home/me/house.
     ```
 
 With no ETS project file, setup creates an empty project. It only reads from the network and writes the gateway's address into `bussard.toml`. Discovery does not cross subnets; if it finds nothing, name the address yourself (`bussard init --gateway 192.0.2.10`, or tell the assistant).

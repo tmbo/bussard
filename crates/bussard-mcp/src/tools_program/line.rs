@@ -112,7 +112,7 @@ impl BussardMcp {
         let targets = targets_on_line(&model, line.0, line.1);
         if targets.is_empty() {
             return Err(format!(
-                "the model has no devices on line {}.{} (looked in {}/devices)",
+                "your project has no devices on line {}.{} (looked in {}/devices)",
                 line.0,
                 line.1,
                 self.state().dir.display()
@@ -226,7 +226,7 @@ impl BussardMcp {
         if let Some(digest) = digest {
             report.approval = Approval {
                 question: Some(format!(
-                    "Write the model's links to {changed} device(s) on line {line_text} via \
+                    "Write the links in your project to {changed} device(s) on line {line_text} via \
                      {gateway}?"
                 )),
                 plan_digest: Some(digest),
@@ -325,7 +325,7 @@ impl BussardMcp {
         if model_digest(&model, &targets) != planned.model {
             tier.line_plans.retire(digest);
             return Err(format!(
-                "refusing to write line {line_text}: the model's devices or links on the line \
+                "refusing to write line {line_text}: the devices or links in your project on the line \
                  (or its protected group addresses) changed since the plan was made. Plan again \
                  with knx_plan_device and line {line_text}, and show the new plan to the human."
             ));
@@ -345,7 +345,7 @@ impl BussardMcp {
             .collect();
         if !errors.is_empty() {
             return Err(format!(
-                "refusing to write line {line_text}: the model has {} validation error(s); \
+                "refusing to write line {line_text}: your project has {} validation error(s); \
                  nothing was written. Fix these first: {}",
                 errors.len(),
                 errors.join("; ")

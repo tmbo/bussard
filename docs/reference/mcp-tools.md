@@ -250,7 +250,7 @@ By default the link opens the hosted page and relay, or the ones the `[enroll]` 
 [home_assistant]
 url = "http://homeassistant.local:8123"
 token_env = "BUSSARD_HA_TOKEN"     # the default
-config_path = "../ha/knx.yaml"     # relative to the model directory
+config_path = "../ha/knx.yaml"     # relative to the project folder
 ```
 
 !!! warning

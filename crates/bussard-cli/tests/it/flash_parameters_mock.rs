@@ -282,7 +282,7 @@ fn test_flash_parameters_only_piped_output_is_unchanged() -> TestResult {
     // stderr after the history line is the exact step / byte-counter trace.
     let (history, progress) = stderr.split_once('\n').ok_or("stderr has no lines")?;
     assert!(
-        history.starts_with("recorded the current model"),
+        history.starts_with("recorded the current project"),
         "{stderr:?}"
     );
     assert_eq!(

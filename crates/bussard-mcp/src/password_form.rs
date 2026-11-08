@@ -158,7 +158,7 @@ pub fn not_imported(reason: &str, next_step: &str) -> CallToolResult {
 /// What to tell the assistant when the form ended without a password.
 const NEVER_IN_CHAT: &str = "Never ask the human for the project password in chat. Call the \
     tool again to show the password form once more, or ask the owner to put \
-    BUSSARD_PROJECT_PASSWORD in the .env next to the model directory.";
+    BUSSARD_PROJECT_PASSWORD in the .env next to the project folder.";
 
 /// Opens a password form for `file` and shows it to the human: the
 /// elicitation of `context`'s protocol. `Unsupported` without URL-mode

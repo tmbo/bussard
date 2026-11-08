@@ -86,7 +86,7 @@ pub fn snapshot(
 pub fn capture_external_edit(dir: &Path, out: &mut dyn ProgressSink) {
     match History::open(dir).snapshot_if_changed_externally() {
         Ok(Some(id)) => out.warn(&format!(
-            "recorded the current model as history snapshot {id} (external edit)"
+            "recorded the current project as history snapshot {id} (external edit)"
         )),
         Ok(None) => {}
         Err(err) => out.warn(&format!(
@@ -113,7 +113,7 @@ pub fn before_write(dir: &Path, out: &mut dyn ProgressSink) {
     capture_external_edit(dir, out);
     snapshot(
         dir,
-        SnapshotReason::new("import").with_result("before writing the imported model"),
+        SnapshotReason::new("import").with_result("before writing the imported project"),
         out,
     );
 }
@@ -266,7 +266,7 @@ pub fn validation_summary(dir: &Path, out: &mut dyn ProgressSink) -> (usize, usi
         Ok(model) => model,
         Err(err) => {
             out.say(&format!(
-                "validation: the written model does not load: {err}"
+                "validation: the written project does not load: {err}"
             ));
             return (1, 0);
         }

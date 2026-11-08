@@ -54,7 +54,7 @@ fn run(file: Option<&Path>, dir: &Path, no_history: bool, json: bool) -> anyhow:
         manifest.history_snapshots,
         out.display()
     );
-    println!("model sha256 {}", manifest.model_sha256);
+    println!("project sha256 {}", manifest.model_sha256);
     println!("never included: {}", manifest.excluded.join(", "));
     Ok(ExitCode::SUCCESS)
 }
@@ -74,7 +74,7 @@ pub fn stale_export_hint(dir: &Path) -> Option<String> {
         .find(|s| s.manifest.reason.command == "apply")?;
     let Some(last) = bundle::last_export(dir) else {
         return Some(
-            "hint: this model has never been exported; `bussard export` writes the one file \
+            "hint: this project has never been exported; `bussard export` writes the one file \
              to hand over or keep as a backup"
                 .to_string(),
         );

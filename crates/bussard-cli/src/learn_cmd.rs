@@ -148,7 +148,7 @@ fn run(options: LearnArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
 
     let (model, changes) = session;
     if changes.groups == 0 && changes.links == 0 {
-        eprintln!("nothing learned; the model is unchanged.");
+        eprintln!("nothing learned; your project is unchanged.");
         return Ok(ExitCode::SUCCESS);
     }
     // History (issue #110): keep the pre-learn files so `bussard undo` can put
@@ -161,7 +161,7 @@ fn run(options: LearnArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     );
     model
         .save(dir)
-        .with_context(|| format!("saving the learned model to {}", dir.display()))?;
+        .with_context(|| format!("saving the project to {}", dir.display()))?;
     println!(
         "learned {} group address(es) and {} link(s); wrote {}",
         changes.groups,
@@ -210,7 +210,9 @@ fn resolve_targets(model: &Model, options: &LearnArgs) -> anyhow::Result<Vec<Tar
             }
         }
         if targets.is_empty() {
-            eprintln!("no group address in the model matches --unnamed/--untyped; nothing to do.");
+            eprintln!(
+                "no group address in your project matches --unnamed/--untyped; nothing to do."
+            );
         }
         return Ok(targets);
     }
@@ -444,7 +446,7 @@ fn choose_link(
     interactive: bool,
 ) -> anyhow::Result<Option<u16>> {
     let Some(candidates) = learn::link_candidates(model, sender) else {
-        eprintln!("  sender {sender} is not in the model, so no link was written.");
+        eprintln!("  sender {sender} is not in your project, so no link was written.");
         return Ok(None);
     };
     Ok(match candidates.as_slice() {
@@ -496,7 +498,7 @@ fn print_observation(
         telegram.source,
         device
             .map(|d| d.name.as_str())
-            .unwrap_or("(not in the model)"),
+            .unwrap_or("(not in your project)"),
     );
     if let Some(object) = object {
         eprintln!(

@@ -35,7 +35,7 @@ pub const KNX_DOMAINS: [&str; 6] = [
 pub enum ApiError {
     /// The token's environment variable is unset or empty.
     #[error(
-        "the Home Assistant token is not set: export {var} or put it in the model's .env \
+        "the Home Assistant token is not set: export {var} or put it in the project's .env \
          (a .env supplies only BUSSARD_* names)"
     )]
     MissingToken {

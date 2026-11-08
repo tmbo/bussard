@@ -166,7 +166,7 @@ fn who(target: &Target) -> String {
         .unwrap_or_default();
     let order = match &target.order_number {
         Some(order) => format!(" ({order})"),
-        None => " (no order number in the model)".to_string(),
+        None => " (no order number in your project)".to_string(),
     };
     format!("{}{room}{order}", target.name)
 }
@@ -192,7 +192,7 @@ fn line_run(model: &Model, line: &str) -> Result<LineRun, String> {
     let run = LineRun::new(model, area, line_no);
     if run.targets().is_empty() {
         return Err(format!(
-            "the model has no devices on line {}; nothing to commission",
+            "your project has no devices on line {}; nothing to commission",
             run.line()
         ));
     }
@@ -261,19 +261,19 @@ impl BussardMcp {
         let n = targets.len();
         let sentences = vec![
             format!(
-                "Line {line} has {n} device(s) in the model: {}.",
+                "Line {line} has {n} device(s) in your project: {}.",
                 names.join("; ")
             ),
             "First bussard checks which of them already answer at their address; those are \
              skipped."
                 .to_string(),
             "Then, one device at a time, the human presses its programming button. bussard reads \
-             the device's order number and, when it is the product the model expects, writes the \
+             the device's order number and, when it is the product your project expects, writes the \
              address, reads the device back at it and gives the label text, without asking \
              again."
                 .to_string(),
-            "A different product, no device, two devices in programming mode, or a device the \
-             model has no order number for pauses the run until the human says retry, skip or \
+            "A different product, no device, two devices in programming mode, or a device your \
+             project has no order number for pauses the run until the human says retry, skip or \
              stop. Only addresses are written: no links, parameters or application programs."
                 .to_string(),
         ];
@@ -288,7 +288,7 @@ impl BussardMcp {
             approval: Approval {
                 question: Some(format!(
                     "Commission the {n} device(s) of line {line} via {gateway}? One yes covers \
-                     every device that turns out to be the product the model expects. Say yes."
+                     every device that turns out to be the product your project expects. Say yes."
                 )),
                 plan_digest: Some(digest),
                 expires_at: Some(
@@ -318,7 +318,7 @@ impl BussardMcp {
             .fresh(given, format!("line {line}"), "plan", again)?;
         if given != fresh {
             return Err(format!(
-                "the model's devices on line {line} or the gateway changed since the plan. Call \
+                "the devices in your project on line {line} or the gateway changed since the plan. Call \
                  knx_commission_line with line {line} for a new plan. Nothing was written."
             ));
         }
@@ -439,7 +439,7 @@ impl BussardMcp {
         if answer == "assign" && !paused.offers_assign {
             self.put_back(tier, job, paused);
             return Err(
-                "`assign` answers only a device the model has no order number for; this question \
+                "`assign` answers only a device your project has no order number for; this question \
                  offers retry, skip or stop"
                     .into(),
             );
@@ -736,7 +736,7 @@ impl BussardMcp {
                 OrderCheck::NoModelNumber if cur.accept_unchecked => {}
                 OrderCheck::NoModelNumber => {
                     let reason = format!(
-                        "The model has no order number for {}, so the pressed device (order \
+                        "Your project has no order number for {}, so the pressed device (order \
                          number {}) cannot be checked against it. Nothing was written.",
                         target.name,
                         identified.verified.order.as_deref().unwrap_or("unknown")
@@ -752,13 +752,13 @@ impl BussardMcp {
                     let expected = target.order_number.as_deref().unwrap_or_default();
                     let reason = match identified.verified.order.as_deref() {
                         Some(read) => format!(
-                            "The pressed device is a {read}, but the model expects a {expected} \
+                            "The pressed device is a {read}, but your project expects a {expected} \
                              for {}. Nothing was written.",
                             target.name
                         ),
                         None => format!(
                             "The pressed device did not report an order number, so it cannot be \
-                             checked against the {expected} the model expects for {}. Nothing \
+                             checked against the {expected} your project expects for {}. Nothing \
                              was written.",
                             target.name
                         ),

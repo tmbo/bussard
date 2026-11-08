@@ -136,7 +136,7 @@ pub fn infer_dpt(payload: &[u8], declared: Option<Dpt>) -> Vec<DptCandidate> {
         out.extend(DptCandidate::new(
             &dpt.to_string(),
             Confidence::High,
-            format!("the sending com object declares DPT {dpt} in the model"),
+            format!("the sending com object declares DPT {dpt} in your project"),
         ));
     }
 
@@ -168,7 +168,7 @@ pub fn infer_dpt(payload: &[u8], declared: Option<Dpt>) -> Vec<DptCandidate> {
             Confidence::Low,
             format!(
                 "the sending com object declares DPT {dpt} ({expected}), but the payload is \
-                     {} byte(s); the model and the wire disagree",
+                     {} byte(s); your project and the wire disagree",
                 payload.len()
             ),
         ));

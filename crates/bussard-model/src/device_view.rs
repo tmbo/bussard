@@ -376,7 +376,7 @@ pub struct DeviceView {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ViewError {
     /// The model has no such device.
-    #[error("{0} is not a device in this model")]
+    #[error("{0} is not a device in this project")]
     NoDevice(IndividualAddress),
     /// The device has no such channel.
     #[error("{address} has no channel {channel:?}; its channels are: {known}")]

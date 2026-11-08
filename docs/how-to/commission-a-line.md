@@ -115,7 +115,7 @@ In chat only addresses are written; links, parameters and the application follow
 
     ```console
     $ bussard apply --line 1.1
-    apply the model's links to 3 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
+    apply the links in your project to 3 device(s) on line 1.1 via 192.0.2.10:3671? [y/N] y
     ```
 
     If the tunnel drops or you stop the run, re-run with `--resume`: it skips the devices already done and retries the failed ones.

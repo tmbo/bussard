@@ -200,7 +200,7 @@ impl SecurityObjectChange {
         if !other_cleared.is_empty() {
             parts.push(format!(
                 "{} {} its security flag (PID 61 0x03 to 0x00; no secured group address links it \
-                 in the model)",
+                 in your project)",
                 objects_phrase(&other_cleared),
                 if other_cleared.len() == 1 {
                     "loses"
@@ -400,7 +400,7 @@ pub fn record_security_flags(
     secured: &BTreeSet<u16>,
 ) -> Result<bool, crate::ServiceError> {
     let mut model = Model::load(dir).map_err(|e| {
-        crate::ServiceError::because("loading the model to record the security flags", e)
+        crate::ServiceError::because("loading the project to record the security flags", e)
     })?;
     let linked: BTreeSet<u16> = model
         .links

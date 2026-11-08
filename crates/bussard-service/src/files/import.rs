@@ -93,7 +93,7 @@ pub fn import_bundle(
             .extract(dir, true)
             .ctx(|| format!("extracting into {}", dir.display()))?;
         out.say(&format!(
-            "imported the bundle into {} (model and history)",
+            "imported the bundle into {} (project files and history)",
             dir.display()
         ));
         return Ok(ImportOutcome {
@@ -343,7 +343,7 @@ pub fn resolve_conflicts(
             format!("Took the {source}'s value.")
         } else {
             kept += 1;
-            "Kept this model's value.".to_string()
+            "Kept this project's value.".to_string()
         };
         if choice == ConflictChoice::Interactive {
             out.say(&format!("    {outcome}"));

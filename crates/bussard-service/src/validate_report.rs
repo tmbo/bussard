@@ -127,7 +127,7 @@ impl ValidateReport {
                 why.push("pass `severity: \"info\"` for the infos".to_string());
             }
             if filter.address.is_some() || filter.group.is_some() {
-                why.push("drop `address`/`group` for the whole model".to_string());
+                why.push("drop `address`/`group` for the whole project".to_string());
             }
             format!(
                 "{shown} of {} diagnostics shown; `counts` covers all of them; {}",
