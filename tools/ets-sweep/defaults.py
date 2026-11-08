@@ -26,6 +26,8 @@ tools/ets-sweep/results/defaults.json, keyed by application id:
     driver-error-address    the device is not at the address the download
                             looks for: a device left in the project pushed it
                             along (#876); `--redo-failed` runs it again
+    driver-error-cleanup    a device left in the project could not be deleted
+                            before the add (#997); `--redo-failed` runs it again
 
 `ia` is the address ETS gave the added device: 1.1.1, or the line's coupler
 address 1.1.0 for a coupler (#876); the sim runs there and the oracle row
@@ -521,7 +523,8 @@ def main() -> int:
             # The same driver failure job after job is a broken layout or a
             # dialog, not the products: 128 adds failed on a moved catalog
             # splitter (2026-11-05). Stop and let a person look.
-            job_errors = job_errors + 1 if r["outcome"] == "driver-error" else 0
+            # A clean-up failure repeats for every product after it as well.
+            job_errors = job_errors + 1 if r["outcome"] in ("driver-error", "driver-error-cleanup") else 0
             if job_errors >= MAX_JOB_ERRORS:
                 print(f"stopping: {job_errors} jobs in a row ended in driver errors: {r.get('error', '')[:160]}", flush=True)
                 stop = True

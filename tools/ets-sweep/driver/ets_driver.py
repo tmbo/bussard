@@ -35,8 +35,11 @@ LOG = HERE / "driver.log"
 TOKEN_FILE = HERE / "driver.token"
 PORT = 8765
 
-sys.stdout = open(LOG, "a", buffering=1, encoding="utf-8")  # noqa: SIM115 (long-lived)
-sys.stderr = sys.stdout
+if __name__ == "__main__":
+    # The running driver logs to driver.log; the offline tests import the
+    # module for its pure helpers and keep their own output.
+    sys.stdout = open(LOG, "a", buffering=1, encoding="utf-8")  # noqa: SIM115 (long-lived)
+    sys.stderr = sys.stdout
 
 
 def log(msg: str) -> None:
@@ -439,15 +442,66 @@ def flow_state(req: dict) -> dict:
     return {"project": window_project(), "tabs": [l["text"] for l in ocr(LAYOUT["tab_strip"])], "popups": len(ets_popups())}
 
 
+def _icon_word(w: str) -> bool:
+    """A button's icon as OCR reads it: a check mark or cross ('√', 'v',
+    'V', 'X', '✓'), at most two characters and no digit."""
+    return len(w) <= 2 and not any(ch.isdigit() for ch in w)
+
+
+def button_hit(lines: list[dict], label: str) -> dict | None:
+    """The OCR line of the button `label`: the label is the line's last word,
+    after at most two icon words. The check mark in front of 'Ja' reads as
+    '√ Ja', 'v Ja' or 'V Ja' (2026-11-08, #997), the way the Katalog
+    panel's close icon joins 'X Import' (#968). Exact, not fuzzy: a wide
+    search strip also holds other text, and the fuzzy match took 'Secure,
+    Schalter/Jalousie 8-fach' for 'Ja' (2026-11-06). The hit carries
+    `click_x`, `click_y`: the middle of the word, not of the icon."""
+    for l in lines:
+        words = l["text"].split()
+        if words and words[-1] != label and re.fullmatch(rf"\W{{1,2}}{re.escape(label)}", words[-1]):
+            # The icon glued to the word ('√Ja'), as PR #878 accepted it.
+            words = [*words[:-1], words[-1][: -len(label)], label]
+        if not words or words[-1] != label or len(words) > 3 or not all(_icon_word(w) for w in words[:-1]):
+            continue
+        # The label ends the line: its characters are the line's last ones.
+        text = l["text"].strip()
+        before = len(text) - len(label)
+        cw = l["w"] / max(len(text), 1)
+        return {**l, "click_x": l["x"] + int((before + len(label) / 2) * cw), "click_y": l["y"] + l["h"] // 2}
+    return None
+
+
 def click_button(label: str, bbox: tuple[int, int, int, int]) -> None:
-    """Clicks the OCR line that is exactly `label` (a leading check mark or
-    cross allowed). A wide search strip also holds other text: the fuzzy
-    match took 'Secure, Schalter/Jalousie 8-fach' for 'Ja' (2026-11-06)."""
-    hits = [l for l in ocr(bbox) if re.fullmatch(rf"\W{{0,3}}\s*{re.escape(label)}", l["text"].strip())]
-    if not hits:
+    """Clicks the button `label` (see `button_hit`) inside the word."""
+    hit = button_hit(ocr(bbox), label)
+    if not hit:
         raise RuntimeError(f"button {label!r} not on screen in {bbox}")
-    hit = hits[0]
-    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+    click(hit["click_x"], hit["click_y"])
+
+
+def leftover_delete_dialog(lines: list[dict]) -> dict | None:
+    """The 'Nein' button of an open delete confirmation ('Löschen' title,
+    'Ja' and 'Nein'), from OCR lines of LAYOUT['delete_dialog']. ETS's dialog
+    is no UIA popup (`ets_popups()` lists nothing), so only OCR finds it; a
+    missed 'Ja' left it open and every import after it failed (2026-11-08,
+    #997). Both the title and the button must be there: a context menu also
+    holds a 'Löschen' line, but no 'Nein'."""
+    if not any(re.fullmatch(r"\W{0,3}\s*Löschen", l["text"].strip()) for l in lines):
+        return None
+    return button_hit(lines, "Nein")
+
+
+def close_delete_dialog() -> bool:
+    """Answer a delete confirmation a failed delete left open with 'Nein'
+    (never 'Ja': it may name another object than the next flow expects).
+    True when one was closed."""
+    hit = leftover_delete_dialog(ocr(LAYOUT["delete_dialog"]))
+    if not hit:
+        return False
+    log(f"closing a leftover delete confirmation at ({hit['click_x']}, {hit['click_y']})")
+    click(hit["click_x"], hit["click_y"])
+    time.sleep(1.5)
+    return True
 
 
 def project_tab_hit(name: str) -> dict | None:
@@ -1150,7 +1204,22 @@ def flow_catalog_add(req: dict) -> dict:
     # ETS moves its splitters between jobs at times: put them back first.
     restore_tree_splitter()
     restore_catalog_splitter()
+    closed_delete_dialog = close_delete_dialog()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
+    if before and req.get("clear", True):
+        # A device a failed delete left in the project pushes the new one to
+        # another address (#876): delete it first, or report the clean-up as
+        # failed instead of adding next to it (#997).
+        for ia in sorted(before):
+            try:
+                gone = flow_delete_device({**req, "ia": ia}).get("deleted")
+            except Exception as exc:  # noqa: BLE001 - reported as the clean-up failure
+                raise RuntimeError(f"clean-up failed: device {ia} left in the project before the add: {exc}") from exc
+            if not gone:
+                raise RuntimeError(f"clean-up failed: device {ia} left in the project before the add")
+        before = {d["ia"] for d in flow_devices(req)["devices"]}
+        if before:
+            raise RuntimeError(f"clean-up failed: devices {sorted(before)} left in the project before the add")
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
     def search(term: str) -> tuple[list[dict], list[dict]]:
@@ -1296,12 +1365,13 @@ def flow_catalog_add(req: dict) -> dict:
             raise CompatModeRequired(f"ETS asked for compatibility mode on adding: {compat[:200]}")
         time.sleep(2)
     return {"devices": after, "added": new, "row": row, "password_dialog": password_dialog,
-            "certificate": certificate}
+            "certificate": certificate, "closed_delete_dialog": closed_delete_dialog}
 
 
 @flow("delete_device")
 def flow_delete_device(req: dict) -> dict:
     require_project(req["project"])
+    close_delete_dialog()
     devs = flow_devices(req)["devices"]
     hit = [d for d in devs if d["ia"] == req["ia"]]
     if not hit:
@@ -1389,7 +1459,13 @@ def flow_delete_device(req: dict) -> dict:
             # (2026-10-28).
             named = " ".join(l["text"] for l in ocr(LAYOUT["delete_dialog"]))
             if req["ia"] in named.replace(" ", "") and "Linie" not in named:
-                click_button("Ja", LAYOUT["delete_yes"])
+                try:
+                    click_button("Ja", LAYOUT["delete_yes"])
+                except RuntimeError as exc:
+                    # Left open, the dialog fails every import after it
+                    # (2026-11-08, #997): answer it before reporting.
+                    closed = close_delete_dialog()
+                    raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
                 confirmed = True
             else:
                 click_button("Nein", (1300, 1380, 2800, 1580))
@@ -1967,6 +2043,9 @@ def flow_catalog_import(req: dict) -> dict:
     timeout = float(req.get("timeout", 900))
     region = (1500, 400, 3500, 1600)
     ets_error = dismiss_ets_error()
+    # A delete confirmation a failed delete left open covers the Katalog
+    # panel: every later import failed (2026-11-08, #997).
+    closed_delete_dialog = close_delete_dialog()
     # A file dialog a failed import left open (a COMError right after it
     # opened, 2026-11-05) covers the Import button: every later import failed.
     for w in ets_popups():
@@ -2074,7 +2153,8 @@ def flow_catalog_import(req: dict) -> dict:
                 time.sleep(1.5)
                 if "erfolgreich" not in " ".join(l["text"] for l in ocr(region)):
                     break
-            return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached, "ets_error": ets_error}
+            return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached, "ets_error": ets_error,
+                    "closed_delete_dialog": closed_delete_dialog}
         if any(k in joined for k in ("Fehler", "fehlgeschlagen", "nicht importiert", "ungültig", "Ausnahme")):
             for label in ("OK", "Schließen", "Abbrechen"):
                 if find_text(label, (1900, 1460, 2700, 1580)):

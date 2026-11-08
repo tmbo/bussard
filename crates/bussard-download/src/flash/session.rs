@@ -315,6 +315,7 @@ impl<Ch: L4Channel> Session<SingleConnector<Ch>> {
             authorize_outcomes: BTreeMap::new(),
             facts: None,
             max_apdu: None,
+            max_apdu_absent: false,
             readiness: Vec::new(),
             pending_readiness: None,
             verify: VerifyModeState::default(),
@@ -380,6 +381,11 @@ pub struct Session<C: Connector> {
     /// window's exchange sequence identical to an un-negotiated flash after the
     /// first, while still scaling chunks to the device.
     max_apdu: Option<u16>,
+    /// The device answered the `PID_MAX_APDU_LENGTH` read without a value (a
+    /// System 7 device has no such property, bussard issue #996). Re-seeded
+    /// like [`max_apdu`](Self::max_apdu) on every later window, so the absence
+    /// costs one exchange for the whole flash as a value does.
+    max_apdu_absent: bool,
     /// Whether the session's connections wrap management APDUs with a Data
     /// Secure tool key. A restart the flash triggers then ends with the Secure
     /// readiness probe and the longer S-A_Sync retry (issue #166); a plain
@@ -592,6 +598,8 @@ impl<C: Connector> Session<C> {
             }
             None => l4.negotiate_max_apdu().await.ok().flatten(),
         };
+        let max_apdu_absent = max_apdu.is_none()
+            && l4.max_apdu_absence() == Some(bussard_mgmt::MaxApduAbsence::Answered);
         Ok(Session {
             secure: l4.is_secure(),
             target: l4.target(),
@@ -601,6 +609,7 @@ impl<C: Connector> Session<C> {
             authorize_outcomes,
             facts,
             max_apdu,
+            max_apdu_absent,
             readiness: Vec::new(),
             pending_readiness: None,
             verify: VerifyModeState::default(),
@@ -800,6 +809,9 @@ impl<C: Connector> Session<C> {
         // round-trip, so scaling persists across the cycle without spending an
         // exchange against the tight per-connection budget (issue #58).
         l4.set_max_apdu(self.max_apdu);
+        if self.max_apdu_absent {
+            l4.set_max_apdu_absent();
+        }
         l4.set_user_memory_above_64k(self.user_memory_above_64k);
         self.l4 = Some(l4);
         // A new transport connection: the device cleared verify mode

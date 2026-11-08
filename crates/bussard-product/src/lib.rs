@@ -48,6 +48,7 @@ pub mod hardware;
 pub mod image;
 pub mod import;
 pub mod index;
+pub mod loaded_image;
 pub mod lock_keys;
 pub mod master;
 pub mod product_model;
@@ -193,6 +194,20 @@ fn attach_companion_programs(hardware: &HardwareCatalog, applications: &mut [App
                 }
             }
         }
+    }
+}
+
+/// Sets [`ApplicationProgram::ets_table_image`] on every application whose
+/// `Hardware2Program` carries a group-object-table segment in its
+/// `LoadedImage` ([`hardware::Hardware::table_image_apps`], issue #949).
+///
+/// The flag is per application while the image is per hardware and program:
+/// an application is marked when any `Hardware2Program` listing it holds the
+/// segment. A cached program is parsed without it, so this runs on every
+/// read, before the companions are attached (they are copies).
+fn mark_table_images(hardware: &HardwareCatalog, applications: &mut [ApplicationProgram]) {
+    for app in applications.iter_mut() {
+        app.ets_table_image = hardware.table_image_apps.contains(&app.id);
     }
 }
 
@@ -486,6 +501,7 @@ fn assemble(
         }
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));
+    mark_table_images(&catalog.hardware, &mut applications);
     attach_companion_programs(&catalog.hardware, &mut applications);
     Ok(ProductData {
         manufacturers: catalog.manufacturers,
@@ -529,6 +545,29 @@ mod tests {
     /// Issue #126, ABB BE/S16.230.3.2: the `Hardware2Program` that lists
     /// `A-A0ED-10` also lists the PEI program `A-A0ED-20`, which the
     /// application then carries; an application of another hardware does not.
+    /// Issue #949: the product reader marks the programs the hardware
+    /// catalogue's `LoadedImage` gives a group-object table, and clears the
+    /// flag on the others (a cached program carries none).
+    #[test]
+    fn test_mark_table_images_follows_the_hardware_catalog() {
+        let mut hardware = HardwareCatalog::default();
+        hardware.table_image_apps.insert("M-1_A-1".to_string());
+        let mut apps = vec![
+            ApplicationProgram {
+                id: "M-1_A-1".to_string(),
+                ..Default::default()
+            },
+            ApplicationProgram {
+                id: "M-1_A-2".to_string(),
+                ets_table_image: true,
+                ..Default::default()
+            },
+        ];
+        mark_table_images(&hardware, &mut apps);
+        assert!(apps[0].ets_table_image);
+        assert!(!apps[1].ets_table_image);
+    }
+
     #[test]
     fn test_attach_companion_programs_pairs_the_pei_program() {
         let mut hardware = HardwareCatalog::default();
