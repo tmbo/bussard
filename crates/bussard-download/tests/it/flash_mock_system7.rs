@@ -1502,15 +1502,21 @@ fn test_plan_flash_system7_writes_a_declared_count_past_max_elements()
         match op {
             LoadOp::DeclarePropDesc {
                 obj_idx: Some(6),
+                prop_id,
                 max_elements,
                 ..
-            } => *max_elements = Some(16),
+            } => {
+                *prop_id = Some(53);
+                *max_elements = Some(16);
+            }
             LoadOp::WriteProp {
                 obj_idx: Some(6),
+                prop_id,
                 inline_data,
                 count,
                 ..
             } => {
+                *prop_id = Some(53);
                 *inline_data = Some((1..=17).collect());
                 *count = Some(17);
             }
@@ -1529,7 +1535,7 @@ fn test_plan_flash_system7_writes_a_declared_count_past_max_elements()
     assert!(plan.steps.iter().any(|s| *s
         == FlashStep::WriteProp {
             object: bussard_download::PropObject::Index(6),
-            prop_id: 52,
+            prop_id: 53,
             value: (1..=17).collect(),
             start_element: 1,
             count: 17,

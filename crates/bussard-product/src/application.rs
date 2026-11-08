@@ -2467,14 +2467,11 @@ fn property_location(m: &Attrs) -> Option<PropertyLocation> {
 /// as the program's other parameters).
 fn place_union_in_property(app: &mut ApplicationProgram, union: &Union, base: &PropertyLocation) {
     for member in &union.members {
-        let bits = u32::from(base.bit_offset) + u32::from(member.bit_offset.unwrap_or(0));
+        let (offset, bit_offset) =
+            crate::image::union_member_position(base.offset, Some(base.bit_offset), member);
         let location = PropertyLocation {
-            offset: base
-                .offset
-                .saturating_add(member.offset.unwrap_or(0))
-                .saturating_add(bits / 8),
-            // Below 8 by the modulo.
-            bit_offset: (bits % 8) as u8,
+            offset,
+            bit_offset,
             ..base.clone()
         };
         if let Some(param) = app.parameters.get_mut(&member.parameter) {

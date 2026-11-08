@@ -230,28 +230,33 @@ pub(super) fn element_count(
 /// The `len` octets of an `LdCtrlWriteProp`'s `InlineData` the write sends,
 /// elements of `elem` octets (issue #957).
 ///
-/// ETS cuts the Hager 10-octet all-zero placeholder to the `Count` elements it
-/// writes (`count=1 index=1 len=1`), so a tail past `Count` elements is
-/// dropped when it is all zero. A non-zero tail is dropped too when the
-/// `InlineData` holds whole elements: the Gira `M-0008_A-C02A-21-B6D8-O007C`
-/// writes `ObjType="40960" PropId="64" Count="49"` (`PDT_UNSIGNED_LONG`) over a
-/// 200-octet `InlineData` of 50 elements, the 50th `00000001`, and ETS writes
-/// the first 49 elements only (`count=14 index=1` .. `count=7 index=43`, ops 71
-/// to 74 of its `plain-defaults` capture; ops 73 and 74 are the `InlineData`'s
-/// octets 112 to 195 as they stand). Only elements of more than one octet are
-/// dropped this way (the shape of that capture). A shorter `InlineData` is padded with
-/// zeros when it is all zero, or when parameters are placed in the property
-/// (`placed`) and it holds whole elements: ETS lays the parameters over the
-/// placeholder. A non-zero value is never cut, never ends in part of an
-/// element, and is never extended on a property no parameter decides.
+/// A longer `InlineData` is cut to `len`:
+///
+/// - an all-zero tail always: ETS cuts the Hager 10-octet all-zero
+///   placeholder to the `Count` elements it writes (`count=1 index=1 len=1`);
+/// - a non-zero tail when the `InlineData` holds whole elements of more than
+///   one octet: the Gira `M-0008_A-C02A-21-B6D8-O007C` writes
+///   `ObjType="40960" PropId="64" Count="49"` (`PDT_UNSIGNED_LONG`) over a
+///   200-octet `InlineData` of 50 elements, the 50th `00000001`, and ETS
+///   writes the first 49 elements only (`count=14 index=1` .. `count=7
+///   index=43`, ops 71 to 74 of its `plain-defaults` capture; ops 73 and 74
+///   are the `InlineData`'s octets 112 to 195 as they stand). The drop is
+///   logged, so a `Count` that disagrees with the `InlineData` shows in the
+///   plan's trace.
+///
+/// A non-zero tail of 1-octet elements is not cut: no capture shows ETS
+/// dropping one. A shorter `InlineData` is padded with zeros when it is all
+/// zero, or when parameters are placed in the property (`placed`) and it holds
+/// whole elements: ETS lays the parameters over the placeholder. A non-zero
+/// value never ends in part of an element and is never extended on a property
+/// no parameter decides.
 ///
 /// # Errors
 ///
 /// The refusal reason, naming `name`, for a non-zero tail past `Count`
-/// elements that ends in part of an element, a non-zero `InlineData` that ends
-/// in part of an element, or a
-/// non-zero one shorter than `Count` elements on a property no parameter is
-/// placed in.
+/// elements of one octet or ending in part of an element, a shorter non-zero
+/// `InlineData` that ends in part of an element, or a shorter non-zero one on
+/// a property no parameter is placed in.
 fn inline_template(
     name: &str,
     inline: &[u8],
@@ -260,17 +265,29 @@ fn inline_template(
     placed: bool,
 ) -> Result<Vec<u8>, String> {
     if inline.len() >= len {
-        // The one capture of a dropped non-zero tail is of 4-octet elements;
-        // with 1-octet elements every tail is whole elements, and no capture
-        // shows ETS dropping a non-zero one, so that stays refused.
-        let whole_elements = elem > 1 && inline.len().is_multiple_of(elem);
-        if inline[len..].iter().any(|b| *b != 0) && !whole_elements {
-            return Err(format!(
-                "the {}-octet InlineData of the write to {name} runs past its {len} octets \
-                 (Count elements of the declared type) with non-zero octets that end in part \
-                 of a {elem}-octet element; bussard does not drop them",
-                inline.len()
-            ));
+        if inline[len..].iter().any(|b| *b != 0) {
+            if elem == 1 {
+                return Err(format!(
+                    "the {}-octet InlineData of the write to {name} runs past its {len} \
+                     one-octet elements (Count) with non-zero octets; no capture shows ETS \
+                     dropping such a tail, so bussard does not drop it",
+                    inline.len()
+                ));
+            }
+            if !inline.len().is_multiple_of(elem) {
+                return Err(format!(
+                    "the {}-octet InlineData of the write to {name} runs past its {len} octets \
+                     (Count elements of the declared type) with non-zero octets that end in \
+                     part of a {elem}-octet element; bussard does not drop them",
+                    inline.len()
+                ));
+            }
+            tracing::info!(
+                property = name,
+                inline_octets = inline.len(),
+                written_octets = len,
+                "dropping the non-zero InlineData elements past Count, as ETS does"
+            );
         }
         return Ok(inline[..len].to_vec());
     }
@@ -821,6 +838,19 @@ mod tests {
         partial.extend([0, 1]);
         let reason = refusal(lower(&write(Some(partial), Some(2)), &decl, &app()?))?;
         assert!(reason.contains("part of a 4-octet element"), "{reason}");
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_refuses_a_non_zero_tail_of_one_octet_elements() -> TestResult
+    {
+        // The whole-element drop of C02A is 4-octet elements; a non-zero tail
+        // of 1-octet elements has no capture and stays refused, with that
+        // reason.
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 4))?;
+        let reason = refusal(lower(&write(Some(vec![1, 2, 3]), Some(2)), &decl, &app()?))?;
+        assert!(reason.contains("one-octet elements"), "{reason}");
+        assert!(!reason.contains("part of"), "{reason}");
         Ok(())
     }
 
