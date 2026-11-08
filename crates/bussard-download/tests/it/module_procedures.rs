@@ -146,11 +146,19 @@ fn test_plan_flash_runs_a_module_procedure_at_its_instance_object() -> TestResul
 /// completion.
 fn template_with(merge: &str) -> Vec<LoadOp> {
     vec![
-        LoadOp::Load { lsm_idx: Some(0) },
+        LoadOp::Load {
+            lsm_idx: Some(0),
+            obj_type: None,
+            occurrence: None,
+        },
         LoadOp::Merge {
             merge_id: Some(merge.to_string()),
         },
-        LoadOp::LoadCompleted { lsm_idx: Some(0) },
+        LoadOp::LoadCompleted {
+            lsm_idx: Some(0),
+            obj_type: None,
+            occurrence: None,
+        },
     ]
 }
 
