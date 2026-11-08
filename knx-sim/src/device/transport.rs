@@ -349,11 +349,19 @@ impl Device {
         if reaction.responses.is_empty() {
             reaction.responses.push(self.t_ack(tool, seq));
         }
-        // A numbered response waits for its T_ACK (OPEN_WAIT); a restart that
-        // dropped the connection leaves nothing to wait for.
+        self.await_ack(&reaction.responses, now);
+        // The T_ACK that precedes an application-layer response is added by
+        // the bus (`Bus::deliver_from_tool`), where the device's unit tests do
+        // not look.
+        Ok(reaction)
+    }
+
+    /// Arms OPEN_WAIT for the last numbered response in `responses`: it waits
+    /// for its `T_ACK` and is repeated on the acknowledge timeout. A restart
+    /// that dropped the connection leaves nothing to wait for.
+    pub(super) fn await_ack(&mut self, responses: &[CemiLData], now: Instant) {
         if self.connected
-            && let Some(resp) = reaction
-                .responses
+            && let Some(resp) = responses
                 .iter()
                 .rev()
                 .find(|r| r.tpdu.first().is_some_and(|b| b & 0xC0 == 0x40))
@@ -365,10 +373,20 @@ impl Device {
                 repetitions: 0,
             });
         }
-        // The T_ACK that precedes an application-layer response is added by
-        // the bus (`Bus::deliver_from_tool`), where the device's unit tests do
-        // not look.
-        Ok(reaction)
+    }
+
+    /// The sequence number of `cemi` when it is a numbered data frame the
+    /// transport layer of this device has just accepted: the open connection's
+    /// peer sent it, and it carried the sequence the device expected (so the
+    /// receive counter has moved past it). `None` for anything else, which a
+    /// refusal must not acknowledge.
+    pub(super) fn accepted_numbered_seq(&self, cemi: &CemiLData) -> Option<u8> {
+        let first = *cemi.tpdu.first()?;
+        let seq = (first >> 2) & 0x0F;
+        (first & 0xC0 == 0x40
+            && self.l4_connected_to(cemi.source)
+            && seq == self.rx_seq.wrapping_sub(1) & 0x0F)
+            .then_some(seq)
     }
 
     /// Build a transport-layer `T_ACK(seq)` frame back toward `to`.
@@ -379,7 +397,7 @@ impl Device {
     /// it considers the restart delivered (bussard's terminal basic restart),
     /// so the simulator must emit it before it
     /// reboots and drops the connection, or the tool retransmits into the void.
-    fn t_ack(&self, to: IndividualAddress, seq: u8) -> CemiLData {
+    pub(super) fn t_ack(&self, to: IndividualAddress, seq: u8) -> CemiLData {
         self.t_control(to, Tpci::ack_byte(seq))
     }
 
