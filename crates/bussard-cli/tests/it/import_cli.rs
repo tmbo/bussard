@@ -85,7 +85,6 @@ fn test_init_with_a_project_file_imports_it() -> TestResult {
             "--dir",
             dir.to_str().ok_or("path")?,
             "--routing",
-            "--no-download",
         ],
         &[],
     )?;
@@ -130,7 +129,6 @@ fn test_init_records_the_keyring_next_to_the_project() -> TestResult {
             "--dir",
             dir.to_str().ok_or("path")?,
             "--routing",
-            "--no-download",
         ],
         &[],
     )?;
@@ -202,7 +200,6 @@ fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> Te
             "--dir",
             dir.to_str().ok_or("path")?,
             "--routing",
-            "--no-download",
         ],
         &password,
     )?;
@@ -232,7 +229,6 @@ fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> Te
             project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
-            "--no-download",
         ],
         &password,
     )?;
@@ -247,13 +243,56 @@ fn test_init_and_import_create_the_key_store_from_a_neighbouring_keyring() -> Te
             project.to_str().ok_or("path")?,
             "--dir",
             dir.to_str().ok_or("path")?,
-            "--no-download",
         ],
         &[("BUSSARD_KEYRING_PASSWORD", "wrong")],
     )?;
     let stderr = String::from_utf8_lossy(&out.stderr);
     assert!(out.status.success(), "{stderr}");
     assert!(stderr.contains("was not imported"), "{stderr}");
+    std::fs::remove_dir_all(&tmp)?;
+    Ok(())
+}
+
+/// Issue #923: an export without the device's application program (what an
+/// ETS export without product data would be) is refused before anything is
+/// written, so an import never reaches a product download.
+#[test]
+fn test_import_project_without_product_data_is_refused_before_writing() -> TestResult {
+    let tmp = tmp("no-product-data")?;
+    let full = fixture(&tmp)?;
+    let stripped = tmp.join("stripped.knxproj");
+    let app_entry = format!("M-9999/{}.xml", super::tiny_project::APP_ID);
+    let mut archive = zip::ZipArchive::new(std::fs::File::open(&full)?)?;
+    let mut zw = zip::ZipWriter::new(std::fs::File::create(&stripped)?);
+    for i in 0..archive.len() {
+        let entry = archive.by_index_raw(i)?;
+        if entry.name()? != app_entry.as_str() {
+            zw.raw_copy_file(entry)?;
+        }
+    }
+    zw.finish()?;
+    let dir = tmp.join("knx");
+    let out = bussard(
+        &[
+            "import",
+            stripped.to_str().ok_or("path")?,
+            "--dir",
+            dir.to_str().ok_or("path")?,
+        ],
+        &[],
+    )?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains(&format!(
+            "application program `{}` referenced by device 1.1.1 was not found in the archive",
+            super::tiny_project::APP_ID
+        )),
+        "{stderr}"
+    );
+    assert!(!dir.join("devices").exists(), "nothing is written");
+    assert!(!stdout.contains("product data missing"), "{stdout}");
     std::fs::remove_dir_all(&tmp)?;
     Ok(())
 }

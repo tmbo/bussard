@@ -168,10 +168,20 @@ fn test_yes_is_not_download_consent() -> TestResult {
         );
     }
     // The download consent has one name on every command that downloads.
-    for command in ["init", "import", "import-product", "adopt"] {
+    for command in ["import-product", "adopt"] {
         let out = bussard(&[command, "--help"], &[])?;
         let help = String::from_utf8_lossy(&out.stdout);
         assert!(help.contains("--yes-download"), "{command} --help: {help}");
+    }
+    // A .knxproj carries its programs, so init and import download nothing
+    // and ask nothing (issue #923).
+    for command in ["init", "import"] {
+        let out = bussard(&[command, "--help"], &[])?;
+        let help = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            !help.contains("--yes-download") && !help.contains("--no-download"),
+            "{command} --help: {help}"
+        );
     }
     // adopt keeps --yes for its prompt, next to --yes-download.
     let out = bussard(&["adopt", "--help"], &[])?;

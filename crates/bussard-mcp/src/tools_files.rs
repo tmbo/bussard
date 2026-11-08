@@ -81,10 +81,9 @@ pub struct ImportFileArgs {
     /// index instead of a file. Needs `download: true`.
     #[serde(default)]
     pub order_number: Option<String>,
-    /// The human agreed to download vendor product data (for
-    /// `order_number`, and for the devices of a `.knxproj` without product
-    /// data). Default false: nothing is downloaded and the result says what
-    /// would be.
+    /// The human agreed to download vendor product data for
+    /// `order_number`. Default false: nothing is downloaded and the result
+    /// says what would be.
     #[serde(default)]
     pub download: Option<bool>,
     /// The project password of a protected `.knxproj`, or the keyring
@@ -269,12 +268,10 @@ fn import_file(dir: &Path, args: &ImportFileArgs) -> Result<Value, Value> {
         (Some(raw), None) => {
             let path = PathBuf::from(raw);
             match FileKind::of(&path) {
-                Some(FileKind::Project) => {
-                    match import_project(dir, &path, args, None, &mut prompt, &mut out) {
-                        ProjectRun::Done(value) => Ok(value),
-                        run => Err(run.into_value()),
-                    }
-                }
+                Some(FileKind::Project) => match import_project(dir, &path, args, None, &mut out) {
+                    ProjectRun::Done(value) => Ok(value),
+                    run => Err(run.into_value()),
+                },
                 Some(FileKind::Bundle) => {
                     match import::import_bundle(&path, dir, choice(args), &mut (), &mut out) {
                         Ok(outcome) => Ok(model_result("bundle", &path, dir, &outcome, &out)),
@@ -365,11 +362,8 @@ async fn run_project_import(
 ) -> ProjectRun {
     let (dir, path, args) = (dir.to_path_buf(), path.to_path_buf(), Arc::clone(args));
     let joined = tokio::task::spawn_blocking(move || {
-        let mut prompt = ChatDownload {
-            download: args.download.unwrap_or(false),
-        };
         let mut out = Collected::default();
-        import_project(&dir, &path, &args, password, &mut prompt, &mut out)
+        import_project(&dir, &path, &args, password, &mut out)
     })
     .await;
     joined.unwrap_or_else(|err| {
@@ -432,7 +426,6 @@ fn import_project(
     path: &Path,
     args: &ImportFileArgs,
     password: Option<String>,
-    prompt: &mut ChatDownload,
     out: &mut Collected,
 ) -> ProjectRun {
     let given = password
@@ -473,16 +466,7 @@ fn import_project(
         }
     };
     let project = Some(path);
-    let written = import::write_model(
-        model,
-        dir,
-        choice(args),
-        "project",
-        Some(prompt),
-        project,
-        &mut (),
-        out,
-    );
+    let written = import::write_model(model, dir, choice(args), "project", project, &mut (), out);
     match written {
         Ok(outcome) => {
             setup::import::import_neighbour(path, dir, out);

@@ -14,8 +14,7 @@
 //!
 //! The setup never asks on a terminal here. What the CLI would ask becomes a
 //! `question` in the result with nothing written: several gateways, none
-//! found, several projects, a directory that is no longer empty. The product
-//! data download is the `download` argument, never a `yes`, and the project
+//! found, several projects, a directory that is no longer empty. The project
 //! password comes from `BUSSARD_PROJECT_PASSWORD` (the `.env` the server
 //! reads) or the `password` argument, which no result or log line repeats.
 //! Without either, a client with URL-mode elicitation gets bussard's
@@ -28,7 +27,7 @@ use std::sync::{Arc, OnceLock};
 
 use bussard_model::Model;
 use bussard_service::BusService;
-use bussard_service::observer::{Answer, Collected, ProgressSink, Prompt, Question};
+use bussard_service::observer::{Collected, ProgressSink};
 use bussard_service::setup::{
     self, SetupError, SetupHooks, SetupOutcome, SetupRequest, TargetState,
 };
@@ -171,12 +170,6 @@ pub struct SetupArgs {
     /// gateway by discovery on this computer's networks.
     #[serde(default)]
     pub gateway: Option<String>,
-    /// Download the vendor product data (`.knxprod`) the export does not
-    /// carry from bussard's product index. These are copyrighted vendor
-    /// files: pass `true` only after the human agreed to the download. Off
-    /// by default; without it the result names what is missing.
-    #[serde(default)]
-    pub download: bool,
     /// The project password, when the export is password-protected and
     /// `BUSSARD_PROJECT_PASSWORD` is not set in the `.env` the server reads.
     /// Never repeated in a result or a log line.
@@ -189,7 +182,6 @@ impl std::fmt::Debug for SetupArgs {
         f.debug_struct("SetupArgs")
             .field("project_file", &self.project_file)
             .field("gateway", &self.gateway)
-            .field("download", &self.download)
             .field("password", &self.password.as_ref().map(|_| "<redacted>"))
             .finish()
     }
@@ -204,20 +196,8 @@ impl std::fmt::Debug for Running {
 /// The answers of a chat to the setup's questions: what the call's arguments
 /// settle, and a question for the assistant where the CLI would ask.
 struct Chat {
-    /// `download: true`.
-    download: bool,
     /// The question that stopped the setup, for the result.
     question: Option<String>,
-}
-
-impl Prompt for Chat {
-    fn ask(&mut self, _question: &Question) -> Answer {
-        if self.download {
-            Answer::Yes
-        } else {
-            Answer::No
-        }
-    }
 }
 
 impl SetupHooks for Chat {
@@ -308,20 +288,19 @@ impl SetupMcp {
             find_project: args.project_file.is_none(),
             password: args.password.clone(),
         };
-        let download = args.download;
         let forms = &self.inner.forms;
         // The client's second round of a 2026-07-28 call: the human's answer
         // to the password form's elicitation (#818).
         if let Some(state) = request_state.filter(|s| password_form::is_form_state(s)) {
             return Ok(
                 match password_form::resume(forms, &state, input_responses.as_ref()) {
-                    Step::Open(form) => self.setup_with_form(form, request, download).await.into(),
+                    Step::Open(form) => self.setup_with_form(form, request).await.into(),
                     Step::Answer(answer) => answer,
                     Step::Unsupported => password_required(Vec::new()).into(),
                 },
             );
         }
-        let (outcome, question, log) = run_setup(request.clone(), download).await;
+        let (outcome, question, log) = run_setup(request.clone()).await;
         // No password, or a wrong one from the .env: the form, when the
         // client can show it (#818).
         let needs_password = match &outcome {
@@ -332,7 +311,7 @@ impl SetupMcp {
         if needs_password {
             match password_form::ask(forms, &context, project_name(&request)).await {
                 Step::Open(form) => {
-                    return Ok(self.setup_with_form(form, request, download).await.into());
+                    return Ok(self.setup_with_form(form, request).await.into());
                 }
                 Step::Answer(answer) => return Ok(answer),
                 Step::Unsupported => {}
@@ -379,12 +358,9 @@ type SetupRun = (
 
 /// Runs the setup of `request` on a blocking thread, answering its
 /// questions as a chat does.
-async fn run_setup(request: SetupRequest, download: bool) -> SetupRun {
+async fn run_setup(request: SetupRequest) -> SetupRun {
     let joined = tokio::task::spawn_blocking(move || {
-        let mut hooks = Chat {
-            download,
-            question: None,
-        };
+        let mut hooks = Chat { question: None };
         let mut out = Collected::default();
         let outcome = setup::run(&request, &mut hooks, &mut out);
         (outcome, hooks.question, out.lines)
@@ -446,14 +422,13 @@ impl SetupMcp {
         &self,
         form: Arc<password_form::PendingForm>,
         request: SetupRequest,
-        download: bool,
     ) -> CallToolResult {
         let dir = request.dir.clone();
         let collected = password_form::collect(form, &dir, "set the project up", |password| {
             let mut request = request.clone();
             request.password = Some(password.expose().to_string());
             async move {
-                let (outcome, question, log) = run_setup(request, download).await;
+                let (outcome, question, log) = run_setup(request).await;
                 match outcome {
                     Err(err) if err.is_wrong_password() => Attempt::WrongPassword,
                     Ok(outcome) => Attempt::Opened((Ok(outcome), question, log)),
@@ -645,8 +620,7 @@ impl SetupMcp {
              have an ETS project export (.knxproj) and where it lies, then call knx_setup \
              (with project_file when it is not next to the model directory). knx_setup finds \
              the gateway on the local network, writes the model and imports the export. \
-             Downloading vendor product data needs the human's agreement first (download: \
-             true). When knx_setup returns a question, nothing was written: relay it and call \
+             When knx_setup returns a question, nothing was written: relay it and call \
              again. After it succeeds the server registers its full tool set and its result \
              carries the instructions for it; start with knx_project_summary.",
             self.inner.onboarding.config.dir.display()
@@ -765,10 +739,7 @@ mod tests {
     #[test]
     fn test_chat_hooks_turn_questions_into_a_question() -> TestResult {
         let dir = scratch("chat")?;
-        let mut chat = Chat {
-            download: false,
-            question: None,
-        };
+        let mut chat = Chat { question: None };
         let mut out = Collected::default();
         let request = SetupRequest {
             dir: dir.join("knx"),

@@ -3,16 +3,15 @@
 //!
 //! [`run`] resolves the gateway (given, routing, or found by KNXnet/IP
 //! discovery), writes the TOML skeleton, and imports the ETS export given or
-//! the one found next to the directory: product data from the export,
-//! vendor downloads only with the caller's consent, the keyring next to the
-//! project into the key store, and a validation summary. It never prints and
-//! never asks: every line goes to a [`ProgressSink`], every question to the
-//! [`Prompt`] or a [`SetupHooks`] method. The CLI answers them on the terminal; the MCP tool
+//! the one found next to the directory: product data from the export, the
+//! keyring next to the project into the key store, and a validation summary.
+//! It never prints and never asks: every line goes to a [`ProgressSink`],
+//! every question to a [`SetupHooks`] method. The CLI answers them on the terminal; the MCP tool
 //! answers them from its arguments and turns a question it cannot answer
 //! into a question for the assistant.
 //!
 //! The pieces are public for the commands that share them: the product store
-//! and the download step ([`products`]), the history snapshot and the fresh
+//! and `adopt`'s download step ([`products`]), the history snapshot and the fresh
 //! import write ([`import`]), the skeleton files ([`skeleton`]) and the
 //! gateway resolution ([`gateway`]).
 
@@ -26,7 +25,7 @@ use std::path::{Path, PathBuf};
 use bussard_model::Model;
 use bussard_transport::knxnet::GatewayInfo;
 
-use crate::observer::{ProgressSink, Prompt};
+use crate::observer::ProgressSink;
 
 pub use gateway::Resolution;
 pub use skeleton::TargetState;
@@ -101,9 +100,8 @@ impl<T, E: std::error::Error + Send + Sync + 'static> Context<T> for Result<T, E
 
 /// The questions a setup asks and the effects a surface supplies. Every
 /// method has the answer of a caller that cannot ask: the MCP tool overrides
-/// what its arguments settle, the CLI asks on the terminal. The product-data
-/// download question goes to the [`Prompt`] ([`crate::observer::Ask::Download`]).
-pub trait SetupHooks: Prompt {
+/// what its arguments settle, the CLI asks on the terminal.
+pub trait SetupHooks {
     /// The KNXnet/IP gateways discovery finds on the local network.
     ///
     /// # Errors
@@ -180,7 +178,7 @@ pub trait SetupHooks: Prompt {
         Self: Sized,
     {
         import::prepare_write(dir, out);
-        import::write_fresh(model, dir, project, Some(self), out)?;
+        import::write_fresh(model, dir, project, out)?;
         Ok(0)
     }
 }
@@ -349,8 +347,6 @@ mod tests {
     struct Quiet {
         confirmed: bool,
     }
-
-    impl Prompt for Quiet {}
 
     impl SetupHooks for Quiet {
         fn discover(&mut self) -> Result<Vec<GatewayInfo>, SetupError> {
