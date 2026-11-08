@@ -294,6 +294,19 @@ class TestFollowups(unittest.TestCase):
         self.assertIn("line 29\n... 10 more lines", d["body"])
         self.assertIn("ETS 6.4.8718", d["body"])
 
+    def test_draft_reads_the_diff_under_the_rows_address(self):
+        # A coupler row's oracle output lives under 1.1.0 (#876).
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        app = "M-0006_A-E001-10-AE55-O0009"
+        oracle_dir = tmp / app / "plain-defaults" / "oracle" / "1.1.0"
+        oracle_dir.mkdir(parents=True)
+        (oracle_dir / "diff.txt").write_text("coupler diff")
+        d = followups.draft({"app": app, "before": "identical", "after": "differs", "mask": "0701",
+                             "file": "s.knxprod", "regression": True},
+                            {app: {"summary": "1.1.0 7 differs", "ia": "1.1.0"}}, tmp, None, {})
+        self.assertIn("coupler diff", d["body"])
+
 
 class TestSeries(unittest.TestCase):
     # The EK-E72's object table at defaults, as the driver reads it.
@@ -722,6 +735,9 @@ class TestCompareProperties(unittest.TestCase):
 
     APP = "M-0004_A-D162-22-D781-O000A"
 
+    def setUp(self):
+        defaults._product_seeds.cache_clear()
+
     def _product(self, tmp: Path, compares: str) -> Path:
         import zipfile
 
@@ -1116,6 +1132,161 @@ class TestCaptureRecapture(unittest.TestCase):
             finally:
                 capture.ROWS = saved
             self.assertEqual(out.read_text(), saved.read_text())
+
+
+
+class TestCouplerAddress(unittest.TestCase):
+    """A coupler product gets the line's coupler address 1.1.0 from ETS, and
+    the sweep follows it (#876, M-0006 S85050100 and M-0009 STR131)."""
+
+    def test_added_address_takes_the_address_ets_gave(self):
+        import sweep
+
+        # The catalog_add result of M-0006_A-E001-10-AE55-O0009, 2026-11-05.
+        add = {"devices": [{"ia": "1.1.0", "y": 287}], "added": [{"ia": "1.1.0", "y": 287}],
+               "row": {"name": "Funk/KNX Gateway AP"}, "ok": True}
+        self.assertEqual(sweep.added_address(add, "1.1.1"), "1.1.0")
+        # The usual case, nothing added, or an ambiguous add keep the address.
+        self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.1"}]}, "1.1.1"), "1.1.1")
+        self.assertEqual(sweep.added_address({"added": []}, "1.1.1"), "1.1.1")
+        self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.0"}, {"ia": "1.1.2"}]}, "1.1.1"), "1.1.1")
+
+    def run_one(self, added: str, refuse_restart: bool = False):
+        """sweep.run_one against a fake driver and sim: ETS adds the device
+        at `added`; returns the result, the sims started and the flows."""
+        from unittest import mock
+
+        import sweep
+
+        sims, flows = [], []
+
+        class FakeSim:
+            def __init__(self, c, knxprod, app, ia, *a, **kw):
+                if sims and refuse_restart:
+                    raise RuntimeError("knx-sim.exe exited at once: bad address")
+                self.ia, self.stopped, self.fetched = ia, False, False
+                sims.append(self)
+
+            def lines(self):
+                return ['load-state changed object=1 state=Loaded', 'device restarted master_reset=false']
+
+            def stop(self):
+                self.stopped = True
+
+            def fetch_pcap(self, local):
+                self.fetched = True
+                Path(local).write_bytes(b"pcap")
+
+            def loaded_objects(self):
+                return {"1"}
+
+            def last_telegram_age(self):
+                return 0.0
+
+        def driver(c, method, path, body, timeout=0):
+            name = path.rsplit("/", 1)[1]
+            flows.append((name, body.get("ia")))
+            return {"devices": {"devices": []},
+                    "catalog_add": {"added": [{"ia": added}], "row": {"name": "x"}},
+                    "history": {"lines": ["Programmieren(Appl.): Abgeschlossen"]}}.get(name, {})
+
+        hook_ia = []
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        with mock.patch.object(sweep, "RemoteSim", FakeSim), mock.patch.object(sweep.vm, "driver", driver), \
+                mock.patch.object(sweep, "vm_now", return_value="2026-11-08 00:00:00"), \
+                mock.patch.object(sweep, "ets_failed_since", return_value=[]), \
+                mock.patch.object(sweep, "secure_enabled", return_value=False), \
+                mock.patch.object(sweep, "save_repair", return_value={}), \
+                mock.patch.object(sweep, "write_ops", return_value=3), \
+                mock.patch.object(sweep, "CAPTURES", tmp), mock.patch.object(sweep.time, "sleep"):
+            r = sweep.run_one(None, Path("p.knxprod"), "M-0006_A-E001-10-AE55-O0009", "85050100",
+                              before_download=lambda flow, out, ia: hook_ia.append(ia) or {})
+        return r, sims, flows, hook_ia
+
+    def test_run_one_restarts_the_sim_at_the_coupler_address(self):
+        r, sims, flows, hook_ia = self.run_one("1.1.0")
+        self.assertEqual(r["outcome"], "captured", r)
+        self.assertEqual((r["ia"], r["ia_requested"]), ("1.1.0", "1.1.1"))
+        self.assertEqual([s.ia for s in sims], ["1.1.1", "1.1.0"])
+        # The first sim stopped at the restart; the finally stopped and
+        # fetched the second one.
+        self.assertTrue(sims[0].stopped and not sims[0].fetched)
+        self.assertTrue(sims[1].stopped and sims[1].fetched)
+        self.assertIn(("download", "1.1.0"), flows)
+        self.assertEqual(hook_ia, ["1.1.0"])
+
+    def test_run_one_other_address_is_a_cleanup_failure(self):
+        r, sims, flows, _ = self.run_one("1.1.2")
+        self.assertEqual(r["outcome"], "driver-error-address", r)
+        self.assertEqual(len(sims), 1)
+        self.assertNotIn("download", [f for f, _ in flows])
+
+    def test_run_one_refused_restart_is_sim_refused(self):
+        r, sims, _, _ = self.run_one("1.1.0", refuse_restart=True)
+        self.assertEqual(r["outcome"], "sim-refused", r)
+        self.assertIn("exited at once", r["sim_refused"])
+
+    def test_oracle_row_uses_the_recorded_address(self):
+        self.assertEqual(oracle.entry_ia({"ia": "1.1.0"}), "1.1.0")
+        self.assertEqual(oracle.entry_ia({"ia": None}), "1.1.1")
+        self.assertEqual(oracle.entry_ia({}), "1.1.1")
+        row = oracle.row("M-0006_A-E001-10-AE55-O0009", Path("c/ets.pcapng"), Path("p.knxprod"), "0701", ia="1.1.0")
+        self.assertTrue(row.startswith("1.1.0|c/ets.pcapng|p.knxprod|M-0006_A-E001-10-AE55-O0009"))
+        self.assertTrue(row.endswith("state=fresh"))
+
+
+class TestOemIdentity(unittest.TestCase):
+    """The brand's manufacturer id of an OEM hardware is seeded as PID 12
+    (#881, Gewiss GW10966 on Hugo Müller hardware)."""
+
+    MASTER = """<KNX><MasterData><Manufacturers>
+      <Manufacturer Id="M-0019" KnxManufacturerId="25" Name="GEWISS" DefaultLanguage="en-US" />
+      <Manufacturer Id="M-00FC" KnxManufacturerId="252" Name="Hugo M&#252;ller GmbH &amp; Co KG" DefaultLanguage="en-US" />
+      </Manufacturers></MasterData></KNX>"""
+    HARDWARE = """<KNX><ManufacturerData><Manufacturer RefId="M-00FC"><Hardware>
+      <Hardware Id="M-00FC_H-LP.2D579.2D401-0" Name="GS4X_knx" SerialNumber="LP-579-401" VersionNumber="0">
+        <Hardware2Programs><Hardware2Program Id="H1">
+          <ApplicationProgramRef RefId="M-00FC_A-000A-11-5E09" /></Hardware2Program></Hardware2Programs>
+      </Hardware>
+      <Hardware Id="M-00FC_H-LP.2D579.2D401.5FGEWISS-0" Name="GS4X_knx" SerialNumber="LP-579-401_GEWISS" VersionNumber="0">
+        <Hardware2Programs><Hardware2Program Id="H2">
+          <ApplicationProgramRef RefId="M-00FC_A-000C-11-FA2D" /></Hardware2Program></Hardware2Programs>
+      </Hardware>
+      </Hardware></Manufacturer></ManufacturerData></KNX>"""
+
+    def setUp(self):
+        defaults._product_seeds.cache_clear()
+
+    def _product(self, tmp: Path) -> Path:
+        import zipfile
+
+        path = tmp / "GS4x12_v1.1.knxprod"
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("knx_master.xml", self.MASTER)
+            z.writestr("M-00FC/Hardware.xml", self.HARDWARE)
+        return path
+
+    def test_oem_identity_seeds_the_brand_manufacturer(self):
+        from unittest import mock
+
+        import sweep
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._product(Path(tmp))
+            want = {"object": 0, "pid": 12, "value": "0019"}
+            self.assertEqual(sweep.oem_identity(path, "M-00FC_A-000C-11-FA2D"), [want])
+            # The unbranded sibling of the same file: nothing.
+            self.assertEqual(sweep.oem_identity(path, "M-00FC_A-000A-11-5E09"), [])
+            with mock.patch.object(sweep, "product_properties", return_value=[]), \
+                    mock.patch.object(sweep, "compare_properties", return_value=[]):
+                self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D", None), [want])
+                # A seed is not learned; a value ETS's log taught still wins.
+                self.assertEqual(defaults.learned_from_ets(path, "M-00FC_A-000C-11-FA2D",
+                                                           {"learned_properties": [want]}), [])
+                taught = {"object": 0, "pid": 12, "value": "00fc"}
+                self.assertEqual(defaults.seed_properties(path, "M-00FC_A-000C-11-FA2D",
+                                                          {"learned_properties": [taught]}), [taught])
 
 
 if __name__ == "__main__":

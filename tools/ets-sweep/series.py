@@ -131,14 +131,14 @@ def links_hook(n: int = 3):
     object table, links `n` objects plus a second address on the first
     (`plan_links`), reads the table again into objects.json."""
 
-    def hook(flow, out: Path) -> dict:
-        objects = flow("objects", ia="1.1.1")["objects"]
+    def hook(flow, out: Path, ia: str = "1.1.1") -> dict:
+        objects = flow("objects", ia=ia)["objects"]
         plan = plan_links(objects, n)
         done = []
         for number, ga in plan["initial"] + ([plan["second"]] if plan["second"] else []):
-            flow("link", ia="1.1.1", number=number, ga=ga)
+            flow("link", ia=ia, number=number, ga=ga)
             done.append([number, ga])
-        after = flow("objects", ia="1.1.1")["objects"]
+        after = flow("objects", ia=ia)["objects"]
         (out / "objects.json").write_text(json.dumps(after, indent=1, ensure_ascii=False))
         return {"links": done}
 
