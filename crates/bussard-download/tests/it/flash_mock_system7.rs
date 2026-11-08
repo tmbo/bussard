@@ -163,6 +163,9 @@ struct DeviceState {
     /// control). A memory-mapped device has no such property, so a correct
     /// memory-mapped flash of a post-restart LSM 5 must leave this at zero.
     lsm5_property_accesses: usize,
+    /// Count of `A_PropertyValue_Read`s of object 0 PID 56
+    /// (`PID_MAX_APDU_LENGTH`), which this device does not have.
+    max_apdu_reads: usize,
     /// Every load event applied, as `(lsm, opcode)`, so a parameter-only
     /// download can be shown to unload nothing and touch only LSM 3 (#119).
     lsm_events: Vec<(u8, u8)>,
@@ -308,6 +311,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         revert_on_reboot: false,
         rebooting: false,
         lsm5_property_accesses: 0,
+        max_apdu_reads: 0,
         lsm_events: Vec::new(),
         task_records: Vec::new(),
         alloc_records: Vec::new(),
@@ -633,6 +637,9 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
             return Reaction::Nak;
         };
         let mut s = lock(state);
+        if obj == 0 && pid == 0x38 {
+            s.max_apdu_reads += 1;
+        }
         // A memory-mapped device has NO load-state-control property: a PID-5
         // access to object 5 (or any object) is a bug in the tool's realisation
         // switch. Count it and reject, exactly as the live sim does.
@@ -1852,6 +1859,7 @@ struct HandoverRun {
     segment_writes: Vec<(u16, usize)>,
     device_control_writes: Vec<u8>,
     memory: Vec<(u16, u8)>,
+    max_apdu_reads: usize,
     elapsed: Duration,
 }
 
@@ -1925,6 +1933,10 @@ async fn sys7_preflight_then_flash(
         ..Default::default()
     };
     let outcome = flash(&mut session, &plan, options, |_p| {}).await?;
+    // A read-back on the session's post-restart connection sizes its reads
+    // from the max APDU (`read_parameter_regions`): the session's knowledge,
+    // a value or an absence, answers it without a request (issue #996).
+    let _ = session.l4().negotiate_max_apdu().await;
     let _ = session.into_disconnect().await;
     let elapsed = started.elapsed();
     let s = lock(&state);
@@ -1939,11 +1951,27 @@ async fn sys7_preflight_then_flash(
         segment_writes: s.segment_writes.clone(),
         device_control_writes: s.device_control_writes.clone(),
         memory,
+        max_apdu_reads: s.max_apdu_reads,
         elapsed,
     };
     drop(s);
     drop(gw);
     Ok(run)
+}
+
+/// Issue #996: a System 7 device without `PID_MAX_APDU_LENGTH` (every house
+/// 0705 and 0701) is asked once, by the pre-flight; the flash's later windows,
+/// the read-back after the restart included, reuse the absence as they reuse
+/// a value.
+#[tokio::test]
+async fn test_flash_system7_absent_max_apdu_is_read_once() -> Result<(), Box<dyn std::error::Error>>
+{
+    for adopt in [false, true] {
+        let run = sys7_preflight_then_flash(adopt, None).await?;
+        assert!(run.ok, "flash completes (adopt {adopt})");
+        assert_eq!(run.max_apdu_reads, 1, "one PID 56 read (adopt {adopt})");
+    }
+    Ok(())
 }
 
 /// Issue #213: on System 7 too, the write phase that takes over the
