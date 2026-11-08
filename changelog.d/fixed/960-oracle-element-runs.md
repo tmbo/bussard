@@ -1,0 +1,1 @@
+- Offline oracle: `knxtrace imgdiff` compares property writes that do not align request by request as element runs, so a long write the dry run sends in one request (APDU 233) matches ETS's split at the device's max APDU (`M-0008_A-C02A-21-B6D8-O007C` PID 69: 25 elements against 14 + 11) (#960).

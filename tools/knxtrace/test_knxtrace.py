@@ -2578,6 +2578,98 @@ class TestTypedPropertyWrites(unittest.TestCase):
             self.assertEqual([e["key"][0] for e in props["ets_only"]], ["obj6"])
 
 
+class TestElementRuns(unittest.TestCase):
+    """Property writes compare as element runs, not requests (bussard issue
+    #960): the dry run splits a long write at its nominal 233-octet APDU,
+    ETS at the device's `PID_MAX_APDU_LENGTH` (66 on the C02A capture,
+    `M-0008_A-C02A-21-B6D8-O007C` PID 69: 14 + 11 elements)."""
+
+    VALUE = bytes(range(100)).hex()  # 25 four-octet elements
+
+    def image_dir(self, ets_writes) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        with open(os.path.join(out, "properties.json"), "w") as fh:
+            json.dump(ets_writes, fh)
+        return out
+
+    @staticmethod
+    def ets_write(seq, start, count, data, pid=69, obj_type=40960):
+        return {"seq": seq, "service": "A_PropertyExtValue_WriteUnCon",
+                "object": {"type": obj_type, "instance": 1}, "pid": pid, "count": count,
+                "index": start, "length": len(data) // 2, "data": data, "secured": None}
+
+    @staticmethod
+    def plan(records) -> dict:
+        return {"steps": [{"index": 27, "label": "write", "properties": [
+            dict({"object_type": 40960, "instance": 1, "pid": 69}, **r) for r in records]}]}
+
+    def c02a_ets(self, value=None):
+        value = value or self.VALUE
+        return [self.ets_write(65, 1, 14, value[:112]), self.ets_write(66, 15, 11, value[112:])]
+
+    def test_compare_properties_one_write_matches_ets_split(self):
+        plan = self.plan([{"start_element": 1, "count": 25, "length": 100, "data": self.VALUE}])
+        props = memimage.compare_properties(plan, self.image_dir(self.c02a_ets()))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        self.assertEqual(len(props["matched"]), 1)
+        m = props["matched"][0]
+        self.assertEqual((m["key"], m["value"]), (["type40960.1", 69, 100], "equal"))
+        self.assertEqual([p["count"] for p in m["ets_parts"]], [14, 11])
+        self.assertEqual([p["ets_seq"] for p in m["ets_parts"]], [65, 66])
+        self.assertEqual((props["bussard_writes"], props["ets_writes"]), (1, 2))
+        self.assertEqual(props["element_runs"], 1)
+        text = "\n".join(memimage.render_properties(props))
+        self.assertIn("one element run, bussard 25, ETS 14+11", text)
+
+    def test_compare_properties_merged_run_still_compares_the_value(self):
+        plan = self.plan([{"start_element": 1, "count": 25, "length": 100, "data": self.VALUE}])
+        other = self.VALUE[:150] + "ff" + self.VALUE[152:]
+        props = memimage.compare_properties(plan, self.image_dir(self.c02a_ets(other)))
+        self.assertEqual(props["verdict"], memimage.DIFFERS)
+        self.assertEqual(props["matched"][0]["value"], "differs")
+
+    def test_compare_properties_both_sides_split_differently(self):
+        # bussard's own split (56 + 44 elements of PID 64 on C02A) against ETS's 14-element writes.
+        plan = self.plan([{"start_element": 1, "count": 15, "length": 60, "data": self.VALUE[:120]},
+                          {"start_element": 16, "count": 10, "length": 40, "data": self.VALUE[120:]}])
+        props = memimage.compare_properties(plan, self.image_dir(self.c02a_ets()))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        self.assertEqual([p["count"] for p in props["matched"][0]["bussard_parts"]], [15, 10])
+
+    def test_compare_properties_same_split_keeps_per_request_hash_check(self):
+        # A value ETS redacted per request (the Hager 07B0 obj10 PID 56: 15 + 7 elements)
+        # still matches request by request; the run merge is not needed there.
+        a, b = self.VALUE[:30], self.VALUE[30:44]
+        ets = [dict(self.ets_write(23, 1, 15, a, pid=56), data="redacted:" + memimage.sha256(bytes.fromhex(a))[:8]),
+               dict(self.ets_write(24, 16, 7, b, pid=56), data="redacted:" + memimage.sha256(bytes.fromhex(b))[:8])]
+        plan = {"steps": [{"index": 27, "label": "write", "properties": [
+            {"object_type": 40960, "instance": 1, "pid": 56, "start_element": 1, "count": 15,
+             "length": 15, "data": a},
+            {"object_type": 40960, "instance": 1, "pid": 56, "start_element": 16, "count": 7,
+             "length": 7, "data": b}]}]}
+        props = memimage.compare_properties(plan, self.image_dir(ets))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        self.assertEqual([m["value"] for m in props["matched"]], ["hash-equal", "hash-equal"])
+        self.assertEqual(props["element_runs"], 0)
+
+    def test_merge_element_runs_keeps_a_gap_apart(self):
+        writes = [self.ets_write(1, 1, 14, self.VALUE[:112]),
+                  self.ets_write(2, 176, 11, self.VALUE[112:]),  # not element 15
+                  self.ets_write(3, 187, 1, "00000000", pid=64)]  # another PID
+        self.assertEqual(len(memimage.merge_element_runs(writes)), 3)
+
+    def test_merge_element_runs_leaves_the_security_object_alone(self):
+        writes = [self.ets_write(1, 1, 1, "00" * 18, pid=53, obj_type=17),
+                  self.ets_write(2, 2, 1, "11" * 18, pid=53, obj_type=17)]
+        self.assertEqual(len(memimage.merge_element_runs(writes)), 2)
+
+    def test_merge_element_runs_needs_a_value_on_both(self):
+        writes = [self.ets_write(1, 1, 14, self.VALUE[:112]),
+                  self.ets_write(2, 15, 11, "redacted:abcd1234")]
+        self.assertEqual(len(memimage.merge_element_runs(writes)), 2)
+
+
 class TestUnloadPass(unittest.TestCase):
     """`unload_pass`: ETS's Unload command ahead of the download (#488)."""
 

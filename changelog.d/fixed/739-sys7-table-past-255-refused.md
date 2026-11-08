@@ -1,0 +1,1 @@
+- `flash` refuses a System 7 table the one-octet form cannot hold (more than 254 group addresses, more than 255 associations, or a TSAP or ASAP past 255) at plan time, naming the table, the count and the limit; it used to leave the table out and stream the product's own `<Data>` table in its place (#739).

@@ -230,6 +230,15 @@ sequence numbers are a note on an `equal` match, and a sender difference
 prints both lists, `1.1.5 (seq N), 1.1.7 (seq M)`, also when the two sides
 wrote tables of different lengths.
 
+`imgdiff` aligns the property writes request by request. Where they do not
+align, it compares that stretch as element runs: consecutive writes to the
+same object and PID whose elements follow on are joined on both sides
+(bussard issue #960). The split of a long write follows the device's
+`PID_MAX_APDU_LENGTH`, which the dry run does not know, so one 100-octet
+bussard write matches ETS's 14 + 11 elements, and the diff names both splits.
+The security object's writes and values redacted per request are never
+joined.
+
 `image` also records every memory read response the device sent (issue
 #384). An octet ETS read and never wrote in the capture is *read-confirmed*:
 on a read-compare download (mask 0701) ETS writes only the octets that differ

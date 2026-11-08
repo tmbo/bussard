@@ -545,6 +545,7 @@ pub fn normalize_plan_error(e: &PlanError) -> String {
             format!("Sys7FieldOutOfRange: {field}")
         }
         PlanError::Sys7LsmOutOfRange { .. } => "Sys7LsmOutOfRange".to_string(),
+        PlanError::Sys7TableOverflow { table, .. } => format!("Sys7TableOverflow: {table}"),
         // NotSystemB is bucketed as NotSupportedFamily before reaching here.
         PlanError::NotSystemB { .. } => "NotSupportedFamily".to_string(),
         PlanError::SecurityActivated { .. } => "SecurityActivated".to_string(),
