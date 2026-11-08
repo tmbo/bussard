@@ -4656,6 +4656,15 @@ mod tests {
                 value: 3
             }
         );
+        // An equality written with its operator (Siemens `07 B0`, #949).
+        assert_eq!(
+            WhenTest::parse(Some("=417"), None),
+            WhenTest::Values(vec![417])
+        );
+        assert_eq!(
+            WhenTest::parse(Some("=x"), None),
+            WhenTest::Unknown("=x".to_string())
+        );
         // `default="true"` wins over a test; `default="false"` does not.
         assert_eq!(WhenTest::parse(Some("1"), Some("true")), WhenTest::Default);
         assert_eq!(

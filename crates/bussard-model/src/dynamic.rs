@@ -100,6 +100,29 @@
 //! Whether the system or something else that sets the System 7 programs apart
 //! decides is open until a System 7 twin of the synthetic product is captured.
 //! The target ref of a reached `<Assign>` counts as active too: ETS writes it.
+//!
+//! Two more places make a ref active without a `<ParameterRefRef>`:
+//!
+//! - The `ParamRefId` of a reached `<ParameterBlock>`, which titles the block
+//!   (issue #943). The Hager actuators `M-0009_A-E807`/`A-E808` (defaults
+//!   sweep, captured 2026-11-07) title each output block with a `TypeNone`,
+//!   `Access="Read"` parameter (`P-2901` "Output 1-2: Definition") that no
+//!   `<ParameterRefRef>` shows, and gate the block's objects behind a
+//!   default-only `<choose>` on it; ETS writes those objects (`1b 00`,
+//!   `4b 00`). As a title the parameter is shown, so the #474 rule for
+//!   never-shown parameters does not apply. Across the sweep's 623 System B
+//!   programs this changes the walk of five, all of which differed before.
+//! - The source of a reached `<Assign>` (issue #950). The DALI gateway program
+//!   `A-DA11` (`M-00EF_A-DA11-21-F620` and its OEM copies) gates every group
+//!   module's objects on `MD-2_P-1_R-1`, which is shown only inside chooses on
+//!   itself and on a colour type that is 0 at the defaults, so it is never
+//!   reached; ETS takes its `test="0 1"` branch and writes the six group
+//!   objects of all 16 groups. The ref is the source of an unconditional
+//!   `<Assign>` in the group block (and also an output of a
+//!   `<ParameterCalculation>`); the sweep has no program that separates the
+//!   two readings, both change only the four `A-DA11` rows. The `<Assign>`
+//!   reading is the one kept, as it mirrors the target rule above; a
+//!   synthetic product is needed to tell them apart (issue #950).
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
@@ -304,6 +327,8 @@ impl CompareOp {
 ///   8.2 M and 492 k occurrences). A value may be negative (`test="-1"`).
 /// * `test="!=0"`, `test=">=2"`, `test="<3"` — a comparison
 ///   ([`WhenTest::Compare`], ~130 k).
+/// * `test="=417"` — one exact value written with its operator, read as
+///   [`WhenTest::Values`] (the Siemens `07 B0` channel functions, issue #949).
 /// * `<when default="true">` — the branch taken when no sibling matched
 ///   ([`WhenTest::Default`], 97 k).
 /// * anything else, preserved verbatim ([`WhenTest::Unknown`]) rather than
@@ -357,6 +382,14 @@ impl WhenTest {
                     Err(_) => WhenTest::Unknown(raw.to_string()),
                 };
             }
+        }
+        // `test="=417"`: an equality written with its operator, one value
+        // (issue #949, the Siemens `07 B0` channel functions).
+        if let Some(rest) = raw.strip_prefix('=') {
+            return match rest.trim().parse::<i64>() {
+                Ok(value) => WhenTest::Values(vec![value]),
+                Err(_) => WhenTest::Unknown(raw.to_string()),
+            };
         }
         let mut values = Vec::new();
         for token in raw.split_whitespace() {
@@ -2027,9 +2060,12 @@ fn instance_module_def(instance: &str) -> String {
 fn placed_parameters<S: DynamicSource + ?Sized>(app: &S) -> HashSet<String> {
     let mut out = HashSet::new();
     for_each_node(app, &mut |node| {
-        if let DynamicNode::ParameterRefRef(r) = node
-            && let Some(id) = parameter_id(app, r)
-        {
+        let shown = match node {
+            DynamicNode::ParameterRefRef(r) => Some(r),
+            DynamicNode::ParameterBlock { param_ref, .. } => param_ref.as_ref(),
+            _ => None,
+        };
+        if let Some(id) = shown.and_then(|r| parameter_id(app, r)) {
             out.insert(id.to_string());
         }
     });
@@ -2548,7 +2584,8 @@ fn get_bits(image: &[u8], pos: u32, bits: u32) -> u64 {
 
 impl Walk {
     /// The active parameter refs this pass reached: every reached
-    /// `<ParameterRefRef>` and every reached `<Assign>` target.
+    /// `<ParameterRefRef>`, every reached block title (`<ParameterBlock
+    /// ParamRefId>`) and the target and source of every reached `<Assign>`.
     fn active_set(&self) -> HashSet<(String, String)> {
         let mut out = self.active_now.clone();
         for a in &self.assigns {
@@ -2556,6 +2593,11 @@ impl Walk {
                 self.instance_id(a.target_module).to_string(),
                 a.target.clone(),
             ));
+            // The source of a reached `<Assign>` is active too (issue
+            // #950, see the module docs).
+            if let Some(src) = &a.source {
+                out.insert((self.instance_id(a.source_module).to_string(), src.clone()));
+            }
         }
         out
     }
@@ -2747,7 +2789,19 @@ impl Walk {
                     self.run(app, values, children, module, depth);
                     self.ctx = outer;
                 }
-                DynamicNode::ParameterBlock { children, .. } => {
+                DynamicNode::ParameterBlock {
+                    children,
+                    param_ref,
+                    ..
+                } => {
+                    // A block titled by a `ParamRefId` shows that ref as its
+                    // heading: reaching the block makes the ref active (issue
+                    // #943, see the module docs).
+                    if let Some(r) = param_ref {
+                        let scope = self.scope(module, r);
+                        self.active_now
+                            .insert((self.instance_id(scope).to_string(), r.clone()));
+                    }
                     let block = node.block_ref();
                     if let Some(b) = &block {
                         self.containers
