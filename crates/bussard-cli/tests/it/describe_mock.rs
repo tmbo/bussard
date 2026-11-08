@@ -386,3 +386,75 @@ fn test_describe_identity_unmodelled_device() -> TestResult {
     assert_eq!(json["identity"]["verdict"], "unmodelled", "{json}");
     Ok(())
 }
+
+/// Issue #904: `bussard describe --json` is `knx_describe_device`'s result
+/// without its chat envelope.
+#[test]
+fn test_describe_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> TestResult {
+    let model = TempModel::new("bussard-describe-shape", None)?;
+    let device = MockDevice {
+        address: target()?,
+        object_types: vec![OT_DEVICE, OT_ADDRESS_TABLE],
+        program_version: None,
+    };
+    let rt = tokio::runtime::Runtime::new()?;
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(CHANNEL)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(30))
+            .device(gateway_device(device))
+            .start(),
+    )?;
+    let gateway = format!("127.0.0.1:{}", gw.port());
+    let dir = model.dir();
+    // A project, so the server is not in its onboarding state.
+    std::fs::write(
+        dir.join("bussard.toml"),
+        "[connection]\ntransport = \"tunnel\"\n",
+    )?;
+    let output = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
+        .env("BUSSARD_ADDRESS_PROBE_MS", "200")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .args([
+            "describe",
+            "1.1.12",
+            "--json",
+            "--gateway",
+            &gateway,
+            "--dir",
+        ])
+        .arg(&dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let cli: serde_json::Value = serde_json::from_slice(&output.stdout)?;
+    let mut server = crate::mcp_stdio_client::McpServer::start_without_keyring(
+        &dir,
+        gw.port(),
+        &[("BUSSARD_MGMT_TIMEOUT_MS", "300")],
+        &[],
+    )
+    .map_err(|e| e.to_string())?;
+    let mcp = server
+        .call_when_connected(
+            "knx_describe_device",
+            serde_json::json!({"address": "1.1.12"}),
+            50,
+        )
+        .map_err(|e| e.to_string())?;
+    // The server walks the objects without the descriptor read
+    // (`Walk::Objects`), so the mask and the identity it gives are only in
+    // the CLI's report; every other key is the same.
+    bussard_testkit::shape::assert_one_shape(&cli, &mcp, &["mask", "system_type", "identity"])
+        .map_err(|e| format!("{e}\n--json: {cli}\nMCP: {mcp}"))?;
+    drop(server);
+    drop(gw);
+    Ok(())
+}

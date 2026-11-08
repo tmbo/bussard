@@ -29,8 +29,12 @@ pub struct ObjectGa {
 /// outputs and for the MCP tool.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct ReconstructReport {
+    /// Always `true`: the device was read.
+    pub ok: bool,
     /// The device address.
     pub address: String,
+    /// Whether it was read under KNX Data Secure.
+    pub secured: bool,
     /// The mask version, formatted `07B0`.
     pub mask: String,
     /// Human-readable system type for the mask.
@@ -54,6 +58,124 @@ pub struct ReconstructReport {
     /// #228), when the device facts were read.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<IdentityCheck>,
+    /// Why the parameters were not compared.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parameters_note: Option<String>,
+    /// The diff in the project's words, when a project was loaded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub differences: Option<DeviceDiff>,
+    /// The programming tier is on, for the next step.
+    #[serde(skip)]
+    pub programming: bool,
+}
+
+/// The diff of a device against the project in the project's words, the
+/// shape `knx_diff_project` returns.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct DeviceDiff {
+    /// The project side.
+    pub from: String,
+    /// The device side.
+    pub to: String,
+    /// How many links differ.
+    pub count: usize,
+    /// The counts in one line.
+    pub summary: String,
+    /// A protected group address is among them.
+    pub touches_protected: bool,
+    /// One sentence per difference.
+    pub sentences: Vec<String>,
+    /// The differences.
+    pub changes: Vec<Difference>,
+}
+
+impl ReconstructReport {
+    /// Adds the diff in the project's words: `model` names the links.
+    pub fn with_differences(
+        mut self,
+        target: IndividualAddress,
+        model: &Model,
+    ) -> ReconstructReport {
+        self.differences = self.diff.as_ref().map(|diff| {
+            let changes = diff.differences(target, Some(model));
+            let extra = changes
+                .iter()
+                .filter(|c| c.kind == DifferenceKind::OnDeviceNotInModel)
+                .count();
+            let missing = changes.len() - extra;
+            let file = model
+                .devices
+                .get(&target)
+                .map(|d| format!("devices/{}.toml", d.file_stem));
+            DeviceDiff {
+                from: match file {
+                    Some(file) => format!("the model ({file})"),
+                    None => "the model (no device file for this address)".to_string(),
+                },
+                to: format!("{target} as read from the bus"),
+                count: changes.len(),
+                summary: if changes.is_empty() {
+                    "no differences".to_string()
+                } else {
+                    format!(
+                        "{extra} link(s) on the device the model does not have, {missing} \
+                         link(s) in the model the device does not have"
+                    )
+                },
+                touches_protected: changes.iter().any(|c| c.protected),
+                sentences: changes.iter().map(|c| c.sentence.clone()).collect(),
+                changes,
+            }
+        });
+        self
+    }
+
+    /// How many links differ (0 without a project).
+    fn differing(&self) -> usize {
+        self.differences.as_ref().map_or(0, |d| d.count)
+    }
+}
+
+impl crate::report::Report for ReconstructReport {
+    const SCHEMA: u32 = 2;
+
+    fn summary(&self, model: &Model) -> Option<String> {
+        let device = self
+            .address
+            .parse()
+            .map(|ia| crate::report::device_phrase(model, ia))
+            .unwrap_or_else(|_| "the device".to_string());
+        let device = bussard_model::text::capitalize(&device);
+        Some(match self.differing() {
+            0 => format!("{device}'s connections match your project; nothing is missing or extra."),
+            1 => format!(
+                "{device} differs from your project in one connection (the sentences list it)."
+            ),
+            n => format!(
+                "{device} differs from your project in {n} connections (the sentences list them)."
+            ),
+        })
+    }
+
+    fn next_step(&self) -> Option<String> {
+        let target = &self.address;
+        Some(if self.differing() == 0 {
+            format!("{target}'s link tables match your project.")
+        } else if self.programming {
+            format!(
+                "Quote differences.sentences to the human. knx_plan_device and \
+                 knx_apply_device write the model's links to {target}; knx_restore_tables puts \
+                 the link tables of a backup back. Neither runs without the human's yes to its \
+                 plan."
+            )
+        } else {
+            format!(
+                "Quote differences.sentences to the human. Writing the model's links to \
+                 {target} needs --allow-programming (knx_plan_device, knx_apply_device) or \
+                 `bussard plan {target}` and `bussard apply {target}` at the CLI."
+            )
+        })
+    }
 }
 
 /// A raw association table entry.
@@ -205,6 +327,11 @@ pub fn build_report(
     let diff = model_objects.map(|model_objects| diff_objects(&device_objects, &model_objects));
 
     ReconstructReport {
+        ok: true,
+        secured: false,
+        parameters_note: None,
+        differences: None,
+        programming: false,
         address: target.to_string(),
         mask: format!("{:04X}", read.mask),
         system_type: system_type(read.mask).to_string(),

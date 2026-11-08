@@ -26,7 +26,6 @@ use bussard_model::tests_schema::{Expectation, TestCase, TestSuite};
 use bussard_model::text::{from_hex, hex};
 use bussard_model::{GroupAddress, IndividualAddress, Model, encode, parse_value};
 use bussard_transport::cemi::MessageCode;
-use serde_json::{Value, json};
 
 use bussard_model::timefmt;
 use bussard_monitor::decode::{DecodedTelegram, DestinationRef};
@@ -88,16 +87,85 @@ pub struct TestOutcome {
     pub observed: Option<String>,
 }
 
-impl TestOutcome {
-    /// This outcome as a JSON object.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "name": self.name,
-            "status": self.status.tag(),
-            "detail": self.detail,
-            "observed": self.observed,
-        })
+/// One test of a run, as the report lists it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestRow {
+    /// The test's name.
+    pub name: String,
+    /// `pass`, `fail`, `skipped` or `refused`.
+    pub status: &'static str,
+    /// Why.
+    pub detail: String,
+    /// The value seen instead, when an expectation failed.
+    pub observed: Option<String>,
+}
+
+/// The counts of a run.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestSummary {
+    /// Tests considered.
+    pub total: usize,
+    /// Passed.
+    pub passed: usize,
+    /// Failed.
+    pub failed: usize,
+    /// Skipped.
+    pub skipped: usize,
+    /// Refused (a protected group address).
+    pub refused: usize,
+    /// No test failed.
+    pub ok: bool,
+}
+
+/// A test run in one shape (issue #904): `bussard test --json` and
+/// `knx_run_tests`.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TestRunReport {
+    /// No test failed.
+    pub ok: bool,
+    /// When the run started, RFC 3339.
+    pub started_at: String,
+    /// One row per test.
+    pub tests: Vec<TestRow>,
+    /// The counts.
+    pub summary: TestSummary,
+    /// The tests the run refused because they write a protected group
+    /// address.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused_protected: Vec<String>,
+}
+
+impl TestRunReport {
+    /// The report of `run`.
+    pub fn of(run: &Report) -> TestRunReport {
+        TestRunReport {
+            ok: run.ok(),
+            started_at: timefmt::to_rfc3339(run.started_at),
+            tests: run
+                .outcomes
+                .iter()
+                .map(|o| TestRow {
+                    name: o.name.clone(),
+                    status: o.status.tag(),
+                    detail: o.detail.clone(),
+                    observed: o.observed.clone(),
+                })
+                .collect(),
+            summary: TestSummary {
+                total: run.outcomes.len(),
+                passed: run.count(Status::Pass),
+                failed: run.count(Status::Fail),
+                skipped: run.count(Status::Skipped),
+                refused: run.count(Status::Refused),
+                ok: run.ok(),
+            },
+            refused_protected: Vec::new(),
+        }
     }
+}
+
+impl crate::report::Report for TestRunReport {
+    const SCHEMA: u32 = 2;
 }
 
 /// The result of a whole run.
@@ -119,22 +187,6 @@ impl Report {
     /// fail the run).
     pub fn ok(&self) -> bool {
         self.count(Status::Fail) == 0
-    }
-
-    /// The report as JSON.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "started_at": timefmt::to_rfc3339(self.started_at),
-            "tests": self.outcomes.iter().map(TestOutcome::to_json).collect::<Vec<_>>(),
-            "summary": {
-                "total": self.outcomes.len(),
-                "passed": self.count(Status::Pass),
-                "failed": self.count(Status::Fail),
-                "skipped": self.count(Status::Skipped),
-                "refused": self.count(Status::Refused),
-                "ok": self.ok(),
-            },
-        })
     }
 
     /// The report as plain text, one line per test plus a summary. Contains no
@@ -644,7 +696,7 @@ mod tests {
         assert!(text.contains("observed: 3/1/0 = Down"), "{text}");
         assert!(text.contains("1 passed, 1 failed"), "{text}");
 
-        let json = report.to_json();
+        let json = serde_json::to_value(TestRunReport::of(&report)).map_err(|e| e.to_string())?;
         assert_eq!(json["summary"]["failed"], 1);
         assert_eq!(json["summary"]["ok"], false);
         assert_eq!(json["tests"][1]["status"], "fail");

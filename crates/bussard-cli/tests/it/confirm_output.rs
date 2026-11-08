@@ -218,7 +218,7 @@ fn test_validate_json_shape() -> TestResult {
     )?;
     let out = bussard(&["validate", "--json", "--dir", s(&dir)?], &[])?;
     let doc: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    assert_eq!(doc["schema"], 1, "{doc}");
+    assert_eq!(doc["schema"], 2, "{doc}");
     let diagnostics = doc["diagnostics"]
         .as_array()
         .ok_or("validate --json: no diagnostics array")?;

@@ -23,7 +23,7 @@ Each row shows the address (IA, the device's `area.line.device` address), mask v
 Behaviour:
 
 - Addresses are swept one at a time, one management connection at a time.
-- The table has the columns Address, Product (manufacturer and order number), Serial number, Secure and In project; a column no device fills is left out. One summary line follows (devices found, addresses swept and how long it took, how many did not answer, how many are not in your project), then the devices of your project on this line that did not answer and the next steps. JSON keeps the mask, system type and `model_status`.
+- The table has the columns Address, Product (manufacturer and order number), Serial number, Secure and In project; a column no device fills is left out. One summary line follows (devices found, addresses swept and how long it took, how many did not answer, how many are not in your project), then the devices of your project on this line that did not answer and the next steps. JSON (`--json`, schema 2) has `devices` (each with `address`, `name`, `known`, `mask`, `system_type`, `manufacturer`, `order_number`, `serial`, `identity`), `not_in_model`, `missing_from_bus` and `timing`; `knx_find_devices` returns the same object.
 - A serial number the scan saved to your project is marked `(saved)`, and a certificate it matched to the device is reported as `certificate for 1.1.3 attached`.
 - A secured device hides its mask from a plain read (mask `FFFF`). When the key store lists the address, `scan` reads it over KNX Data Secure and shows the real mask; the Secure column shows a lock (`secure` without colour) and JSON adds `"secure": "activated"`.
 - Without a tool key the device keeps mask `FFFF`, the Secure column says `(no tool key)` and JSON gives `"secure": "activated_no_key"`. A key the device does not accept gives `(key refused)` and `"secure": "key_refused"`.
@@ -135,7 +135,7 @@ $ bussard reconstruct --line 1.1 --out rebuilt/
 | `--no-parameters` | off | Single-device mode: read the links and tables only. No product is parsed and no parameter memory is read, which on a large parameter segment is most of the time. Conflicts with `--product` and `--application`. |
 | `--keyring <FILE>` | | Single-device mode: the keyring holding the target's KNX Data Secure tool key. Required for a secured device; password from `BUSSARD_KEYRING_PASSWORD`. |
 | `--tool-key <HEX>` | | Single-device mode: the raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
-| `--json` | off | Emit the result as JSON; `table_source` reports per table how it was read. |
+| `--json` | off | Emit the result as JSON (schema 2, the object `knx_reconstruct_device` returns): `table_source` reports per table how it was read, `diff` holds `matches` and `note`, and `differences` the comparison in the shape of `diff --json`. |
 
 Behaviour:
 
@@ -203,7 +203,7 @@ Rocker 1 on Hallway push button now switches Porch light.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Emit the change set as `{"schema", "base": <snapshot id>, "changes": [...]}`. With `ADDRESS`: `{"schema", "address", "name", "mask", "system_type", "identity", "knxnet", "model_knxnet", "knxnet_drift"}`. |
+| `--json` | off | Emit the change set as `{"schema", "ok", "base": <snapshot id>, "count", "touches_protected", "sentences", "changes": [...]}`, the object `knx_describe_change` returns. With `ADDRESS` (schema 2, the `live` object of `knx_show_device {live: true}`): `{"schema", "ok", "address", "secured", "name", "mask", "system_type", "identity", "sentences", "knxnet", "knxnet_lines", "knxnet_error", "model_knxnet", "knxnet_drift"}`. |
 | `--raw` | off | Print the file-level diff instead of the sentences. Not with `ADDRESS`. |
 
 Behaviour without an address:

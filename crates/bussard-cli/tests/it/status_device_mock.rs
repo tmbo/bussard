@@ -141,7 +141,7 @@ fn test_status_address_json_carries_facts_model_and_drift() -> TestResult {
     let stdout = String::from_utf8(output.stdout)?;
     assert!(output.status.success(), "{stdout}");
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    assert_eq!(json["schema"], 1);
+    assert_eq!(json["schema"], 2);
     assert_eq!(json["address"], "1.1.200");
     assert_eq!(json["knxnet"]["current_address"], "192.168.1.74");
     assert_eq!(json["knxnet"]["assignment_mode"], "dhcp");

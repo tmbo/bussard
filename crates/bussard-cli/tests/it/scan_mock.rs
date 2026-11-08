@@ -168,7 +168,7 @@ fn scan_reports_devices_and_model_delta() -> TestResult {
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
 
-    let found = json["found"].as_array().ok_or("found array")?;
+    let found = json["devices"].as_array().ok_or("found array")?;
     assert_eq!(found.len(), 3, "three devices should respond: {stdout}");
 
     // Find 1.1.4 and check its decoded fields.
@@ -179,8 +179,8 @@ fn scan_reports_devices_and_model_delta() -> TestResult {
     assert_eq!(d4["mask"], "07B0");
     assert_eq!(d4["system_type"], "System B");
     assert_eq!(d4["manufacturer"], "MDT");
-    assert_eq!(d4["order"], "MDT-JAL0410");
-    assert_eq!(d4["model_status"], "known");
+    assert_eq!(d4["order_number"], "MDT-JAL0410");
+    assert_eq!(d4["known"], true);
 
     // 1.1.7 responds but is not in the model.
     let d7 = found
@@ -189,7 +189,7 @@ fn scan_reports_devices_and_model_delta() -> TestResult {
         .ok_or("1.1.7 present")?;
     assert_eq!(d7["manufacturer"], "Jung");
     assert_eq!(d7["system_type"], "System 7");
-    assert_eq!(d7["model_status"], "not_in_model");
+    assert_eq!(d7["known"], false);
 
     // 1.1.8 → ABB, System 1.
     let d8 = found
@@ -347,7 +347,7 @@ fn test_scan_names_manufacturers_from_the_imported_list() -> TestResult {
     );
     let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
-    let found = json["found"].as_array().ok_or("found array")?;
+    let found = json["devices"].as_array().ok_or("found array")?;
     let manufacturer = |addr: &str| {
         found
             .iter()
@@ -479,7 +479,7 @@ fn scan_with_skip_address_check_runs_despite_a_shared_source_address() -> TestRe
     let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
-    let found = json["found"].as_array().ok_or("found array")?;
+    let found = json["devices"].as_array().ok_or("found array")?;
     assert!(
         found.iter().any(|d| d["address"] == "1.1.4"),
         "the sweep still reports the devices it saw: {stdout}"
@@ -596,7 +596,7 @@ fn test_scan_secure_devices_are_read_secured_or_labelled() -> TestResult {
     let stdout = String::from_utf8(output.stdout)?;
     let json: serde_json::Value = serde_json::from_str(&stdout)
         .map_err(|e| format!("scan --json must emit valid JSON: {e}\n{stdout}"))?;
-    let found = json["found"].as_array().ok_or("found array")?;
+    let found = json["devices"].as_array().ok_or("found array")?;
     let row = |addr: &str| {
         found
             .iter()
@@ -610,7 +610,7 @@ fn test_scan_secure_devices_are_read_secured_or_labelled() -> TestResult {
     );
     assert_eq!(d10["secure"], "activated");
     assert_eq!(d10["manufacturer"], "MDT");
-    assert_eq!(d10["order"], "MDT-SECURE");
+    assert_eq!(d10["order_number"], "MDT-SECURE");
     let d12 = row("1.1.12")?;
     assert_eq!(d12["mask"], "FFFF");
     assert_eq!(d12["secure"], "activated_no_key");
@@ -758,7 +758,7 @@ fn per_address(json: &serde_json::Value) -> TestResult<Vec<(String, u64, String)
 
 /// The found devices' identifying fields, for comparing two runs.
 fn found_rows(json: &serde_json::Value) -> TestResult<Vec<String>> {
-    Ok(json["found"]
+    Ok(json["devices"]
         .as_array()
         .ok_or("found array")?
         .iter()
@@ -837,7 +837,7 @@ fn test_scan_without_confirmations_falls_back_to_timeout() -> TestResult {
             assert!(ms >= 40, "{address} waited out the ACK timeout ({ms} ms)");
         }
     }
-    assert_eq!(json["found"].as_array().ok_or("found")?.len(), 5);
+    assert_eq!(json["devices"].as_array().ok_or("found")?.len(), 5);
     assert_eq!(json["timing"]["absent_negative_confirmation"], 0);
     assert_eq!(json["timing"]["absent_timeout"], 7);
     assert!(
@@ -867,7 +867,7 @@ fn measure_full_line_sweep() -> TestResult {
          tunnelling_requests={}",
         elapsed.as_secs_f64(),
         json["timing"]["total_ms"],
-        json["found"].as_array().map_or(0, Vec::len),
+        json["devices"].as_array().map_or(0, Vec::len),
         json["timing"]["absent_negative_confirmation"],
         json["timing"]["absent_timeout"],
         stats.requests

@@ -114,23 +114,14 @@ fn render_text(diagnostics: &[Diagnostic], style: Style) -> String {
     out
 }
 
-/// Prints diagnostics as a JSON document: `{ "schema", "diagnostics": [...] }`.
+/// Prints the diagnostics as the JSON document `knx_validate` returns.
 fn print_json(diagnostics: &[Diagnostic]) {
-    let items: Vec<serde_json::Value> = diagnostics
-        .iter()
-        .map(|d| {
-            serde_json::json!({
-                "code": d.code,
-                "severity": d.severity.to_string(),
-                "message": d.message,
-                "location": d.location,
-            })
-        })
-        .collect();
-    let doc = serde_json::json!({ "diagnostics": items });
-    match crate::output::render(crate::output::schema::VALIDATE, &doc) {
-        Ok(s) => println!("{s}"),
-        Err(e) => eprintln!("error: failed to serialize diagnostics: {e}"),
+    let report = bussard_service::validate_report::ValidateReport::new(
+        diagnostics.to_vec(),
+        &bussard_service::validate_report::ValidateFilter::all(),
+    );
+    if let Err(e) = crate::output::report(&report) {
+        eprintln!("error: failed to serialize diagnostics: {e}");
     }
 }
 

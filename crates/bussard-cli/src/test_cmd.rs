@@ -137,7 +137,7 @@ fn run(options: &TestArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     )?;
 
     if g.json {
-        crate::output::print(crate::output::schema::TEST, &report.to_json())?;
+        crate::output::report(&bussard_service::acceptance::TestRunReport::of(&report))?;
     } else {
         print!("{}", report.text());
     }
@@ -174,7 +174,7 @@ fn run_secure_idle(
     let runtime = tokio::runtime::Runtime::new()?;
     let report = runtime.block_on(bussard_service::transport::probe_secure_idle(&config, idle))?;
     if json {
-        crate::output::print(crate::output::schema::TEST_SECURE_IDLE, &idle_json(&report))?;
+        crate::output::report(&bussard_service::bus_report::SecureIdleView::of(&report))?;
     } else {
         println!("{}", idle_text(&report));
     }
@@ -204,33 +204,6 @@ fn idle_text(report: &bussard_service::transport::SecureIdleReport) -> String {
             format!("{head} SILENT (no answer to the probe; the interface forgot the session)")
         }
     }
-}
-
-/// The JSON report of an idle probe.
-fn idle_json(report: &bussard_service::transport::SecureIdleReport) -> serde_json::Value {
-    use bussard_service::transport::SecureIdleOutcome;
-    let mut out = serde_json::json!({
-        "gateway": report.gateway.to_string(),
-        "user_id": report.user_id,
-        "transport": report.transport.to_string(),
-        "idle_secs": report.idle.as_secs(),
-    });
-    let outcome = match &report.outcome {
-        SecureIdleOutcome::Alive { answered_in } => serde_json::json!({
-            "outcome": "alive",
-            "answered_ms": answered_in.as_millis() as u64,
-        }),
-        SecureIdleOutcome::Dropped { after, reason } => serde_json::json!({
-            "outcome": "dropped",
-            "after_ms": after.as_millis() as u64,
-            "reason": reason,
-        }),
-        SecureIdleOutcome::Silent => serde_json::json!({ "outcome": "silent" }),
-    };
-    if let (Some(obj), Some(extra)) = (out.as_object_mut(), outcome.as_object()) {
-        obj.extend(extra.clone());
-    }
-    out
 }
 
 /// Connects, runs the suite, and closes the bus cleanly.
@@ -515,6 +488,10 @@ mod tests {
     #[test]
     fn test_idle_report_text_and_json() -> Result<(), Box<dyn Error>> {
         use bussard_service::transport::{SecureIdleOutcome, SecureIdleReport, SecureTransport};
+        let idle_json = |r: &SecureIdleReport| {
+            serde_json::to_value(bussard_service::bus_report::SecureIdleView::of(r))
+                .unwrap_or_default()
+        };
         let mut report = SecureIdleReport {
             gateway: "127.0.0.1:3671".parse()?,
             user_id: 2,

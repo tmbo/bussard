@@ -14,29 +14,30 @@
 //! `bussard restore` read them.
 
 use crate::jobs::{JobKind, Subject};
-use crate::reply::answer_on;
+use crate::reply::{answer_chat, answer_on};
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use crate::args::Parameters;
 use bussard_model::IndividualAddress;
+use bussard_service::FactsCache;
+use bussard_service::backup::BackupOutcome;
 use bussard_service::backup::{
     BackupInputs, capture_devices, default_out_dir, select_targets, write_backup_run,
 };
 use bussard_service::line::WalkEvent;
-use bussard_service::reconstruct::{Diff, DifferenceKind, build_report};
+use bussard_service::reconstruct::build_report;
 use bussard_service::reconstruct_line::{
     OutDir, build_summary, check_out_dir, inject_reconstruct_banners, sweep_line, synthesize_model,
 };
 use bussard_service::scan::LineRange;
 use bussard_service::secure::ToolKeySource;
-use bussard_service::{FactsCache, identity_line};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::guidance::Tiers;
 use crate::server::BussardMcp;
@@ -103,7 +104,12 @@ impl BussardMcp {
         Parameters(args): Parameters<BackupDeviceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let label = args.address.clone().unwrap_or_else(|| "all".to_string());
-        answer_on("address", &label, self.backup_devices(args).await)
+        answer_chat(
+            "address",
+            &label,
+            self.backup_devices(args).await,
+            &self.model(),
+        )
     }
 
     // `knx_reconstruct_device` (omitted in passive mode).
@@ -120,12 +126,18 @@ impl BussardMcp {
                 .map(str::to_string)
         };
         match (given(&args.address), given(&args.line)) {
-            (Some(address), None) => {
-                answer_on("address", &address, self.reconstruct_device(&address).await)
-            }
-            (None, Some(line)) => {
-                answer_on("line", &line, self.reconstruct_line(&line, &args).await)
-            }
+            (Some(address), None) => answer_chat(
+                "address",
+                &address,
+                self.reconstruct_device(&address).await,
+                &self.model(),
+            ),
+            (None, Some(line)) => answer_chat(
+                "line",
+                &line,
+                self.reconstruct_line(&line, &args).await,
+                &self.model(),
+            ),
             (Some(_), Some(_)) => answer_on(
                 "address",
                 "",
@@ -227,41 +239,9 @@ impl BussardMcp {
         drop(warm);
         let (manifest, manifest_path) =
             written.map_err(|e| format!("writing the backup failed: {e}"))?;
-        let totals = manifest.totals();
-        let backed_up = totals.get("backed_up").copied().unwrap_or(0);
-        let name = out_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or_default()
-            .to_string();
-        let tiers = Tiers::of(self.state());
-        let restore = if tiers.programming {
-            format!(
-                "To put a device's link tables back later, knx_restore_tables with backup \
-                 {name:?} (plan, the human's yes, then the write)."
-            )
-        } else {
-            format!(
-                "Restoring a device's link tables needs --allow-programming \
-                 (knx_restore_tables with backup {name:?}) or `bussard restore {} <ia>` at the \
-                 CLI.",
-                out_dir.display()
-            )
-        };
-        Ok(json!({
-            "ok": !manifest.any_failed(),
-            "out_dir": out_dir.display().to_string(),
-            "backup": name,
-            "manifest": manifest_path.display().to_string(),
-            "gateway": gateway,
-            "devices": manifest.devices,
-            "totals": totals,
-            "next_step": format!(
-                "Tell the human {backed_up} device(s) were backed up to {} (list any skipped, \
-                 unreachable or failed device with its detail). {restore}",
-                out_dir.display()
-            ),
-        }))
+        let mut outcome = BackupOutcome::new(&out_dir, manifest, &manifest_path);
+        outcome.programming = Tiers::of(self.state()).programming;
+        Ok(crate::reply::report(&outcome, &self.model()))
     }
 
     /// `knx_reconstruct_device`'s body; `Err` is a refusal reason.
@@ -307,43 +287,21 @@ impl BussardMcp {
         let mut report = build_report(target, live.tables(), Some(&model));
         report.parameters = params.map(|p| p.readback);
         report.identity = check;
-        let identity = report
-            .identity
-            .as_ref()
-            .map(|check| identity_line(target, check));
-        let diff = report
-            .diff
-            .as_ref()
-            .map(|diff| diff_json(target, diff, &model, &dir));
-        let differs = report.diff.as_ref().is_some_and(|d| !d.is_empty());
-        let mut out = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        out["ok"] = json!(true);
-        out["secured"] = json!(tool_key.is_some());
-        out["identity_line"] = json!(identity);
-        out["diff"] = diff.unwrap_or(Value::Null);
-        if let Some(why) = &product.refusal {
-            out["parameters_note"] = json!(why);
-        }
-        out["next_step"] = json!(if differs {
-            let tiers = Tiers::of(self.state());
-            if tiers.programming {
-                format!(
-                    "Quote diff.sentences to the human. knx_plan_device and knx_apply_device \
-                     write the model's links to {target}; knx_restore_tables puts the link \
-                     tables of a backup back. Neither runs without the human's yes to its plan."
-                )
-            } else {
-                format!(
-                    "Quote diff.sentences to the human. Writing the model's links to {target} \
-                     needs --allow-programming (knx_plan_device, knx_apply_device) or `bussard \
-                     plan {target}` and `bussard apply {target}` at the CLI."
-                )
-            }
-        } else {
-            format!("{target}'s link tables match your project.")
-        });
-        Ok(out)
+        report.secured = tool_key.is_some();
+        report.parameters_note = product.refusal.clone();
+        report.programming = Tiers::of(self.state()).programming;
+        let report = report.with_differences(target, &model);
+        Ok(crate::reply::report(&report, &model))
     }
+}
+
+/// A line sweep still running, as its call answers.
+#[derive(serde::Serialize)]
+struct SweepStarted {
+    /// Always a read job.
+    kind: JobKind,
+    /// The line.
+    line: String,
 }
 
 /// Resolves `out` (relative to the model directory, without `..`) or the
@@ -433,32 +391,39 @@ impl BussardMcp {
             let range = (from, to);
             let body =
                 me.reconstruct_line_body(&id, &service, (area, line_no), range, &out, &worker_line);
-            Ok(body.await.unwrap_or_else(
-                |reason| json!({"line": worker_line, "ok": false, "reason": reason}),
-            ))
+            Ok(body.await.unwrap_or_else(|reason| {
+                serde_json::to_value(bussard_service::report::Refusal {
+                    line: Some(worker_line),
+                    ..bussard_service::report::Refusal::new(reason)
+                })
+                .unwrap_or_default()
+            }))
         });
         let wait = state.jobs.read_wait().saturating_sub(began.elapsed());
         if let Some(mut result) = state.jobs.outcome(&job, wait).await {
-            result["job"] = json!(job);
+            if let Some(map) = result.as_object_mut() {
+                map.insert("job".to_string(), Value::String(job));
+            }
             return Ok(result);
         }
         let estimate = bussard_service::reconstruct_line::PER_ADDRESS_ESTIMATE
             * (u32::from(to) - u32::from(from) + 1);
-        Ok(json!({
-            "started": true,
-            "done": false,
-            "kind": "read",
-            "job": job,
-            "line": line_text,
-            "step": "sweeping the line",
-            "next_step": format!(
+        Ok(crate::reply::started_with(
+            &job,
+            "sweeping the line",
+            SweepStarted {
+                kind: JobKind::Read,
+                line: line_text.clone(),
+            },
+            None,
+            format!(
                 "The sweep of line {line_text} ({from} to {to}) runs in the server as job {job}, \
                  read-only on the bus; it can take up to about {} minute(s). Tell the human it \
                  is running, then call knx_job_status with job {job} every few seconds until \
                  `done` is true and report its `result`.",
                 estimate.as_secs().div_ceil(60)
             ),
-        }))
+        ))
     }
 
     /// The sweep, the synthesized model and its summary, run inside the
@@ -542,61 +507,8 @@ impl BussardMcp {
             tracing::warn!("could not record a history snapshot: {err}");
         }
         let summary = build_summary(line, out, &found, &synthesized);
-        let mut value = serde_json::to_value(&summary).map_err(|e| e.to_string())?;
-        value["ok"] = json!(true);
-        value["started"] = json!(false);
-        value["done"] = json!(true);
-        value["next_step"] = json!(format!(
-            "Tell the human {} device(s) answered on line {line}: {} read, {} recorded as stubs \
-             (name each stub with its skip_reason), and that the model in {} is a scaffold \
-             synthesized from the tables: group names and DPTs are placeholders and every group \
-             address is recorded as listen, so it needs naming (watch the bus) before it is \
-             treated as the truth. It was written to its own directory; the model this server \
-             serves is unchanged.",
-            summary.devices_found, summary.devices_read, summary.devices_skipped, summary.out
-        ));
+        let mut value = crate::reply::report(&summary, &model);
+        crate::reply::with_job(&mut value, job, false, true);
         Ok(value)
     }
-}
-
-/// The diff in the shape `knx_diff_project` returns: from, to, count,
-/// summary, touches_protected, sentences and changes, plus the matches and
-/// the direction note.
-fn diff_json(
-    target: IndividualAddress,
-    diff: &Diff,
-    model: &bussard_model::Model,
-    dir: &std::path::Path,
-) -> Value {
-    let changes = diff.differences(target, Some(model));
-    let extra = changes
-        .iter()
-        .filter(|c| c.kind == DifferenceKind::OnDeviceNotInModel)
-        .count();
-    let missing = changes.len() - extra;
-    let file = model
-        .devices
-        .get(&target)
-        .map(|d| format!("devices/{}.toml", d.file_stem));
-    json!({
-        "from": match file {
-            Some(file) => format!("the model ({file} in {})", dir.display()),
-            None => "the model (no device file for this address)".to_string(),
-        },
-        "to": format!("{target} as read from the bus"),
-        "count": changes.len(),
-        "summary": if changes.is_empty() {
-            "no differences".to_string()
-        } else {
-            format!(
-                "{extra} link(s) on the device the model does not have, {missing} link(s) in the \
-                 model the device does not have"
-            )
-        },
-        "touches_protected": changes.iter().any(|c| c.protected),
-        "sentences": changes.iter().map(|c| c.sentence.as_str()).collect::<Vec<_>>(),
-        "changes": changes,
-        "matches": diff.matches.len(),
-        "note": diff.note,
-    })
 }

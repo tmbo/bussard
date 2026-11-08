@@ -543,7 +543,10 @@ async fn test_show_device_scoped_on_a_meteodata_like_model_stays_small() -> Test
     assert_eq!(scoped["scope"]["block"], "universalkanal-c4-funktion");
     assert!(scoped.get("how_to_change").is_none(), "{scoped}");
     assert!(scoped.get("inactive_pages").is_none(), "{scoped}");
-    let lines = scoped["blocks"].as_array().cloned().unwrap_or_default();
+    let lines = scoped["block_summary"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
     assert!(
         lines.iter().all(Value::is_string) && lines.len() == blocks.len(),
         "{scoped}"
@@ -1472,11 +1475,8 @@ fn show_device_before(dir: &Path, ia: &str, channel: Option<&str>) -> anyhow::Re
         .and_then(|p| p.application_ref.clone());
     let products = bussard_model::ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, ia, channel)?;
-    Ok(bussard_mcp::tools::show_device_result(
-        view,
-        false,
-        false,
-        read_tiers(),
+    Ok(serde_json::to_value(
+        bussard_mcp::tools::show_device_result(view, false, false, read_tiers()),
     )?)
 }
 

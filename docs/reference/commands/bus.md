@@ -149,7 +149,7 @@ as a suffix: `6500 K` on `7.600`, `3600 s` on `13.100` or `7.005`, `2 K` on `9.0
 | `--dpt <DPT>` | the GA's DPT | The DPT to encode as. |
 | `--force` | off | Override the protected-group-address refusal: write to a GA marked `protected = true` in `groups.toml`. |
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
-| `--json` | off | Print (schema 2, the object `knx_write_group` returns with `gateway`) `{"schema", "ok", "ga", "name", "value", "dpt", "payload", "secured", "gateway", "sent", "confirmed", "result", "admission", "note"}` after the write. `result` is what KNX confirmed; `admission` is `admitted`, `unknown` or `null` (a plain GA); `note` is the unknown-delivery note. A write refused for sender admission prints `ok: false`, `refused: true`, `sent: false`, `admission: "refused"`, `reason` and `hint`. |
+| `--json` | off | Print (schema 2, the object `knx_write_group` returns) `{"schema", "ok", "ga", "name", "value", "dpt", "payload", "secured", "gateway", "sent", "confirmed", "result", "admission", "note"}` after the write. `result` is what KNX confirmed; `admission` is `admitted`, `unknown` or `null` (a plain GA); `note` is the unknown-delivery note. A write refused for sender admission prints `ok: false`, `refused: true`, `sent: false`, `admission: "refused"`, `reason` and `hint`. |
 | `--keyring <FILE>` | the key store | Group keys for secured GAs. |
 
 Behaviour:

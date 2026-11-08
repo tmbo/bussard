@@ -449,3 +449,97 @@ fn test_commission_reads_the_modelled_device_as_present() -> anyhow::Result<()> 
     assert_eq!(bench, "15.15.255".parse::<IndividualAddress>()?);
     Ok(())
 }
+
+/// Issue #904: `bussard commission --json` is the finished
+/// `knx_commission_line` job's result without its chat envelope (two
+/// identical benches, one per surface).
+#[test]
+fn test_commission_one_shape_cli_json_is_the_mcp_result_without_its_envelope() -> anyhow::Result<()>
+{
+    let rt = tokio::runtime::Runtime::new()?;
+    let mut results = Vec::new();
+    for surface in ["cli", "mcp"] {
+        let gw = spawn_bench(&rt, "JAL-0810.03")?;
+        let tmp = tmp_dir(&format!("shape-{surface}"));
+        let model_dir = tmp.join("knx");
+        write_device(&model_dir, "1.1.7", "Blind actuator", "JAL-0810.03")?;
+        std::fs::write(
+            model_dir.join("bussard.toml"),
+            "[connection]\ntransport = \"tunnel\"\n",
+        )?;
+        let model_arg = model_dir
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("non-UTF-8 temp path"))?
+            .to_string();
+        let result = if surface == "cli" {
+            let output = run_commission(
+                gw.port(),
+                &[
+                    "commission",
+                    "--line",
+                    "1.1",
+                    "--yes",
+                    "--json",
+                    "--dir",
+                    &model_arg,
+                ],
+            )?;
+            anyhow::ensure!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout)?
+        } else {
+            mcp_commission(&model_dir, gw.port()).map_err(|e| anyhow::anyhow!("{e}"))?
+        };
+        results.push(result);
+        drop(gw);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+    // Two benches: the gateway's port is the one difference.
+    bussard_testkit::shape::assert_one_shape(&results[0], &results[1], &["gateway"])
+        .map_err(|e| anyhow::anyhow!("{e}\n--json: {}\nMCP: {}", results[0], results[1]))?;
+    Ok(())
+}
+
+/// Commissions line 1.1 through `knx_commission_line` (plan, yes, poll the
+/// job) and returns the finished job's result.
+fn mcp_commission(dir: &Path, port: u16) -> bussard_testkit::TestResult<serde_json::Value> {
+    let mut server = crate::mcp_stdio_client::McpServer::start_without_keyring(
+        dir,
+        port,
+        &[
+            ("BUSSARD_MGMT_TIMEOUT_MS", "300"),
+            ("BUSSARD_ADDRESS_PROBE_MS", "200"),
+            ("BUSSARD_ASSIGN_WAIT_MS", "200"),
+            ("BUSSARD_SCAN_DISCOVERY_MS", "150"),
+        ],
+        &["--allow-programming"],
+    )?;
+    let plan = server.call_when_connected(
+        "knx_commission_line",
+        serde_json::json!({"line": "1.1"}),
+        50,
+    )?;
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| format!("no plan_digest in {plan}"))?
+        .to_string();
+    let started = server.call(
+        "knx_commission_line",
+        serde_json::json!({"line": "1.1", "plan_digest": digest, "yes": true}),
+    )?;
+    let job = started["job"]
+        .as_str()
+        .ok_or_else(|| format!("no job in {started}"))?
+        .to_string();
+    for _ in 0..400 {
+        let status = server.call("knx_job_status", serde_json::json!({"job": job}))?;
+        if status["done"] == true {
+            return Ok(status["result"].clone());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Err(format!("job {job} never finished").into())
+}

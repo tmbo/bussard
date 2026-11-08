@@ -16,8 +16,10 @@ use bussard_service::ip_secure::{
 use bussard_service::keys::KeyStore;
 use bussard_service::observer::Event;
 use bussard_service::program::plan::Fingerprint;
+use bussard_service::report::Approval;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
-use serde_json::{Value, json};
+use bussard_service::secure_report::InterfaceSecureReport;
+use serde_json::Value;
 
 use super::BussardMcp;
 
@@ -87,23 +89,26 @@ impl BussardMcp {
         }
         let digest = digest(&plan);
         let Some(given) = plan_digest else {
-            return Ok(json!({
-                "ok": true,
-                "address": target.to_string(),
-                "switch": switch,
-                "steps": plan.lines(),
-                "generated": plan.generated,
-                "question": format!(
-                    "Switch KNXnet/IP Secure {switch} on {target} via {gateway}? It restarts \
-                     the interface{}.",
-                    if plan.generated.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" and first adds to the key store: {}", plan.generated.join(", "))
-                    }
-                ),
-                "plan_digest": digest,
-            }));
+            let question = format!(
+                "Switch KNXnet/IP Secure {switch} on {target} via {gateway}? It restarts the \
+                 interface{}.",
+                if plan.generated.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " and first adds to the key store: {}",
+                        plan.generated.join(", ")
+                    )
+                }
+            );
+            let mut report =
+                InterfaceSecureReport::plan(target, switch, plan.lines(), plan.generated.clone());
+            report.approval = Approval {
+                question: Some(question),
+                plan_digest: Some(digest),
+                expires_at: None,
+            };
+            return Ok(crate::reply::report(&report, &self.model()));
         };
         if given != digest {
             return Err(format!(
@@ -127,32 +132,31 @@ impl BussardMcp {
                 steps_done.push(line);
             }
         };
-        match run_switch(&ctx, &mut plan, &store, &mut progress).await {
-            Ok(outcome) => Ok(json!({
-                "ok": outcome.verified(switch),
-                "verified": outcome.verified(switch),
-                "address": target.to_string(),
-                "switch": switch,
-                "steps": steps_done,
-                "generated": plan.generated,
-                "security_mode": outcome.verification.security_mode,
-                "tunnel_users": outcome.verification.tunnel_users,
-                "gateway_secure_only": outcome.gateway_secure_only,
-                "mismatches": outcome.verification.mismatches(),
-                "key_store_updated": outcome.store_saved_before || outcome.store_saved_after,
-            })),
-            Err(err) => Ok(json!({
-                "ok": false,
-                "verified": false,
-                "address": target.to_string(),
-                "switch": switch,
-                "steps": steps_done,
-                "error": err.to_string(),
-                "recovery": format!(
+        let base = InterfaceSecureReport::plan(target, switch, Vec::new(), plan.generated.clone());
+        let report = match run_switch(&ctx, &mut plan, &store, &mut progress).await {
+            Ok(outcome) => InterfaceSecureReport {
+                ok: outcome.verified(switch),
+                verified: Some(outcome.verified(switch)),
+                steps: steps_done,
+                security_mode: outcome.verification.security_mode,
+                tunnel_users: outcome.verification.tunnel_users.clone(),
+                gateway_secure_only: outcome.gateway_secure_only,
+                mismatches: outcome.verification.mismatches(),
+                key_store_updated: Some(outcome.store_saved_before || outcome.store_saved_after),
+                ..base
+            },
+            Err(err) => InterfaceSecureReport {
+                ok: false,
+                verified: Some(false),
+                steps: steps_done,
+                reason: Some(err.to_string()),
+                recovery: Some(format!(
                     "the key store holds the credentials {target} was given and its FDSK; retry, \
                      or factory-reset {target} and switch it on again (docs/explanation/safety.md)"
-                ),
-            })),
-        }
+                )),
+                ..base
+            },
+        };
+        Ok(crate::reply::report(&report, &self.model()))
     }
 }

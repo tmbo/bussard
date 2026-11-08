@@ -11,12 +11,13 @@
 //! gets back the addresses it created plus the model's validation counts.
 
 use crate::args::Parameters;
+use bussard_service::groups_report::ReserveReport;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use bussard_model::history::{History, SnapshotReason};
 use bussard_model::scaffold::{self, Plan, PlanRoom, Scheme};
@@ -104,6 +105,11 @@ impl BussardMcp {
         tool: &str,
     ) -> Result<CallToolResult, ErrorData> {
         let state = self.state();
+        // One room is named in the result, as `bussard groups reserve` does.
+        let room = match plan.rooms.as_slice() {
+            [one] => Some(format!("{} {}", one.floor, one.room)),
+            _ => None,
+        };
         let scheme = scheme.unwrap_or_else(|| {
             state
                 .model
@@ -160,26 +166,17 @@ impl BussardMcp {
             Err(_) => (0, 0),
         };
 
-        let added: Vec<Value> = report
-            .added
-            .iter()
-            .map(|a| {
-                json!({
-                    "address": a.address.to_string(),
-                    "name": a.name,
-                    "dpt": a.dpt.to_string(),
-                })
-            })
-            .collect();
-
-        Ok(CallToolResult::structured(json!({
-            "scheme": scheme.as_str(),
-            "file": groups_path.display().to_string(),
-            "added_count": added.len(),
-            "added": added,
-            "lint_config_written": lint_written,
-            "snapshot": snapshot,
-            "validation": { "errors": errors, "warnings": warnings },
-        })))
+        let reserved = ReserveReport {
+            room,
+            snapshot: snapshot.map(|id| id.to_string()),
+            ..ReserveReport::new(
+                scheme.as_str(),
+                &groups_path,
+                &report,
+                lint_written,
+                (errors, warnings),
+            )
+        };
+        crate::reply::ok_report(&reserved, &state.model.current())
     }
 }

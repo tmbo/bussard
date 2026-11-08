@@ -20,6 +20,7 @@ use bussard_model::change::{ChangeSet, describe, render_text};
 use bussard_model::history::{History, Pending, Snapshot, SnapshotId, SnapshotReason};
 
 use bussard_service::history::{HistoryFlowError, UndoOutcome};
+use bussard_service::model_edit::{ChangeReport, HistoryReport, UndoReport};
 
 use crate::cli::{Resolved, Run, Spec};
 
@@ -116,13 +117,7 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
 
     let Some(latest) = latest else {
         if json {
-            crate::output::print(
-                crate::output::schema::STATUS,
-                &serde_json::json!({
-                    "base": serde_json::Value::Null,
-                    "changes": [],
-                }),
-            )?;
+            crate::output::report(&ChangeReport::no_history())?;
         } else {
             println!(
                 "No history yet for {}. bussard records a snapshot the first time it \
@@ -144,10 +139,11 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
     let changes = describe(&old, &new);
 
     if json {
-        crate::output::print(
-            crate::output::schema::STATUS,
-            &change_json(Some(&latest.id), &changes),
-        )?;
+        crate::output::report(&ChangeReport::new(
+            Some(latest.id.to_string()),
+            &changes,
+            None,
+        ))?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -195,10 +191,7 @@ pub(crate) fn run_status(dir: &Path, json: bool, raw: bool) -> anyhow::Result<Ex
 fn run_history(dir: &Path, json: bool) -> anyhow::Result<ExitCode> {
     let rows = bussard_service::history::list(dir, None).map_err(history_error)?;
     if json {
-        crate::output::print(
-            crate::output::schema::HISTORY,
-            &serde_json::json!({ "snapshots": rows }),
-        )?;
+        crate::output::report(&HistoryReport::new(rows))?;
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -243,10 +236,7 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
     let Some(shown) = bussard_service::history::show(dir, first, second).map_err(history_error)?
     else {
         if json {
-            crate::output::print(
-                crate::output::schema::SHOW,
-                &serde_json::json!({ "from": null, "to": null, "reason": null, "changes": [] }),
-            )?;
+            crate::output::report(&ChangeReport::no_history())?;
         } else {
             println!("No history yet for {}.", dir.display());
         }
@@ -254,15 +244,12 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
     };
     let (from, to, changes) = (&shown.from, &shown.to, &shown.changes);
     if json {
-        crate::output::print(
-            crate::output::schema::SHOW,
-            &serde_json::json!({
-                "from": from.as_ref().map(|s| s.id.to_string()),
-                "to": to.id.to_string(),
-                "reason": reason_line(to),
-                "changes": changes.changes,
-            }),
-        )?;
+        crate::output::report(&ChangeReport {
+            from: from.as_ref().map(|s| s.id.to_string()),
+            to: Some(to.id.to_string()),
+            reason: Some(reason_line(to)),
+            ..ChangeReport::new(None, changes, None)
+        })?;
         return Ok(ExitCode::SUCCESS);
     }
     match from {
@@ -286,15 +273,11 @@ fn run_show(dir: &Path, first: &str, second: Option<&str>, json: bool) -> anyhow
 fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<ExitCode> {
     // What `undo --json` prints when nothing was restored.
     let nothing = |reason: &str| {
-        crate::output::print(
-            crate::output::schema::UNDO,
-            &serde_json::json!({
-                "restored": null,
-                "undo_snapshot": null,
-                "reason": reason,
-                "changes": [],
-            }),
-        )
+        crate::output::report(&UndoReport {
+            ok: true,
+            reason: Some(reason.to_string()),
+            ..UndoReport::default()
+        })
     };
     let undone = match bussard_service::history::undo(dir, target).map_err(history_error)? {
         UndoOutcome::Restored(undone) => undone,
@@ -325,20 +308,19 @@ fn run_undo(dir: &Path, target: Option<&str>, json: bool) -> anyhow::Result<Exit
             Some(follow)
                 if !follow.ok || follow.sentences.as_ref().is_some_and(|s| !s.is_empty()) =>
             {
-                serde_json::json!(follow)
+                serde_json::to_value(follow).ok()
             }
-            _ => serde_json::Value::Null,
+            _ => None,
         };
-        crate::output::print(
-            crate::output::schema::UNDO,
-            &serde_json::json!({
-                "restored": target.id.to_string(),
-                "created_at": target.manifest.created_at,
-                "undo_snapshot": undone.undo_snapshot.to_string(),
-                "changes": changes.changes,
-                "key_store": key_store,
-            }),
-        )?;
+        crate::output::report(&UndoReport {
+            ok: true,
+            restored: Some(target.id.to_string()),
+            created_at: Some(target.manifest.created_at.clone()),
+            undo_snapshot: Some(undone.undo_snapshot.to_string()),
+            reason: None,
+            changes: changes.changes.clone(),
+            key_store,
+        })?;
         return Ok(ExitCode::SUCCESS);
     }
     if let Some(follow) = &undone.key_store {
@@ -389,14 +371,6 @@ fn print_apply_hint(changes: &ChangeSet) {
             }
         }
     }
-}
-
-/// The JSON body shared by `status --json` and the MCP change tool.
-fn change_json(base: Option<&SnapshotId>, changes: &ChangeSet) -> serde_json::Value {
-    serde_json::json!({
-        "base": base.map(|id| id.to_string()),
-        "changes": changes.changes,
-    })
 }
 
 /// `apply 1.1.4 → 127.0.0.1:3671 (before writing the device tables)`.

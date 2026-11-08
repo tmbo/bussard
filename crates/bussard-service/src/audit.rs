@@ -9,7 +9,7 @@
 //! | `masks` | Devices grouped by mask version with the capability row from [`bussard_mgmt::MaskProfile::capabilities`]. |
 //! | `secure` | KNX Secure devices and, when a keyring was given, whether each has a tool-key entry. |
 //! | `live` | `null` for a static audit; otherwise the gateway description, the scan delta, the traffic sample and `secure`: each Data Secure device probed with its keyring tool key ([`SecureProbe`]). |
-//! | `products` | CLI only (absent from the MCP report): the product data the lock pins ([`ProductsReport`]). |
+//! | `products` | The product data the lock pins ([`ProductsReport`]). |
 //!
 //! The JSON is the serialised struct as a [`serde_json::Value`] (keys sorted),
 //! which is what both surfaces print, so text, `--json` and MCP cannot drift.
@@ -58,7 +58,7 @@ pub struct AuditReport {
     pub secure: SecureCoverage,
     /// The live part; `null` for a static audit.
     pub live: Option<LiveReport>,
-    /// The product data the lock pins (CLI only; absent when `None`).
+    /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
 }
@@ -148,6 +148,36 @@ pub struct SecureCoverageRow {
     pub activated: bool,
     /// Whether the keyring has a tool key for it; `null` without a keyring.
     pub keyring_entry: Option<bool>,
+}
+
+impl crate::report::Report for AuditReport {
+    const SCHEMA: u32 = 1;
+
+    fn summary(&self, _model: &Model) -> Option<String> {
+        let devices: usize = self.masks.iter().map(|m| m.devices.len()).sum();
+        let unsupported = self
+            .masks
+            .iter()
+            .filter(|m| m.plan_apply != Some(true))
+            .map(|m| m.devices.len())
+            .sum::<usize>();
+        let secure = self.secure.devices.iter().filter(|d| d.activated).count();
+        let mut out = format!(
+            "Your project has {devices} device(s) of {} kind(s); {} of them bussard can plan \
+             and write, {secure} run KNX Data Secure.",
+            self.masks.len(),
+            devices - unsupported
+        );
+        if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
+            out.push_str(&format!(
+                " {missing} secured device(s) have no tool key in the keyring."
+            ));
+        }
+        if self.live.is_some() {
+            out.push_str(" The live part read the interface and the bus.");
+        }
+        Some(out)
+    }
 }
 
 impl AuditReport {

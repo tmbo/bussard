@@ -19,13 +19,13 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::Context;
+use bussard_service::enroll_session::EnrollLine;
 use bussard_service::enroll_session::{
     DOCS_URL, Endpoints, EnrollEvent, EnrollSession, EnrollTally, RunOptions, data_path,
 };
 
 use crate::certificate_view;
 use crate::style::Style;
-use serde_json::json;
 
 /// The long-poll wait: how long a `q` or Ctrl-C takes at most to be noticed.
 const WAIT_SECS: u64 = 3;
@@ -84,16 +84,12 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
     let fingerprint = session.fingerprint();
 
     if json_out {
-        crate::output::print(
-            crate::output::schema::KEYS_ENROLL,
-            &json!({
-                "event": "session",
-                "link": link,
-                "fingerprint": fingerprint,
-                "local": local.is_some(),
-                "warnings": warnings,
-            }),
-        )?;
+        crate::output::report(&EnrollLine::Session {
+            link: link.clone(),
+            fingerprint: fingerprint.clone(),
+            local: local.is_some(),
+            warnings: warnings.clone(),
+        })?;
     } else {
         for warning in &warnings {
             println!("{}", Style::stdout().warning_line(warning));
@@ -143,19 +139,15 @@ pub(crate) fn run(dir: &Path, options: EnrollArgs, json_out: bool) -> anyhow::Re
 
     let why = summary.end.describe(&run_options.timeouts, "this terminal");
     if json_out {
-        crate::output::print(
-            crate::output::schema::KEYS_ENROLL,
-            &json!({
-                "event": "end",
-                "end": why,
-                "stored": summary.stored,
-                "certificates": summary.certificates,
-                "refused_phones": summary.refused_phones,
-                "tally": tally,
-                "summary": tally.summary(),
-                "next_steps": tally.next_steps(),
-            }),
-        )?;
+        crate::output::report(&EnrollLine::End {
+            end: why.to_string(),
+            stored: summary.stored,
+            certificates: summary.certificates,
+            refused_phones: summary.refused_phones,
+            tally,
+            summary: tally.summary(),
+            next_steps: tally.next_steps(),
+        })?;
     } else {
         print!("{}", ending_text(&why, &tally, Style::stdout()));
     }
@@ -223,18 +215,7 @@ fn ending_text(why: &str, tally: &EnrollTally, style: Style) -> String {
 /// One event as a line. Never a key: events carry none.
 fn show(event: &EnrollEvent, json_out: bool) -> anyhow::Result<()> {
     if json_out {
-        let line = match event {
-            EnrollEvent::PhoneJoined => json!({ "event": "phone" }),
-            EnrollEvent::PhoneRefused { phones } => {
-                json!({ "event": "refused_phone", "phones": phones })
-            }
-            EnrollEvent::Certificate(outcome) => {
-                json!({ "event": "certificate", "result": outcome })
-            }
-            EnrollEvent::Ignored { reason } => json!({ "event": "ignored", "reason": reason }),
-            EnrollEvent::PhoneDone => json!({ "event": "done" }),
-        };
-        return crate::output::print(crate::output::schema::KEYS_ENROLL, &line);
+        return crate::output::report(&EnrollLine::of(event));
     }
     let style = Style::stdout();
     match event {

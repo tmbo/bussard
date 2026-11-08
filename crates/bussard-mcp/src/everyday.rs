@@ -19,106 +19,18 @@
 //! ([`plain_view`] and friends); `technical: true` returns the payload
 //! exactly as before.
 
-use std::collections::BTreeSet;
-
-use bussard_model::change::{ChangeKind, ChangeSet, summarize};
-use bussard_model::text::{capitalize, join_and};
-use bussard_model::{IndividualAddress, Model};
-use serde_json::{Map, Value, json};
-
-/// The tools whose result [`add_result_summary`] gives a `summary` when the
-/// tool did not write one itself.
-pub const SUMMARIZED_TOOLS: &[&str] = &[
-    "knx_backup_device",
-    "knx_reconstruct_device",
-    "knx_ha_plan",
-    "knx_ha_apply",
-    "knx_ha_automation_plan",
-    "knx_ha_automation_apply",
-    "knx_ha_automation_remove",
-];
+use serde_json::Value;
 
 pub use bussard_service::report::{device_phrase, object_phrase, room_of};
 
-/// The devices a change set needs pushed (its link, device and parameter
-/// changes), by address.
-pub fn devices_to_push(changes: &ChangeSet) -> BTreeSet<IndividualAddress> {
-    changes
-        .changes
-        .iter()
-        .filter(|c| {
-            matches!(
-                c.kind,
-                ChangeKind::LinkAdded
-                    | ChangeKind::LinkRemoved
-                    | ChangeKind::DeviceAdded
-                    | ChangeKind::DeviceProductChanged
-                    | ChangeKind::ObjectSecurityChanged
-                    | ChangeKind::InterfaceChanged
-                    | ChangeKind::ParameterChanged
-            )
-        })
-        .filter_map(|c| c.device.as_deref()?.parse().ok())
-        .collect()
-}
-
-/// The `summary` of a model edit, an undo, a discard or a pending change:
-/// what changes ([`summarize`]), then which devices still need a push.
-/// `models` are the new side, then the old.
-pub fn edit_summary(changes: &ChangeSet, models: [&Model; 2]) -> String {
-    let mut out = summarize(changes, models);
-    if changes.is_empty() {
-        return out;
-    }
-    let devices = devices_to_push(changes);
-    out.push(' ');
-    if devices.is_empty() {
-        out.push_str(
-            "Nothing to push: this only changes names, rooms or notes in the model, which no \
-             device stores.",
-        );
-    } else {
-        let names: Vec<String> = devices
-            .iter()
-            .map(|ia| {
-                let model = if models[0].devices.contains_key(ia) {
-                    models[0]
-                } else {
-                    models[1]
-                };
-                device_phrase(model, *ia)
-            })
-            .collect();
-        let verb = if names.len() == 1 { "needs" } else { "need" };
-        out.push_str(&format!(
-            "No device has it yet: {} {verb} to be written before the house behaves this way.",
-            join_and(&names)
-        ));
-    }
-    out
-}
+pub use bussard_service::model_edit::{devices_to_push, edit_summary};
 
 /// The one line an edit result's `validation` gains for the human: whether
 /// the model has problems that stop a push, and whether the edit added notes.
 pub fn for_the_human(validation: &Value) -> String {
-    let errors = validation["error_count"].as_u64().unwrap_or(0);
+    let errors = validation["error_count"].as_u64().unwrap_or(0) as usize;
     let new_warnings = validation["new_warnings"].as_array().map_or(0, Vec::len);
-    match (errors, new_warnings) {
-        (0, 0) => "No problems.".to_string(),
-        (0, 1) => "One new note about the model (types or naming); harmless, it can be \
-                   tidied later."
-            .to_string(),
-        (0, n) => format!(
-            "{n} new notes about the model (types or naming); harmless, they can be tidied \
-             later."
-        ),
-        (1, _) => "The model has one problem that has to be fixed before a device can be \
-                   written."
-            .to_string(),
-        (n, _) => format!(
-            "The model has {n} problems that have to be fixed before a device can be written."
-        ),
-    }
+    bussard_service::model_edit::for_the_human(errors, new_warnings)
 }
 
 /// Adds `for_the_human` to an edit result's `validation` object.
@@ -127,209 +39,6 @@ pub fn put_for_the_human(result: &mut Value) {
     if let Some(map) = result["validation"].as_object_mut() {
         map.insert("for_the_human".to_string(), Value::String(line));
     }
-}
-
-/// The device a result is about, by its `address` field, as a phrase; a
-/// line-form result (`line`, no `address`) is about every device on that line.
-fn result_device(model: &Model, value: &Value) -> String {
-    match value["address"]
-        .as_str()
-        .and_then(|a| a.parse::<IndividualAddress>().ok())
-    {
-        Some(ia) => device_phrase(model, ia),
-        None => match value["line"].as_str() {
-            Some(line) => format!("every device on line {line}"),
-            None => "the device".to_string(),
-        },
-    }
-}
-
-/// Adds a `summary` to the result of `tool` (one of [`SUMMARIZED_TOOLS`])
-/// when the tool did not write one itself. Returns whether it did.
-pub fn add_result_summary(tool: &str, value: &mut Value, model: &Model) -> bool {
-    if !SUMMARIZED_TOOLS.contains(&tool) {
-        return false;
-    }
-    let Some(map) = value.as_object() else {
-        return false;
-    };
-    if map.contains_key("summary") {
-        return false;
-    }
-    let summary = result_summary(tool, value, model);
-    match value.as_object_mut() {
-        Some(map) => {
-            map.insert("summary".to_string(), Value::String(summary));
-            true
-        }
-        None => false,
-    }
-}
-
-/// The `summary` of a programming, device-read or Home Assistant result.
-pub fn result_summary(tool: &str, value: &Value, model: &Model) -> String {
-    let device = result_device(model, value);
-    if value["refused"] == true {
-        return format!(
-            "Nothing was changed: bussard refused this request (`reason` says why){}.",
-            if value["address"].is_string() {
-                format!("; {device} is as it was")
-            } else {
-                String::new()
-            }
-        );
-    }
-    match tool {
-        "knx_backup_device" => backup_summary(model, value),
-        "knx_reconstruct_device" => reconstruct_summary(&device, value),
-        "knx_ha_plan" => ha_plan_summary(value),
-        "knx_ha_apply" => ha_apply_summary(value),
-        "knx_ha_automation_plan" => automation_plan_summary(value),
-        "knx_ha_automation_apply" | "knx_ha_automation_remove" => automation_apply_summary(value),
-        _ => format!("The request for {device} was handled."),
-    }
-}
-
-/// `knx_backup_device`: which devices were backed up and which could not be.
-fn backup_summary(model: &Model, value: &Value) -> String {
-    let totals = &value["totals"];
-    let count = |k: &str| totals[k].as_u64().unwrap_or(0);
-    let backed: Vec<String> = value["devices"]
-        .as_array()
-        .map(|devices| {
-            devices
-                .iter()
-                .filter(|d| d["status"] == "backed_up")
-                .filter_map(|d| d["address"].as_str()?.parse().ok())
-                .map(|ia| device_phrase(model, ia))
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = match backed.len() {
-        0 => "No device was backed up.".to_string(),
-        1..=4 => format!("Backed up {}.", join_and(&backed)),
-        n => format!("Backed up {n} devices."),
-    };
-    let unreachable = count("unreachable");
-    if unreachable > 0 {
-        out.push_str(&format!(
-            " {unreachable} did not answer (switched off or disconnected)."
-        ));
-    }
-    let failed = count("failed");
-    if failed > 0 {
-        out.push_str(&format!(
-            " {failed} could not be read (`devices` says why)."
-        ));
-    }
-    if !backed.is_empty() {
-        out.push_str(" The copies let a device's connections be put back later.");
-    }
-    out
-}
-
-/// `knx_reconstruct_device`: whether the device matches the model.
-fn reconstruct_summary(device: &str, value: &Value) -> String {
-    let n = value["diff"]["count"].as_u64().unwrap_or(0);
-    match n {
-        0 => format!(
-            "{}'s connections match your project; nothing is missing or extra.",
-            capitalize(device)
-        ),
-        1 => format!(
-            "{} differs from your project in one connection (the sentences list it).",
-            capitalize(device)
-        ),
-        n => format!(
-            "{} differs from your project in {n} connections (the sentences list them).",
-            capitalize(device)
-        ),
-    }
-}
-
-/// `knx_ha_plan`: what Home Assistant would gain, change and lose.
-fn ha_plan_summary(value: &Value) -> String {
-    if value["noop"] == true || value["plan_digest"].is_null() {
-        return "Home Assistant already matches your project; nothing to write.".to_string();
-    }
-    let counts = &value["counts"];
-    let n = |k: &str| counts[k].as_u64().unwrap_or(0);
-    let names: Vec<String> = value["changes"]
-        .as_array()
-        .map(|changes| {
-            changes
-                .iter()
-                .filter_map(|c| c["name"].as_str())
-                .map(str::to_string)
-                .take(3)
-                .collect()
-        })
-        .unwrap_or_default();
-    let mut out = format!(
-        "Home Assistant gets {} new, {} changed and {} removed entities",
-        n("added"),
-        n("changed"),
-        n("removed")
-    );
-    if !names.is_empty() {
-        out.push_str(&format!(" (among them {})", join_and(&names)));
-    }
-    out.push_str(". Nothing is written before the human says yes.");
-    out
-}
-
-/// `knx_ha_apply`: written and reloaded, or written and not reloaded.
-fn ha_apply_summary(value: &Value) -> String {
-    if value["reload"]["ok"] == true {
-        "Home Assistant's KNX setup is updated and reloaded; the previous file is backed up."
-            .to_string()
-    } else {
-        "Home Assistant's KNX file is updated, but the reload failed: the change takes effect \
-         at the next reload or restart of Home Assistant. The previous file is backed up."
-            .to_string()
-    }
-}
-
-/// `knx_ha_automation_plan`: the rule in words and what happens to it.
-fn automation_plan_summary(value: &Value) -> String {
-    let rule = value["sentence"].as_str().unwrap_or("this rule");
-    match value["op"].as_str() {
-        Some("unchanged") => {
-            "Home Assistant already has this automation; nothing to write.".to_string()
-        }
-        Some("remove") => "Removes this bussard automation from Home Assistant. Nothing is \
-                           removed before the human says yes."
-            .to_string(),
-        Some("update") => format!(
-            "Changes the Home Assistant automation to: {rule}. Nothing is written before the \
-             human says yes."
-        ),
-        _ => format!(
-            "Home Assistant would get a new automation: {rule}. Nothing is written before the \
-             human says yes."
-        ),
-    }
-}
-
-/// `knx_ha_automation_apply` and `_remove`: what Home Assistant now does.
-fn automation_apply_summary(value: &Value) -> String {
-    let rule = value["sentences"]
-        .as_array()
-        .and_then(|s| s.first())
-        .and_then(Value::as_str)
-        .and_then(|s| s.split_once(": ").map(|(_, rule)| rule))
-        .and_then(|rule| rule.split(" (changes ").next())
-        .map(str::to_string);
-    let reloaded = value["reload"]["ok"] == true;
-    let mut out = match (value["op"].as_str(), rule) {
-        (Some("remove"), _) => "The automation is removed from Home Assistant.".to_string(),
-        (_, Some(rule)) => format!("Home Assistant now runs the automation: {rule}."),
-        _ => "Home Assistant has the automation.".to_string(),
-    };
-    if !reloaded {
-        out.push_str(" The reload failed, so it takes effect at the next reload or restart.");
-    }
-    out
 }
 
 /// The keys [`plain_view`] drops: ETS ids and what only an integrator reads.
@@ -362,49 +71,19 @@ pub fn plain_view(value: &mut Value) {
     }
 }
 
-/// `knx_get_group`'s default payload: each link with the device's room and
-/// the object's channel, and the last telegram without its wire detail.
-pub fn plain_group(value: &mut Value, model: &Model) {
-    if let Some(links) = value["links"].as_array_mut() {
-        for link in links {
-            let ia = link["device_ia"]
-                .as_str()
-                .and_then(|a| a.parse::<IndividualAddress>().ok());
-            let object = link["object"].as_u64().and_then(|n| u16::try_from(n).ok());
-            if let (Some(ia), Some(map)) = (ia, link.as_object_mut()) {
-                if let Some(room) = room_of(model, ia) {
-                    map.insert("room".to_string(), json!(room));
-                }
-                if let Some(object) = object {
-                    map.insert("what".to_string(), json!(object_phrase(model, ia, object)));
-                }
-                drop_nulls(map);
-            }
-        }
-    }
-    if let Some(last) = value["last_telegram"].as_object_mut() {
-        for key in [
-            "apci",
-            "payload",
-            "dest_type",
-            "secure_seq",
-            "secure_raw",
-            "secure_status",
-        ] {
-            last.remove(key);
-        }
-        drop_nulls(last);
-    }
-}
-
 /// `knx_model_lookup`'s default payload: every match without null or empty
 /// fields, the capability matches without the ETS references a key names.
 pub fn plain_lookup(value: &mut Value) {
     for kind in ["groups", "devices", "objects", "channels", "capabilities"] {
-        if let Some(items) = value[kind].as_array_mut() {
+        if let Some(items) = value.get_mut(kind).and_then(Value::as_array_mut) {
             for item in items {
                 if let Some(map) = item.as_object_mut() {
-                    drop_nulls(map);
+                    map.retain(|_, v| match v {
+                        Value::Null => false,
+                        Value::String(s) => !s.is_empty(),
+                        Value::Array(a) => !a.is_empty(),
+                        _ => true,
+                    });
                 }
                 plain_view(item);
             }
@@ -412,19 +91,10 @@ pub fn plain_lookup(value: &mut Value) {
     }
 }
 
-/// Removes the null, empty-string and empty-array fields of `map`.
-fn drop_nulls(map: &mut Map<String, Value>) {
-    map.retain(|_, v| match v {
-        Value::Null => false,
-        Value::String(s) => !s.is_empty(),
-        Value::Array(a) => !a.is_empty(),
-        _ => true,
-    });
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn test_plain_view_drops_ets_ids_and_keeps_keys() {

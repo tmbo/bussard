@@ -19,7 +19,7 @@
 //! automation is updated or removed only when its description carries the
 //! bussard marker line, so automations made by hand are never touched.
 
-use crate::reply::{ok, refused};
+use crate::reply::{ok, refused_said};
 use std::time::SystemTime;
 
 use crate::args::Parameters;
@@ -27,13 +27,16 @@ use bussard_ha::api::{HaClient, HaStatus};
 use bussard_ha::automation::{self, Rule};
 use bussard_model::Model;
 use bussard_model::schema::HomeAssistantConfig;
+use bussard_service::home_assistant::{
+    AutomationApplyReport, AutomationPlanReport, ManagedAutomation, Reload,
+};
 use bussard_service::program::plan::Fingerprint;
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::server::BussardMcp;
 
@@ -264,11 +267,11 @@ impl BussardMcp {
     async fn automation_plan(&self, op: Op) -> Value {
         let tier = match self.ha_tier() {
             Ok(t) => t,
-            Err(reason) => return refused(reason),
+            Err(reason) => return refused_said(reason, &self.model()),
         };
         let planned = match self.render_op(tier.config(), &op).await {
             Ok(p) => p,
-            Err(reason) => return refused(reason),
+            Err(reason) => return refused_said(reason, &self.model()),
         };
         let unchanged = planned.config.is_some() && planned.config == planned.previous;
         let (op_name, sentences, question) = describe(&planned);
@@ -279,27 +282,30 @@ impl BussardMcp {
             .config
             .as_ref()
             .and_then(|c| serde_norway::to_string(c).ok());
-        json!({
-            "ok": true,
-            "id": planned.id,
-            "op": if unchanged { "unchanged" } else { op_name },
-            "sentence": planned.sentence,
-            "sentences": sentences,
-            "automation": planned.config,
-            "yaml": yaml,
-            "previous": planned.previous,
-            "question": (!unchanged).then_some(question),
-            "plan_digest": (!unchanged).then_some(planned.digest),
-            "backup_dir": bussard_ha::apply::backup_dir(&self.state().dir).display().to_string(),
-            "plan_ttl_minutes": tier.automation_plans.ttl_minutes(),
-        })
+        let report = AutomationPlanReport {
+            ok: true,
+            id: planned.id,
+            op: if unchanged { "unchanged" } else { op_name }.to_string(),
+            sentence: planned.sentence,
+            sentences,
+            automation: planned.config,
+            yaml,
+            previous: planned.previous,
+            question: (!unchanged).then_some(question),
+            plan_digest: (!unchanged).then_some(planned.digest),
+            backup_dir: bussard_ha::apply::backup_dir(&self.state().dir)
+                .display()
+                .to_string(),
+            plan_ttl_minutes: tier.automation_plans.ttl_minutes(),
+        };
+        crate::reply::report(&report, &self.model())
     }
 
     /// Applies the plan with `digest`; `remove_id` is set for a removal call.
     async fn automation_apply(&self, digest: &str, remove_id: Option<&str>) -> Value {
         match self.automation_apply_inner(digest, remove_id).await {
             Ok(v) => v,
-            Err(reason) => refused(reason),
+            Err(reason) => refused_said(reason, &self.model()),
         }
     }
 
@@ -407,26 +413,33 @@ impl BussardMcp {
             if reload.is_ok() { "ok" } else { "failed" }
         );
         let (_, sentences, _) = describe(&planned);
-        Ok(json!({
-            "ok": reload.is_ok(),
-            "id": id,
-            "op": if is_remove { "remove" } else if planned.previous.is_some() { "update" } else { "create" },
-            "written": true,
-            "sentences": sentences,
-            "backup": backup_path,
-            "reload": match &reload {
-                Ok(()) => json!({"ok": true}),
-                Err(e) => json!({"ok": false, "error": e}),
-            },
-            "message": match (&reload, is_remove) {
-                (Ok(()), true) => format!("Removed {id} from Home Assistant and reloaded automations."),
-                (Ok(()), false) => format!("Wrote {id} to Home Assistant and reloaded automations."),
-                (Err(_), _) => format!(
-                    "Home Assistant accepted the change to {id}, but automation.reload failed; \
-                     it takes effect at the next reload or restart."
-                ),
-            },
-        }))
+        let op = if is_remove {
+            "remove"
+        } else if planned.previous.is_some() {
+            "update"
+        } else {
+            "create"
+        };
+        let message = match (&reload, is_remove) {
+            (Ok(()), true) => format!("Removed {id} from Home Assistant and reloaded automations."),
+            (Ok(()), false) => format!("Wrote {id} to Home Assistant and reloaded automations."),
+            (Err(_), _) => format!(
+                "Home Assistant accepted the change to {id}, but automation.reload failed; it \
+                 takes effect at the next reload or restart."
+            ),
+        };
+        let report = AutomationApplyReport {
+            ok: reload.is_ok(),
+            id,
+            op: op.to_string(),
+            written: true,
+            sentences,
+            backup: backup_path,
+            reload: Reload::of(&reload),
+            message,
+            rule: planned.sentence.clone(),
+        };
+        Ok(crate::reply::report(&report, &self.model()))
     }
 }
 
@@ -519,7 +532,7 @@ pub(crate) async fn managed_automations(
     config: &HomeAssistantConfig,
     status: &HaStatus,
     model: &Model,
-) -> Value {
+) -> Vec<ManagedAutomation> {
     let ids: Vec<(String, Option<String>, String)> = status
         .automations
         .iter()
@@ -545,15 +558,15 @@ pub(crate) async fn managed_automations(
             Ok(None) => (false, vec!["the config could not be found".to_string()]),
             Err(e) => (false, vec![e.clone()]),
         };
-        out.push(json!({
-            "id": id,
-            "alias": alias,
-            "state": state,
-            "managed": managed,
-            "problems": problems,
-        }));
+        out.push(ManagedAutomation {
+            id,
+            alias,
+            state,
+            managed,
+            problems,
+        });
     }
-    Value::Array(out)
+    out
 }
 
 #[cfg(test)]
@@ -562,8 +575,8 @@ mod tests {
 
     #[test]
     fn test_automation_digest_moves_with_every_input() {
-        let a = json!({"alias": "a"});
-        let b = json!({"alias": "b"});
+        let a = serde_json::json!({"alias": "a"});
+        let b = serde_json::json!({"alias": "b"});
         let base = automation_digest("bussard_x", Some(&a), None);
         assert_ne!(base, automation_digest("bussard_y", Some(&a), None));
         assert_ne!(base, automation_digest("bussard_x", Some(&b), None));

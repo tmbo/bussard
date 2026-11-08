@@ -147,6 +147,20 @@ pub fn answer_chat(
     }))
 }
 
+/// [`answer`] whose refusal carries the homeowner's `summary`: nothing
+/// changed.
+pub fn answer_said(
+    result: Result<Value, String>,
+    model: &Model,
+) -> Result<CallToolResult, ErrorData> {
+    ok(result.unwrap_or_else(|reason| report(&Refusal::new(reason), model)))
+}
+
+/// [`refused`] with the homeowner's `summary`.
+pub fn refused_said(reason: impl Into<String>, model: &Model) -> Value {
+    report(&Refusal::new(reason), model)
+}
+
 /// The result of a tool body: its value, or [`refused`] with the reason.
 pub fn answer(result: Result<Value, String>) -> Result<CallToolResult, ErrorData> {
     ok(result.unwrap_or_else(refused))

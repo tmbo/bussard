@@ -88,10 +88,7 @@ fn run(options: AuditArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     }
 
     if g.json {
-        // Through a `Value`, as `knx_audit` returns it: the keys come out
-        // sorted, the order the JSON contract has always had.
-        let value = serde_json::to_value(&report).context("serialising the audit")?;
-        crate::output::print(crate::output::schema::AUDIT, &value)?;
+        crate::output::report(&report)?;
     } else {
         print!("{}", render_text(&report, Style::stdout()));
     }

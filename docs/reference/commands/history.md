@@ -14,7 +14,7 @@ Each line shows the number, the id, the command and arguments that caused the sn
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Print `{"schema", "snapshots": [...]}`; each snapshot has `index`, `id`, `created_at`, `command`, `args`, `gateway`, `result` and `summary`. |
+| `--json` | off | Print `{"schema", "ok", "count", "snapshots": [...]}` (the object `knx_history` returns); each snapshot has `index`, `id`, `created_at`, `command`, `args`, `gateway`, `result` and `summary`. |
 
 Behaviour:
 
@@ -33,7 +33,7 @@ $ bussard show 10 12
 |---|---|---|
 | `<SNAPSHOT>` | | The snapshot to show: its id, or its number from `bussard history`. |
 | `[SNAPSHOT]` | | A second snapshot: show the change from the first to this one. |
-| `--json` | off | Print `{"schema", "from", "to", "reason", "changes": [...]}`, the same change objects as `status --json`. |
+| `--json` | off | Print `{"schema", "ok", "from", "to", "reason", "count", "touches_protected", "sentences", "changes": [...]}`, the same change objects as `status --json` and the object `knx_describe_change` returns. |
 
 ## `bussard undo [SNAPSHOT]`
 
@@ -46,7 +46,7 @@ $ bussard undo
 | Flag / arg | Default | Meaning |
 |---|---|---|
 | `[SNAPSHOT]` | the newest one that differs from the working files | The snapshot to restore: its id or number. |
-| `--json` | off | Print `{"schema", "restored", "created_at", "undo_snapshot", "changes": [...], "key_store"}`. `restored` is `null`, with a `reason`, when nothing was restored. `key_store` is `null` unless the undo changed a group address's Data Secure state: then `{"ok": true, "sentences"}`, or `{"ok": false, "reason"}` when the key store did not follow. |
+| `--json` | off | Print `{"schema", "ok", "restored", "created_at", "undo_snapshot", "changes": [...], "key_store"}`. `restored` is `null`, with a `reason`, when nothing was restored. `key_store` is `null` unless the undo changed a group address's Data Secure state: then `{"ok": true, "sentences"}`, or `{"ok": false, "reason"}` when the key store did not follow. |
 
 Behaviour:
 

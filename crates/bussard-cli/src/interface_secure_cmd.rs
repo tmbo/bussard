@@ -23,6 +23,7 @@ use bussard_service::ip_secure::{
 };
 use bussard_service::keys::KeyStore;
 use bussard_service::secure::KEYRING_PASSWORD_ENV;
+use bussard_service::secure_report::InterfaceSecureReport;
 
 use crate::cli::{Resolved, Run, Spec};
 use crate::conn_cmd::{enforce_write_gate, gateway_display, resolve_config};
@@ -96,27 +97,6 @@ struct DumpedPlan<'a> {
     switch: Switch,
     /// The steps with their property writes.
     steps: &'a [PlanRecordStep],
-}
-
-/// The `--json` output.
-#[derive(Debug, serde::Serialize)]
-struct SecureJson {
-    /// The interface.
-    device: String,
-    /// `on` or `off`.
-    switch: Switch,
-    /// Whether this was a dry run (nothing sent, nothing saved).
-    dry_run: bool,
-    /// The steps, one line each.
-    steps: Vec<String>,
-    /// The credentials the plan generated (names only).
-    generated: Vec<String>,
-    /// Whether the switch was verified (absent on a dry run).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    verified: Option<bool>,
-    /// What the read-back found wrong.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    mismatches: Vec<String>,
 }
 
 fn parse_switch(state: &str) -> anyhow::Result<Switch> {
@@ -265,18 +245,16 @@ fn run(inputs: &SecureArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         ));
     }
     if json {
-        crate::output::print(
-            crate::output::schema::INTERFACE_SECURE,
-            &SecureJson {
-                device: target.to_string(),
-                switch,
-                dry_run: false,
-                steps: plan.lines(),
-                generated: plan.generated.clone(),
-                verified: Some(verified),
-                mismatches,
-            },
-        )?;
+        crate::output::report(&InterfaceSecureReport {
+            ok: verified,
+            verified: Some(verified),
+            security_mode: outcome.verification.security_mode,
+            tunnel_users: outcome.verification.tunnel_users.clone(),
+            gateway_secure_only: outcome.gateway_secure_only,
+            mismatches,
+            key_store_updated: Some(outcome.store_saved_before || outcome.store_saved_after),
+            ..InterfaceSecureReport::plan(target, switch, plan.lines(), plan.generated.clone())
+        })?;
     } else if verified {
         println!(
             "\nKNXnet/IP Secure switched {switch} for {target}: verified (security mode{}{}).",
@@ -334,18 +312,15 @@ fn print_plan(plan: &SwitchPlan) {
 
 fn report_plan(plan: &SwitchPlan, json: bool, dry_run: bool) -> anyhow::Result<()> {
     if json {
-        crate::output::print(
-            crate::output::schema::INTERFACE_SECURE,
-            &SecureJson {
-                device: plan.target.to_string(),
-                switch: plan.switch,
-                dry_run,
-                steps: plan.lines(),
-                generated: plan.generated.clone(),
-                verified: None,
-                mismatches: Vec::new(),
-            },
-        )?;
+        crate::output::report(&InterfaceSecureReport {
+            dry_run,
+            ..InterfaceSecureReport::plan(
+                plan.target,
+                plan.switch,
+                plan.lines(),
+                plan.generated.clone(),
+            )
+        })?;
     } else {
         print_plan(plan);
         println!("\ndry run: nothing sent, the key store unchanged.");

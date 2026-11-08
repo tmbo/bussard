@@ -74,8 +74,11 @@ impl BussardMcp {
             };
         let keyring_devices = keys.keyring_given().then(|| keys.listed());
         let mut report = AuditReport::from_model(&model, keyring_devices.as_deref());
+        report.products = Some(bussard_service::audit::ProductsReport::from_dir(
+            &model, &state.dir,
+        ));
         if !args.live {
-            return structured(&report);
+            return structured(&report, &model);
         }
         if state.passive {
             return Err(ErrorData::invalid_params(
@@ -136,15 +139,16 @@ impl BussardMcp {
             secure,
             traffic: TrafficReport::new(&model, window, &telegrams),
         });
-        structured(&report)
+        structured(&report, &model)
     }
 }
 
 /// The report as the tool's structured result.
-fn structured(report: &AuditReport) -> Result<CallToolResult, ErrorData> {
-    serde_json::to_value(report)
-        .map(CallToolResult::structured)
-        .map_err(|err| ErrorData::internal_error(format!("serialising the audit: {err}"), None))
+fn structured(
+    report: &AuditReport,
+    model: &bussard_model::Model,
+) -> Result<CallToolResult, ErrorData> {
+    crate::reply::ok_report(report, model)
 }
 
 impl BussardMcp {

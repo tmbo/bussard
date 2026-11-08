@@ -39,62 +39,12 @@ pub trait Report: Serialize {
 /// The version of each `--json` shape that has no [`Report`] struct yet,
 /// one constant per shape (see the CLI's `output` module for the rules).
 pub mod schema {
-    /// `bussard audit --json`.
-    pub const AUDIT: u32 = 1;
-    /// `bussard backup --json` (the manifest).
-    pub const BACKUP: u32 = 1;
-    /// `bussard device --json`.
-    pub const DEVICE: u32 = 1;
-    /// `bussard diff --json`.
-    pub const DIFF: u32 = 1;
-    /// `bussard diff --checklist --json`.
-    pub const DIFF_CHECKLIST: u32 = 1;
     /// `bussard doc --json` (the documentation model).
     pub const DOC: u32 = 1;
-    /// `bussard export --json`.
-    pub const EXPORT: u32 = 1;
-    /// `bussard groups reserve --json`.
-    pub const GROUPS_RESERVE: u32 = 1;
-    /// `bussard groups secure --json`.
-    pub const GROUPS_SECURE: u32 = 1;
-    /// `bussard history --json`: `{ "snapshots": [...] }`.
-    pub const HISTORY: u32 = 1;
-    /// `bussard interface secure --json` (issue #398).
-    pub const INTERFACE_SECURE: u32 = 1;
-    /// `bussard keys add-certificate --json`.
-    pub const KEYS_ADD_CERTIFICATE: u32 = 1;
-    /// `bussard keys enroll --json`: one object per line (issue #729).
-    pub const KEYS_ENROLL: u32 = 1;
-    /// `bussard keys export --json`.
-    pub const KEYS_EXPORT: u32 = 1;
-    /// `bussard keys import --json`.
-    pub const KEYS_IMPORT: u32 = 1;
     /// `bussard keys show --json`.
     pub const KEYS_SHOW: u32 = 1;
     /// `bussard monitor --json`: one object per line.
     pub const MONITOR: u32 = 1;
-    /// `bussard reconstruct --json`.
-    pub const RECONSTRUCT: u32 = 1;
-    /// `bussard reconstruct --line --json`.
-    pub const RECONSTRUCT_LINE: u32 = 1;
-    /// `bussard scan --json`.
-    pub const SCAN: u32 = 1;
-    /// `bussard secure diag <ADDRESS> --json` (issue #533).
-    pub const SECURE_DIAG: u32 = 1;
-    /// `bussard show --json`.
-    pub const SHOW: u32 = 1;
-    /// `bussard status --json`.
-    pub const STATUS: u32 = 1;
-    /// `bussard status <ADDRESS> --json`: one device's live state (issue #391).
-    pub const STATUS_DEVICE: u32 = 1;
-    /// `bussard test --json`.
-    pub const TEST: u32 = 1;
-    /// `bussard test --secure-idle --json`.
-    pub const TEST_SECURE_IDLE: u32 = 1;
-    /// `bussard undo --json`.
-    pub const UNDO: u32 = 1;
-    /// `bussard validate --json`: `{ "diagnostics": [...] }`.
-    pub const VALIDATE: u32 = 1;
 }
 
 /// A device as the human knows it: `Hallway push button in Hallway`, its

@@ -7,9 +7,11 @@
 use bussard_model::IndividualAddress;
 use bussard_service::L4Options;
 use bussard_service::program::plan::Fingerprint;
+use bussard_service::report::Approval;
 use bussard_service::secure::SequenceHighWater;
 use bussard_service::secure::ToolKeySource;
-use serde_json::{Value, json};
+use bussard_service::secure_report::SecureDiagReport;
+use serde_json::Value;
 
 use super::{BussardMcp, chain};
 
@@ -69,18 +71,18 @@ impl BussardMcp {
                     chain(&e)
                 )
             })?;
-        let diagnostics = json!(read);
+        let diagnostics = serde_json::to_value(&read).unwrap_or_default();
         let digest = digest(target, &diagnostics);
+        let model = self.model();
         let Some(given) = plan_digest else {
-            return Ok(json!({
-                "ok": true,
-                "address": target.to_string(),
-                "gateway": gateway,
-                "diagnostics": diagnostics,
-                "lines": read.lines(),
-                "question": bussard_service::security_diag::clear_question(target),
-                "plan_digest": digest,
-            }));
+            let mut report = SecureDiagReport::new(target, read, false);
+            report.gateway = Some(gateway);
+            report.approval = Approval {
+                question: Some(bussard_service::security_diag::clear_question(target)),
+                plan_digest: Some(digest),
+                expires_at: None,
+            };
+            return Ok(crate::reply::report(&report, &model));
         };
         if given != digest {
             return Err(format!(
@@ -88,22 +90,20 @@ impl BussardMcp {
                  log moved since the plan. Show the human the new lines and ask again"
             ));
         }
-        match bussard_service::security_diag::clear(&service, target, &options).await {
-            Ok(after) => Ok(json!({
-                "ok": true,
-                "cleared": true,
-                "address": target.to_string(),
-                "before": diagnostics,
-                "diagnostics": after,
-                "lines": after.lines(),
-            })),
-            Err(err) => Ok(json!({
-                "ok": false,
-                "cleared": false,
-                "address": target.to_string(),
-                "before": diagnostics,
-                "error": chain(&err),
-            })),
-        }
+        let report = match bussard_service::security_diag::clear(&service, target, &options).await {
+            Ok(after) => SecureDiagReport {
+                before: Some(read),
+                ..SecureDiagReport::new(target, after, true)
+            },
+            Err(err) => SecureDiagReport {
+                ok: false,
+                diagnostics: None,
+                lines: Vec::new(),
+                reason: Some(chain(&err)),
+                before: Some(read),
+                ..SecureDiagReport::new(target, Default::default(), false)
+            },
+        };
+        Ok(crate::reply::report(&report, &model))
     }
 }

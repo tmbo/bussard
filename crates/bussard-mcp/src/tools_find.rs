@@ -13,20 +13,34 @@
 use crate::jobs::{JobKind, Subject};
 use std::sync::Arc;
 
-use bussard_model::text::hex;
 use bussard_model::{IndividualAddress, Model};
 use bussard_service::line::WalkEvent;
-use bussard_service::scan::{self, LineRange, ScanReport, Sweep};
+use bussard_service::scan::{self, LineRange, ScanOutcome, Sweep};
 use bussard_service::secure::Key16;
 use bussard_service::secure::{ToolKeySource, ToolKeys};
 use bussard_service::status::{read_live_status, read_only_authorize, status_report};
-use bussard_service::{BusService, FactsCache, L4Options, SourcePolicy, identity_line};
-use serde_json::{Value, json};
+use bussard_service::{BusService, FactsCache, L4Options, SourcePolicy};
+use serde_json::Value;
 
 use crate::jobs::JobTable;
 use crate::server::BussardMcp;
 use crate::state::{Need, SharedState};
 use crate::warm::WarmConnection;
+
+/// What a started scan establishes.
+#[derive(serde::Serialize)]
+struct ScanStarted {
+    /// The line.
+    line: String,
+    /// The first device number.
+    from: u8,
+    /// The last device number.
+    to: u8,
+    /// How many addresses.
+    addresses: usize,
+    /// The worst-case duration in seconds.
+    estimate_s_worst_case: u64,
+}
 
 /// What `knx_find_devices` scans: the parsed line and range.
 #[derive(Debug, Clone, Copy)]
@@ -101,28 +115,34 @@ impl BussardMcp {
             return Ok(result);
         }
         let estimate = request.range.estimate().as_secs();
-        Ok(json!({
-            "ok": true,
-            "started": true,
-            "done": false,
-            "job": id,
-            "line": line,
-            "from": request.range.from,
-            "to": request.range.to,
-            "addresses": total,
-            "estimate_s_worst_case": estimate,
-            "summary": format!(
-                "Scanning line {line} ({total} addresses, one at a time; up to {}m{:02}s on \
-                 TP1). Nothing is written.",
-                estimate / 60,
-                estimate % 60
-            ),
-            "next_step": format!(
+        let mut out = crate::reply::started_with(
+            &id,
+            "scanning the line",
+            ScanStarted {
+                line: line.clone(),
+                from: request.range.from,
+                to: request.range.to,
+                addresses: total,
+                estimate_s_worst_case: estimate,
+            },
+            None,
+            format!(
                 "Tell the human the scan of line {line} is running. Call knx_job_status with job \
                  {id} every few seconds: `progress` counts the addresses probed and the devices \
                  found so far, and once `done` is true `result` is the device list."
             ),
-        }))
+        );
+        crate::reply::envelope(
+            &mut out,
+            Some(format!(
+                "Scanning line {line} ({total} addresses, one at a time; up to {}m{:02}s on \
+                 TP1). Nothing is written.",
+                estimate / 60,
+                estimate % 60
+            )),
+            None,
+        );
+        Ok(out)
     }
 
     /// The `live` object of `knx_show_device`: the live status, or `ok:
@@ -130,7 +150,8 @@ impl BussardMcp {
     pub(crate) async fn live_part(&self, target: IndividualAddress) -> Value {
         match self.live_status(target).await {
             Ok(value) => value,
-            Err(reason) => json!({ "ok": false, "reason": reason }),
+            Err(reason) => serde_json::to_value(bussard_service::report::Refusal::new(reason))
+                .unwrap_or_default(),
         }
     }
 
@@ -176,62 +197,8 @@ impl BussardMcp {
         drop(warm);
         let read = read.map_err(|err| format!("{err:#}"))?;
         let device = model.devices.get(&target).map(|d| &d.device);
-        let report = status_report(target, device, &read);
-        let who = match &report.name {
-            Some(name) => format!("{name} ({target})"),
-            None => target.to_string(),
-        };
-        let mut sentences = vec![format!(
-            "{who} answers with mask {} ({}).",
-            report.mask, report.system_type
-        )];
-        if let Some(check) = &report.identity {
-            sentences.push(format!("{}.", identity_line(target, check)));
-        }
-        let knxnet_lines: Vec<String> = report
-            .knxnet
-            .as_ref()
-            .map(|k| {
-                k.lines()
-                    .into_iter()
-                    .map(|(label, value)| format!("{label}: {value}"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        match (&report.knxnet, &read.knxnet_error) {
-            (Some(_), _) if report.model_knxnet.is_some() && report.knxnet_drift.is_empty() => {
-                sentences.push(
-                    "It is a KNX IP interface; its KNXnet/IP settings match [knxnet] in its \
-                     device file."
-                        .to_string(),
-                )
-            }
-            (Some(_), _) if report.model_knxnet.is_some() => sentences.push(format!(
-                "It is a KNX IP interface; its KNXnet/IP settings differ from [knxnet] in its \
-                 device file: {}.",
-                report.knxnet_drift.join("; ")
-            )),
-            (Some(_), _) => sentences.push(
-                "It is a KNX IP interface; `knxnet_lines` lists its IP settings, tunnelling \
-                 addresses and state."
-                    .to_string(),
-            ),
-            (None, Some(err)) => sentences.push(format!(
-                "Its KNXnet/IP parameter object was not read ({err})."
-            )),
-            (None, None) => {}
-        }
-        let mut out = serde_json::to_value(&report).map_err(|e| e.to_string())?;
-        out["ok"] = json!(true);
-        out["secured"] = json!(secured);
-        out["sentences"] = json!(sentences);
-        if !knxnet_lines.is_empty() {
-            out["knxnet_lines"] = json!(knxnet_lines);
-        }
-        if let Some(err) = &read.knxnet_error {
-            out["knxnet_error"] = json!(err);
-        }
-        Ok(out)
+        let report = status_report(target, device, &read, secured);
+        serde_json::to_value(&report).map_err(|e| e.to_string())
     }
 }
 
@@ -255,12 +222,13 @@ async fn run_scan(
     let source = match service.checked_source(false).await {
         Ok(source) => source,
         Err(err) => {
-            return json!({
-                "ok": false,
-                "refused": true,
-                "line": line,
-                "reason": format!("the source address check failed: {err}"),
-            });
+            return serde_json::to_value(bussard_service::report::Refusal {
+                line: Some(line),
+                ..bussard_service::report::Refusal::new(format!(
+                    "the source address check failed: {err}"
+                ))
+            })
+            .unwrap_or_default();
         }
     };
     // Only a listed address gets a key; any other device is read in the
@@ -296,120 +264,16 @@ async fn run_scan(
 /// The result of a finished sweep: the responders names first, the model
 /// delta of the swept range, and one summary sentence.
 fn scan_result(dir: &std::path::Path, range: LineRange, swept: Sweep, model: &Model) -> Value {
-    let summary_timing = swept.summary();
-    let timing = json!({
-        "addresses": swept.timings.len(),
-        "total_ms": swept.elapsed.as_millis(),
-        "summary": summary_timing,
-    });
+    let timing = scan::ScanTiming::of(&swept);
     let mut report = scan::cross_reference(swept.found, Some(model));
     for f in &mut report.found {
         let device = model.devices.get(&f.address).map(|d| &d.device);
         f.identity = Some(scan::observe_identity(dir, true, f.address, f.mask, device));
     }
-    let name_of = |addr: IndividualAddress| -> Option<String> {
-        model
-            .devices
-            .get(&addr)
-            .map(|d| d.device.name.clone())
-            .filter(|n| !n.is_empty())
-    };
-    let devices: Vec<Value> = report
-        .found
-        .iter()
-        .map(|f| device_row(f, name_of(f.address), &report))
-        .collect();
-    let missing: Vec<(IndividualAddress, String)> = report
-        .missing
-        .iter()
-        .filter(|(addr, _)| range.contains(*addr))
-        .cloned()
-        .collect();
-    let line = format!("{}.{}", range.area, range.line);
-    let summary = summary(&line, &report, &missing, &name_of, swept.timings.len());
-    json!({
-        "ok": true,
-        "line": line,
-        "from": range.from,
-        "to": range.to,
-        "summary": summary,
-        "devices": devices,
-        "not_in_model": report.not_in_model,
-        "missing_from_bus": missing
-            .iter()
-            .map(|(addr, name)| json!({ "name": name, "address": addr.to_string() }))
-            .collect::<Vec<_>>(),
-        "timing": timing,
-        "next_step": "Tell the human the summary and the devices by name. knx_show_device with \
-            `live: true` reads one device's live status (identity, and for an IP interface its \
-            IP settings and tunnels).",
-    })
-}
-
-/// One responder as `knx_find_devices` lists it: name first.
-fn device_row(f: &scan::Found, name: Option<String>, report: &ScanReport) -> Value {
-    let mut row = json!({
-        "name": name,
-        "address": f.address.to_string(),
-        "known": report.known(f.address),
-        "mask": format!("{:04X}", f.mask),
-        "system_type": f.system_type(),
-        "manufacturer": f.manufacturer_id.map(bussard_service::mgmt::manufacturers::display),
-        "manufacturer_id": f.manufacturer_id.map(|id| format!("{id:#06X}")),
-        "order_number": f.order,
-        "serial": f.serial.as_deref().map(hex),
-    });
-    if f.secure.activated() {
-        row["secure"] = json!(f.secure.as_str());
-        row["secure_note"] = json!(scan::secure_label(f.secure));
-    }
-    if let Some(check) = &f.identity {
-        row["identity"] = json!(check);
-        row["identity_line"] = json!(identity_line(f.address, check));
-    }
-    row
-}
-
-/// The one-sentence summary of a scan, names first.
-fn summary(
-    line: &str,
-    report: &ScanReport,
-    missing: &[(IndividualAddress, String)],
-    name_of: &dyn Fn(IndividualAddress) -> Option<String>,
-    probed: usize,
-) -> String {
-    let who = |addr: IndividualAddress| match name_of(addr) {
-        Some(name) => format!("{name} ({addr})"),
-        None => format!("{addr} (not in the model)"),
-    };
-    let answered: Vec<String> = report.found.iter().map(|f| who(f.address)).collect();
-    let mut out = if answered.is_empty() {
-        format!("No device answered on line {line} ({probed} addresses probed).")
-    } else {
-        format!(
-            "{} device(s) answered on line {line} ({probed} addresses probed): {}.",
-            answered.len(),
-            answered.join(", ")
-        )
-    };
-    if !missing.is_empty() {
-        let names: Vec<String> = missing
-            .iter()
-            .map(|(addr, name)| {
-                if name.is_empty() {
-                    addr.to_string()
-                } else {
-                    format!("{name} ({addr})")
-                }
-            })
-            .collect();
-        out.push_str(&format!(
-            " {} model device(s) in the scanned range did not answer: {}.",
-            names.len(),
-            names.join(", ")
-        ));
-    }
-    out
+    crate::reply::report(
+        &ScanOutcome::new(range, &report, timing, Some(model)),
+        model,
+    )
 }
 
 #[cfg(test)]
@@ -424,10 +288,5 @@ mod tests {
         assert!(ScanRequest::parse("1.1", Some(9), Some(3)).is_err());
         assert!(ScanRequest::parse("16.1", None, None).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn test_hex_formats_lowercase() {
-        assert_eq!(hex(&[0xDE, 0xAD]), "dead");
     }
 }

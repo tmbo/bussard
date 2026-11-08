@@ -35,7 +35,10 @@ use serde_json::{Value, json};
 use crate::reply::{invalid, ok, ok_report};
 use crate::state::{ConnState, Need, READ_RESPONSE_TIMEOUT, SharedState};
 use crate::tools;
+use bussard_service::bus_report::{ReconnectReport, TelegramsReport, WaitReport};
+use bussard_service::device_show::{KnxnetSection, UnmodelledLive};
 use bussard_service::group_report::{GroupReadReport, GroupWriteReport};
+use bussard_service::project_view::{DeviceInfo, ProjectSummary};
 
 /// How long `knx_bus_reconnect` waits for its connect attempt: the secure
 /// probe, the TCP connect and the session handshake each have their own
@@ -194,29 +197,6 @@ impl BussardMcp {
     /// This session's unapplied model edits, by device (issue #279).
     pub(crate) fn session_edits(&self) -> &crate::session_edits::SessionEdits {
         &self.session_edits
-    }
-
-    /// Adds the homeowner's `summary` to the result of a programming,
-    /// device-read or Home Assistant tool that did not write one (issue
-    /// #306, [`crate::everyday::add_result_summary`]).
-    fn with_summary(
-        &self,
-        tool: &str,
-        response: rmcp::model::CallToolResponse,
-    ) -> rmcp::model::CallToolResponse {
-        if !crate::everyday::SUMMARIZED_TOOLS.contains(&tool) {
-            return response;
-        }
-        let rmcp::model::CallToolResponse::Complete(mut result) = response else {
-            return response;
-        };
-        if let Some(value) = result.structured_content.as_mut() {
-            let model = self.state().model.current();
-            if crate::everyday::add_result_summary(tool, value, &model) {
-                result.content = vec![rmcp::model::ContentBlock::text(value.to_string())];
-            }
-        }
-        rmcp::model::CallToolResponse::Complete(result)
     }
 }
 
@@ -397,16 +377,14 @@ impl BussardMcp {
     #[doc = include_str!("../guidance/tools/knx_project_summary.md")]
     #[tool]
     async fn knx_project_summary(&self) -> Result<CallToolResult, ErrorData> {
-        let mut summary = tools::project_summary(&self.state().model.current(), &self.state().bus);
+        let model = self.state().model.current();
         let tiers = crate::guidance::Tiers::of(self.state());
-        if let Some(map) = summary.as_object_mut() {
-            map.insert("server".to_string(), tiers.summary_json());
-            map.insert(
-                "capabilities".to_string(),
-                Value::String(tiers.capabilities()),
-            );
-        }
-        ok(summary)
+        let summary = ProjectSummary {
+            server: Some(tiers.summary_json()),
+            capabilities: Some(tiers.capabilities()),
+            ..ProjectSummary::of(&model, self.state().bus.to_json())
+        };
+        ok_report(&summary, &model)
     }
 
     // `knx_model_lookup`.
@@ -420,7 +398,8 @@ impl BussardMcp {
         let tiers = crate::guidance::Tiers::of(self.state());
         let model = self.state().model.current();
         let capabilities = Some((self.state().dir.as_path(), tiers));
-        let mut value = tools::model_lookup(&model, &args.query, limit, capabilities);
+        let report = tools::lookup_report(&model, &args.query, limit, capabilities);
+        let mut value = crate::reply::report(&report, &model);
         if !args.technical {
             crate::everyday::plain_lookup(&mut value);
         }
@@ -439,11 +418,11 @@ impl BussardMcp {
             .parse()
             .map_err(|_| invalid(format!("invalid group address {:?}", args.ga)))?;
         let model = self.state().model.current();
-        let mut value = tools::get_group(&model, &self.state().ring, ga);
+        let mut view = tools::group_view(&model, &self.state().ring, ga);
         if !args.technical {
-            crate::everyday::plain_group(&mut value, &model);
+            view = view.plain(&model);
         }
-        ok(value)
+        ok_report(&view, &model)
     }
 
     // `knx_get_device`.
@@ -467,7 +446,10 @@ impl BussardMcp {
             &self.state().dir,
             app.iter().map(String::as_str),
         );
-        ok(tools::get_device(&model, &products, ia, args.technical))
+        ok_report(
+            &DeviceInfo::of(&model, &products, ia, args.technical),
+            &model,
+        )
     }
 
     // `knx_show_device`.
@@ -501,30 +483,26 @@ impl BussardMcp {
             // A live read of a device the model does not have (a scan
             // responder) still answers, with the reason in `model_view`.
             Err(e) if args.live => {
-                return ok(json!({
-                    "address": ia.to_string(),
-                    "model_view": e.to_string(),
-                    "live": self.live_part(ia).await,
-                }));
+                return ok_report(
+                    &UnmodelledLive {
+                        address: ia.to_string(),
+                        model_view: e.to_string(),
+                        live: self.live_part(ia).await,
+                    },
+                    &model,
+                );
             }
             Err(e) => return Err(invalid(e.to_string())),
         };
-        let mut value = tools::show_device_result(
+        let mut show = tools::show_device_result(
             view,
             args.inactive,
             args.toml,
             crate::guidance::Tiers::of(self.state()),
-        )
-        .map_err(|e| {
-            ErrorData::internal_error(format!("serializing the device view: {e}"), None)
-        })?;
+        );
         // An IP interface's KNXnet/IP settings and facts (issue #391).
-        if let (Some(map), Some(knxnet)) = (
-            value.as_object_mut(),
-            crate::tools_model::knxnet_section(&self.state().dir, &model, ia),
-        ) {
-            map.insert("knxnet".to_string(), knxnet);
-        }
+        show.knxnet = KnxnetSection::of(&self.state().dir, &model, ia);
+        let mut value = crate::reply::report(&show, &model);
         if !args.technical {
             crate::everyday::plain_view(&mut value);
         }
@@ -595,10 +573,13 @@ impl BussardMcp {
         }
 
         let items: Vec<Value> = telegrams.iter().map(tools::telegram_json).collect();
-        ok(json!({
-            "count": items.len(),
-            "telegrams": items,
-        }))
+        ok_report(
+            &TelegramsReport {
+                count: items.len(),
+                telegrams: items,
+            },
+            &self.model(),
+        )
     }
 
     // `knx_wait_for_telegram`.
@@ -611,53 +592,63 @@ impl BussardMcp {
         let timeout = Duration::from_secs(args.timeout_seconds.clamp(1, 300) as u64);
         let filter = build_filter(args.ga.as_deref(), args.source.as_deref())?;
 
-        match self.state().ring.wait_for(&filter, timeout).await {
-            Some(t) => ok(json!({
-                "matched": true,
-                "telegram": tools::telegram_json(&t),
-            })),
-            None => ok(json!({
-                "matched": false,
-                "timed_out": true,
-                "waited_seconds": timeout.as_secs(),
-            })),
-        }
+        let report = match self.state().ring.wait_for(&filter, timeout).await {
+            Some(t) => WaitReport {
+                matched: true,
+                telegram: Some(tools::telegram_json(&t)),
+                timed_out: false,
+                waited_seconds: None,
+            },
+            None => WaitReport {
+                matched: false,
+                telegram: None,
+                timed_out: true,
+                waited_seconds: Some(timeout.as_secs()),
+            },
+        };
+        ok_report(&report, &self.model())
     }
 
     // `knx_bus_status` (issue #287).
     #[doc = include_str!("../guidance/tools/knx_bus_status.md")]
     #[tool]
     async fn knx_bus_status(&self) -> Result<CallToolResult, ErrorData> {
-        let mut out = self.state().bus.to_json();
-        if let Some(map) = out.as_object_mut() {
-            let others: Vec<u32> = crate::instances::other_instances(&self.state().dir);
-            map.insert("other_instances".into(), json!(others));
-            if self.state().bus.state() != ConnState::Connected {
-                map.insert(
-                    "reason".into(),
-                    json!(self.state().bus.not_connected_reason()),
-                );
-            }
+        let mut view = self.state().bus.view();
+        view.other_instances = Some(crate::instances::other_instances(&self.state().dir));
+        if self.state().bus.state() != ConnState::Connected {
+            view.reason = Some(self.state().bus.not_connected_reason());
         }
-        ok(out)
+        ok_report(&view, &self.model())
     }
 
     // `knx_bus_reconnect` (issue #287; omitted in passive mode).
     #[doc = include_str!("../guidance/tools/knx_bus_reconnect.md")]
     #[tool]
     async fn knx_bus_reconnect(&self) -> Result<CallToolResult, ErrorData> {
+        let model = self.model();
         if self.state().passive {
-            return ok(json!({
-                "ok": false,
-                "reason": "server is in passive mode; the bus reconnects on its own",
-            }));
+            return ok_report(
+                &ReconnectReport {
+                    ok: false,
+                    bus: None,
+                    note: None,
+                    reason: Some(
+                        "server is in passive mode; the bus reconnects on its own".to_string(),
+                    ),
+                },
+                &model,
+            );
         }
         let Some(handle) = self.state().bus.handle() else {
-            return ok(json!({
-                "ok": false,
-                "reason": "bus is not wired",
-                "bus": self.state().bus.to_json(),
-            }));
+            return ok_report(
+                &ReconnectReport {
+                    ok: false,
+                    bus: Some(self.state().bus.view()),
+                    note: None,
+                    reason: Some("bus is not wired".to_string()),
+                },
+                &model,
+            );
         };
         let attempt = tokio::time::timeout(RECONNECT_WAIT, handle.reconnect()).await;
         let note = match attempt {
@@ -671,22 +662,13 @@ impl BussardMcp {
             )),
         };
         let connected = self.state().bus.state() == ConnState::Connected;
-        let mut out = json!({
-            "ok": connected,
-            "bus": self.state().bus.to_json(),
-        });
-        if let Some(map) = out.as_object_mut() {
-            if let Some(note) = note {
-                map.insert("note".into(), json!(note));
-            }
-            if !connected {
-                map.insert(
-                    "reason".into(),
-                    json!(self.state().bus.not_connected_reason()),
-                );
-            }
-        }
-        ok(out)
+        let report = ReconnectReport {
+            ok: connected,
+            bus: Some(self.state().bus.view()),
+            note,
+            reason: (!connected).then(|| self.state().bus.not_connected_reason()),
+        };
+        ok_report(&report, &model)
     }
 
     // `knx_validate`.
@@ -947,7 +929,9 @@ impl BussardMcp {
             Ok(outcome) => outcome,
             Err(err) => return ok_report(&group_error(ga, &err), &model),
         };
-        let report = GroupWriteReport::of(ga, None, &outcome, |refusal| write_refusal(ga, refusal));
+        let gateway = self.state().bus.diagnostics().map(|d| d.interface);
+        let report =
+            GroupWriteReport::of(ga, gateway, &outcome, |refusal| write_refusal(ga, refusal));
         crate::reply::ok_report(&report, &model)
     }
 }
@@ -1152,7 +1136,6 @@ impl ServerHandler for BussardMcp {
                 "tools/call request (string values redacted)"
             );
         }
-        let tool = request.name.to_string();
         let before_setup = self.before_setup();
         let peer = context.peer.clone();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -1164,7 +1147,7 @@ impl ServerHandler for BussardMcp {
         {
             tracing::warn!("failed to send tools/list_changed: {err}");
         }
-        Ok(self.with_summary(&tool, response?))
+        response
     }
 
     fn get_info(&self) -> ServerInfo {

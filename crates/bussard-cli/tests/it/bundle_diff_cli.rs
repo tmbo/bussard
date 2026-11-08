@@ -277,7 +277,7 @@ fn test_diff_checklist_groups_devices_and_notes() -> TestResult {
         0,
     )?;
     let value: serde_json::Value = serde_json::from_str(&out)?;
-    assert_eq!(value["schema"], 1);
+    assert_eq!(value["schema"], 2);
     assert_eq!(value["items"], 3);
     assert_eq!(value["groups"][0]["kind"], "group_added");
     assert_eq!(value["groups"][0]["group"], "1/0/3");

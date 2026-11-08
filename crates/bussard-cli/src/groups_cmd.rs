@@ -16,6 +16,7 @@ use std::process::ExitCode;
 use anyhow::{Context, bail};
 use bussard_model::scaffold::{self, Plan, PlanRoom, Scheme};
 use bussard_model::{DeclaredGroup, Model, Severity};
+use bussard_service::groups_report::ReserveReport;
 
 use crate::cli::{Resolved, Run, Spec};
 
@@ -126,7 +127,7 @@ fn run_reserve(
     crate::history_cmd::capture_external_edit(dir);
     let mut args = vec![format!("{} {}", room.floor, room.room)];
     args.extend(functions.iter().cloned());
-    crate::history_cmd::snapshot(
+    let snapshot = crate::history_cmd::snapshot(
         dir,
         bussard_model::history::SnapshotReason::new("groups reserve")
             .with_args(args)
@@ -146,26 +147,17 @@ fn run_reserve(
     let (errors, warnings) = validation_counts(dir);
 
     if json {
-        let added: Vec<serde_json::Value> = report
-            .added
-            .iter()
-            .map(|a| {
-                serde_json::json!({
-                    "address": a.address.to_string(),
-                    "name": a.name,
-                    "dpt": a.dpt.to_string(),
-                })
-            })
-            .collect();
-        let value = serde_json::json!({
-            "room": label,
-            "scheme": scheme.as_str(),
-            "file": groups_path.display().to_string(),
-            "added": added,
-            "lint_config_written": lint_written,
-            "validation": { "errors": errors, "warnings": warnings },
-        });
-        crate::output::print(crate::output::schema::GROUPS_RESERVE, &value)?;
+        crate::output::report(&ReserveReport {
+            room: Some(label.clone()),
+            snapshot: snapshot.map(|id| id.to_string()),
+            ..ReserveReport::new(
+                scheme.as_str(),
+                &groups_path,
+                &report,
+                lint_written,
+                (errors, warnings),
+            )
+        })?;
     } else {
         if report.added.is_empty() {
             println!(
@@ -209,6 +201,7 @@ fn run_reserve(
 /// the key store, so `bussard undo` restores all three.
 fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<ExitCode> {
     use bussard_service::group_security as gs;
+    use bussard_service::groups_report::GroupSecureReport;
     let ga: bussard_model::GroupAddress = ga
         .parse()
         .map_err(|_| anyhow::anyhow!("{ga:?} is not a group address like \"1/0/4\""))?;
@@ -228,15 +221,12 @@ fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<E
     let changes = bussard_model::change::describe(&before, &edited);
     if changes.is_empty() && !action.changed() {
         if json {
-            crate::output::print(
-                crate::output::schema::GROUPS_SECURE,
-                &serde_json::json!({
-                    "ga": ga.to_string(),
-                    "secure": secure,
-                    "changes": [],
-                    "group_key": action.label(),
-                }),
-            )?;
+            crate::output::report(&GroupSecureReport::new(
+                ga,
+                secure,
+                &changes,
+                action.label(),
+            ))?;
         } else {
             println!(
                 "{ga} already runs {}; nothing changed.",
@@ -269,25 +259,14 @@ fn run_secure(dir: &Path, ga: &str, state: &str, json: bool) -> anyhow::Result<E
     let devices = edit.secure_devices(&edited);
     let note = gs::export_note(ga, secure);
     if json {
-        let linked: Vec<serde_json::Value> = edit
-            .devices
-            .iter()
-            .map(|(ia, objects)| serde_json::json!({"address": ia.to_string(), "objects": objects}))
-            .collect();
-        crate::output::print(
-            crate::output::schema::GROUPS_SECURE,
-            &serde_json::json!({
-                "ga": ga.to_string(),
-                "secure": secure,
-                "changes": changes.changes,
-                "group_key": action.label(),
-                "devices": linked,
-                "plan_devices": devices.iter().map(ToString::to_string).collect::<Vec<_>>(),
-                "snapshot": snapshot.as_ref().map(ToString::to_string),
-                "snapshot_keeps_key_store": kept,
-                "note": note,
-            }),
-        )?;
+        let report = GroupSecureReport {
+            snapshot: snapshot.as_ref().map(ToString::to_string),
+            snapshot_keeps_key_store: Some(kept),
+            note: Some(note),
+            ..GroupSecureReport::new(ga, secure, &changes, action.label())
+                .with_devices(&edit.devices, &devices)
+        };
+        crate::output::report(&report)?;
         return Ok(ExitCode::SUCCESS);
     }
     print!("{}", bussard_model::change::render_text(&changes));

@@ -322,6 +322,26 @@ pub fn completed(read: &Verified, before: &Verified) -> Verified {
     }
 }
 
+/// What the human should know after `assigned`: the read-back's warnings and
+/// a device left in programming mode (issue #904: one wording for the CLI's
+/// `--json` and the chat result).
+pub fn assigned_notes(assigned: &Assigned) -> Vec<String> {
+    let mut notes = assigned.verified.warnings.clone();
+    let target = assigned.target;
+    if assigned.still_in_programming_mode {
+        notes.push(format!(
+            "{target} is still in programming mode after the assignment; ask the human to press \
+             its programming button once to leave it (on KNX Virtual: toggle it off in the GUI)."
+        ));
+    } else if !assigned.written {
+        notes.push(format!(
+            "{target} stays in programming mode (nothing was written to it); ask the human to \
+             press its programming button to leave it."
+        ));
+    }
+    notes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

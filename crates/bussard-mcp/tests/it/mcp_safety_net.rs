@@ -315,9 +315,13 @@ async fn test_knx_reconstruct_device_diffs_the_tables_against_the_model() -> any
     assert_eq!(report["ok"], true, "reconstruct: {report}");
     assert_eq!(report["mask"], "07B0", "{report}");
     assert_eq!(report["addresses"], json!(["1/2/0", "1/2/1", "4/2/12"]));
-    let diff = &report["diff"];
+    let diff = &report["differences"];
     assert_eq!(diff["count"], 2, "{diff}");
-    assert_eq!(diff["matches"], 2, "{diff}");
+    assert_eq!(
+        report["diff"]["matches"].as_array().map(Vec::len),
+        Some(2),
+        "{report}"
+    );
     assert_eq!(diff["touches_protected"], false);
     let sentences: Vec<&str> = diff["sentences"]
         .as_array()

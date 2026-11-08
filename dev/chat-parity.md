@@ -197,6 +197,38 @@ keys.
 | Describe | `describe::DescribeReport` | `describe --json` | `knx_describe_device` |
 | Group read, write | `group_report::GroupReadReport`, `GroupWriteReport` | `read --json`, `write --json` | `knx_read_group`, `knx_write_group` |
 
-Still built by hand (#904 status): scan, backup, reconstruct, history and
-undo, learn, keys, import and export, Home Assistant, audit and the model
-edit tools.
+| Scan | `scan::ScanOutcome` | `scan --json` | `knx_find_devices` |
+| Live device status | `status::StatusReport` | `status <ADDRESS> --json` | `live` of `knx_show_device {live: true}` |
+| Backup | `backup::BackupOutcome` | `backup --json` | `knx_backup_device` |
+| Reconstruct a device, a line | `reconstruct::ReconstructReport`, `reconstruct_line::LineSummary` | `reconstruct --json`, `reconstruct --line --json` | `knx_reconstruct_device` |
+| Pending change, history | `model_edit::ChangeReport`, `HistoryReport`, `UndoReport` | `status --json`, `show --json`, `history --json`, `undo --json` | `knx_describe_change`, `knx_history` |
+| Model edits | `model_edit::EditOutcome` | | `knx_set_parameter`, `knx_set_group`, `knx_add_link`, `knx_remove_link` and the other edit tools |
+| Validate | `validate_report::ValidateReport` | `validate --json` | `knx_validate` (`severity: "info"` for the CLI's set) |
+| Audit | `audit::AuditReport` | `audit --json` | `knx_audit` |
+| Project diff | `project_diff::ProjectDiffReport`, `ChecklistReport` | `diff --json` | `knx_diff_project` |
+| Reserve group addresses | `groups_report::ReserveReport` | `groups reserve --json` | `knx_reserve_groups`, `knx_scaffold_groups` |
+| Group security | `groups_report::GroupSecureReport` | `groups secure --json` | `knx_set_group` with `secure` answers an `EditOutcome` with `security` |
+| File import and export | `files::report::FileOutcome` | `keys import --json`, `keys export --json`, `export --json` | `knx_import_file`, `knx_export`, `knx_export_bundle` |
+| Learn, acceptance tests | `learn::InferReport`, `acceptance::TestRunReport` | `test --json` | `knx_infer_group`, `knx_run_tests` |
+| Enrolment | `enroll_session::status::EnrollView`, `report::EnrollLine` | `keys enroll --json` | `knx_enroll_status`, `knx_enroll_certificates` |
+| Secure diagnostics, IP Secure | `secure_report::SecureDiagReport`, `InterfaceSecureReport` | `secure diag --json`, `interface secure --json` | `knx_clear_security_log`, `knx_interface_secure` |
+| Project views | `project_view::ProjectSummary`, `LookupReport`, `GroupView`, `DeviceInfo`, `device_show::DeviceShow` | `device --json` | `knx_project_summary`, `knx_model_lookup`, `knx_get_group`, `knx_get_device`, `knx_show_device` |
+| Bus and telegrams | `bus_report::BusView`, `ReconnectReport`, `TelegramsReport`, `WaitReport`, `VizReport` | | `knx_bus_status`, `knx_bus_reconnect`, `knx_recent_telegrams`, `knx_wait_for_telegram`, `knx_viz` |
+| Home Assistant | `home_assistant::HaStatusReport`, `HaPlanReport`, `HaApplyReport`, `AutomationPlanReport`, `AutomationApplyReport` | | `knx_ha_*` |
+
+The equality tests (`test_*_one_shape_*` in `bussard-cli`'s integration
+tests) cover plan, line plan, restart, commission, describe, group write,
+scan, live status, backup, reconstruct, validate, history, pending change,
+audit, reserve, bundle export and project diff.
+
+Known differences, on purpose:
+
+- `knx_describe_device` walks the objects without the descriptor read, so
+  its result has no `mask`, `system_type` or `identity`.
+- A scoped `knx_show_device` lists the other pages and inactive channels one
+  line each (`block_summary`, `inactive_channel_summary`), to keep the chat
+  result small; `bussard device --json` keeps the full rows.
+- `bussard diff` names its first side by path; `knx_diff_project` compares
+  against "the working model".
+- `knx_undo` and `knx_discard_edits` still build their result from the edit
+  helpers of `tools_model.rs` (#941 owns them).

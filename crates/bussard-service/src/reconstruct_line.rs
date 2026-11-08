@@ -402,6 +402,8 @@ pub fn inject_reconstruct_banners(out: &Path) -> Result<(), ServiceError> {
 /// The line-mode summary, shaped for both text and JSON.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LineSummary {
+    /// Always `true`: the sweep ran and the model was written.
+    pub ok: bool,
     /// The line as the caller named it.
     pub line: String,
     /// The output directory.
@@ -418,6 +420,22 @@ pub struct LineSummary {
     pub links: usize,
     /// Per-device breakdown.
     pub device_details: Vec<LineDeviceDetail>,
+}
+
+impl crate::report::Report for LineSummary {
+    const SCHEMA: u32 = 2;
+
+    fn next_step(&self) -> Option<String> {
+        Some(format!(
+            "Tell the human {} device(s) answered on line {}: {} read, {} recorded as stubs \
+             (name each stub with its skip_reason), and that the model in {} is a scaffold \
+             synthesized from the tables: group names and DPTs are placeholders and every group \
+             address is recorded as listen, so it needs naming (watch the bus) before it is \
+             treated as the truth. It was written to its own directory; the model this server \
+             serves is unchanged.",
+            self.devices_found, self.line, self.devices_read, self.devices_skipped, self.out
+        ))
+    }
 }
 
 /// One device row in the line-mode summary.
@@ -480,6 +498,7 @@ pub fn build_summary(line: &str, out: &Path, found: &[LineDevice], model: &Model
     }
 
     LineSummary {
+        ok: true,
         line: line.to_string(),
         out: out.display().to_string(),
         devices_read: read,

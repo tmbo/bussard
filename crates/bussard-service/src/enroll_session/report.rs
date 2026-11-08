@@ -256,3 +256,94 @@ mod tests {
         assert!(data_path(false).join(" ").contains("cannot decrypt"));
     }
 }
+
+/// One line of `bussard keys enroll --json` (issue #904): the session, each
+/// event, and the end. Never a key.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum EnrollLine {
+    /// The session opened.
+    Session {
+        /// The link the phone opens.
+        link: String,
+        /// The session code both sides show.
+        fingerprint: String,
+        /// Local mode.
+        local: bool,
+        /// What the page or relay warns about.
+        warnings: Vec<String>,
+    },
+    /// A phone joined.
+    Phone,
+    /// Another phone was refused.
+    RefusedPhone {
+        /// Refused phones so far.
+        phones: usize,
+    },
+    /// A certificate was handled.
+    Certificate {
+        /// What happened to it.
+        result: super::CertificateOutcome,
+    },
+    /// A message was dropped.
+    Ignored {
+        /// Why.
+        reason: String,
+    },
+    /// The phone said it is done.
+    Done,
+    /// The session ended.
+    End {
+        /// Why it ended.
+        end: String,
+        /// Certificates whose key is now in the store.
+        stored: u32,
+        /// Certificates handled.
+        certificates: u32,
+        /// Phones refused.
+        refused_phones: usize,
+        /// The count per certificate state.
+        tally: EnrollTally,
+        /// The counts in words.
+        summary: String,
+        /// The commands that apply.
+        next_steps: Vec<NextStep>,
+    },
+}
+
+impl EnrollLine {
+    /// The line of `event`.
+    pub fn of(event: &super::EnrollEvent) -> EnrollLine {
+        match event {
+            super::EnrollEvent::PhoneJoined => EnrollLine::Phone,
+            super::EnrollEvent::PhoneRefused { phones } => {
+                EnrollLine::RefusedPhone { phones: *phones }
+            }
+            super::EnrollEvent::Certificate(outcome) => EnrollLine::Certificate {
+                result: outcome.clone(),
+            },
+            super::EnrollEvent::Ignored { reason } => EnrollLine::Ignored {
+                reason: reason.clone(),
+            },
+            super::EnrollEvent::PhoneDone => EnrollLine::Done,
+        }
+    }
+}
+
+impl crate::report::Report for EnrollLine {
+    const SCHEMA: u32 = 1;
+}
+
+/// `bussard keys add-certificate --json`: the store and one result per
+/// certificate.
+#[derive(Debug, Clone, Serialize)]
+pub struct CertificatesReport {
+    /// The key store.
+    pub store: String,
+    /// One result per certificate.
+    pub results: Vec<crate::EnrolOutcome>,
+}
+
+impl crate::report::Report for CertificatesReport {
+    const SCHEMA: u32 = 1;
+}

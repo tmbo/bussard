@@ -637,7 +637,46 @@ pub struct CommissionDevice {
     pub readback: Option<CommissionReadback>,
 }
 
+impl CommissionReadback {
+    /// The read-back of `labelled`, the device identified as `identified`.
+    pub fn of(labelled: &Labelled, identified: &Identified, target: &Target) -> CommissionReadback {
+        let mut notes = crate::program::assign::assigned_notes(&labelled.assigned);
+        if matches!(identified.check, OrderCheck::NoModelNumber) {
+            notes.push(format!(
+                "Assigned on the human's word: the model has no order number for {}.",
+                target.name
+            ));
+        }
+        let v = &labelled.identity;
+        CommissionReadback {
+            verified: true,
+            mask: v.mask.map(|m| format!("{m:04X}")),
+            serial: v.serial.as_deref().map(crate::assign::hex),
+            order_number: v.order.clone(),
+            programming_mode_cleared: Some(v.programming_mode_cleared),
+            notes,
+        }
+    }
+}
+
 impl CommissionDevice {
+    /// The row of a device whose address was written (or failed to be,
+    /// with a default `readback`) after it was identified at `identified`.
+    pub fn assigned(
+        target: &Target,
+        outcome: &Outcome,
+        identified: &Identified,
+        readback: CommissionReadback,
+    ) -> CommissionDevice {
+        CommissionDevice {
+            identified: Some(IdentifiedDevice::of(identified)),
+            step: Some("assigned".to_string()),
+            from: Some(identified.current.to_string()),
+            readback: Some(readback),
+            ..CommissionDevice::of(target, outcome)
+        }
+    }
+
     /// The row of `outcome` for `target`.
     pub fn of(target: &Target, outcome: &Outcome) -> CommissionDevice {
         CommissionDevice {

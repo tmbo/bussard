@@ -19,12 +19,13 @@ use bussard_model::Model;
 use bussard_model::bundle::{self, Bundle};
 use bussard_model::change::{describe, name_parameters};
 use bussard_model::param_model::ProductModels;
+use bussard_service::project_diff::{DiffSource, ProjectDiffReport};
 use rmcp::ErrorData;
 use rmcp::model::CallToolResult;
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::server::BussardMcp;
 
@@ -100,44 +101,30 @@ fn diff_against(dir: &Path, path: &Path) -> Result<Value, String> {
     let (other, source) = load_other(path)?;
     let mut changes = describe(&working, &other);
     name_parameters(&mut changes, [&other, &working], &ProductModels::load(dir));
-    let sentences: Vec<&str> = changes
-        .changes
-        .iter()
-        .map(|c| c.sentence.as_str())
-        .collect();
-    Ok(json!({
-        "ok": true,
-        "from": "the working model",
-        "to": path.display().to_string(),
-        "source": source,
-        "count": changes.len(),
-        "summary": if changes.is_empty() {
-            "no differences".to_string()
-        } else {
-            changes.summary()
-        },
-        "touches_protected": changes.touches_protected(),
-        "sentences": sentences,
-        "changes": changes.changes,
-    }))
+    let mut report =
+        ProjectDiffReport::new("the working model", path.display().to_string(), &changes);
+    report.source = Some(source);
+    Ok(crate::reply::report(&report, &working))
 }
 
 /// Loads a `.bussard` bundle or a `.knxproj` into memory, with a short
 /// description of what it was.
-fn load_other(path: &Path) -> Result<(Model, Value), String> {
+fn load_other(path: &Path) -> Result<(Model, DiffSource), String> {
     if bundle::is_bundle_path(path) {
         let bundle = Bundle::read(path).map_err(|err| err.to_string())?;
         let model = bundle.model().map_err(|err| err.to_string())?;
         return Ok((
             model,
-            json!({ "kind": "bundle", "manifest": bundle.manifest }),
+            DiffSource::Bundle {
+                manifest: Box::new(bundle.manifest),
+            },
         ));
     }
     let password = bussard_model::dotenv::var("BUSSARD_PROJECT_PASSWORD")
         .ok()
         .filter(|s| !s.is_empty());
     match bussard_product::import(path, password.as_deref()) {
-        Ok(model) => Ok((model, json!({ "kind": "knxproj" }))),
+        Ok(model) => Ok((model, DiffSource::Knxproj)),
         Err(bussard_product::ProductError::PasswordRequired) => Err(format!(
             "{} is password-protected; the server needs BUSSARD_PROJECT_PASSWORD set (ask the \
              human; never guess a password)",

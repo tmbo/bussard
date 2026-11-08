@@ -12,7 +12,7 @@ use bussard_service::BusService;
 use bussard_service::assign::{Verified, hex};
 use bussard_service::observer::{Collected, Consented};
 use bussard_service::program::addressed::AddressOutcome;
-use bussard_service::program::assign::{Assigned, Stop};
+use bussard_service::program::assign::Stop;
 use serde_json::Value;
 
 use super::{BussardMcp, ProgrammingTier, chain};
@@ -120,24 +120,7 @@ pub(super) fn found_sentence(v: &Verified, current: IndividualAddress, rest: &st
     )
 }
 
-/// The notes an address write leaves for the human: the read-back's
-/// warnings and a device still in programming mode.
-pub(super) fn assigned_notes(assigned: &Assigned) -> Vec<String> {
-    let mut notes = assigned.verified.warnings.clone();
-    let target = assigned.target;
-    if assigned.still_in_programming_mode {
-        notes.push(format!(
-            "{target} is still in programming mode after the assignment; ask the human to press \
-             its programming button once to leave it (on KNX Virtual: toggle it off in the GUI)."
-        ));
-    } else if !assigned.written {
-        notes.push(format!(
-            "{target} stays in programming mode (nothing was written to it); ask the human to \
-             press its programming button to leave it."
-        ));
-    }
-    notes
-}
+pub(super) use bussard_service::program::assign::assigned_notes;
 
 /// The result of a job that stopped before anything was written.
 pub(super) fn refused(reason: String) -> AddressOutcome {

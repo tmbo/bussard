@@ -954,7 +954,7 @@ fn test_identity_verdict_and_facts_across_the_management_commands() -> TestResul
     // application id the facts hold.
     let out = bench.run(&["scan", "1.1", "--from", "12", "--to", "12", "--json"])?;
     let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    let row = &json["found"][0];
+    let row = &json["devices"][0];
     assert_eq!(row["identity"]["verdict"], "drift", "{json}");
     assert_eq!(row["identity"]["device"]["application_id"], "00FA000202");
     Ok(())
