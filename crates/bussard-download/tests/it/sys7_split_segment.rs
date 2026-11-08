@@ -151,7 +151,7 @@ fn test_plan_flash_sys7_split_segment_writes_the_two_parts() -> TestResult {
     // The read-back and the plan locate the same gap without a plan at hand.
     let app = product.applications.first().ok_or("one application")?;
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
+    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo)?, kept.to_vec());
     // A device that holds something else in the gap: `delay` is reported as
     // kept with the device's value, never as a difference.
     let mut current = regions_memory(&planned_parameter_regions(&plan));
@@ -190,7 +190,7 @@ fn test_plan_flash_sys7_split_segment_other_branch_allocates_the_whole_segment()
     );
     let app = product.applications.first().ok_or("one application")?;
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    assert!(kept_octets(app, &overrides, &memo).is_empty());
+    assert!(kept_octets(app, &overrides, &memo)?.is_empty());
     Ok(())
 }
 
@@ -268,7 +268,7 @@ fn test_plan_flash_sys7_static_split_keeps_the_gap() -> TestResult {
     );
     let app = product.applications.first().ok_or("one application")?;
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo), kept.to_vec());
+    assert_eq!(kept_octets(app, &BTreeMap::new(), &memo)?, kept.to_vec());
     // A changed `delay` is reported as kept, never as a difference.
     let mut current = regions_memory(&planned_parameter_regions(&plan));
     let held = current

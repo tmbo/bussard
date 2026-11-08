@@ -25,18 +25,20 @@ use bussard_transport::tpci::TpciKind;
 
 use crate::consts::{
     A_AUTHORIZE_REQUEST, A_AUTHORIZE_RESPONSE, A_DEVICE_DESCRIPTOR_READ,
-    A_DEVICE_DESCRIPTOR_RESPONSE, A_INDIVIDUAL_ADDRESS_READ, A_INDIVIDUAL_ADDRESS_RESPONSE,
-    A_INDIVIDUAL_ADDRESS_SERIAL_READ, A_INDIVIDUAL_ADDRESS_SERIAL_RESPONSE,
-    A_INDIVIDUAL_ADDRESS_SERIAL_WRITE, A_INDIVIDUAL_ADDRESS_WRITE, A_MEMORY_EXTENDED_READ,
-    A_MEMORY_EXTENDED_READ_RESPONSE, A_MEMORY_EXTENDED_WRITE, A_MEMORY_EXTENDED_WRITE_RESPONSE,
-    A_MEMORY_READ, A_MEMORY_RESPONSE, A_MEMORY_WRITE, A_PROPERTY_DESCRIPTION_READ,
-    A_PROPERTY_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_DESCRIPTION_READ,
-    A_PROPERTY_EXT_DESCRIPTION_RESPONSE, A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE,
-    A_PROPERTY_EXT_VALUE_WRITE_CON, A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, A_PROPERTY_VALUE_READ,
-    A_PROPERTY_VALUE_RESPONSE, A_PROPERTY_VALUE_WRITE, A_RESTART, A_USER_MEMORY_READ,
-    A_USER_MEMORY_RESPONSE, A_USER_MEMORY_WRITE, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED,
-    LE_START_LOADING, LE_UNLOAD, LS_LOAD_COMPLETING, LS_LOADED, LS_LOADING, LS_UNLOADED,
-    LS_UNLOADING, OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
+    A_DEVICE_DESCRIPTOR_RESPONSE, A_FUNCTION_PROPERTY_EXT_COMMAND,
+    A_FUNCTION_PROPERTY_EXT_STATE_READ, A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE,
+    A_INDIVIDUAL_ADDRESS_READ, A_INDIVIDUAL_ADDRESS_RESPONSE, A_INDIVIDUAL_ADDRESS_SERIAL_READ,
+    A_INDIVIDUAL_ADDRESS_SERIAL_RESPONSE, A_INDIVIDUAL_ADDRESS_SERIAL_WRITE,
+    A_INDIVIDUAL_ADDRESS_WRITE, A_MEMORY_EXTENDED_READ, A_MEMORY_EXTENDED_READ_RESPONSE,
+    A_MEMORY_EXTENDED_WRITE, A_MEMORY_EXTENDED_WRITE_RESPONSE, A_MEMORY_READ, A_MEMORY_RESPONSE,
+    A_MEMORY_WRITE, A_PROPERTY_DESCRIPTION_READ, A_PROPERTY_DESCRIPTION_RESPONSE,
+    A_PROPERTY_EXT_DESCRIPTION_READ, A_PROPERTY_EXT_DESCRIPTION_RESPONSE,
+    A_PROPERTY_EXT_VALUE_READ, A_PROPERTY_EXT_VALUE_RESPONSE, A_PROPERTY_EXT_VALUE_WRITE_CON,
+    A_PROPERTY_EXT_VALUE_WRITE_CON_RESPONSE, A_PROPERTY_VALUE_READ, A_PROPERTY_VALUE_RESPONSE,
+    A_PROPERTY_VALUE_WRITE, A_RESTART, A_USER_MEMORY_READ, A_USER_MEMORY_RESPONSE,
+    A_USER_MEMORY_WRITE, APCI_SELECTOR, LE_ADDITIONAL, LE_LOAD_COMPLETED, LE_START_LOADING,
+    LE_UNLOAD, LS_LOAD_COMPLETING, LS_LOADED, LS_LOADING, LS_UNLOADED, LS_UNLOADING,
+    OT_ADDRESS_TABLE, OT_ASSOCIATION_TABLE, OT_DEVICE, OT_GROUP_OBJECT_TABLE,
     OT_KNXNET_IP_PARAMETER, PID_IO_LIST, PID_LOAD_STATE_CONTROL, PID_MANUFACTURER_ID,
     PID_OBJECT_TYPE, PID_ORDER_INFO, PID_PROGMODE, PID_SERIAL_NUMBER, PID_TABLE,
     PID_TABLE_REFERENCE, SUB_REL_SEGMENT,
@@ -186,6 +188,16 @@ pub struct MockDevice {
     /// The intermediate state each object still reports, and how many more
     /// times: `(state octet, remaining reports)`.
     pub intermediate: HashMap<u8, (u8, u32)>,
+    /// Load state per interface object the device reaches by type and
+    /// instance on `A_FunctionPropertyExt_Command` PID 5 (issue #961; a
+    /// vendor object such as the Gira Eco's type 40960). Only the objects
+    /// listed here answer; see [`MockDevice::with_typed_load_object`].
+    pub typed_load_states: HashMap<(u16, u16), u8>,
+    /// The intermediate state each typed object still reports, as
+    /// [`MockDevice::intermediate`].
+    pub typed_intermediate: HashMap<(u16, u16), (u8, u32)>,
+    /// Every load event a typed object received: `(type, instance, event)`.
+    pub typed_load_events: Vec<(u16, u16, u8)>,
     /// Allocated segment per object index: `(base, size)`.
     pub segments: HashMap<u8, (u32, u32)>,
     /// Sparse 24-bit memory.
@@ -611,6 +623,9 @@ impl MockDevice {
             load_states: HashMap::new(),
             intermediate_reports: 0,
             intermediate: HashMap::new(),
+            typed_load_states: HashMap::new(),
+            typed_intermediate: HashMap::new(),
+            typed_load_events: Vec::new(),
             segments: HashMap::new(),
             memory: HashMap::new(),
             memory_write_policy: MemoryWritePolicy::Anywhere,
@@ -996,6 +1011,14 @@ impl MockDevice {
         self
     }
 
+    /// Gives the device an interface object it drives by type and instance
+    /// (`A_FunctionPropertyExt_Command` PID 5, issue #961), `Unloaded`.
+    pub fn with_typed_load_object(mut self, object_type: u16, instance: u16) -> Self {
+        self.typed_load_states
+            .insert((object_type, instance), LS_UNLOADED);
+        self
+    }
+
     /// The load state `object_index` reports to the tool now: the pending
     /// intermediate state while it has reports left (each call uses one),
     /// else [`MockDevice::load_state`].
@@ -1302,6 +1325,9 @@ impl MockDevice {
                 }
                 _ => self.property_read(data),
             },
+            A_FUNCTION_PROPERTY_EXT_COMMAND | A_FUNCTION_PROPERTY_EXT_STATE_READ => {
+                self.typed_load_control(apci == A_FUNCTION_PROPERTY_EXT_COMMAND, data)
+            }
             A_PROPERTY_EXT_VALUE_READ => self.property_ext_read(data),
             A_PROPERTY_EXT_VALUE_WRITE_CON => self.property_ext_write(data),
             A_PROPERTY_VALUE_WRITE => self.property_write(data),
@@ -1790,6 +1816,72 @@ impl MockDevice {
     }
 }
 
+impl MockDevice {
+    /// `A_FunctionPropertyExt_Command` / `_State_Read` PID 5 to an object of
+    /// [`MockDevice::typed_load_states`]: `[type:16][instance:12|pid:12]
+    /// [data]`, answered `[header][return code 0][state]`. The command takes
+    /// the 10-octet load-control value; the state machine is the indexed
+    /// objects' (`Unload`, `StartLoading`, `LoadCompleted`, the intermediate
+    /// reports of [`MockDevice::with_intermediate_load_states`]). Any other
+    /// object or PID stays silent, as before.
+    fn typed_load_control(&mut self, command: bool, data: &[u8]) -> Reaction {
+        let Some(h) = data.get(..5) else {
+            return Reaction::Nak;
+        };
+        let object_type = u16::from_be_bytes([h[0], h[1]]);
+        let packed = (u32::from(h[2]) << 16) | (u32::from(h[3]) << 8) | u32::from(h[4]);
+        let key = (object_type, (packed >> 12) as u16);
+        if packed & 0x0FFF != u32::from(PID_LOAD_STATE_CONTROL)
+            || !self.typed_load_states.contains_key(&key)
+        {
+            return Reaction::Silent;
+        }
+        if command && !self.typed_intermediate.contains_key(&key) {
+            let event = data.get(5).copied().unwrap_or(0);
+            self.typed_load_events.push((key.0, key.1, event));
+            let prior = self
+                .typed_load_states
+                .get(&key)
+                .copied()
+                .unwrap_or(LS_UNLOADED);
+            let new_state = match event {
+                LE_START_LOADING => LS_LOADING,
+                LE_LOAD_COMPLETED => LS_LOADED,
+                LE_UNLOAD => LS_UNLOADED,
+                _ => prior,
+            };
+            self.typed_load_states.insert(key, new_state);
+            let intermediate = match event {
+                LE_LOAD_COMPLETED if prior == LS_LOADING => Some(LS_LOAD_COMPLETING),
+                LE_UNLOAD if prior != LS_UNLOADED => Some(LS_UNLOADING),
+                _ => None,
+            };
+            if let Some(state) = intermediate.filter(|_| self.intermediate_reports > 0) {
+                self.typed_intermediate
+                    .insert(key, (state, self.intermediate_reports));
+            }
+        }
+        let state = match self.typed_intermediate.get_mut(&key) {
+            Some((state, left)) => {
+                let state = *state;
+                *left = left.saturating_sub(1);
+                if *left == 0 {
+                    self.typed_intermediate.remove(&key);
+                }
+                state
+            }
+            None => self
+                .typed_load_states
+                .get(&key)
+                .copied()
+                .unwrap_or(LS_UNLOADED),
+        };
+        let mut out = h.to_vec();
+        out.extend_from_slice(&[0, state]);
+        Reaction::Answer(A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE, out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1799,6 +1891,50 @@ mod tests {
         Ok(MockDevice::system_b("1.1.4".parse()?)
             .with_table(1, &[0x00, 0x01, 0x0A, 0x00])
             .with_manufacturer(0x00C5))
+    }
+
+    #[test]
+    fn test_typed_load_control_answers_the_state_by_type() -> Result<(), BoxError> {
+        let mut dev = device()?.with_typed_load_object(40960, 1);
+        // type 40960, instance 1, PID 5; the Gira Eco capture's frames.
+        let header = [0xA0, 0x00, 0x00, 0x10, 0x05];
+        let command = |event: u8| {
+            let mut d = header.to_vec();
+            d.push(event);
+            d.extend_from_slice(&[0; 9]);
+            d
+        };
+        let answer = |state: u8| {
+            let mut d = header.to_vec();
+            d.extend_from_slice(&[0, state]);
+            Reaction::Answer(A_FUNCTION_PROPERTY_EXT_STATE_RESPONSE, d)
+        };
+        assert_eq!(
+            dev.handle_request(A_FUNCTION_PROPERTY_EXT_COMMAND, &command(LE_UNLOAD)),
+            answer(LS_UNLOADED)
+        );
+        assert_eq!(
+            dev.handle_request(A_FUNCTION_PROPERTY_EXT_COMMAND, &command(LE_START_LOADING)),
+            answer(LS_LOADING)
+        );
+        assert_eq!(
+            dev.handle_request(A_FUNCTION_PROPERTY_EXT_COMMAND, &command(LE_LOAD_COMPLETED)),
+            answer(LS_LOADED)
+        );
+        assert_eq!(
+            dev.handle_request(A_FUNCTION_PROPERTY_EXT_STATE_READ, &header),
+            answer(LS_LOADED)
+        );
+        // Another instance is not there: silent.
+        assert_eq!(
+            dev.handle_request(
+                A_FUNCTION_PROPERTY_EXT_STATE_READ,
+                &[0xA0, 0x00, 0x00, 0x20, 0x05]
+            ),
+            Reaction::Silent
+        );
+        assert_eq!(dev.typed_load_events.len(), 3);
+        Ok(())
     }
 
     #[test]

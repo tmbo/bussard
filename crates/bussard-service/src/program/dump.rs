@@ -552,6 +552,24 @@ pub fn write_dump(
                 call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
                 record["function_property"] = call;
             }
+            // A load-state control naming its object by type (issue #961)
+            // goes out as the same extended function property call, PID 5
+            // with the 10-octet control value, and is compared like one.
+            FlashStep::TypedLoadControl {
+                object_type,
+                occurrence,
+                control,
+            } => {
+                let mut call = object_record(&bussard_download::PropObject::Type {
+                    object_type: *object_type,
+                    occurrence: *occurrence,
+                });
+                let data = control.encode_full();
+                call["pid"] = json!(bussard_mgmt::load::PID_LOAD_STATE_CONTROL);
+                call["length"] = json!(data.len());
+                call["data"] = json!(data.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                record["function_property"] = call;
+            }
             // The KNXnet/IP parameters of an IP-enabled device (issue #455),
             // one record per write as the executor sends them: plain at the
             // index ETS uses, or by type 11 on the extended services. The

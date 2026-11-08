@@ -5425,11 +5425,16 @@ async fn flash_da_tp_four_objects(
                 s.load_control_targets
             );
         }
-        assert!(
-            !s.load_control_targets.contains(&5),
-            "LSM5 ops must be skipped (no obj5); got {:?}",
-            s.load_control_targets
-        );
+        // DA.tp loads no Application Program 2: object 5 only gets the
+        // unload, whose refusal the AP1-only procedure maps to success
+        // (issue #942); it is never opened or completed.
+        let obj5: Vec<u8> = s
+            .load_events
+            .iter()
+            .filter(|(oi, _)| *oi == 5)
+            .map(|(_, event)| *event)
+            .collect();
+        assert_eq!(obj5, [LE_UNLOAD], "object 5 gets only its unload");
         assert!(
             !s.load_control_targets.contains(&0),
             "no load-control write may target the device object 0"

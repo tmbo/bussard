@@ -26,7 +26,7 @@ use super::plan_props::prop_object;
 use super::{FlashStep, PlanError, PropObject};
 use bussard_mgmt::connection::{L4Channel, Layer4Connection};
 use bussard_mgmt::function_property::function_property_command;
-use bussard_mgmt::load::WriteError;
+use bussard_mgmt::load::{PID_LOAD_STATE_CONTROL, WriteError};
 use bussard_mgmt::property_ext::{PropertyExtAddress, function_property_ext_command};
 use bussard_product::application::LoadOp;
 
@@ -132,6 +132,32 @@ pub async fn invoke_function_property<Ch: L4Channel>(
         }
     }
     Ok(())
+}
+
+/// The extended address of the `occurrence`-th (0-based) object of
+/// `object_type`'s `PID_LOAD_STATE_CONTROL`: instance `occurrence + 1`.
+///
+/// # Errors
+///
+/// [`WriteError::TargetOutOfRange`] for an occurrence past the 12-bit
+/// instance the extended services carry (nothing is sent).
+pub(super) fn typed_load_state_address(
+    address: bussard_model::IndividualAddress,
+    object_type: u16,
+    occurrence: u16,
+) -> Result<PropertyExtAddress, WriteError> {
+    let instance = occurrence
+        .checked_add(1)
+        .filter(|i| *i <= 0x0FFF)
+        .ok_or_else(|| WriteError::TargetOutOfRange {
+            address,
+            detail: format!("occurrence {occurrence} of object type {object_type} (12 bits)"),
+        })?;
+    Ok(PropertyExtAddress {
+        object_type,
+        object_instance: instance,
+        property_id: u16::from(PID_LOAD_STATE_CONTROL),
+    })
 }
 
 #[cfg(test)]

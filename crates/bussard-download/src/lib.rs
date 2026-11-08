@@ -73,9 +73,10 @@ pub use flash::{
 };
 pub use model_params::{
     Sys7Identity, build_table_images, describe_group_object_change, flash_gate, identity_gate,
-    linked_object_flags, model_parameters, needs_sys7_identity, parameter_overrides,
-    plan_for_readback, region_rows, resolve_by_order_number, runtime_segments, sys7_code_mismatch,
-    sys7_identity, template_ops_for, verify_readback, write_parameter_memory_backup,
+    linked_object_flags, master_template_ops, model_parameters, needs_sys7_identity,
+    parameter_overrides, plan_for_readback, region_rows, resolve_by_order_number, runtime_segments,
+    sys7_code_mismatch, sys7_identity, template_ops_for, verify_readback,
+    write_parameter_memory_backup,
 };
 pub use object_table::{
     ObjectTableChange, ObjectTableCheck, check_object_table, find_object_table,
