@@ -1118,6 +1118,9 @@ pub struct FlashPlan {
     par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)>,
     /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
     par_procedure: bool,
+    /// Whether [`FlashPlan::parameters_only`] cut this plan down to a
+    /// parameter-only download (see [`FlashPlan::is_parameters_only`]).
+    parameters_only: bool,
     /// The allocated octets the load procedure's taken `<choose>` branches
     /// leave as the device holds them (issue #411, [`KeptOctets`]). Empty
     /// for every plan whose writes cover what they allocate.
@@ -1617,9 +1620,12 @@ impl FlashPlan {
     }
 
     /// Whether this is a parameter-only download (issue #119): it rewrites only
-    /// resident parameter memory, diffed against what the device holds.
+    /// resident parameter memory, diffed against what the device holds, and
+    /// the properties the parameters are placed in. A program whose
+    /// parameters all live in properties (issue #944) has no memory baseline
+    /// and is a parameter-only download all the same.
     pub fn is_parameters_only(&self) -> bool {
-        !self.baseline.is_empty()
+        self.parameters_only
     }
 
     /// The code and parameter segments the memory-write steps stream, in

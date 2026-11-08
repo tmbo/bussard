@@ -46,6 +46,10 @@ mod mcp_stdio_client;
 mod offline_oracle;
 mod plan_mock;
 mod plan_property_mock;
+// Includes support/param_mock.rs, whose Secure and large-segment helpers only
+// the parameter suites use.
+#[allow(dead_code)]
+mod plan_property_only_mock;
 mod product_store_cli;
 mod reconstruct_line_mock;
 mod reconstruct_mock;

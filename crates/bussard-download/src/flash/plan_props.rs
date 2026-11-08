@@ -738,6 +738,7 @@ pub(super) fn plan_flash_properties(
         typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
+        parameters_only: false,
         kept: Vec::new(),
     })
 }

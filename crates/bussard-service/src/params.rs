@@ -574,7 +574,10 @@ pub async fn read_state<Ch: L4Channel>(
     // (issue #540): a link the last flash did not know left its object's
     // Communication flag off, and `apply` reloads the table to switch it on.
     let object_table = bussard_download::check_object_table(l4, &plan).await;
-    if regions.is_empty() {
+    // A program whose parameters all live in interface-object properties
+    // (the Hager 07B0 actuators, issue #944) has no parameter memory to read:
+    // its parameters are the properties read above, compared on their own.
+    if regions.is_empty() && plan.has_parameter_memory() {
         return ParamState::noted(&app.id, "the parameter memory could not be read".into());
     }
     let Decoded {
@@ -733,8 +736,7 @@ pub async fn read_flashed_parameters<Ch: L4Channel>(
         Err(note) => return noted(note),
     };
     let regions = read_parameter_regions(l4, &plan, &[]).await;
-    let expects_parameters = plan.param_images.values().any(|b| !b.is_empty());
-    if regions.is_empty() && expects_parameters {
+    if regions.is_empty() && plan.has_parameter_memory() {
         return noted("the parameter memory could not be read back".into());
     }
     let decoded = decode_regions(app, model, target, &regions, &memo).decoded;

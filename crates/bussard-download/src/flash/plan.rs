@@ -1411,6 +1411,7 @@ pub fn plan_flash(
         typed_objects_by_list,
         par_allocations,
         par_procedure: false,
+        parameters_only: false,
         kept,
     })
 }

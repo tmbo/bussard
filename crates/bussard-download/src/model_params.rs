@@ -906,7 +906,9 @@ pub fn verify_readback(
             }
         }
     }
-    if after.is_empty() {
+    // A program whose parameters all live in properties (issue #944) has no
+    // memory to read back; the caller compares its properties.
+    if after.is_empty() && partial.has_parameter_memory() {
         return Err("the parameter memory could not be read back".to_string());
     }
     Ok(checked)
