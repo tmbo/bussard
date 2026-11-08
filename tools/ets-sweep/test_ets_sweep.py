@@ -1151,7 +1151,8 @@ class TestCouplerAddress(unittest.TestCase):
         self.assertEqual(sweep.added_address({"added": []}, "1.1.1"), "1.1.1")
         self.assertEqual(sweep.added_address({"added": [{"ia": "1.1.0"}, {"ia": "1.1.2"}]}, "1.1.1"), "1.1.1")
 
-    def run_one(self, added: str, refuse_restart: bool = False, catalog_add: dict | None = None):
+    def run_one(self, added: str, refuse_restart: bool = False, catalog_add: dict | None = None,
+                leftover: list | None = None, delete: dict | None = None):
         """sweep.run_one against a fake driver and sim: ETS adds the device
         at `added`; returns the result, the sims started and the flows."""
         from unittest import mock
@@ -1186,7 +1187,8 @@ class TestCouplerAddress(unittest.TestCase):
         def driver(c, method, path, body, timeout=0):
             name = path.rsplit("/", 1)[1]
             flows.append((name, body.get("ia")))
-            return {"devices": {"devices": []},
+            return {"devices": {"devices": leftover or []},
+                    "delete_device": delete or {"deleted": True},
                     "catalog_add": catalog_add or {"added": [{"ia": added}], "row": {"name": "x"}},
                     "history": {"lines": ["Programmieren(Appl.): Abgeschlossen"]}}.get(name, {})
 
@@ -1222,6 +1224,23 @@ class TestCouplerAddress(unittest.TestCase):
         self.assertEqual(len(sims), 1)
         self.assertNotIn("download", [f for f, _ in flows])
 
+    def test_run_one_leftover_device_not_deleted_is_a_cleanup_failure(self):
+        r, _, flows, _ = self.run_one("1.1.1", leftover=[{"ia": "1.1.1"}], delete={"deleted": False})
+        self.assertEqual(r["outcome"], "driver-error-cleanup", r)
+        self.assertNotIn("catalog_add", [f for f, _ in flows])
+
+    def test_run_one_refused_delete_is_a_cleanup_failure(self):
+        # The flow error of 2026-11-08 (#997), met by the delete before the add.
+        r, _, flows, _ = self.run_one("1.1.1", leftover=[{"ia": "1.1.1"}], delete={
+            "ok": False, "error": "RuntimeError(\"button 'Ja' not on screen in (1300, 1380, 2800, 1580)\")"})
+        self.assertEqual(r["outcome"], "driver-error-cleanup", r)
+        self.assertNotIn("catalog_add", [f for f, _ in flows])
+
+    def test_run_one_driver_cleanup_failure_in_catalog_add(self):
+        r, _, _, _ = self.run_one("1.1.1", catalog_add={
+            "ok": False, "error": "RuntimeError('clean-up failed: device 1.1.1 left in the project before the add')"})
+        self.assertEqual(r["outcome"], "driver-error-cleanup", r)
+
     def test_run_one_refused_restart_is_sim_refused(self):
         r, sims, _, _ = self.run_one("1.1.0", refuse_restart=True)
         self.assertEqual(r["outcome"], "sim-refused", r)
@@ -1234,6 +1253,170 @@ class TestCouplerAddress(unittest.TestCase):
         row = oracle.row("M-0006_A-E001-10-AE55-O0009", Path("c/ets.pcapng"), Path("p.knxprod"), "0701", ia="1.1.0")
         self.assertTrue(row.startswith("1.1.0|c/ets.pcapng|p.knxprod|M-0006_A-E001-10-AE55-O0009"))
         self.assertTrue(row.endswith("state=fresh"))
+
+
+def load_driver():
+    """The VM-side driver module, with pywinauto stubbed: only its pure
+    helpers and flows with every screen access mocked run on the Mac."""
+    import types
+    from unittest import mock
+
+    pw = types.ModuleType("pywinauto")
+    pw.Desktop, pw.keyboard, pw.mouse = mock.MagicMock(), mock.MagicMock(), mock.MagicMock()
+    app = types.ModuleType("pywinauto.application")
+    app.Application = mock.MagicMock()
+    with mock.patch.dict(sys.modules, {"pywinauto": pw, "pywinauto.application": app}):
+        spec = importlib.util.spec_from_file_location(
+            "ets_driver_under_test", Path(__file__).resolve().parent / "driver" / "ets_driver.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    return module
+
+
+class TestDriverDeleteDialog(unittest.TestCase):
+    """The delete confirmation's buttons carry an icon OCR reads in front of
+    the word, and a dialog left open must not stop the run (#997)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    # PR #878's strip (1300, 1380, 2800, 1580): a catalog row shares it, the
+    # check mark glued to Ja, the dialog grown by a two-line device name.
+    ROWS_878 = [
+        {"text": "Secure, Schalter/Jalousie 8-fach", "x": 1310, "y": 1400, "w": 520, "h": 30},
+        {"text": "√Ja", "x": 2340, "y": 1462, "w": 66, "h": 30},
+        {"text": "X Nein", "x": 2480, "y": 1462, "w": 120, "h": 30},
+    ]
+    # 2026-11-08 (#997): the dialog of BE-BZS86.01, Ja at about x 2380.
+    ROWS_997 = [
+        {"text": "Löschen", "x": 1260, "y": 1010, "w": 120, "h": 30},
+        {"text": "Möchten Sie die markierten Objekte wirklich löschen?", "x": 1400, "y": 1250, "w": 900, "h": 30},
+        {"text": "v Ja", "x": 2340, "y": 1400, "w": 80, "h": 32},
+        {"text": "X Nein", "x": 2480, "y": 1400, "w": 120, "h": 32},
+    ]
+
+    def assert_inside_word(self, hit, row, word):
+        # The word is the line's last characters: the click lies in them.
+        cw = row["w"] / len(row["text"])
+        start = row["x"] + (len(row["text"]) - len(word)) * cw
+        self.assertGreaterEqual(hit["click_x"], start, hit)
+        self.assertLessEqual(hit["click_x"], row["x"] + row["w"], hit)
+        self.assertEqual(hit["click_y"], row["y"] + row["h"] // 2)
+
+    def test_button_hit_ja_with_icon_prefix(self):
+        for prefix in ("√ ", "v ", "V ", "✓ ", ""):
+            rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
+            hit = self.d.button_hit(rows, "Ja")
+            self.assertIsNotNone(hit, prefix)
+            self.assertEqual(hit["y"], 1400)
+            self.assert_inside_word(hit, rows[2], "Ja")
+
+    def test_button_hit_pr_878_region(self):
+        hit = self.d.button_hit(self.ROWS_878, "Ja")
+        self.assertEqual(hit["text"], "√Ja")
+        self.assert_inside_word(hit, self.ROWS_878[1], "Ja")
+        nein = self.d.button_hit(self.ROWS_878, "Nein")
+        self.assert_inside_word(nein, self.ROWS_878[2], "Nein")
+
+    def test_button_hit_rejects_other_text(self):
+        rows = [{"text": "Secure, Schalter/Jalousie 8-fach", "x": 0, "y": 0, "w": 500, "h": 30},
+                {"text": "Gerät 1.1.1 Ja", "x": 0, "y": 40, "w": 200, "h": 30},
+                {"text": "Jalousie", "x": 0, "y": 80, "w": 100, "h": 30},
+                {"text": "X Nein", "x": 0, "y": 120, "w": 100, "h": 30}]
+        self.assertIsNone(self.d.button_hit(rows, "Ja"))
+
+    def test_click_button_clicks_inside_the_word(self):
+        from unittest import mock
+
+        with mock.patch.object(self.d, "ocr", return_value=self.ROWS_997), \
+                mock.patch.object(self.d, "click") as click:
+            self.d.click_button("Ja", self.d.LAYOUT["delete_yes"])
+        (x, y), _ = click.call_args
+        self.assertTrue(2340 + 2 * 80 / 4 <= x <= 2420, x)
+        self.assertEqual(y, 1416)
+
+    def test_click_button_missing_raises(self):
+        from unittest import mock
+
+        with mock.patch.object(self.d, "ocr", return_value=self.ROWS_997[:2]), \
+                mock.patch.object(self.d, "click") as click:
+            with self.assertRaisesRegex(RuntimeError, "button 'Ja' not on screen"):
+                self.d.click_button("Ja", self.d.LAYOUT["delete_yes"])
+        click.assert_not_called()
+
+    def test_leftover_delete_dialog_found_by_title_and_nein(self):
+        hit = self.d.leftover_delete_dialog(self.ROWS_997)
+        self.assertIsNotNone(hit)
+        self.assert_inside_word(hit, self.ROWS_997[3], "Nein")
+        # A context menu holds 'Löschen' but no 'Nein'; a dialog without the
+        # title is not the delete confirmation.
+        self.assertIsNone(self.d.leftover_delete_dialog([self.ROWS_997[0], {"text": "Gerät neu starten", "x": 0, "y": 0, "w": 9, "h": 9}]))
+        self.assertIsNone(self.d.leftover_delete_dialog(self.ROWS_997[1:]))
+        self.assertIsNone(self.d.leftover_delete_dialog([]))
+
+    def test_close_delete_dialog_clicks_nein(self):
+        from unittest import mock
+
+        with mock.patch.object(self.d, "ocr", return_value=self.ROWS_997), \
+                mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
+                mock.patch.object(self.d, "log"):
+            self.assertTrue(self.d.close_delete_dialog())
+        (x, _), _ = click.call_args
+        self.assertTrue(2480 + 2 * 120 / 6 <= x <= 2600, x)
+        with mock.patch.object(self.d, "ocr", return_value=[]), mock.patch.object(self.d, "click") as click:
+            self.assertFalse(self.d.close_delete_dialog())
+        click.assert_not_called()
+
+    def catalog_add(self, devices: list, delete):
+        """flow_catalog_add up to its catalog search, with the screen mocked:
+        `devices` are the device lists it reads in turn, `delete` stands in
+        for flow_delete_device. Returns the exception and the deletes."""
+        from unittest import mock
+
+        class Reached(Exception):
+            pass
+
+        lists = iter(devices)
+        deletes = []
+
+        def fake_delete(req):
+            deletes.append(req["ia"])
+            return delete(req)
+
+        d = self.d
+        with mock.patch.multiple(d, require_project=mock.DEFAULT, dismiss_password_dialog=mock.DEFAULT,
+                                 wait_busy=mock.DEFAULT, restore_tree_splitter=mock.DEFAULT,
+                                 restore_catalog_splitter=mock.DEFAULT, close_delete_dialog=mock.DEFAULT), \
+                mock.patch.object(d, "flow_devices", side_effect=lambda req: {"devices": next(lists)}), \
+                mock.patch.object(d, "flow_delete_device", side_effect=fake_delete), \
+                mock.patch.object(d, "catalog_dy", side_effect=Reached):
+            try:
+                d.flow_catalog_add({"project": "ets-sweep", "search": "X"})
+            except Exception as exc:  # noqa: BLE001 - the test looks at which one
+                return exc, deletes
+        return None, deletes
+
+    def test_catalog_add_deletes_a_leftover_device_first(self):
+        exc, deletes = self.catalog_add([[{"ia": "1.1.1", "y": 287}], []], lambda req: {"deleted": True})
+        self.assertEqual(type(exc).__name__, "Reached", exc)
+        self.assertEqual(deletes, ["1.1.1"])
+
+    def test_catalog_add_failed_cleanup_stops_before_the_add(self):
+        exc, deletes = self.catalog_add([[{"ia": "1.1.1", "y": 287}]], lambda req: {"deleted": False})
+        self.assertRegex(str(exc), "clean-up failed: device 1.1.1")
+        self.assertEqual(deletes, ["1.1.1"])
+
+        def refused(req):
+            raise RuntimeError("button 'Ja' not on screen in (1300, 1380, 2800, 1580)")
+
+        exc, _ = self.catalog_add([[{"ia": "1.1.1", "y": 287}]], refused)
+        self.assertRegex(str(exc), "clean-up failed: device 1.1.1 .*'Ja' not on screen")
+
+    def test_catalog_add_empty_project_deletes_nothing(self):
+        exc, deletes = self.catalog_add([[]], lambda req: {"deleted": True})
+        self.assertEqual(type(exc).__name__, "Reached", exc)
+        self.assertEqual(deletes, [])
 
 
 class TestOemIdentity(unittest.TestCase):

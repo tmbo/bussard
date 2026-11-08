@@ -721,8 +721,12 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         result["driver"] = steps
         flow("project_tab", name=project)
         for d in flow("devices")["devices"]:
-            if not flow("delete_device", ia=d["ia"]).get("deleted"):
-                raise RuntimeError(f"could not delete {d['ia']} before the add")
+            try:
+                deleted = flow("delete_device", ia=d["ia"]).get("deleted")
+            except RuntimeError as exc:
+                raise RuntimeError(f"clean-up failed: could not delete {d['ia']} before the add: {exc}") from exc
+            if not deleted:
+                raise RuntimeError(f"clean-up failed: could not delete {d['ia']} before the add")
         # What the catalog row should show, recorded against the row (#881).
         identity = catalog_identity(knxprod, app)
         result["catalog_identity"] = identity
@@ -830,6 +834,10 @@ def run_one(c, knxprod: Path, app: str, search: str, *, version: str | None = No
         # device left in the project, or an address the sweep did not follow.
         # Not `skipped-*`, so `--redo-failed` runs it again after a clean-up.
         else "driver-error-address" if re.search(r"device \S+ not in list", err)
+        # A device left in the project that the delete before the add (here
+        # or in the driver's catalog_add) could not remove (#997): the run
+        # never got to this product. Not `skipped-*` either.
+        else "driver-error-cleanup" if "clean-up failed" in err
         # An exception ETS logged for the download outranks the history pane
         # (the secure run read 'Abgeschlossen' off another project's pane
         # while ETS logged 'Das Gerät ist mit einem in diesem Projekt nicht
