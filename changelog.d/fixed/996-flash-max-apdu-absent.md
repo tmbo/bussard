@@ -1,0 +1,1 @@
+- `bussard flash` asks a device without `PID_MAX_APDU_LENGTH` once per flash, not again on the connection after the restart. The reference installation's Jung 0705 and Theben 0701 devices answer the read with count 0 (`captures/campaign/2026-09-23/devices/1.1.32/`, `1.1.202/`) (#996).
