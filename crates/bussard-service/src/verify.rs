@@ -250,6 +250,23 @@ impl ExpectedProperty {
                         value: value.clone(),
                     })
                 }
+                // A write left out because the device holds the value after
+                // the parameter reset (issue #951) is read back like one:
+                // "verified" means the device holds the model's value.
+                FlashStep::FactoryHeldProp {
+                    object,
+                    prop_id,
+                    value,
+                    start_element,
+                    count,
+                    ..
+                } => Some(ExpectedProperty {
+                    object: *object,
+                    prop_id: *prop_id,
+                    start: *start_element,
+                    count: (*count).max(1),
+                    value: value.clone(),
+                }),
                 _ => None,
             })
             .chain(knxnet)
@@ -272,9 +289,12 @@ impl ExpectedProperty {
     /// a parameter write (an apply) must find in the device's properties, as
     /// it must find the parameter memory.
     pub fn from_parameter_writes(flash: &FlashPlan) -> Vec<ExpectedProperty> {
+        // A write the full flash leaves out as held after the parameter reset
+        // (issue #951) is a parameter property all the same.
         flash
             .steps
             .iter()
+            .map(FlashStep::without_parameter_reset)
             .filter_map(|step| match step {
                 FlashStep::WriteProp {
                     object,
@@ -285,11 +305,11 @@ impl ExpectedProperty {
                     from_parameters: true,
                     ..
                 } => Some(ExpectedProperty {
-                    object: *object,
-                    prop_id: *prop_id,
-                    start: *start_element,
-                    count: (*count).max(1),
-                    value: value.clone(),
+                    object,
+                    prop_id,
+                    start: start_element,
+                    count: count.max(1),
+                    value,
                 }),
                 _ => None,
             })

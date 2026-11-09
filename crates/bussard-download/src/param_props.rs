@@ -102,6 +102,9 @@ impl FlashPlan {
     pub fn parameter_properties(&self) -> Vec<ParamProperty> {
         let mut out: Vec<ParamProperty> = Vec::new();
         for step in &self.steps {
+            // A write the full flash leaves out as held after the parameter
+            // reset (issue #951) is still a property the parameters decide.
+            let step = step.without_parameter_reset();
             let FlashStep::WriteProp {
                 object,
                 prop_id,
@@ -110,7 +113,7 @@ impl FlashPlan {
                 count,
                 from_parameters: true,
                 ..
-            } = step
+            } = &step
             else {
                 continue;
             };

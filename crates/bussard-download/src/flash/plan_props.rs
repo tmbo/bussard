@@ -439,7 +439,15 @@ pub(super) fn lower_write_prop(
     let (value, from_parameters) = match inline_data.as_ref().filter(|d| !d.is_empty()) {
         Some(data) => (data.clone(), false),
         None => match parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id) {
-            Some(value) => (value.clone(), true),
+            Some(value) => {
+                let target = WriteTarget {
+                    object,
+                    prop_id,
+                    start_element: *start_element,
+                    count: *count,
+                };
+                (elements_of_property(step, &name, value, app, target)?, true)
+            }
             None if !app.parameters.values().any(|p| {
                 p.property
                     .as_ref()
@@ -485,6 +493,72 @@ pub(super) fn lower_write_prop(
         verify.unwrap_or(false),
         typed_by_list,
     )
+}
+
+/// The octets of `property`, the value the parameters compose for the
+/// whole property from element 1, that the write to `target` sends. From element 1 the value as it stands (the shape
+/// every capture before issue #951 shows: `M-0009_A-E801-13-F381` writes the
+/// 124 octets of object 9 PID 208 as `Count="124"`). From a later element
+/// the write's own elements: ETS writes `count=1 index=16 len=1` for the
+/// count-less `ObjIdx="12" PropId="208" StartElement="16"` of
+/// `M-0009_A-E0EE-10-ADF8` (op 34), not the property's 48 octets. Their
+/// size is the one an `LdCtrlDeclarePropDesc` of the procedure gives the
+/// property (`PDT_GENERIC_01` there, declared after the write).
+///
+/// # Errors
+///
+/// [`PlanError::UnsupportedWriteProp`] for a write past element 1 to a
+/// property no declaration of the procedure sizes.
+fn elements_of_property(
+    step: usize,
+    name: &str,
+    property: &[u8],
+    app: &ApplicationProgram,
+    target: WriteTarget,
+) -> Result<Vec<u8>, PlanError> {
+    let WriteTarget {
+        object,
+        prop_id,
+        start_element,
+        count,
+    } = target;
+    let start = start_element.unwrap_or(1).max(1);
+    if start == 1 {
+        return Ok(property.to_vec());
+    }
+    let elem = app
+        .load_procedures
+        .iter()
+        .flat_map(|p| p.ops.iter())
+        .find_map(|op| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(declared),
+                prop_type: Some(prop_type),
+                ..
+            } if *declared == prop_id
+                && prop_object(step, *obj_idx, *obj_type, *occurrence).ok() == Some(object) =>
+            {
+                super::declare::pdt_element_size(prop_type)
+            }
+            _ => None,
+        })
+        .ok_or_else(|| PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!(
+                "the write to {name} starts at element {start} with the value the parameters \
+                 compose for the whole property, and no LdCtrlDeclarePropDesc of the procedure \
+                 gives the size of its elements; bussard does not guess which octets it sends"
+            ),
+        })?;
+    let count = super::declare::undeclared_element_count(count) as usize;
+    let from = (start as usize - 1).saturating_mul(elem);
+    let len = count.saturating_mul(elem);
+    let mut value: Vec<u8> = property.iter().copied().skip(from).take(len).collect();
+    value.resize(len, 0);
+    Ok(value)
 }
 
 /// What an undeclared `LdCtrlWriteProp` writes to: the object, the PID, and
@@ -852,6 +926,79 @@ mod tests {
             ops_for(&app, "three"),
             Err(PlanError::UndecidableCondition { .. })
         ));
+        Ok(())
+    }
+
+    /// An application placing `9` at octet 0 and `1` at octet 15 of object
+    /// 12 PID 208, writing it from element 16 without `Count`, then
+    /// `declaration` (issue #951, the shape of `M-0009_A-E0EE-10-ADF8`).
+    fn element_app(declaration: &str) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-0009_A-1" ApplicationNumber="1" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="E">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-0009_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="9" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-0009_A-1_P-1" Name="a" ParameterType="M-0009_A-1_PT-u8" Value="9">
+             <Property ObjectIndex="12" PropertyId="208" Offset="0" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-0009_A-1_P-2" Name="b" ParameterType="M-0009_A-1_PT-u8" Value="1">
+             <Property ObjectIndex="12" PropertyId="208" Offset="15" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-0009_A-1_P-1_R-1" RefId="M-0009_A-1_P-1" />
+            <ParameterRef Id="M-0009_A-1_P-2_R-2" RefId="M-0009_A-1_P-2" />
+           </ParameterRefs>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlWriteProp ObjIdx="12" PropId="208" StartElement="16" Verify="false" />
+             {declaration}
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        Ok(parse_application_program("M-0009_A-1", xml.as_bytes())?)
+    }
+
+    #[test]
+    fn test_lower_write_prop_writes_the_elements_from_its_start() -> TestResult {
+        // Issue #951: ETS writes `count=1 index=16 len=1` for the count-less
+        // `StartElement="16"` write of `M-0009_A-E0EE-10-ADF8`, the element
+        // the later `PDT_GENERIC_01` declaration sizes, not the property.
+        let app = element_app(
+            r#"<LdCtrlDeclarePropDesc ObjIdx="12" PropId="208" PropType="PDT_GENERIC_01" MaxElements="46" Writable="true" />"#,
+        )?;
+        let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
+        let values = bussard_product::compute_property_values(&app, &config)?;
+        let op = &app.load_procedures[0].ops[0];
+        assert_eq!(
+            lower_write_prop(1, op, &values, &app, false)?,
+            FlashStep::WriteProp {
+                object: PropObject::Index(12),
+                prop_id: 208,
+                value: vec![1],
+                start_element: 16,
+                count: 1,
+                verify: false,
+                from_parameters: true,
+            }
+        );
+        // Without a declaration the element size is unknown: refused.
+        let app = element_app("")?;
+        let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
+        let values = bussard_product::compute_property_values(&app, &config)?;
+        let op = &app.load_procedures[0].ops[0];
+        match lower_write_prop(1, op, &values, &app, false) {
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
+                assert!(reason.contains("size of its elements"), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
         Ok(())
     }
 

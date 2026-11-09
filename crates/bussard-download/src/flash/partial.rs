@@ -309,6 +309,13 @@ impl FlashPlan {
         &self,
         regions: &ParamRegions,
     ) -> Result<Vec<FlashStep>, PartialPlanError> {
+        // The parameter-only download resets nothing, so a write the full
+        // plan leaves out as held after the reset is written (issue #951).
+        let full: Vec<FlashStep> = self
+            .steps
+            .iter()
+            .map(FlashStep::without_parameter_reset)
+            .collect();
         // Pass 1: the parameter writes, the load-state machine that owns
         // their segment, and the allocation each write lands in: the
         // allocation naming the write's own object index (the master template
@@ -321,7 +328,7 @@ impl FlashPlan {
         let mut last_alloc: Option<(Option<u32>, usize)> = None;
         let mut kept_allocs: BTreeSet<usize> = BTreeSet::new();
         let mut writes = 0usize;
-        for (i, step) in self.steps.iter().enumerate() {
+        for (i, step) in full.iter().enumerate() {
             match step {
                 FlashStep::AllocateSegment { target, .. } => {
                     alloc_at.insert(*target, i);
@@ -373,7 +380,7 @@ impl FlashPlan {
         let property_only = writes == 0 && !param_props.is_empty();
         if property_only {
             let mut par_alloc: BTreeMap<Option<u32>, usize> = BTreeMap::new();
-            for (i, step) in self.steps.iter().enumerate() {
+            for (i, step) in full.iter().enumerate() {
                 if let FlashStep::AllocateSegment { target, size, .. } = step
                     && let Some(&(par_size, _)) = self.par_allocations.get(target)
                 {
@@ -410,7 +417,7 @@ impl FlashPlan {
         // and the restart.
         let mut written: BTreeSet<String> = BTreeSet::new();
         let mut steps = Vec::new();
-        for (i, step) in self.steps.iter().enumerate() {
+        for (i, step) in full.iter().enumerate() {
             match step {
                 FlashStep::Unload { target, .. }
                 | FlashStep::StartLoading { target }
@@ -480,7 +487,7 @@ impl FlashPlan {
                 // never touches PID_DEVICE_CONTROL).
                 FlashStep::EnableVerifyMode
                     if matches!(
-                        self.steps.get(i + 1),
+                        full.get(i + 1),
                         Some(FlashStep::WriteRelMem { image, .. })
                             if image.kind == ImageKind::Parameters
                     ) =>

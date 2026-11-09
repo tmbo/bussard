@@ -207,6 +207,26 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
                 value.len()
             )
         }
+        FlashStep::FactoryHeldProp {
+            object,
+            prop_id,
+            value,
+            start_element,
+            describe,
+            ..
+        } => {
+            let read = if *describe {
+                "; its description is read"
+            } else {
+                ""
+            };
+            format!(
+                "property already held ({object}, PID {prop_id}, {} byte(s) from element \
+                 {start_element}): the parameter reset leaves the catalogue's LoadedImage value, \
+                 which is the project's, so nothing is written{read}",
+                value.len()
+            )
+        }
         FlashStep::CompareProp {
             object,
             prop_id,

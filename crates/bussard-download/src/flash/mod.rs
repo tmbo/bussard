@@ -104,6 +104,7 @@ mod declare;
 mod execute;
 mod execute_props;
 mod execute_sys7;
+mod factory;
 mod function_prop;
 mod knxnet_ip;
 mod labels;
@@ -329,6 +330,37 @@ pub enum FlashStep {
         /// compares it on every system (issue #669), and the executor never
         /// skips it as a template write to an absent object.
         from_parameters: bool,
+    },
+    /// An `LdCtrlWriteProp` whose value the device already holds after the
+    /// procedure's reset of its parameters: the catalogue's `LoadedImage`
+    /// holds it ([`bussard_product::ApplicationProgram::factory_properties`]),
+    /// and ETS sends no write for it (issue #951: of the 71 writes of
+    /// `M-0009_A-E0D1-11-99AD` ETS sends the 24 whose value differs from the
+    /// image, element 97 and 141 of objects 13 to 24; of
+    /// `M-0009_A-E0D0-11-434F` none). Nothing is written; for a property no
+    /// declaration describes, ETS reads its description first
+    /// (`describe`), as for any undeclared write (`M-0009_A-E0D0-11-434F`
+    /// op 34, object 6). The value is the model's: the post-flash read-back
+    /// compares it like a write's, and a parameter-only download, which
+    /// resets nothing, writes it ([`FlashPlan::parameters_only`]).
+    FactoryHeldProp {
+        /// The interface object the op names.
+        object: PropObject,
+        /// The property id.
+        prop_id: u32,
+        /// The value the model gives the property, which the device holds.
+        value: Vec<u8>,
+        /// The 1-based element the value starts at.
+        start_element: u16,
+        /// How many elements `value` spans.
+        count: u16,
+        /// The op's `Verify`, for the write a parameter-only download makes.
+        verify: bool,
+        /// The value comes from the program's property-located parameters.
+        from_parameters: bool,
+        /// Read the property's description first, as ETS does for a property
+        /// no `LdCtrlDeclarePropDesc` describes.
+        describe: bool,
     },
     /// Read the description of an interface-object property and write nothing:
     /// an `LdCtrlWriteProp` without `InlineData` on a property no parameter of
@@ -1429,7 +1461,9 @@ impl FlashPlan {
         while block_at > 0
             && matches!(
                 self.steps[block_at - 1],
-                FlashStep::WriteProp { .. } | FlashStep::DeclareProp { .. }
+                FlashStep::WriteProp { .. }
+                    | FlashStep::DeclareProp { .. }
+                    | FlashStep::FactoryHeldProp { .. }
             )
         {
             block_at -= 1;
@@ -1557,6 +1591,7 @@ impl FlashPlan {
                     s,
                     FlashStep::WriteProp { .. }
                         | FlashStep::DescribeProp { .. }
+                        | FlashStep::FactoryHeldProp { .. }
                         | FlashStep::CompareProp { .. }
                         | FlashStep::Restart
                 )

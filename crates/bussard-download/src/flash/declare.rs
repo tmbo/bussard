@@ -42,6 +42,18 @@
 //! - a write with neither `InlineData` nor a parameter placed in the
 //!   property sends nothing, not even a description read
 //!   (`M-0008_A-F060-10-5848`, the declared object 4 PID 201: no frame for it).
+//!
+//! From the sweep captures of three Hager 0701 programs (issue #971):
+//!
+//! - nor does a write whose `InlineData` is all zero, the Hager placeholder,
+//!   to a property no parameter is placed in: ETS sends none of the nine such
+//!   writes of `M-0009_A-20B6-11-52E9`, `A-20B8-11-2099` and `A-20B9-10-E763`
+//!   (the last three writes of each, objects 7/8, 9/10 and 10/11, 10 zero
+//!   octets for 11 to 26 elements) and writes every other property of the
+//!   same procedures. Every declared write over an unplaced property in the
+//!   sweep captures is of this shape; an all-zero value the parameters
+//!   compose is written (`M-0009_A-E0CF-10-46B8` object 8 PID 52, 22 zero
+//!   octets, ops 106 to 108).
 
 use super::plan_props::{check_addressable, may_hold, prop_object};
 use super::{FlashStep, PlanError, PropObject};
@@ -462,6 +474,29 @@ fn unresolved_reason(name: &str) -> String {
     )
 }
 
+/// Whether the program's `LoadedImage` holds one element of `elem` octets at
+/// element `start` of object `index`/`prop_id`: the size ETS gives a
+/// count-less write there (issue #951). `M-0009_A-E0EE-10-ADF8`'s image holds
+/// one octet at elements 12 to 15 of object 12, the count-less
+/// `StartElement="12"` writes of its four module instances
+/// (`BaseStartElement` 0 to 3) to the property declared with 46 elements,
+/// and one at element 16, its count-less undeclared write that ETS sends as
+/// `count=1 index=16` (op 34).
+fn image_has_one_element(
+    app: &ApplicationProgram,
+    index: u32,
+    prop_id: u32,
+    start: u32,
+    elem: usize,
+) -> bool {
+    app.factory_properties.iter().any(|f| {
+        f.object == index
+            && f.prop_id == prop_id
+            && f.start.checked_add(1) == Some(start)
+            && f.data.len() == elem
+    })
+}
+
 /// Lowers an `LdCtrlWriteProp` to a property `decl` declared: `Count` elements
 /// of the declared size from `StartElement` ([`element_count`]), whether or
 /// not a parameter is placed in the property. `inline` is the op's
@@ -473,8 +508,8 @@ fn unresolved_reason(name: &str) -> String {
 /// module docs). `typed_by_list` is the plan's
 /// [`super::FlashPlan::typed_objects_by_list`], which holds the PID of an
 /// object named by type to 8 bits ([`check_addressable`]). `None` for a
-/// write with neither `InlineData` nor a parameter placed in the property:
-/// ETS sends nothing for it.
+/// write with neither a non-zero `InlineData` nor a parameter placed in the
+/// property: ETS sends nothing for it.
 ///
 /// # Errors
 ///
@@ -512,7 +547,16 @@ pub(super) fn lower_declared_write_prop(
     let elem = decl.element_size;
     let inline = inline.filter(|d| !d.is_empty());
     let start = start_element.unwrap_or(1).max(1);
-    let count = element_count(&name, *count, start, Some(decl.max_elements)).map_err(refuse)?;
+    let count = match (*count, decl.object) {
+        (None, PropObject::Index(index))
+            if image_has_one_element(app, index, prop_id, start, decl.element_size) =>
+        {
+            1
+        }
+        (count, _) => {
+            element_count(&name, count, start, Some(decl.max_elements)).map_err(refuse)?
+        }
+    };
     let last = start.saturating_add(count).saturating_sub(1);
     if last > MAX_ELEMENT_INDEX {
         return Err(refuse(format!(
@@ -536,10 +580,11 @@ pub(super) fn lower_declared_write_prop(
         let value =
             compose_over(&name, &names, prop_id, params, &template, from).map_err(refuse)?;
         (value, true)
-    } else if inline.is_some() {
+    } else if inline.is_some_and(|d| d.iter().any(|b| *b != 0)) {
         (template, false)
     } else {
-        // Nothing decides the value: ETS sends nothing (issue #948).
+        // Nothing decides the value: ETS sends nothing (issue #948), also
+        // over an all-zero `InlineData` placeholder (issue #971).
         return Ok(None);
     };
     Ok(Some(FlashStep::WriteProp {
@@ -857,12 +902,18 @@ mod tests {
     #[test]
     fn test_lower_declared_write_prop_refuses_to_extend_an_unplaced_value() -> TestResult {
         // Issue #957: one element of InlineData for Count 2 with no parameter
-        // placed in the property; a zero placeholder is padded.
+        // placed in the property; a zero placeholder there decides no value
+        // and sends nothing (issue #971), one under a placed parameter is
+        // padded.
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 4))?;
         let reason = refusal(lower(&write(Some(vec![5]), Some(2)), &decl, &app()?))?;
         assert!(reason.contains("shorter than"), "{reason}");
-        let step = lower(&write(Some(vec![0]), Some(2)), &decl, &app()?)?;
-        assert!(matches!(step, FlashStep::WriteProp { ref value, .. } if value == &[0, 0]));
+        assert_eq!(
+            lower_opt(&write(Some(vec![0]), Some(2)), &decl, &app()?)?,
+            None
+        );
+        let step = lower(&write(Some(vec![0]), Some(2)), &decl, &app_with(&[(1, 9)])?)?;
+        assert!(matches!(step, FlashStep::WriteProp { ref value, .. } if value == &[0, 9]));
         Ok(())
     }
 
@@ -964,26 +1015,51 @@ mod tests {
     }
 
     #[test]
-    fn test_lower_declared_write_prop_sizes_an_unplaced_placeholder_by_count() -> TestResult {
+    fn test_lower_declared_write_prop_sizes_a_placed_placeholder_by_count() -> TestResult {
         // Issue #945: the Hager 10-octet zero placeholder with Count 1 on a
-        // one-element declaration writes one zero element (`count=1 index=1
-        // len=1`), where sizing by the InlineData refused it.
+        // one-element declaration writes one element (`count=1 index=1
+        // len=1`, object 10 PID 52 of `M-0009_A-E804-10-98AD`, where a
+        // parameter is placed), where sizing by the InlineData refused it.
         let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 1))?;
         for count in [Some(1), None] {
-            let step = lower(&write(Some(vec![0; 10]), count), &decl, &app()?)?;
+            let step = lower(
+                &write(Some(vec![0; 10]), count),
+                &decl,
+                &app_with(&[(0, 7)])?,
+            )?;
             assert_eq!(
                 step,
                 FlashStep::WriteProp {
                     object: PropObject::Index(10),
                     prop_id: 55,
-                    value: vec![0],
+                    value: vec![7],
                     start_element: 1,
                     count: 1,
                     verify: false,
-                    from_parameters: false,
+                    from_parameters: true,
                 }
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_declared_write_prop_sends_nothing_over_an_unplaced_zero_placeholder() -> TestResult
+    {
+        // Issue #971: the all-zero placeholder on a property no parameter is
+        // placed in decides no value; ETS sends none of the nine such writes
+        // of `M-0009_A-20B6-11-52E9`, `A-20B8` and `A-20B9`. A non-zero
+        // `InlineData` is written as it stands.
+        let decl = lower_declare_prop(1, &declare("PDT_UNSIGNED_CHAR", 11))?;
+        assert_eq!(
+            lower_opt(&write(Some(vec![0; 10]), Some(11)), &decl, &app()?)?,
+            None
+        );
+        let step = lower(&write(Some(vec![1; 11]), Some(11)), &decl, &app()?)?;
+        assert!(matches!(
+            step,
+            FlashStep::WriteProp { ref value, from_parameters: false, .. } if *value == vec![1; 11]
+        ));
         Ok(())
     }
 

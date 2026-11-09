@@ -24,7 +24,7 @@
 //! in that block (which could attribute the wrong application to a part when a
 //! block carries several distinct programs).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use quick_xml::Reader;
 use quick_xml::events::Event;
@@ -76,6 +76,16 @@ pub struct Hardware {
     /// listed by two that disagree.
     #[serde(default)]
     pub table_image_apps: BTreeSet<String>,
+    /// The property values the `LoadedImage` of the `Hardware2Program`s
+    /// listing an application holds (kind 5 entries, objects relative to the
+    /// mask's first application object, see [`crate::loaded_image`]), per
+    /// application id: what the device holds after its parameters are reset
+    /// (issue #951, [`crate::ApplicationProgram::factory_properties`]). An
+    /// application several `Hardware2Program`s list that disagree (one with
+    /// another image or none) has no entry: which hardware a device is
+    /// cannot be told from the program, so no value is taken as held.
+    #[serde(default)]
+    pub factory_properties: BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>>,
 }
 
 impl Hardware {
@@ -88,6 +98,9 @@ impl Hardware {
         self.hardware2program.extend(other.hardware2program);
         self.order_to_bus_current.extend(other.order_to_bus_current);
         self.table_image_apps.extend(other.table_image_apps);
+        for (app, entries) in other.factory_properties {
+            merge_factory_properties(&mut self.factory_properties, &app, entries);
+        }
         for (order, apps) in other.order_to_apps {
             self.order_to_apps.entry(order).or_default().extend(apps);
         }
@@ -115,6 +128,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     // group-object-table segment.
     let mut current_table_image = false;
     let mut table_image_apps: BTreeSet<String> = BTreeSet::new();
+    // The property values of the current `Hardware2Program`'s `LoadedImage`.
+    let mut current_factory: Vec<crate::loaded_image::LoadedImageEntry> = Vec::new();
+    let mut factory_properties: BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>> =
+        BTreeMap::new();
     let mut current_hw_name: Option<String> = None;
 
     // Order numbers and app refs collected within the current <Hardware> block,
@@ -170,8 +187,15 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                 }
                 b"Hardware2Program" => {
                     current_h2p_id = attr_value(&e, b"Id", context)?;
-                    current_table_image = attr_value(&e, b"LoadedImage", context)?
-                        .is_some_and(|image| table_image(current_h2p_id.as_deref(), &image));
+                    let image = attr_value(&e, b"LoadedImage", context)?
+                        .map(|image| decode_image(current_h2p_id.as_deref(), &image))
+                        .unwrap_or_default();
+                    current_table_image =
+                        crate::loaded_image::has_group_object_table_segment(&image);
+                    current_factory = image
+                        .into_iter()
+                        .filter(|e| e.kind == crate::loaded_image::KIND_PROPERTY_VALUE)
+                        .collect();
                     if let Some(id) = &current_h2p_id {
                         h2p.entry(id.clone()).or_default();
                     }
@@ -184,6 +208,11 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                         if current_table_image {
                             table_image_apps.insert(ref_id.clone());
                         }
+                        merge_factory_properties(
+                            &mut factory_properties,
+                            &ref_id,
+                            current_factory.clone(),
+                        );
                         block_apps.push(ref_id);
                     }
                 }
@@ -212,6 +241,7 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                 b"Hardware2Program" => {
                     current_h2p_id = None;
                     current_table_image = false;
+                    current_factory.clear();
                 }
                 b"Language" => translations.exit_language(),
                 b"TranslationElement" => translations.exit_element(),
@@ -245,25 +275,56 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         order_to_bus_current,
         order_to_apps,
         table_image_apps,
+        factory_properties: factory_properties
+            .into_iter()
+            .filter(|(_, entries)| !entries.is_empty())
+            .collect(),
     })
 }
 
-/// Whether a `Hardware2Program`'s `LoadedImage` holds a group-object-table
-/// segment. An empty attribute holds none; one that does not decode counts as
-/// none too, with a warning: the image only selects the table shape, it never
-/// refuses an import.
-fn table_image(h2p_id: Option<&str>, image: &str) -> bool {
+/// Records `entries`, the property values of one `Hardware2Program` listing
+/// `app`, in `into`: the first listing's values, emptied when a later one
+/// disagrees ([`Hardware::factory_properties`]).
+fn merge_factory_properties(
+    into: &mut BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>>,
+    app: &str,
+    entries: Vec<crate::loaded_image::LoadedImageEntry>,
+) {
+    match into.get_mut(app) {
+        None => {
+            into.insert(app.to_string(), entries);
+        }
+        Some(held) if *held != entries => {
+            if !held.is_empty() || !entries.is_empty() {
+                tracing::warn!(
+                    application = app,
+                    "the Hardware2Programs listing the application carry different LoadedImage \
+                     property values; none is taken as what the device holds"
+                );
+            }
+            held.clear();
+        }
+        Some(_) => {}
+    }
+}
+
+/// The entries of a `Hardware2Program`'s `LoadedImage`. An empty attribute
+/// holds none; one that does not decode holds none too, with a warning: the
+/// image only selects the table shape and the values taken as held after a
+/// parameter reset (which then are written), it never refuses an import.
+fn decode_image(h2p_id: Option<&str>, image: &str) -> Vec<crate::loaded_image::LoadedImageEntry> {
     if image.trim().is_empty() {
-        return false;
+        return Vec::new();
     }
     match crate::loaded_image::decode_loaded_image(image) {
-        Ok(entries) => crate::loaded_image::has_group_object_table_segment(&entries),
+        Ok(entries) => entries,
         Err(err) => {
             tracing::warn!(
                 hardware2program = h2p_id.unwrap_or("?"),
-                "LoadedImage does not decode ({err}); read as holding no group-object table"
+                "LoadedImage does not decode ({err}); read as holding no group-object table \
+                 and no property value"
             );
-            false
+            Vec::new()
         }
     }
 }
@@ -542,6 +603,48 @@ mod tests {
             vec!["M-1_A-1"]
         );
         assert_eq!(hw.hardware2program.len(), 5);
+        // The property values (kind 5) of the two images that carry them.
+        assert_eq!(
+            hw.factory_properties.keys().collect::<Vec<_>>(),
+            vec!["M-1_A-1", "M-1_A-2"]
+        );
+        assert_eq!(hw.factory_properties["M-1_A-2"].len(), 1);
+        assert_eq!(hw.factory_properties["M-1_A-2"][0].pid, 0xD0);
+        Ok(())
+    }
+
+    /// Issue #951: an application two `Hardware2Program`s list with
+    /// different property values (or one without an image) has none: the
+    /// program cannot tell which hardware a device is.
+    #[test]
+    fn test_parse_hardware_factory_properties_need_agreeing_listings()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        use crate::loaded_image::test_support::{attribute, entry, list};
+        let zero = attribute(&list(&[entry(5, 0, 0xD0, 0, &[0])]))?;
+        let one = attribute(&list(&[entry(5, 0, 0xD0, 0, &[1])]))?;
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20"><Hardware Id="H-1" Name="x">
+            <Hardware2Programs>
+              <Hardware2Program Id="H-1_HP-1" LoadedImage="{zero}">
+                <ApplicationProgramRef RefId="M-1_A-1" /><ApplicationProgramRef RefId="M-1_A-2" />
+                <ApplicationProgramRef RefId="M-1_A-3" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-2" LoadedImage="{zero}">
+                <ApplicationProgramRef RefId="M-1_A-1" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-3" LoadedImage="{one}">
+                <ApplicationProgramRef RefId="M-1_A-2" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-1_HP-4">
+                <ApplicationProgramRef RefId="M-1_A-3" />
+              </Hardware2Program>
+            </Hardware2Programs></Hardware></KNX>"#
+        );
+        let hw = parse_hardware(&xml)?;
+        assert_eq!(
+            hw.factory_properties.keys().collect::<Vec<_>>(),
+            vec!["M-1_A-1"]
+        );
         Ok(())
     }
 }

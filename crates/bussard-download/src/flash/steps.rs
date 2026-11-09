@@ -243,6 +243,27 @@ pub(super) async fn run_shared_step<C: Connector>(
             super::function_prop::invoke_function_property(session.l4(), *object, *prop_id, data)
                 .await
         }
+        // A write whose value the device holds after the parameter reset
+        // (issue #951): nothing is written; a property no declaration
+        // describes has its description read first, as ETS does.
+        FlashStep::FactoryHeldProp {
+            object,
+            prop_id,
+            describe,
+            ..
+        } => {
+            tracing::debug!(
+                %object,
+                prop_id,
+                "LdCtrlWriteProp: the device holds the value after the parameter reset, nothing \
+                 written"
+            );
+            if *describe {
+                super::props::describe_property(session.l4(), *object, *prop_id).await
+            } else {
+                Ok(())
+            }
+        }
         // A property declaration (issue #938): the planner sized the write
         // that follows from it; ETS sends nothing for it, and neither does
         // bussard.
