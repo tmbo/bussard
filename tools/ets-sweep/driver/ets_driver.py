@@ -2075,6 +2075,31 @@ def ets_running() -> bool:
     return b"ETS6N.exe" in out
 
 
+
+def result_ok(lines: list[dict]) -> dict:
+    """Where to click the import result panel's OK: the OCR line 'OK' in the
+    wizard region, else the place it had on 2026-10-27 (2488, 1528). On
+    2026-11-09 16:47 the panel of a 200-product Theben file sat higher
+    (OK at about 2416, 1486), the fixed click missed, and the catalog reset
+    then tried to close ETS under the modal (COMError)."""
+    hit = button_hit(lines, "OK")
+    if hit:
+        return {"click_x": hit["click_x"], "click_y": hit["click_y"]}
+    return {"click_x": 2488, "click_y": 1528}
+
+
+def close_result_panel(region: tuple[int, int, int, int]) -> bool:
+    """Click away an import result panel ('erfolgreich' or 'fehlgeschlagen')
+    that is still up in `region`; True when one was there."""
+    lines = ocr(region)
+    text = " ".join(l["text"] for l in lines)
+    if "erfolgreich" not in text and "fehlgeschlagen" not in text:
+        return False
+    ok = result_ok(lines)
+    click(ok["click_x"], ok["click_y"])
+    time.sleep(1.5)
+    return True
+
 @flow("reset_catalog")
 def flow_reset_catalog(req: dict) -> dict:
     """Close ETS, clear its product store, start it again on the sweep
@@ -2088,6 +2113,8 @@ def flow_reset_catalog(req: dict) -> dict:
 
     did: list[str] = []
     if ets_running():
+        if close_result_panel((1500, 400, 3500, 1600)):
+            did.append("closed a result panel")
         ets_main_window().close()
         did.append("closed ETS")
     t0 = time.time()
@@ -2163,8 +2190,9 @@ def flow_catalog_import(req: dict) -> dict:
             break
         # A previous file's result panel is still up (its OK click missed
         # once and covered the Import button for 39 files, 2026-10-27):
-        # close it by position, then look again.
-        click(2488, 1528)
+        # close it, then look again.
+        ok = result_ok(ocr(region))
+        click(ok["click_x"], ok["click_y"])
         time.sleep(1.5)
         btn = catalog_import_button()
         wizard_text = " ".join(l["text"] for l in ocr(region))
@@ -2234,7 +2262,8 @@ def flow_catalog_import(req: dict) -> dict:
                 if ok:
                     click(ok["x"] + ok["w"] // 2, ok["y"] + ok["h"] // 2)
                 else:
-                    click(2488, 1528)  # where the result panel's OK sits
+                    ok = result_ok(ocr(region))
+                    click(ok["click_x"], ok["click_y"])
                 time.sleep(1.5)
                 if "erfolgreich" not in " ".join(l["text"] for l in ocr(region)):
                     break
