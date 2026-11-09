@@ -1383,6 +1383,26 @@ mod tests {
     }
 
     #[test]
+    fn test_build_system_b_never_loaded_empty_object_has_no_mcb()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Bussard issue #1015: the empty image of #422 is the MCB of an object
+        // loaded empty. An object that never reached Loaded and holds nothing
+        // has no CRC (it is calculated on the transition to Loaded, Resources
+        // §4.2.27), so the read answers no element and a tool never takes the
+        // re-download skip on a blank device.
+        let mut pd = crate::testfixtures::synthetic_mdt_sys7_product();
+        pd.mask_version = "MV-07B0".into();
+        pd.objects.retain(|o| o.lsm_index != 4);
+        let mut dev = connected_device(&pd)?;
+        assert_eq!(dev.load_state(4), Some(LoadState::Unloaded));
+        assert!(dev.mcb_entry(4).is_none());
+        let r = dev.handle_cemi(&data(&dev, 0x3D5, &[4, 27, 0x10, 0x01]))?;
+        // `[obj 04][pid 1b][count 0, start 001]`: no element.
+        assert_eq!(&r.responses[0].tpdu[2..6], &[0x04, 0x1B, 0x00, 0x01]);
+        Ok(())
+    }
+
+    #[test]
     fn test_build_system_b_allocation_covers_the_procedure_writes()
     -> Result<(), Box<dyn std::error::Error>> {
         // Bussard issue #422: the Hager TYMS616D (`M-0009_A-E804-10`)

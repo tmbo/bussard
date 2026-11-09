@@ -919,11 +919,17 @@ impl Device {
         // loads object 4 empty and then reads its PID 27) has an empty image:
         // size 0 and the CRC of no octets. The zero-count refusal made ETS
         // report a read of a protected or absent memory area (ETS sweep,
-        // 2026-11-06).
-        let bytes = self
-            .memory
-            .written_span(object)
-            .or_else(|| self.loadables.contains_key(&object).then(Vec::new))?;
+        // 2026-11-06; the re-sweep in #422 confirmed the empty image). Only a
+        // Loaded object has that empty image: the CRC is calculated on the
+        // transition to Loaded (Resources §4.2.27), so an object that was
+        // never loaded and holds nothing reports no entry, and a tool reading
+        // it never takes the re-download skip (#73, #1015).
+        let bytes = self.memory.written_span(object).or_else(|| {
+            self.loadables
+                .get(&object)
+                .is_some_and(|o| o.lsm.state() == LoadState::Loaded)
+                .then(Vec::new)
+        })?;
         Some(mcb::mcb_entry(&bytes).to_vec())
     }
 
