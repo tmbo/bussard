@@ -733,7 +733,17 @@ pub(crate) fn declared_object_numbers(
 /// selects (issue #949): ETS sets the communication flag on every declared
 /// object. A shown object keeps its flags with C added; a declared object
 /// the configuration does not show gets `04 00` (C only, system priority,
-/// size code 0); only the numbers no object declares stay `00 00`.
+/// size code 0) when its `<ComObject>` declares the communication flag. The
+/// numbers no object declares, and an unshown object declared with
+/// `CommunicationFlag="Disabled"`, stay `00 00`.
+///
+/// The `CommunicationFlag` part is from the 52 captured System B rows in
+/// this shape (issue #1007): every unshown static object declared with C
+/// was written `04 00`, and the 30 placeholders of the Jung `A-146D`/`A-146F`
+/// room controller modules, declared with every flag `Disabled`, were
+/// written `00 00`; their `LoadedImage` table segment stores `03 00` (no
+/// flag) for exactly those entries. No capture has an object with C disabled
+/// but another flag enabled.
 ///
 /// From the defaults sweep of the four Busch-Jaeger DALI gateways
 /// (`M-0007_A-A0AA`..`A0AD`, a group-object-table segment in `LoadedImage`):
@@ -749,9 +759,17 @@ fn ets_download_plugin_descriptors(
         d.flags |= Flags::COMMUNICATION;
     }
     let shown: BTreeSet<u16> = descriptors.iter().map(|d| d.asap).collect();
+    // An unshown object gets C only when its `<ComObject>` declares it; one
+    // declared with `CommunicationFlag="Disabled"` stays `00 00` like an
+    // undeclared number (issue #1007).
+    let communication_declared: BTreeSet<u16> = app
+        .static_com_objects()
+        .filter(|c| c.flags.communication != Some(false))
+        .map(|c| c.number)
+        .collect();
     let unshown: Vec<u16> = declared_object_numbers(app, shown.iter().copied())
         .into_iter()
-        .filter(|&n| n != 0 && !shown.contains(&n))
+        .filter(|&n| n != 0 && !shown.contains(&n) && communication_declared.contains(&n))
         .collect();
     descriptors.extend(unshown.into_iter().map(|asap| GroupObjectDescriptor {
         asap,
@@ -1349,6 +1367,61 @@ mod tests {
                 "{extension:?} table image {table_image}"
             );
         }
+        Ok(())
+    }
+
+    /// Issue #1007: in the download-plugin shape an unshown object whose
+    /// `<ComObject>` declares `CommunicationFlag="Disabled"` stays `00 00`
+    /// (the Jung `A-146F` placeholders, all six flags `Disabled`); one that
+    /// declares C gets `04 00`. A shown placeholder takes its ref's flags
+    /// with C, as before.
+    #[test]
+    fn test_dynamic_group_object_table_ets_download_plugin_skips_unshown_c_disabled()
+    -> Result<(), Box<dyn std::error::Error>> {
+        const DISABLED: &str = r#"ReadFlag="Disabled" WriteFlag="Disabled" CommunicationFlag="Disabled" TransmitFlag="Disabled" UpdateFlag="Disabled" ReadOnInitFlag="Disabled""#;
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/21">
+         <ApplicationProgram Id="A" MaskVersion="MV-07B0" Name="jung">
+          <Static>
+           <Parameters><Parameter Id="A_P-1" Name="sel" Value="0" /></Parameters>
+           <ParameterRefs><ParameterRef Id="A_P-1_R-1" RefId="A_P-1" /></ParameterRefs>
+           <ComObjects>
+            <ComObject Id="A_O-1" Number="1" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-2" Number="2" ObjectSize="1 Bit" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+            <ComObject Id="A_O-3" Number="3" ObjectSize="1 Bit" {DISABLED} />
+            <ComObject Id="A_O-4" Number="4" ObjectSize="1 Bit" {DISABLED} />
+           </ComObjects>
+           <ComObjectRefs>
+            <ComObjectRef Id="A_O-1_R-1" RefId="A_O-1" /><ComObjectRef Id="A_O-2_R-2" RefId="A_O-2" />
+            <ComObjectRef Id="A_O-3_R-3" RefId="A_O-3" />
+            <ComObjectRef Id="A_O-4_R-4" RefId="A_O-4" WriteFlag="Enabled" CommunicationFlag="Enabled" />
+           </ComObjectRefs>
+           <Extension EtsDownloadPlugin="{{B385ADFE-A7D2-4503-9657-D49E97FF9FF4}}" />
+          </Static>
+          <Dynamic>
+           <ChannelIndependentBlock><ParameterBlock Id="A_PB-1">
+            <ParameterRefRef RefId="A_P-1_R-1" />
+            <ComObjectRefRef RefId="A_O-1_R-1" />
+            <ComObjectRefRef RefId="A_O-4_R-4" />
+            <choose ParamRefId="A_P-1_R-1">
+             <when test="1"><ComObjectRefRef RefId="A_O-2_R-2" /><ComObjectRefRef RefId="A_O-3_R-3" /></when>
+            </choose>
+           </ParameterBlock></ChannelIndependentBlock>
+          </Dynamic>
+         </ApplicationProgram></KNX>"#
+        );
+        let app = bussard_product::parse_application_program("A", xml.as_bytes())?;
+        let table = dynamic_group_object_table(
+            &app,
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+            &bussard_product::dynamic::DynamicMemo::new(&app),
+        )
+        .ok_or("empty table")?;
+        assert_eq!(
+            table,
+            vec![0x00, 0x04, 0x17, 0x00, 0x04, 0x00, 0x00, 0x00, 0x17, 0x00]
+        );
         Ok(())
     }
 
