@@ -31,7 +31,7 @@ serde_json = { workspace = true }
 serde_path_to_error = { workspace = true }
 anyhow = { workspace = true }
 # The official Rust MCP SDK. Apache-2.0. Server + macros + stdio transport +
-# JSON-Schema generation for tool parameters. Pinned to 3.x; MSRV 1.88 < 1.98.
+# JSON-Schema generation for tool parameters. Pinned to 3.x; MSRV 1.89 < 1.98.
 # `transport-streamable-http-server` serves `bussard mcp --listen` (issue #265);
 # it adds rand, rand_core, chacha20, sse-stream and async-trait, all
 # MIT OR Apache-2.0.
