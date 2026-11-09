@@ -449,25 +449,33 @@ def _icon_word(w: str) -> bool:
 
 
 def button_hit(lines: list[dict], label: str) -> dict | None:
-    """The OCR line of the button `label`: the label is the line's last word,
-    after at most two icon words. The check mark in front of 'Ja' reads as
-    '√ Ja', 'v Ja' or 'V Ja' (2026-11-08, #997), the way the Katalog
-    panel's close icon joins 'X Import' (#968). Exact, not fuzzy: a wide
-    search strip also holds other text, and the fuzzy match took 'Secure,
-    Schalter/Jalousie 8-fach' for 'Ja' (2026-11-06). The hit carries
-    `click_x`, `click_y`: the middle of the word, not of the icon."""
+    """The OCR line of the button `label` and where to click it: the label is
+    a whole word of a short line (at most five words), after icon words
+    or the other button. The check mark in
+    front of 'Ja' reads as '√ Ja', 'v Ja' or 'V Ja' (2026-11-08, #997), the
+    way the Katalog panel's close icon joins 'X Import' (#968). OCR also joins
+    the two buttons of the delete confirmation into one line ('√ Ja X Nein',
+    2026-11-09: 'Ja' was never the last word, 'Nein' always was, and every
+    delete ended "not on screen; dialog closed with Nein"), so the label may
+    be followed by more words. Exact, not fuzzy: a wide search strip also
+    holds other text, and the fuzzy match took 'Secure, Schalter/Jalousie
+    8-fach' for 'Ja' (2026-11-06). The hit carries `click_x`, `click_y`: the
+    middle of the word, not of the icon."""
     for l in lines:
         words = l["text"].split()
-        if words and words[-1] != label and re.fullmatch(rf"\W{{1,2}}{re.escape(label)}", words[-1]):
-            # The icon glued to the word ('√Ja'), as PR #878 accepted it.
-            words = [*words[:-1], words[-1][: -len(label)], label]
-        if not words or words[-1] != label or len(words) > 3 or not all(_icon_word(w) for w in words[:-1]):
-            continue
-        # The label ends the line: its characters are the line's last ones.
-        text = l["text"].strip()
-        before = len(text) - len(label)
-        cw = l["w"] / max(len(text), 1)
-        return {**l, "click_x": l["x"] + int((before + len(label) / 2) * cw), "click_y": l["y"] + l["h"] // 2}
+        for i, w in enumerate(words):
+            glued = w != label and re.fullmatch(rf"\W{{1,2}}{re.escape(label)}", w) is not None
+            if w != label and not glued:
+                continue
+            # A short line only (both buttons and their icons make five
+            # words); the words before the label are icons or the other button.
+            if len(words) > 5 or not all(_icon_word(x) or x in ("Ja", "Nein") for x in words[:i]):
+                break
+            # The label's characters: the words before it, their spaces, and
+            # the glued icon, measured at the line's mean character width.
+            before = len(" ".join(words[:i])) + (1 if i else 0) + (len(w) - len(label) if glued else 0)
+            cw = l["w"] / max(len(l["text"].strip()), 1)
+            return {**l, "click_x": l["x"] + int((before + len(label) / 2) * cw), "click_y": l["y"] + l["h"] // 2}
     return None
 
 

@@ -1306,6 +1306,20 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertLessEqual(hit["click_x"], row["x"] + row["w"], hit)
         self.assertEqual(hit["click_y"], row["y"] + row["h"] // 2)
 
+    def test_button_hit_ja_followed_by_nein_on_one_line(self):
+        # OCR joined both buttons of the delete confirmation (2026-11-09):
+        # 'Ja' is matched as a whole word and the click lands on it, not on
+        # 'Nein'; the same line also yields 'Nein'.
+        line = {"text": "√ Ja X Nein", "x": 2340, "y": 1405, "w": 220, "h": 24}
+        ja = self.d.button_hit([line], "Ja")
+        nein = self.d.button_hit([line], "Nein")
+        self.assertIsNotNone(ja)
+        self.assertIsNotNone(nein)
+        self.assertLess(ja["click_x"], nein["click_x"])
+        cw = 220 / len("√ Ja X Nein")
+        self.assertEqual(ja["click_x"], 2340 + int((2 + 1) * cw))
+        self.assertIsNone(self.d.button_hit([{"text": "Secure, Schalter/Jalousie 8-fach", "x": 0, "y": 0, "w": 300, "h": 20}], "Ja"))
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
