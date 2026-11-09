@@ -1422,12 +1422,24 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual(len(clicks), 2)
         self.assertTrue(2480 + 2 * 120 / 6 <= clicks[1][0] <= 2600, clicks)
 
-    def test_confirm_delete_without_ja_closes_with_nein(self):
+    def test_confirm_delete_without_ja_clicks_beside_nein_then_closes(self):
+        # OCR reads 'Nein' but no 'Ja' (2026-11-09): the Ja is clicked at its
+        # place beside Nein; the dialog still open afterwards is closed with
+        # Nein and the error says so.
         no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
-        err, clicks = self.confirm([no_ja, no_ja])
-        self.assertIn("button 'Ja' not on screen", str(err))
+        err, clicks = self.confirm([no_ja, no_ja, no_ja])
+        self.assertIn("still open after 'Ja'", str(err))
         self.assertIn("closed with Nein", str(err))
-        self.assertEqual(len(clicks), 1)
+        self.assertEqual(len(clicks), 2)
+        nein = self.d.button_hit(no_ja, "Nein")
+        self.assertEqual(clicks[0][0], nein["x"] - 128)
+
+    def test_confirm_delete_without_ja_or_nein_reports_what_ocr_read(self):
+        other = [r for r in self.ROWS_997 if "Ja" not in r["text"] and "Nein" not in r["text"]]
+        err, clicks = self.confirm([other, other])
+        self.assertIn("button 'Ja' not on screen", str(err))
+        self.assertIn("OCR read", str(err))
+        self.assertEqual(len(clicks), 0)
 
     def catalog_add(self, devices: list, delete):
         """flow_catalog_add up to its catalog search, with the screen mocked:
