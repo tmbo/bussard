@@ -83,197 +83,125 @@ pub fn read_knxprod_bytes(
             continue;
         }
         if let Some(mut pd) = parse_application_program(&content, application_id)? {
-            attach_pei_programs(&mut zip, &names, &mut pd)?;
-            attach_factory_properties(&mut zip, &names, &mut pd)?;
+            attach_hardware(&mut zip, &names, &mut pd)?;
             return Ok(pd);
         }
     }
     Err(ProdError::NoApplicationProgram)
 }
 
-/// The application ids a `Hardware2Program` of the archive lists next to
-/// `app_id`, read from every `Hardware.xml`.
-fn hardware_partners<R: Read + std::io::Seek>(
+/// One `Hardware2Program` of a `Hardware.xml`: the application ids it lists
+/// and its `LoadedImage` attribute.
+#[derive(Debug, Default)]
+struct Hardware2Program {
+    /// The `Id` attribute, for log messages.
+    id: String,
+    /// The `RefId` of every `ApplicationProgramRef`.
+    refs: Vec<String>,
+    /// The `LoadedImage` attribute, when present.
+    loaded_image: Option<String>,
+}
+
+/// Calls `f` with every `Hardware2Program` of every `Hardware.xml` of the
+/// archive that lists `app_id`: one walk feeds the paired programs
+/// ([`attach_pei_programs`]) and the `LoadedImage` property values
+/// ([`attach_factory_properties`]).
+fn for_each_hardware2program<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     names: &[String],
     app_id: &str,
-) -> Result<Vec<String>, ProdError> {
+    mut f: impl FnMut(&Hardware2Program),
+) -> Result<(), ProdError> {
     let needle = format!("RefId=\"{app_id}\"");
-    let mut partners: Vec<String> = Vec::new();
     for name in names.iter().filter(|n| n.ends_with("Hardware.xml")) {
         let mut content = String::new();
         zip.by_name(name)?.read_to_string(&mut content)?;
         if !content.contains(&needle) {
             continue;
         }
-        let mut reader = Reader::from_str(&content);
-        let mut group: Option<Vec<String>> = None;
-        let mut buf = Vec::new();
-        loop {
-            match reader.read_event_into(&mut buf)? {
-                Event::Eof => break,
-                Event::Start(e) if e.name().as_ref() == b"Hardware2Program" => {
-                    group = Some(Vec::new());
-                }
-                Event::Start(e) | Event::Empty(e)
-                    if e.name().as_ref() == b"ApplicationProgramRef" =>
-                {
-                    if let (Some(g), Some(id)) = (group.as_mut(), attr(&e, "RefId")) {
-                        g.push(id);
-                    }
-                }
-                Event::End(e) if e.name().as_ref() == b"Hardware2Program" => {
-                    if let Some(g) = group.take()
-                        && g.iter().any(|id| id == app_id)
-                    {
-                        for id in g {
-                            if id != app_id && !partners.contains(&id) {
-                                partners.push(id);
-                            }
-                        }
-                    }
-                }
-                _ => {}
+        walk_hardware2programs(&content, |h2p| {
+            if h2p.refs.iter().any(|id| id == app_id) {
+                f(h2p);
             }
-            buf.clear();
-        }
+        })?;
     }
-    Ok(partners)
-}
-
-/// Sets [`ProductData::factory_properties`] from the kind 5 entries of the
-/// `LoadedImage` of the `Hardware2Program`s listing the application
-/// ([`hardware_loaded_image`]), their objects made absolute by the mask's
-/// first application object ([`first_app_object_index`]). An entry whose
-/// object or PID does not fit an octet is left out.
-fn attach_factory_properties<R: Read + std::io::Seek>(
-    zip: &mut zip::ZipArchive<R>,
-    names: &[String],
-    pd: &mut ProductData,
-) -> Result<(), ProdError> {
-    let Some(first) = first_app_object_index(&pd.mask_version) else {
-        return Ok(());
-    };
-    let needle = format!("RefId=\"{}\"", pd.application_id);
-    let mut listings: Vec<Vec<LoadedImageEntry>> = Vec::new();
-    for name in names.iter().filter(|n| n.ends_with("Hardware.xml")) {
-        let mut content = String::new();
-        zip.by_name(name)?.read_to_string(&mut content)?;
-        if content.contains(&needle) {
-            listings.extend(hardware_loaded_image(&content, &pd.application_id)?);
-        }
-    }
-    let Some(entries) = agreeing_property_values(&pd.application_id, listings) else {
-        return Ok(());
-    };
-    pd.factory_properties = entries
-        .into_iter()
-        .filter_map(|e| {
-            Some(FactoryProperty {
-                object: u8::try_from(u16::from(first).checked_add(e.object)?).ok()?,
-                pid: u8::try_from(e.pid).ok()?,
-                start: e.offset,
-                data: e.data,
-                mask: e.mask,
-            })
-        })
-        .collect();
     Ok(())
 }
 
-/// The kind 5 entries of the `LoadedImage` of every `Hardware2Program` of
-/// the `Hardware.xml` `xml` that lists `app_id`, one list per such
-/// `Hardware2Program`. One without the attribute, or whose attribute does
-/// not decode (with a warning), holds none.
-fn hardware_loaded_image(xml: &str, app_id: &str) -> Result<Vec<Vec<LoadedImageEntry>>, ProdError> {
+/// Calls `f` with every `Hardware2Program` of the `Hardware.xml` `xml`.
+fn walk_hardware2programs(
+    xml: &str,
+    mut f: impl FnMut(&Hardware2Program),
+) -> Result<(), ProdError> {
     let mut reader = Reader::from_str(xml);
-    let mut listings = Vec::new();
-    // The current `Hardware2Program`'s property values and whether it lists
-    // the application.
-    let mut current: Option<(Vec<LoadedImageEntry>, bool)> = None;
+    let mut current: Option<Hardware2Program> = None;
     let mut buf = Vec::new();
     loop {
         match reader.read_event_into(&mut buf)? {
             Event::Eof => break,
             Event::Start(e) if e.name().as_ref() == b"Hardware2Program" => {
-                let image = attr(&e, "LoadedImage").unwrap_or_default();
-                let entries = if image.trim().is_empty() {
-                    Vec::new()
-                } else {
-                    match decode_loaded_image(&image) {
-                        Ok(entries) => entries,
-                        Err(err) => {
-                            tracing::warn!(
-                                hardware2program = attr(&e, "Id").unwrap_or_default(),
-                                "LoadedImage does not decode ({err}); read as holding no \
-                                 property value"
-                            );
-                            Vec::new()
-                        }
-                    }
-                };
-                let values = entries
-                    .into_iter()
-                    .filter(|e| e.kind == KIND_PROPERTY_VALUE)
-                    .collect();
-                current = Some((values, false));
+                current = Some(Hardware2Program {
+                    id: attr(&e, "Id").unwrap_or_default(),
+                    refs: Vec::new(),
+                    loaded_image: attr(&e, "LoadedImage"),
+                });
             }
             Event::Start(e) | Event::Empty(e) if e.name().as_ref() == b"ApplicationProgramRef" => {
-                if let Some((_, lists)) = current.as_mut()
-                    && attr(&e, "RefId").as_deref() == Some(app_id)
-                {
-                    *lists = true;
+                if let (Some(h2p), Some(id)) = (current.as_mut(), attr(&e, "RefId")) {
+                    h2p.refs.push(id);
                 }
             }
             Event::End(e) if e.name().as_ref() == b"Hardware2Program" => {
-                if let Some((values, true)) = current.take() {
-                    listings.push(values);
+                if let Some(h2p) = current.take() {
+                    f(&h2p);
                 }
             }
             _ => {}
         }
         buf.clear();
     }
-    Ok(listings)
+    Ok(())
 }
 
-/// The property values of `listings`, the `Hardware2Program`s listing
-/// `app_id`, when they all agree; `None` when there is none, or when two
-/// disagree (one with other values or none): the program does not tell
-/// which hardware the device is, so no value is taken as held, as in
-/// bussard's reader (issue #951).
-fn agreeing_property_values(
-    app_id: &str,
-    listings: Vec<Vec<LoadedImageEntry>>,
-) -> Option<Vec<LoadedImageEntry>> {
-    let mut listings = listings.into_iter();
-    let first = listings.next()?;
-    for other in listings {
-        if other != first {
-            tracing::warn!(
-                application = app_id,
-                "the Hardware2Programs listing the application carry different LoadedImage \
-                 property values; none is taken as held"
-            );
-            return None;
-        }
-    }
-    Some(first)
-}
-
-/// Folds into `pd` what the `PeiProgram`s paired with the application
-/// (`Hardware2Program`) bring to the device: ETS downloads such a companion in
-/// the same session (an ABB i-bus control element pairs `A-488A-11` with the
-/// PEI program `A-488A-21`, which allocates object 5 and writes its PID 16 and
-/// PID 13). The real hardware serves those properties and that segment, so the
-/// simulated device must too; without them a write to object 5 PID 16 went
-/// unanswered and timed the flash out.
-fn attach_pei_programs<R: Read + std::io::Seek>(
+/// Reads the archive's `Hardware2Program`s listing the application once and
+/// folds in what they bring: the paired `PeiProgram`s
+/// ([`attach_pei_programs`]) and the `LoadedImage` property values
+/// ([`attach_factory_properties`]).
+fn attach_hardware<R: Read + std::io::Seek>(
     zip: &mut zip::ZipArchive<R>,
     names: &[String],
     pd: &mut ProductData,
 ) -> Result<(), ProdError> {
-    let partners = hardware_partners(zip, names, &pd.application_id)?;
+    let app_id = pd.application_id.clone();
+    let mut partners: Vec<String> = Vec::new();
+    let mut listings: Vec<Vec<LoadedImageEntry>> = Vec::new();
+    for_each_hardware2program(zip, names, &app_id, |h2p| {
+        for id in &h2p.refs {
+            if *id != app_id && !partners.contains(id) {
+                partners.push(id.clone());
+            }
+        }
+        listings.push(property_values(h2p));
+    })?;
+    attach_pei_programs(zip, names, pd, partners)?;
+    attach_factory_properties(pd, listings);
+    Ok(())
+}
+
+/// Folds into `pd` what the `PeiProgram`s paired with the application
+/// (`partners`, listed by a `Hardware2Program` next to it) bring to the
+/// device: ETS downloads such a companion in the same session (an ABB i-bus
+/// control element pairs `A-488A-11` with the PEI program `A-488A-21`, which
+/// allocates object 5 and writes its PID 16 and PID 13). The real hardware
+/// serves those properties and that segment, so the simulated device must
+/// too; without them a write to object 5 PID 16 went unanswered and timed
+/// the flash out.
+fn attach_pei_programs<R: Read + std::io::Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    names: &[String],
+    pd: &mut ProductData,
+    partners: Vec<String>,
+) -> Result<(), ProdError> {
     for id in partners {
         let Some(name) = names.iter().find(|n| n.ends_with(&format!("{id}.xml"))) else {
             continue;
@@ -315,6 +243,116 @@ fn attach_pei_programs<R: Read + std::io::Seek>(
     }
     pd.objects.sort_by_key(|o| o.lsm_index);
     Ok(())
+}
+
+/// Sets [`ProductData::factory_properties`] from `listings`, the property
+/// values of each `Hardware2Program` listing the application
+/// ([`property_values`]), when they agree ([`agreeing_property_values`]),
+/// their objects made absolute by the mask's first application object
+/// ([`first_app_object_index`]). An entry whose absolute object or PID does
+/// not fit an octet is left out with a warning.
+fn attach_factory_properties(pd: &mut ProductData, listings: Vec<Vec<LoadedImageEntry>>) {
+    let Some(first) = first_app_object_index(&pd.mask_version) else {
+        return;
+    };
+    let Some(entries) = agreeing_property_values(&pd.application_id, listings) else {
+        return;
+    };
+    pd.factory_properties = entries
+        .into_iter()
+        .filter_map(|e| {
+            let object = u16::from(first)
+                .checked_add(e.object)
+                .and_then(|o| u8::try_from(o).ok());
+            let pid = u8::try_from(e.pid).ok();
+            let (Some(object), Some(pid)) = (object, pid) else {
+                tracing::warn!(
+                    object = u32::from(first) + u32::from(e.object),
+                    pid = e.pid,
+                    start = e.offset,
+                    len = e.data.len(),
+                    "the LoadedImage holds a property value whose object or PID does not fit an \
+                     octet; left out"
+                );
+                return None;
+            };
+            Some(FactoryProperty {
+                object,
+                pid,
+                start: e.offset,
+                data: e.data,
+                mask: e.mask,
+            })
+        })
+        .collect();
+}
+
+/// The kind 5 entries of the `LoadedImage` of `h2p`, each with its mask
+/// made explicit (all ones where the tag carries none), so the two
+/// encodings of one value (tag 1 without a mask, tag 3 with an all-ones
+/// mask) compare equal. One without the attribute, or whose attribute does
+/// not decode (with a warning), holds none.
+fn property_values(h2p: &Hardware2Program) -> Vec<LoadedImageEntry> {
+    let image = h2p.loaded_image.as_deref().unwrap_or_default();
+    if image.trim().is_empty() {
+        return Vec::new();
+    }
+    let entries = match decode_loaded_image(image) {
+        Ok(entries) => entries,
+        Err(err) => {
+            tracing::warn!(
+                hardware2program = h2p.id,
+                "LoadedImage does not decode ({err}); read as holding no property value"
+            );
+            return Vec::new();
+        }
+    };
+    entries
+        .into_iter()
+        .filter(|e| e.kind == KIND_PROPERTY_VALUE)
+        .map(|mut e| {
+            if e.mask.is_empty() {
+                e.mask = vec![0xFF; e.data.len()];
+            }
+            e
+        })
+        .collect()
+}
+
+/// What a property value entry holds: its object, PID, start, data and
+/// (explicit) mask; the tag only says how the entry was encoded.
+fn held_value(e: &LoadedImageEntry) -> (u16, u16, u32, &[u8], &[u8]) {
+    (e.object, e.pid, e.offset, &e.data, &e.mask)
+}
+
+/// The property values of `listings`, the `Hardware2Program`s listing
+/// `app_id` ([`property_values`]), when they all hold the same
+/// ([`held_value`]); `None` when there is none, or when two disagree (one
+/// with other values or none): the program does not tell which hardware the
+/// device is, so no value is taken as held, as in bussard's reader (issue
+/// #951).
+fn agreeing_property_values(
+    app_id: &str,
+    listings: Vec<Vec<LoadedImageEntry>>,
+) -> Option<Vec<LoadedImageEntry>> {
+    let mut listings = listings.into_iter();
+    let first = listings.next()?;
+    for other in listings {
+        let same = other.len() == first.len()
+            && other
+                .iter()
+                .zip(&first)
+                .all(|(a, b)| held_value(a) == held_value(b));
+        if !same {
+            tracing::warn!(
+                application = app_id,
+                "the Hardware2Programs listing the application carry different LoadedImage \
+                 property values; none is taken as held"
+            );
+            return None;
+        }
+    }
+    Some(first)
 }
 
 /// Record the object type a property step declares for the object it
@@ -408,6 +446,27 @@ fn merge_element_compares<K: PartialEq + Clone>(
         .collect()
 }
 
+/// The scalar PDTs of the product schema with a fixed element size, as
+/// `(PropType name, PDT code, element size)` (KNX 3/7/3 Standardized
+/// Identifier Tables §4.1); `PDT_GENERIC_01` to `_20` are computed.
+const SCALAR_PDTS: [(&str, u8, usize); 15] = [
+    ("PDT_CHAR", 0x01, 1),
+    ("PDT_UNSIGNED_CHAR", 0x02, 1),
+    ("PDT_INT", 0x03, 2),
+    ("PDT_UNSIGNED_INT", 0x04, 2),
+    ("PDT_KNX_FLOAT", 0x05, 2),
+    ("PDT_DATE", 0x06, 3),
+    ("PDT_TIME", 0x07, 3),
+    ("PDT_LONG", 0x08, 4),
+    ("PDT_UNSIGNED_LONG", 0x09, 4),
+    ("PDT_FLOAT", 0x0A, 4),
+    ("PDT_DOUBLE", 0x0B, 8),
+    ("PDT_CHAR_BLOCK", 0x0C, 10),
+    ("PDT_POLL_GROUP_SETTINGS", 0x0D, 3),
+    ("PDT_SHORT_CHAR_BLOCK", 0x0E, 5),
+    ("PDT_DATE_TIME", 0x0F, 8),
+];
+
 /// The PDT code and element size of a `PropType` name of the product
 /// schema (KNX 3/7/3 Standardized Identifier Tables §4.1).
 /// `None` for a type without a fixed element size.
@@ -418,24 +477,22 @@ fn pdt_by_name(name: &str) -> Option<(u8, usize)> {
             .contains(&size)
             .then(|| (0x10 + size, usize::from(size)));
     }
-    Some(match name {
-        "PDT_CHAR" => (0x01, 1),
-        "PDT_UNSIGNED_CHAR" => (0x02, 1),
-        "PDT_INT" => (0x03, 2),
-        "PDT_UNSIGNED_INT" => (0x04, 2),
-        "PDT_KNX_FLOAT" => (0x05, 2),
-        "PDT_DATE" => (0x06, 3),
-        "PDT_TIME" => (0x07, 3),
-        "PDT_LONG" => (0x08, 4),
-        "PDT_UNSIGNED_LONG" => (0x09, 4),
-        "PDT_FLOAT" => (0x0A, 4),
-        "PDT_DOUBLE" => (0x0B, 8),
-        "PDT_CHAR_BLOCK" => (0x0C, 10),
-        "PDT_POLL_GROUP_SETTINGS" => (0x0D, 3),
-        "PDT_SHORT_CHAR_BLOCK" => (0x0E, 5),
-        "PDT_DATE_TIME" => (0x0F, 8),
-        _ => return None,
-    })
+    SCALAR_PDTS
+        .iter()
+        .find(|(n, _, _)| *n == name)
+        .map(|&(_, pdt, size)| (pdt, size))
+}
+
+/// The element size of PDT code `pdt` ([`pdt_by_name`]'s codes), `None` for
+/// a PDT without a fixed one.
+pub(crate) fn pdt_size(pdt: u8) -> Option<usize> {
+    match pdt {
+        0x11..=0x24 => Some(usize::from(pdt - 0x10)),
+        _ => SCALAR_PDTS
+            .iter()
+            .find(|(_, code, _)| *code == pdt)
+            .map(|&(_, _, size)| size),
+    }
 }
 
 /// Decode an even-length hex string (as used by `InlineData`); `None` on any
@@ -1581,12 +1638,61 @@ mod tests {
         Ok(())
     }
 
+    /// The property values of the `Hardware2Program`s of `xml` listing `app`.
+    fn listings(xml: &str, app: &str) -> Result<Vec<Vec<LoadedImageEntry>>, ProdError> {
+        let mut out = Vec::new();
+        walk_hardware2programs(xml, |h2p| {
+            if h2p.refs.iter().any(|r| r == app) {
+                out.push(property_values(h2p));
+            }
+        })?;
+        Ok(out)
+    }
+
+    /// One value in the two encodings of the corpus, tag 1 without a mask
+    /// and tag 3 with an all-ones mask, agrees; a mask that leaves bits
+    /// undefined does not.
+    #[test]
+    fn test_agreeing_property_values_ignores_the_mask_encoding()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use crate::prod::loaded_image::test_support::{attribute, entry, entry_masked, list};
+        let mut unmasked = entry(5, 0, 208, 1, &[0x14, 0x30]);
+        unmasked[16] = 1;
+        unmasked.truncate(19);
+        let tag1 = attribute(&list(&[unmasked]))?;
+        let tag3 = attribute(&list(&[entry(5, 0, 208, 1, &[0x14, 0x30])]))?;
+        let partial = attribute(&list(&[entry_masked(
+            5,
+            0,
+            208,
+            1,
+            &[0x14, 0x30],
+            &[0xFF, 0x0F],
+        )]))?;
+        let xml = format!(
+            r#"<KNX><Hardware Id="H-1"><Hardware2Programs>
+              <Hardware2Program Id="HP-1" LoadedImage="{tag1}"><ApplicationProgramRef RefId="A-1" /><ApplicationProgramRef RefId="A-2" /></Hardware2Program>
+              <Hardware2Program Id="HP-2" LoadedImage="{tag3}"><ApplicationProgramRef RefId="A-1" /></Hardware2Program>
+              <Hardware2Program Id="HP-3" LoadedImage="{partial}"><ApplicationProgramRef RefId="A-2" /></Hardware2Program>
+            </Hardware2Programs></Hardware></KNX>"#
+        );
+        let held = agreeing_property_values("A-1", listings(&xml, "A-1")?).ok_or("A-1 agrees")?;
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].data, vec![0x14, 0x30]);
+        assert_eq!(held[0].mask, vec![0xFF, 0xFF]);
+        assert_eq!(
+            agreeing_property_values("A-2", listings(&xml, "A-2")?),
+            None
+        );
+        Ok(())
+    }
+
     /// Only the `Hardware2Program`s that list the application count, and
     /// they must agree: one with other values, or with none, leaves no
     /// value held (as bussard's reader, issue #951).
     #[test]
-    fn test_hardware_loaded_image_needs_agreeing_listings() -> Result<(), Box<dyn std::error::Error>>
-    {
+    fn test_agreeing_property_values_needs_agreeing_listings()
+    -> Result<(), Box<dyn std::error::Error>> {
         use crate::prod::loaded_image::test_support::{attribute, entry, list};
         let zero = attribute(&list(&[entry(5, 0, 208, 0, &[0])]))?;
         let one = attribute(&list(&[entry(5, 0, 208, 0, &[1])]))?;
@@ -1603,10 +1709,7 @@ mod tests {
             </Hardware2Programs></Hardware></KNX>"#
         );
         let held = |app: &str| -> Result<Option<Vec<LoadedImageEntry>>, ProdError> {
-            Ok(agreeing_property_values(
-                app,
-                hardware_loaded_image(&xml, app)?,
-            ))
+            Ok(agreeing_property_values(app, listings(&xml, app)?))
         };
         assert_eq!(held("A-1")?.map(|e| e.len()), Some(1));
         assert_eq!(held("A-2")?, None);
@@ -1617,44 +1720,63 @@ mod tests {
     }
 
     /// The Hager TYM646T (`M-0009_A-E0D0-11-434F`, 07B0) from the product
-    /// corpus: eleven PID 208 values on objects 6 to 16, and the device
-    /// built from it holds them (issue #1012). Skips when the copyrighted
-    /// vendor file is absent.
+    /// corpus: eleven PID 208 values on objects 6 to 16. It and the five
+    /// other programs of the sweep corpus whose image carries property
+    /// values (issue #951) build a device that holds every one of them
+    /// (issue #1012); all are on one-octet elements (`PDT_UNSIGNED_CHAR`),
+    /// so the start is the octet offset. A program whose copyrighted vendor
+    /// file is absent is skipped.
     #[test]
     fn test_read_knxprod_hager_e0d0_loaded_image() -> Result<(), Box<dyn std::error::Error>> {
-        let path = crate::testfixtures::corpus_vendor_knxprod_path("PS_TYM646T_V118_T11.KNXPROD");
-        let Ok(bytes) = std::fs::read(&path) else {
-            eprintln!("SKIP: {} not in the product-corpus cache", path.display());
-            return Ok(());
-        };
-        let pd = read_knxprod_bytes(&bytes, Some("M-0009_A-E0D0-11-434F"))?;
-        let held: Vec<(u8, u8, u32, usize)> = pd
-            .factory_properties
-            .iter()
-            .map(|f| (f.object, f.pid, f.start, f.data.len()))
-            .collect();
-        let lens = [124, 124, 124, 124, 124, 124, 76, 4, 4, 1, 32];
-        let expected: Vec<(u8, u8, u32, usize)> =
-            (6u8..).zip(lens).map(|(o, n)| (o, 208, 0, n)).collect();
-        assert_eq!(held, expected);
-        assert_eq!(
-            pd.factory_properties[0].data[..6],
-            [0x8E, 0x05, 0x02, 0x19, 0x0C, 0xB2]
-        );
-        let dev = crate::device::Device::from_product(
-            crate::wire::IndividualAddress::new(1, 1, 5),
-            &pd,
-            crate::device::LoadState::Unloaded,
-            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
-        );
-        for f in &pd.factory_properties {
-            assert_eq!(
-                dev.property_value(f.object, f.pid),
-                Some(f.data.as_slice()),
-                "object {} PID {}",
-                f.object,
-                f.pid
+        let programs = [
+            ("M-0009_A-E0D0-11-434F", "PS_TYM646T_V118_T11.KNXPROD", 11),
+            ("M-0009_A-E0D1-11-99AD", "PS_TYM646R_V118_T11.KNXPROD", 71),
+            ("M-0009_A-E0D2-11-6B74", "PS_TXM646T_V118_T11.KNXPROD", 9),
+            ("M-0009_A-E0D3-12-35BF", "PS_TXM646R_V119_T11.KNXPROD", 69),
+            ("M-0009_A-E0EE-10-ADF8", "PS_TXF121_V106_T6.KNXPROD", 13),
+            ("M-0009_A-E0ED-10-0B6F", "PS_TXA664D_V105_T5.KNXPROD", 42),
+        ];
+        for (app, file, count) in programs {
+            let path = crate::testfixtures::corpus_vendor_knxprod_path(file);
+            let Ok(bytes) = std::fs::read(&path) else {
+                eprintln!("SKIP: {} not in the product-corpus cache", path.display());
+                continue;
+            };
+            let pd = read_knxprod_bytes(&bytes, Some(app))?;
+            assert_eq!(pd.factory_properties.len(), count, "{app}");
+            if app == "M-0009_A-E0D0-11-434F" {
+                let held: Vec<(u8, u8, u32, usize)> = pd
+                    .factory_properties
+                    .iter()
+                    .map(|f| (f.object, f.pid, f.start, f.data.len()))
+                    .collect();
+                let lens = [124, 124, 124, 124, 124, 124, 76, 4, 4, 1, 32];
+                let expected: Vec<(u8, u8, u32, usize)> =
+                    (6u8..).zip(lens).map(|(o, n)| (o, 208, 0, n)).collect();
+                assert_eq!(held, expected);
+                assert_eq!(
+                    pd.factory_properties[0].data[..6],
+                    [0x8E, 0x05, 0x02, 0x19, 0x0C, 0xB2]
+                );
+            }
+            let dev = crate::device::Device::from_product(
+                crate::wire::IndividualAddress::new(1, 1, 5),
+                &pd,
+                crate::device::LoadState::Unloaded,
+                std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
             );
+            for f in &pd.factory_properties {
+                let from = usize::try_from(f.start)?;
+                let value = dev.property_value(f.object, f.pid).ok_or("property")?;
+                assert_eq!(
+                    value.get(from..from + f.data.len()),
+                    Some(f.data.as_slice()),
+                    "{app} object {} PID {} start {}",
+                    f.object,
+                    f.pid,
+                    f.start
+                );
+            }
         }
         Ok(())
     }

@@ -11,6 +11,44 @@ use super::{
     LoadStateMachine, MasterResetSupport, PID_OBJECT_TYPE, Sys7LoadStateMachine,
 };
 
+/// A factory property value as the device places it
+/// ([`Device::with_factory_properties`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct HeldProperty {
+    /// The interface object index.
+    object: u8,
+    /// The property id.
+    pid: u8,
+    /// The octet offset of `data` in the property's value.
+    offset: usize,
+    /// The held octets.
+    data: Vec<u8>,
+    /// The bits of `data` the entry defines; empty for every bit.
+    mask: Vec<u8>,
+}
+
+/// The element size the product declares for property `pid` of `object`
+/// (see [`Device::with_factory_properties`]); `None` when no
+/// `LdCtrlWriteProp` writes it.
+fn declared_element_size(product: &crate::prod::ProductData, object: u8, pid: u8) -> Option<usize> {
+    let &(_, _, len, count) = product
+        .written_props
+        .iter()
+        .find(|&&(o, p, _, _)| o == object && p == pid)?;
+    let pdt_size = product
+        .written_prop_pdts
+        .iter()
+        .find(|&&(o, p, _)| o == object && p == pid)
+        .and_then(|&(_, _, pdt)| crate::prod::pdt_size(pdt));
+    let count = usize::from(count);
+    Some(match pdt_size {
+        Some(size) => size,
+        None if count > 1 && len.is_multiple_of(count) => len / count,
+        None if count > 1 => 1,
+        None => len.max(1),
+    })
+}
+
 impl Device {
     /// Unloads the loadable objects `select` picks (by interface-object type)
     /// and erases their segments: the Unload of Configuration Procedures
@@ -83,38 +121,84 @@ impl Device {
             .map_or(u16::from(object), |v| u16::from_be_bytes([v[0], v[1]]))
     }
 
-    /// Writes the property values the device holds in factory state
+    /// Places the property values the device holds in factory state
     /// ([`crate::prod::ProductData::factory_properties`], the kind 5 entries
-    /// of the catalogue's `LoadedImage`, bussard issue #1012) into its
-    /// properties: on build, and after a master reset that resets the
-    /// parameters (erase code 2, 5 or 7 on channel 0). The real device holds
-    /// them there, and ETS leaves out a procedure write the value already
-    /// holds (the sweep captures of `M-0009_A-E0D0-11-434F`).
+    /// of the catalogue's `LoadedImage`, bussard issue #1012) and writes them
+    /// into its properties ([`Self::restore_factory_properties`]). Every
+    /// device constructor's result passes through here
+    /// ([`Device::from_product_with_overrides`]).
     ///
-    /// An entry's start counts elements of the property (every entry of the
-    /// corpus is on a one-octet element, where elements and octets agree).
+    /// An entry's start counts elements of the property. The element size
+    /// is the one the product declares for the property: the size of the
+    /// PDT its parameters give, else the `InlineData` (or parameter extent)
+    /// over the step's `Count` when that divides it, else one octet (every
+    /// entry of the corpus is on a one-octet element). A property no step
+    /// writes keeps the element size of its description. The size of the
+    /// property's description is not used for a written property: a
+    /// `Count` that does not divide the length leaves it described as one
+    /// element of the whole value, and an entry at element 1 or later would
+    /// then fall outside it.
+    pub(super) fn with_factory_properties(mut self, product: &crate::prod::ProductData) -> Self {
+        let held = product
+            .factory_properties
+            .iter()
+            .filter_map(|f| {
+                let element = declared_element_size(product, f.object, f.pid).or_else(|| {
+                    self.objects
+                        .get(&f.object)
+                        .and_then(|o| o.property(f.pid))
+                        .map(|p| p.element_size())
+                });
+                let offset =
+                    element.and_then(|size| usize::try_from(f.start).ok()?.checked_mul(size));
+                if offset.is_none() {
+                    tracing::warn!(
+                        object = f.object,
+                        pid = f.pid,
+                        start = f.start,
+                        "the LoadedImage holds a property value the device does not have; left out"
+                    );
+                }
+                Some(HeldProperty {
+                    object: f.object,
+                    pid: f.pid,
+                    offset: offset?,
+                    data: f.data.clone(),
+                    mask: f.mask.clone(),
+                })
+            })
+            .collect();
+        self.factory_properties = held;
+        self.restore_factory_properties();
+        self
+    }
+
+    /// Writes the property values the device holds in factory state
+    /// ([`Self::with_factory_properties`]) into its properties: on build,
+    /// and after a master reset that resets the parameters (erase code 2, 5
+    /// or 7 on channel 0). The real device holds them there, and ETS leaves
+    /// out a procedure write the value already holds (the sweep captures of
+    /// `M-0009_A-E0D0-11-434F`).
+    ///
     /// Bits the entry's mask leaves undefined keep their value. An entry
     /// whose object or property the device lacks, or that runs past the
     /// property's value, is left out with a warning: no product of the
     /// corpus has one, and a resized property would change its description.
     pub(super) fn restore_factory_properties(&mut self) {
         for held in &self.factory_properties {
-            let prop = self
+            let slot = self
                 .objects
                 .get_mut(&held.object)
-                .and_then(|o| o.property_mut(held.pid));
-            let slot = prop.and_then(|p| {
-                let from = usize::try_from(held.start)
-                    .ok()?
-                    .checked_mul(p.element_size())?;
-                let to = from.checked_add(held.data.len())?;
-                p.value.get_mut(from..to)
-            });
+                .and_then(|o| o.property_mut(held.pid))
+                .and_then(|p| {
+                    let to = held.offset.checked_add(held.data.len())?;
+                    p.value.get_mut(held.offset..to)
+                });
             let Some(slot) = slot else {
                 tracing::warn!(
                     object = held.object,
                     pid = held.pid,
-                    start = held.start,
+                    offset = held.offset,
                     len = held.data.len(),
                     "the LoadedImage holds a property value the device does not have room for; \
                      left out"
@@ -625,6 +709,47 @@ mod tests {
                 assert_eq!(pid_208(&dev)?, vec![0xAA; 4], "{mask} {erase} {channel}");
             }
         }
+        Ok(())
+    }
+
+    /// A property whose `Count` does not divide its length is described as
+    /// one element of the whole value; an entry at element 1 still lands at
+    /// octet 1, the element size the product declares (one octet per
+    /// element), not past the value.
+    #[test]
+    fn test_with_factory_properties_uses_the_declared_element_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut product = crate::testfixtures::synthetic_system_b_product();
+        product.written_props.push((6, 208, 5, 2));
+        product.factory_properties = vec![crate::prod::FactoryProperty {
+            object: 6,
+            pid: 208,
+            start: 1,
+            data: vec![0x33],
+            mask: Vec::new(),
+        }];
+        let dev = Device::from_product(
+            IndividualAddress::new(1, 1, 5),
+            &product,
+            LoadState::Unloaded,
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        );
+        let prop = dev
+            .objects
+            .get(&6)
+            .and_then(|o| o.property(208))
+            .ok_or("object 6 PID 208")?;
+        assert_eq!(prop.max_elements, 1, "described as one element");
+        assert_eq!(pid_208(&dev)?, vec![0x00, 0x33, 0x00, 0x00, 0x00]);
+        // A PDT the product gives sets the element size: two octets.
+        product.written_prop_pdts.push((6, 208, 0x04));
+        let dev = Device::from_product(
+            IndividualAddress::new(1, 1, 5),
+            &product,
+            LoadState::Unloaded,
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        );
+        assert_eq!(pid_208(&dev)?, vec![0x00, 0x00, 0x33, 0x00, 0x00]);
         Ok(())
     }
 
