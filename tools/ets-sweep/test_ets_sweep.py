@@ -1338,6 +1338,15 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertIsNone(self.d.ja_on_the_line_of([cell], nein))
         self.assertIs(self.d.ja_on_the_line_of([cell], None), cell)
 
+    def test_result_ok_finds_the_button_or_falls_back(self):
+        # The import result panel's OK by OCR (2026-11-09: at 2416, 1486),
+        # else the position of 2026-10-27.
+        line = {"text": "OK", "x": 2404, "y": 1476, "w": 28, "h": 20}
+        hit = self.d.result_ok([line])
+        self.assertEqual(hit["click_y"], 1486)
+        self.assertTrue(2404 <= hit["click_x"] <= 2432, hit)
+        self.assertEqual(self.d.result_ok([]), {"click_x": 2488, "click_y": 1528})
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
