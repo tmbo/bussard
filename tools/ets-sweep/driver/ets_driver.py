@@ -481,9 +481,13 @@ def button_hit(lines: list[dict], label: str) -> dict | None:
 
 def click_button(label: str, bbox: tuple[int, int, int, int]) -> None:
     """Clicks the button `label` (see `button_hit`) inside the word."""
-    hit = button_hit(ocr(bbox), label)
+    lines = ocr(bbox)
+    hit = button_hit(lines, label)
     if not hit:
-        raise RuntimeError(f"button {label!r} not on screen in {bbox}")
+        # What OCR read, so a miss can be diagnosed from the row's error
+        # (every delete of 2026-11-09 missed 'Ja' and no log said why).
+        seen = [(l["text"], l["x"], l["y"]) for l in lines][:12]
+        raise RuntimeError(f"button {label!r} not on screen in {bbox}; OCR read {seen}")
     click(hit["click_x"], hit["click_y"])
 
 
