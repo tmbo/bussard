@@ -22,7 +22,7 @@ use bussard_model::Model;
 use bussard_testkit::MockGateway;
 use bussard_transport::{ConnectionConfig, TransportKind};
 use rmcp::model::{
-    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo, ElicitRequestParams,
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, ElicitRequestParams,
     ElicitResult, ElicitationAction, ElicitationCapability, FormElicitationCapability,
     Implementation, InputRequest, ProtocolVersion, RequestMetaObject, UrlElicitationCapability,
 };
@@ -124,8 +124,8 @@ impl ClientHandler for Human {
         Ok(self.answer(request))
     }
 
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
             self.capabilities(),
             Implementation::new("fake-chat", "0.0.0"),
         )
