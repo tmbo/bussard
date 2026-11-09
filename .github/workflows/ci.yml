@@ -329,10 +329,10 @@ jobs:
         working-directory: services/enroll-relay
         run: npm test
 
-  # MSRV gate: the workspace declares rust-version = "1.88", so verify the code
+  # MSRV gate: the workspace declares rust-version = "1.89", so verify the code
   # still builds on exactly that toolchain. This is `cargo check` only (no
   # tests): it type-checks the whole workspace without paying for codegen +
-  # test execution, which is enough to catch use of newer-than-1.88 std/lang
+  # test execution, which is enough to catch use of newer-than-1.89 std/lang
   # features and dependencies whose own rust-version is newer. The `test`
   # matrix already exercises behaviour on stable.
   #
@@ -341,7 +341,7 @@ jobs:
   # it, and this job silently checked on stable: it stayed green while
   # rmcp 3.x already required 1.88 (issue #87).
   msrv:
-    name: MSRV 1.88 (cargo check --all-targets)
+    name: MSRV 1.89 (cargo check --all-targets)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -349,17 +349,17 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install Rust 1.88
+      - name: Install Rust 1.89
         id: msrv-toolchain
-        uses: dtolnay/rust-toolchain@360a4e93673de6630fac2478bc9e35244b01a759 # 1.88 (branch)
+        uses: dtolnay/rust-toolchain@599c45df1a24c1c63ae1129a7e59f46654b8fb66 # 1.89 (branch)
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-          # Own cache key: the 1.88 build graph differs from the stable one, so
+          # Own cache key: the 1.89 build graph differs from the stable one, so
           # it must not share with the rust-ubuntu cache used by lint/test.
-          shared-key: rust-msrv-1-88
+          shared-key: rust-msrv-1-89
 
       - name: cargo check (workspace)
         env:

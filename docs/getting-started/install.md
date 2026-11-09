@@ -90,7 +90,7 @@ Pick the file for your machine on the [download page](https://bussard.tmbo.dev/#
 
 ## Build from source
 
-With Rust 1.88 or newer:
+With Rust 1.89 or newer:
 
 ```console
 $ git clone https://github.com/tmbo/bussard

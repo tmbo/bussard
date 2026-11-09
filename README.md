@@ -113,7 +113,7 @@ Or download a binary from the [latest release](https://github.com/tmbo/bussard/r
 | `bussard-macos-x64` | macOS, Intel |
 | `bussard-windows-x64.exe` | Windows, x86-64 |
 
-Building from source needs Rust 1.88 or newer: `cargo install --path crates/bussard-cli`. [The install docs](https://bussard.tmbo.dev/docs/getting-started/install/) have the details. Read [the safety page](docs/explanation/safety.md) before your first write.
+Building from source needs Rust 1.89 or newer: `cargo install --path crates/bussard-cli`. [The install docs](https://bussard.tmbo.dev/docs/getting-started/install/) have the details. Read [the safety page](docs/explanation/safety.md) before your first write.
 
 ## Safety
 

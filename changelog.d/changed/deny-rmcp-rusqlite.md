@@ -1,0 +1,1 @@
+- Bumped `rmcp` 3.3 to 3.9 (RUSTSEC-2026-0457, RUSTSEC-2026-0461, RUSTSEC-2026-0462) and `rusqlite` 0.32 to 0.41, which brings the bundled `libsqlite3-sys` 0.30 to 0.39 (RUSTSEC-2026-0459). Building from source now needs Rust 1.89 or newer (was 1.88), because rusqlite 0.41 requires it. No change to the MCP tools or the monitor's history database.

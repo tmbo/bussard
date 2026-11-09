@@ -26,7 +26,7 @@ use bussard_service::{
 use bussard_service::{describe, group};
 use rmcp::ErrorData;
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ServerCapabilities, ServerConfig};
 use rmcp::schemars::{self, JsonSchema};
 use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use serde::Deserialize;
@@ -1150,7 +1150,7 @@ impl ServerHandler for BussardMcp {
         response
     }
 
-    fn get_info(&self) -> ServerInfo {
+    fn get_info(&self) -> ServerConfig {
         // Identify as bussard (not the SDK default "rmcp") so clients show the
         // right name/version.
         let mut server_info = rmcp::model::Implementation::from_build_env();
@@ -1170,7 +1170,7 @@ impl ServerHandler for BussardMcp {
             Some(setup) if self.before_setup() => setup.instructions(),
             _ => crate::guidance::Tiers::of(self.state()).instructions(),
         };
-        ServerInfo::new(capabilities)
+        ServerConfig::new(capabilities)
             .with_server_info(server_info)
             .with_instructions(instructions)
     }

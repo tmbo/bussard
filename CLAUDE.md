@@ -155,9 +155,9 @@ when it waits on the owner. The table of labels and when to use them is in
 ## Rust Edition and Toolchain
 
 - Edition: **2024**, set once in `[workspace.package]` (do not set it per crate).
-- MSRV: **1.88**, declared as `rust-version` in `[workspace.package]` and gated
-  by the dedicated `msrv` CI job (`cargo check` on the 1.88 toolchain). Do not
-  use std/lang features newer than 1.88.
+- MSRV: **1.89**, declared as `rust-version` in `[workspace.package]` and gated
+  by the dedicated `msrv` CI job (`cargo check` on the 1.89 toolchain). Do not
+  use std/lang features newer than 1.89.
 - `rust-toolchain.toml` pins the local dev channel to `stable` (with `rustfmt`
   and `clippy`). It does NOT pin the MSRV; that floor lives in `Cargo.toml`.
 - Do NOT use nightly features.
