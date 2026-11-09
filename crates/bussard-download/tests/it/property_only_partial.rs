@@ -410,6 +410,7 @@ fn test_parameters_only_reads_the_description_of_an_undeclared_property() -> Tes
     let describe = FlashStep::DescribeProp {
         object: PropObject::Index(10),
         prop_id: 52,
+        unwritten: None,
     };
     let reads_before_write = |steps: &[FlashStep]| -> Vec<usize> {
         steps

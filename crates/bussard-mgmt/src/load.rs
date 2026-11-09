@@ -660,6 +660,30 @@ pub enum WriteError {
         detail: String,
     },
 
+    /// A property a load procedure writes from the program's parameters was
+    /// planned as left out, as ETS leaves out a property the device describes
+    /// as `PDT_VARIABLE_LENGTH` (issue #947), and the device describes it with
+    /// a fixed-size type instead: ETS would write it. The flash stops rather
+    /// than report success with the parameters placed in it unwritten.
+    #[error(
+        "{address}: {property} is described as {max_elements} element(s) of PDT {pdt:#04X}, \
+         not variable-length; the {octets} octets your project's parameters compose for it \
+         split into neither the load procedure's Count nor one element, so bussard cannot \
+         write it as ETS would, and stops rather than leave it unwritten"
+    )]
+    PropertyNotVariableLength {
+        /// The device.
+        address: IndividualAddress,
+        /// The object and property, in words.
+        property: String,
+        /// The PDT the device describes.
+        pdt: u8,
+        /// The element count the device describes.
+        max_elements: u16,
+        /// The octets the parameters compose for the property.
+        octets: usize,
+    },
+
     /// A property or function-property target does not fit the field the
     /// service carries it in (an 8-bit object index or PID on the plain
     /// services, a 12-bit PID on the extended ones). Refused before anything is

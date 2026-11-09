@@ -120,6 +120,7 @@ fn test_plan_flash_runs_a_module_procedure_at_its_instance_object() -> TestResul
         [FlashStep::DescribeProp {
             object: PropObject::Index(6),
             prop_id: 208,
+            unwritten: None,
         }]
     );
     // Each reached instance runs the procedure at its own base, in walk
@@ -130,10 +131,12 @@ fn test_plan_flash_runs_a_module_procedure_at_its_instance_object() -> TestResul
             FlashStep::DescribeProp {
                 object: PropObject::Index(6),
                 prop_id: 208,
+                unwritten: None,
             },
             FlashStep::DescribeProp {
                 object: PropObject::Index(7),
                 prop_id: 208,
+                unwritten: None,
             },
         ]
     );
@@ -173,6 +176,7 @@ fn test_plan_flash_splices_a_module_procedure_at_the_template_marker() -> TestRe
         [FlashStep::DescribeProp {
             object: PropObject::Index(6),
             prop_id: 208,
+            unwritten: None,
         }]
     );
     Ok(())

@@ -3402,7 +3402,8 @@ mod tests {
             plan.steps.iter().any(|s| *s
                 == FlashStep::DescribeProp {
                     object: typed,
-                    prop_id: 207
+                    prop_id: 207,
+                    unwritten: None,
                 }),
             "the description read names the type: {:?}",
             plan.steps
@@ -3411,7 +3412,8 @@ mod tests {
             s,
             FlashStep::DescribeProp {
                 object: crate::flash::PropObject::Index(0),
-                prop_id: 207
+                prop_id: 207,
+                unwritten: None,
             }
         )));
         Ok(())
@@ -4028,6 +4030,7 @@ mod tests {
                     occurrence: 0,
                 },
                 prop_id: 204,
+                unwritten: None,
             }]
         );
         Ok(())
@@ -4661,6 +4664,7 @@ mod tests {
         assert!(plan.steps.contains(&FlashStep::DescribeProp {
             object: typed,
             prop_id: 211,
+            unwritten: None,
         }));
         assert!(writes_to(&plan, 211).is_empty());
         let param = r#"<Parameter Id="M-00FA_A-2500-10-51CB_P-1" Name="limit" ParameterType="M-00FA_A-2500-10-51CB_PT-u8" Value="50"><Property ObjectType="50001" PropertyId="211" Offset="0" BitOffset="0" /></Parameter>"#;

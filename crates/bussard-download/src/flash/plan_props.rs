@@ -396,7 +396,10 @@ pub(super) fn may_hold(
 ///
 /// A write without `InlineData` on a property no parameter of `app` is stored
 /// in lowers to [`FlashStep::DescribeProp`]: ETS reads the property's
-/// description and writes nothing (issue #841, `M-00A6_A-0033-20-BFA6`).
+/// description and writes nothing (issue #841, `M-00A6_A-0033-20-BFA6`). One
+/// from element 1 to an undeclared property the parameters compose a value
+/// for is sized as ETS sizes it by the description ([`DescribedSize`], issue
+/// #947): `Count` elements, one element, or the description read alone.
 ///
 /// `typed_by_list` is the plan's [`FlashPlan::typed_objects_by_list`]: an
 /// object named by type is then written at a listed index on the plain
@@ -436,15 +439,32 @@ pub(super) fn lower_write_prop(
     })?;
     let object = prop_object(step, *obj_idx, *obj_type, *occurrence)?;
     let name = format!("{object} PID {prop_id}");
+    let mut count = *count;
     let (value, from_parameters) = match inline_data.as_ref().filter(|d| !d.is_empty()) {
         Some(data) => (data.clone(), false),
         None => match parameter_value(values, *obj_idx, *obj_type, *occurrence, prop_id) {
+            Some(value) if start_element.unwrap_or(1) <= 1 && !declared(app, object, prop_id) => {
+                match sized_by_description(count, value.len()) {
+                    DescribedSize::Elements(elements) => {
+                        count = Some(elements);
+                        (value.to_vec(), true)
+                    }
+                    DescribedSize::VariableLength => {
+                        check_addressable(step, object, prop_id, typed_by_list)?;
+                        return Ok(FlashStep::DescribeProp {
+                            object,
+                            prop_id,
+                            unwritten: Some(value.len()),
+                        });
+                    }
+                }
+            }
             Some(value) => {
                 let target = WriteTarget {
                     object,
                     prop_id,
                     start_element: *start_element,
-                    count: *count,
+                    count,
                 };
                 (elements_of_property(step, &name, value, app, target)?, true)
             }
@@ -466,7 +486,11 @@ pub(super) fn lower_write_prop(
                         ),
                     });
                 }
-                return Ok(FlashStep::DescribeProp { object, prop_id });
+                return Ok(FlashStep::DescribeProp {
+                    object,
+                    prop_id,
+                    unwritten: None,
+                });
             }
             None => {
                 return Err(PlanError::UnsupportedWriteProp {
@@ -486,13 +510,80 @@ pub(super) fn lower_write_prop(
             object,
             prop_id,
             start_element: *start_element,
-            count: *count,
+            count,
         },
         value,
         from_parameters,
         verify.unwrap_or(false),
         typed_by_list,
     )
+}
+
+/// How ETS sizes an undeclared `LdCtrlWriteProp` without `InlineData` from
+/// element 1: by the property's description, which it reads first (issue
+/// #947). A device holding what the product implies describes the property
+/// from the `len` octets the parameters placed in it compose and the op's
+/// `Count` (knx-sim `Property::product_written`, #983):
+///
+/// - `Count` elements of `len / Count` octets when `Count` divides `len`:
+///   ETS writes the `Count` elements (`M-007C_A-0002-30-DC22` object 8 PID
+///   64, `Count="988"`, 3952 octets: 988 elements of 4 in 66 requests);
+/// - else one element of the whole value, `PDT_GENERIC_01` to `_20`, when
+///   `len` is 1 to 20 octets: ETS writes it as `count=1` (DC22 PID 69,
+///   `Count="64"`, 4 octets; `M-007C_A-0003-43-4813` PID 68, the 4-octet IP
+///   address under `Count="64"`);
+/// - else one element of `PDT_VARIABLE_LENGTH`: ETS reads the description and
+///   writes nothing (`M-007C_A-0001-10-2A85` PIDs 64 and 66, `Count="500"`,
+///   256 octets; PIDs 68 and 69, 40 octets under `Count="64"`; DC22 PID 68,
+///   240 octets under `Count="100"`; 4813 PID 69, 108 octets).
+///
+/// All ten such writes of the sweep's captures, and the 29 whose `Count`
+/// divides the value, follow it (issue #947, 2026-11-09).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DescribedSize {
+    /// Written as this many elements from element 1.
+    Elements(u32),
+    /// Described as variable-length: not written.
+    VariableLength,
+}
+
+/// The largest element a generic PDT describes: `PDT_GENERIC_20`.
+const MAX_GENERIC_OCTETS: usize = 20;
+
+/// The size ETS writes a composed value of `len` octets in under the op's
+/// `count` ([`DescribedSize`]).
+fn sized_by_description(count: Option<u32>, len: usize) -> DescribedSize {
+    let count = super::declare::undeclared_element_count(count);
+    let divides = usize::try_from(count).is_ok_and(|c| len.is_multiple_of(c));
+    if len > 0 && divides {
+        DescribedSize::Elements(count)
+    } else if (1..=MAX_GENERIC_OCTETS).contains(&len) {
+        DescribedSize::Elements(1)
+    } else {
+        DescribedSize::VariableLength
+    }
+}
+
+/// Whether an `LdCtrlDeclarePropDesc` of `app`'s procedures declares
+/// `object`/`prop_id`: its description is then the declared one, which
+/// [`elements_of_property`] and `flash/declare.rs` size by.
+fn declared(app: &ApplicationProgram, object: PropObject, prop_id: u32) -> bool {
+    app.load_procedures
+        .iter()
+        .flat_map(|p| p.ops.iter())
+        .any(|op| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(declared),
+                ..
+            } => {
+                *declared == prop_id
+                    && prop_object(0, *obj_idx, *obj_type, *occurrence).ok() == Some(object)
+            }
+            _ => false,
+        })
 }
 
 /// The octets of `property`, the value the parameters compose for the
@@ -1112,6 +1203,112 @@ mod tests {
         Ok(())
     }
 
+    /// The ise smart connect's count-only write to object 8 (issue #947).
+    fn ise_write(prop_id: u32, count: u32) -> LoadOp {
+        LoadOp::WriteProp {
+            obj_idx: Some(8),
+            obj_type: None,
+            prop_id: Some(prop_id),
+            inline_data: None,
+            start_element: None,
+            count: Some(count),
+            verify: Some(false),
+            occurrence: None,
+        }
+    }
+
+    #[test]
+    fn test_sized_by_description_follows_the_captures() {
+        // DC22 PID 64: 988 elements of 4 octets.
+        assert_eq!(
+            sized_by_description(Some(988), 3952),
+            DescribedSize::Elements(988)
+        );
+        // DC22 PID 69 and 4813 PID 68: 4 octets under Count 64, one element.
+        assert_eq!(
+            sized_by_description(Some(64), 4),
+            DescribedSize::Elements(1)
+        );
+        assert_eq!(
+            sized_by_description(Some(64), 20),
+            DescribedSize::Elements(1)
+        );
+        // 2A85 PID 64 (256 octets, Count 500), 4813 PID 69 (108, Count 64),
+        // and 2A85 PID 68 (40, Count 64): variable-length, not written.
+        assert_eq!(
+            sized_by_description(Some(500), 256),
+            DescribedSize::VariableLength
+        );
+        assert_eq!(
+            sized_by_description(Some(64), 108),
+            DescribedSize::VariableLength
+        );
+        assert_eq!(
+            sized_by_description(Some(64), 21),
+            DescribedSize::VariableLength
+        );
+        // No Count: one element, as before.
+        assert_eq!(sized_by_description(None, 300), DescribedSize::Elements(1));
+    }
+
+    #[test]
+    fn test_lower_write_prop_leaves_out_a_variable_length_property() -> TestResult {
+        // `M-007C_A-0001-10-2A85` step 31: 64 parameters of 4 octets in
+        // object 8 PID 64 under `Count="500"`; ETS reads the description and
+        // writes nothing (ops 43, 44).
+        let mut values = PropertyValues::new();
+        values.insert((PropertyObjectRef::Index(8), 64), vec![0; 256]);
+        assert_eq!(
+            lower_write_prop(31, &ise_write(64, 500), &values, &guarded_app()?, false)?,
+            FlashStep::DescribeProp {
+                object: PropObject::Index(8),
+                prop_id: 64,
+                unwritten: Some(256),
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_write_prop_writes_a_short_value_as_one_element() -> TestResult {
+        // `M-007C_A-0002-30-DC22` op 210: one 32-bit parameter in object 8
+        // PID 69 under `Count="64"`, written `count=1 index=1 len=4`.
+        let mut values = PropertyValues::new();
+        values.insert((PropertyObjectRef::Index(8), 69), vec![0, 0, 0, 1]);
+        assert_eq!(
+            lower_write_prop(35, &ise_write(69, 64), &values, &guarded_app()?, false)?,
+            FlashStep::WriteProp {
+                object: PropObject::Index(8),
+                prop_id: 69,
+                value: vec![0, 0, 0, 1],
+                start_element: 1,
+                count: 1,
+                verify: false,
+                from_parameters: true,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_lower_write_prop_writes_count_elements_that_split() -> TestResult {
+        // DC22 op 75: 988 elements of 4 octets.
+        let mut values = PropertyValues::new();
+        values.insert((PropertyObjectRef::Index(8), 64), vec![7; 3952]);
+        match lower_write_prop(31, &ise_write(64, 988), &values, &guarded_app()?, false)? {
+            FlashStep::WriteProp {
+                count,
+                value,
+                start_element,
+                ..
+            } => {
+                assert_eq!((start_element, count, value.len()), (1, 988, 3952));
+            }
+            other => return Err(format!("expected WriteProp, got {other:?}").into()),
+        }
+        Ok(())
+    }
+
     /// A data-less write on a property no parameter is stored in.
     fn dataless_write(obj_idx: Option<u32>, obj_type: Option<u32>, prop_id: u32) -> LoadOp {
         LoadOp::WriteProp {
@@ -1141,6 +1338,7 @@ mod tests {
                     occurrence: 0,
                 },
                 prop_id: 211,
+                unwritten: None,
             }
         );
         let op = dataless_write(Some(6), None, 61);
@@ -1149,6 +1347,7 @@ mod tests {
             FlashStep::DescribeProp {
                 object: PropObject::Index(6),
                 prop_id: 61,
+                unwritten: None,
             }
         );
         Ok(())
@@ -1254,6 +1453,7 @@ mod tests {
             FlashStep::DescribeProp {
                 object: PropObject::Index(8),
                 prop_id: 68,
+                unwritten: None,
             }
         );
         Ok(())

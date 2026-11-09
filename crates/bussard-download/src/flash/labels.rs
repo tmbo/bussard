@@ -420,9 +420,23 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
                 program.writes.len()
             )
         }
-        FlashStep::DescribeProp { object, prop_id } => format!(
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten: None,
+        } => format!(
             "read property description ({object}, PID {prop_id}; no declaration or KNX master \
              data types it)"
+        ),
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten: Some(octets),
+        } => format!(
+            "read property description ({object}, PID {prop_id}) and leave it unwritten, as ETS \
+             does: the {octets} octets your parameters compose for it split into neither the \
+             procedure's Count nor one element, so the device describes it as variable-length \
+             (checked)"
         ),
         FlashStep::EnableVerifyMode => {
             "enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear; \

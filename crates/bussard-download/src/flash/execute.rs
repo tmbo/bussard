@@ -831,8 +831,9 @@ impl StepExecutor for SystemB<'_> {
             // The description read of a property no value decides (issue
             // #841), on an object named by type of a program that is not Data
             // Secure enabled: at its index, by the resolver of the write
-            // above; a type no list holds reads nothing, the read changes
-            // nothing.
+            // above; a type no list holds reads nothing. The answer changes
+            // nothing, except for a read that stands in for a write left out
+            // (issue #947), which checks it.
             FlashStep::DescribeProp {
                 object:
                     PropObject::Type {
@@ -840,6 +841,7 @@ impl StepExecutor for SystemB<'_> {
                         occurrence,
                     },
                 prop_id,
+                unwritten,
             } if plan.typed_objects_by_list() => {
                 if let Some(index) = super::props::resolve_type_index(
                     session.l4(),
@@ -854,6 +856,7 @@ impl StepExecutor for SystemB<'_> {
                         session.l4(),
                         PropObject::Index(u32::from(index)),
                         *prop_id,
+                        *unwritten,
                     )
                     .await?;
                 }

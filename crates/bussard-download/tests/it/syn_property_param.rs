@@ -145,6 +145,7 @@ fn test_plan_flash_describes_a_bare_write_prop_no_parameter_supplies() -> TestRe
         plan.steps.contains(&FlashStep::DescribeProp {
             object: PropObject::Index(4),
             prop_id: 201,
+            unwritten: None,
         }),
         "{:?}",
         plan.steps
@@ -1013,6 +1014,7 @@ fn test_plan_flash_keeps_a_compare_prop_by_type_off_object_0() -> TestResult {
             &FlashStep::DescribeProp {
                 object: typed,
                 prop_id: 207,
+                unwritten: None,
             },
             &FlashStep::CompareProp {
                 object: typed,

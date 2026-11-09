@@ -146,8 +146,8 @@ pub use plan_sys7::{
     sys7_task_identity,
 };
 pub use props::{
-    PropertyWriteRequest, compare_property_value, plain_write_elements, property_write_requests,
-    read_property_value, write_property_value,
+    PropertyWriteRequest, compare_property_value, describe_property, plain_write_elements,
+    property_write_requests, read_property_value, write_property_value,
 };
 pub use restart_form::{RestartForm, restart_form};
 pub use session::{
@@ -378,11 +378,23 @@ pub enum FlashStep {
     /// planners also put one before the first write or compare of a property
     /// on a connection that neither a declaration nor the KNX master data
     /// types, as ETS does (issue #1014).
+    ///
+    /// A write without `InlineData` whose composed value splits neither into
+    /// its `Count` elements nor into one generic element of at most 20 octets
+    /// lowers to one too, with `unwritten` set (issue #947): ETS finds such a
+    /// property described as `PDT_VARIABLE_LENGTH` and writes nothing. The
+    /// executor then checks the answer: a device that describes the property
+    /// with a fixed-size type fails the flash, because ETS would write it and
+    /// the parameters placed in it would be left out silently.
     DescribeProp {
         /// The interface object the op names: by index or by type.
         object: PropObject,
         /// The property id.
         prop_id: u32,
+        /// The octets the program's parameters compose for the property that
+        /// this read stands in for a write of (issue #947); `None` for a
+        /// property no parameter decides and for the read before a write.
+        unwritten: Option<usize>,
     },
     /// Verify an interface-object property against expected data
     /// (`LdCtrlCompareProp`) — the read-only precondition check that is the twin
@@ -2246,6 +2258,7 @@ mod tests {
         let describe = FlashStep::DescribeProp {
             object: PropObject::Index(4),
             prop_id: 206,
+            unwritten: None,
         };
         plan.add_security_program(crate::security::SecurityProgram {
             senders: Vec::new(),
@@ -2318,6 +2331,7 @@ mod tests {
         let describe = FlashStep::DescribeProp {
             object: obj4,
             prop_id: 246,
+            unwritten: None,
         };
         let reads = |steps: &[FlashStep]| steps.iter().filter(|s| **s == describe).count();
         assert_eq!(reads(&plan.steps), 2, "{:?}", plan.steps);

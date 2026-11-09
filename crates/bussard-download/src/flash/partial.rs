@@ -355,13 +355,16 @@ impl FlashPlan {
         }
         // The properties the parameters are placed in (issue #706): the
         // writes whose value the parameters compose, by object and PID.
-        // A write the full flash leaves out as held counts too (issue #951).
+        // A write the full flash leaves out as held counts too (issue #951),
+        // and so does one it leaves out as ETS does, whose description read
+        // checks the device's answer (issue #947).
         let param_props: BTreeSet<(super::PropObject, u32)> = self
             .steps
             .iter()
             .filter_map(FlashStep::property_write)
             .filter(|w| w.from_parameters)
             .map(|w| (w.object, w.prop_id))
+            .chain(self.steps.iter().filter_map(left_out_property))
             .collect();
         // A program whose parameters all live in properties (the Hager 07B0
         // actuators, issue #944) writes no parameter image. Its `par`
@@ -478,6 +481,14 @@ impl FlashPlan {
                 FlashStep::LoadImageProp { obj_idx, .. } if objects.contains(obj_idx) => {
                     steps.push(step.clone());
                 }
+                // A property the parameters compose a value for that ETS
+                // leaves out (issue #947): its checked description read stays,
+                // so a device that describes it as fixed-size stops the
+                // parameter-only download as it stops the full one, rather
+                // than report success with those parameters unwritten.
+                FlashStep::DescribeProp {
+                    unwritten: Some(_), ..
+                } => steps.push(step.clone()),
                 // Read-only preconditions the vendor asks for stay in.
                 FlashStep::CompareProp { .. } | FlashStep::CompareRelMem { .. } => {
                     steps.push(step.clone());
@@ -582,6 +593,11 @@ impl FlashPlan {
                 | FlashStep::LoadImageProp { .. } => {
                     steps.push(step.clone());
                 }
+                // The checked description read of a property ETS leaves out
+                // (issue #947), as on System B.
+                FlashStep::DescribeProp {
+                    unwritten: Some(_), ..
+                } => steps.push(step.clone()),
                 FlashStep::Restart | FlashStep::Delay { .. } | FlashStep::EnableVerifyMode => {
                     steps.push(step.clone());
                 }
@@ -629,6 +645,19 @@ impl FlashPlan {
             })
             .filter(|(_, changed)| !changed.is_empty())
             .collect()
+    }
+}
+
+/// The property a [`FlashStep::DescribeProp`] stands in for a write of, one
+/// whose parameters ETS leaves unwritten (issue #947).
+fn left_out_property(step: &FlashStep) -> Option<(super::PropObject, u32)> {
+    match step {
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten: Some(_),
+        } => Some((*object, *prop_id)),
+        _ => None,
     }
 }
 
@@ -706,6 +735,47 @@ mod tests {
         assert_eq!(partial.baseline_address(segment), Some(0x4006));
         assert_eq!(partial.changed_octets(), 1);
         assert_eq!(partial.baseline(segment), Some(&[7u8][..]));
+        Ok(())
+    }
+
+    #[test]
+    fn test_parameters_only_keeps_the_check_of_a_property_left_unwritten()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #947: the full plan leaves object 8 PID 64 unwritten as ETS
+        // does (a 256-octet value under `Count="500"`). The parameter-only
+        // download keeps the checked description read, so a device that
+        // describes the property as fixed-size stops it too.
+        let app = fabricated_app();
+        let overrides = BTreeMap::from([("P-0_R-0".to_string(), "9".to_string())]);
+        let mut full = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &overrides,
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let check = FlashStep::DescribeProp {
+            object: super::super::PropObject::Index(8),
+            prop_id: 64,
+            unwritten: Some(256),
+        };
+        let at = full
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .ok_or("the full plan completes a load")?;
+        full.steps.insert(at, check.clone());
+        let segment = "M-1_A-1_RS-2";
+        let regions = ParamRegions::from([region(segment, 0x4006, &[7])]);
+        let partial = full.parameters_only(&regions)?;
+        assert_eq!(
+            partial.steps.iter().filter(|s| **s == check).count(),
+            1,
+            "{:?}",
+            partial.steps
+        );
         Ok(())
     }
 
