@@ -88,6 +88,18 @@ fn touched(step: &FlashStep) -> Option<(PropObject, u32)> {
 /// `describe`, issue #951) counts as read; a held step does not read the
 /// description of a property ETS has a type for or already described on the
 /// connection.
+///
+/// Idempotent, and run again on the final step list: after a step removal
+/// that ends no connection any more ([`FlashPlan::skip_factory_reset`],
+/// [`FlashPlan::skip_sys7_prelude`], [`FlashPlan::use_par_procedure`]) a
+/// read the joined connection already made is dropped, and on a
+/// parameter-only plan ([`FlashPlan::parameters_only`]) the reads its writes
+/// need are put back.
+///
+/// [`FlashPlan::skip_factory_reset`]: super::FlashPlan::skip_factory_reset
+/// [`FlashPlan::skip_sys7_prelude`]: super::FlashPlan::skip_sys7_prelude
+/// [`FlashPlan::use_par_procedure`]: super::FlashPlan::use_par_procedure
+/// [`FlashPlan::parameters_only`]: super::FlashPlan::parameters_only
 pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashStep> {
     let mut out = Vec::with_capacity(steps.len());
     let mut declared: BTreeSet<(PropObject, u32)> = BTreeSet::new();
@@ -102,8 +114,12 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
             } => {
                 declared.insert((*object, *prop_id));
             }
+            // A second read of a property on one connection goes: the pass
+            // runs again after a step removal joins two connections.
             FlashStep::DescribeProp { object, prop_id } => {
-                described.insert((*object, *prop_id));
+                if !described.insert((*object, *prop_id)) {
+                    continue;
+                }
             }
             FlashStep::FactoryHeldProp {
                 object,

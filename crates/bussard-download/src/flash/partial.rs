@@ -142,6 +142,11 @@ impl FlashPlan {
         } else {
             self.system_b_parameter_steps(regions)?
         };
+        // The cut drops the full plan's description reads; the pass puts back
+        // the ones its own writes need on its connection (issue #1014; no
+        // capture of a parameter-only download shows them, the rule is the
+        // full download's).
+        let steps = super::describe::describe_untyped_properties(steps);
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
             .filter_map(|step| match step {
