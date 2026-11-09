@@ -14,7 +14,9 @@ links; oracle_model.py) and run scripts/campaign/95-offline-oracle.sh on the
 row `1.1.1|<capture>|<product>|<application>`, with `state=fresh` on a
 System 7 mask (`device_state`: the sim starts factory-fresh, #640). The verdict, coverage and the
 region summary land in results/oracle.json, keyed by application id, with the
-load-control verdict and its differences under `loadctl` (issue #419). Nothing
+load-control verdict and its differences under `loadctl` (issue #419) and the
+property description read verdict under `desc` (issue #1014; shown, never part
+of the verdict). Nothing
 touches a bus; the model and the oracle output live next to the capture under
 captures/ (ignored), or under --work DIR/<application>/<variant> (a worktree
 reads the main checkout's captures with --captures and writes nowhere under
@@ -66,6 +68,24 @@ def load_control_summary(diff_json: Path) -> dict:
         out["differences"] = [{k: d.get(k) for k in ("object", "position", "kind", "event", "bussard_hex",
                                                      "ets_hex", "bussard_event", "ets_event")}
                               for d in lc["differences"]]
+    return out
+
+
+def description_summary(diff_json: Path) -> dict:
+    """The property description read verdict of a row and its counts, from
+    diff.json (issue #1014). Shown next to the row's verdict, never part of
+    it: a read changes nothing on the device."""
+    try:
+        desc = json.loads(diff_json.read_text()).get("property_descriptions") or {}
+    except (OSError, ValueError):
+        return {"verdict": "missing"}
+    out = {"verdict": desc.get("verdict", "missing")}
+    for key in ("bussard_reads", "ets_reads"):
+        if desc.get(key) is not None:
+            out[key] = desc[key]
+    for key in ("bussard_only", "ets_only", "not_compared"):
+        if desc.get(key):
+            out[key] = len(desc[key])
     return out
 
 
@@ -167,7 +187,21 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
         out["verdict"] = "oracle-error"
         out["tail"] = text.strip().splitlines()[-6:]
     out["loadctl"] = load_control_summary(work_dir / "oracle" / ia / "diff.json")
+    out["desc"] = description_summary(work_dir / "oracle" / ia / "diff.json")
     return out
+
+
+def desc_text(desc: dict | None) -> str:
+    """The `desc=` column of the progress line (issue #1014): `desc=ok`,
+    `desc=differs(+1/-2)` (bussard-only/ETS-only reads), `desc=none`."""
+    if not desc:
+        return "desc=-"
+    v = desc.get("verdict", "missing")
+    if v == "identical":
+        return "desc=ok"
+    if v == "differs":
+        return "desc=differs(+%d/-%d)" % (desc.get("bussard_only", 0), desc.get("ets_only", 0))
+    return "desc=" + v
 
 
 def main() -> int:
@@ -205,16 +239,21 @@ def main() -> int:
         out[app] = v
         args.out.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
         lc = v.get("loadctl", {}).get("verdict", "-")
-        print(f"{v['verdict']:14} {lc:14} {v.get('coverage', ''):>7} {entry.get('mask')} {app} "
+        desc = desc_text(v.get("desc"))
+        print(f"{v['verdict']:14} {lc:14} {desc:18} {v.get('coverage', ''):>7} {entry.get('mask')} {app} "
               f"{v.get('regions', '')[:70]}", flush=True)
     counts: dict[str, int] = {}
     lc_counts: dict[str, int] = {}
+    desc_counts: dict[str, int] = {}
     for v in out.values():
         counts[v["verdict"]] = counts.get(v["verdict"], 0) + 1
         lc = v.get("loadctl", {}).get("verdict", "missing")
         lc_counts[lc] = lc_counts.get(lc, 0) + 1
+        dv = (v.get("desc") or {}).get("verdict", "missing")
+        desc_counts[dv] = desc_counts.get(dv, 0) + 1
     print("oracle:", counts)
     print("load control:", lc_counts)
+    print("description reads (not part of the verdict):", desc_counts)
     return 0
 
 

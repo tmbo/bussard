@@ -804,6 +804,9 @@ pub(super) fn plan_flash_properties(
             }
         }
     }
+    // The description reads ETS makes before it first touches a property it
+    // has no type for (issue #1014).
+    let steps = super::describe::describe_untyped_properties(steps);
     Ok(FlashPlan {
         identity: AppIdentity {
             id: app.id.clone(),

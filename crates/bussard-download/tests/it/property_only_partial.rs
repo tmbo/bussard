@@ -394,3 +394,49 @@ fn test_parameters_only_writes_a_held_property() -> TestResult {
     );
     Ok(())
 }
+
+/// Issue #1014: a parameter-only download reads the description of an
+/// undeclared property the master data gives no type before its first write,
+/// as the full download does (the full download's connection rule; no
+/// capture of a parameter-only download shows it).
+#[test]
+fn test_parameters_only_reads_the_description_of_an_undeclared_property() -> TestResult {
+    let xml = APP_XML.replace(
+        r#"<LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />"#,
+        "",
+    );
+    let app = parse_application_program("M-00FA_A-0002", xml.as_bytes())?;
+    let plan = plan_of(&app, &BTreeMap::new())?;
+    let describe = FlashStep::DescribeProp {
+        object: PropObject::Index(10),
+        prop_id: 52,
+    };
+    let reads_before_write = |steps: &[FlashStep]| -> Vec<usize> {
+        steps
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| **s == describe)
+            .map(|(i, _)| i)
+            .filter(|i| {
+                matches!(
+                    steps.get(i + 1),
+                    Some(FlashStep::WriteProp {
+                        object: PropObject::Index(10),
+                        prop_id: 52,
+                        ..
+                    })
+                )
+            })
+            .collect()
+    };
+    assert_eq!(reads_before_write(&plan.steps).len(), 1, "{:?}", plan.steps);
+    let partial = plan.parameters_only(&Default::default())?;
+    assert_eq!(
+        reads_before_write(&partial.steps).len(),
+        1,
+        "{:?}",
+        partial.steps
+    );
+    assert_eq!(partial.steps.iter().filter(|s| **s == describe).count(), 1);
+    Ok(())
+}

@@ -821,6 +821,9 @@ pub(super) fn plan_flash_sys7(
         }
     }
     let code_segments = sys7_code_segments(&steps, &images, declared, &param_images, &placed);
+    // The description reads ETS makes before it first touches a property it
+    // has no type for (issue #1014).
+    let steps = super::describe::describe_untyped_properties(steps);
 
     Ok(FlashPlan {
         identity: AppIdentity {

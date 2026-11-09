@@ -101,6 +101,7 @@ pub use bussard_product::SegmentFill;
 use std::collections::BTreeMap;
 
 mod declare;
+mod describe;
 mod execute;
 mod execute_props;
 mod execute_sys7;
@@ -373,7 +374,10 @@ pub enum FlashStep {
     /// Enertex `PID_ENX_TELEGRAMMRATE_LIMIT`, object type 50001 PID 211, of
     /// `M-00A6_A-0033-20-BFA6`, ETS 6.4.1 into knx-sim on 2026-11-04). The
     /// model holds no value for the property, so there is nothing to read back.
-    /// The read's answer, or its absence, does not change the flash.
+    /// The read's answer, or its absence, does not change the flash. The
+    /// planners also put one before the first write or compare of a property
+    /// on a connection that neither a declaration nor the KNX master data
+    /// types, as ETS does (issue #1014).
     DescribeProp {
         /// The interface object the op names: by index or by type.
         object: PropObject,
@@ -1416,6 +1420,13 @@ impl FlashPlan {
     pub fn skip_sys7_prelude(&mut self) {
         self.steps
             .retain(|s| !matches!(s, FlashStep::Sys7PreDownloadRestart { .. }));
+        self.redescribe();
+    }
+
+    /// Runs the description-read pass (issue #1014) again on the steps as
+    /// they stand, after a removal joined two connections.
+    fn redescribe(&mut self) {
+        self.steps = describe::describe_untyped_properties(std::mem::take(&mut self.steps));
     }
 
     /// Whether the plan carries ETS's System 7 pre-download pass
@@ -1431,6 +1442,7 @@ impl FlashPlan {
     pub fn skip_factory_reset(&mut self) {
         self.steps
             .retain(|s| !matches!(s, FlashStep::FactoryReset { .. }));
+        self.redescribe();
     }
 
     /// Adds the KNX Data Secure security-object steps (issue #156) at the
@@ -1459,8 +1471,8 @@ impl FlashPlan {
             .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
             .unwrap_or(self.steps.len());
         // Step back over the property writes, and the declarations that
-        // size them (issue #945), so the block never splits a declaration
-        // from its write.
+        // size them (issue #945) and the description reads ahead of them
+        // (issue #1014), so the block never splits either from its write.
         let mut block_at = first_load_completed;
         while block_at > 0
             && matches!(
@@ -1468,6 +1480,7 @@ impl FlashPlan {
                 FlashStep::WriteProp { .. }
                     | FlashStep::DeclareProp { .. }
                     | FlashStep::FactoryHeldProp { .. }
+                    | FlashStep::DescribeProp { .. }
             )
         {
             block_at -= 1;
@@ -2189,6 +2202,128 @@ mod tests {
             })
             .ok_or("no security completion")?;
         assert!(sec_complete < declared, "{:?}", plan.steps);
+        Ok(())
+    }
+
+    /// The security block goes before the description read of a property
+    /// written ahead of the first `LoadCompleted`, never between the read and
+    /// its write (issue #1014).
+    #[test]
+    fn test_add_security_program_keeps_a_description_read_with_its_write()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        use super::PropObject;
+        use bussard_mgmt::LoadControl;
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let first_complete = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .ok_or("complete")?;
+        // The planner's shape of an undeclared write of object 4 PID 206
+        // (`M-0001_A-9A01-03-E6C8`): the read, then the write.
+        let write = FlashStep::WriteProp {
+            object: PropObject::Index(4),
+            prop_id: 206,
+            value: vec![1],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        plan.steps
+            .splice(first_complete..first_complete, [write.clone()]);
+        plan.steps = super::describe::describe_untyped_properties(std::mem::take(&mut plan.steps));
+        let describe = FlashStep::DescribeProp {
+            object: PropObject::Index(4),
+            prop_id: 206,
+        };
+        plan.add_security_program(crate::security::SecurityProgram {
+            senders: Vec::new(),
+            group_keys: Vec::new(),
+            go_flags: vec![3],
+        });
+        let read = plan
+            .steps
+            .iter()
+            .position(|s| *s == describe)
+            .ok_or("the description read")?;
+        assert_eq!(plan.steps.get(read + 1), Some(&write), "{:?}", plan.steps);
+        let sec_complete = plan
+            .steps
+            .iter()
+            .position(|s| {
+                matches!(
+                    s,
+                    FlashStep::SecurityLoadControl {
+                        control: LoadControl::LoadCompleted
+                    }
+                )
+            })
+            .ok_or("no security completion")?;
+        assert!(sec_complete < read, "{:?}", plan.steps);
+        Ok(())
+    }
+
+    /// `--no-factory-reset` joins the connections the reset ended: a
+    /// property the plan described before the reset and touches again after
+    /// it is described once (issue #1014, the `M-0001_A-9A01-03-E6C8` shape:
+    /// object 4 PID 246 compared, the reset, then written).
+    #[test]
+    fn test_skip_factory_reset_describes_a_property_once_per_joined_connection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        use super::PropObject;
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let obj4 = PropObject::Index(4);
+        let compare = FlashStep::CompareProp {
+            object: obj4,
+            prop_id: 246,
+            expected: Some(vec![5]),
+            mask: None,
+            start_element: 1,
+        };
+        let write = FlashStep::WriteProp {
+            object: obj4,
+            prop_id: 246,
+            value: vec![5],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        plan.steps = super::describe::describe_untyped_properties(vec![
+            compare,
+            FlashStep::FactoryReset { erase_code: 7 },
+            write,
+        ]);
+        let describe = FlashStep::DescribeProp {
+            object: obj4,
+            prop_id: 246,
+        };
+        let reads = |steps: &[FlashStep]| steps.iter().filter(|s| **s == describe).count();
+        assert_eq!(reads(&plan.steps), 2, "{:?}", plan.steps);
+        plan.skip_factory_reset();
+        assert_eq!(reads(&plan.steps), 1, "{:?}", plan.steps);
+        assert_eq!(plan.steps.first(), Some(&describe));
         Ok(())
     }
 

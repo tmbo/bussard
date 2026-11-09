@@ -12,11 +12,13 @@ hand-kept `benign.json` and `run.json` of the nightly run) and writes, next to
 them:
 
 - `manifest.json`: per application its labels only (product file, mask,
-  manufacturer, sweep outcome, oracle and load-control verdicts, coverage),
+  manufacturer, sweep outcome, oracle, load-control and description-read
+  verdicts, coverage),
   plus the ETS version and when it was generated. No vendor data, no capture.
 - `summary.md`: outcome counts, the parity table (identical / benign / differs
-  / ...) per mask family and per manufacturer, and every application whose
-  verdict changed since the previous manifest.
+  / ...) per mask family and per manufacturer, the load-control and the
+  property description read (#1014) verdicts per mask family, and every
+  application whose verdict changed since the previous manifest.
 - `changes.json`: those changes, machine-readable (`followups.py` opens an
   issue for each identical -> differs).
 - `history/manifest-<UTC stamp>.json`: this manifest, the previous one being
@@ -83,6 +85,8 @@ def build_manifest(defaults: dict, oracle: dict, benign: dict, run: dict, now: s
         }
         if e.get("outcome") == "captured" and o:
             rec["loadctl"] = (o.get("loadctl") or {}).get("verdict")
+            if o.get("desc"):
+                rec["desc"] = o["desc"].get("verdict")
             if o.get("coverage"):
                 rec["coverage"] = o["coverage"]
         if app in benign:
@@ -131,6 +135,7 @@ def render(manifest: dict, delta: list[dict]) -> str:
     per_vendor: dict[str, dict[str, int]] = {}
     files: dict[str, dict[str, int]] = {}
     loadctl: dict[str, dict[str, int]] = {}
+    desc: dict[str, dict[str, int]] = {}
     for app, r in apps.items():
         if r["verdict"] not in COMPARED:
             continue
@@ -142,6 +147,9 @@ def render(manifest: dict, delta: list[dict]) -> str:
         if r.get("loadctl"):
             row = loadctl.setdefault(r["mask"] or "?", {})
             row[r["loadctl"]] = row.get(r["loadctl"], 0) + 1
+        if r.get("desc"):
+            row = desc.setdefault(r["mask"] or "?", {})
+            row[r["desc"]] = row.get(r["desc"], 0) + 1
     hint = {m: ", ".join(sorted(fs, key=lambda k: -fs[k])[:2])[:60] for m, fs in files.items()}
     out = [
         "# ETS sweep parity summary",
@@ -158,6 +166,9 @@ def render(manifest: dict, delta: list[dict]) -> str:
     out += [f"| {k} | {v} |" for k, v in sorted(outcomes.items(), key=lambda kv: -kv[1])]
     out += ["", "## Parity per mask family", ""] + table(per_mask, "mask")
     out += ["", "## Load-control parity per mask family", ""] + table(loadctl, "mask")
+    if desc:
+        out += ["", "## Property description reads per mask family (#1014, not part of the verdict)", ""] \
+            + table(desc, "mask")
     out += ["", "## Parity per manufacturer", ""] + table(per_vendor, "manufacturer", hint)
     out += ["", "## Verdict changes since the previous manifest", ""]
     if not delta:

@@ -421,8 +421,8 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             )
         }
         FlashStep::DescribeProp { object, prop_id } => format!(
-            "read property description ({object}, PID {prop_id}; no parameter is stored in it, \
-             nothing written)"
+            "read property description ({object}, PID {prop_id}; no declaration or KNX master \
+             data types it)"
         ),
         FlashStep::EnableVerifyMode => {
             "enable verify mode (object 0 PID_DEVICE_CONTROL bit 2, written only when clear; \

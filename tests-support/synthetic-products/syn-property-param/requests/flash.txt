@@ -58,6 +58,7 @@ mem-write 0x603f addr_int=24639 len=63 sha=d12449c8 extended=False
 mem-write 0x607e addr_int=24702 len=63 sha=d12449c8 extended=False
 mem-write 0x60bd addr_int=24765 len=63 sha=d12449c8 extended=False
 mem-write 0x60fc addr_int=24828 len=4 sha=ad95131b extended=False
+prop-desc-read obj4/PID_201 obj=4 pid=201 pid_name=PID_201 prop_index=0
 prop-write obj4/PID_201 count=1 index=1 len=1 sha=bbeebd87
 prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
 mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False

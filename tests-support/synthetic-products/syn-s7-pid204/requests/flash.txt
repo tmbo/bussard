@@ -96,6 +96,7 @@ mem-read 0x4470 addr_int=17520 count=12
 mem-read 0x447c addr_int=17532 count=4
 mem-write 0x447c addr_int=17532 len=4 sha=ad95131b extended=False
 mem-read 0x447c addr_int=17532 count=4
+prop-desc-read obj3/PID_204 obj=3 pid=204 pid_name=PID_204 prop_index=0
 prop-write obj3/PID_204 count=2 index=1 len=10 sha=d540d6f1
 mem-write 0x0104 addr_int=260 len=11 sha=5390c90c extended=False
 mem-read 0xb6ec addr_int=46828 count=1
