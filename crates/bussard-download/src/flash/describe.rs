@@ -104,9 +104,12 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
     let mut out = Vec::with_capacity(steps.len());
     let mut declared: BTreeSet<(PropObject, u32)> = BTreeSet::new();
     let mut described: BTreeSet<(PropObject, u32)> = BTreeSet::new();
+    // Where the current connection's steps start in `out`.
+    let mut connection_start = 0;
     for mut step in steps {
         if ends_connection(&step) {
             described.clear();
+            connection_start = out.len();
         }
         match &mut step {
             FlashStep::DeclareProp {
@@ -117,16 +120,24 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
             // A second read of a property on one connection goes: the pass
             // runs again after a step removal joins two connections. A read
             // that stands in for a write ETS leaves out (issue #947) hands its
-            // check to the read the connection already made.
+            // check to the description read the connection already made; when
+            // that read is a held step's (issue #951), which carries no check,
+            // the checking read stays.
             FlashStep::DescribeProp {
                 object,
                 prop_id,
                 unwritten,
             } => {
-                if !described.insert((*object, *prop_id)) {
-                    if let Some(octets) = unwritten {
-                        mark_unwritten(&mut out, (*object, *prop_id), *octets);
-                    }
+                let key = (*object, *prop_id);
+                if !described.insert(key)
+                    && unwritten.is_none_or(|octets| {
+                        mark_unwritten(
+                            out.get_mut(connection_start..).unwrap_or_default(),
+                            key,
+                            octets,
+                        )
+                    })
+                {
                     continue;
                 }
             }
@@ -158,10 +169,13 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
     out
 }
 
-/// Sets `unwritten` on the last description read of `key` in `out`, the one
-/// the connection already made, when it carries none.
-fn mark_unwritten(out: &mut [FlashStep], key: (PropObject, u32), octets: usize) {
-    let earlier = out.iter_mut().rev().find_map(|step| match step {
+/// Hands the check of a read leaving `octets` unwritten to the description
+/// read of `key` among `connection`, the steps of the current connection:
+/// sets its `unwritten` when it carries none. `false` when no
+/// [`FlashStep::DescribeProp`] of `key` is among them (the connection's read
+/// was a held step's), so the caller keeps its own read.
+fn mark_unwritten(connection: &mut [FlashStep], key: (PropObject, u32), octets: usize) -> bool {
+    let earlier = connection.iter_mut().rev().find_map(|step| match step {
         FlashStep::DescribeProp {
             object,
             prop_id,
@@ -169,11 +183,13 @@ fn mark_unwritten(out: &mut [FlashStep], key: (PropObject, u32), octets: usize) 
         } if (*object, *prop_id) == key => Some(unwritten),
         _ => None,
     });
-    if let Some(unwritten) = earlier
-        && unwritten.is_none()
-    {
+    let Some(unwritten) = earlier else {
+        return false;
+    };
+    if unwritten.is_none() {
         *unwritten = Some(octets);
     }
+    true
 }
 
 #[cfg(test)]
@@ -381,5 +397,61 @@ mod tests {
         };
         let out = describe_untyped_properties(vec![compare(OBJ4, 206, 1), left_out.clone()]);
         assert_eq!(out, vec![left_out, compare(OBJ4, 206, 1)]);
+    }
+
+    #[test]
+    fn test_describe_untyped_properties_keeps_the_check_after_a_held_read() {
+        // A held step reads the description of object 4 PID 206 (issue
+        // #951); a count-only write ETS leaves out follows on the same
+        // connection (issue #947). The held step's read carries no check, so
+        // the checking read stays.
+        let held = FlashStep::FactoryHeldProp {
+            object: OBJ4,
+            prop_id: 206,
+            value: vec![1],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: true,
+            describe: true,
+        };
+        let left_out = FlashStep::DescribeProp {
+            object: OBJ4,
+            prop_id: 206,
+            unwritten: Some(256),
+        };
+        let out = describe_untyped_properties(vec![held.clone(), left_out.clone()]);
+        assert_eq!(out, vec![held, left_out]);
+    }
+
+    #[test]
+    fn test_describe_untyped_properties_never_moves_the_check_past_a_restart() {
+        // The read before the restart belongs to another connection: the
+        // checking read after it stays, and the earlier read keeps no check.
+        let left_out = FlashStep::DescribeProp {
+            object: OBJ4,
+            prop_id: 206,
+            unwritten: Some(256),
+        };
+        let out = describe_untyped_properties(vec![
+            describe(OBJ4, 206),
+            FlashStep::Restart,
+            compare(OBJ4, 206, 1),
+            left_out.clone(),
+        ]);
+        let with_check = FlashStep::DescribeProp {
+            object: OBJ4,
+            prop_id: 206,
+            unwritten: Some(256),
+        };
+        assert_eq!(
+            out,
+            vec![
+                describe(OBJ4, 206),
+                FlashStep::Restart,
+                with_check,
+                compare(OBJ4, 206, 1),
+            ]
+        );
     }
 }
