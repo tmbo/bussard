@@ -154,10 +154,12 @@ pub(super) async fn run_shared_step<C: Connector>(
 ) -> Option<Result<(), WriteError>> {
     let result = match step {
         // ETS's description read for a property write it has no value for
-        // (issue #841); the answer changes nothing.
-        FlashStep::DescribeProp { object, prop_id } => {
-            super::props::describe_property(session.l4(), *object, *prop_id).await
-        }
+        // (issue #841), or for one it leaves out (issue #947, checked).
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten,
+        } => super::props::describe_property(session.l4(), *object, *prop_id, *unwritten).await,
         // Read the named interface object's property and compare it with the
         // vendor's expected data. The op names the object by its own index
         // (0 = the device object), not the discovered application object. A
@@ -262,7 +264,7 @@ pub(super) async fn run_shared_step<C: Connector>(
         } => {
             async {
                 if *describe {
-                    super::props::describe_property(session.l4(), *object, *prop_id).await?;
+                    super::props::describe_property(session.l4(), *object, *prop_id, None).await?;
                 }
                 let elem = (value.len() / usize::from((*count).max(1))).max(1);
                 let read = super::props::read_property_value(

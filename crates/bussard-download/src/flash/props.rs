@@ -415,39 +415,63 @@ fn masked_equal(expected: &[u8], actual: &[u8], mask: Option<&[u8]>) -> bool {
         })
 }
 
+/// `PDT_VARIABLE_LENGTH` (KNX 3/7/3 §3.3).
+const PDT_VARIABLE_LENGTH: u8 = 0x10;
+
 /// Executes a [`FlashStep::DescribeProp`](super::FlashStep::DescribeProp):
 /// reads the description of `object`/`prop_id` as ETS does for a property
 /// write it has no value for (issue #841), on the extended service for an
-/// object named by type and the plain one for an index, and ignores the
-/// answer. A device that stays silent or declines keeps the flash going.
+/// object named by type and the plain one for an index. A device that stays
+/// silent or declines keeps the flash going.
+///
+/// With `unwritten` (issue #947) the read stands in for a write of that many
+/// octets the plan leaves out, as ETS leaves out a property described as
+/// `PDT_VARIABLE_LENGTH`: a device that describes the property with any other
+/// type and at least one element fails the flash. Without it the answer
+/// changes nothing.
 ///
 /// # Errors
 ///
-/// A transport failure only.
+/// [`WriteError::PropertyNotVariableLength`], and a transport failure.
 pub async fn describe_property<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     object: PropObject,
     prop_id: u32,
+    unwritten: Option<usize>,
 ) -> Result<(), WriteError> {
-    match object {
+    let described = match object {
         PropObject::Type {
             object_type,
             occurrence,
-        } => {
-            read_property_ext_description_optional(
-                l4,
-                ext_address(object_type, occurrence, prop_id),
-            )
-            .await?;
-        }
+        } => read_property_ext_description_optional(
+            l4,
+            ext_address(object_type, occurrence, prop_id),
+        )
+        .await?
+        .map(|d| (d.pdt, d.max_elements)),
         PropObject::Index(index) => {
             let (Ok(index), Ok(pid)) = (u8::try_from(index), u8::try_from(prop_id)) else {
                 return Ok(());
             };
-            bussard_mgmt::connection::read_property_description_optional(l4, index, pid).await?;
+            bussard_mgmt::connection::read_property_description_optional(l4, index, pid)
+                .await?
+                .map(|d| (d.pdt, d.max_elements))
         }
+    };
+    match (unwritten, described) {
+        (Some(octets), Some((pdt, max_elements)))
+            if max_elements > 0 && pdt != PDT_VARIABLE_LENGTH =>
+        {
+            Err(WriteError::PropertyNotVariableLength {
+                address: l4.target(),
+                property: property_name(object, prop_id),
+                pdt,
+                max_elements,
+                octets,
+            })
+        }
+        _ => Ok(()),
     }
-    Ok(())
 }
 
 /// Executes an `LdCtrlCompareProp`: reads element `start` (1-based) of

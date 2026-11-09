@@ -541,9 +541,18 @@ pub fn write_dump(
             // the oracle sees the read ETS makes and the value the device is
             // taken to hold. Neither is a write, so neither is a `property`
             // record; `knxtrace imgdiff` compares writes.
-            FlashStep::DescribeProp { object, prop_id } => {
+            // A read that stands in for a write ETS leaves out (issue #947)
+            // names the octets left unwritten.
+            FlashStep::DescribeProp {
+                object,
+                prop_id,
+                unwritten,
+            } => {
                 let mut read = object_record(object);
                 read["pid"] = json!(prop_id);
+                if let Some(octets) = unwritten {
+                    read["unwritten_octets"] = json!(octets);
+                }
                 record["property_description"] = read;
             }
             FlashStep::FactoryHeldProp {

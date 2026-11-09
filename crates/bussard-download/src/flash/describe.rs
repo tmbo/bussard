@@ -115,9 +115,18 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
                 declared.insert((*object, *prop_id));
             }
             // A second read of a property on one connection goes: the pass
-            // runs again after a step removal joins two connections.
-            FlashStep::DescribeProp { object, prop_id } => {
+            // runs again after a step removal joins two connections. A read
+            // that stands in for a write ETS leaves out (issue #947) hands its
+            // check to the read the connection already made.
+            FlashStep::DescribeProp {
+                object,
+                prop_id,
+                unwritten,
+            } => {
                 if !described.insert((*object, *prop_id)) {
+                    if let Some(octets) = unwritten {
+                        mark_unwritten(&mut out, (*object, *prop_id), *octets);
+                    }
                     continue;
                 }
             }
@@ -141,11 +150,30 @@ pub(super) fn describe_untyped_properties(steps: Vec<FlashStep>) -> Vec<FlashSte
             out.push(FlashStep::DescribeProp {
                 object: key.0,
                 prop_id: key.1,
+                unwritten: None,
             });
         }
         out.push(step);
     }
     out
+}
+
+/// Sets `unwritten` on the last description read of `key` in `out`, the one
+/// the connection already made, when it carries none.
+fn mark_unwritten(out: &mut [FlashStep], key: (PropObject, u32), octets: usize) {
+    let earlier = out.iter_mut().rev().find_map(|step| match step {
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten,
+        } if (*object, *prop_id) == key => Some(unwritten),
+        _ => None,
+    });
+    if let Some(unwritten) = earlier
+        && unwritten.is_none()
+    {
+        *unwritten = Some(octets);
+    }
 }
 
 #[cfg(test)]
@@ -175,7 +203,11 @@ mod tests {
     }
 
     fn describe(object: PropObject, prop_id: u32) -> FlashStep {
-        FlashStep::DescribeProp { object, prop_id }
+        FlashStep::DescribeProp {
+            object,
+            prop_id,
+            unwritten: None,
+        }
     }
 
     const OBJ4: PropObject = PropObject::Index(4);
@@ -335,5 +367,19 @@ mod tests {
                 held(false)
             ]
         );
+    }
+
+    #[test]
+    fn test_describe_untyped_properties_keeps_the_unwritten_check() {
+        // A compare reads the description first; the read standing in for a
+        // write ETS leaves out (issue #947) goes, and its check moves to the
+        // read the connection made.
+        let left_out = FlashStep::DescribeProp {
+            object: OBJ4,
+            prop_id: 206,
+            unwritten: Some(256),
+        };
+        let out = describe_untyped_properties(vec![compare(OBJ4, 206, 1), left_out.clone()]);
+        assert_eq!(out, vec![left_out, compare(OBJ4, 206, 1)]);
     }
 }

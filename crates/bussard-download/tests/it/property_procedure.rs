@@ -10,7 +10,7 @@ use bussard_download::{FlashStep, PlanError, PropObject, Session, flash};
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_mgmt::load::WriteError;
 use bussard_product::application::{ApplicationProgram, parse_application_program};
-use bussard_testkit::{MockDevice, MockGateway, TestResult, ia};
+use bussard_testkit::{MockDevice, MockGateway, MockPropertyDescription, TestResult, ia};
 use bussard_transport::{ConnectionConfig, Transport};
 
 use crate::support::plan_flash_default;
@@ -143,6 +143,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                     occurrence: 0,
                 },
                 prop_id: 204,
+                unwritten: None,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -162,6 +163,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                     occurrence: 0,
                 },
                 prop_id: 205,
+                unwritten: None,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -181,6 +183,7 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                     occurrence: 0,
                 },
                 prop_id: 211,
+                unwritten: None,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -247,6 +250,7 @@ fn test_plan_flash_describes_a_write_prop_no_parameter_is_stored_in() -> TestRes
                 occurrence: 0,
             },
             prop_id: 205,
+            unwritten: None,
         })
     );
     Ok(())
@@ -709,5 +713,48 @@ async fn test_flash_factory_held_prop_writes_only_what_the_device_does_not_hold(
         .filter(|(apci, _)| *apci == bussard_mgmt::apci::A_PROPERTY_DESCRIPTION_READ)
         .count();
     assert_eq!(described, 1);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_describe_property_checks_a_property_left_unwritten() -> TestResult {
+    // Issue #947: the plan leaves object 8 PID 64 unwritten as ETS does on
+    // the knx-sim, which describes it as `PDT_VARIABLE_LENGTH`. A device that
+    // describes it as 500 four-octet elements instead fails the flash; PID 66,
+    // variable-length, passes, and a plain description read never fails.
+    let described = |pid: u8, pdt: u8, max_elements: u16| MockPropertyDescription {
+        pid,
+        pdt,
+        writable: true,
+        max_elements,
+        read_level: 3,
+        write_level: 2,
+    };
+    let device = MockDevice::new(ia("1.1.200")?)
+        .with_property_descriptions(8, &[described(64, 0x09, 500), described(66, 0x10, 1)]);
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut bus = connect(&gw).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let object = PropObject::Index(8);
+    bussard_download::describe_property(session.l4(), object, 66, Some(256)).await?;
+    bussard_download::describe_property(session.l4(), object, 64, None).await?;
+    let refused = bussard_download::describe_property(session.l4(), object, 64, Some(256)).await;
+    let _ = session.into_disconnect().await;
+    match refused {
+        Err(WriteError::PropertyNotVariableLength {
+            pdt,
+            max_elements,
+            octets,
+            ..
+        }) => assert_eq!((pdt, max_elements, octets), (0x09, 500, 256)),
+        other => return Err(format!("expected PropertyNotVariableLength, got {other:?}").into()),
+    }
     Ok(())
 }
