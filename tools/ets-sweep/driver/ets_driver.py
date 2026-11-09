@@ -503,6 +503,20 @@ def leftover_delete_dialog(lines: list[dict]) -> dict | None:
     return button_hit(lines, "Nein")
 
 
+
+def ja_beside_nein(nein: dict | None) -> dict | None:
+    """Where the delete confirmation's 'Ja' sits when OCR reads its 'Nein'
+    but not the 'Ja' (2026-11-09: the region's OCR gave 'X' and 'Nein' and
+    nothing of the check-marked 'Ja', with the driver of #1003). The two
+    buttons share one line; the word 'Ja' starts about 144 px left of the
+    word 'Nein' and is about 30 px wide (screenshot of 2026-11-08 23:06:
+    'Ja' at x 2380, 'Nein' at x 2524; OCR of 2026-11-09 10:58: 'Nein' at
+    x 2584). The click lands in the middle of that word; `confirm_delete`
+    checks afterwards that the dialog is gone."""
+    if not nein:
+        return None
+    return {"click_x": nein["x"] - 128, "click_y": nein["y"] + nein["h"] // 2}
+
 def confirm_delete() -> None:
     """Answer the delete confirmation with 'Ja'. A dialog left open fails
     every import after it (2026-11-08, #997): when 'Ja' is not found, or the
@@ -511,8 +525,12 @@ def confirm_delete() -> None:
     try:
         click_button("Ja", LAYOUT["delete_yes"])
     except RuntimeError as exc:
-        closed = close_delete_dialog()
-        raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
+        beside = ja_beside_nein(button_hit(ocr(LAYOUT["delete_yes"]), "Nein"))
+        if beside is None:
+            closed = close_delete_dialog()
+            raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
+        log(f"'Ja' not read by OCR; clicking beside 'Nein' at ({beside['click_x']}, {beside['click_y']})")
+        click(beside["click_x"], beside["click_y"])
     time.sleep(1.5)
     if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
         closed = close_delete_dialog()

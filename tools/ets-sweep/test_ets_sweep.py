@@ -1320,6 +1320,14 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual(ja["click_x"], 2340 + int((2 + 1) * cw))
         self.assertIsNone(self.d.button_hit([{"text": "Secure, Schalter/Jalousie 8-fach", "x": 0, "y": 0, "w": 300, "h": 20}], "Ja"))
 
+    def test_ja_beside_nein_from_the_nein_hit(self):
+        # OCR of 2026-11-09 read the delete confirmation's 'Nein' at x 2584
+        # and no 'Ja' at all; the click lands in the word left of it.
+        nein = {"text": "Nein", "x": 2584, "y": 1468, "w": 60, "h": 24, "click_x": 2614, "click_y": 1480}
+        hit = self.d.ja_beside_nein(nein)
+        self.assertEqual((hit["click_x"], hit["click_y"]), (2456, 1480))
+        self.assertIsNone(self.d.ja_beside_nein(None))
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]

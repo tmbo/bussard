@@ -1,0 +1,1 @@
+- ETS sweep driver: when OCR reads the delete confirmation's Nein but not its Ja, the Ja is clicked at its place beside Nein and the dialog is checked afterwards; the error names what OCR read (#997).
