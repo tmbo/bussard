@@ -231,6 +231,122 @@ fn test_offline_oracle_rows_pass_the_check() -> TestResult {
     Ok(())
 }
 
+/// Runs `git` in `dir` with a fixed identity and no signing; fails on a
+/// non-zero exit.
+fn git(dir: &Path, args: &[&str]) -> TestResult {
+    let status = Command::new("git")
+        .args([
+            "-c",
+            "user.name=oracle-test",
+            "-c",
+            "user.email=oracle-test@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?;
+    if !status.success() {
+        return Err(format!("git {args:?} failed in {}", dir.display()).into());
+    }
+    Ok(())
+}
+
+/// A row whose product file is gone plans with the model's retained
+/// `products/<application>.knxprod`, and `rev=` plans with the model as
+/// committed at that revision, not its working tree (issue #1010: the house
+/// rows name ETS exports that are no longer kept, and a device edited in the
+/// model after its capture). The working tree's `bussard.toml` is broken on
+/// purpose, so the row passes only when the dry run planned with the commit.
+#[test]
+fn test_offline_oracle_row_plans_with_the_retained_product_at_a_revision() -> TestResult {
+    let git_available = Command::new("git")
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !tools_available() || !git_available {
+        eprintln!("SKIP: python3, bash or git is not available");
+        return Ok(());
+    }
+    let root = workspace_root();
+    let tmp = TmpDir::new("retained")?;
+    let model = tmp.path().join("model");
+    copy_files(&root.join("captures/synthetic/model"), &model)?;
+    let model_arg = model.to_string_lossy().into_owned();
+    let application = "M-00FA_A-271F-10-0000";
+    let capture = "captures/synthetic/syn-assign/defaults/ets.pcapng";
+
+    // The product as the script zips it from the committed XML, retained in
+    // the model under its application.
+    let first = tmp.path().join("first");
+    let first_arg = first.to_string_lossy().into_owned();
+    let row = format!(
+        "1.1.1|{capture}|tests-support/synthetic-products/syn-assign/xml|{application}|syn-assign|100.0|loadctl=identical"
+    );
+    let (ok, text) = oracle(
+        &root,
+        &[
+            "--row", &row, "--dir", &model_arg, "--out", &first_arg, "--check",
+        ],
+    )?;
+    assert!(ok, "the row with its product failed:\n{}", tail(&text, 30));
+    std::fs::create_dir_all(model.join("products"))?;
+    std::fs::copy(
+        first.join(".products/syn-assign.knxprod"),
+        model.join(format!("products/{application}.knxprod")),
+    )?;
+
+    git(&model, &["init", "-q"])?;
+    std::fs::write(model.join(".gitignore"), ".bussard/\n")?;
+    git(&model, &["add", "-A"])?;
+    git(&model, &["commit", "-q", "-m", "model"])?;
+    std::fs::write(model.join("bussard.toml"), "this is [not toml\n")?;
+
+    let out = tmp.path().join("out");
+    let out_arg = out.to_string_lossy().into_owned();
+    let row = format!(
+        "1.1.1|{capture}|gone/Project_20261026.knxproj|{application}|syn-assign|100.0|loadctl=identical rev=HEAD"
+    );
+    let (ok, text) = oracle(
+        &root,
+        &[
+            "--row", &row, "--dir", &model_arg, "--out", &out_arg, "--check",
+        ],
+    )?;
+    assert!(ok, "the row failed the check:\n{}", tail(&text, 30));
+    assert!(
+        text.contains("planned with the retained"),
+        "{}",
+        tail(&text, 30)
+    );
+    assert!(text.contains("at revision HEAD"), "{}", tail(&text, 30));
+    assert!(out.join(".models/HEAD/bussard.toml").is_file());
+
+    // An unknown revision is a not-comparable row, never the working tree.
+    let bad = tmp.path().join("bad");
+    let bad_arg = bad.to_string_lossy().into_owned();
+    let row = format!(
+        "1.1.1|{capture}|gone/Project_20261026.knxproj|{application}|syn-assign|100.0|rev=no-such-rev"
+    );
+    let (ok, text) = oracle(
+        &root,
+        &[
+            "--row", &row, "--dir", &model_arg, "--out", &bad_arg, "--check",
+        ],
+    )?;
+    assert!(
+        !ok,
+        "a row at an unknown revision passed:\n{}",
+        tail(&text, 30)
+    );
+    assert!(text.contains("rev=no-such-rev"), "{}", tail(&text, 30));
+    Ok(())
+}
+
 /// Copies the files of `from` into `to` (one level; the synthetic model is a
 /// single `bussard.toml`, and the dry run writes its caches into the copy).
 fn copy_files(from: &Path, to: &Path) -> std::io::Result<()> {

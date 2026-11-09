@@ -47,6 +47,10 @@
 #                (the row is reported as not comparable, with the note). Paths
 #                may contain spaces (ETS names exports `Name  Project_date`);
 #                only the `|` separators and the ends of a field are trimmed.
+#                A product file that does not exist falls back to the model's
+#                retained `<--dir>/products/<application>.knxprod` when the row
+#                names its application (issue #1010: the house rows name ETS
+#                exports that are no longer kept); the row's output says so
 #   application  optional --application ref (empty: the sole application)
 #   note         optional free text, shown when the row is not comparable
 #   coverage     optional: the coverage percent recorded for the row (see
@@ -153,6 +157,15 @@
 #                                without one the row is not comparable. The
 #                                bussard side still plans with the model's
 #                                own key material
+#                rev=REV         plan with the model (--dir) as committed at
+#                                git revision REV of its repository instead
+#                                of its working tree (issue #1010): a row
+#                                whose capture predates a later edit of the
+#                                device in the model keeps comparing against
+#                                the project ETS downloaded. `git archive REV`
+#                                into $OUT/.models/REV; the passwords still
+#                                come from the environment and --dir's .env.
+#                                Not with dir= or run=
 #                phase=fdsk|tool with run=: compare only bussard's writes under
 #                                that key (the decoded half of a capture whose
 #                                other half ran in a KNXnet/IP Secure session)
@@ -454,6 +467,41 @@ EOF
   esac
 }
 
+# The product file of a row: the named one, else (issue #1010) the model's
+# retained product of the row's application. Prints the path; fails when
+# neither exists.
+row_product() {
+  local spec="$1" application="$2" prod retained
+  if prod="$(resolve_product "$spec")" && [ -f "$prod" ]; then
+    printf '%s\n' "$prod"
+    return 0
+  fi
+  retained="$MODEL_DIR/products/$application.knxprod"
+  if [ -n "$application" ] && [ ! -e "$spec" ] && [ -f "$retained" ]; then
+    printf '  product %s not found; planned with the retained %s\n' "$spec" "$retained" >&2
+    printf '%s\n' "$retained"
+    return 0
+  fi
+  return 1
+}
+
+# The model at git revision REV (rev=, issue #1010): `git archive` of --dir's
+# repository into $OUT/.models/REV, once per run. With --no-admit the copy's
+# bussard.toml plans without admit_tunnel_senders, as the shadow of --dir does.
+model_at_rev() {
+  local rev="$1" dest="$OUT/.models/$1"
+  if [ ! -f "$dest/bussard.toml" ]; then
+    rm -rf "$dest"; ensure_dir "$dest"
+    git -C "$MODEL_DIR" archive "$rev" | tar -x -C "$dest" || return 1
+    [ -f "$dest/bussard.toml" ] || return 1
+    if [ "$NO_ADMIT" = 1 ]; then
+      sed -E 's/^([[:space:]]*admit_tunnel_senders[[:space:]]*=[[:space:]]*)true/\1false/' \
+        "$dest/bussard.toml" >"$dest/bussard.toml.tmp" && mv "$dest/bussard.toml.tmp" "$dest/bussard.toml"
+    fi
+  fi
+  printf '%s\n' "$dest"
+}
+
 # The model a row with dir= plans with (epic #596). A directory that holds a
 # bussard.lock is a model and is used as it is. Any other is a template
 # (bussard.toml, devices/, groups.toml, as a run variant of a synthetic product
@@ -505,7 +553,7 @@ apply_row() {
     return 0
   fi
   local prod
-  if ! prod="$(resolve_product "$product")" || [ ! -f "$prod" ]; then
+  if ! prod="$(row_product "$product" "$application")"; then
     not_comparable "$dir" "$device" "product file not found"
     return 0
   fi
@@ -574,7 +622,7 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" word
+  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
@@ -589,7 +637,8 @@ run_row() {
       lsm=*)       lsm="${word#lsm=}" ;;
       state=*)     devstate="${word#state=}" ;;
       keyring=*)   rowkeyring="${word#keyring=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=...)" ;;
+      rev=*)       rev="${word#rev=}" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=...)" ;;
     esac
   done
   local scope_args=()
@@ -603,6 +652,9 @@ run_row() {
     ""|secure-on|secure-off|apply|apply-line|params) ;;
     *) die "$device: unknown run=$run (secure-on, secure-off, apply, apply-line or params)" ;;
   esac
+  if [ -n "$rev" ] && { [ -n "$rowdir" ] || [ -n "$run" ]; }; then
+    die "$device: rev= plans with --dir at a revision; it does not combine with dir= or run="
+  fi
   [ -n "$device" ] || return 0
   local dir="$OUT/$key"
   rm -rf "$dir"; ensure_dir "$dir"
@@ -669,7 +721,7 @@ PY
     fi
   else
     local prod
-    if ! prod="$(resolve_product "$product")" || [ ! -f "$prod" ]; then
+    if ! prod="$(row_product "$product" "$application")"; then
       not_comparable "$dir" "$device" "product file not found"
       return 0
     fi
@@ -703,6 +755,13 @@ PY
     fi
     # dir= (a run variant's model template, epic #596): the row's own model.
     local plan_dir="$PLAN_DIR"
+    if [ -n "$rev" ]; then
+      if ! plan_dir="$(model_at_rev "$rev")"; then
+        not_comparable "$dir" "$device" "rev=$rev: no model at that revision of $MODEL_DIR"
+        return 0
+      fi
+      note "planned with $MODEL_DIR at revision $rev"
+    fi
     if [ -n "$rowdir" ]; then
       if ! plan_dir="$(row_model "$rowdir" "$prod" "$application" "$device" "$dir")"; then
         not_comparable "$dir" "$device" "model dir=$rowdir: $(tail -1 "$dir/model.log" 2>/dev/null | cut -c1-160)"

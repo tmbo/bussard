@@ -1,0 +1,1 @@
+- Offline oracle: a row whose product file is gone (the house rows name ETS exports that are no longer kept) plans with the model's retained `products/<application>.knxprod`, and the new row option `rev=<git revision>` plans with the model as committed before a later edit of the device, so the 1.1.44 row compares against the project ETS downloaded in its capture (#1010).

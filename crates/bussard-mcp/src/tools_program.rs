@@ -1058,6 +1058,10 @@ impl BussardMcp {
         self.run_write(
             Subject::Device(target),
             "apply",
+            // Each step is boxed (issue #1008): the plan, flash, read-back
+            // and link chain is a future of hundreds of KiB, and a debug
+            // build copies it onto the stack at every `.await` that moves it
+            // by value, which overflowed the 2 MiB test thread on macOS.
             move |me, job, gate| async move {
                 let tier = me.tier()?;
                 let (result, links_after) = me
@@ -1066,30 +1070,36 @@ impl BussardMcp {
                         // parameter object (issue #391), and so is the write.
                         let model = me.state().model.reload();
                         if bussard_service::knxnet::interface_config(&model, target).is_some() {
-                            let result: WriteOutcome = me
-                                .apply_interface(
-                                    tier,
-                                    &job,
-                                    target,
-                                    &digest,
-                                    plan_hash.as_deref(),
-                                    &gate,
-                                )
-                                .await?;
+                            let result: WriteOutcome = Box::pin(me.apply_interface(
+                                tier,
+                                &job,
+                                target,
+                                &digest,
+                                plan_hash.as_deref(),
+                                &gate,
+                            ))
+                            .await?;
                             return Ok((result, None));
                         }
-                        let prepared = me
-                            .apply_preflight(tier, target, &digest, plan_hash.as_deref())
-                            .await?;
+                        let prepared = Box::pin(me.apply_preflight(
+                            tier,
+                            target,
+                            &digest,
+                            plan_hash.as_deref(),
+                        ))
+                        .await?;
                         let record =
                             crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
                         gate.pass(&prepared.result, record);
                         let links_after = LinksAfter::of(&prepared);
-                        Ok::<_, String>((me.apply_write(tier, &job, prepared).await, links_after))
+                        let written = Box::pin(me.apply_write(tier, &job, prepared)).await;
+                        Ok::<_, String>((written, links_after))
                     })
                     .await?;
                 Ok(match links_after {
-                    Some(consent) => me.links_after_download(tier, &job, consent, result).await,
+                    Some(consent) => {
+                        Box::pin(me.links_after_download(tier, &job, consent, result)).await
+                    }
                     None => result,
                 })
             },
