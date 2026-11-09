@@ -1328,6 +1328,16 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual((hit["click_x"], hit["click_y"]), (2456, 1480))
         self.assertIsNone(self.d.ja_beside_nein(None))
 
+    def test_ja_on_the_line_of_nein_skips_a_catalog_cell(self):
+        # A catalog row's "SL Ready" cell reads 'Ja' inside the search region;
+        # the button is the 'Ja' on Nein's line (2026-11-09).
+        cell = {"text": "Ja", "x": 2300, "y": 1499, "w": 24, "h": 20, "click_x": 2312, "click_y": 1509}
+        btn = {"text": "√ Ja", "x": 2440, "y": 1468, "w": 60, "h": 24, "click_x": 2480, "click_y": 1480}
+        nein = {"text": "X Nein", "x": 2538, "y": 1468, "w": 100, "h": 24, "click_x": 2600, "click_y": 1480}
+        self.assertIs(self.d.ja_on_the_line_of([cell, btn], nein), btn)
+        self.assertIsNone(self.d.ja_on_the_line_of([cell], nein))
+        self.assertIs(self.d.ja_on_the_line_of([cell], None), cell)
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
