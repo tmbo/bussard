@@ -542,6 +542,7 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: Vec::new(),
             events,
         };
         // A device constructed already `Loaded` (a previously-programmed device)
@@ -735,6 +736,7 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: Vec::new(),
             events,
         };
         device.refresh_group_comm();
@@ -813,6 +815,7 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: Vec::new(),
             events,
         }
     }

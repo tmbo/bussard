@@ -16,11 +16,13 @@
 //! It is a clean-room parser: it does not reuse the tool's importer.
 
 mod branch;
+pub mod loaded_image;
 mod model;
 mod reader;
 
 pub use model::{
-    LdCtrl, LoadProcedure, LoadableObject, ProductData, RelativeSegment, SecurityCapacity,
-    TypedProperty,
+    FactoryProperty, LdCtrl, LoadProcedure, LoadableObject, ProductData, RelativeSegment,
+    SecurityCapacity, TypedProperty,
 };
+pub(crate) use reader::pdt_size;
 pub use reader::{ProdError, program_manufacturer, read_knxprod, read_knxprod_bytes};

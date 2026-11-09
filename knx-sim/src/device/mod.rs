@@ -307,6 +307,11 @@ pub struct Device {
     /// The intermediate state octet each LSM still reports, and how many
     /// more times.
     intermediate: std::collections::BTreeMap<u8, (u8, u32)>,
+    /// The property values the device holds in factory state and after a
+    /// reset of its parameters ([`ProductData::factory_properties`], bussard
+    /// issue #1012), placed at build; see
+    /// [`Device::restore_factory_properties`].
+    factory_properties: Vec<restart::HeldProperty>,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -380,6 +385,21 @@ impl Device {
     /// `0x0701` / `0x0705` are modelled), because a strict simulator refuses to pretend to
     /// be a device generation it does not implement.
     pub fn from_product_with_overrides(
+        address: IndividualAddress,
+        product: &ProductData,
+        initial_state: LoadState,
+        overrides: ProfileOverrides,
+        events: std::sync::Arc<dyn EventSink>,
+    ) -> Result<Self, String> {
+        // Whichever generation is built, the device then holds the
+        // catalogue's factory property values (bussard issue #1012).
+        Self::build_for_mask(address, product, initial_state, overrides, events)
+            .map(|device| device.with_factory_properties(product))
+    }
+
+    /// [`Device::from_product_with_overrides`] before the factory property
+    /// values are placed: the constructor of the mask's device generation.
+    fn build_for_mask(
         address: IndividualAddress,
         product: &ProductData,
         initial_state: LoadState,
@@ -715,6 +735,16 @@ impl Device {
     pub fn knxnet_property(&self, pid: u8) -> Option<&[u8]> {
         self.knxnet_by_type
             .as_ref()
+            .and_then(|o| o.property(pid))
+            .map(|p| p.value.as_slice())
+    }
+
+    /// Test support: the value of PID `pid` of interface object `object`
+    /// (by index), as the device holds it now; `None` when the object or the
+    /// property is absent. Not part of the simulated device's bus behaviour.
+    pub fn property_value(&self, object: u8, pid: u8) -> Option<&[u8]> {
+        self.objects
+            .get(&object)
             .and_then(|o| o.property(pid))
             .map(|p| p.value.as_slice())
     }
@@ -1292,6 +1322,33 @@ mod tests {
         ];
         pd.property_only = true;
         pd
+    }
+
+    /// Issue #1012: the property-only device (mask 0021) holds the factory
+    /// property values too, since every constructor's result passes through
+    /// [`Device::with_factory_properties`]. The entry is on object 0, the
+    /// object such a device serves by index.
+    #[test]
+    fn test_from_product_with_overrides_property_only_device_holds_factory_values()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut pd = property_only_product();
+        pd.factory_properties = vec![crate::prod::FactoryProperty {
+            object: 0,
+            pid: 0x0F,
+            start: 0,
+            data: b"IPS".to_vec(),
+            mask: Vec::new(),
+        }];
+        let dev = Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 200),
+            &pd,
+            LoadState::Loaded,
+            ProfileOverrides::default(),
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        )?;
+        let order = dev.property_value(0, 0x0F).ok_or("object 0 PID 15")?;
+        assert_eq!(&order[..3], b"IPS");
+        Ok(())
     }
 
     #[test]

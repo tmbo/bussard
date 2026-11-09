@@ -183,6 +183,30 @@ pub struct ProductData {
     /// entries in PID 53 and PID 54 and reports them in the property
     /// descriptions.
     pub security_capacity: SecurityCapacity,
+    /// The property values the device holds in factory state and after a
+    /// reset of its parameters, from the kind 5 entries of the catalogue's
+    /// `Hardware2Program/@LoadedImage` ([`crate::prod::loaded_image`],
+    /// bussard issue #1012). Empty when the program's hardware carries none,
+    /// when the `Hardware2Program`s listing it disagree, or when the mask
+    /// declares no first application object.
+    pub factory_properties: Vec<FactoryProperty>,
+}
+
+/// A property value the device holds after a reset of its parameters: one
+/// kind 5 entry of the catalogue's `LoadedImage`, its object made absolute.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FactoryProperty {
+    /// The interface object index.
+    pub object: u8,
+    /// The property id.
+    pub pid: u8,
+    /// The 0-based element the value starts at.
+    pub start: u32,
+    /// The held octets.
+    pub data: Vec<u8>,
+    /// The bits of `data` the entry defines, as long as `data`; empty for
+    /// every bit.
+    pub mask: Vec<u8>,
 }
 
 /// The Data Secure table capacities of an application program (KNX 3/5/1

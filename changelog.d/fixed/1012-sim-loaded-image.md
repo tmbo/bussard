@@ -1,0 +1,1 @@
+- knx-sim: a device holds the property values its catalogue `Hardware2Program/@LoadedImage` lists (kind 5 entries) in factory state and after a master reset with erase code 2, 5 or 7, as the real Hager devices do; a flash that leaves those writes out, as ETS does, now reads back what the device holds (#1012).

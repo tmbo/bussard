@@ -101,6 +101,7 @@ fn synthetic_system_b_product() -> ProductData {
         object_types: Vec::new(),
         property_only: false,
         security_capacity: Default::default(),
+        factory_properties: Vec::new(),
     }
 }
 
