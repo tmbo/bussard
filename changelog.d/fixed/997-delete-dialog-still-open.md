@@ -1,0 +1,1 @@
+- ETS sweep driver: a delete confirmation still open after the click on "Ja" is answered with "Nein" before the delete reports the error, so the next import finds the Katalog panel (#997).

@@ -491,6 +491,22 @@ def leftover_delete_dialog(lines: list[dict]) -> dict | None:
     return button_hit(lines, "Nein")
 
 
+def confirm_delete() -> None:
+    """Answer the delete confirmation with 'Ja'. A dialog left open fails
+    every import after it (2026-11-08, #997): when 'Ja' is not found, or the
+    dialog is still there after the click, it is answered with 'Nein' before
+    the error is raised, so the next flow finds the Katalog panel."""
+    try:
+        click_button("Ja", LAYOUT["delete_yes"])
+    except RuntimeError as exc:
+        closed = close_delete_dialog()
+        raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
+    time.sleep(1.5)
+    if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
+        closed = close_delete_dialog()
+        raise RuntimeError(f"delete dialog still open after 'Ja'; {'closed with Nein' if closed else 'left open'}")
+
+
 def close_delete_dialog() -> bool:
     """Answer a delete confirmation a failed delete left open with 'Nein'
     (never 'Ja': it may name another object than the next flow expects).
@@ -1459,13 +1475,7 @@ def flow_delete_device(req: dict) -> dict:
             # (2026-10-28).
             named = " ".join(l["text"] for l in ocr(LAYOUT["delete_dialog"]))
             if req["ia"] in named.replace(" ", "") and "Linie" not in named:
-                try:
-                    click_button("Ja", LAYOUT["delete_yes"])
-                except RuntimeError as exc:
-                    # Left open, the dialog fails every import after it
-                    # (2026-11-08, #997): answer it before reporting.
-                    closed = close_delete_dialog()
-                    raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
+                confirm_delete()
                 confirmed = True
             else:
                 click_button("Nein", (1300, 1380, 2800, 1580))

@@ -1370,6 +1370,43 @@ class TestDriverDeleteDialog(unittest.TestCase):
             self.assertFalse(self.d.close_delete_dialog())
         click.assert_not_called()
 
+    def confirm(self, screens: list):
+        """confirm_delete with OCR answering `screens` in turn; returns the
+        error (or None) and the clicked points."""
+        from unittest import mock
+
+        shots = iter(screens)
+        with mock.patch.object(self.d, "ocr", side_effect=lambda *a, **k: next(shots)), \
+                mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
+                mock.patch.object(self.d, "log"):
+            try:
+                self.d.confirm_delete()
+                err = None
+            except RuntimeError as exc:
+                err = exc
+        return err, [c.args for c in click.call_args_list]
+
+    def test_confirm_delete_clicks_ja_and_checks_the_dialog_closed(self):
+        err, clicks = self.confirm([self.ROWS_997, []])
+        self.assertIsNone(err)
+        self.assertEqual(len(clicks), 1)
+        self.assertTrue(2340 + 2 * 80 / 4 <= clicks[0][0] <= 2420, clicks)
+
+    def test_confirm_delete_closes_a_dialog_still_open_with_nein(self):
+        # The click on Ja missed: the dialog is there after it.
+        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997])
+        self.assertIn("still open", str(err))
+        self.assertIn("closed with Nein", str(err))
+        self.assertEqual(len(clicks), 2)
+        self.assertTrue(2480 + 2 * 120 / 6 <= clicks[1][0] <= 2600, clicks)
+
+    def test_confirm_delete_without_ja_closes_with_nein(self):
+        no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
+        err, clicks = self.confirm([no_ja, no_ja])
+        self.assertIn("button 'Ja' not on screen", str(err))
+        self.assertIn("closed with Nein", str(err))
+        self.assertEqual(len(clicks), 1)
+
     def catalog_add(self, devices: list, delete):
         """flow_catalog_add up to its catalog search, with the screen mocked:
         `devices` are the device lists it reads in turn, `delete` stands in
