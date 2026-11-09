@@ -783,6 +783,51 @@ impl StepExecutor for SystemB<'_> {
                 )
                 .await?;
             }
+            // A compare naming its object by type, on a program that is not
+            // Data Secure enabled: read at the index the same resolver gives
+            // the write above (issue #1021: the Gira E000 compares PID 207 of
+            // type 65281). A type no list holds is refused, never read at
+            // object 0; a `Range`-only compare reads nothing, as below.
+            FlashStep::CompareProp {
+                object:
+                    PropObject::Type {
+                        object_type,
+                        occurrence,
+                    },
+                prop_id,
+                expected: Some(expected),
+                mask,
+                start_element,
+            } if plan.typed_objects_by_list() => {
+                let target = super::props::resolve_type_index(
+                    session.l4(),
+                    object_table,
+                    &mut self.io_list,
+                    *object_type,
+                    *occurrence,
+                )
+                .await?
+                .ok_or_else(|| {
+                    WriteError::Mgmt(bussard_mgmt::MgmtError::MalformedResponse {
+                        address: session.l4().target(),
+                        reason: format!(
+                            "the device lists no interface object of type {object_type} \
+                             (occurrence {occurrence}) in its object list {object_table:?} or \
+                             its PID_IO_LIST, so the compare of PID {prop_id} has nothing to \
+                             read"
+                        ),
+                    })
+                })?;
+                super::props::compare_property_value(
+                    session.l4(),
+                    PropObject::Index(u32::from(target)),
+                    *prop_id,
+                    *start_element,
+                    expected,
+                    mask.as_deref(),
+                )
+                .await?;
+            }
             // The description read of a property no value decides (issue
             // #841), on an object named by type of a program that is not Data
             // Secure enabled: at its index, by the resolver of the write

@@ -955,6 +955,139 @@ async fn test_flash_refuses_a_write_prop_by_type_the_device_does_not_list() -> T
     Ok(())
 }
 
+/// The manufacturer object type the Gira `M-0008_A-E000-10-89B0-O0077`
+/// compares PID 207 of (issue #1021).
+const OT_GIRA_VENDOR: u16 = 65281;
+
+/// `app` with `LdCtrlCompareProp ObjType="65281" PropId="207"
+/// InlineData="01"` (no `ObjIdx`) ahead of its procedure, the Gira E000
+/// shape (issue #1021).
+fn with_typed_compare(app: &ApplicationProgram) -> TestResult<ApplicationProgram> {
+    use bussard_product::application::LoadOp;
+    let mut app = app.clone();
+    let procedure = app
+        .load_procedures
+        .first_mut()
+        .ok_or("the application has a load procedure")?;
+    procedure.ops.insert(
+        0,
+        LoadOp::CompareProp {
+            obj_idx: None,
+            obj_type: Some(u32::from(OT_GIRA_VENDOR)),
+            prop_id: Some(207),
+            inline_data: Some(vec![0x01]),
+            mask: None,
+            range: None,
+            occurrence: None,
+            start_element: None,
+        },
+    );
+    Ok(app)
+}
+
+#[test]
+fn test_plan_flash_keeps_a_compare_prop_by_type_off_object_0() -> TestResult {
+    // Issue #1021: the compare names the object by type, as the by-type
+    // write does, and so does the description read ahead of it.
+    let (product, _tmp) = product()?;
+    let app = with_typed_compare(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let typed = PropObject::Type {
+        object_type: OT_GIRA_VENDOR,
+        occurrence: 0,
+    };
+    let touched: Vec<&FlashStep> = plan
+        .steps
+        .iter()
+        .filter(|s| {
+            matches!(
+                s,
+                FlashStep::CompareProp { prop_id: 207, .. }
+                    | FlashStep::DescribeProp { prop_id: 207, .. }
+            )
+        })
+        .collect();
+    assert_eq!(
+        touched,
+        vec![
+            &FlashStep::DescribeProp {
+                object: typed,
+                prop_id: 207,
+            },
+            &FlashStep::CompareProp {
+                object: typed,
+                prop_id: 207,
+                expected: Some(vec![0x01]),
+                mask: None,
+                start_element: 1,
+            },
+        ]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_compares_a_compare_prop_by_type_at_the_listed_index() -> TestResult {
+    // Issue #1021: ETS reads PID 207 of the type 65281 object; bussard reads
+    // it at the index the device's object list gives the type (5 here),
+    // never at object 0, whose PID 207 holds a value the compare would
+    // refuse.
+    const PROPERTY_VALUE_READ: u16 = 0x3D5;
+    let (product, _tmp) = product()?;
+    let app = with_typed_compare(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    assert!(plan.typed_objects_by_list());
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&object_types_with(&[OT_GIRA_VENDOR]))
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(4, 201, 1, &[0])
+        .with_writable_property(0, 207, 1, &[0x02])
+        .with_writable_property(5, 207, 1, &[0x01]);
+    let (result, seen) = flash_logged(&plan, device).await?;
+    assert_eq!(result, Ok(true));
+    let reads_207: Vec<u8> = seen
+        .iter()
+        .filter(|(a, d)| *a == PROPERTY_VALUE_READ && d.get(1) == Some(&207))
+        .filter_map(|(_, d)| d.first().copied())
+        .collect();
+    assert_eq!(reads_207, vec![5]);
+    // A program that is not Data Secure enabled reads it on the plain
+    // services, as the by-type write goes (issue #948).
+    assert!(
+        !seen
+            .iter()
+            .any(|(a, _)| *a == bussard_testkit::consts::A_PROPERTY_EXT_VALUE_READ),
+        "no extended property read"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_refuses_a_compare_prop_by_type_the_device_does_not_list() -> TestResult {
+    // Issue #1021: a type no list holds is a refusal naming the type, never
+    // a read of object 0.
+    const PROPERTY_VALUE_READ: u16 = 0x3D5;
+    let (product, _tmp) = product()?;
+    let app = with_typed_compare(product.applications.first().ok_or("one application")?)?;
+    let plan = plan_of(&product, &app, &BTreeMap::new()).map_err(|e| e.to_string())?;
+    let device = MockDevice::system_b(ia("1.1.1")?)
+        .with_object_types(&object_types_with(&[]))
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(0, 207, 1, &[0x01]);
+    let (result, seen) = flash_logged(&plan, device).await?;
+    match result {
+        Err(text) => assert!(text.contains("type 65281"), "{text}"),
+        Ok(ok) => return Err(format!("expected a refusal, the flash ended ok={ok}").into()),
+    }
+    assert!(
+        !seen
+            .iter()
+            .any(|(a, d)| *a == PROPERTY_VALUE_READ && d.get(1) == Some(&207)),
+        "no PID 207 read"
+    );
+    Ok(())
+}
+
 /// `app` with the ise smart connect load-state writes after its PID 201
 /// write (`M-007C_A-0006-20-C776`, issue #947): object 8 unloaded, opened and
 /// completed by `LdCtrlWriteProp ObjIdx="8" PropId="5"`, each followed by the

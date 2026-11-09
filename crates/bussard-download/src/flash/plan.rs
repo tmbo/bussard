@@ -1207,35 +1207,16 @@ pub fn plan_flash(
                 }
             }
 
-            LoadOp::CompareProp {
-                obj_idx,
-                prop_id,
-                inline_data,
-                mask,
-                range,
-                start_element,
-                ..
-            } => {
-                // A property-verify precondition. The expected bytes come from the
-                // op's own `InlineData` (resolved at parse time), so this lowers
-                // with no device access — a fully-executable read-and-compare.
-                // A `Range`-only op carries no literal bytes; keep it as a
-                // no-expectation confirm so the whole procedure still lowers
-                // rather than refusing (its numeric-range semantics are not
-                // needed to complete the download).
-                let _ = range;
-                steps.push(FlashStep::CompareProp {
-                    object: super::PropObject::Index(obj_idx.unwrap_or(0)),
-                    prop_id: prop_id.unwrap_or(0),
-                    expected: inline_data.clone(),
-                    mask: mask.clone(),
-                    // The Siemens 07B0 applications compare single elements
-                    // of an array property (issue #614).
-                    start_element: super::plan_props::compare_start_element(
-                        step_no,
-                        *start_element,
-                    )?,
-                });
+            LoadOp::CompareProp { .. } => {
+                // A property-verify precondition. The expected bytes come from
+                // the op's own `InlineData` (resolved at parse time), so this
+                // lowers with no device access. A `Range`-only op carries no
+                // literal bytes and stays a no-expectation confirm. An op
+                // naming its object by `ObjType` keeps the type, resolved on
+                // the device as a by-type write is, never object 0 (issue
+                // #1021: the Gira `M-0008_A-E000-10-89B0-O0077` compares PID
+                // 207 of type 65281).
+                steps.push(super::plan_props::lower_compare_prop(step_no, op)?);
             }
 
             LoadOp::CompareRelMem {
@@ -3361,6 +3342,78 @@ mod tests {
             .filter(|s| matches!(s, FlashStep::AllocateSegment { .. }))
             .count();
         assert_eq!(allocs, 2, "distinct segments keep distinct allocations");
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_compare_prop_by_object_type() -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #1021: the Gira `M-0008_A-E000-10-89B0-O0077` compares PID
+        // 207 of the object of type 65281 (no `ObjIdx`); ETS describes and
+        // reads that object, so the step keeps the type, never object 0, and
+        // the description read before it names the type too. `ObjType="0"`
+        // is the device object.
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-4" ApplicationNumber="8" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Typed" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-4_RS-1" Size="4" LoadStateMachine="4" Offset="0"><Data>AAECAw==</Data></RelativeSegment></Code>
+           <LoadProcedures>
+            <LoadProcedure MergeId="1">
+             <LdCtrlCompareProp InlineData="0008" ObjType="0" PropId="12" />
+             <LdCtrlCompareProp InlineData="01" ObjType="65281" PropId="207" />
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" />
+             <LdCtrlWriteRelMem AppliesTo="full" ObjIdx="0" Offset="0" Size="4" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-1_A-4", xml.as_bytes())?;
+        let plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let typed = crate::flash::PropObject::Type {
+            object_type: 65281,
+            occurrence: 0,
+        };
+        let objects: Vec<(crate::flash::PropObject, u32)> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::CompareProp {
+                    object, prop_id, ..
+                } => Some((*object, *prop_id)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            objects,
+            vec![(crate::flash::PropObject::Index(0), 12), (typed, 207)]
+        );
+        assert!(
+            plan.steps.iter().any(|s| *s
+                == FlashStep::DescribeProp {
+                    object: typed,
+                    prop_id: 207
+                }),
+            "the description read names the type: {:?}",
+            plan.steps
+        );
+        assert!(!plan.steps.iter().any(|s| matches!(
+            s,
+            FlashStep::DescribeProp {
+                object: crate::flash::PropObject::Index(0),
+                prop_id: 207
+            }
+        )));
         Ok(())
     }
 
