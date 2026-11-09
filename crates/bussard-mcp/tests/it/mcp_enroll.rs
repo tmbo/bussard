@@ -37,7 +37,7 @@ use bussard_service::enroll_session::Timeouts;
 use bussard_service::enroll_session::{DownMessage, EnrollStatus, Envelope};
 use bussard_transport::TransportKind;
 use rmcp::model::{
-    CallToolRequest, CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientInfo,
+    CallToolRequest, CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig,
     ClientRequest, ElicitRequestParams, ElicitResult, ElicitationAction, ElicitationCapability,
     FormElicitationCapability, Implementation, InputRequest, ProgressNotificationParam,
     ProtocolVersion, RequestMetaObject, UrlElicitationCapability,
@@ -129,8 +129,8 @@ impl ClientHandler for Human {
         }
     }
 
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::new(
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
             self.capabilities(),
             Implementation::new("fake-chat", "0.0.0"),
         )
