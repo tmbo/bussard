@@ -1,0 +1,1 @@
+- ETS sweep driver: a dialog button is matched as a whole word anywhere in its OCR line, so the delete confirmation's Ja is found when OCR joins it with Nein ("√ Ja X Nein", 2026-11-09, #997).
