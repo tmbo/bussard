@@ -6,7 +6,7 @@
 
 use std::collections::BTreeMap;
 
-use bussard_download::{FlashPlan, FlashStep, PropObject, parameter_overrides, plan_flash};
+use bussard_download::{FlashPlan, PropObject, parameter_overrides, plan_flash};
 use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::text::hex_upper;
 use bussard_model::{IndividualAddress, Model};
@@ -70,28 +70,24 @@ pub async fn read_property_rows<Ch: L4Channel>(
 ) -> Vec<PropertyRow> {
     let mut rows = Vec::new();
     for step in &plan.steps {
-        let FlashStep::WriteProp {
-            object,
-            prop_id,
-            value,
-            start_element,
-            count,
-            ..
-        } = step
-        else {
+        // A write the flash leaves out as held after the parameter reset
+        // (issue #951) is listed too: the device may hold another value.
+        let Some(write) = step.property_write() else {
             continue;
         };
-        let elem = (value.len() / usize::from((*count).max(1))).max(1);
+        let (object, prop_id, value) = (write.object, write.prop_id, write.value);
+        let count = write.count.max(1);
+        let elem = (value.len() / usize::from(count)).max(1);
         let read = bussard_download::read_property_value(
             l4,
-            *object,
-            *prop_id,
-            *start_element,
-            (*count).max(1),
+            object,
+            prop_id,
+            write.start_element,
+            count,
             elem,
         )
         .await;
-        rows.push(row(*object, *prop_id, value, read));
+        rows.push(row(object, prop_id, value, read));
     }
     rows
 }

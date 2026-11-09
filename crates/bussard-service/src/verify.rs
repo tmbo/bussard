@@ -294,24 +294,14 @@ impl ExpectedProperty {
         flash
             .steps
             .iter()
-            .map(FlashStep::without_parameter_reset)
-            .filter_map(|step| match step {
-                FlashStep::WriteProp {
-                    object,
-                    prop_id,
-                    value,
-                    start_element,
-                    count,
-                    from_parameters: true,
-                    ..
-                } => Some(ExpectedProperty {
-                    object,
-                    prop_id,
-                    start: start_element,
-                    count: count.max(1),
-                    value,
-                }),
-                _ => None,
+            .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
+            .map(|w| ExpectedProperty {
+                object: w.object,
+                prop_id: w.prop_id,
+                start: w.start_element,
+                count: w.count.max(1),
+                value: w.value.to_vec(),
             })
             .collect()
     }
@@ -1265,6 +1255,44 @@ mod tests {
     }
 
     #[test]
+    fn test_from_flash_plan_reads_back_a_held_write() -> TestResult {
+        // Review of #1011: a write the flash leaves out as held after the
+        // parameter reset (issue #951) is read back like a write, declared or
+        // not, from the parameters or the InlineData: the device must hold
+        // the model's value, never a silent ok.
+        let mut plan = property_param_plan()?;
+        for (prop_id, from_parameters) in [(57, false), (58, true)] {
+            plan.steps.push(FlashStep::FactoryHeldProp {
+                object: PropObject::Index(6),
+                prop_id,
+                value: vec![0, 0],
+                start_element: 1,
+                count: 2,
+                verify: false,
+                from_parameters,
+                describe: true,
+            });
+        }
+        let expected = ExpectedProperty::from_flash_plan(&plan);
+        for prop_id in [57, 58] {
+            assert!(
+                expected.contains(&ExpectedProperty {
+                    object: PropObject::Index(6),
+                    prop_id,
+                    start: 1,
+                    count: 2,
+                    value: vec![0, 0],
+                }),
+                "{expected:?}"
+            );
+        }
+        let parameters = ExpectedProperty::from_parameter_writes(&plan);
+        assert!(parameters.iter().any(|e| e.prop_id == 58));
+        assert!(!parameters.iter().any(|e| e.prop_id == 57));
+        Ok(())
+    }
+
+    #[test]
     fn test_from_flash_plan_reads_back_a_declared_inline_data_write() -> TestResult {
         // Issue #945: a write to a declared property carrying InlineData (no
         // parameter placed in it) is read back; an undeclared one is not.
@@ -1373,6 +1401,48 @@ mod tests {
                 value: vec![0x02],
             }]
         );
+        Ok(())
+    }
+
+    /// Review of #1011: the program read lists a property the flash leaves
+    /// out as held (issue #951), so one that differs on the device shows.
+    #[tokio::test]
+    async fn test_read_property_rows_lists_a_held_property() -> TestResult {
+        let mut plan = property_param_plan()?;
+        plan.steps.retain(|s| s.property_write().is_none());
+        plan.steps.push(FlashStep::FactoryHeldProp {
+            object: PropObject::Index(4),
+            prop_id: 201,
+            value: vec![0x5A],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: true,
+            describe: false,
+        });
+        let device =
+            bussard_testkit::MockDevice::new("1.1.1".parse()?).with_property(4, 201, 1, &[0xFF]);
+        let gw = bussard_testkit::MockGateway::builder()
+            .device(device)
+            .start()
+            .await?;
+        let mut bus = bussard_transport::Transport::connect(
+            &bussard_transport::ConnectionConfig::tunnel(gw.addr()),
+        )
+        .await?;
+        let mut l4 = Layer4Connection::connect(
+            &mut bus,
+            "1.1.1".parse()?,
+            "0.0.255".parse()?,
+            bussard_mgmt::ConnectOptions::default(),
+        )
+        .await?;
+        let rows = crate::property_plan::read_property_rows(&mut l4, &plan).await;
+        let _ = l4.disconnect().await;
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].planned, "5A");
+        assert_eq!(rows[0].device.as_deref(), Some("FF"));
+        assert!(rows[0].differs());
         Ok(())
     }
 

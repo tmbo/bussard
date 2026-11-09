@@ -30,10 +30,18 @@
 //!
 //! bussard leaves a write out only after a reset of every channel's
 //! parameters in the same procedure ([`resets_parameters`]): without one the
-//! device holds whatever an earlier download left. Only one-octet
+//! device holds whatever an earlier download left. A write of the procedure
+//! after the reset changes what the device holds, so a later write to the
+//! same elements is always sent ([`DeviceImage`]). A value the image leaves
+//! partly undefined (a mask bit of 0) is not held. The executor reads every
+//! held property and writes it as before when the device holds something
+//! else or does not answer, so a device (or knx-sim, #1012) whose reset does
+//! not restore the image still ends with the model's value. Only one-octet
 //! elements are compared (every entry of the corpus is `PDT_UNSIGNED_CHAR` or
 //! `PDT_GENERIC_01`): whether an entry's offset counts octets or elements is
 //! not known for a wider type.
+
+use std::collections::{BTreeMap, BTreeSet};
 
 use super::{FlashStep, PropObject};
 use bussard_product::application::ApplicationProgram;
@@ -47,46 +55,157 @@ pub(super) fn resets_parameters(erase_code: u8, channel: u8) -> bool {
     channel == 0 && matches!(erase_code, 2 | 5 | 7)
 }
 
-/// Turns `step`, lowered from an `LdCtrlWriteProp` after a reset of the
-/// parameters, into a [`FlashStep::FactoryHeldProp`] when the program's
-/// `LoadedImage` holds its value; any other step stays. `declared`: a
-/// declaration describes the property, so ETS reads no description for it.
-pub(super) fn hold_after_reset(step: &mut FlashStep, app: &ApplicationProgram, declared: bool) {
-    let FlashStep::WriteProp {
-        object: PropObject::Index(index),
-        prop_id,
-        value,
-        start_element,
-        count,
-        verify,
-        from_parameters,
-    } = step
-    else {
-        return;
-    };
-    if value.len() != usize::from(*count) {
-        return;
+/// What the procedure has done to the device's properties so far, as the
+/// planner walks it: whether a reset of every channel's parameters ran, and
+/// which elements a write sent since (issue #951). The device holds the
+/// `LoadedImage` value of an element only while no write of the procedure
+/// has touched it since the reset.
+#[derive(Debug, Default)]
+pub(super) struct DeviceImage {
+    /// A reset of every channel's parameters ran ([`resets_parameters`]).
+    reset: bool,
+    /// The elements (1-based) written since that reset, per object index and
+    /// PID.
+    written: BTreeMap<(u32, u32), BTreeSet<u32>>,
+}
+
+impl DeviceImage {
+    /// Records an `LdCtrlMasterReset` with `erase_code` on `channel`: one
+    /// that resets every channel's parameters puts the image's values back
+    /// and forgets the writes before it.
+    pub(super) fn master_reset(&mut self, erase_code: u8, channel: u8) {
+        if resets_parameters(erase_code, channel) {
+            self.reset = true;
+            self.written.clear();
+        }
     }
-    let held = app
-        .factory_properties
-        .iter()
-        .any(|f| f.holds(*index, *prop_id, u32::from(*start_element), value));
-    if !held {
-        return;
+
+    /// Settles `step`, lowered from an `LdCtrlWriteProp`: a write whose
+    /// value the device holds (a reset ran, no write of the procedure
+    /// touched its elements since, and the program's `LoadedImage` holds the
+    /// value) becomes a [`FlashStep::FactoryHeldProp`]; any other write is
+    /// sent and marks its elements as written, so a later write to them is
+    /// always sent. `declared`: a declaration describes the property, so ETS
+    /// reads no description for it.
+    pub(super) fn settle(
+        &mut self,
+        step: &mut FlashStep,
+        app: &ApplicationProgram,
+        declared: bool,
+    ) {
+        let FlashStep::WriteProp {
+            object: PropObject::Index(index),
+            prop_id,
+            value,
+            start_element,
+            count,
+            verify,
+            from_parameters,
+        } = step
+        else {
+            return;
+        };
+        let elements = u32::from(*start_element)..u32::from(*start_element) + u32::from(*count);
+        let key = (*index, *prop_id);
+        let untouched = self
+            .written
+            .get(&key)
+            .is_none_or(|w| elements.clone().all(|e| !w.contains(&e)));
+        // One octet per element: whether an entry's offset counts octets or
+        // elements is not known for a wider type (module docs).
+        let held = self.reset
+            && untouched
+            && value.len() == usize::from(*count)
+            && app
+                .factory_properties
+                .iter()
+                .any(|f| f.holds(*index, *prop_id, u32::from(*start_element), value));
+        if !held {
+            self.written.entry(key).or_default().extend(elements);
+            return;
+        }
+        *step = FlashStep::FactoryHeldProp {
+            object: PropObject::Index(*index),
+            prop_id: *prop_id,
+            value: std::mem::take(value),
+            start_element: *start_element,
+            count: *count,
+            verify: *verify,
+            from_parameters: *from_parameters,
+            describe: !declared,
+        };
     }
-    *step = FlashStep::FactoryHeldProp {
-        object: PropObject::Index(*index),
-        prop_id: *prop_id,
-        value: std::mem::take(value),
-        start_element: *start_element,
-        count: *count,
-        verify: *verify,
-        from_parameters: *from_parameters,
-        describe: !declared,
-    };
+}
+
+/// A property write of a plan, sent or held, borrowed
+/// ([`FlashStep::property_write`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PropertyWrite<'a> {
+    /// The interface object.
+    pub object: PropObject,
+    /// The property id.
+    pub prop_id: u32,
+    /// The value the model gives the elements.
+    pub value: &'a [u8],
+    /// The 1-based first element.
+    pub start_element: u16,
+    /// How many elements `value` spans.
+    pub count: u16,
+    /// The op's `Verify`.
+    pub verify: bool,
+    /// The value comes from the program's property-located parameters.
+    pub from_parameters: bool,
+    /// The full flash leaves it out as held after the parameter reset.
+    pub held: bool,
 }
 
 impl FlashStep {
+    /// The property write a [`FlashStep::WriteProp`] or a
+    /// [`FlashStep::FactoryHeldProp`] stands for, borrowed; `None` for any
+    /// other step.
+    pub fn property_write(&self) -> Option<PropertyWrite<'_>> {
+        match self {
+            FlashStep::WriteProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+                from_parameters,
+            } => Some(PropertyWrite {
+                object: *object,
+                prop_id: *prop_id,
+                value,
+                start_element: *start_element,
+                count: *count,
+                verify: *verify,
+                from_parameters: *from_parameters,
+                held: false,
+            }),
+            FlashStep::FactoryHeldProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                verify,
+                from_parameters,
+                ..
+            } => Some(PropertyWrite {
+                object: *object,
+                prop_id: *prop_id,
+                value,
+                start_element: *start_element,
+                count: *count,
+                verify: *verify,
+                from_parameters: *from_parameters,
+                held: true,
+            }),
+            _ => None,
+        }
+    }
+
     /// The step as a download that resets no parameters runs it: a
     /// [`FlashStep::FactoryHeldProp`] is the write it leaves out, every other
     /// step itself. The parameter-only download resets nothing, so the
@@ -149,6 +268,20 @@ mod tests {
         }
     }
 
+    /// A device image after an erase code 5 reset.
+    fn after_reset() -> DeviceImage {
+        let mut image = DeviceImage::default();
+        image.master_reset(5, 0);
+        image
+    }
+
+    /// `step` settled on a fresh image after the reset.
+    fn settled(step: FlashStep, app: &ApplicationProgram, declared: bool) -> FlashStep {
+        let mut step = step;
+        after_reset().settle(&mut step, app, declared);
+        step
+    }
+
     #[test]
     fn test_resets_parameters_names_the_factory_and_parameter_resets() {
         let resets: Vec<u8> = (0..=8).filter(|c| resets_parameters(*c, 0)).collect();
@@ -160,12 +293,10 @@ mod tests {
     /// give `...02`: written, as ETS writes it; element 1 holds the value:
     /// left out, with no description read under a declaration.
     #[test]
-    fn test_hold_after_reset_leaves_out_only_the_held_value() {
+    fn test_settle_leaves_out_only_the_held_value() {
         let app = app(&[(13, 208, 0, &[0, 0, 0, 2]), (13, 208, 96, &[1, 0, 4, 3])]);
-        let mut held = write(13, 1, &[0, 0, 0, 2]);
-        hold_after_reset(&mut held, &app, true);
         assert_eq!(
-            held,
+            settled(write(13, 1, &[0, 0, 0, 2]), &app, true),
             FlashStep::FactoryHeldProp {
                 object: PropObject::Index(13),
                 prop_id: 208,
@@ -177,56 +308,112 @@ mod tests {
                 describe: false,
             }
         );
-        let mut differs = write(13, 97, &[1, 0, 4, 2]);
-        hold_after_reset(&mut differs, &app, true);
-        assert_eq!(differs, write(13, 97, &[1, 0, 4, 2]));
+        assert_eq!(
+            settled(write(13, 97, &[1, 0, 4, 2]), &app, true),
+            write(13, 97, &[1, 0, 4, 2])
+        );
     }
 
     /// The image names the property, the start and the length: another
     /// object, start or length is written.
     #[test]
-    fn test_hold_after_reset_needs_the_same_property_start_and_length() {
+    fn test_settle_needs_the_same_property_start_and_length() {
         let app = app(&[(6, 208, 0, &[0x14])]);
-        for mut step in [
+        for step in [
             write(7, 1, &[0x14]),
             write(6, 2, &[0x14]),
             write(6, 1, &[0x14, 0]),
         ] {
-            let before = step.clone();
-            hold_after_reset(&mut step, &app, false);
-            assert_eq!(step, before);
+            assert_eq!(settled(step.clone(), &app, false), step);
         }
-        let mut undeclared = write(6, 1, &[0x14]);
-        hold_after_reset(&mut undeclared, &app, false);
         assert!(matches!(
-            undeclared,
+            settled(write(6, 1, &[0x14]), &app, false),
             FlashStep::FactoryHeldProp { describe: true, .. }
         ));
     }
 
-    /// A download that resets nothing writes the held value.
+    /// Without a reset of every channel's parameters the device holds what
+    /// an earlier download left: nothing is held.
+    #[test]
+    fn test_settle_holds_nothing_without_a_parameter_reset() {
+        let app = app(&[(6, 208, 0, &[0x14])]);
+        for (erase, channel) in [(6, 0), (5, 1), (1, 0)] {
+            let mut image = DeviceImage::default();
+            image.master_reset(erase, channel);
+            let mut step = write(6, 1, &[0x14]);
+            image.settle(&mut step, &app, true);
+            assert_eq!(
+                step,
+                write(6, 1, &[0x14]),
+                "erase code {erase} channel {channel}"
+            );
+        }
+    }
+
+    /// Review of #1011: an earlier write of the procedure to the same
+    /// elements leaves its value on the device, so a later write of the
+    /// image's value is sent; a reset after it puts the image back.
+    #[test]
+    fn test_settle_sends_a_write_to_elements_written_before() {
+        let app = app(&[(6, 208, 0, &[1, 2])]);
+        let mut image = after_reset();
+        let mut first = write(6, 2, &[9]);
+        image.settle(&mut first, &app, true);
+        assert_eq!(first, write(6, 2, &[9]));
+        let mut later = write(6, 1, &[1, 2]);
+        image.settle(&mut later, &app, true);
+        assert_eq!(later, write(6, 1, &[1, 2]));
+        // Another property's write does not count.
+        let mut image = after_reset();
+        let mut other = write(7, 1, &[1, 2]);
+        image.settle(&mut other, &app, true);
+        let mut held = write(6, 1, &[1, 2]);
+        image.settle(&mut held, &app, true);
+        assert!(matches!(held, FlashStep::FactoryHeldProp { .. }));
+        // A reset after the write puts the image's value back.
+        let mut image = after_reset();
+        let mut first = write(6, 1, &[9, 9]);
+        image.settle(&mut first, &app, true);
+        image.master_reset(5, 0);
+        let mut again = write(6, 1, &[1, 2]);
+        image.settle(&mut again, &app, true);
+        assert!(matches!(again, FlashStep::FactoryHeldProp { .. }));
+    }
+
+    /// A download that resets nothing writes the held value; the view
+    /// borrows either step.
     #[test]
     fn test_without_parameter_reset_writes_the_held_value() {
         let app = app(&[(6, 208, 0, &[0x14])]);
-        let mut step = write(6, 1, &[0x14]);
-        hold_after_reset(&mut step, &app, true);
-        assert_eq!(step.without_parameter_reset(), write(6, 1, &[0x14]));
+        let held = settled(write(6, 1, &[0x14]), &app, true);
+        assert_eq!(held.without_parameter_reset(), write(6, 1, &[0x14]));
         assert_eq!(
             write(7, 1, &[1]).without_parameter_reset(),
             write(7, 1, &[1])
         );
+        let view = held
+            .property_write()
+            .ok_or("a held write is a property write");
+        assert!(matches!(
+            view,
+            Ok(PropertyWrite {
+                held: true,
+                value: [0x14],
+                ..
+            })
+        ));
+        assert!(FlashStep::Restart.property_write().is_none());
     }
 
-    /// The mask leaves the bits the image does not define free.
+    /// Review of #1011: an image bit the mask leaves undefined is not held;
+    /// the write goes out.
     #[test]
-    fn test_hold_after_reset_compares_under_the_mask() {
+    fn test_settle_writes_a_value_the_mask_leaves_undefined() {
         let mut app = app(&[(6, 208, 0, &[0x10])]);
         app.factory_properties[0].mask = vec![0xF0];
-        let mut step = write(6, 1, &[0x1F]);
-        hold_after_reset(&mut step, &app, true);
-        assert!(matches!(step, FlashStep::FactoryHeldProp { .. }));
-        let mut other = write(6, 1, &[0x2F]);
-        hold_after_reset(&mut other, &app, true);
-        assert!(matches!(other, FlashStep::WriteProp { .. }));
+        assert_eq!(
+            settled(write(6, 1, &[0x10]), &app, true),
+            write(6, 1, &[0x10])
+        );
     }
 }

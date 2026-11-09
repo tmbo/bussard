@@ -244,25 +244,69 @@ pub(super) async fn run_shared_step<C: Connector>(
                 .await
         }
         // A write whose value the device holds after the parameter reset
-        // (issue #951): nothing is written; a property no declaration
-        // describes has its description read first, as ETS does.
+        // (issue #951): the description read ETS makes for an undeclared
+        // property, then the property is read, and written as before when
+        // it does not hold the value or does not answer (the fallback to the
+        // previous behaviour, CLAUDE.md "Speed Changes"): a device whose
+        // parameter reset leaves something else there ends with the model's
+        // value all the same.
         FlashStep::FactoryHeldProp {
             object,
             prop_id,
+            value,
+            start_element,
+            count,
+            verify,
             describe,
             ..
         } => {
-            tracing::debug!(
-                %object,
-                prop_id,
-                "LdCtrlWriteProp: the device holds the value after the parameter reset, nothing \
-                 written"
-            );
-            if *describe {
-                super::props::describe_property(session.l4(), *object, *prop_id).await
-            } else {
-                Ok(())
+            async {
+                if *describe {
+                    super::props::describe_property(session.l4(), *object, *prop_id).await?;
+                }
+                let elem = (value.len() / usize::from((*count).max(1))).max(1);
+                let read = super::props::read_property_value(
+                    session.l4(),
+                    *object,
+                    *prop_id,
+                    *start_element,
+                    *count,
+                    elem,
+                )
+                .await;
+                match read {
+                    Ok(held) if held == *value => {
+                        tracing::debug!(
+                            %object,
+                            prop_id,
+                            "LdCtrlWriteProp: the device holds the value after the parameter \
+                             reset, nothing written"
+                        );
+                        Ok(())
+                    }
+                    other => {
+                        tracing::warn!(
+                            %object,
+                            prop_id,
+                            start_element,
+                            read = ?other.as_ref().map(|v| v.len()),
+                            "the device does not hold the LoadedImage value after the parameter \
+                             reset; writing the property"
+                        );
+                        super::props::write_property_value(
+                            session.l4(),
+                            *object,
+                            *prop_id,
+                            *start_element,
+                            *count,
+                            value,
+                            *verify,
+                        )
+                        .await
+                    }
+                }
             }
+            .await
         }
         // A property declaration (issue #938): the planner sized the write
         // that follows from it; ETS sends nothing for it, and neither does

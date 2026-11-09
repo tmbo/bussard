@@ -141,6 +141,19 @@ impl MasterTemplate {
     pub fn hawk_config(&self, mask: &str) -> Option<&HawkConfig> {
         self.hawk.get(mask)
     }
+
+    /// The index of the mask's first application interface object: its
+    /// `FirstAppObjectIdx` feature (6 on `07B0`, 5 on `0701`), the base the
+    /// object of a `LoadedImage` property value is relative to (issue #951,
+    /// [`crate::loaded_image`]). `None` when the mask, its Hawk block or the
+    /// feature is absent, or the value is not a number.
+    pub fn first_app_object_index(&self, mask: &str) -> Option<u32> {
+        self.hawk_config(mask)?
+            .feature("FirstAppObjectIdx")?
+            .trim()
+            .parse()
+            .ok()
+    }
 }
 
 /// The masks bussard carries a built-in full-download `Load` template for: the
@@ -702,6 +715,25 @@ mod tests {
         assert_eq!(hawk.feature("PropertyMappedLsms"), Some("1"));
         assert_eq!(hawk.verify_mode(), Some(1));
         Ok(())
+    }
+
+    /// Issue #951: `FirstAppObjectIdx` read from the mask's features; an
+    /// absent mask, feature or a non-number gives none.
+    #[test]
+    fn test_first_app_object_index_reads_the_mask_feature() {
+        let mut t = MasterTemplate::default();
+        for (mask, value) in [("07B0", "6"), ("0701", " 5 "), ("0010", "x")] {
+            let mut hawk = HawkConfig::default();
+            hawk.features
+                .insert("FirstAppObjectIdx".to_string(), value.to_string());
+            t.hawk.insert(mask.to_string(), hawk);
+        }
+        t.hawk.insert("0705".to_string(), HawkConfig::default());
+        assert_eq!(t.first_app_object_index("07B0"), Some(6));
+        assert_eq!(t.first_app_object_index("0701"), Some(5));
+        assert_eq!(t.first_app_object_index("0010"), None);
+        assert_eq!(t.first_app_object_index("0705"), None);
+        assert_eq!(t.first_app_object_index("091A"), None);
     }
 
     #[test]

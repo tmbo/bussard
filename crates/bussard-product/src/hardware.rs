@@ -82,8 +82,10 @@ pub struct Hardware {
     /// application id: what the device holds after its parameters are reset
     /// (issue #951, [`crate::ApplicationProgram::factory_properties`]). An
     /// application several `Hardware2Program`s list that disagree (one with
-    /// another image or none) has no entry: which hardware a device is
-    /// cannot be told from the program, so no value is taken as held.
+    /// another image or none) has an empty list, kept through
+    /// [`Hardware::extend`] so another file cannot undo it: which hardware a
+    /// device is cannot be told from the program, so no value is taken as
+    /// held.
     #[serde(default)]
     pub factory_properties: BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>>,
 }
@@ -275,10 +277,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         order_to_bus_current,
         order_to_apps,
         table_image_apps,
-        factory_properties: factory_properties
-            .into_iter()
-            .filter(|(_, entries)| !entries.is_empty())
-            .collect(),
+        // An empty list stays: it marks an application whose listings
+        // disagree (or carry no image), so a later file's listing cannot
+        // bring a value back ([`Hardware::extend`]).
+        factory_properties,
     })
 }
 
@@ -604,10 +606,14 @@ mod tests {
         );
         assert_eq!(hw.hardware2program.len(), 5);
         // The property values (kind 5) of the two images that carry them.
-        assert_eq!(
-            hw.factory_properties.keys().collect::<Vec<_>>(),
-            vec!["M-1_A-1", "M-1_A-2"]
-        );
+        let held = |hw: &Hardware| {
+            hw.factory_properties
+                .iter()
+                .filter(|(_, e)| !e.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(held(&hw), vec!["M-1_A-1", "M-1_A-2"]);
         assert_eq!(hw.factory_properties["M-1_A-2"].len(), 1);
         assert_eq!(hw.factory_properties["M-1_A-2"][0].pid, 0xD0);
         Ok(())
@@ -640,11 +646,31 @@ mod tests {
               </Hardware2Program>
             </Hardware2Programs></Hardware></KNX>"#
         );
-        let hw = parse_hardware(&xml)?;
-        assert_eq!(
-            hw.factory_properties.keys().collect::<Vec<_>>(),
-            vec!["M-1_A-1"]
+        let mut hw = parse_hardware(&xml)?;
+        let held = |hw: &Hardware| {
+            hw.factory_properties
+                .iter()
+                .filter(|(_, e)| !e.is_empty())
+                .map(|(k, _)| k.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(held(&hw), vec!["M-1_A-1"]);
+        // Review of #1011: a second file that lists M-1_A-2 with the first
+        // listing's value cannot bring back what the first file's
+        // disagreement cleared, and one that disagrees clears M-1_A-1.
+        let second = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20"><Hardware Id="H-2" Name="y">
+            <Hardware2Programs>
+              <Hardware2Program Id="H-2_HP-1" LoadedImage="{zero}">
+                <ApplicationProgramRef RefId="M-1_A-2" />
+              </Hardware2Program>
+              <Hardware2Program Id="H-2_HP-2" LoadedImage="{one}">
+                <ApplicationProgramRef RefId="M-1_A-1" />
+              </Hardware2Program>
+            </Hardware2Programs></Hardware></KNX>"#
         );
+        hw.extend(parse_hardware(&second)?);
+        assert!(held(&hw).is_empty());
         Ok(())
     }
 }

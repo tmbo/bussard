@@ -309,13 +309,6 @@ impl FlashPlan {
         &self,
         regions: &ParamRegions,
     ) -> Result<Vec<FlashStep>, PartialPlanError> {
-        // The parameter-only download resets nothing, so a write the full
-        // plan leaves out as held after the reset is written (issue #951).
-        let full: Vec<FlashStep> = self
-            .steps
-            .iter()
-            .map(FlashStep::without_parameter_reset)
-            .collect();
         // Pass 1: the parameter writes, the load-state machine that owns
         // their segment, and the allocation each write lands in: the
         // allocation naming the write's own object index (the master template
@@ -328,7 +321,7 @@ impl FlashPlan {
         let mut last_alloc: Option<(Option<u32>, usize)> = None;
         let mut kept_allocs: BTreeSet<usize> = BTreeSet::new();
         let mut writes = 0usize;
-        for (i, step) in full.iter().enumerate() {
+        for (i, step) in self.steps.iter().enumerate() {
             match step {
                 FlashStep::AllocateSegment { target, .. } => {
                     alloc_at.insert(*target, i);
@@ -357,18 +350,13 @@ impl FlashPlan {
         }
         // The properties the parameters are placed in (issue #706): the
         // writes whose value the parameters compose, by object and PID.
+        // A write the full flash leaves out as held counts too (issue #951).
         let param_props: BTreeSet<(super::PropObject, u32)> = self
             .steps
             .iter()
-            .filter_map(|step| match step {
-                FlashStep::WriteProp {
-                    object,
-                    prop_id,
-                    from_parameters: true,
-                    ..
-                } => Some((*object, *prop_id)),
-                _ => None,
-            })
+            .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
+            .map(|w| (w.object, w.prop_id))
             .collect();
         // A program whose parameters all live in properties (the Hager 07B0
         // actuators, issue #944) writes no parameter image. Its `par`
@@ -380,7 +368,7 @@ impl FlashPlan {
         let property_only = writes == 0 && !param_props.is_empty();
         if property_only {
             let mut par_alloc: BTreeMap<Option<u32>, usize> = BTreeMap::new();
-            for (i, step) in full.iter().enumerate() {
+            for (i, step) in self.steps.iter().enumerate() {
                 if let FlashStep::AllocateSegment { target, size, .. } = step
                     && let Some(&(par_size, _)) = self.par_allocations.get(target)
                 {
@@ -417,7 +405,7 @@ impl FlashPlan {
         // and the restart.
         let mut written: BTreeSet<String> = BTreeSet::new();
         let mut steps = Vec::new();
-        for (i, step) in full.iter().enumerate() {
+        for (i, step) in self.steps.iter().enumerate() {
             match step {
                 FlashStep::Unload { target, .. }
                 | FlashStep::StartLoading { target }
@@ -450,6 +438,16 @@ impl FlashPlan {
                         continue;
                     }
                     steps.push(step.clone());
+                }
+                // The parameter-only download resets nothing, so a write the
+                // full plan leaves out as held after the reset is written
+                // (issue #951); converted here, one step at a time.
+                FlashStep::FactoryHeldProp {
+                    object, prop_id, ..
+                } if matches!(object, super::PropObject::Index(i) if objects.contains(i))
+                    || param_props.contains(&(*object, *prop_id)) =>
+                {
+                    steps.push(step.without_parameter_reset());
                 }
                 FlashStep::WriteProp {
                     object: super::PropObject::Index(obj_idx),
@@ -487,7 +485,7 @@ impl FlashPlan {
                 // never touches PID_DEVICE_CONTROL).
                 FlashStep::EnableVerifyMode
                     if matches!(
-                        full.get(i + 1),
+                        self.steps.get(i + 1),
                         Some(FlashStep::WriteRelMem { image, .. })
                             if image.kind == ImageKind::Parameters
                     ) =>

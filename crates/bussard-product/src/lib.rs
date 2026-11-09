@@ -214,28 +214,46 @@ fn mark_table_images(hardware: &HardwareCatalog, applications: &mut [Application
 /// Sets [`ApplicationProgram::factory_properties`] from the property values
 /// of the `LoadedImage` of the `Hardware2Program`s listing each application
 /// ([`hardware::Hardware::factory_properties`], issue #951), their objects
-/// made absolute by the mask's first application object
-/// ([`loaded_image::first_app_object_index`]). Like the table image, a
-/// cached program is parsed without them, so this runs on every read.
-fn mark_factory_properties(hardware: &HardwareCatalog, applications: &mut [ApplicationProgram]) {
+/// made absolute by the mask's `FirstAppObjectIdx` from the archive's
+/// `knx_master.xml` ([`MasterTemplate::first_app_object_index`]). A program
+/// whose mask states none gets no value, with a warning: the planner then
+/// writes every property as before rather than guess the base. Like the
+/// table image, a cached program is parsed without them, so this runs on
+/// every read.
+fn mark_factory_properties(
+    hardware: &HardwareCatalog,
+    master: Option<&MasterTemplate>,
+    applications: &mut [ApplicationProgram],
+) {
     for app in applications.iter_mut() {
-        let first = app
-            .mask_version
-            .as_deref()
-            .and_then(loaded_image::first_app_object_index);
-        app.factory_properties = match (first, hardware.factory_properties.get(&app.id)) {
-            (Some(first), Some(entries)) => entries
-                .iter()
-                .map(|e| FactoryProperty {
-                    object: first + u32::from(e.object),
-                    prop_id: u32::from(e.pid),
-                    start: e.offset,
-                    data: e.data.clone(),
-                    mask: e.mask.clone(),
-                })
-                .collect(),
-            _ => Vec::new(),
+        app.factory_properties = Vec::new();
+        let Some(entries) = hardware
+            .factory_properties
+            .get(&app.id)
+            .filter(|e| !e.is_empty())
+        else {
+            continue;
         };
+        let mask = app.mask_version.as_deref().unwrap_or("");
+        let Some(first) = master.and_then(|m| m.first_app_object_index(mask)) else {
+            tracing::warn!(
+                application = app.id.as_str(),
+                mask,
+                "the LoadedImage holds property values, but knx_master.xml states no \
+                 FirstAppObjectIdx for the mask; every property write is sent"
+            );
+            continue;
+        };
+        app.factory_properties = entries
+            .iter()
+            .map(|e| FactoryProperty {
+                object: first + u32::from(e.object),
+                prop_id: u32::from(e.pid),
+                start: e.offset,
+                data: e.data.clone(),
+                mask: e.mask.clone(),
+            })
+            .collect();
     }
 }
 
@@ -530,7 +548,11 @@ fn assemble(
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));
     mark_table_images(&catalog.hardware, &mut applications);
-    mark_factory_properties(&catalog.hardware, &mut applications);
+    mark_factory_properties(
+        &catalog.hardware,
+        catalog.master.as_ref(),
+        &mut applications,
+    );
     attach_companion_programs(&catalog.hardware, &mut applications);
     Ok(ProductData {
         manufacturers: catalog.manufacturers,
@@ -598,8 +620,9 @@ mod tests {
     }
 
     /// Issue #951: the image's property values land on the program with
-    /// their objects made absolute by the mask's first application object
-    /// (6 on 07B0, 5 on 0701); a program of a mask without one gets none.
+    /// their objects made absolute by the mask's `FirstAppObjectIdx` from
+    /// `knx_master.xml` (6 on 07B0, 5 on 0701 here); a program of a mask the
+    /// master data states none for, or without master data, gets none.
     #[test]
     fn test_mark_factory_properties_makes_the_objects_absolute() {
         let entry = |object: u16| crate::loaded_image::LoadedImageEntry {
@@ -628,7 +651,17 @@ mod tests {
             app("M-1_A-3", "0010"),
             app("M-1_A-4", "07B0"),
         ];
-        mark_factory_properties(&hardware, &mut apps);
+        let mut master = MasterTemplate::default();
+        for (mask, first) in [("07B0", "6"), ("0701", "5")] {
+            let mut hawk = HawkConfig::default();
+            hawk.features
+                .insert("FirstAppObjectIdx".to_string(), first.to_string());
+            master.hawk.insert(mask.to_string(), hawk);
+        }
+        let mut without = apps.clone();
+        mark_factory_properties(&hardware, None, &mut without);
+        assert!(without.iter().all(|a| a.factory_properties.is_empty()));
+        mark_factory_properties(&hardware, Some(&master), &mut apps);
         assert_eq!(
             apps[0].factory_properties,
             vec![FactoryProperty {

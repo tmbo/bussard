@@ -556,9 +556,21 @@ fn elements_of_property(
     let count = super::declare::undeclared_element_count(count) as usize;
     let from = (start as usize - 1).saturating_mul(elem);
     let len = count.saturating_mul(elem);
-    let mut value: Vec<u8> = property.iter().copied().skip(from).take(len).collect();
-    value.resize(len, 0);
-    Ok(value)
+    // The parameters' value never gains octets they do not compose, as the
+    // write from element 1 does not.
+    property
+        .get(from..from.saturating_add(len))
+        .map(<[u8]>::to_vec)
+        .ok_or_else(|| PlanError::UnsupportedWriteProp {
+            step,
+            reason: format!(
+                "the write to {name} sends elements {start} to {} ({len} octets from octet \
+                 {from}), past the {} octets the parameters compose for the property; bussard \
+                 does not make up the missing octets",
+                start as usize + count - 1,
+                property.len()
+            ),
+        })
 }
 
 /// What an undeclared `LdCtrlWriteProp` writes to: the object, the PID, and
@@ -988,6 +1000,20 @@ mod tests {
                 from_parameters: true,
             }
         );
+        // A write past the octets the parameters compose is refused, not
+        // padded (review of #1011).
+        let app = element_app(
+            r#"<LdCtrlDeclarePropDesc ObjIdx="12" PropId="208" PropType="PDT_GENERIC_02" MaxElements="46" Writable="true" />"#,
+        )?;
+        let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());
+        let values = bussard_product::compute_property_values(&app, &config)?;
+        let op = &app.load_procedures[0].ops[0];
+        match lower_write_prop(1, op, &values, &app, false) {
+            Err(PlanError::UnsupportedWriteProp { reason, .. }) => {
+                assert!(reason.contains("does not make up"), "{reason}");
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
         // Without a declaration the element size is unknown: refused.
         let app = element_app("")?;
         let config = DynamicMemo::new(&app).evaluate_for(&app, &BTreeMap::new());

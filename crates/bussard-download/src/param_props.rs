@@ -5,7 +5,7 @@
 //! #669) has no octet in the parameter memory, so the memory diff of a
 //! parameter-only download ([`FlashPlan::changed_octets`]) never sees a change
 //! to it. The plan's `LdCtrlWriteProp` steps whose value the parameters
-//! compose ([`FlashStep::WriteProp`] with `from_parameters`) name where the
+//! compose ([`crate::flash::FlashStep::WriteProp`] with `from_parameters`) name where the
 //! value lives; this module reads what the device holds there and says which
 //! of them differ from the model, so `flash --parameters-only` and `apply`
 //! (CLI and MCP) count such a change as one to write.
@@ -14,7 +14,7 @@ use bussard_mgmt::{L4Channel, Layer4Connection};
 use bussard_model::text::hex_upper;
 use bussard_product::application::ApplicationProgram;
 
-use crate::flash::{FlashPlan, FlashStep, PropObject, read_property_value};
+use crate::flash::{FlashPlan, PropObject, PropertyWrite, read_property_value};
 
 /// One property the program's parameters compose, with the model's value and
 /// what the device holds.
@@ -104,8 +104,7 @@ impl FlashPlan {
         for step in &self.steps {
             // A write the full flash leaves out as held after the parameter
             // reset (issue #951) is still a property the parameters decide.
-            let step = step.without_parameter_reset();
-            let FlashStep::WriteProp {
+            let Some(PropertyWrite {
                 object,
                 prop_id,
                 value,
@@ -113,16 +112,16 @@ impl FlashPlan {
                 count,
                 from_parameters: true,
                 ..
-            } = &step
+            }) = step.property_write()
             else {
                 continue;
             };
             let property = ParamProperty {
-                object: *object,
-                prop_id: *prop_id,
-                start_element: *start_element,
-                count: (*count).max(1),
-                model: value.clone(),
+                object,
+                prop_id,
+                start_element,
+                count: count.max(1),
+                model: value.to_vec(),
                 device: None,
                 parameters: Vec::new(),
             };

@@ -1543,16 +1543,16 @@ pub struct FactoryProperty {
 impl FactoryProperty {
     /// Whether the device holds `value` from element `start_element`
     /// (1-based) of `object`/`prop_id`: the same property and start, as
-    /// long as `data`, and equal on every bit the mask defines.
+    /// long as `data`, every bit defined by the image (a mask bit of 0 is a
+    /// bit the image leaves undefined, so the device may hold anything
+    /// there and the value is not taken as held), and equal to `data`.
     pub fn holds(&self, object: u32, prop_id: u32, start_element: u32, value: &[u8]) -> bool {
         self.object == object
             && self.prop_id == prop_id
             && self.start.checked_add(1) == Some(start_element)
             && value.len() == self.data.len()
-            && value.iter().zip(&self.data).enumerate().all(|(i, (v, d))| {
-                let m = self.mask.get(i).copied().unwrap_or(0xFF);
-                v & m == d & m
-            })
+            && self.mask.iter().all(|m| *m == 0xFF)
+            && value == self.data.as_slice()
     }
 }
 
@@ -5991,5 +5991,25 @@ mod tests {
             .ok_or("resolved a write off its declaration")?;
         assert!(err.reason.contains("declared without"), "{err}");
         Ok(())
+    }
+
+    /// Review of #1011: a mask bit of 0 is undefined by the image, so the
+    /// value is not held; a full mask needs every bit equal.
+    #[test]
+    fn test_factory_property_holds_only_fully_defined_equal_values() {
+        let held = |mask: Vec<u8>| FactoryProperty {
+            object: 13,
+            prop_id: 208,
+            start: 96,
+            data: vec![0x01, 0x30],
+            mask,
+        };
+        assert!(held(Vec::new()).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(held(vec![0xFF, 0xFF]).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(!held(vec![0xFF, 0xFF]).holds(13, 208, 97, &[0x01, 0x31]));
+        assert!(!held(vec![0xFF, 0xF0]).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(13, 208, 96, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(14, 208, 97, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(13, 208, 97, &[0x01]));
     }
 }

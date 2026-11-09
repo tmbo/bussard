@@ -565,9 +565,10 @@ pub fn plan_flash(
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
-    // Whether the procedure has reset every channel's parameters so far: the
-    // device then holds the catalogue's `LoadedImage` values (issue #951).
-    let mut parameters_reset = false;
+    // What the procedure has left in the device's properties so far: after
+    // a reset of every channel's parameters the catalogue's `LoadedImage`
+    // values, until a write touches them (issue #951).
+    let mut device_image = super::factory::DeviceImage::default();
 
     // ETS switches verify mode on before the first `Verify="true"` relative
     // memory write it sends over the plain memory services (issue #705).
@@ -695,7 +696,7 @@ pub fn plan_flash(
                 // device) when the attribute is absent, and clamp to u8.
                 let erase_code = erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8;
                 let channel_number = channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8;
-                parameters_reset |= super::factory::resets_parameters(erase_code, channel_number);
+                device_image.master_reset(erase_code, channel_number);
                 steps.push(FlashStep::MasterReset {
                     erase_code,
                     channel_number,
@@ -1365,10 +1366,11 @@ pub fn plan_flash(
             }
         }
         // A write whose value the device holds after the reset of its
-        // parameters is not sent (issue #951).
-        if parameters_reset && matches!(op, LoadOp::WriteProp { .. }) {
+        // parameters is not sent; every other write marks its elements
+        // (issue #951).
+        if matches!(op, LoadOp::WriteProp { .. }) {
             for step in &mut steps[lowered_from..] {
-                super::factory::hold_after_reset(step, app, declared_target);
+                device_image.settle(step, app, declared_target);
             }
         }
     }
@@ -4189,6 +4191,73 @@ mod tests {
                 "{reset}"
             );
         }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_holds_a_zero_placeholder_only_where_the_image_records_it() -> TestResult {
+        // Review of #1011: a declared all-zero `InlineData` write to a
+        // property no parameter is placed in is written as before, unless
+        // the `LoadedImage` records the zeros after the reset; then it is held
+        // and still read back (`FactoryHeldProp`).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-00FA_A-2502-10-0000" ApplicationNumber="9474"
+            ApplicationVersion="16" MaskVersion="MV-07B0" Name="Zero">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlMasterReset EraseCode="5" ChannelNumber="0" />
+             <LdCtrlDeclarePropDesc ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="11" Writable="true" />
+             <LdCtrlWriteProp ObjIdx="10" PropId="52" Count="11" InlineData="00000000000000000000" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let mut app = parse_application_program("M-00FA_A-2502-10-0000", xml.as_bytes())?;
+        let plan = |app: &ApplicationProgram| {
+            plan_flash_default(
+                app,
+                "1.1.4",
+                0x07B0,
+                &no_overrides(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            )
+        };
+        let property_steps = |plan: FlashPlan| -> Vec<FlashStep> {
+            plan.steps
+                .into_iter()
+                .filter(|s| s.property_write().is_some())
+                .collect()
+        };
+        assert_eq!(
+            property_steps(plan(&app)?),
+            vec![FlashStep::WriteProp {
+                object: crate::flash::PropObject::Index(10),
+                prop_id: 52,
+                value: vec![0; 11],
+                start_element: 1,
+                count: 11,
+                verify: false,
+                from_parameters: false,
+            }]
+        );
+        app.factory_properties = vec![bussard_product::FactoryProperty {
+            object: 10,
+            prop_id: 52,
+            start: 0,
+            data: vec![0; 11],
+            mask: Vec::new(),
+        }];
+        assert!(matches!(
+            property_steps(plan(&app)?).as_slice(),
+            [FlashStep::FactoryHeldProp {
+                prop_id: 52,
+                describe: false,
+                ..
+            }]
+        ));
         Ok(())
     }
 
