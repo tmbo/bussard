@@ -568,6 +568,32 @@ class TestSummary(unittest.TestCase):
         self.assertIn("## Links variant parity per mask family (#478)", text)
         self.assertIn("| M-00B6_A-4537-03-DE59 | own GO segment | a-full-links: ok |", text)
 
+    def test_render_description_reads_apart_from_the_verdict(self):
+        # Issue #1014: a description read difference is shown per mask and
+        # leaves the row's verdict alone.
+        oracle = json.loads(json.dumps(self.ORACLE))
+        oracle["M-0002_A-0001-10-0000"]["desc"] = {"verdict": "differs", "ets_only": 2}
+        m = self.manifest(oracle)
+        self.assertEqual(m["apps"]["M-0002_A-0001-10-0000"]["verdict"], "identical")
+        self.assertEqual(m["apps"]["M-0002_A-0001-10-0000"]["desc"], "differs")
+        text = summary.render(m, [])
+        self.assertIn("## Property description reads per mask family (#1014, not part of the verdict)", text)
+
+    def test_description_summary_and_progress_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            diff = Path(tmp) / "diff.json"
+            self.assertEqual(oracle.description_summary(diff), {"verdict": "missing"})
+            diff.write_text(json.dumps({"verdict": "identical", "property_descriptions": {
+                "verdict": "differs", "bussard_reads": 1, "ets_reads": 2,
+                "bussard_only": [{"step": 3}], "ets_only": [{"ets_seq": 1}, {"ets_seq": 2}],
+                "not_compared": [{"ets_seq": 0}]}}))
+            desc = oracle.description_summary(diff)
+        self.assertEqual(desc, {"verdict": "differs", "bussard_reads": 1, "ets_reads": 2,
+                                "bussard_only": 1, "ets_only": 2, "not_compared": 1})
+        self.assertEqual(oracle.desc_text(desc), "desc=differs(+1/-2)")
+        self.assertEqual(oracle.desc_text({"verdict": "identical"}), "desc=ok")
+        self.assertEqual(oracle.desc_text(None), "desc=-")
+
     def test_render_tables(self):
         text = summary.render(self.manifest(), [])
         self.assertIn("ETS 6.4.1", text)

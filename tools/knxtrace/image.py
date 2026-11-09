@@ -77,6 +77,16 @@ property comparison judges. `compare` aligns them with the plan's
 `function_property` records by object and PID, compares the input octets, and
 reports a fourth verdict (`none` when neither side calls one).
 
+Property description reads (bussard issue #1014): `compose` also writes
+`property_descriptions.json`, every `A_PropertyDescription_Read` (object by
+index, the property by PID or, with PID 0, by property index) and
+`A_PropertyExtDescription_Read` (object by type) the tool sent. `compare`
+aligns them with the plan's `property_description` records by object and PID
+and reports their own verdict. It never changes the row's verdict: what ETS
+reads changes nothing on the device. ETS's read of the association table's
+PID_TABLE description before the download (object 2, PID 23) is no load
+procedure step and is listed as not compared.
+
 A diff is only as strong as what it compared. `compare` also reports the
 coverage (issue #347): of the octets bussard places, how many the capture
 holds a value for. A region's placed octets are the ones a parameter placement
@@ -453,6 +463,45 @@ def function_property_calls(ops: DeviceOps) -> List[Dict[str, object]]:
     return out
 
 
+# Property description reads (bussard issue #1014), the file `compose` writes.
+PROPERTY_DESCRIPTIONS_FILE = "property_descriptions.json"
+DESCRIPTION_READ_SERVICES = ("A_PropertyDescription_Read", "A_PropertyExtDescription_Read")
+# The description reads ETS makes outside the load procedure, by object label
+# and PID: before every System B download it reads the description of the
+# association table's PID_TABLE (object 2, PID 23; 788 of the sweep's
+# captures), which no procedure step asks for.
+ETS_CHECK_DESCRIPTION_READS = {("obj2", 23): "ETS's pre-download check of the association table"}
+
+
+def description_reads(ops: DeviceOps) -> List[Dict[str, object]]:
+    """Every property description read the tool sent, in order: the object
+    (`{"index": n}` or `{"type": t, "instance": i}`), its `form` (`index` or
+    `type`), the PID, and the property index when the PID is 0 (a read by
+    property index)."""
+    out: List[Dict[str, object]] = []
+    for op in ops.ops:
+        apdu = op.apdu
+        if op.direction != "req" or apdu is None or apdu.name not in DESCRIPTION_READ_SERVICES:
+            continue
+        f = apdu.fields
+        if f.get("truncated") or "pid" not in f:
+            continue
+        if apdu.name == "A_PropertyExtDescription_Read":
+            if "obj_type" not in f:
+                continue
+            obj: Dict[str, int] = {"type": int(f["obj_type"]), "instance": int(f.get("instance", 0))}
+            form = "type"
+        else:
+            obj = {"index": int(f.get("obj", 0))}
+            form = "index"
+        record: Dict[str, object] = {"seq": len(out) + 1, "service": apdu.name, "form": form,
+                                     "object": obj, "pid": int(f["pid"])}
+        if int(f["pid"]) == 0:
+            record["prop_index"] = int(f.get("prop_index", 0))
+        out.append(record)
+    return out
+
+
 CONFIRMED_DIR = "confirmed"
 
 # Load control (issue #419): the file `compose` writes, the System 7
@@ -748,6 +797,10 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         json.dump(function_property_calls(ops), fh, indent=2)
         fh.write("\n")
 
+    with open(os.path.join(out_dir, PROPERTY_DESCRIPTIONS_FILE), "w", encoding="utf-8") as fh:
+        json.dump(description_reads(ops), fh, indent=2)
+        fh.write("\n")
+
     index = {
         "device": ops.device,
         "source": os.path.basename(source),
@@ -1013,6 +1066,7 @@ def compare(
     props = compare_properties(plan, image_dir, _ets_groups(plan, results, ets), phase=phase)
     load_controls = compare_load_controls(plan, image_dir)
     function_props = compare_function_properties(plan, image_dir)
+    descriptions = compare_description_reads(plan, image_dir)
     for r in results:
         r["in_scope"] = scope is None or region_short(r["region"]) in scope
     judged = [r for r in results if r["in_scope"]]
@@ -1064,6 +1118,7 @@ def compare(
         "properties": props,
         "load_controls": load_controls,
         "function_properties": function_props,
+        "property_descriptions": descriptions,
     }
 
 
@@ -1932,6 +1987,109 @@ def render_function_properties(fp: Optional[Dict[str, object]]) -> List[str]:
     return lines
 
 
+def plan_description_reads(plan: dict) -> List[Dict[str, object]]:
+    """bussard's property description reads (`property_description` records
+    of `plan.json`, bussard issues #841, #951 and #1014), in plan order."""
+    out: List[Dict[str, object]] = []
+    for step in plan.get("steps", []):
+        rec = step.get("property_description")
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("object_type") is not None:
+            obj: Dict[str, int] = {"type": int(rec["object_type"]),
+                                   "instance": int(rec.get("instance", 1))}
+        else:
+            obj = {"index": int(rec["object"])}
+        out.append({"step": step.get("index"), "object": obj, "pid": int(rec["pid"])})
+    return out
+
+
+def compare_description_reads(plan: dict, image_dir: str) -> Dict[str, object]:
+    """Aligns bussard's property description reads with the ones ETS sent
+    (`property_descriptions.json`) by object and PID (bussard issue #1014).
+
+    `none` when neither side reads one; `not-comparable` when the image
+    predates the file. A read by type matches ETS's read at the index the
+    capture shows that type at. ETS's reads outside the load procedure
+    (`ETS_CHECK_DESCRIPTION_READS`) are listed under `not_compared`. The
+    verdict is reported on its own and never changes the row's."""
+    path = os.path.join(image_dir, PROPERTY_DESCRIPTIONS_FILE)
+    ours = plan_description_reads(plan)
+    if not os.path.exists(path):
+        if not ours:
+            return {"verdict": "none"}
+        return {"verdict": NOT_COMPARABLE,
+                "reason": "no %s (re-run `knxtrace image`)" % PROPERTY_DESCRIPTIONS_FILE}
+    with open(path, encoding="utf-8") as fh:
+        captured = json.load(fh)
+
+    def key(e: Dict[str, object]) -> Tuple[str, int]:
+        return (_obj_label(e["object"]), int(e["pid"]))
+
+    not_compared = [{"ets_seq": b["seq"], "key": list(key(b)),
+                     "reason": ETS_CHECK_DESCRIPTION_READS[key(b)]}
+                    for b in captured if key(b) in ETS_CHECK_DESCRIPTION_READS]
+    # A read bussard makes by type ETS makes at the index it found the type
+    # at (`resolve_index_writes`, bussard issue #960).
+    ets = resolve_index_writes(ours, [b for b in captured if key(b) not in ETS_CHECK_DESCRIPTION_READS],
+                               _captured_object_types(image_dir))
+    if not ours and not ets:
+        return {"verdict": "none", "not_compared": not_compared}
+    matcher = difflib.SequenceMatcher(None, [key(e) for e in ours], [key(e) for e in ets],
+                                      autojunk=False)
+    matched: List[Dict[str, object]] = []
+    bussard_only: List[Dict[str, object]] = []
+    ets_only: List[Dict[str, object]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            matched.extend({"step": a["step"], "ets_seq": b["seq"], "key": list(key(a))}
+                           for a, b in zip(ours[i1:i2], ets[j1:j2]))
+            continue
+        bussard_only.extend({"step": a["step"], "key": list(key(a))} for a in ours[i1:i2])
+        ets_only.extend({"ets_seq": b["seq"], "service": b["service"], "key": list(key(b))}
+                        for b in ets[j1:j2])
+    verdict = DIFFERS if bussard_only or ets_only else IDENTICAL
+    return {"verdict": verdict, "bussard_reads": len(ours), "ets_reads": len(ets),
+            "matched": matched, "bussard_only": bussard_only, "ets_only": ets_only,
+            "not_compared": not_compared}
+
+
+def description_summary(desc: Optional[Dict[str, object]]) -> str:
+    """The `desc=` column of the oracle's summary line (bussard issue #1014):
+    `desc=ok(3)`, `desc=differs(bussard-only 1, ets-only 2)`, `desc=n/c`, or
+    empty when neither side reads a description."""
+    if not desc or desc.get("verdict") == "none":
+        return ""
+    if desc.get("verdict") == IDENTICAL:
+        return "desc=ok(%d)" % len(desc.get("matched", []))
+    if desc.get("verdict") == DIFFERS:
+        return "desc=differs(bussard-only %d, ets-only %d)" % (
+            len(desc.get("bussard_only", [])), len(desc.get("ets_only", [])))
+    return "desc=n/c"
+
+
+def render_description_reads(desc: Optional[Dict[str, object]]) -> List[str]:
+    """The text lines of the description read comparison."""
+    if not desc:
+        return []
+    lines: List[str] = []
+    if desc.get("verdict") == NOT_COMPARABLE:
+        lines.append("  property description reads: not comparable: %s" % desc.get("reason", ""))
+    elif desc.get("verdict") != "none":
+        lines.append("  property description reads: %s (bussard %d, ETS %d; not part of the "
+                     "verdict)" % (desc["verdict"], desc.get("bussard_reads", 0),
+                                   desc.get("ets_reads", 0)))
+        for a in desc.get("bussard_only", []):
+            lines.append("      bussard only: step %3s %s PID %s" % (a["step"], a["key"][0], a["key"][1]))
+        for b in desc.get("ets_only", []):
+            lines.append("      ETS only:     #%s %s %s PID %s" % (
+                b["ets_seq"], b["service"], b["key"][0], b["key"][1]))
+    for n in desc.get("not_compared", []):
+        lines.append("      not compared: #%s %s PID %s (%s)" % (
+            n["ets_seq"], n["key"][0], n["key"][1], n["reason"]))
+    return lines
+
+
 LOAD_EVENTS = {1: "start-loading", 2: "load-completed", 4: "unload", 0: "no-operation"}
 # `AdditionalLoadControls` subtypes (KNX 3/5/1 §3.31.3.4).
 LOAD_SUBTYPES = {0x00: "abs-segment", 0x01: "stack-segment", 0x02: "task-segment",
@@ -2267,6 +2425,7 @@ def render(report: Dict[str, object]) -> List[str]:
         )
     lines.extend(render_properties(report.get("properties")))
     lines.extend(render_function_properties(report.get("function_properties")))
+    lines.extend(render_description_reads(report.get("property_descriptions")))
     lines.extend(render_load_controls(report.get("load_controls")))
     return lines
 

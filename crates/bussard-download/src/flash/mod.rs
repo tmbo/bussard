@@ -101,6 +101,7 @@ pub use bussard_product::SegmentFill;
 use std::collections::BTreeMap;
 
 mod declare;
+mod describe;
 mod execute;
 mod execute_props;
 mod execute_sys7;
@@ -373,7 +374,10 @@ pub enum FlashStep {
     /// Enertex `PID_ENX_TELEGRAMMRATE_LIMIT`, object type 50001 PID 211, of
     /// `M-00A6_A-0033-20-BFA6`, ETS 6.4.1 into knx-sim on 2026-11-04). The
     /// model holds no value for the property, so there is nothing to read back.
-    /// The read's answer, or its absence, does not change the flash.
+    /// The read's answer, or its absence, does not change the flash. The
+    /// planners also put one before the first write or compare of a property
+    /// on a connection that neither a declaration nor the KNX master data
+    /// types, as ETS does (issue #1014).
     DescribeProp {
         /// The interface object the op names: by index or by type.
         object: PropObject,

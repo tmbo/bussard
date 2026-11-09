@@ -117,6 +117,9 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
     let app = ip_interface_app("0021")?;
     let plan = plan_for(&app, 0x0021)?;
     assert!(plan.is_property_only());
+    // ETS reads the description of each property the master data gives no
+    // type, once, before the write (issue #1014; `M-00A6_A-0014-10-2517`
+    // reads type 11 PID 204 and 205 and type 50001 PID 211).
     assert_eq!(
         plan.steps,
         vec![
@@ -134,6 +137,13 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 mask: Some(vec![0xFF, 0xFF, 0xFF, 0xFF, 0, 0]),
                 start_element: 1,
             },
+            FlashStep::DescribeProp {
+                object: PropObject::Type {
+                    object_type: OT_KNXNETIP,
+                    occurrence: 0,
+                },
+                prop_id: 204,
+            },
             FlashStep::WriteProp {
                 object: PropObject::Type {
                     object_type: OT_KNXNETIP,
@@ -146,6 +156,13 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 verify: true,
                 from_parameters: true,
             },
+            FlashStep::DescribeProp {
+                object: PropObject::Type {
+                    object_type: OT_KNXNETIP,
+                    occurrence: 0,
+                },
+                prop_id: 205,
+            },
             FlashStep::WriteProp {
                 object: PropObject::Type {
                     object_type: OT_KNXNETIP,
@@ -157,6 +174,13 @@ fn test_plan_flash_lowers_a_property_only_procedure_on_mask_0021() -> TestResult
                 count: 2,
                 verify: true,
                 from_parameters: true,
+            },
+            FlashStep::DescribeProp {
+                object: PropObject::Type {
+                    object_type: OT_VENDOR,
+                    occurrence: 0,
+                },
+                prop_id: 211,
             },
             FlashStep::WriteProp {
                 object: PropObject::Type {
@@ -213,8 +237,10 @@ fn test_plan_flash_describes_a_write_prop_no_parameter_is_stored_in() -> TestRes
     let app = without_preferred_parameters()?;
     let plan = plan_for(&app, 0x0021)?;
     assert!(plan.is_property_only());
+    // Steps 2 and 3 are the description read before the PID 204 write
+    // (issue #1014) and the write; the PID 205 read follows, with no write.
     assert_eq!(
-        plan.steps.get(3),
+        plan.steps.get(4),
         Some(&FlashStep::DescribeProp {
             object: PropObject::Type {
                 object_type: OT_KNXNETIP,
@@ -287,7 +313,9 @@ async fn test_flash_describe_prop_reads_the_description_and_writes_nothing() -> 
     assert_eq!(dev.property_ext(OT_KNXNETIP, 204), Some(&TIMEOUT[..]));
     assert_eq!(dev.property_ext(OT_VENDOR, 211), Some(&RATE[..]));
     assert_eq!(dev.writes, 2);
-    // One A_PropertyExtDescription_Read of object type 11 instance 1 PID 205.
+    // An A_PropertyExtDescription_Read of object type 11 instance 1 PID 205,
+    // and one before each write of a property the master data gives no type
+    // (type 11 PID 204, type 50001 PID 211; issue #1014).
     let log = seen.lock().map_err(|e| e.to_string())?;
     let described: Vec<&Vec<u8>> = log
         .iter()
@@ -296,7 +324,11 @@ async fn test_flash_describe_prop_reads_the_description_and_writes_nothing() -> 
         .collect();
     assert_eq!(
         described,
-        vec![&vec![0x00, 0x0B, 0x00, 0x10, 0xCD, 0x00, 0x00]]
+        vec![
+            &vec![0x00, 0x0B, 0x00, 0x10, 0xCC, 0x00, 0x00],
+            &vec![0x00, 0x0B, 0x00, 0x10, 0xCD, 0x00, 0x00],
+            &vec![0xC3, 0x51, 0x00, 0x10, 0xD3, 0x00, 0x00],
+        ]
     );
     Ok(())
 }

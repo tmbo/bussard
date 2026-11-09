@@ -840,6 +840,16 @@ for dev in devices:
             fp.get("value_differs", 0))
     elif fp.get("verdict") == "not-comparable":
         detail += "  fcall=n/c"
+    # The property description reads (issue #1014): shown, never part of the
+    # verdict, since a read changes nothing on the device.
+    desc = r.get("property_descriptions") or {}
+    if desc.get("verdict") == "identical":
+        detail += "  desc=ok(%d)" % len(desc.get("matched", []))
+    elif desc.get("verdict") == "differs":
+        detail += "  desc=differs(bussard-only %d, ets-only %d)" % (
+            len(desc.get("bussard_only", [])), len(desc.get("ets_only", [])))
+    elif desc.get("verdict") == "not-comparable":
+        detail += "  desc=n/c"
     lc = r.get("load_controls") or {}
     if lc.get("verdict") == "identical":
         detail += "  loadctl=ok(%d)" % lc.get("ets_records", 0)

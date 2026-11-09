@@ -1138,6 +1138,92 @@ class TestFunctionProperties(unittest.TestCase):
         self.assertEqual(memimage.compare_function_properties({"steps": []}, out)["verdict"], "none")
 
 
+class TestDescriptionReads(unittest.TestCase):
+    """`property_descriptions.json` and its comparison with the plan's
+    `property_description` records (bussard issue #1014)."""
+
+    def image_dir(self) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.1"
+        ext = struct.pack("!H", 50001) + ((1 << 12) | 211).to_bytes(3, "big") + struct.pack("!H", 0)
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            # ETS's pre-download check: object 2 PID 23.
+            cemi_ldata(tool, dev, numbered(0, 0x3D8, bytes([2, 23, 0]))),
+            # The Siemens 07B0 read before an undeclared write of object 4 PID 206.
+            cemi_ldata(tool, dev, numbered(1, 0x3D8, bytes([4, 206, 0]))),
+            # A read by property index (PID 0) and one by object type.
+            cemi_ldata(tool, dev, numbered(2, 0x3D8, bytes([6, 0, 3]))),
+            cemi_ldata(tool, dev, numbered(3, 0x1D2, ext)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", path, "--device", dev, "--out", out]), 0)
+        return out
+
+    @staticmethod
+    def plan(*reads) -> dict:
+        return {"steps": [{"index": i, "label": "describe", "property_description": dict(obj, pid=pid)}
+                          for i, (obj, pid) in enumerate(reads, start=1)]}
+
+    def test_description_reads_records_index_and_type_forms(self):
+        out = self.image_dir()
+        with open(os.path.join(out, memimage.PROPERTY_DESCRIPTIONS_FILE)) as fh:
+            reads = json.load(fh)
+        self.assertEqual(
+            [(r["form"], r["object"], r["pid"], r.get("prop_index")) for r in reads],
+            [
+                ("index", {"index": 2}, 23, None),
+                ("index", {"index": 4}, 206, None),
+                ("index", {"index": 6}, 0, 3),
+                ("type", {"type": 50001, "instance": 1}, 211, None),
+            ],
+        )
+
+    def test_compare_description_reads_identical_and_differs(self):
+        out = self.image_dir()
+        same = self.plan(({"object": 4}, 206), ({"object": 6}, 0),
+                         ({"object_type": 50001, "instance": 1}, 211))
+        desc = memimage.compare_description_reads(same, out)
+        self.assertEqual(desc["verdict"], memimage.IDENTICAL, desc)
+        self.assertEqual(len(desc["matched"]), 3)
+        # The pre-download check is listed, never compared.
+        self.assertEqual([n["key"] for n in desc["not_compared"]], [["obj2", 23]])
+        self.assertEqual(memimage.description_summary(desc), "desc=ok(3)")
+        other = self.plan(({"object": 4}, 206), ({"object": 4}, 202))
+        desc = memimage.compare_description_reads(other, out)
+        self.assertEqual(desc["verdict"], memimage.DIFFERS)
+        self.assertEqual([e["key"] for e in desc["bussard_only"]], [["obj4", 202]])
+        self.assertEqual([e["key"] for e in desc["ets_only"]], [["obj6", 0], ["type50001.1", 211]])
+        self.assertEqual(memimage.description_summary(desc), "desc=differs(bussard-only 1, ets-only 2)")
+        self.assertTrue(any("ETS only" in line for line in memimage.render_description_reads(desc)))
+
+    def test_compare_description_reads_resolves_a_typed_read_to_its_index(self):
+        # M-0001_A-9839-01-38C4: bussard names type 50215 PID 205, ETS reads
+        # it at object 6, the index the capture shows that type at.
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        with open(os.path.join(out, "regions.json"), "w") as fh:
+            json.dump({"object_types": {"0": 0, "6": 50215}}, fh)
+        with open(os.path.join(out, memimage.PROPERTY_DESCRIPTIONS_FILE), "w") as fh:
+            json.dump([{"seq": 1, "service": "A_PropertyDescription_Read", "form": "index",
+                        "object": {"index": 6}, "pid": 205}], fh)
+        desc = memimage.compare_description_reads(
+            self.plan(({"object_type": 50215, "instance": 1}, 205)), out)
+        self.assertEqual(desc["verdict"], memimage.IDENTICAL, desc)
+
+    def test_compare_description_reads_none_and_not_comparable(self):
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(memimage.compare_description_reads({"steps": []}, out)["verdict"], "none")
+        self.assertEqual(memimage.description_summary({"verdict": "none"}), "")
+        desc = memimage.compare_description_reads(self.plan(({"object": 4}, 206)), out)
+        self.assertEqual(desc["verdict"], memimage.NOT_COMPARABLE)
+
+
 class TestPropertyWrites(unittest.TestCase):
     """`properties.json` and its parity check against bussard's plan."""
 
