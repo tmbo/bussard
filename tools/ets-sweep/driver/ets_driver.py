@@ -448,6 +448,16 @@ def _icon_word(w: str) -> bool:
     return len(w) <= 2 and not any(ch.isdigit() for ch in w)
 
 
+def button_hits(lines: list[dict], label: str) -> list[dict]:
+    """Every OCR line `button_hit` would take for `label`, in line order."""
+    out = []
+    for l in lines:
+        hit = button_hit([l], label)
+        if hit:
+            out.append(hit)
+    return out
+
+
 def button_hit(lines: list[dict], label: str) -> dict | None:
     """The OCR line of the button `label` and where to click it: the label is
     a whole word of a short line (at most five words), after icon words
@@ -517,6 +527,26 @@ def ja_beside_nein(nein: dict | None) -> dict | None:
         return None
     return {"click_x": nein["x"] - 128, "click_y": nein["y"] + nein["h"] // 2}
 
+
+def ja_on_the_line_of(jas: list[dict], nein: dict | None) -> dict | None:
+    """The 'Ja' hit that sits on the same line as the dialog's 'Nein' (both
+    buttons share one line). The search region also covers catalog rows,
+    whose "SL Ready" cell reads 'Ja' for a secure product; a click there
+    left the dialog open ("still open after 'Ja'", 2026-11-09). Without a
+    'Nein' the first hit is taken, as before."""
+    if nein is None:
+        return jas[0] if jas else None
+    same = [j for j in jas if abs(j["y"] - nein["y"]) <= 15]
+    return same[0] if same else None
+
+
+def _keep_delete_dialog_image() -> None:
+    """The dialog as it looked, for the next diagnosis (#997)."""
+    try:
+        grab(LAYOUT["delete_dialog"]).save(str(HERE / "cap" / "delete-dialog.png"))
+    except Exception as exc:  # noqa: BLE001 - a diagnostic only
+        log(f"delete dialog screenshot failed: {exc}")
+
 def confirm_delete() -> None:
     """Answer the delete confirmation with 'Ja'. A dialog left open fails
     every import after it (2026-11-08, #997): when 'Ja' is not found, or the
@@ -524,14 +554,11 @@ def confirm_delete() -> None:
     the error is raised, so the next flow finds the Katalog panel."""
     bbox = LAYOUT["delete_yes"]
     lines = ocr(bbox)
-    hit = button_hit(lines, "Ja")
+    nein = button_hit(lines, "Nein")
+    hit = ja_on_the_line_of(button_hits(lines, "Ja"), nein)
     if hit is None:
-        # What the dialog looked like, for the next diagnosis (#997).
-        try:
-            grab(LAYOUT["delete_dialog"]).save(str(Path(__file__).resolve().parent / "cap" / "delete-dialog.png"))
-        except Exception as exc:  # noqa: BLE001 - a diagnostic only
-            log(f"delete dialog screenshot failed: {exc}")
-        hit = ja_beside_nein(button_hit(lines, "Nein"))
+        _keep_delete_dialog_image()
+        hit = ja_beside_nein(nein)
         if hit is None:
             seen = [(l["text"], l["x"], l["y"]) for l in lines][:12]
             closed = close_delete_dialog()
@@ -540,8 +567,19 @@ def confirm_delete() -> None:
     click(hit["click_x"], hit["click_y"])
     time.sleep(1.5)
     if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
-        closed = close_delete_dialog()
-        raise RuntimeError(f"delete dialog still open after 'Ja'; {'closed with Nein' if closed else 'left open'}")
+        # The click on the word did not take (2026-11-09 11:25, at (2457,
+        # 1456) inside the highlighted button, image in cap/delete-dialog.png)
+        # while 'Ja' is the dialog's focused default button: Enter confirms it.
+        log(f"delete dialog still open after the click at ({hit['click_x']}, {hit['click_y']}); pressing Enter")
+        keys("{ENTER}")
+        time.sleep(1.5)
+        if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
+            _keep_delete_dialog_image()
+            closed = close_delete_dialog()
+            raise RuntimeError(
+                f"delete dialog still open after 'Ja' at ({hit['click_x']}, {hit['click_y']}) and Enter; "
+                f"{'closed with Nein' if closed else 'left open'}"
+            )
 
 
 def close_delete_dialog() -> bool:

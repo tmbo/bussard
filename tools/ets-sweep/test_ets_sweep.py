@@ -1328,6 +1328,16 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual((hit["click_x"], hit["click_y"]), (2456, 1480))
         self.assertIsNone(self.d.ja_beside_nein(None))
 
+    def test_ja_on_the_line_of_nein_skips_a_catalog_cell(self):
+        # A catalog row's "SL Ready" cell reads 'Ja' inside the search region;
+        # the button is the 'Ja' on Nein's line (2026-11-09).
+        cell = {"text": "Ja", "x": 2300, "y": 1499, "w": 24, "h": 20, "click_x": 2312, "click_y": 1509}
+        btn = {"text": "√ Ja", "x": 2440, "y": 1468, "w": 60, "h": 24, "click_x": 2480, "click_y": 1480}
+        nein = {"text": "X Nein", "x": 2538, "y": 1468, "w": 100, "h": 24, "click_x": 2600, "click_y": 1480}
+        self.assertIs(self.d.ja_on_the_line_of([cell, btn], nein), btn)
+        self.assertIsNone(self.d.ja_on_the_line_of([cell], nein))
+        self.assertIs(self.d.ja_on_the_line_of([cell], None), cell)
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
@@ -1384,7 +1394,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
 
         with mock.patch.object(self.d, "ocr", return_value=self.ROWS_997), \
                 mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
-                mock.patch.object(self.d, "log"):
+                mock.patch.object(self.d, "keys"), mock.patch.object(self.d, "log"):
             self.assertTrue(self.d.close_delete_dialog())
         (x, _), _ = click.call_args
         self.assertTrue(2480 + 2 * 120 / 6 <= x <= 2600, x)
@@ -1400,7 +1410,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
         shots = iter(screens)
         with mock.patch.object(self.d, "ocr", side_effect=lambda *a, **k: next(shots)), \
                 mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
-                mock.patch.object(self.d, "log"):
+                mock.patch.object(self.d, "keys"), mock.patch.object(self.d, "log"):
             try:
                 self.d.confirm_delete()
                 err = None
@@ -1416,7 +1426,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
 
     def test_confirm_delete_closes_a_dialog_still_open_with_nein(self):
         # The click on Ja missed: the dialog is there after it.
-        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997])
+        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997, self.ROWS_997])
         self.assertIn("still open", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)
@@ -1427,7 +1437,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
         # place beside Nein; the dialog still open afterwards is closed with
         # Nein and the error says so.
         no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
-        err, clicks = self.confirm([no_ja, no_ja, no_ja])
+        err, clicks = self.confirm([no_ja, no_ja, no_ja, no_ja])
         self.assertIn("still open after 'Ja'", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)

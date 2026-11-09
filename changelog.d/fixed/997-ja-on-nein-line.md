@@ -1,0 +1,1 @@
+- ETS sweep driver: the delete confirmation's Ja is the one on the same line as its Nein, so a catalog cell reading "Ja" is not clicked instead; the dialog's image is kept when a click leaves it open (#997).
