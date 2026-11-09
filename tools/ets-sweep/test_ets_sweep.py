@@ -1320,6 +1320,14 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual(ja["click_x"], 2340 + int((2 + 1) * cw))
         self.assertIsNone(self.d.button_hit([{"text": "Secure, Schalter/Jalousie 8-fach", "x": 0, "y": 0, "w": 300, "h": 20}], "Ja"))
 
+    def test_ja_beside_nein_from_the_nein_hit(self):
+        # OCR of 2026-11-09 read the delete confirmation's 'Nein' at x 2584
+        # and no 'Ja' at all; the click lands in the word left of it.
+        nein = {"text": "Nein", "x": 2584, "y": 1468, "w": 60, "h": 24, "click_x": 2614, "click_y": 1480}
+        hit = self.d.ja_beside_nein(nein)
+        self.assertEqual((hit["click_x"], hit["click_y"]), (2456, 1480))
+        self.assertIsNone(self.d.ja_beside_nein(None))
+
     def test_button_hit_ja_with_icon_prefix(self):
         for prefix in ("√ ", "v ", "V ", "✓ ", ""):
             rows = [*self.ROWS_997[:2], {**self.ROWS_997[2], "text": prefix + "Ja"}, self.ROWS_997[3]]
@@ -1414,12 +1422,24 @@ class TestDriverDeleteDialog(unittest.TestCase):
         self.assertEqual(len(clicks), 2)
         self.assertTrue(2480 + 2 * 120 / 6 <= clicks[1][0] <= 2600, clicks)
 
-    def test_confirm_delete_without_ja_closes_with_nein(self):
+    def test_confirm_delete_without_ja_clicks_beside_nein_then_closes(self):
+        # OCR reads 'Nein' but no 'Ja' (2026-11-09): the Ja is clicked at its
+        # place beside Nein; the dialog still open afterwards is closed with
+        # Nein and the error says so.
         no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
-        err, clicks = self.confirm([no_ja, no_ja])
-        self.assertIn("button 'Ja' not on screen", str(err))
+        err, clicks = self.confirm([no_ja, no_ja, no_ja])
+        self.assertIn("still open after 'Ja'", str(err))
         self.assertIn("closed with Nein", str(err))
-        self.assertEqual(len(clicks), 1)
+        self.assertEqual(len(clicks), 2)
+        nein = self.d.button_hit(no_ja, "Nein")
+        self.assertEqual(clicks[0][0], nein["x"] - 128)
+
+    def test_confirm_delete_without_ja_or_nein_reports_what_ocr_read(self):
+        other = [r for r in self.ROWS_997 if "Ja" not in r["text"] and "Nein" not in r["text"]]
+        err, clicks = self.confirm([other, other])
+        self.assertIn("button 'Ja' not on screen", str(err))
+        self.assertIn("OCR read", str(err))
+        self.assertEqual(len(clicks), 0)
 
     def catalog_add(self, devices: list, delete):
         """flow_catalog_add up to its catalog search, with the screen mocked:

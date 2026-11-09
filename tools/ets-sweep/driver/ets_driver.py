@@ -481,9 +481,13 @@ def button_hit(lines: list[dict], label: str) -> dict | None:
 
 def click_button(label: str, bbox: tuple[int, int, int, int]) -> None:
     """Clicks the button `label` (see `button_hit`) inside the word."""
-    hit = button_hit(ocr(bbox), label)
+    lines = ocr(bbox)
+    hit = button_hit(lines, label)
     if not hit:
-        raise RuntimeError(f"button {label!r} not on screen in {bbox}")
+        # What OCR read, so a miss can be diagnosed from the row's error
+        # (every delete of 2026-11-09 missed 'Ja' and no log said why).
+        seen = [(l["text"], l["x"], l["y"]) for l in lines][:12]
+        raise RuntimeError(f"button {label!r} not on screen in {bbox}; OCR read {seen}")
     click(hit["click_x"], hit["click_y"])
 
 
@@ -499,16 +503,41 @@ def leftover_delete_dialog(lines: list[dict]) -> dict | None:
     return button_hit(lines, "Nein")
 
 
+
+def ja_beside_nein(nein: dict | None) -> dict | None:
+    """Where the delete confirmation's 'Ja' sits when OCR reads its 'Nein'
+    but not the 'Ja' (2026-11-09: the region's OCR gave 'X' and 'Nein' and
+    nothing of the check-marked 'Ja', with the driver of #1003). The two
+    buttons share one line; the word 'Ja' starts about 144 px left of the
+    word 'Nein' and is about 30 px wide (screenshot of 2026-11-08 23:06:
+    'Ja' at x 2380, 'Nein' at x 2524; OCR of 2026-11-09 10:58: 'Nein' at
+    x 2584). The click lands in the middle of that word; `confirm_delete`
+    checks afterwards that the dialog is gone."""
+    if not nein:
+        return None
+    return {"click_x": nein["x"] - 128, "click_y": nein["y"] + nein["h"] // 2}
+
 def confirm_delete() -> None:
     """Answer the delete confirmation with 'Ja'. A dialog left open fails
     every import after it (2026-11-08, #997): when 'Ja' is not found, or the
     dialog is still there after the click, it is answered with 'Nein' before
     the error is raised, so the next flow finds the Katalog panel."""
-    try:
-        click_button("Ja", LAYOUT["delete_yes"])
-    except RuntimeError as exc:
-        closed = close_delete_dialog()
-        raise RuntimeError(f"{exc}; dialog {'closed with Nein' if closed else 'left open'}") from exc
+    bbox = LAYOUT["delete_yes"]
+    lines = ocr(bbox)
+    hit = button_hit(lines, "Ja")
+    if hit is None:
+        # What the dialog looked like, for the next diagnosis (#997).
+        try:
+            grab(LAYOUT["delete_dialog"]).save(str(Path(__file__).resolve().parent / "cap" / "delete-dialog.png"))
+        except Exception as exc:  # noqa: BLE001 - a diagnostic only
+            log(f"delete dialog screenshot failed: {exc}")
+        hit = ja_beside_nein(button_hit(lines, "Nein"))
+        if hit is None:
+            seen = [(l["text"], l["x"], l["y"]) for l in lines][:12]
+            closed = close_delete_dialog()
+            raise RuntimeError(f"button 'Ja' not on screen in {bbox}; OCR read {seen}; dialog {'closed with Nein' if closed else 'left open'}")
+        log(f"'Ja' not read by OCR; clicking beside 'Nein' at ({hit['click_x']}, {hit['click_y']})")
+    click(hit["click_x"], hit["click_y"])
     time.sleep(1.5)
     if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
         closed = close_delete_dialog()
