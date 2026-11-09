@@ -83,6 +83,51 @@ impl Device {
             .map_or(u16::from(object), |v| u16::from_be_bytes([v[0], v[1]]))
     }
 
+    /// Writes the property values the device holds in factory state
+    /// ([`crate::prod::ProductData::factory_properties`], the kind 5 entries
+    /// of the catalogue's `LoadedImage`, bussard issue #1012) into its
+    /// properties: on build, and after a master reset that resets the
+    /// parameters (erase code 2, 5 or 7 on channel 0). The real device holds
+    /// them there, and ETS leaves out a procedure write the value already
+    /// holds (the sweep captures of `M-0009_A-E0D0-11-434F`).
+    ///
+    /// An entry's start counts elements of the property (every entry of the
+    /// corpus is on a one-octet element, where elements and octets agree).
+    /// Bits the entry's mask leaves undefined keep their value. An entry
+    /// whose object or property the device lacks, or that runs past the
+    /// property's value, is left out with a warning: no product of the
+    /// corpus has one, and a resized property would change its description.
+    pub(super) fn restore_factory_properties(&mut self) {
+        for held in &self.factory_properties {
+            let prop = self
+                .objects
+                .get_mut(&held.object)
+                .and_then(|o| o.property_mut(held.pid));
+            let slot = prop.and_then(|p| {
+                let from = usize::try_from(held.start)
+                    .ok()?
+                    .checked_mul(p.element_size())?;
+                let to = from.checked_add(held.data.len())?;
+                p.value.get_mut(from..to)
+            });
+            let Some(slot) = slot else {
+                tracing::warn!(
+                    object = held.object,
+                    pid = held.pid,
+                    start = held.start,
+                    len = held.data.len(),
+                    "the LoadedImage holds a property value the device does not have room for; \
+                     left out"
+                );
+                continue;
+            };
+            for (i, (octet, data)) in slot.iter_mut().zip(&held.data).enumerate() {
+                let mask = held.mask.get(i).copied().unwrap_or(0xFF);
+                *octet = (*octet & !mask) | (data & mask);
+            }
+        }
+    }
+
     /// Resets the individual address to the TP1 default `15.15.255` (erase
     /// codes 2 and 3).
     fn reset_individual_address(&mut self) {
@@ -117,7 +162,15 @@ impl Device {
     /// (the 2026-10-27 sweep capture of `M-00FA_A-2500-10-51CB`, bussard
     /// issue #600). Outside a load procedure the reset unloads as before.
     /// The factory resets (codes 2 and 7) still unload every object.
+    ///
+    /// The resets of every channel's parameters (codes 2, 5 and 7 on channel
+    /// 0; the device answers any other channel before it gets here) restore
+    /// the property values the catalogue lists as the factory state
+    /// ([`Self::restore_factory_properties`], bussard issue #1012).
     fn execute_master_reset(&mut self, erase_code: u8) {
+        if matches!(erase_code, 0x02 | 0x05 | ERASE_CODE_FACTORY_RESET_KEEP_IA) {
+            self.restore_factory_properties();
+        }
         match erase_code {
             // Factory reset: everything, the individual address included.
             0x02 => {
@@ -495,6 +548,112 @@ mod tests {
         assert!(!dev.connected);
         assert_eq!(dev.load_state(3), Some(LoadState::Loaded));
         assert_eq!(dev.memory().read(base, 2), vec![0x12, 0x34]);
+        Ok(())
+    }
+
+    /// A product whose procedure writes object 6 PID 208 (four one-octet
+    /// elements) and whose `LoadedImage` holds elements 2 and 3 of it, the
+    /// second with its high nibble undefined (bussard issue #1012).
+    fn factory_product(mut product: crate::prod::ProductData) -> crate::prod::ProductData {
+        product.written_props.push((6, 208, 4, 4));
+        product.factory_properties = vec![crate::prod::FactoryProperty {
+            object: 6,
+            pid: 208,
+            start: 1,
+            data: vec![0x11, 0x22],
+            mask: vec![0xFF, 0x0F],
+        }];
+        product
+    }
+
+    fn pid_208(dev: &Device) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        Ok(dev
+            .objects
+            .get(&6)
+            .and_then(|o| o.property(208))
+            .ok_or("object 6 PID 208")?
+            .value
+            .clone())
+    }
+
+    fn set_pid_208(dev: &mut Device, value: &[u8]) -> Result<(), Box<dyn std::error::Error>> {
+        dev.objects
+            .get_mut(&6)
+            .and_then(|o| o.property_mut(208))
+            .ok_or("object 6 PID 208")?
+            .value = value.to_vec();
+        Ok(())
+    }
+
+    /// Issue #1012: a factory device holds the `LoadedImage` values, and a
+    /// reset of the parameters (erase codes 2, 5, 7 on channel 0) brings
+    /// them back over what a download wrote; erase code 4 and a reset on
+    /// another channel do not.
+    #[test]
+    fn test_restore_factory_properties_after_build_and_parameter_reset()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let products = [
+            factory_product(crate::testfixtures::synthetic_system_b_product()),
+            factory_product(crate::testfixtures::synthetic_mdt_sys7_product()),
+        ];
+        for product in &products {
+            let build = || {
+                Device::from_product_with_overrides(
+                    IndividualAddress::new(1, 1, 5),
+                    product,
+                    LoadState::Loaded,
+                    ProfileOverrides::default(),
+                    std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+                )
+            };
+            let mask = &product.mask_version;
+            let mut dev = build()?;
+            assert_eq!(pid_208(&dev)?, vec![0x00, 0x11, 0x02, 0x00], "{mask}");
+            for erase in [0x02u8, 0x05, 0x07] {
+                let mut dev = build()?;
+                set_pid_208(&mut dev, &[0xAA; 4])?;
+                assert_eq!(master_reset(&mut dev, erase, 0)?[0], 0x00);
+                assert_eq!(
+                    pid_208(&dev)?,
+                    vec![0xAA, 0x11, 0xA2, 0xAA],
+                    "{mask} erase code {erase}"
+                );
+            }
+            for (erase, channel) in [(0x04u8, 0u8), (0x01, 0), (0x05, 1)] {
+                set_pid_208(&mut dev, &[0xAA; 4])?;
+                master_reset(&mut dev, erase, channel)?;
+                assert_eq!(pid_208(&dev)?, vec![0xAA; 4], "{mask} {erase} {channel}");
+            }
+        }
+        Ok(())
+    }
+
+    /// A value the device has no room for (an object, a property or an
+    /// extent it lacks) is left out; the rest is held.
+    #[test]
+    fn test_restore_factory_properties_skips_what_does_not_fit()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut product = factory_product(crate::testfixtures::synthetic_system_b_product());
+        for (object, pid, start) in [(9u8, 208u8, 0u32), (6, 209, 0), (6, 208, 3)] {
+            product.factory_properties.insert(
+                0,
+                crate::prod::FactoryProperty {
+                    object,
+                    pid,
+                    start,
+                    data: vec![0x55, 0x55],
+                    mask: Vec::new(),
+                },
+            );
+        }
+        let dev = Device::from_product(
+            IndividualAddress::new(1, 1, 5),
+            &product,
+            LoadState::Unloaded,
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        );
+        assert_eq!(pid_208(&dev)?, vec![0x00, 0x11, 0x02, 0x00]);
+        assert!(!dev.objects.contains_key(&9));
         Ok(())
     }
 }

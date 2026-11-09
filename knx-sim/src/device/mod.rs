@@ -307,6 +307,10 @@ pub struct Device {
     /// The intermediate state octet each LSM still reports, and how many
     /// more times.
     intermediate: std::collections::BTreeMap<u8, (u8, u32)>,
+    /// The property values the device holds in factory state and after a
+    /// reset of its parameters ([`ProductData::factory_properties`], bussard
+    /// issue #1012); see [`Device::restore_factory_properties`].
+    factory_properties: Vec<crate::prod::FactoryProperty>,
     events: std::sync::Arc<dyn EventSink>,
 }
 
@@ -715,6 +719,15 @@ impl Device {
     pub fn knxnet_property(&self, pid: u8) -> Option<&[u8]> {
         self.knxnet_by_type
             .as_ref()
+            .and_then(|o| o.property(pid))
+            .map(|p| p.value.as_slice())
+    }
+
+    /// The value of PID `pid` of interface object `object` (by index), for
+    /// tests and observability.
+    pub fn property_value(&self, object: u8, pid: u8) -> Option<&[u8]> {
+        self.objects
+            .get(&object)
             .and_then(|o| o.property(pid))
             .map(|p| p.value.as_slice())
     }

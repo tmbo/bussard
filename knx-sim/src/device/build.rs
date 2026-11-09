@@ -542,8 +542,10 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: product.factory_properties.clone(),
             events,
         };
+        device.restore_factory_properties();
         // A device constructed already `Loaded` (a previously-programmed device)
         // should come alive immediately from whatever tables its memory holds.
         // Freshly constructed memory is empty, so this is a no-op unless a test
@@ -735,8 +737,10 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: product.factory_properties.clone(),
             events,
         };
+        device.restore_factory_properties();
         device.refresh_group_comm();
         device
     }
@@ -813,6 +817,7 @@ impl Device {
             master_reset: MasterResetSupport::Supported,
             intermediate_reports: 0,
             intermediate: std::collections::BTreeMap::new(),
+            factory_properties: Vec::new(),
             events,
         }
     }
