@@ -312,7 +312,11 @@ recorded coverage; the corpus-gated test
 may be a `.knxprod`, a `.knxproj` project export (name the application, the
 export holds every device's), `wrapper.zip!inner/file.knxprod` to pick one file
 out of a vendor ZIP, or `-` when there is no product data (the row is reported
-as not comparable with the note). Paths may contain spaces; only the ends of a
+as not comparable with the note). A product file that is gone falls back to the
+model's retained `products/<application>.knxprod` when the row names its
+application (#1010). `rev=<git revision>` plans with the model as committed at
+that revision instead of its working tree, for a capture that predates a later
+edit of the device in the model (#1010). Paths may contain spaces; only the ends of a
 field are trimmed. `--keyring <file.knxkeys>` is passed to `knxtrace image`
 only, with the password from `BUSSARD_KEYRING_PASSWORD`; the bussard dry run
 plans with the model's key store, as a flash would, so an ETS keyring never
