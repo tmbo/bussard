@@ -608,3 +608,74 @@ fn test_flash_gate_lets_a_property_only_plan_through() -> TestResult {
     );
     Ok(())
 }
+
+/// A held write (issue #951) the device holds is read and not written; one
+/// it does not hold is written as before (the fallback of CLAUDE.md "Speed
+/// Changes", review of #1011), so the device ends with the model's value.
+#[tokio::test]
+async fn test_flash_factory_held_prop_writes_only_what_the_device_does_not_hold() -> TestResult {
+    let seen: RequestLog = Default::default();
+    let log = seen.clone();
+    let device = ip_interface(false)?.with_hook(move |_, apci, data| {
+        if let Ok(mut log) = log.lock() {
+            log.push((apci, data.to_vec()));
+        }
+        None
+    });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let app = ip_interface_app("0021")?;
+    let mut plan = plan_for(&app, 0x0021)?;
+    let held = |index: u32, prop_id: u32, value: &[u8], count: u16, describe: bool| {
+        FlashStep::FactoryHeldProp {
+            object: PropObject::Index(index),
+            prop_id,
+            value: value.to_vec(),
+            start_element: 1,
+            count,
+            verify: false,
+            from_parameters: true,
+            describe,
+        }
+    };
+    plan.steps
+        .retain(|s| matches!(s, FlashStep::CompareProp { .. }));
+    plan.steps.extend([
+        // The device holds the zeros: read, not written.
+        held(1, 205, &[0; 8], 2, false),
+        // It holds 0, the model 10: written.
+        held(1, 204, &TIMEOUT, 1, false),
+        // Held, with the description ETS reads for an undeclared property.
+        held(2, 211, &[0], 1, true),
+    ]);
+    assert!(plan.is_property_only());
+    let mut bus = connect(&gw).await?;
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        ia("1.1.200")?,
+        ia("0.0.255")?,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = Session::from_connection(l4);
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+    assert!(outcome.ok(), "{outcome:?}");
+    let dev = gw.with_device(ia("1.1.200")?, |d| d.clone())?;
+    assert_eq!(dev.property(1, 205), Some(&[0u8; 8][..]));
+    assert_eq!(dev.property(1, 204), Some(&TIMEOUT[..]));
+    assert_eq!(dev.property(2, 211), Some(&[0u8][..]));
+    assert_eq!(dev.writes, 1);
+    let log = seen.lock().map_err(|e| e.to_string())?;
+    let described = log
+        .iter()
+        .filter(|(apci, _)| *apci == bussard_mgmt::apci::A_PROPERTY_DESCRIPTION_READ)
+        .count();
+    assert_eq!(described, 1);
+    Ok(())
+}

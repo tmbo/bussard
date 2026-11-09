@@ -565,6 +565,10 @@ pub fn plan_flash(
     let property_params = bussard_product::PropertyParameters::resolve(app, &config);
     // The properties an `LdCtrlDeclarePropDesc` declared so far (issue #938).
     let mut declared: Vec<super::declare::PropDecl> = Vec::new();
+    // What the procedure has left in the device's properties so far: after
+    // a reset of every channel's parameters the catalogue's `LoadedImage`
+    // values, until a write touches them (issue #951).
+    let mut device_image = super::factory::DeviceImage::default();
 
     // ETS switches verify mode on before the first `Verify="true"` relative
     // memory write it sends over the plain memory services (issue #705).
@@ -606,6 +610,8 @@ pub fn plan_flash(
         // The declaration a write to a declared property follows, looked up
         // once (issue #945).
         let declared_write = super::declare::declaration_for(&declared, step_no, op).cloned();
+        let lowered_from = steps.len();
+        let declared_target = declared_write.is_some();
         match op {
             // Session boundaries: the engine holds one connection open across the
             // whole procedure, so these carry no per-op device action.
@@ -688,9 +694,12 @@ pub fn plan_flash(
                 // value beyond a u8 is corrupt vendor input. Default the erase
                 // code to 1 ("Confirmed Restart") and the channel to 0 (the whole
                 // device) when the attribute is absent, and clamp to u8.
+                let erase_code = erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8;
+                let channel_number = channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8;
+                device_image.master_reset(erase_code, channel_number);
                 steps.push(FlashStep::MasterReset {
-                    erase_code: erase_code.unwrap_or(1).min(u32::from(u8::MAX)) as u8,
-                    channel_number: channel_number.unwrap_or(0).min(u32::from(u8::MAX)) as u8,
+                    erase_code,
+                    channel_number,
                 });
             }
 
@@ -1354,6 +1363,14 @@ pub fn plan_flash(
             }
             LoadOp::Raw { name, .. } => {
                 return Err(PlanError::UnsupportedOp { op: name.clone() });
+            }
+        }
+        // A write whose value the device holds after the reset of its
+        // parameters is not sent; every other write marks its elements
+        // (issue #951).
+        if matches!(op, LoadOp::WriteProp { .. }) {
+            for step in &mut steps[lowered_from..] {
+                device_image.settle(step, app, declared_target);
             }
         }
     }
@@ -4062,6 +4079,186 @@ mod tests {
             app_program_version_value(&app),
             Some([0x00, 0xFA, 0x25, 0x00, 0x10])
         );
+    }
+
+    /// The property steps of a System B plan of a procedure that writes
+    /// object 6 (undeclared) and object 7 (declared, two writes) PID 208,
+    /// after `reset` (an `LdCtrlMasterReset` line or nothing), with the
+    /// `LoadedImage` holding `01 02` at object 6, `03 04` at object 7 element
+    /// 1 and `05 07` at element 3 (issue #951).
+    fn factory_plan(reset: &str) -> Result<Vec<FlashStep>, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-00FA_A-2501-10-0000" ApplicationNumber="9473"
+            ApplicationVersion="16" MaskVersion="MV-07B0" Name="Held">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             {reset}
+             <LdCtrlWriteProp ObjIdx="6" PropId="208" Count="2" InlineData="0102" />
+             <LdCtrlDeclarePropDesc ObjIdx="7" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="4" Writable="true" />
+             <LdCtrlWriteProp ObjIdx="7" PropId="208" Count="2" InlineData="0304" />
+             <LdCtrlWriteProp ObjIdx="7" PropId="208" StartElement="3" Count="2" InlineData="0506" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        let mut app = parse_application_program("M-00FA_A-2501-10-0000", xml.as_bytes())?;
+        let held = |object: u32, start: u32, data: &[u8]| bussard_product::FactoryProperty {
+            object,
+            prop_id: 208,
+            start,
+            data: data.to_vec(),
+            mask: Vec::new(),
+        };
+        app.factory_properties = vec![
+            held(6, 0, &[1, 2]),
+            held(7, 0, &[3, 4]),
+            held(7, 2, &[5, 7]),
+        ];
+        let plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        Ok(plan
+            .steps
+            .into_iter()
+            .filter(|s| {
+                matches!(
+                    s,
+                    FlashStep::WriteProp { prop_id: 208, .. }
+                        | FlashStep::FactoryHeldProp { prop_id: 208, .. }
+                )
+            })
+            .collect())
+    }
+
+    #[test]
+    fn test_plan_flash_leaves_out_a_write_the_factory_image_holds() -> TestResult {
+        // Issue #951: after the parameter reset, ETS sends none of the writes
+        // whose value the `LoadedImage` holds (`M-0009_A-E0D0-11-434F`) and
+        // the others whole (`M-0009_A-E0D1-11-99AD`, element 97 of objects
+        // 13 to 24); the undeclared one still has its description read.
+        let held = |object: u32, value: &[u8], start_element: u16, describe: bool| {
+            FlashStep::FactoryHeldProp {
+                object: crate::flash::PropObject::Index(object),
+                prop_id: 208,
+                value: value.to_vec(),
+                start_element,
+                count: 2,
+                verify: false,
+                from_parameters: false,
+                describe,
+            }
+        };
+        let write = |object: u32, value: &[u8], start_element: u16| FlashStep::WriteProp {
+            object: crate::flash::PropObject::Index(object),
+            prop_id: 208,
+            value: value.to_vec(),
+            start_element,
+            count: 2,
+            verify: false,
+            from_parameters: false,
+        };
+        assert_eq!(
+            factory_plan(r#"<LdCtrlMasterReset EraseCode="5" ChannelNumber="0" />"#)?,
+            vec![
+                held(6, &[1, 2], 1, true),
+                held(7, &[3, 4], 1, false),
+                write(7, &[5, 6], 3),
+            ]
+        );
+        // Without a reset of every channel's parameters the device holds
+        // what an earlier download left: every write is sent.
+        for reset in [
+            "",
+            r#"<LdCtrlMasterReset EraseCode="6" ChannelNumber="0" />"#,
+            r#"<LdCtrlMasterReset EraseCode="5" ChannelNumber="2" />"#,
+        ] {
+            assert_eq!(
+                factory_plan(reset)?,
+                vec![
+                    write(6, &[1, 2], 1),
+                    write(7, &[3, 4], 1),
+                    write(7, &[5, 6], 3),
+                ],
+                "{reset}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_plan_flash_holds_a_zero_placeholder_only_where_the_image_records_it() -> TestResult {
+        // Review of #1011: a declared all-zero `InlineData` write to a
+        // property no parameter is placed in is written as before, unless
+        // the `LoadedImage` records the zeros after the reset; then it is held
+        // and still read back (`FactoryHeldProp`).
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-00FA_A-2502-10-0000" ApplicationNumber="9474"
+            ApplicationVersion="16" MaskVersion="MV-07B0" Name="Zero">
+          <Static>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlMasterReset EraseCode="5" ChannelNumber="0" />
+             <LdCtrlDeclarePropDesc ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="11" Writable="true" />
+             <LdCtrlWriteProp ObjIdx="10" PropId="52" Count="11" InlineData="00000000000000000000" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#;
+        let mut app = parse_application_program("M-00FA_A-2502-10-0000", xml.as_bytes())?;
+        let plan = |app: &ApplicationProgram| {
+            plan_flash_default(
+                app,
+                "1.1.4",
+                0x07B0,
+                &no_overrides(),
+                &BTreeMap::new(),
+                None,
+                &BTreeMap::new(),
+            )
+        };
+        let property_steps = |plan: FlashPlan| -> Vec<FlashStep> {
+            plan.steps
+                .into_iter()
+                .filter(|s| s.property_write().is_some())
+                .collect()
+        };
+        assert_eq!(
+            property_steps(plan(&app)?),
+            vec![FlashStep::WriteProp {
+                object: crate::flash::PropObject::Index(10),
+                prop_id: 52,
+                value: vec![0; 11],
+                start_element: 1,
+                count: 11,
+                verify: false,
+                from_parameters: false,
+            }]
+        );
+        app.factory_properties = vec![bussard_product::FactoryProperty {
+            object: 10,
+            prop_id: 52,
+            start: 0,
+            data: vec![0; 11],
+            mask: Vec::new(),
+        }];
+        assert!(matches!(
+            property_steps(plan(&app)?).as_slice(),
+            [FlashStep::FactoryHeldProp {
+                prop_id: 52,
+                describe: false,
+                ..
+            }]
+        ));
+        Ok(())
     }
 
     #[test]

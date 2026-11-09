@@ -339,3 +339,58 @@ fn test_parameters_only_writes_a_property_parameter_off_the_lsm_object() -> Test
     );
     Ok(())
 }
+
+/// Review of #1011: a write the full flash leaves out as held after the
+/// parameter reset (issue #951) is written by the parameter-only download,
+/// which resets nothing, and still counts as a parameter property.
+#[test]
+fn test_parameters_only_writes_a_held_property() -> TestResult {
+    let app = app()?;
+    let mut plan = plan_of(&app, &BTreeMap::new())?;
+    for step in &mut plan.steps {
+        if let FlashStep::WriteProp {
+            object,
+            prop_id,
+            value,
+            start_element,
+            count,
+            verify,
+            from_parameters,
+        } = step
+        {
+            *step = FlashStep::FactoryHeldProp {
+                object: *object,
+                prop_id: *prop_id,
+                value: value.clone(),
+                start_element: *start_element,
+                count: *count,
+                verify: *verify,
+                from_parameters: *from_parameters,
+                describe: false,
+            };
+        }
+    }
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::WriteProp { .. }))
+    );
+    assert_eq!(plan.parameter_properties().len(), 1);
+    let partial = plan.parameters_only(&Default::default())?;
+    assert!(partial.steps.iter().any(|s| matches!(
+        s,
+        FlashStep::WriteProp {
+            object: PropObject::Index(10),
+            prop_id: 52,
+            ..
+        }
+    )));
+    assert!(
+        !partial
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::FactoryHeldProp { .. }))
+    );
+    Ok(())
+}

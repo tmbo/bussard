@@ -350,18 +350,13 @@ impl FlashPlan {
         }
         // The properties the parameters are placed in (issue #706): the
         // writes whose value the parameters compose, by object and PID.
+        // A write the full flash leaves out as held counts too (issue #951).
         let param_props: BTreeSet<(super::PropObject, u32)> = self
             .steps
             .iter()
-            .filter_map(|step| match step {
-                FlashStep::WriteProp {
-                    object,
-                    prop_id,
-                    from_parameters: true,
-                    ..
-                } => Some((*object, *prop_id)),
-                _ => None,
-            })
+            .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
+            .map(|w| (w.object, w.prop_id))
             .collect();
         // A program whose parameters all live in properties (the Hager 07B0
         // actuators, issue #944) writes no parameter image. Its `par`
@@ -443,6 +438,16 @@ impl FlashPlan {
                         continue;
                     }
                     steps.push(step.clone());
+                }
+                // The parameter-only download resets nothing, so a write the
+                // full plan leaves out as held after the reset is written
+                // (issue #951); converted here, one step at a time.
+                FlashStep::FactoryHeldProp {
+                    object, prop_id, ..
+                } if matches!(object, super::PropObject::Index(i) if objects.contains(i))
+                    || param_props.contains(&(*object, *prop_id)) =>
+                {
+                    steps.push(step.without_parameter_reset());
                 }
                 FlashStep::WriteProp {
                     object: super::PropObject::Index(obj_idx),

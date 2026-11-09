@@ -14,13 +14,25 @@
 //! ```
 //!
 //! Kind 12 is an interface object's memory segment (object 3 the group-object
-//! table, object 4 the application), kind 5 a property value (PID 208) and
-//! kind 4 a property compare (PID 78). Every tag seen in the sweep corpus is
-//! `3`, so every entry there carries a mask.
+//! table, object 4 the application), kind 5 a property value and kind 4 a
+//! property compare (PID 78). A kind 5 entry names its object relative to the
+//! mask's first application object (the `FirstAppObjectIdx` feature of the
+//! mask in `knx_master.xml`: 6 on System B, 5 on System 7,
+//! [`crate::MasterTemplate::first_app_object_index`]): entry object 0
+//! of `M-0009_A-E0D1-11-99AD` (07B0) is the program's `ObjIdx="6"`, entry
+//! object 1 of `M-0009_A-E0ED-10-0B6F` (0701) its `ObjIdx="6"`; the kind 5
+//! entries of the six programs of the sweep corpus that carry any match the
+//! `ObjIdx`, `PropId`, `StartElement - 1` and `Count` of one of their
+//! `LdCtrlWriteProp`s each under that reading (issue #951). Tag bit 1 says a
+//! mask of the data's length follows (`3`), else none (`1`, the System 7
+//! `M-0009_A-E0ED-10-0B6F`).
 //!
-//! bussard uses the list for one thing: whether it holds a segment of the
+//! bussard uses the list for two things: whether it holds a segment of the
 //! group-object table, one of the two triggers of the ETS download-plugin
-//! table shape ([`crate::ApplicationProgram::ets_download_plugin_shape`]).
+//! table shape ([`crate::ApplicationProgram::ets_download_plugin_shape`]),
+//! and its property values, the values a device holds after its parameters
+//! are reset ([`crate::ApplicationProgram::factory_properties`], issue
+//! #951).
 
 use std::io::Read;
 
@@ -28,6 +40,9 @@ use base64::Engine;
 
 /// Kind of an entry that is an interface object's memory segment.
 pub const KIND_MEMORY_SEGMENT: u32 = 12;
+
+/// Kind of an entry that is a property value.
+pub const KIND_PROPERTY_VALUE: u32 = 5;
 
 /// Interface object index of the group-object table.
 pub const OBJECT_GROUP_OBJECT_TABLE: u16 = 3;
@@ -37,13 +52,15 @@ pub const OBJECT_GROUP_OBJECT_TABLE: u16 = 3;
 const MAX_INFLATED: u64 = 16 * 1024 * 1024;
 
 /// One entry of a decoded `LoadedImage`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoadedImageEntry {
     /// What the entry is: [`KIND_MEMORY_SEGMENT`], 5 a property value, 4 a
     /// property compare.
     pub kind: u32,
-    /// The interface object index (for a memory segment: 3 the group-object
-    /// table, 4 the application).
+    /// The interface object: for a memory segment its index (3 the
+    /// group-object table, 4 the application), for a property value its
+    /// index relative to the mask's first application object
+    /// ([`crate::MasterTemplate::first_app_object_index`]).
     pub object: u16,
     /// The property id the entry names.
     pub pid: u16,
@@ -53,6 +70,10 @@ pub struct LoadedImageEntry {
     pub tag: u8,
     /// The stored octets.
     pub data: Vec<u8>,
+    /// The bits of `data` the entry defines, as long as `data`; empty when
+    /// the tag carries no mask (every bit defined).
+    #[serde(default)]
+    pub mask: Vec<u8>,
 }
 
 /// Why a `LoadedImage` did not decode.
@@ -160,9 +181,11 @@ impl Cursor<'_> {
         let len = usize::try_from(self.u32()?).ok()?;
         let tag = self.u8()?;
         let data = self.take(len)?.to_vec();
-        if tag & 0x02 != 0 {
-            self.take(len)?;
-        }
+        let mask = if tag & 0x02 != 0 {
+            self.take(len)?.to_vec()
+        } else {
+            Vec::new()
+        };
         Some(LoadedImageEntry {
             kind,
             object,
@@ -170,6 +193,7 @@ impl Cursor<'_> {
             offset,
             tag,
             data,
+            mask,
         })
     }
 }
@@ -295,6 +319,18 @@ mod tests {
         e.truncate(19);
         let entries = parse_loaded_image(&list(&[e]))?;
         assert_eq!(entries[0].data, vec![0, 0]);
+        assert!(entries[0].mask.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_loaded_image_keeps_the_mask() -> TestResult {
+        let mut e = entry(5, 0, 0xD0, 0, &[0x12, 0x34]);
+        let at = e.len() - 2;
+        e[at] = 0xF0;
+        let entries = parse_loaded_image(&list(&[e]))?;
+        assert_eq!(entries[0].data, vec![0x12, 0x34]);
+        assert_eq!(entries[0].mask, vec![0xF0, 0xFF]);
         Ok(())
     }
 

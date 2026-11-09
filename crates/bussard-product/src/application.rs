@@ -1521,6 +1521,41 @@ impl SecurityCapacity {
     }
 }
 
+/// A property value the device holds after a reset of its parameters
+/// ([`ApplicationProgram::factory_properties`]): one kind 5 entry of the
+/// catalogue's `LoadedImage`, its object made absolute.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct FactoryProperty {
+    /// The interface object index.
+    pub object: u32,
+    /// The property id.
+    pub prop_id: u32,
+    /// The 0-based element the value starts at (`StartElement - 1` of the
+    /// `LdCtrlWriteProp` it matches).
+    pub start: u32,
+    /// The held octets.
+    pub data: Vec<u8>,
+    /// The bits of `data` the entry defines; empty for every bit.
+    #[serde(default)]
+    pub mask: Vec<u8>,
+}
+
+impl FactoryProperty {
+    /// Whether the device holds `value` from element `start_element`
+    /// (1-based) of `object`/`prop_id`: the same property and start, as
+    /// long as `data`, every bit defined by the image (a mask bit of 0 is a
+    /// bit the image leaves undefined, so the device may hold anything
+    /// there and the value is not taken as held), and equal to `data`.
+    pub fn holds(&self, object: u32, prop_id: u32, start_element: u32, value: &[u8]) -> bool {
+        self.object == object
+            && self.prop_id == prop_id
+            && self.start.checked_add(1) == Some(start_element)
+            && value.len() == self.data.len()
+            && self.mask.iter().all(|m| *m == 0xFF)
+            && value == self.data.as_slice()
+    }
+}
+
 /// One parsed ApplicationProgram.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ApplicationProgram {
@@ -1564,6 +1599,15 @@ pub struct ApplicationProgram {
     /// of [`Self::ets_download_plugin_shape`] (issue #949).
     #[serde(default)]
     pub ets_table_image: bool,
+    /// The property values the device holds after a reset of its
+    /// parameters, from the catalogue's `Hardware2Program/@LoadedImage`
+    /// (kind 5 entries, [`crate::loaded_image`]): ETS sends no
+    /// `LdCtrlWriteProp` whose value one of them already holds (issue #951).
+    /// Set by the product reader from the hardware catalogue, not by the
+    /// program parser; empty for a program whose hardware carries none, or
+    /// whose mask declares no first application object.
+    #[serde(default)]
+    pub factory_properties: Vec<FactoryProperty>,
     /// Whether `<Options>` declares `SupportsExtendedMemoryServices="true"`.
     /// ETS reads and writes memory above `0xFFFF` with
     /// `A_MemoryExtended_*` when it does and with `A_UserMemory_*` when it
@@ -5947,5 +5991,25 @@ mod tests {
             .ok_or("resolved a write off its declaration")?;
         assert!(err.reason.contains("declared without"), "{err}");
         Ok(())
+    }
+
+    /// Review of #1011: a mask bit of 0 is undefined by the image, so the
+    /// value is not held; a full mask needs every bit equal.
+    #[test]
+    fn test_factory_property_holds_only_fully_defined_equal_values() {
+        let held = |mask: Vec<u8>| FactoryProperty {
+            object: 13,
+            prop_id: 208,
+            start: 96,
+            data: vec![0x01, 0x30],
+            mask,
+        };
+        assert!(held(Vec::new()).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(held(vec![0xFF, 0xFF]).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(!held(vec![0xFF, 0xFF]).holds(13, 208, 97, &[0x01, 0x31]));
+        assert!(!held(vec![0xFF, 0xF0]).holds(13, 208, 97, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(13, 208, 96, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(14, 208, 97, &[0x01, 0x30]));
+        assert!(!held(Vec::new()).holds(13, 208, 97, &[0x01]));
     }
 }

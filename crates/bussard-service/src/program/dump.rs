@@ -536,6 +536,39 @@ pub fn write_dump(
                     Err(records) => record["properties"] = json!(records),
                 }
             }
+            // A description read (issue #841) and a write the flash leaves
+            // out as held after the parameter reset (issue #951): recorded so
+            // the oracle sees the read ETS makes and the value the device is
+            // taken to hold. Neither is a write, so neither is a `property`
+            // record; `knxtrace imgdiff` compares writes.
+            FlashStep::DescribeProp { object, prop_id } => {
+                let mut read = object_record(object);
+                read["pid"] = json!(prop_id);
+                record["property_description"] = read;
+            }
+            FlashStep::FactoryHeldProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                describe,
+                ..
+            } => {
+                let mut held = object_record(object);
+                held["pid"] = json!(prop_id);
+                held["start_element"] = json!(start_element);
+                held["count"] = json!(count);
+                held["length"] = json!(value.len());
+                held["data"] = json!(value.iter().map(|b| format!("{b:02x}")).collect::<String>());
+                held["source"] = json!("loaded-image");
+                record["held_property"] = held;
+                if *describe {
+                    let mut read = object_record(object);
+                    read["pid"] = json!(prop_id);
+                    record["property_description"] = read;
+                }
+            }
             // A function property call (issue #946), as the wire carries it:
             // by index on `A_FunctionPropertyCommand`, by type on
             // `A_FunctionPropertyExt_Command` (instance 1-based). `knxtrace

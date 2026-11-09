@@ -462,6 +462,29 @@ fn unresolved_reason(name: &str) -> String {
     )
 }
 
+/// Whether the program's `LoadedImage` holds one element of `elem` octets at
+/// element `start` of object `index`/`prop_id`: the size ETS gives a
+/// count-less write there (issue #951). `M-0009_A-E0EE-10-ADF8`'s image holds
+/// one octet at elements 12 to 15 of object 12, the count-less
+/// `StartElement="12"` writes of its four module instances
+/// (`BaseStartElement` 0 to 3) to the property declared with 46 elements,
+/// and one at element 16, its count-less undeclared write that ETS sends as
+/// `count=1 index=16` (op 34).
+fn image_has_one_element(
+    app: &ApplicationProgram,
+    index: u32,
+    prop_id: u32,
+    start: u32,
+    elem: usize,
+) -> bool {
+    app.factory_properties.iter().any(|f| {
+        f.object == index
+            && f.prop_id == prop_id
+            && f.start.checked_add(1) == Some(start)
+            && f.data.len() == elem
+    })
+}
+
 /// Lowers an `LdCtrlWriteProp` to a property `decl` declared: `Count` elements
 /// of the declared size from `StartElement` ([`element_count`]), whether or
 /// not a parameter is placed in the property. `inline` is the op's
@@ -512,7 +535,16 @@ pub(super) fn lower_declared_write_prop(
     let elem = decl.element_size;
     let inline = inline.filter(|d| !d.is_empty());
     let start = start_element.unwrap_or(1).max(1);
-    let count = element_count(&name, *count, start, Some(decl.max_elements)).map_err(refuse)?;
+    let count = match (*count, decl.object) {
+        (None, PropObject::Index(index))
+            if image_has_one_element(app, index, prop_id, start, decl.element_size) =>
+        {
+            1
+        }
+        (count, _) => {
+            element_count(&name, count, start, Some(decl.max_elements)).map_err(refuse)?
+        }
+    };
     let last = start.saturating_add(count).saturating_sub(1);
     if last > MAX_ELEMENT_INDEX {
         return Err(refuse(format!(
