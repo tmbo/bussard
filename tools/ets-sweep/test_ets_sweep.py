@@ -1394,7 +1394,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
 
         with mock.patch.object(self.d, "ocr", return_value=self.ROWS_997), \
                 mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
-                mock.patch.object(self.d, "log"):
+                mock.patch.object(self.d, "keys"), mock.patch.object(self.d, "log"):
             self.assertTrue(self.d.close_delete_dialog())
         (x, _), _ = click.call_args
         self.assertTrue(2480 + 2 * 120 / 6 <= x <= 2600, x)
@@ -1410,7 +1410,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
         shots = iter(screens)
         with mock.patch.object(self.d, "ocr", side_effect=lambda *a, **k: next(shots)), \
                 mock.patch.object(self.d, "click") as click, mock.patch.object(self.d.time, "sleep"), \
-                mock.patch.object(self.d, "log"):
+                mock.patch.object(self.d, "keys"), mock.patch.object(self.d, "log"):
             try:
                 self.d.confirm_delete()
                 err = None
@@ -1426,7 +1426,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
 
     def test_confirm_delete_closes_a_dialog_still_open_with_nein(self):
         # The click on Ja missed: the dialog is there after it.
-        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997])
+        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997, self.ROWS_997])
         self.assertIn("still open", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)
@@ -1437,7 +1437,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
         # place beside Nein; the dialog still open afterwards is closed with
         # Nein and the error says so.
         no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
-        err, clicks = self.confirm([no_ja, no_ja, no_ja])
+        err, clicks = self.confirm([no_ja, no_ja, no_ja, no_ja])
         self.assertIn("still open after 'Ja'", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)

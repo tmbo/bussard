@@ -567,12 +567,19 @@ def confirm_delete() -> None:
     click(hit["click_x"], hit["click_y"])
     time.sleep(1.5)
     if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
-        _keep_delete_dialog_image()
-        closed = close_delete_dialog()
-        raise RuntimeError(
-            f"delete dialog still open after 'Ja' at ({hit['click_x']}, {hit['click_y']}); "
-            f"{'closed with Nein' if closed else 'left open'}"
-        )
+        # The click on the word did not take (2026-11-09 11:25, at (2457,
+        # 1456) inside the highlighted button, image in cap/delete-dialog.png)
+        # while 'Ja' is the dialog's focused default button: Enter confirms it.
+        log(f"delete dialog still open after the click at ({hit['click_x']}, {hit['click_y']}); pressing Enter")
+        keys("{ENTER}")
+        time.sleep(1.5)
+        if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
+            _keep_delete_dialog_image()
+            closed = close_delete_dialog()
+            raise RuntimeError(
+                f"delete dialog still open after 'Ja' at ({hit['click_x']}, {hit['click_y']}) and Enter; "
+                f"{'closed with Nein' if closed else 'left open'}"
+            )
 
 
 def close_delete_dialog() -> bool:
