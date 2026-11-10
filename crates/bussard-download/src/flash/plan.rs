@@ -532,6 +532,10 @@ pub fn plan_flash(
     // allocated in between (the ABB PEI program: object 5 is allocated before
     // object 4, and written after it was allocated).
     let mut rel_segment_by_object: BTreeMap<u32, String> = BTreeMap::new();
+    // The fill byte each segment's lowered allocation asks the device to
+    // pre-fill it with (`Mode` bit 0), so a write into a segment that has no
+    // image of its own streams nothing (issue #1026).
+    let mut prefill_by_segment: BTreeMap<String, u8> = BTreeMap::new();
     // Track the image most-recently streamed into device memory so a following
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
@@ -841,6 +845,12 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
+                    if let Some((seg_id, _)) = &seg {
+                        match fill.prefill() {
+                            Some(byte) => prefill_by_segment.insert(seg_id.clone(), byte),
+                            None => prefill_by_segment.remove(seg_id),
+                        };
+                    }
                     // Thread the source procedure's fill (`Mode`/`Fill`) through:
                     // `None` (the DA.tp default) keeps the historical no-fill
                     // allocation byte-identical; `Some(b)` requests the device
@@ -936,11 +946,13 @@ pub fn plan_flash(
                 let current = obj_idx
                     .and_then(|idx| rel_segment_by_object.get(&idx))
                     .or(last_rel_segment.as_ref());
+                let prefill = current.and_then(|seg| prefill_by_segment.get(seg).copied());
                 let (segment_id, kind, bytes) = resolve_write_image(
                     &segments,
                     applies_to.as_deref(),
                     current.map(String::as_str),
                     &param_images,
+                    prefill,
                 )
                 .map_err(|reason| PlanError::UnresolvableImage {
                     step: step_no,
@@ -2281,11 +2293,18 @@ pub(super) fn bound_write_rel_mem(
 /// streams the parameter image when parameters target the segment, else the
 /// code `<Data>` — either way the segment's own bytes, so a following
 /// `LoadImageProp` MCB check runs over a real image.
+///
+/// A segment with neither a parameter image nor a code `<Data>` that its
+/// allocation pre-fills (`prefill`, `Mode` bit 0) holds the fill byte
+/// throughout, and ETS writes none of it (issue #1026, the Gira
+/// `M-0008_A-6010-20-4D55`: a 256-octet segment allocated with fill `00`, no
+/// memory parameter, no memory write): the image is empty.
 pub(super) fn resolve_write_image(
     segments: &HashMap<String, CodeSegment>,
     applies_to: Option<&str>,
     current_segment: Option<&str>,
     param_images: &BTreeMap<String, Vec<u8>>,
+    prefill: Option<u8>,
 ) -> std::result::Result<(String, ImageKind, Vec<u8>), String> {
     let seg_id = current_segment
         .map(str::to_string)
@@ -2335,11 +2354,11 @@ pub(super) fn resolve_write_image(
     }
 
     // Code image: the segment's `<Data>`.
-    let bytes = segments
-        .get(&seg_id)
-        .and_then(|s| s.data.clone())
-        .ok_or_else(|| format!("segment {seg_id} carries no code image (<Data>)"))?;
-    Ok((seg_id, ImageKind::Code, bytes))
+    match segments.get(&seg_id).and_then(|s| s.data.clone()) {
+        Some(bytes) => Ok((seg_id, ImageKind::Code, bytes)),
+        None if prefill.is_some() => Ok((seg_id, ImageKind::Parameters, Vec::new())),
+        None => Err(format!("segment {seg_id} carries no code image (<Data>)")),
+    }
 }
 
 /// Resolves an absolute segment's bytes for a `WriteMem` op by matching its
@@ -2651,6 +2670,61 @@ mod tests {
         assert!(matches!(
             plan_for("<LdCtrlDelay />")?,
             Err(PlanError::UnsupportedOp { op }) if op.contains("LdCtrlDelay")
+        ));
+        Ok(())
+    }
+
+    /// Issue #1026: a write into a segment with neither `<Data>` nor a memory
+    /// parameter streams nothing when its allocation pre-fills it (the Gira
+    /// `M-0008_A-6010-20-4D55`: ETS allocates 256 octets with fill `00` and
+    /// writes none), and still refuses when the allocation keeps the memory.
+    #[test]
+    fn test_plan_flash_prefilled_segment_without_image_writes_nothing() -> TestResult {
+        let plan_for =
+            |mode: u8| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
+                let xml = format!(
+                    r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-EMPTY" MaskVersion="MV-07B0" Name="Empty"
+            LoadProcedureStyle="ProductDefault">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-EMPTY_RS-04-00000" Size="256" LoadStateMachine="4" Offset="0" /></Code>
+           <LoadProcedures>
+            <LoadProcedure>
+             <LdCtrlUnload LsmIdx="4" />
+             <LdCtrlLoad LsmIdx="4" />
+             <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="{mode}" Fill="0" />
+             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" Verify="true" />
+             <LdCtrlLoadCompleted LsmIdx="4" />
+             <LdCtrlRestart />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+                );
+                let app = parse_application_program("M-1_A-EMPTY", xml.as_bytes())?;
+                Ok(plan_flash_default(
+                    &app,
+                    "1.1.4",
+                    0x07B0,
+                    &no_overrides(),
+                    &BTreeMap::new(),
+                    None,
+                    &BTreeMap::new(),
+                ))
+            };
+        let plan = plan_for(1)??;
+        let lens: Vec<usize> = plan
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => Some(image.len),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lens, [0]);
+        assert!(matches!(
+            plan_for(0)?,
+            Err(PlanError::UnresolvableImage { reason, .. }) if reason.contains("no code image")
         ));
         Ok(())
     }

@@ -852,12 +852,25 @@ class EtsMemory:
             for i, b in enumerate(data):
                 if region["start"] + i not in self.written:
                     self.confirmed[region["start"] + i] = b
+        # The fill of each object ETS allocated with a fill but whose base it
+        # never read (issue #1026). ETS addresses a relative segment only by
+        # the base it reads right before writing into it, so with no read it
+        # wrote none of the segment: the allocation's fill is all it holds
+        # (`M-007C_A-0001-10-2A85`: 32768 x 00, no PID_TABLE_REFERENCE read).
+        unread: Dict[int, Tuple[int, int]] = {}
+        for rec in self.index["allocations"]:
+            if rec.get("kind") == "rel-segment" and isinstance(rec.get("object"), int):
+                if rec.get("fill") and not isinstance(rec.get("base"), int):
+                    unread[rec["object"]] = (int(rec["size"]), int(rec.get("fill_byte", 0)))
+                else:
+                    unread.pop(rec["object"], None)
         self.bases = {int(k): v for k, v in self.index.get("table_refs", {}).items()}
         # The base read back right after each object's allocation wins over a
         # stale read taken before the download.
         for rec in self.index["allocations"]:
             if rec.get("kind") == "rel-segment" and isinstance(rec.get("base"), int):
                 self.bases[int(rec["object"])] = rec["base"]
+        self.unread_fills = {k: v for k, v in unread.items() if k not in self.bases}
 
     def get(self, addr: int) -> Optional[int]:
         b = self.written.get(addr)
@@ -974,6 +987,11 @@ def compare(
         if addr is None:
             obj = image.get("object")
             base = ets.bases.get(obj) if obj is not None else None
+            if base is None and obj in ets.unread_fills:
+                results.append(
+                    _compare_unread_fill(step, name, ours, mask, placed_offsets, obj, ets, page_size)
+                )
+                continue
             if base is None:
                 rec = _result(step, name, ours, NOT_COMPARABLE, "no ETS base for object %s" % obj)
                 rec["compared"] = 0
@@ -2309,6 +2327,62 @@ def _add_coverage(
     rec["pages"] = [
         {"page": _page_name(k), "placed": v[0], "compared": v[1]} for k, v in pages.items()
     ]
+
+
+def _compare_unread_fill(
+    step: dict,
+    name: str,
+    ours: bytes,
+    mask: Optional[bytes],
+    placed_offsets: List[int],
+    obj: int,
+    ets: "EtsMemory",
+    page_size: int,
+) -> dict:
+    """Compares an image with the fill of an object ETS never wrote (issue #1026).
+
+    ETS allocated the object's segment with a fill and never read its base,
+    so the segment holds the fill byte over the allocation; the octets are
+    compared object-relative, an octet past the allocation is not compared.
+    """
+    size, fill = ets.unread_fills[obj]
+    compared = diffs = 0
+    first = None
+    known = set()
+    for i, b in enumerate(ours[:size]):
+        if mask is not None and i < len(mask) and mask[i] != 0xFF:
+            continue
+        compared += 1
+        known.add(i)
+        if b != fill:
+            diffs += 1
+            if first is None:
+                first = i
+    rec = _result(step, name, ours, IDENTICAL, "")
+    rec["address"] = None
+    rec["compared"] = compared
+    rec["ets_fill_only"] = {"object": obj, "size": size, "fill_byte": fill}
+    _add_coverage(rec, placed_offsets, known & set(placed_offsets), None, "obj%s" % obj, page_size)
+    rec["with_confirmed"] = {k: rec[k] for k in ("placed", "placed_compared", "pages")}
+    if compared == 0:
+        rec["verdict"] = NOT_COMPARABLE
+        rec["reason"] = "ETS allocated object %s with fill and wrote nothing" % obj
+    elif diffs:
+        lo = max(0, first - EXCERPT)
+        hi = min(len(ours), first + EXCERPT, size)
+        rec.update(
+            {
+                "verdict": DIFFERS,
+                "diff_octets": diffs,
+                "first_offset": first,
+                "excerpt_offset": lo,
+                "bussard_hex": ours[lo:hi].hex(),
+                "ets_hex": bytes([fill] * (hi - lo)).hex(),
+                "fill_diff_octets": diffs,
+                "fill_diff_offsets": [i for i in range(len(ours[:size])) if ours[i] != fill][:20],
+            }
+        )
+    return rec
 
 
 def _result(step: dict, name: str, ours: bytes, verdict: str, reason: str) -> dict:
