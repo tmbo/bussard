@@ -478,6 +478,10 @@ def main() -> int:
                                       "when": datetime.now(timezone.utc).isoformat(),
                                       "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
                                       "error": (imp.get("message") or imp.get("error") or "")[:300]}
+                # One line per job, as a run prints: a filtered job whose
+                # import failed looked as if the filter had dropped it (#478).
+                print(f"{results[job['id']]['outcome']:13} {job['mask']}    0s ops=None {job['id']} {job['name']!s:.40}"
+                      f"  import failed", flush=True)
             save()
             if any(k in (imp.get("error") or "") for k in ("screen grab failed", "not the RDP layout", "desktop in use")):
                 print(f"stopping: the VM desktop is not usable: {imp.get('error', '')[:160]}", flush=True)

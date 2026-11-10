@@ -1739,7 +1739,7 @@ class TestDriverLinkDialog(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.object(self.d, "close_link_dialog", side_effect=RuntimeError("stop")) as close, \
-                mock.patch.object(self.d, "close_size_prompt", return_value=False), \
+                mock.patch.object(self.d, "close_link_question", return_value=False), \
                 mock.patch.object(self.d, "require_project"):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"})
@@ -1799,6 +1799,9 @@ class FakeEts:
         self.size_prompt = set(size_prompt)
         self.prompt = leftover_prompt
         self.pending = None
+        # The mouse over the table shows ETS's tooltip of addresses over the
+        # last row: a read then sees them there (DALI Basic 1f, 2026-11-10).
+        self.parked = True
         self.dialog = leftover
         self.typed = ""
         self.row = None
@@ -1820,6 +1823,7 @@ class FakeEts:
         self.typed = ""
 
     def right_click(self, coords):
+        self.parked = False
         self.events.append(("right", coords[1]))
         if self.late_menus:
             self.late_menus -= 1
@@ -1828,20 +1832,18 @@ class FakeEts:
         self.row = next(r for r in self.rows if r["y"] == coords[1])
 
     def find_text(self, pattern, bbox=None, min_ratio=0.8):
-        if self.prompt and pattern.startswith("abweichende"):
-            return {"text": pattern, "x": 1460, "y": 1170, "w": 900, "h": 30}
-        if self.prompt and pattern == "OK":
-            return {"text": "OK", "x": 2600, "y": 1445, "w": 24, "h": 22}
-        if self.prompt and pattern == "Abbrechen":
-            return {"text": "Abbrechen", "x": 2720, "y": 1445, "w": 80, "h": 22}
+        if self.prompt and pattern == "Mit Gruppenadresse verbinden" and bbox == self.d.QUESTION_TITLE:
+            return {"text": pattern, "x": 1640, "y": 1058, "w": 400, "h": 30}
         if pattern == "Verbinden mit" and self.menu_open:
             return {"text": "Verbinden mit...", "x": 1050, "y": 900, "w": 200, "h": 30, "ratio": 1.0}
         return None
 
     def click(self, x, y, *a, **k):
+        if 260 <= y <= 1240:
+            self.parked = False
         if self.prompt:
             self.prompt = False
-            if x < 2700:
+            if x < 2500:
                 self.events.append(("ok",))
                 if self.pending:
                     self.pending["gas"].append(self.typed)
@@ -1892,6 +1894,10 @@ class FakeEts:
 
     def ocr(self, bbox=None, zoom=1, **_):
         d = self.d
+        if bbox == d.QUESTION_BUTTONS:
+            # The Hue's question: OK at x ~2432, Abbrechen at ~2580.
+            return [{"text": "OK", "x": 2420, "y": 1445, "w": 24, "h": 22},
+                    {"text": "Abbrechen", "x": 2540, "y": 1445, "w": 80, "h": 22}] if self.prompt else []
         if bbox == d.LINK_BUTTONS:
             return self.BUTTONS
         if bbox == d.LINK_VERBINDEN:
@@ -1912,7 +1918,10 @@ class FakeEts:
 
     def read_objects(self, numbers=None):
         self.reads += 1
-        return [dict(r, gas=list(r["gas"])) for r in self.rows]
+        rows = [dict(r, gas=list(r["gas"])) for r in self.rows]
+        if not self.parked:
+            rows[-1]["gas"].append("1/0/3")
+        return rows
 
     def table_numbers(self):
         return {r["y"]: r["number"] for r in self.rows}
@@ -1935,6 +1944,7 @@ class FakeEts:
         pw = types.ModuleType("pywinauto")
         pw.mouse = mock.MagicMock()
         pw.mouse.right_click.side_effect = self.right_click
+        pw.mouse.move.side_effect = lambda coords: setattr(self, "parked", True)
         return [mock.patch.dict(sys.modules, {"pywinauto": pw}),
                 mock.patch.multiple(d, require_project=mock.DEFAULT, scale=mock.Mock(return_value=1.0),
                                     link_dialog_open=self.link_dialog_open, menu_click=self.menu_click,
@@ -2060,13 +2070,13 @@ class TestDriverLinksFlow(unittest.TestCase):
         self.assertEqual(out["row"]["gas"], ["1/0/2"])
         self.assertEqual(ets.opened, 1)
 
-    def test_flow_links_answers_the_size_question_with_ok(self):
+    def test_flow_links_answers_the_question_after_a_link_with_ok(self):
         ets = FakeEts(self.d, self.ROWS, size_prompt={"1/0/2"})
         out = self.links(ets, links=[[12, "1/0/2"]], final=False)
         self.assertTrue(out["links"][0]["linked"])
         self.assertEqual([e[0] for e in ets.events], ["right", "menu", "field", "verbinden", "ok"])
 
-    def test_flow_links_cancels_a_leftover_size_question_first(self):
+    def test_flow_links_cancels_a_leftover_question_first(self):
         ets = FakeEts(self.d, self.ROWS, leftover_prompt=True)
         out = self.links(ets, links=[[12, "1/0/1"]], final=False)
         self.assertTrue(out["closed_link_dialog"])
@@ -2084,6 +2094,42 @@ class TestDriverLinksFlow(unittest.TestCase):
         ets.read_objects = read_objects
         out = self.links(ets, links=[[12, "1/0/1"]])
         self.assertEqual([(r["number"], r["gas"]) for r in out["objects"]], [(12, ["1/0/1"]), (16, []), (20, [])])
+
+    def test_with_linked_rows_the_links_number_stands_at_its_place(self):
+        from unittest import mock
+
+        final = [{"number": 0, "y": 290, "gas": ["1/0/1"]}, {"number": 3, "y": 370, "gas": ["1/0/2"]}]
+        links = [{"number": 1, "ga": "1/0/1", "linked": True, "row": {"number": 1, "y": 290, "gas": ["1/0/1"]}},
+                 {"number": 3, "ga": "1/0/2", "linked": True, "row": {"number": 3, "y": 370, "gas": ["1/0/2"]}},
+                 {"number": 1, "ga": "1/0/2", "linked": False, "row": {"number": 1, "y": 290, "gas": []}}]
+        with mock.patch.object(self.d, "log"):
+            out = self.d.with_linked_rows(final, links)
+        self.assertEqual([(r["number"], r["y"]) for r in out], [(1, 290), (3, 370)])
+
+    def test_flow_links_waits_for_an_address_shown_late(self):
+        ets = FakeEts(self.d, self.ROWS)
+        gas_at = self.d.gas_at
+        calls = {"n": 0}
+        from unittest import mock
+
+        def slow(y):
+            calls["n"] += 1
+            return gas_at(y) if calls["n"] > 15 else []
+        with mock.patch.object(self.d, "gas_at", side_effect=slow):
+            read = ets.read_objects
+
+            def blank_gas(numbers=None):
+                return [dict(r, gas=[]) for r in read(numbers)]
+            ets.read_objects = blank_gas
+            out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual(out["links"][0]["row"]["gas"], ["1/0/1"])
+
+    def test_flow_links_reads_the_table_with_the_mouse_off_it(self):
+        ets = FakeEts(self.d, self.ROWS)
+        out = self.links(ets, links=[[12, "1/0/1"], [16, "1/0/2"]])
+        self.assertEqual([(r["number"], r["gas"]) for r in out["objects"]],
+                         [(12, ["1/0/1"]), (16, ["1/0/2"]), (20, [])])
 
     def test_view_changed(self):
         rows = self.ROWS
@@ -2113,15 +2159,28 @@ class TestDriverLinksFlow(unittest.TestCase):
         self.assertFalse(self.d.tree_node_of("> 1.1.10 Dimmer", "1.1.1"))
         self.assertFalse(self.d.tree_node_of("> 1.1.1.5", "1.1.1"))
 
-    def test_glyph_digit_zero_has_a_hole(self):
+    def test_cell_digit_checks_ocr_against_the_ink(self):
         black = (20, 20, 20)
-        one = FakeImage(108, 32).put(50, 9, 53, 23, black).convert("L")
-        zero = FakeImage(108, 32).put(48, 9, 56, 23, black).put(50, 11, 54, 21, (255, 255, 255)).convert("L")
-        wide = FakeImage(108, 32).put(40, 9, 60, 23, black).convert("L")
-        self.assertEqual(self.d.glyph_digit(one), 1)
-        self.assertEqual(self.d.glyph_digit(zero), 0)
-        self.assertIsNone(self.d.glyph_digit(wide))
-        self.assertIsNone(self.d.glyph_digit(FakeImage(108, 32).convert("L")))
+        one = FakeImage(108, 32).put(50, 5, 56, 22, black).convert("L")
+        zero = FakeImage(108, 32).put(48, 5, 58, 22, black).put(51, 8, 55, 19, (255, 255, 255)).convert("L")
+        seven = FakeImage(108, 32).put(48, 5, 58, 8, black).put(54, 8, 57, 22, black).convert("L")
+        d = self.d
+        self.assertTrue(d.lone_one(one))
+        self.assertFalse(d.lone_one(zero))
+        self.assertFalse(d.lone_one(seven))
+        self.assertTrue(d.has_hole(zero))
+        self.assertFalse(d.has_hole(seven))
+        # The Vaillant's selected lone 1 that OCR read as 0.
+        self.assertEqual(d.cell_digit(one, 0), 1)
+        self.assertEqual(d.cell_digit(one, 4), 1)
+        self.assertEqual(d.cell_digit(one, None), 1)
+        self.assertEqual(d.cell_digit(one, 1), 1)
+        self.assertEqual(d.cell_digit(zero, 0), 0)
+        self.assertIsNone(d.cell_digit(zero, 1))
+        self.assertIsNone(d.cell_digit(zero, None))
+        self.assertEqual(d.cell_digit(seven, 7), 7)
+        self.assertIsNone(d.cell_digit(seven, 1))
+        self.assertIsNone(d.cell_digit(FakeImage(108, 32).convert("L"), None))
 
     def test_repeated_number(self):
         self.assertEqual(self.d.repeated_number("7 7 7"), 7)
