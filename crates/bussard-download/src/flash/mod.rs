@@ -154,6 +154,18 @@ pub use session::{
     Connector, RebootReadiness, RestartKind, Session, SingleConnector, VerifyEchoes,
 };
 
+/// The interface object a property step names: a write, a declaration,
+/// a factory-held value or a description read; `None` for any other step.
+fn prop_step_object(step: &FlashStep) -> Option<PropObject> {
+    match step {
+        FlashStep::WriteProp { object, .. }
+        | FlashStep::DeclareProp { object, .. }
+        | FlashStep::FactoryHeldProp { object, .. }
+        | FlashStep::DescribeProp { object, .. } => Some(*object),
+        _ => None,
+    }
+}
+
 /// How a property step names its interface object (issue #390).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PropObject {
@@ -1497,6 +1509,26 @@ impl FlashPlan {
         {
             block_at -= 1;
         }
+        // With several objects' writes in that run, the block goes right
+        // before the writes of the object written last (the application
+        // program's PID_PROGRAM_VERSION). CONFIRMED by the ETS sweep's Data
+        // Secure capture of the Busch-Jaeger 6179 (`M-0007_A-6179-82-036E`,
+        // 2026-11-10, issue #423): ETS wrote object 5's PID 13, then the
+        // security object (PID 5, 54, 61, 5), then object 4's PID 13.
+        let last_object = self.steps[block_at..first_load_completed]
+            .iter()
+            .rev()
+            .find_map(|s| match s {
+                FlashStep::WriteProp { object, .. } => Some(*object),
+                _ => None,
+            });
+        if let Some(last) = last_object {
+            while block_at < first_load_completed
+                && prop_step_object(&self.steps[block_at]) != Some(last)
+            {
+                block_at += 1;
+            }
+        }
         let mut block = vec![
             FlashStep::SecurityLoadControl {
                 control: bussard_mgmt::LoadControl::StartLoading,
@@ -2144,6 +2176,70 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("PID 53") && l.contains("keys not shown"))
         );
+        Ok(())
+    }
+
+    /// With two programs' PID 13 writes before the first `LoadCompleted`,
+    /// the security block goes between them, before the object written last
+    /// (the Busch-Jaeger 6179 Data Secure capture, ETS sweep 2026-11-10,
+    /// issue #423).
+    #[test]
+    fn test_add_security_program_goes_before_the_last_objects_writes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use super::FlashStep;
+        use super::PropObject;
+        use bussard_mgmt::LoadControl;
+        let app = fabricated_app();
+        let mut plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let first_complete = plan
+            .steps
+            .iter()
+            .position(|s| matches!(s, FlashStep::LoadCompleted { .. }))
+            .ok_or("complete")?;
+        let mut first_back = first_complete;
+        while first_back > 0 && matches!(plan.steps[first_back - 1], FlashStep::WriteProp { .. }) {
+            first_back -= 1;
+        }
+        plan.steps.drain(first_back..first_complete);
+        let version = |object: u32| FlashStep::WriteProp {
+            object: PropObject::Index(object),
+            prop_id: 13,
+            value: vec![0, 7, 0x61, 0x79, 0x83],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        plan.steps
+            .splice(first_back..first_back, [version(5), version(4)]);
+        plan.add_security_program(crate::security::SecurityProgram {
+            senders: Vec::new(),
+            group_keys: Vec::new(),
+            go_flags: vec![0],
+        });
+        let at = |want: &FlashStep| plan.steps.iter().position(|s| s == want);
+        let obj5 = at(&version(5)).ok_or("object 5's version")?;
+        let obj4 = at(&version(4)).ok_or("object 4's version")?;
+        assert!(matches!(
+            plan.steps[obj5 + 1],
+            FlashStep::SecurityLoadControl {
+                control: LoadControl::StartLoading
+            }
+        ));
+        assert!(matches!(
+            plan.steps[obj4 - 1],
+            FlashStep::SecurityLoadControl {
+                control: LoadControl::LoadCompleted
+            }
+        ));
         Ok(())
     }
 
