@@ -899,6 +899,29 @@ class TestImage(unittest.TestCase):
         )
         par = memimage.compare(longer, ets)["regions"][0]
         self.assertEqual((par["verdict"], par["compared"]), (memimage.IDENTICAL, 16))
+        # An image at offset 12 sits at segment octets 12.. : four compared.
+        at = self.step(1, "parameters", 4, "p.bin", 8)
+        at["image"]["offset"] = 12
+        shifted = self.write_plan(
+            [at, table], {"p.bin": b"\xaa" * 3 + b"\x01" + b"\x02" * 4, "t.bin": b"\x00\x01\x08\x01"}
+        )
+        par = memimage.compare(shifted, ets)["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.DIFFERS, 4))
+        self.assertEqual((par["diff_octets"], par["fill_diff_offsets"]), (1, [3]))
+        # A masked octet is neither compared nor listed as a fill difference.
+        masked_step = self.step(1, "parameters", 4, "p.bin", 16)
+        masked_step["image"]["mask_file"] = "m.bin"
+        masked = self.write_plan(
+            [masked_step, table],
+            {
+                "p.bin": b"\xaa" * 2 + b"\x01" + b"\xaa" * 6 + b"\x02" + b"\xaa" * 6,
+                "m.bin": b"\xff" * 2 + b"\x00" + b"\xff" * 13,
+                "t.bin": b"\x00\x01\x08\x01",
+            },
+        )
+        par = memimage.compare(masked, ets)["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.DIFFERS, 15))
+        self.assertEqual((par["diff_octets"], par["fill_diff_offsets"]), (1, [9]))
 
     def test_compare_full_coverage_stays_identical(self):
         ets = self.tmpdir()

@@ -2342,44 +2342,46 @@ def _compare_unread_fill(
     """Compares an image with the fill of an object ETS never wrote (issue #1026).
 
     ETS allocated the object's segment with a fill and never read its base,
-    so the segment holds the fill byte over the allocation; the octets are
-    compared object-relative, an octet past the allocation is not compared.
+    so the segment holds the fill byte over the allocation. The image's octet
+    `i` sits at segment offset `offset + i` (the image's `offset`, as the
+    addressed comparison adds it to the base); an octet the mask leaves out
+    or that lies past the allocation is not compared.
     """
     size, fill = ets.unread_fills[obj]
-    compared = diffs = 0
-    first = None
+    offset = int(step["image"].get("offset") or 0)
     known = set()
-    for i, b in enumerate(ours[:size]):
+    differing: List[int] = []
+    for i, b in enumerate(ours):
+        if offset + i >= size:
+            break
         if mask is not None and i < len(mask) and mask[i] != 0xFF:
             continue
-        compared += 1
         known.add(i)
         if b != fill:
-            diffs += 1
-            if first is None:
-                first = i
+            differing.append(i)
     rec = _result(step, name, ours, IDENTICAL, "")
     rec["address"] = None
-    rec["compared"] = compared
-    rec["ets_fill_only"] = {"object": obj, "size": size, "fill_byte": fill}
+    rec["compared"] = len(known)
+    rec["ets_fill_only"] = {"object": obj, "offset": offset, "size": size, "fill_byte": fill}
     _add_coverage(rec, placed_offsets, known & set(placed_offsets), None, "obj%s" % obj, page_size)
     rec["with_confirmed"] = {k: rec[k] for k in ("placed", "placed_compared", "pages")}
-    if compared == 0:
+    if not known:
         rec["verdict"] = NOT_COMPARABLE
         rec["reason"] = "ETS allocated object %s with fill and wrote nothing" % obj
-    elif diffs:
+    elif differing:
+        first = differing[0]
         lo = max(0, first - EXCERPT)
-        hi = min(len(ours), first + EXCERPT, size)
+        hi = min(len(ours), first + EXCERPT, max(lo, size - offset))
         rec.update(
             {
                 "verdict": DIFFERS,
-                "diff_octets": diffs,
+                "diff_octets": len(differing),
                 "first_offset": first,
                 "excerpt_offset": lo,
                 "bussard_hex": ours[lo:hi].hex(),
                 "ets_hex": bytes([fill] * (hi - lo)).hex(),
-                "fill_diff_octets": diffs,
-                "fill_diff_offsets": [i for i in range(len(ours[:size])) if ours[i] != fill][:20],
+                "fill_diff_octets": len(differing),
+                "fill_diff_offsets": differing[:20],
             }
         )
     return rec

@@ -532,10 +532,12 @@ pub fn plan_flash(
     // allocated in between (the ABB PEI program: object 5 is allocated before
     // object 4, and written after it was allocated).
     let mut rel_segment_by_object: BTreeMap<u32, String> = BTreeMap::new();
-    // The fill byte each segment's lowered allocation asks the device to
-    // pre-fill it with (`Mode` bit 0), so a write into a segment that has no
-    // image of its own streams nothing (issue #1026).
-    let mut prefill_by_segment: BTreeMap<String, u8> = BTreeMap::new();
+    // The fill byte and size of each object's lowered allocation that asks
+    // the device to pre-fill it (`Mode` bit 0), so a write into a segment that
+    // has no image of its own streams that fill (issue #1026). Keyed by the
+    // object the allocation names: a write takes the fill of its own object's
+    // allocation only.
+    let mut prefill_by_object: BTreeMap<u32, (u8, u32)> = BTreeMap::new();
     // Track the image most-recently streamed into device memory so a following
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
@@ -845,10 +847,10 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
-                    if let Some((seg_id, _)) = &seg {
-                        match fill.prefill() {
-                            Some(byte) => prefill_by_segment.insert(seg_id.clone(), byte),
-                            None => prefill_by_segment.remove(seg_id),
+                    if let Some(idx) = lsm_idx {
+                        match (fill.prefill(), &seg) {
+                            (Some(byte), Some(_)) => prefill_by_object.insert(*idx, (byte, size)),
+                            _ => prefill_by_object.remove(idx),
                         };
                     }
                     // Thread the source procedure's fill (`Mode`/`Fill`) through:
@@ -946,7 +948,12 @@ pub fn plan_flash(
                 let current = obj_idx
                     .and_then(|idx| rel_segment_by_object.get(&idx))
                     .or(last_rel_segment.as_ref());
-                let prefill = current.and_then(|seg| prefill_by_segment.get(seg).copied());
+                // Only the write's own object's allocation decides the fill: a
+                // write whose object has no allocation of its own keeps the
+                // refusal below rather than borrow another object's fill.
+                let prefill = obj_idx
+                    .filter(|idx| rel_segment_by_object.contains_key(idx))
+                    .and_then(|idx| prefill_by_object.get(&idx).copied());
                 let (segment_id, kind, bytes) = resolve_write_image(
                     &segments,
                     applies_to.as_deref(),
@@ -2295,16 +2302,18 @@ pub(super) fn bound_write_rel_mem(
 /// `LoadImageProp` MCB check runs over a real image.
 ///
 /// A segment with neither a parameter image nor a code `<Data>` that its
-/// allocation pre-fills (`prefill`, `Mode` bit 0) holds the fill byte
-/// throughout, and ETS writes none of it (issue #1026, the Gira
-/// `M-0008_A-6010-20-4D55`: a 256-octet segment allocated with fill `00`, no
-/// memory parameter, no memory write): the image is empty.
+/// allocation pre-fills (`prefill`: the fill byte and the allocated size,
+/// `Mode` bit 0) holds the fill byte throughout, and that is its image (issue
+/// #1026). ETS writes none of it (the Gira `M-0008_A-6010-20-4D55`: a
+/// 256-octet segment allocated with fill `00`, no memory parameter, no memory
+/// write); the executor streams only what differs from the fill, so nothing,
+/// and an MCB check of the object runs over the octets the device holds.
 pub(super) fn resolve_write_image(
     segments: &HashMap<String, CodeSegment>,
     applies_to: Option<&str>,
     current_segment: Option<&str>,
     param_images: &BTreeMap<String, Vec<u8>>,
-    prefill: Option<u8>,
+    prefill: Option<(u8, u32)>,
 ) -> std::result::Result<(String, ImageKind, Vec<u8>), String> {
     let seg_id = current_segment
         .map(str::to_string)
@@ -2356,8 +2365,10 @@ pub(super) fn resolve_write_image(
     // Code image: the segment's `<Data>`.
     match segments.get(&seg_id).and_then(|s| s.data.clone()) {
         Some(bytes) => Ok((seg_id, ImageKind::Code, bytes)),
-        None if prefill.is_some() => Ok((seg_id, ImageKind::Parameters, Vec::new())),
-        None => Err(format!("segment {seg_id} carries no code image (<Data>)")),
+        None => match prefill.and_then(|(fill, size)| Some((fill, usize::try_from(size).ok()?))) {
+            Some((fill, size)) => Ok((seg_id, ImageKind::Parameters, vec![fill; size])),
+            None => Err(format!("segment {seg_id} carries no code image (<Data>)")),
+        },
     }
 }
 
@@ -2674,58 +2685,120 @@ mod tests {
         Ok(())
     }
 
-    /// Issue #1026: a write into a segment with neither `<Data>` nor a memory
-    /// parameter streams nothing when its allocation pre-fills it (the Gira
-    /// `M-0008_A-6010-20-4D55`: ETS allocates 256 octets with fill `00` and
-    /// writes none), and still refuses when the allocation keeps the memory.
-    #[test]
-    fn test_plan_flash_prefilled_segment_without_image_writes_nothing() -> TestResult {
-        let plan_for =
-            |mode: u8| -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
-                let xml = format!(
-                    r#"<KNX xmlns="http://knx.org/xml/project/23">
+    /// Plans a 07B0 program whose relative segments (one per LSM in `lsms`)
+    /// carry no `<Data>` and no parameter, around the procedure `body`.
+    fn plan_dataless(
+        lsms: &[u32],
+        body: &str,
+    ) -> Result<Result<FlashPlan, PlanError>, Box<dyn std::error::Error>> {
+        let segments: String = lsms
+            .iter()
+            .map(|lsm| {
+                format!(
+                    r#"<RelativeSegment Id="M-1_A-EMPTY_RS-{lsm:02}-00000" Size="256" LoadStateMachine="{lsm}" Offset="0" />"#
+                )
+            })
+            .collect();
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
          <ApplicationProgram Id="M-1_A-EMPTY" MaskVersion="MV-07B0" Name="Empty"
             LoadProcedureStyle="ProductDefault">
           <Static>
-           <Code><RelativeSegment Id="M-1_A-EMPTY_RS-04-00000" Size="256" LoadStateMachine="4" Offset="0" /></Code>
-           <LoadProcedures>
-            <LoadProcedure>
-             <LdCtrlUnload LsmIdx="4" />
-             <LdCtrlLoad LsmIdx="4" />
-             <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="{mode}" Fill="0" />
-             <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" Verify="true" />
-             <LdCtrlLoadCompleted LsmIdx="4" />
-             <LdCtrlRestart />
-            </LoadProcedure>
-           </LoadProcedures>
+           <Code>{segments}</Code>
+           <LoadProcedures><LoadProcedure>{body}<LdCtrlRestart /></LoadProcedure></LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#
-                );
-                let app = parse_application_program("M-1_A-EMPTY", xml.as_bytes())?;
-                Ok(plan_flash_default(
-                    &app,
-                    "1.1.4",
-                    0x07B0,
-                    &no_overrides(),
-                    &BTreeMap::new(),
-                    None,
-                    &BTreeMap::new(),
-                ))
-            };
-        let plan = plan_for(1)??;
-        let lens: Vec<usize> = plan
+        );
+        let app = parse_application_program("M-1_A-EMPTY", xml.as_bytes())?;
+        Ok(plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &no_overrides(),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        ))
+    }
+
+    /// Issue #1026: a write into a segment with neither `<Data>` nor a memory
+    /// parameter streams the fill when its allocation pre-fills it (the Gira
+    /// `M-0008_A-6010-20-4D55`: ETS allocates 256 octets with fill `00` and
+    /// writes none; the executor streams only what differs from the fill).
+    /// The image is the allocation's fill octets, so an MCB check of the
+    /// object compares the device's CRC over what it holds.
+    #[test]
+    fn test_plan_flash_prefilled_segment_without_image_streams_the_fill() -> TestResult {
+        let plan = plan_dataless(
+            &[4],
+            r#"<LdCtrlUnload LsmIdx="4" /><LdCtrlLoad LsmIdx="4" />
+               <LdCtrlRelSegment LsmIdx="4" Size="200" Mode="1" Fill="170" />
+               <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="200" Verify="true" />
+               <LdCtrlLoadCompleted LsmIdx="4" />
+               <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />"#,
+        )??;
+        let written: Vec<&ImageRef> = plan
             .steps
             .iter()
             .filter_map(|s| match s {
-                FlashStep::WriteRelMem { image, .. } => Some(image.len),
+                FlashStep::WriteRelMem { image, .. } => Some(image),
                 _ => None,
             })
             .collect();
-        assert_eq!(lens, [0]);
-        assert!(matches!(
-            plan_for(0)?,
-            Err(PlanError::UnresolvableImage { reason, .. }) if reason.contains("no code image")
-        ));
+        let [image] = written[..] else {
+            return Err(format!("one WriteRelMem expected, got {}", written.len()).into());
+        };
+        assert_eq!(image.len, 200);
+        assert_eq!(plan.image_bytes(&image.segment_id), Some(&[0xAA; 200][..]));
+        let checked = plan.steps.iter().find_map(|s| match s {
+            FlashStep::LoadImageProp { image, .. } => Some(image.clone()),
+            _ => None,
+        });
+        assert_eq!(checked.flatten().as_ref(), Some(image));
+        Ok(())
+    }
+
+    /// Issue #1026: an allocation that keeps the memory (`Mode` 0) leaves a
+    /// segment without an image refused, also when another object's
+    /// allocation pre-fills: a write takes only its own object's fill, and a
+    /// write whose object has no allocation of its own borrows none.
+    #[test]
+    fn test_plan_flash_dataless_segment_without_its_own_prefill_refuses() -> TestResult {
+        let no_image = |plan: Result<FlashPlan, PlanError>| matches!(plan, Err(PlanError::UnresolvableImage { reason, .. }) if reason.contains("no code image"));
+        // Mode 0 on the written object.
+        assert!(no_image(plan_dataless(
+            &[4],
+            r#"<LdCtrlLoad LsmIdx="4" />
+               <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="0" Fill="0" />
+               <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="256" />
+               <LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?));
+        // Object 4 pre-filled, object 5 allocated with Mode 0, object 5 written.
+        assert!(no_image(plan_dataless(
+            &[4, 5],
+            r#"<LdCtrlLoad LsmIdx="4" /><LdCtrlLoad LsmIdx="5" />
+               <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="1" Fill="0" />
+               <LdCtrlRelSegment LsmIdx="5" Size="128" Mode="0" Fill="0" />
+               <LdCtrlWriteRelMem ObjIdx="5" Offset="0" Size="128" />
+               <LdCtrlLoadCompleted LsmIdx="5" /><LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?));
+        // The same where only object 4 declares a segment.
+        assert!(no_image(plan_dataless(
+            &[4],
+            r#"<LdCtrlLoad LsmIdx="4" /><LdCtrlLoad LsmIdx="5" />
+               <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="1" Fill="0" />
+               <LdCtrlRelSegment LsmIdx="5" Size="128" Mode="0" Fill="0" />
+               <LdCtrlWriteRelMem ObjIdx="5" Offset="0" Size="128" />
+               <LdCtrlLoadCompleted LsmIdx="5" /><LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?));
+        // Object 4 pre-filled, object 5 written without an allocation of its own.
+        assert!(no_image(plan_dataless(
+            &[4],
+            r#"<LdCtrlLoad LsmIdx="4" />
+               <LdCtrlRelSegment LsmIdx="4" Size="256" Mode="1" Fill="0" />
+               <LdCtrlWriteRelMem ObjIdx="5" Offset="0" Size="256" />
+               <LdCtrlLoadCompleted LsmIdx="4" />"#,
+        )?));
         Ok(())
     }
 
