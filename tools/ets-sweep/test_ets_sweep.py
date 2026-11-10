@@ -1799,6 +1799,9 @@ class FakeEts:
         self.size_prompt = set(size_prompt)
         self.prompt = leftover_prompt
         self.pending = None
+        # The mouse over the table shows ETS's tooltip of addresses over the
+        # last row: a read then sees them there (DALI Basic 1f, 2026-11-10).
+        self.parked = True
         self.dialog = leftover
         self.typed = ""
         self.row = None
@@ -1820,6 +1823,7 @@ class FakeEts:
         self.typed = ""
 
     def right_click(self, coords):
+        self.parked = False
         self.events.append(("right", coords[1]))
         if self.late_menus:
             self.late_menus -= 1
@@ -1835,6 +1839,8 @@ class FakeEts:
         return None
 
     def click(self, x, y, *a, **k):
+        if 260 <= y <= 1240:
+            self.parked = False
         if self.prompt:
             self.prompt = False
             if x < 2500:
@@ -1912,7 +1918,10 @@ class FakeEts:
 
     def read_objects(self, numbers=None):
         self.reads += 1
-        return [dict(r, gas=list(r["gas"])) for r in self.rows]
+        rows = [dict(r, gas=list(r["gas"])) for r in self.rows]
+        if not self.parked:
+            rows[-1]["gas"].append("1/0/3")
+        return rows
 
     def table_numbers(self):
         return {r["y"]: r["number"] for r in self.rows}
@@ -1935,6 +1944,7 @@ class FakeEts:
         pw = types.ModuleType("pywinauto")
         pw.mouse = mock.MagicMock()
         pw.mouse.right_click.side_effect = self.right_click
+        pw.mouse.move.side_effect = lambda coords: setattr(self, "parked", True)
         return [mock.patch.dict(sys.modules, {"pywinauto": pw}),
                 mock.patch.multiple(d, require_project=mock.DEFAULT, scale=mock.Mock(return_value=1.0),
                                     link_dialog_open=self.link_dialog_open, menu_click=self.menu_click,
@@ -2114,6 +2124,12 @@ class TestDriverLinksFlow(unittest.TestCase):
             out = self.links(ets, links=[[12, "1/0/1"]], final=False)
         self.assertTrue(out["links"][0]["linked"])
         self.assertEqual(out["links"][0]["row"]["gas"], ["1/0/1"])
+
+    def test_flow_links_reads_the_table_with_the_mouse_off_it(self):
+        ets = FakeEts(self.d, self.ROWS)
+        out = self.links(ets, links=[[12, "1/0/1"], [16, "1/0/2"]])
+        self.assertEqual([(r["number"], r["gas"]) for r in out["objects"]],
+                         [(12, ["1/0/1"]), (16, ["1/0/2"]), (20, [])])
 
     def test_view_changed(self):
         rows = self.ROWS

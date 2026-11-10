@@ -1901,6 +1901,7 @@ def flow_objects(req: dict) -> dict:
     addresses and the flags ETS shows (K L S Ü A)."""
     require_project(req["project"])
     open_device_objects(req["ia"])
+    park_mouse()
     return {"objects": read_objects(req.get("numbers"))}
 
 
@@ -2147,6 +2148,22 @@ def close_link_question() -> bool:
     return True
 
 
+# Where the mouse rests while the object table is read: the right panel's
+# empty lower part. Resting over the table, after the click that clears a
+# selection, ETS's tooltip showed addresses over rows 95 and 96 of the DALI
+# Basic 1f and the last read gave them links ETS never made (2026-11-10).
+PARK = (3700, 2200)
+
+
+def park_mouse() -> None:
+    """Move the mouse off the object table (no click), so no tooltip
+    covers rows while they are read."""
+    from pywinauto import mouse
+
+    s = scale()
+    mouse.move(coords=(int(PARK[0] * s), int(PARK[1] * s)))
+
+
 def close_menus() -> bool:
     """Close context menus ETS has open (Escape until none is left, at most
     three): a late one covers the table and the Katalog panel. True when one
@@ -2181,6 +2198,7 @@ def find_row(number: int, rows: list[dict], numbers: list[int] | None = None) ->
     mouse.scroll(coords=at, wheel_dist=40)
     seen: list[int] = []
     for _ in range(12):
+        park_mouse()
         time.sleep(0.3)
         rows = read_objects(numbers)
         hit = next((r for r in rows if r["number"] == number), None)
@@ -2203,6 +2221,7 @@ def verify_link(row: dict, rows: list[dict], number: int, ga: str,
     below the rows clears the selection first). Raises when the address is
     not on the row."""
     seen: dict = {}
+    park_mouse()
 
     def settled():
         seen["gas"] = gas_at(row["y"])
@@ -2221,12 +2240,14 @@ def verify_link(row: dict, rows: list[dict], number: int, ga: str,
         # OCR reads nothing on the selected row (blue text): click below the
         # rows to clear the selection and read again (syn-minimal, 2026-10-31).
         click(1500, GO_TABLE[3] - 20)
+        park_mouse()
         time.sleep(0.5)
     hit, rows = find_row(number, [], numbers)
     if hit is not None and ga not in hit["gas"] and state == "shown":
         # The row showed the address before the view moved: read it once
         # more without its selection.
         click(1500, GO_TABLE[3] - 20)
+        park_mouse()
         time.sleep(0.5)
         hit, rows = find_row(number, [], numbers)
     if hit is not None and ga not in hit["gas"]:
@@ -2288,6 +2309,7 @@ def flow_links(req: dict) -> dict:
         raise
     result = {"links": out, "opened": opened, "closed_link_dialog": closed}
     if req.get("final", True):
+        park_mouse()
         result["objects"] = with_linked_rows(read_objects(numbers), out)
     return result
 
