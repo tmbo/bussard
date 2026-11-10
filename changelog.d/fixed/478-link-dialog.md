@@ -1,0 +1,1 @@
+- ETS sweep, links variant: the second address goes on an object of the same size (ETS refused a 1-byte object's address for a 1-bit object and left its link dialog open, which failed every import after it). The driver now cancels a link dialog ETS refuses an address in, records the reason, and closes a leftover link dialog before a link or an import (#478).
