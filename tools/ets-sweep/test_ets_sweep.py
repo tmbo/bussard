@@ -1739,6 +1739,7 @@ class TestDriverLinkDialog(unittest.TestCase):
         from unittest import mock
 
         with mock.patch.object(self.d, "close_link_dialog", side_effect=RuntimeError("stop")) as close, \
+                mock.patch.object(self.d, "close_size_prompt", return_value=False), \
                 mock.patch.object(self.d, "require_project"):
             with self.assertRaisesRegex(RuntimeError, "stop"):
                 self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"})
@@ -1783,7 +1784,8 @@ class FakeEts:
     BUTTONS = TestDriverLinkDialog.BUTTONS
     TITLE = TestDriverLinkDialog.TITLE
 
-    def __init__(self, d, rows, refuse=(), leftover=False, stuck=False, late_menus=0, blind_menus=0):
+    def __init__(self, d, rows, refuse=(), leftover=False, stuck=False, late_menus=0, blind_menus=0,
+                 size_prompt=(), leftover_prompt=False):
         self.d, self.rows, self.refuse, self.stuck = d, [dict(r, gas=list(r["gas"])) for r in rows], set(refuse), stuck
         # Right-clicks whose menu comes too late for menu_click (it then
         # stays open as a popup until Escape).
@@ -1792,6 +1794,11 @@ class FakeEts:
         # Automation: OCR finds the entry.
         self.blind_menus = blind_menus
         self.menu_open = False
+        # Addresses for which ETS asks about another object size after
+        # Verbinden (its question is a dialog of its own; OK links).
+        self.size_prompt = set(size_prompt)
+        self.prompt = leftover_prompt
+        self.pending = None
         self.dialog = leftover
         self.typed = ""
         self.row = None
@@ -1821,11 +1828,27 @@ class FakeEts:
         self.row = next(r for r in self.rows if r["y"] == coords[1])
 
     def find_text(self, pattern, bbox=None, min_ratio=0.8):
+        if self.prompt and pattern.startswith("abweichende"):
+            return {"text": pattern, "x": 1460, "y": 1170, "w": 900, "h": 30}
+        if self.prompt and pattern == "OK":
+            return {"text": "OK", "x": 2600, "y": 1445, "w": 24, "h": 22}
+        if self.prompt and pattern == "Abbrechen":
+            return {"text": "Abbrechen", "x": 2720, "y": 1445, "w": 80, "h": 22}
         if pattern == "Verbinden mit" and self.menu_open:
             return {"text": "Verbinden mit...", "x": 1050, "y": 900, "w": 200, "h": 30, "ratio": 1.0}
         return None
 
     def click(self, x, y, *a, **k):
+        if self.prompt:
+            self.prompt = False
+            if x < 2700:
+                self.events.append(("ok",))
+                if self.pending:
+                    self.pending["gas"].append(self.typed)
+            else:
+                self.events.append(("prompt-abbrechen",))
+            self.pending = None
+            return
         if self.menu_open and not self.dialog:
             self.events.append(("menu-ocr",))
             self.menu_open = False
@@ -1842,9 +1865,19 @@ class FakeEts:
             self.events.append(("verbinden", self.typed))
             if self.typed not in self.refuse and not self.stuck:
                 self.dialog = False
-                self.row["gas"].append(self.typed)
+                if self.typed in self.size_prompt:
+                    self.prompt, self.pending = True, self.row
+                else:
+                    self.row["gas"].append(self.typed)
         else:
             self.events.append(("field",))
+
+    def click_text(self, pattern, bbox=None, *a, **k):
+        hit = self.find_text(pattern, bbox)
+        if not hit:
+            raise RuntimeError(f"text {pattern!r} not on screen in {bbox}")
+        self.click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+        return hit
 
     def ets_popups(self):
         return ["menu"] if self.menu_open else []
@@ -1910,6 +1943,7 @@ class FakeEts:
                                     open_device_objects=self.open_device_objects, log=mock.DEFAULT,
                                     ets_popups=self.ets_popups,
                                     find_text=self.find_text),
+                mock.patch.object(d, "click_text", side_effect=self.click_text),
                 mock.patch.object(d.time, "sleep", side_effect=self.sleep),
                 mock.patch.object(d.time, "time", side_effect=self.time)]
 
@@ -2026,6 +2060,31 @@ class TestDriverLinksFlow(unittest.TestCase):
         self.assertEqual(out["row"]["gas"], ["1/0/2"])
         self.assertEqual(ets.opened, 1)
 
+    def test_flow_links_answers_the_size_question_with_ok(self):
+        ets = FakeEts(self.d, self.ROWS, size_prompt={"1/0/2"})
+        out = self.links(ets, links=[[12, "1/0/2"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual([e[0] for e in ets.events], ["right", "menu", "field", "verbinden", "ok"])
+
+    def test_flow_links_cancels_a_leftover_size_question_first(self):
+        ets = FakeEts(self.d, self.ROWS, leftover_prompt=True)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["closed_link_dialog"])
+        self.assertEqual(ets.events[0], ("prompt-abbrechen",))
+
+    def test_flow_links_keeps_a_linked_row_the_last_read_missed(self):
+        ets = FakeEts(self.d, self.ROWS)
+        read = ets.read_objects
+        calls = {"n": 0}
+
+        def read_objects(numbers=None):
+            calls["n"] += 1
+            rows = read(numbers)
+            return rows if calls["n"] == 1 else [r for r in rows if r["number"] != 12]
+        ets.read_objects = read_objects
+        out = self.links(ets, links=[[12, "1/0/1"]])
+        self.assertEqual([(r["number"], r["gas"]) for r in out["objects"]], [(12, ["1/0/1"]), (16, []), (20, [])])
+
     def test_view_changed(self):
         rows = self.ROWS
         self.assertFalse(self.d.view_changed(rows, {707: 12, 867: 20}))
@@ -2046,6 +2105,32 @@ class TestDriverLinksFlow(unittest.TestCase):
             self.assertIn("wait x 1.00s ok", log.call_args.args[0])
             self.assertFalse(self.d.wait_for("y", lambda: False, 1, 0.5))
             self.assertIn("timeout", log.call_args.args[0])
+
+    def test_tree_node_of(self):
+        self.assertTrue(self.d.tree_node_of("> 1.1.1 ise KNX Sonos", "1.1.1"))
+        self.assertTrue(self.d.tree_node_of("m 1.1.1 KCI 4 S0", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("1.1 TP Linie", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("> 1.1.10 Dimmer", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("> 1.1.1.5", "1.1.1"))
+
+    def test_glyph_digit_zero_has_a_hole(self):
+        black = (20, 20, 20)
+        one = FakeImage(108, 32).put(50, 9, 53, 23, black).convert("L")
+        zero = FakeImage(108, 32).put(48, 9, 56, 23, black).put(50, 11, 54, 21, (255, 255, 255)).convert("L")
+        wide = FakeImage(108, 32).put(40, 9, 60, 23, black).convert("L")
+        self.assertEqual(self.d.glyph_digit(one), 1)
+        self.assertEqual(self.d.glyph_digit(zero), 0)
+        self.assertIsNone(self.d.glyph_digit(wide))
+        self.assertIsNone(self.d.glyph_digit(FakeImage(108, 32).convert("L")))
+
+    def test_repeated_number(self):
+        self.assertEqual(self.d.repeated_number("7 7 7"), 7)
+        self.assertEqual(self.d.repeated_number("12 12 12"), 12)
+        self.assertEqual(self.d.repeated_number("lll"), 1)
+        self.assertEqual(self.d.repeated_number("O O O"), 0)
+        self.assertIsNone(self.d.repeated_number("7 1 7"))
+        self.assertIsNone(self.d.repeated_number("77"))
+        self.assertIsNone(self.d.repeated_number(""))
 
     def test_field_text_normalised(self):
         self.assertEqual(self.d._ga_text("l/O/ 3"), "1/0/3")

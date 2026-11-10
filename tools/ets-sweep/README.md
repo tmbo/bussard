@@ -319,7 +319,13 @@ one `links` call on that same table: per link the row's context menu,
 only; the whole table is read again only when its numbers moved. Each pause
 is a poll for the state the next click needs (`wait_for`, logged in
 `driver.log` as `wait <name> <seconds>`), and each request's log line counts
-its clicks and OCR passes (`/ets/links 41.2s clicks=17 ocr=60`).
+its clicks and OCR passes (`/ets/links 35.1s clicks=14 ocr=92`: three
+links on the MDT AKK). After the first link of a table, ETS's context menu
+shows "Verbinden mit..." on screen but not to UI Automation (2026-11-10); the
+driver then clicks the entry by OCR, and closes a menu that never came
+before it right-clicks again. The catalog's columns are read from its header
+row: ETS showed "Sic" and "Hersteller" before "Name" that day and every
+cell moved.
 
 **Partial-download series, representative products.**
 

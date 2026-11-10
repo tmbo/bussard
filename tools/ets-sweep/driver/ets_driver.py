@@ -1663,14 +1663,24 @@ def object_size(text: str) -> str | None:
 GO_FLAG_X = (2120, 2159, 2200, 2241, 2280)
 
 
+def tree_node_of(text: str, ia: str) -> bool:
+    """True when a Topologie tree line is the node of device `ia`: the
+    address as a whole word (not the line '1.1 TP Linie', not 1.1.10)."""
+    return re.search(rf"(?<![\d.]){re.escape(ia)}(?![\d.])", text.replace(" ", " ")) is not None
+
+
 def open_device_objects(ia: str) -> None:
     """Select device `ia` in the Topologie tree and show its object table."""
     click(*line_1_1())
     time.sleep(1)
-    # The node reads '> 1.1.1 <product>' (its expander arrow first).
-    tree = [l for l in ocr(LAYOUT["tree"]) if re.match(rf"^\W*{re.escape(ia)}\b", l["text"].strip())]
+    # The node reads '> 1.1.1 <product>' (its expander arrow first); OCR
+    # reads the arrow and the device icon as a letter at times ('m 1.1.1 KCI
+    # 4 S0' missed, Zennio KCI 4 S0, 2026-11-10), so the address is looked
+    # for as a word anywhere in the line.
+    lines = ocr(LAYOUT["tree"])
+    tree = [l for l in lines if tree_node_of(l["text"], ia)]
     if not tree:
-        raise RuntimeError(f"device {ia} not in the Topologie tree")
+        raise RuntimeError(f"device {ia} not in the Topologie tree: {[l['text'] for l in lines]}")
     t = tree[0]
     click(t["x"] + t["w"] // 2, t["y"] + t["h"] // 2)
     # OCR joins the tab strip into one line ('Kanäle 5 Kommunikationsobjekte 22');
@@ -1723,6 +1733,63 @@ def view_changed(rows: list[dict], numbers: dict[int, int]) -> bool:
     return any(n not in at or abs(at[n] - y) >= 14 for y, n in numbers.items())
 
 
+def ink_box(img, dark: int = 150) -> tuple[int, int, int, int] | None:
+    """The bounding box (x0, y0, x1, y1, exclusive) of the pixels darker
+    than `dark` in a greyscale image, or None when it holds no ink."""
+    xs = [x for x in range(img.width) if any(img.getpixel((x, y)) < dark for y in range(img.height))]
+    ys = [y for y in range(img.height) if any(img.getpixel((x, y)) < dark for x in range(img.width))]
+    return (xs[0], ys[0], xs[-1] + 1, ys[-1] + 1) if xs and ys else None
+
+
+def glyph_digit(img) -> int | None:
+    """0 or 1 for a lone narrow glyph in a number cell (greyscale), else
+    None: a 0 has a hole (light pixels between dark ones across its middle
+    row), a 1 has none. Wider ink is more than one digit, left to OCR."""
+    box = ink_box(img)
+    if box is None:
+        return None
+    x0, y0, x1, y1 = box
+    if x1 - x0 > img.height // 3:
+        return None
+    mid = [img.getpixel((x, (y0 + y1) // 2)) < 150 for x in range(x0, x1)]
+    first, last = mid.index(True) if True in mid else 0, len(mid) - 1 - mid[::-1].index(True) if True in mid else 0
+    return 0 if any(not d for d in mid[first:last + 1]) else 1
+
+
+def repeated_number(text: str) -> int | None:
+    """The number OCR read in a cell repeated three times ('7 7 7', '12 12
+    12', 'lll' for 111 read as letters), or None unless all repeats agree."""
+    t = text.translate(str.maketrans({"l": "1", "I": "1", "|": "1", "O": "0", "o": "0", "D": "0"}))
+    parts = t.split()
+    if len(parts) == 1 and len(parts[0]) % 3 == 0 and parts[0].isdigit():
+        k = len(parts[0]) // 3
+        parts = [parts[0][i:i + k] for i in range(0, len(parts[0]), k)]
+    if len(parts) == 3 and all(p.isdigit() for p in parts) and len(set(parts)) == 1:
+        return int(parts[0])
+    return None
+
+
+def cell_number(img) -> int | None:
+    """The object number in a number cell (greyscale crop) that OCR skipped:
+    the cell's ink repeated three times side by side, magnified, read by OCR
+    (`repeated_number`)."""
+    import winocr
+    from PIL import Image, ImageOps
+
+    box = ink_box(img)
+    if box is None:
+        return None
+    glyph = img.crop((max(box[0] - 2, 0), max(box[1] - 2, 0), box[2] + 2, box[3] + 2))
+    gap = glyph.height
+    canvas = Image.new("L", (3 * glyph.width + 4 * gap, glyph.height + 2 * gap), 255)
+    for i in range(3):
+        canvas.paste(glyph, (gap + i * (glyph.width + gap), gap))
+    canvas = ImageOps.autocontrast(canvas.resize((canvas.width * 4, canvas.height * 4)), cutoff=1)
+    COUNTS["ocr"] += 1
+    text = " ".join(l["text"] for l in winocr.recognize_pil_sync(canvas.convert("RGB"), "de")["lines"])
+    return repeated_number(text)
+
+
 def read_objects(numbers: list[int] | None = None) -> list[dict]:
     """Rows of the open object table: number, name, addresses, size, flags.
 
@@ -1757,9 +1824,17 @@ def read_objects(numbers: list[int] | None = None) -> list[dict]:
             r["number"] = prev + 1
             continue
         img = grab((722, r["y"] - 16, 830, r["y"] + 16)).convert("L")
-        cols = [x for x in range(img.width) if any(img.getpixel((x, y)) < 150 for y in range(img.height))]
-        if cols and cols[-1] - cols[0] <= img.height // 3 and (nxt is None or nxt > 1) and (prev is None or prev < 1):
-            r["number"] = 1
+        # Read the cell's digits by OCR of the glyphs repeated ('7 7 7'):
+        # Windows OCR skips a lone digit but reads a word of them. Else a
+        # lone narrow glyph is a 0 (it has a hole) or a 1. Until 2026-11-10
+        # every narrow glyph was taken as 1: the MDT AKK's object 0 and the
+        # DALI Basic's object 2 were recorded as 1, and the links oracle
+        # modelled the neighbour of the object ETS linked (#478).
+        n = cell_number(img)
+        if n is None:
+            n = glyph_digit(img)
+        if n is not None and (prev is None or prev < n) and (nxt is None or nxt > n):
+            r["number"] = n
     rows = {cy: r for cy, r in rows.items() if r["number"] is not None}
 
     def row_at(cy: int) -> dict | None:
@@ -1898,6 +1973,7 @@ def link_refusal(button: dict) -> str | None:
 # 2026-10-31), and its OK button.
 SIZE_PROMPT = (1260, 1100, 2850, 1260)
 SIZE_PROMPT_OK = (2450, 1410, 2700, 1500)
+SIZE_PROMPT_CANCEL = (2650, 1410, 2900, 1500)
 
 
 def _ga_text(text: str) -> str:
@@ -2019,6 +2095,23 @@ def link_row(row: dict, number: int, ga: str) -> dict:
 MENU_UIA = {"timeout": 1.5}
 
 
+def close_size_prompt() -> bool:
+    """Cancel ETS's question about another object size (a 'Mit
+    Gruppenadresse verbinden' dialog of its own, below the link dialog's
+    title, so `close_link_dialog` does not see it): left open after a failed
+    link it covered the Katalog panel and five imports failed (879 414 knx,
+    2026-11-10). True when one was open."""
+    if not find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7):
+        return False
+    hit = find_text("Abbrechen", SIZE_PROMPT_CANCEL)
+    if hit:
+        click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+    else:
+        keys("{ESC}")
+    wait_for("size question closed", lambda: not find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7), 3, 0.3)
+    return True
+
+
 def close_menus() -> bool:
     """Close context menus ETS has open (Escape until none is left, at most
     three): a late one covers the table and the Katalog panel. True when one
@@ -2057,6 +2150,7 @@ def find_row(number: int, rows: list[dict], numbers: list[int] | None = None) ->
         rows = read_objects(numbers)
         hit = next((r for r in rows if r["number"] == number), None)
         shown = [r["number"] for r in rows]
+        log(f"find_row {number}: the table shows {shown}")
         if hit or not shown or shown == seen or max(shown) > number:
             return hit, rows
         seen = shown
@@ -2079,6 +2173,8 @@ def verify_link(row: dict, rows: list[dict], number: int, ga: str,
         seen["gas"] = gas_at(row["y"])
         if ga in seen["gas"]:
             return "shown"
+        # ETS's question about another object size (a dialog titled 'Mit
+        # Gruppenadresse verbinden' as well, its OK at y ~1456).
         return "prompt" if find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7) else None
     state = wait_for("row shows the address", settled, 2.5)
     if state == "prompt":
@@ -2120,7 +2216,7 @@ def flow_links(req: dict) -> dict:
     require_project(req["project"])
     # A link dialog a failed link left open covers the object table and the
     # Katalog panel: every import after it failed (2026-11-10, #478).
-    closed = close_link_dialog()
+    closed = close_size_prompt() | close_link_dialog()
     MENU_UIA["timeout"] = 1.5
     numbers = req.get("numbers")
     wanted = [(int(n), str(g)) for n, g in req["links"]]
@@ -2149,12 +2245,27 @@ def flow_links(req: dict) -> dict:
         # Leave nothing open over the table and the Katalog panel: the next
         # import looks for its button there.
         close_menus()
+        close_size_prompt()
         close_link_dialog()
         raise
     result = {"links": out, "opened": opened, "closed_link_dialog": closed}
     if req.get("final", True):
-        result["objects"] = read_objects(numbers)
+        result["objects"] = with_linked_rows(read_objects(numbers), out)
     return result
+
+
+def with_linked_rows(objects: list[dict], links: list[dict]) -> list[dict]:
+    """The table read after the links, with every row a link verified that
+    this read missed (OCR skipped its number: Gira S1 object 2, 2026-11-10)
+    added back as the link last read it, so objects.json names each object
+    ETS linked."""
+    have = {r["number"] for r in objects}
+    rows = {}
+    for link in links:
+        row = link.get("row")
+        if link.get("linked") and row and row.get("number") not in have:
+            rows[row["number"]] = row
+    return sorted(objects + list(rows.values()), key=lambda r: r["y"])
 
 
 @flow("link")
