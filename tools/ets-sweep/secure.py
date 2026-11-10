@@ -195,6 +195,11 @@ def jobs() -> list[dict]:
     return out
 
 
+# An import error that fails every row after it: stop the run (defaults.py's
+# desktop checks, and ETS's 'not enough disk space').
+STOP_ERRORS = ("screen grab failed", "not the RDP layout", "desktop in use", "Speicherplatz")
+
+
 def save(results: dict) -> None:
     RESULTS.parent.mkdir(exist_ok=True)
     RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
@@ -235,20 +240,38 @@ def run(args) -> int:
     c = vm.connect()
     vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
     done = 0
+    import_errors = 0
     for job in todo:
-        if job["id"] in results and not args.redo:
+        # A row whose import failed is run again (nothing of it reached ETS).
+        if job["id"] in results and not args.redo and not results[job["id"]].get("import_failed"):
             continue
         path = defaults.product_path(job["file"])
         imp = import_product(c, path, pw)
         if imp.get("outcome") not in ("imported", "done_unverified"):
+            error = (imp.get("message") or imp.get("error") or "")[:300]
             results[job["id"]] = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"),
                                   "when": datetime.now(timezone.utc).isoformat(),
                                   "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
-                                  "error": (imp.get("message") or imp.get("error") or "")[:300]}
+                                  "error": error, "import_failed": imp.get("outcome") != "refused"}
             save(results)
-            print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed", flush=True)
-            c = vm.connect()
+            print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed: {error[:120]}", flush=True)
+            # defaults.py's stop rules: a desktop that cannot be used, or a
+            # run of failed imports (a dialog ETS left open, a full disk:
+            # 'nicht genug Speicherplatz', 2026-11-10) fails every row after it.
+            if any(k in error for k in STOP_ERRORS):
+                print(f"stopping: {error[:160]}", flush=True)
+                break
+            import_errors += imp.get("outcome") != "refused"
+            if import_errors >= defaults.MAX_IMPORT_ERRORS:
+                print(f"stopping: {import_errors} imports in a row failed", flush=True)
+                break
+            try:
+                c = vm.connect()
+            except Exception as exc:  # noqa: BLE001 - the VM is gone: stop, the rows stay to do
+                print(f"stopping: ssh reconnect failed: {exc}", flush=True)
+                break
             continue
+        import_errors = 0
         secure, serial_prop = sim_security(job["id"])
         serial, fdsk = synthetic_identity(job["id"])
         props = (defaults.seed_properties(path, job["id"], job["prev"]) or []) + serial_prop

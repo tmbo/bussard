@@ -570,6 +570,12 @@ def _keep_delete_dialog_image() -> None:
     except Exception as exc:  # noqa: BLE001 - a diagnostic only
         log(f"delete dialog screenshot failed: {exc}")
 
+# How often confirm_delete looks for the confirmation after its click, 1.5 s
+# apart (12 s): a Data Secure device's delete took longer than the single
+# 1.5 s look of before (ets-sweep-secure, 2026-11-10).
+DELETE_POLLS = 8
+
+
 def confirm_delete() -> None:
     """Answer the delete confirmation with 'Ja'. A dialog left open fails
     every import after it (2026-11-08, #997): when 'Ja' is not found, or the
@@ -592,12 +598,12 @@ def confirm_delete() -> None:
     # ('Löschen ...', 'Gerät ... gelöscht', only 'Abbrechen') before the
     # confirmation is gone (ets-sweep-secure, 2026-11-10). Wait for it rather
     # than press Enter into that dialog.
-    t0 = time.time()
-    while True:
+    for _ in range(DELETE_POLLS):
         time.sleep(1.5)
-        if not leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])) or time.time() - t0 > 12:
+        still = leftover_delete_dialog(ocr(LAYOUT["delete_dialog"]))
+        if not still:
             break
-    if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
+    if still:
         # The click on the word did not take (2026-11-09 11:25, at (2457,
         # 1456) inside the highlighted button, image in cap/delete-dialog.png)
         # while 'Ja' is the dialog's focused default button: Enter confirms it.
@@ -630,10 +636,30 @@ def project_tab_hit(name: str) -> dict | None:
     """The tab of project `name` in the tab strip. OCR splits a hyphenated
     name into fragments ('ets', '-sweep', '-secure', 2026-11-04): when no
     single line matches, adjacent fragments on one row are joined."""
+    lines = ocr(LAYOUT["tab_strip"])
+    whole = whole_name_hits(lines, name)
+    if whole:
+        return whole[0]
+    # A misread name (OCR's 'ets-sweep' as 'ets-swee p'): the fuzzy match,
+    # unless it is the first fragment of another project's name ('ets-sweep'
+    # before '-secure', #423).
     hit = find_text(name, LAYOUT["tab_strip"])
-    if hit and re.sub(r"\s", "", hit["text"]) == name:
-        return hit
-    return next(iter(joined_texts(ocr(LAYOUT["tab_strip"]), name)), None) or hit
+    if hit and (followed_closely(lines, hit) or re.match(re.escape(_norm(name)) + r"[a-z0-9]", _norm(hit["text"]))):
+        return None
+    return hit
+
+
+def followed_closely(lines: list[dict], hit: dict) -> bool:
+    """Whether another OCR line starts right after `hit` on its row: `hit`
+    is then a fragment of a longer name, not a whole one."""
+    return any(abs(l["y"] - hit["y"]) <= 10 and 0 <= l["x"] - (hit["x"] + hit["w"]) <= 60 for l in lines)
+
+
+def whole_name_hits(lines: list[dict], name: str) -> list[dict]:
+    """`joined_texts` hits of `name` that no further fragment follows: a
+    name OCR split ('ets-sweep', '-secure') never passes for the project
+    named by its first fragment (#423)."""
+    return [h for h in joined_texts(lines, name) if not followed_closely(lines, h)]
 
 
 def joined_texts(lines: list[dict], name: str) -> list[dict]:
@@ -1072,9 +1098,8 @@ def project_tile(project: str) -> dict:
     # project whose name is its first fragment: whole names are matched on
     # the joined row (`joined_texts`), and a fragment followed closely by
     # another one is not a whole name.
-    for hit in joined_texts(lines, project):
-        if not [l for l in lines if abs(l["y"] - hit["y"]) <= 10 and 0 <= l["x"] - (hit["x"] + hit["w"]) <= 60]:
-            return hit
+    for hit in whole_name_hits(lines, project):
+        return hit
     raise RuntimeError(f"no tile for project {project!r}: {[l['text'] for l in lines][:12]}")
 
 

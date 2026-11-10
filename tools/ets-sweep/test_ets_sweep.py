@@ -1391,6 +1391,40 @@ def load_driver():
     return module
 
 
+class TestDriverProjectNames(unittest.TestCase):
+    """OCR splits 'ets-sweep-secure' into 'ets-sweep' and '-secure' (start
+    page tiles, 2026-11-10, #423): neither project may pass for the other."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    # The start page's tile names as OCR read them (2026-11-10): the secure
+    # tile's second fragment sits 5 px lower.
+    TILES = [
+        {"text": "ets-sweep", "x": 171, "y": 1246, "w": 162, "h": 31},
+        {"text": "Bocklisch / Alpha", "x": 731, "y": 1246, "w": 280, "h": 31},
+        {"text": "ets-sweep", "x": 1291, "y": 1246, "w": 162, "h": 31},
+        {"text": "-secure", "x": 1457, "y": 1251, "w": 116, "h": 18},
+    ]
+
+    def test_whole_name_hits_tiles(self):
+        self.assertEqual([h["x"] for h in self.d.whole_name_hits(self.TILES, "ets-sweep")], [171])
+        self.assertEqual([h["x"] for h in self.d.whole_name_hits(self.TILES, "ets-sweep-secure")], [1291])
+
+    def test_project_tile_reads_split_names(self):
+        with mock.patch.object(self.d, "ocr", return_value=self.TILES):
+            self.assertEqual(self.d.project_tile("ets-sweep")["x"], 171)
+            self.assertEqual(self.d.project_tile("ets-sweep-secure")["x"], 1291)
+
+    def test_project_tab_hit_never_takes_the_secure_tab_for_ets_sweep(self):
+        tabs = [{"text": "ets-sweep", "x": 1291, "y": 30, "w": 162, "h": 31},
+                {"text": "-secure", "x": 1457, "y": 35, "w": 116, "h": 18}]
+        with mock.patch.object(self.d, "ocr", return_value=tabs):
+            self.assertIsNone(self.d.project_tab_hit("ets-sweep"))
+            self.assertEqual(self.d.project_tab_hit("ets-sweep-secure")["x"], 1291)
+
+
 class TestDriverDeleteDialog(unittest.TestCase):
     """The delete confirmation's buttons carry an icon OCR reads in front of
     the word, and a dialog left open must not stop the run (#997)."""
@@ -1551,7 +1585,8 @@ class TestDriverDeleteDialog(unittest.TestCase):
 
     def test_confirm_delete_closes_a_dialog_still_open_with_nein(self):
         # The click on Ja missed: the dialog is there after it.
-        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997, self.ROWS_997])
+        # The first look, DELETE_POLLS looks after the click, one after Enter, the close.
+        err, clicks = self.confirm([self.ROWS_997] * (self.d.DELETE_POLLS + 3))
         self.assertIn("still open", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)
@@ -1562,12 +1597,18 @@ class TestDriverDeleteDialog(unittest.TestCase):
         # place beside Nein; the dialog still open afterwards is closed with
         # Nein and the error says so.
         no_ja = [r for r in self.ROWS_997 if "Ja" not in r["text"]]
-        err, clicks = self.confirm([no_ja, no_ja, no_ja, no_ja])
+        err, clicks = self.confirm([no_ja] * (self.d.DELETE_POLLS + 3))
         self.assertIn("still open after 'Ja'", str(err))
         self.assertIn("closed with Nein", str(err))
         self.assertEqual(len(clicks), 2)
         nein = self.d.button_hit(no_ja, "Nein")
         self.assertEqual(clicks[0][0], nein["x"] - 128)
+
+    def test_confirm_delete_waits_for_a_slow_delete(self):
+        # A Data Secure device's confirmation stays a few looks (#423).
+        err, clicks = self.confirm([self.ROWS_997, self.ROWS_997, self.ROWS_997, []])
+        self.assertIsNone(err)
+        self.assertEqual(len(clicks), 1)
 
     def test_confirm_delete_without_ja_or_nein_reports_what_ocr_read(self):
         other = [r for r in self.ROWS_997 if "Ja" not in r["text"] and "Nein" not in r["text"]]
