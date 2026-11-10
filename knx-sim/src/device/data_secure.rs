@@ -248,11 +248,12 @@ impl Device {
     }
 
     /// The range facts the security object checks against: the group-object
-    /// count from the loaded group-object table (obj 3) and the address-table
-    /// length from the loaded address table (obj 1).
+    /// count from the group-object table (obj 3), loaded or being loaded
+    /// (`table_count_being_loaded`), and the address-table length from the
+    /// loaded address table (obj 1).
     fn security_limits(&self) -> SecurityLimits {
         SecurityLimits {
-            group_objects: self.loaded_table_count(3),
+            group_objects: self.table_count_being_loaded(3),
             address_table_len: self.loaded_table_count(1),
         }
     }

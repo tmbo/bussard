@@ -421,6 +421,28 @@ impl Device {
     /// `Loaded` (a table being rewritten has no trustworthy count yet). `None`
     /// on System 7, for an unloaded object, or when the count word lies outside
     /// the object's segment.
+    /// The entry count of table `lsm_index` (its first word in memory) while
+    /// the table is `Loading` or `Loaded`. ETS writes the security object's
+    /// GO flags (PID 61) and group keys before the tables' `LoadCompleted`,
+    /// so a secured download checks them against the table it is loading:
+    /// the Steinel DALI Gateway Colour 2fold's flags run to element 4136,
+    /// past the 4095 fallback (ETS sweep secure capture of 2026-11-10,
+    /// bussard issue #423).
+    pub(super) fn table_count_being_loaded(&self, lsm_index: u8) -> Option<u16> {
+        if self.sys7.is_some()
+            || !matches!(
+                self.load_state(lsm_index),
+                Some(LoadState::Loaded | LoadState::Loading)
+            )
+        {
+            return None;
+        }
+        let base = self.loadables.get(&lsm_index)?.base;
+        let word = self.memory.read_bounded(base, 2)?;
+        // A table still empty (allocated, not yet written) says nothing.
+        Some(u16::from_be_bytes([word[0], word[1]])).filter(|n| *n > 0)
+    }
+
     pub(super) fn loaded_table_count(&self, lsm_index: u8) -> Option<u16> {
         if self.sys7.is_some() || self.load_state(lsm_index) != Some(LoadState::Loaded) {
             return None;

@@ -698,6 +698,17 @@ impl SecureTool {
     /// PID 5 plus A_MemoryExtended_Write, all wrapped in A_SecureData, and
     /// verify the image with A_MemoryExtended_Read.
     fn load_table_extended(&mut self, obj: u8, base: u32, image: &[u8]) -> TestResult {
+        self.start_table_extended(obj, base, image)?;
+        self.secure_ndt(
+            0x3D7,
+            &[obj, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        ); // LoadCompleted
+        Ok(())
+    }
+
+    /// `load_table_extended` without the closing `LoadCompleted`: the table
+    /// stays `Loading`, as during ETS's secured download.
+    fn start_table_extended(&mut self, obj: u8, base: u32, image: &[u8]) -> TestResult {
         self.secure_ndt(
             0x3D7,
             &[obj, 0x05, 0x10, 0x01, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0],
@@ -721,10 +732,6 @@ impl SecureTool {
             read,
             [vec![0x01, 0xfe, 0x00, a2, a1, a0], image.to_vec()].concat()
         );
-        self.secure_ndt(
-            0x3D7,
-            &[obj, 0x05, 0x10, 0x01, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 0],
-        ); // LoadCompleted
         Ok(())
     }
 
@@ -838,6 +845,30 @@ fn test_security_object_limits_follow_loaded_tables() -> TestResult {
     assert_eq!(
         t.secure_hex("01cc 0011 00103d 01 0000")?,
         hex("01cd 0011 00103d 01 0000 0002")?
+    );
+    assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
+    Ok(())
+}
+
+/// ETS writes the GO flags (PID 61) before the group-object table's
+/// `LoadCompleted`: the table being loaded bounds them, not the 4095
+/// fallback (the Steinel DALI Gateway Colour 2fold's flags run to element
+/// 4136, ETS sweep secure capture of 2026-11-10, bussard issue #423).
+#[test]
+fn test_security_object_go_flags_follow_the_table_being_loaded() -> TestResult {
+    let mut t = SecureTool::new(SecAlgorithm::AuthOnly);
+    t.control(0x80);
+    t.secure_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+    // Group-object table (obj 3 at 0x8000): 2 descriptors, still Loading.
+    t.start_table_extended(3, 0x8000, &hex("0002 0000 0000")?)?;
+    t.secure_hex("01d4 0011 001005 01000000000000000000")?;
+    assert_eq!(
+        t.secure_hex("01ce 0011 00103d 03 0001 030303")?,
+        hex("01cf 0011 00103d 03 0001 f7")?
+    );
+    assert_eq!(
+        t.secure_hex("01ce 0011 00103d 02 0001 0300")?,
+        hex("01cf 0011 00103d 02 0001 00")?
     );
     assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
     Ok(())
