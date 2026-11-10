@@ -283,9 +283,15 @@ the same verdict as the device row.
 **Links variant, every product.** `defaults.py --variant links` runs the
 applications the defaults sweep captured once more, with a few links made
 before the download (`series.links_hook`: three objects linked to 1/0/1..,
-transmitting objects first, and a second address on one of them), into
+transmitting objects first, and a second address on one of them, taken
+from an object of the same size), into
 `captures/ets-sweep/<app>/links/` with the object table ETS showed after
-linking (`objects.json`); outcomes in `results/links.json`.
+linking (`objects.json`); outcomes in `results/links.json`. ETS links an
+address only to objects of its size: for another one its "Mit
+Gruppenadresse verbinden" dialog frames the field red and greys out
+"Verbinden". The driver then cancels the dialog and returns the refusal,
+which `links.json` keeps under `links_refused`; a leftover dialog is closed
+with Abbrechen before the next link and the next import.
 `oracle.py --variant links` builds each row's model with those links
 (`apply_rows.links_from_objects`) and writes `results/oracle-links.json`;
 `summary.py` adds the links variant's parity per mask family.
