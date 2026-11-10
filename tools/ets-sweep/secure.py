@@ -4,7 +4,7 @@
 # ///
 """The KNX Data Secure variant of the ETS sweep (epic #419, part 4 #423).
 
-    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo]
+    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo | --redo-failed]
     uv run tools/ets-sweep/secure.py cert --serial 00FA12345678 --fdsk <32 hex>   # print a label
     uv run tools/ets-sweep/secure.py cert --check "<36-character label>"          # calibrate the format
     uv run tools/ets-sweep/secure.py jobs                                         # list the secure-capable jobs
@@ -247,8 +247,12 @@ def run(args) -> int:
     import_errors = 0
     driver_errors = 0
     for job in todo:
-        # A row whose import failed is run again (nothing of it reached ETS).
-        if job["id"] in results and not args.redo and not results[job["id"]].get("import_failed"):
+        # A row whose import failed is run again (nothing of it reached ETS);
+        # --redo-failed also runs again what is neither captured nor skipped,
+        # as defaults.py's does.
+        prev = results.get(job["id"])
+        if prev and not args.redo and not prev.get("import_failed") and not (
+                args.redo_failed and not str(prev.get("outcome", "")).startswith(("captured", "skipped"))):
             continue
         path = defaults.product_path(job["file"])
         imp = import_product(c, path, pw)
@@ -305,7 +309,8 @@ def run(args) -> int:
         save(results)
         # A driver error in a row of its own is the row's; a run of them is
         # ETS stuck in a state the driver does not recover from (seven rows
-        # in the Gebäude view, 2026-11-10): stop, the rows stay to do.
+        # in the Gebäude view, 2026-11-10): stop. The failed rows are saved;
+        # `run --redo-failed` runs them again.
         driver_errors = driver_errors + 1 if entry["outcome"].startswith("driver-error") else 0
         print(f"{entry['outcome']:13} {(entry.get('decode') or {}).get('verdict', '-'):10} {job['id']}"
               + (f"  {entry['error'][:100]}" if entry.get("error") else ""), flush=True)
@@ -325,6 +330,8 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
+    p.add_argument("--redo-failed", action="store_true",
+                   help="run again what is neither captured nor skipped (a driver error, an ETS failure)")
     p.add_argument("--representative", action="store_true",
                    help="only the applications of secure-subset.json (secure_subset.py, #423)")
     p = sub.add_parser("cert")
