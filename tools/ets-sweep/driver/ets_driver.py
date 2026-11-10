@@ -1129,8 +1129,12 @@ def flow_export_project(req: dict) -> dict:
         menu_click("Export", timeout=5, settle=0)
         dialog = wait_popup(10)
         save_as(dialog, path)
-        wait_for("project exported", lambda: os.path.exists(path) and not find_text(
+        done = wait_for("project exported", lambda: os.path.exists(path) and not find_text(
             "Exportiere Projektdateien", (1500, 900, 2600, 1100)), float(req.get("wait", 1800)), 2)
+        if not done:
+            # The file appears while ETS still writes it: only a closed
+            # progress dialog is a finished export.
+            raise RuntimeError(f"the export of {project!r} did not finish within {req.get('wait', 1800)} s")
     finally:
         close_menus()
         hit = project_tab_hit(project)
@@ -1461,6 +1465,21 @@ def same_page(a: dict, b: dict) -> bool:
     return _alike(a.get("crumb"), b.get("crumb"), 0.9) and _alike(a.get("page"), b.get("page"))
 
 
+def channel_node_of(prev: dict, page: dict) -> bool:
+    """Whether `prev`, read just before `page`, was the channel node of
+    `page`'s channel showing `page` highlighted: the same page text, the
+    same channel (the breadcrumb's first part), and a breadcrumb that does
+    not end in that page (`Ausgang 5` or `Ausgang 5 > ...`). Two channels'
+    pages of one name ('K1 > Allgemein', 'K2 > Allgemein') are two pages."""
+    if not _alike(prev.get("page"), page.get("page")):
+        return False
+    parts = [p.strip() for p in (prev.get("crumb") or "").split(">")]
+    theirs = [p.strip() for p in (page.get("crumb") or "").split(">")]
+    if not parts or not theirs or not _alike(parts[0], theirs[0]):
+        return False
+    return len(parts) == 1 or parts[-1].endswith("...") or not _alike(parts[-1], prev.get("page"))
+
+
 def page_consistent(p: dict) -> bool:
     """The breadcrumb and the tree's selection name the same page: ETS
     updates the breadcrumb first and the highlight a moment later. A
@@ -1543,7 +1562,7 @@ def flow_param_pages(req: dict) -> dict:
         if not page.get("page"):
             # A channel node ('Ausgang 5'): Down selects its first page next.
             continue
-        if pages and _alike(pages[-1]["page"], page["page"]):
+        if pages and channel_node_of(pages[-1], page):
             # A channel node read with its first page's highlight
             # ('Ausgang 5 > ...'): keep the page itself, selected next.
             pages.pop()

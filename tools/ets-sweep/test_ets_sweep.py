@@ -227,6 +227,17 @@ class TestParamsModel(unittest.TestCase):
         model["parameters"]["P-1"]["default"] = model["parameters"]["P-2"]["default"] = "7"
         self.assertEqual(params.model_changes(model, final, done, shown), ({}, []))
 
+    def test_float_values_in_the_locale_ets_shows(self):
+        model = {"parameters": {"P-9": {"kind": {"Float": {"min": 0.5, "max": 2.5}}, "text": "Faktor"}},
+                 "parameter_refs": {"P-9_R-9": {"parameter": "P-9"}}}
+        row = {"page": {"crumb": "A", "page": "A"}, "label": "Faktor", "n": 0, "kind": "number", "before": "1,5"}
+        import random
+        for seed in range(20):
+            c = params.change_for(row, random.Random(seed), params.number_ranges(model), "t")
+            self.assertNotIn(".", c["value"], c)
+            self.assertNotEqual(c["value"], "1,5")
+        self.assertEqual(params.value_of(model, "P-9_R-9", {"kind": "number", "shown": "2,5"}), "2.5")
+
     def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
         done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
                  "set_to": "2 Presetobjekten"},
@@ -1645,6 +1656,15 @@ class TestDriverParamEditor(unittest.TestCase):
         self.assertTrue(ok({"crumb": "Ausgang 5 > ...", "page": "Ausgang 4: Funktionsfreigabe"}))
         # The breadcrumb moved on, the highlight not yet.
         self.assertFalse(ok({"crumb": "Ausgang 1 > - A1: Zeiten für Schaltobjekt", "page": "Ausgang 1: Funktionsfreigabe"}))
+
+    def test_channel_node_of_keeps_two_channels_pages_of_one_name(self):
+        node = {"crumb": "Ausgang 5 > ...", "page": "Ausgang 5: Funktionsfreigabe"}
+        page = {"crumb": "Ausgang 5 > Ausgang 5: Funktionsfreigabe", "page": "Ausgang 5: Funktionsfreigabe"}
+        self.assertTrue(self.d.channel_node_of(node, page))
+        self.assertTrue(self.d.channel_node_of({"crumb": "Ausgang 5", "page": page["page"]}, page))
+        k1 = {"crumb": "K1 > Allgemein", "page": "Allgemein"}
+        k2 = {"crumb": "K2 > Allgemein", "page": "Allgemein"}
+        self.assertFalse(self.d.channel_node_of(k1, k2))
 
     def test_choose_value_pick_among_others(self):
         row = {"label": "Preset", "value": "Inaktiv"}

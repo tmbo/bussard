@@ -91,6 +91,8 @@ SURVEYS = HERE / "results" / "param-surveys"
 ORACLE_OUT = HERE / "results" / "oracle-params.json"
 ORACLE = REPO / "scripts" / "campaign" / "95-offline-oracle.sh"
 SETTABLE = ("checkbox", "radio", "dropdown", "number", "text")
+# The decimal separator of the sweep's ETS (German UI, de-DE).
+DECIMAL = ","
 
 
 def norm(t: str) -> str:
@@ -181,9 +183,12 @@ def change_for(row: dict, rng: random.Random, ranges: dict, tag: str) -> dict | 
             choices = [int(lo), int(hi), rng.randint(int(lo), int(hi))]
         else:
             choices = [lo, hi, round(rng.uniform(lo, hi), 1)]
-        choices = [c for c in choices if str(c) != str(row["before"])] or [hi]
+        before = str(row["before"]).replace(",", ".")
+        choices = [c for c in choices if str(c) != before] or [hi]
         value = rng.choice(choices)
-        out["value"] = str(int(value)) if name == "Int" or float(value).is_integer() else str(value)
+        text = str(int(value)) if name == "Int" or float(value).is_integer() else str(value)
+        # Typed as ETS shows numbers (the sweep's ETS is German: 12,3).
+        out["value"] = text.replace(".", DECIMAL)
     else:
         out["value"] = f"bussard {tag}"
     return out
@@ -344,7 +349,9 @@ def value_of(model: dict, ref: str, change: dict) -> str | None:
     if kind == "checkbox" and "Enum" in pkind:
         return shown if shown in [str(v) for v, _ in p.get("labels") or []] else None
     if kind in ("checkbox", "number"):
-        return shown if re.fullmatch(r"-?\d+(\.\d+)?", shown) else None
+        # ETS shows a decimal in its locale (12,3); the device file takes 12.3.
+        number = shown.replace(DECIMAL, ".") if kind == "number" else shown
+        return number if re.fullmatch(r"-?\d+(\.\d+)?", number) else None
     return shown
 
 
@@ -703,6 +710,11 @@ def oracle(args) -> int:
             continue
         app, name = key.split("/", 1)
         job = jobs.get(app)
+        if job is None:
+            out[key] = {"verdict": "not-run", "problems": ["not a captured application of the defaults sweep"],
+                        "when": datetime.now(timezone.utc).isoformat()}
+            print(f"{'not-run':14} {key}", flush=True)
+            continue
         run_dir = sweep.CAPTURES / app / name
         recorded = json.loads((run_dir / "params.json").read_text())
         model_dir, problems = change_model(job, args.work, args.work / app / name / "model", recorded)
@@ -854,6 +866,12 @@ def partial(args) -> int:
             if args.label:
                 change = {"page": {"crumb": args.page, "page": args.page.rsplit(">", 1)[-1].strip()},
                           "label": args.label, "n": args.occurrence, "value": args.value}
+                row = find_row(survey, change)
+                if row is None:
+                    raise RuntimeError(f"no row {args.label!r} on {args.page!r} in the survey")
+                # The control's kind and value as ETS shows them (read_back
+                # and value_of need both).
+                change.update({"kind": row["kind"], "before": row.get("value", "")})
             else:
                 change = partial_change(survey, enablers)
             if change is None:
