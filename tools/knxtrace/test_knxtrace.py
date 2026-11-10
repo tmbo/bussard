@@ -2882,6 +2882,13 @@ class TestGoFlagsRuns(unittest.TestCase):
         self.assertEqual(props["matched"][0]["value"], "differs")
         self.assertIn("elements 34+11", props["matched"][0]["why"])
 
+    def test_compare_properties_go_flags_one_hashed_write_is_hash_equal(self):
+        # The plan split 50 + 50, ETS one hashed write: only a hash was
+        # compared, so the verdict says hash-equal, not equal.
+        props = memimage.compare_properties(self.plan(50), self.image_dir(self.ets(self.FLAGS, 100)))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        self.assertEqual(props["matched"][0]["value"], "hash-equal")
+
     def test_merge_element_runs_go_flags_merge_hashed(self):
         self.assertEqual(len(memimage.merge_element_runs(self.ets(self.FLAGS, 11))), 1)
 

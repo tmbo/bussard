@@ -1725,8 +1725,10 @@ def _go_flags_check(ours: Dict[str, object], theirs: Dict[str, object]) -> Optio
                     else octets.hex() == data)
             if not same:
                 return "differs", "GO flags differ in elements %s+%s" % (part["index"], part["count"])
-        return "hash-equal" if any(str(p.get("data") or "").startswith("redacted:")
-                                   for r in (ours, theirs) for p in (r.get("parts") or [])) else "equal", ""
+        hashed = any(str(p.get("data") or "").startswith("redacted:")
+                     for r in (ours, theirs)
+                     for p in (r.get("parts") or [{"data": r.get("data")}]))
+        return ("hash-equal" if hashed else "equal"), ""
     return None
 
 
