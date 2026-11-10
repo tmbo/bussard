@@ -166,6 +166,46 @@ fn prop_step_object(step: &FlashStep) -> Option<PropObject> {
     }
 }
 
+/// Where the security block goes in the trailing property run
+/// `steps[from..end]` (see [`FlashPlan::add_security_program`]): past each
+/// leading unit that is another program's version write, a
+/// `PID_PROGRAM_VERSION` write with the declarations, factory-held values
+/// and description reads of its object ahead of it, as long as the run still
+/// holds a later `PID_PROGRAM_VERSION` write and the unit's object has no
+/// further step in the run. Anything else stops the walk, so a declaration
+/// is never split from its write (#945) and a single-program run keeps the
+/// block where it was.
+fn past_other_versions(steps: &[FlashStep], from: usize, end: usize) -> usize {
+    let is_version = |s: &FlashStep| matches!(s, FlashStep::WriteProp { prop_id, .. } if *prop_id == plan::PID_PROGRAM_VERSION);
+    let mut at = from;
+    while at < end {
+        let Some(object) = prop_step_object(&steps[at]) else {
+            break;
+        };
+        let mut next = at;
+        while next < end
+            && !matches!(steps[next], FlashStep::WriteProp { .. })
+            && prop_step_object(&steps[next]) == Some(object)
+        {
+            next += 1;
+        }
+        if next >= end
+            || !is_version(&steps[next])
+            || prop_step_object(&steps[next]) != Some(object)
+        {
+            break;
+        }
+        next += 1;
+        let rest = &steps[next..end];
+        if !rest.iter().any(is_version) || rest.iter().any(|s| prop_step_object(s) == Some(object))
+        {
+            break;
+        }
+        at = next;
+    }
+    at
+}
+
 /// How a property step names its interface object (issue #390).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PropObject {
@@ -1479,7 +1519,12 @@ impl FlashPlan {
     ///   table (when there are keys), the group-object flags and
     ///   `SecurityLoadControl(LoadCompleted)` after the last memory write, before
     ///   the property writes (`PID_PROGRAM_VERSION`) that precede the first
-    ///   `LoadCompleted`.
+    ///   `LoadCompleted`. When that run starts with other programs'
+    ///   `PID_PROGRAM_VERSION` writes (each with the declarations and
+    ///   description reads ahead of it) and ends with the last program's, the
+    ///   block goes after the others, right before the last program's
+    ///   (`past_other_versions`, the Busch-Jaeger 6179 capture of #423). Any
+    ///   other property write keeps the block ahead of it, as before.
     ///
     /// A no-op on a System 7 plan (no security object), on a property-only
     /// plan, and when the plan already carries security steps.
@@ -1509,26 +1554,13 @@ impl FlashPlan {
         {
             block_at -= 1;
         }
-        // With several objects' writes in that run, the block goes right
-        // before the writes of the object written last (the application
-        // program's PID_PROGRAM_VERSION). CONFIRMED by the ETS sweep's Data
-        // Secure capture of the Busch-Jaeger 6179 (`M-0007_A-6179-82-036E`,
-        // 2026-11-10, issue #423): ETS wrote object 5's PID 13, then the
-        // security object (PID 5, 54, 61, 5), then object 4's PID 13.
-        let last_object = self.steps[block_at..first_load_completed]
-            .iter()
-            .rev()
-            .find_map(|s| match s {
-                FlashStep::WriteProp { object, .. } => Some(*object),
-                _ => None,
-            });
-        if let Some(last) = last_object {
-            while block_at < first_load_completed
-                && prop_step_object(&self.steps[block_at]) != Some(last)
-            {
-                block_at += 1;
-            }
-        }
+        // With another program's PID_PROGRAM_VERSION ahead of the one
+        // written last, the block goes after it, right before the last
+        // program's. CONFIRMED by the ETS sweep's Data Secure capture of the
+        // Busch-Jaeger 6179 (`M-0007_A-6179-82-036E`, 2026-11-10, issue #423):
+        // ETS wrote object 5's PID 13, then the security object (PID 5, 54,
+        // 61, 5), then object 4's PID 13.
+        block_at = past_other_versions(&self.steps, block_at, first_load_completed);
         let mut block = vec![
             FlashStep::SecurityLoadControl {
                 control: bussard_mgmt::LoadControl::StartLoading,
@@ -2241,6 +2273,52 @@ mod tests {
             }
         ));
         Ok(())
+    }
+
+    /// `past_other_versions` on the trailing runs of the review of #1041:
+    /// only other programs' PID 13 writes are passed, a single program's
+    /// run with another property write keeps the block at its start, and
+    /// a declaration is never split from its write.
+    #[test]
+    fn test_past_other_versions_moves_only_over_other_programs_versions() {
+        use super::{FlashStep, PropObject, past_other_versions};
+        let w = |object: PropObject, prop_id: u32| FlashStep::WriteProp {
+            object,
+            prop_id,
+            value: vec![0; 5],
+            start_element: 1,
+            count: 1,
+            verify: false,
+            from_parameters: false,
+        };
+        let declare = |object: PropObject| FlashStep::DeclareProp {
+            object,
+            prop_id: 13,
+            prop_type: "PDT_GENERIC_05".to_string(),
+            max_elements: 1,
+        };
+        let (o4, o5, o6) = (
+            PropObject::Index(4),
+            PropObject::Index(5),
+            PropObject::Index(6),
+        );
+        let knxnet = PropObject::Type {
+            object_type: 11,
+            occurrence: 0,
+        };
+        let at = |steps: &[FlashStep]| past_other_versions(steps, 0, steps.len());
+        // The Busch-Jaeger 6179: object 5's version, then object 4's.
+        assert_eq!(at(&[w(o5, 13), w(o4, 13)]), 1);
+        // With a declaration ahead of object 5's version.
+        assert_eq!(at(&[declare(o5), w(o5, 13), w(o4, 13)]), 2);
+        // One program, a product's own write after its version: unchanged.
+        assert_eq!(at(&[w(o4, 13), w(knxnet, 205)]), 0);
+        // One program, a product's own write ahead of its version: unchanged.
+        assert_eq!(at(&[w(o6, 60), w(o4, 13)]), 0);
+        // Object 5's declaration ahead of another object's write: not split.
+        assert_eq!(at(&[declare(o5), w(o4, 60), w(o5, 13), w(o4, 13)]), 0);
+        // Object 5 written again later: its first write is not passed.
+        assert_eq!(at(&[w(o5, 13), w(o4, 13), w(o5, 60)]), 0);
     }
 
     /// The security block lands before a declaration that precedes the
