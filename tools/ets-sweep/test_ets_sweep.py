@@ -328,6 +328,44 @@ class TestSeries(unittest.TestCase):
         self.assertEqual(plan["second"], (29, "1/0/1"))
         self.assertEqual(plan["add"], (31, "1/0/9"))
 
+    # The ise KNX Sonos as the links run of 2026-11-10 read it: three free
+    # senders of two sizes, none writable (#478).
+    SONOS = [{"number": 12, "gas": [], "size": "1 bit", "flags": "KLÜ"},
+             {"number": 16, "gas": [], "size": "1 byte", "flags": "KLÜ"},
+             {"number": 20, "gas": [], "size": "1 bit", "flags": "KLÜ"},
+             {"number": 21, "gas": [], "size": "1 bit", "flags": "KS"}]
+
+    def test_plan_links_second_same_size(self):
+        plan = series.plan_links(self.SONOS, n=3)
+        self.assertEqual(plan["initial"], [(12, "1/0/1"), (16, "1/0/2"), (20, "1/0/3")])
+        # Not 1/0/2 (the 1-byte object's) on object 12: ETS refuses it.
+        self.assertEqual(plan["second"], (12, "1/0/3"))
+
+    def test_plan_links_second_none_without_a_same_size_pair(self):
+        rows = [dict(self.SONOS[0]), dict(self.SONOS[1])]
+        self.assertIsNone(series.plan_links(rows, n=2)["second"])
+        # An unread size does not rule the pair out.
+        rows[1]["size"] = None
+        self.assertEqual(series.plan_links(rows, n=2)["second"], (12, "1/0/2"))
+
+    def test_links_hook_records_a_refused_link_and_goes_on(self):
+        calls = []
+
+        def flow(name, **kw):
+            calls.append((name, kw.get("number"), kw.get("ga")))
+            if name == "objects":
+                return {"objects": self.SONOS}
+            if kw["ga"] == "1/0/2":
+                return {"linked": False, "refused": "ETS refused 1/0/2 for object 16: ..."}
+            return {"linked": True}
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        out = series.links_hook(3)(flow, tmp)
+        self.assertEqual(out["links"], [[12, "1/0/1"], [20, "1/0/3"], [12, "1/0/3"]])
+        self.assertEqual(out["refused"], [{"number": 16, "ga": "1/0/2", "reason": "ETS refused 1/0/2 for object 16: ..."}])
+        self.assertEqual(calls[-1][0], "objects")
+        self.assertTrue((tmp / "objects.json").exists())
+
     def test_plan_links_empty_table(self):
         self.assertEqual(series.plan_links([]), {"initial": [], "add": None, "second": None})
 
@@ -1568,6 +1606,158 @@ class TestDriverDeleteDialog(unittest.TestCase):
         exc, deletes = self.catalog_add([[]], lambda req: {"deleted": True})
         self.assertEqual(type(exc).__name__, "Reached", exc)
         self.assertEqual(deletes, [])
+
+
+class FakeImage:
+    """The few PIL image calls the driver's pixel checks make."""
+
+    def __init__(self, w: int, h: int, fill=(255, 255, 255)):
+        self.width, self.height = w, h
+        self.px = [[fill] * w for _ in range(h)]
+
+    def put(self, x0: int, y0: int, x1: int, y1: int, rgb) -> "FakeImage":
+        for y in range(y0, y1):
+            for x in range(x0, x1):
+                self.px[y][x] = rgb
+        return self
+
+    def convert(self, mode: str):
+        if mode == "RGB":
+            return self
+        grey = FakeImage(self.width, self.height)
+        grey.px = [[sum(p) // 3 for p in row] for row in self.px]
+        return grey
+
+    def getpixel(self, xy):
+        return self.px[xy[1]][xy[0]]
+
+    def getdata(self):
+        return [p for row in self.px for p in row]
+
+
+class TestDriverLinkDialog(unittest.TestCase):
+    """ETS refuses an address of another size than the object's, and the
+    dialog it leaves open must not stop the run (#478)."""
+
+    RED = (220, 30, 40)
+    TITLE = {"text": "Mit Gruppenadresse verbinden", "x": 1560, "y": 600, "w": 500, "h": 40}
+    BUTTONS = [{"text": "00 Verbinden", "x": 2070, "y": 1866, "w": 200, "h": 40},
+               {"text": "X Abbrechen", "x": 2310, "y": 1866, "w": 200, "h": 40}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    def field(self, framed: bool) -> FakeImage:
+        img = FakeImage(60, 24).put(4, 8, 10, 16, self.RED)  # the red address icon
+        if framed:
+            img.put(0, 0, 60, 1, self.RED).put(0, 23, 60, 24, self.RED)
+            img.put(0, 0, 1, 24, self.RED).put(59, 0, 60, 24, self.RED)
+        return img
+
+    def test_object_size_normalised(self):
+        self.assertEqual(self.d.object_size("1 bit"), "1 bit")
+        self.assertEqual(self.d.object_size("1/0/2 1 byte"), "1 byte")
+        self.assertEqual(self.d.object_size("14 Bytes"), "14 bytes")
+        self.assertEqual(self.d.object_size("4 bit"), "4 bit")
+        self.assertIsNone(self.d.object_size("Gruppe 1 - Zeigt an"))
+
+    def test_red_frame_needs_the_frame_not_the_icon(self):
+        self.assertTrue(self.d.red_frame(self.field(True)))
+        self.assertFalse(self.d.red_frame(self.field(False)))
+
+    def test_greyed_out_by_ink(self):
+        self.assertTrue(self.d.greyed_out(FakeImage(40, 10).put(5, 3, 30, 7, (150, 150, 150))))
+        self.assertFalse(self.d.greyed_out(FakeImage(40, 10).put(5, 3, 30, 7, (40, 40, 40))))
+
+    def screen(self, open_states: list[bool], framed: bool = True, list_lines=None):
+        """Mocks for the link dialog: `open_states`, what successive title
+        checks see."""
+        from unittest import mock
+
+        states = iter(open_states)
+        d = self.d
+
+        def ocr(bbox=None, **_):
+            if bbox == d.LINK_BUTTONS:
+                return self.BUTTONS
+            if bbox == d.LINK_VERBINDEN:
+                return self.BUTTONS[:1]
+            if bbox == d.LINK_LIST:
+                return list_lines or [{"text": "1/0/1 On/Off", "x": 1700, "y": 1000, "w": 300, "h": 30},
+                                      {"text": "1/0/3 On/Off status", "x": 1700, "y": 1040, "w": 300, "h": 30}]
+            return []
+
+        def grab(bbox=None):
+            if bbox == d.LINK_FIELD:
+                return self.field(framed)
+            return FakeImage(40, 10).put(5, 3, 30, 7, (150, 150, 150))
+        return [mock.patch.object(d, "link_dialog_open", side_effect=lambda: next(states)),
+                mock.patch.object(d, "find_text", side_effect=lambda p, *a, **k: self.TITLE if "verbinden" in p else None),
+                mock.patch.object(d, "ocr", side_effect=ocr), mock.patch.object(d, "grab", side_effect=grab),
+                mock.patch.object(d, "click"), mock.patch.object(d, "keys"), mock.patch.object(d.time, "sleep"),
+                mock.patch.object(d, "log")]
+
+    def run_patched(self, patches, fn):
+        import contextlib
+
+        with contextlib.ExitStack() as stack:
+            mocks = [stack.enter_context(p) for p in patches]
+            return fn(), mocks
+
+    def test_close_link_dialog_clicks_abbrechen(self):
+        out, mocks = self.run_patched(self.screen([True, False, False]), self.d.close_link_dialog)
+        self.assertTrue(out)
+        (x, y), _ = mocks[4].call_args
+        self.assertTrue(2310 + 200 * 2 / 11 <= x <= 2510, x)
+        self.assertEqual(y, 1886)
+        mocks[5].assert_not_called()
+
+    def test_close_link_dialog_none_open(self):
+        out, mocks = self.run_patched(self.screen([False]), self.d.close_link_dialog)
+        self.assertFalse(out)
+        mocks[4].assert_not_called()
+
+    def flow_link(self, open_states: list[bool], framed: bool):
+        import types
+        from unittest import mock
+
+        d = self.d
+        pw = types.ModuleType("pywinauto")
+        pw.mouse = mock.MagicMock()
+        row = {"number": 12, "y": 707, "gas": ["1/0/1"]}
+        patches = self.screen(open_states, framed) + [
+            mock.patch.dict(sys.modules, {"pywinauto": pw}),
+            mock.patch.multiple(d, require_project=mock.DEFAULT, open_device_objects=mock.DEFAULT,
+                                menu_click=mock.DEFAULT, scale=mock.DEFAULT),
+            mock.patch.object(d, "_object_row", return_value=row)]
+        return self.run_patched(patches, lambda: d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"}))
+
+    def test_flow_link_refused_address_cancels_and_reports(self):
+        # States: no leftover, the dialog opened, then Abbrechen closes it.
+        out, mocks = self.flow_link([False, True, True, False, False], framed=True)
+        self.assertFalse(out["linked"])
+        self.assertRegex(out["refused"], r"ETS refused 1/0/2 for object 12: the address field shows an error "
+                                         r"and 'Verbinden' is disabled \(the dialog offers 1/0/1, 1/0/3")
+        # The only button click is Abbrechen, never Verbinden.
+        clicks = [c.args for c in mocks[4].call_args_list]
+        self.assertTrue(all(x > 2300 for x, _ in clicks[1:]), clicks)
+
+    def test_flow_link_dialog_that_stays_open_is_cancelled(self):
+        # Not framed: Verbinden is clicked three times, the dialog stays,
+        # the greyed button names the refusal, Abbrechen closes it.
+        out, mocks = self.flow_link([False] + [True] * 5 + [False, False], framed=False)
+        self.assertFalse(out["linked"])
+        self.assertIn("'Verbinden' is disabled", out["refused"])
+
+    def test_flow_link_closes_a_leftover_dialog_first(self):
+        from unittest import mock
+
+        with mock.patch.object(self.d, "close_link_dialog", side_effect=RuntimeError("stop")) as close, \
+                mock.patch.object(self.d, "require_project"):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"})
+        close.assert_called_once()
 
 
 class TestOemIdentity(unittest.TestCase):
