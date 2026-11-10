@@ -1645,6 +1645,14 @@ pub struct ApplicationProgram {
     /// #455). `None` when the application declares none.
     #[serde(default)]
     pub additional_addresses_count: Option<u16>,
+    /// Whether the hardware this program runs on declares
+    /// `IsIPEnabled="true"`: it has a KNX IP side with a KNXnet/IP parameter
+    /// object, which ETS writes after a download even when the program
+    /// declares no tunnelling addresses (the ise smart connect gateways,
+    /// issue #1023). Set by the product reader from the hardware catalogue,
+    /// not by the program parser.
+    #[serde(default)]
+    pub is_ip_enabled: bool,
     /// The XML schema version this file declared, e.g. `"20"`, `"21"`, `"23"`.
     pub schema_version: Option<String>,
     /// The `MinEtsVersion` attribute of `<ApplicationProgram>` (`"3.0d"`,

@@ -1575,8 +1575,20 @@ def flow_delete_device(req: dict) -> dict:
 # The device's 'Kommunikationsobjekte' table (layout x ranges, measured
 # 2026-10-28 on the Ekinex EK-E72): number, name, linked addresses, flags.
 GO_TABLE = (680, 260, 3400, 1240)
-GO_COLS = {"number": (690, 830), "name": (830, 1280), "ga": (1840, 2000), "flags": (2090, 2300)}
+GO_COLS = {"number": (690, 830), "name": (830, 1280), "ga": (1840, 2000), "size": (2000, 2090), "flags": (2090, 2300)}
 GA_RE = re.compile(r"\d{1,2}/\d{1,2}/\d{1,3}")
+SIZE_RE = re.compile(r"(\d+)\s*(bits?|bytes?)\b", re.IGNORECASE)
+
+
+def object_size(text: str) -> str | None:
+    """The 'Länge' cell normalised ('1 bit', '2 bytes'), or None. ETS links
+    an address only to objects of one size (#478), so the links variant
+    pairs a second address by it."""
+    m = SIZE_RE.search(text)
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2).lower().rstrip("s")
+    return f"{n} {unit}{'s' if n != 1 and unit == 'byte' else ''}"
 # Centres of the K, L, S, Ü, A flag columns.
 GO_FLAG_X = (2120, 2159, 2200, 2241, 2280)
 
@@ -1615,7 +1627,7 @@ def open_device_objects(ia: str) -> None:
 
 
 def read_objects(numbers: list[int] | None = None) -> list[dict]:
-    """Rows of the open object table: number, name, addresses, flags.
+    """Rows of the open object table: number, name, addresses, size, flags.
 
     `numbers`, the object numbers the caller knows the table lists in order
     (a synthetic product's com objects): when OCR reads no number at all and
@@ -1627,14 +1639,14 @@ def read_objects(numbers: list[int] | None = None) -> list[dict]:
     for l in ocr((GO_COLS["number"][0], GO_TABLE[1], GO_COLS["number"][1], GO_TABLE[3]), zoom=2):
         cy = l["y"] + l["h"] // 2
         if l["text"].strip().isdigit():
-            rows[cy] = {"number": int(l["text"].strip()), "y": cy, "name": "", "gas": [], "flags": ""}
+            rows[cy] = {"number": int(l["text"].strip()), "y": cy, "name": "", "gas": [], "size": None, "flags": ""}
     # Rows whose number OCR missed: Windows OCR never reads a lone '1'
     # (2026-10-28, any zoom or crop). Infer it from the neighbours when only
     # one number fits, else take a single narrow glyph as '1'.
     for l in lines:
         cy = l["y"] + l["h"] // 2
         if GO_COLS["name"][0] <= l["x"] + 4 < GO_COLS["name"][1] and all(abs(y - cy) >= 14 for y in rows):
-            rows[cy] = {"number": None, "y": cy, "name": "", "gas": [], "flags": ""}
+            rows[cy] = {"number": None, "y": cy, "name": "", "gas": [], "size": None, "flags": ""}
     ordered = sorted(rows.values(), key=lambda r: r["y"])
     if numbers and all(r["number"] is None for r in ordered) and len(ordered) == len(numbers):
         for r, n in zip(ordered, numbers):
@@ -1663,6 +1675,9 @@ def read_objects(numbers: list[int] | None = None) -> list[dict]:
             continue
         if GO_COLS["name"][0] <= cx < GO_COLS["name"][1]:
             r["name"] = (r["name"] + " " + l["text"]).strip()
+        # 'Länge', right-aligned: OCR may join it to the address before it.
+        if GO_COLS["ga"][0] <= l["x"] + l["w"] and l["x"] < GO_COLS["size"][1] and r["size"] is None:
+            r["size"] = object_size(l["text"])
         for ga in GA_RE.findall(l["text"]):
             if cx >= GO_COLS["ga"][0] - 400 and ga not in r["gas"]:
                 r["gas"].append(ga)
@@ -1704,6 +1719,83 @@ def _object_row(number: int, numbers: list[int] | None = None) -> dict:
     return hit[0]
 
 
+# The 'Mit Gruppenadresse verbinden' dialog (layout coordinates, the
+# screenshot of 2026-11-10 at half scale: title at y ~610, the address field
+# framed at x 1606..1846, y 1674..1756, 'Verbinden' and 'Abbrechen' at y ~1887).
+LINK_TITLE = (1500, 560, 2600, 680)
+LINK_FIELD = (1606, 1670, 1848, 1760)
+LINK_BUTTONS = (1800, 1830, 2560, 1920)
+# 'Verbinden' alone: OCR of the wider strip may join both buttons in a line.
+LINK_VERBINDEN = (1800, 1830, 2300, 1910)
+LINK_LIST = (1600, 960, 2440, 1500)
+
+
+def link_dialog_open() -> bool:
+    return find_text("Mit Gruppenadresse verbinden", LINK_TITLE) is not None
+
+
+def close_link_dialog() -> bool:
+    """Cancel a 'Mit Gruppenadresse verbinden' dialog left open with
+    'Abbrechen' (Escape when OCR misses the button). True when one was open
+    and is gone now. Like the delete confirmation it is found by OCR."""
+    if not link_dialog_open():
+        return False
+    hit = button_hit(ocr(LINK_BUTTONS), "Abbrechen")
+    if hit:
+        log(f"closing a link dialog with Abbrechen at ({hit['click_x']}, {hit['click_y']})")
+        click(hit["click_x"], hit["click_y"])
+    else:
+        log("closing a link dialog with Escape ('Abbrechen' not read)")
+        keys("{ESC}")
+    time.sleep(1.5)
+    if link_dialog_open():
+        keys("{ESC}")
+        time.sleep(1.5)
+    return not link_dialog_open()
+
+
+def red_frame(img) -> bool:
+    """True when the address field's crop (`LINK_FIELD`) holds ETS's red
+    error frame: a row and a column of strong red each spanning most of the
+    crop. The address icon inside the field is red as well, but small: it
+    never spans the crop (half-scale screenshot of 2026-11-10: frame rows of
+    121 red pixels of 121, the icon 13)."""
+    rgb = img.convert("RGB")
+    w, h = rgb.width, rgb.height
+
+    def red(x: int, y: int) -> bool:
+        r, g, b = rgb.getpixel((x, y))
+        return r > 170 and g < 100 and b < 100
+    row = any(sum(red(x, y) for x in range(w)) > 0.8 * w for y in range(h))
+    col = any(sum(red(x, y) for y in range(h)) > 0.7 * h for x in range(w))
+    return row and col
+
+
+def greyed_out(img) -> bool:
+    """True when a button label's crop holds no dark ink: ETS greys out a
+    disabled 'Verbinden' (lightest 144 of 255, no pixel under 120) where
+    'Abbrechen' beside it reads near black (47, 156 pixels under 120;
+    2026-11-10)."""
+    return not any(p < 120 for p in img.convert("L").getdata())
+
+
+def link_refusal(button: dict) -> str | None:
+    """Why the open link dialog will not take the typed address, or None:
+    the red frame of the address field or a greyed-out 'Verbinden' (the OCR
+    line `button`). The reason names the addresses the dialog's list offers
+    (only those of the object's size)."""
+    why = []
+    if red_frame(grab(LINK_FIELD)):
+        why.append("the address field shows an error")
+    pad = 4
+    if greyed_out(grab((button["x"] - pad, button["y"] - pad, button["x"] + button["w"] + pad, button["y"] + button["h"] + pad))):
+        why.append("'Verbinden' is disabled")
+    if not why:
+        return None
+    offered = sorted({ga for l in ocr(LINK_LIST) for ga in GA_RE.findall(l["text"].replace(" ", ""))})
+    return " and ".join(why) + f" (the dialog offers {', '.join(offered) or 'no address'}, addresses of the object's size)"
+
+
 @flow("link")
 def flow_link(req: dict) -> dict:
     """Link object `number` of device `ia` to group address `ga` ('1/0/9'):
@@ -1711,21 +1803,27 @@ def flow_link(req: dict) -> dict:
     the dialog's field, 'Erstellen & Verbinden' (ETS creates the address
     when the project lacks it) or 'Verbinden'. Verified in the table."""
     require_project(req["project"])
+    # A link dialog a failed link left open covers the object table and the
+    # Katalog panel: every import after it failed (2026-11-10, #478).
+    closed = close_link_dialog()
     from pywinauto import mouse
 
     open_device_objects(req["ia"])
     row = _object_row(int(req["number"]), req.get("numbers"))
     if req["ga"] in row["gas"]:
-        return {"linked": True, "already": True, "row": row}
+        return {"linked": True, "already": True, "row": row, "closed_link_dialog": closed}
     s = scale()
     mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
     time.sleep(1.2)
     menu_click("Verbinden mit...")
     # The dialog can take several seconds to open (syn-minimal, 2026-10-31).
     t0 = time.time()
-    while not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
+    while not link_dialog_open():
         if time.time() - t0 > 12:
-            raise RuntimeError("the link dialog did not open")
+            # One that opens late must not stay (#478).
+            time.sleep(3)
+            closed = close_link_dialog()
+            raise RuntimeError(f"the link dialog did not open{'; it did later, closed with Abbrechen' if closed else ''}")
         time.sleep(1)
     click(1720, 1718)  # the address field left of 'Neue Gruppenadresse'
     time.sleep(0.3)
@@ -1734,19 +1832,40 @@ def flow_link(req: dict) -> dict:
     time.sleep(1.2)
     # The button reads 'Erstellen & Verbinden' for a new address and
     # 'Verbinden' for an existing one; OCR prefixes its link icon ('00').
-    buttons = [l for l in ocr((1800, 1830, 2300, 1910)) if "Verbinden" in l["text"]]
+    buttons = [l for l in ocr(LINK_VERBINDEN) if "Verbinden" in l["text"]]
     if not buttons:
-        raise RuntimeError("no 'Verbinden' button in the link dialog")
+        closed = close_link_dialog()
+        raise RuntimeError(f"no 'Verbinden' button in the link dialog; {'closed with Abbrechen' if closed else 'left open'}")
     b = buttons[0]
+
+    def refuse(refused: str) -> dict:
+        reason = f"ETS refused {req['ga']} for object {req['number']}: {refused}"
+        closed = close_link_dialog()
+        log(f"link: {reason}; {'closed with Abbrechen' if closed else 'dialog left open'}")
+        if not closed:
+            raise RuntimeError(f"{reason}; the link dialog did not close with Abbrechen")
+        return {"linked": False, "refused": reason, "row": row}
+
+    # ETS takes only an address of the object's size (its list offers just
+    # those); for another one it frames the field red and greys 'Verbinden'
+    # out (ise KNX Sonos object 12, 1 bit, given 1/0/2 of a 1-byte object,
+    # 2026-11-10). The red frame is ETS's verdict on the typed text: cancel
+    # and report, never wait for a close that cannot come.
+    if red_frame(grab(LINK_FIELD)):
+        return refuse(link_refusal(b) or "the address field shows an error")
     # The first click after typing only commits the field at times (the
     # dialog stayed open, 2026-10-28): click until the dialog closes.
     for _ in range(3):
         click(b["x"] + b["w"] - 60, b["y"] + b["h"] // 2)
         time.sleep(2)
-        if not find_text("Mit Gruppenadresse verbinden", (1500, 560, 2600, 680)):
+        if not link_dialog_open():
             break
     else:
-        raise RuntimeError("the link dialog did not close")
+        refused = link_refusal(b)
+        if refused:
+            return refuse(refused)
+        closed = close_link_dialog()
+        raise RuntimeError(f"the link dialog did not close; {'closed with Abbrechen' if closed else 'left open'}")
     time.sleep(1)
     # An address the project already holds with another object size: ETS asks
     # whether to take the object's datatype for it ('... abweichende
@@ -2006,10 +2125,14 @@ def catalog_import_button() -> dict | None:
     """The Katalog panel's Import button wherever the panel sits."""
     # The first word: OCR joins an enabled 'Herunterladen' next to it into one
     # line ('Import Herunterladen', 2026-10-28).
-    # The first two words: the panel's close icon left of the button joins the
-    # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06).
-    hits = [l for l in ocr((680, 200, 1100, 2440))
-            if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:2])]
+    # The first three words: the panel's close icon left of the button joins the
+    # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06), and
+    # with the collapse arrow as 'v X Import' after a restart (2026-11-10 09:40).
+    # The strip reaches x 1300: after the reset of 2026-11-10 the Katalog
+    # tree column was wider and the word Import started at x 1067, past
+    # the old right edge (1100), so OCR read only the icons.
+    hits = [l for l in ocr((680, 200, 1300, 2440))
+            if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:3])]
     if not hits:
         return None
     hit = dict(min(hits, key=lambda l: abs(l["y"] - 1354)))
@@ -2158,6 +2281,8 @@ def flow_catalog_import(req: dict) -> dict:
     # A delete confirmation a failed delete left open covers the Katalog
     # panel: every later import failed (2026-11-08, #997).
     closed_delete_dialog = close_delete_dialog()
+    # So does a link dialog a failed link left open (2026-11-10, #478).
+    closed_link_dialog = close_link_dialog()
     # A file dialog a failed import left open (a COMError right after it
     # opened, 2026-11-05) covers the Import button: every later import failed.
     for w in ets_popups():
@@ -2268,7 +2393,7 @@ def flow_catalog_import(req: dict) -> dict:
                 if "erfolgreich" not in " ".join(l["text"] for l in ocr(region)):
                     break
             return {"outcome": "imported", "products": products, "message": joined[:600], "attached": attached, "ets_error": ets_error,
-                    "closed_delete_dialog": closed_delete_dialog}
+                    "closed_delete_dialog": closed_delete_dialog, "closed_link_dialog": closed_link_dialog}
         if any(k in joined for k in ("Fehler", "fehlgeschlagen", "nicht importiert", "ungültig", "Ausnahme")):
             for label in ("OK", "Schließen", "Abbrechen"):
                 if find_text(label, (1900, 1460, 2700, 1580)):

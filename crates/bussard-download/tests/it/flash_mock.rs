@@ -8406,3 +8406,73 @@ async fn test_flash_mapped_unload_still_fails_on_another_error() -> TestResult {
     drop(handle);
     Ok(())
 }
+
+/// Issue #1026: a segment with neither `<Data>` nor a memory parameter that
+/// its allocation pre-fills (the Gira `M-0008_A-6010-20-4D55` shape) holds the
+/// fill throughout. The flash writes none of it, as ETS does, and the MCB check
+/// of the object compares the device's CRC over the filled octets and passes.
+#[tokio::test]
+async fn test_flash_prefilled_segment_without_image_passes_the_mcb_check() -> TestResult {
+    let xml = r#"<KNX xmlns="http://knx.org/xml/project/23">
+     <ApplicationProgram Id="M-2_A-8" ApplicationNumber="8" ApplicationVersion="1"
+        MaskVersion="MV-07B0" Name="Empty" LoadProcedureStyle="MergedProcedure">
+      <Static>
+       <Code>
+        <RelativeSegment Id="M-2_A-8_RS-04-00000" Size="16" LoadStateMachine="4" Offset="0" />
+       </Code>
+       <LoadProcedures>
+        <LoadProcedure MergeId="1">
+         <LdCtrlConnect />
+         <LdCtrlUnload LsmIdx="4" />
+         <LdCtrlLoad LsmIdx="4" />
+         <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="16" Mode="1" Fill="0" />
+         <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="16" Verify="true" />
+         <LdCtrlLoadCompleted LsmIdx="4" />
+         <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />
+         <LdCtrlRestart />
+         <LdCtrlDisconnect />
+        </LoadProcedure>
+       </LoadProcedures>
+      </Static>
+     </ApplicationProgram></KNX>"#;
+    let app = parse_application_program("M-2_A-8", xml.as_bytes())?;
+    let (mut bus, state, handle) = setup(Fault::None).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
+    let mut plan = plan_flash_default(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    plan.skip_factory_reset();
+    let l4 = Layer4Connection::connect(
+        &mut bus,
+        target,
+        source,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let mut session = authed_session(l4).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    let _ = session.into_disconnect().await;
+
+    assert!(outcome.ok(), "the MCB check must pass: {outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    assert_eq!(
+        lock(&state)?.memory_writes_seen,
+        0,
+        "ETS writes none of the fill"
+    );
+    drop(handle);
+    Ok(())
+}

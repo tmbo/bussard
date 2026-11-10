@@ -512,6 +512,8 @@ def main() -> int:
                 "end": r.get("end"),
                 "learned_properties": r.get("learned_properties"),
                 "links": (r.get("before") or {}).get("links"),
+                # Links ETS refused, with its reason (#478); the dialog was cancelled.
+                "links_refused": (r.get("before") or {}).get("refused") or None,
             }
             save()
             print(f"{r['outcome']:13} {job['mask']} {r.get('seconds', 0):4}s ops={r.get('ops')} {job['id']} {job['name']!s:.40}"

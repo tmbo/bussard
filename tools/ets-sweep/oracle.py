@@ -89,16 +89,27 @@ def description_summary(diff_json: Path) -> dict:
     return out
 
 
-def catalog_row_name(run_dir: Path) -> str | None:
-    """The catalog row ETS added the device from (its product text, the
-    device's name in the project): ETS writes it as the friendly name of an
-    IP-enabled device (bussard issue #455)."""
+def catalog_row(run_dir: Path) -> dict:
+    """The catalog row ETS added the device from, as the driver read it."""
     try:
         driver = json.loads((run_dir / "driver.json").read_text())
     except (OSError, ValueError):
-        return None
-    row = (driver.get("driver") or {}).get("catalog_add", {}).get("row") or {}
-    return row.get("name")
+        return {}
+    return (driver.get("driver") or {}).get("catalog_add", {}).get("row") or {}
+
+
+def catalog_row_name(run_dir: Path) -> str | None:
+    """The catalog row's name, as the driver read it off the screen."""
+    return catalog_row(run_dir).get("name")
+
+
+def device_name(run_dir: Path, product: Path, app: str) -> str | None:
+    """The device's name in the sweep's ETS project, which ETS writes as the
+    friendly name of an IP-enabled device (bussard issues #455, #1023): the
+    product text of the catalog row's order number
+    (`oracle_model.project_device_name`), else the row's name as read."""
+    return (oracle_model.project_device_name(product, app, catalog_row(run_dir).get("order"))
+            or catalog_row_name(run_dir))
 
 
 def variant_links(run_dir: Path) -> dict:
@@ -167,7 +178,7 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     shared = oracle_model.shared_import(shared_root(captures, work), product, seed=seed_dir)
     ia = entry_ia(entry)
     model = oracle_model.build(work_dir / "model", product, app, ia=ia, mask=entry.get("mask", ""),
-                               friendly_name=catalog_row_name(run_dir), shared=shared, links=links)
+                               friendly_name=device_name(run_dir, product, app), shared=shared, links=links)
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"),
                         "--row", row(app, capture, product, entry.get("mask", ""), variant, ia)],
                        capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})

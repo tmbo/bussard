@@ -83,8 +83,9 @@ def has(flags: str | None, flag: str) -> bool:
 def plan_links(objects: list[dict], n: int = 4) -> dict:
     """The links of a series, picked from ETS's object table (see the module
     doc): `initial` [(object, ga)] for step A, `add` (object, ga) for B and C,
-    `second` (object, ga) for D. Addresses 1/0/1.. in order, 1/0/9 for B.
-    None where the table offers no candidate."""
+    `second` (object, ga) for D, an address of another initial object of
+    the same size. Addresses 1/0/1.. in order, 1/0/9 for B. None where the
+    table offers no candidate."""
     rows = [o for o in objects if isinstance(o.get("number"), int)]
     # Objects already linked keep their links; the initial links go to free
     # transmitting objects first (the status outputs ETS shows K L Ü), then
@@ -101,12 +102,17 @@ def plan_links(objects: list[dict], n: int = 4) -> dict:
     add = (add_obj["number"], "1/0/9") if add_obj else None
     # Step D: another link's address on a linked object (the EK-E72 series
     # put 1/0/4 on object 1), one that can be written preferred: a second
-    # address is one the object listens to.
-    second = None
-    if len(initial) >= 2:
-        flags = {o["number"]: o.get("flags") for o in initial_objs}
-        target = next((n for n, _ in initial if has(flags[n], WRITE)), initial[0][0])
-        second = (target, next(ga for n, ga in initial if n != target))
+    # address is one the object listens to. ETS links an address only to
+    # objects of its size: it refused 1/0/2 of a 1-byte object for a 1-bit
+    # one and left its dialog open (ise KNX Sonos, 2026-11-10, #478). A size
+    # the table did not yield does not rule a pair out.
+    by_no = {o["number"]: o for o in initial_objs}
+
+    def fits(a: int, b: int) -> bool:
+        sa, sb = by_no[a].get("size"), by_no[b].get("size")
+        return sa is None or sb is None or sa == sb
+    pairs = [(t, ga) for t, _ in initial for n, ga in initial if n != t and fits(t, n)]
+    second = next((p for p in pairs if has(by_no[p[0]].get("flags"), WRITE)), pairs[0] if pairs else None)
     return {"initial": initial, "add": add, "second": second}
 
 
@@ -134,13 +140,17 @@ def links_hook(n: int = 3):
     def hook(flow, out: Path, ia: str = "1.1.1") -> dict:
         objects = flow("objects", ia=ia)["objects"]
         plan = plan_links(objects, n)
-        done = []
+        done, refused = [], []
         for number, ga in plan["initial"] + ([plan["second"]] if plan["second"] else []):
-            flow("link", ia=ia, number=number, ga=ga)
+            r = flow("link", ia=ia, number=number, ga=ga)
+            if r.get("linked") is False:
+                # ETS refused the address; the driver cancelled its dialog.
+                refused.append({"number": number, "ga": ga, "reason": r.get("refused")})
+                continue
             done.append([number, ga])
         after = flow("objects", ia=ia)["objects"]
         (out / "objects.json").write_text(json.dumps(after, indent=1, ensure_ascii=False))
-        return {"links": done}
+        return {"links": done, "refused": refused}
 
     return hook
 
@@ -215,7 +225,9 @@ def run_series(c, rep: dict, only_steps: str = "abcd") -> dict:
             out = series / name
             out.mkdir(parents=True, exist_ok=True)
             for action, number, ga in changes:
-                flow(action, ia="1.1.1", number=number, ga=ga)
+                r = flow(action, ia="1.1.1", number=number, ga=ga)
+                if r.get("linked") is False:
+                    raise RuntimeError(f"{name}: {r.get('refused')}")
             objects = flow("objects", ia="1.1.1")["objects"]
             (out / "objects.json").write_text(json.dumps(objects, indent=1, ensure_ascii=False))
             try:
