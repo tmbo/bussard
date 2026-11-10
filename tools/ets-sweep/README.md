@@ -422,6 +422,22 @@ port per row.
     export ETS_SWEEP_PROJECT_PASSWORD=<8-64 characters: upper, lower, digit and one of !#$*,.:;=?@_->
     uv run tools/ets-sweep/secure.py jobs                    # the secure-capable captured applications
     uv run tools/ets-sweep/secure.py run --filter <app> --limit 1
+    uv run tools/ets-sweep/secure.py run --representative    # the subset of secure-subset.json
+    uv run tools/ets-sweep/oracle.py --variant secure         # results/oracle-secure.json
+
+The owner chose a representative subset over every secure-capable
+application (2026-11-10). `secure_subset.py select` derives
+`secure-subset.json`: a greedy cover over the secure-capable applications
+the defaults sweep captured whose plain oracle row is identical (memory and
+load control), so a difference of the secure row is the secure download's.
+The labels are the mask, TP device or tunnelling device or IP interface, the
+number of tunnels, the manufacturer, the number of group objects, the group
+key and security address table capacities, whether the load procedure
+writes the security mode itself, the table loading style, modules and
+download plugins; each row keeps the labels it added as its reason.
+`oracle.py --variant secure` decodes each row with its keyring (`keyring=`)
+and plans it with a key store imported from that keyring, so bussard plans
+the security object's writes (PID 5, 54, 61) as the syn-secure row does.
 
 `secure.py` runs every application the defaults sweep captured whose program
 declares `IsSecureEnabled="true"` once more, in a project of its own

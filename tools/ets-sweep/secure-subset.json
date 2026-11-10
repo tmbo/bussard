@@ -1,0 +1,264 @@
+{
+ "issue": 423,
+ "derived_by": "tools/ets-sweep/secure_subset.py select",
+ "apps": [
+  {
+   "app": "M-00A6_A-0014-10-2517",
+   "mask": "0021",
+   "name": "IP Secure Interface",
+   "file": "1168-ETS-KNXIPSecureInterface-1.001.knxprod",
+   "defaults_seconds": 180,
+   "plain": "not-comparable",
+   "why": "the only secure-capable application of mask 0021 (Enertex IP Secure Interface); its plain row is not comparable, so its secure row shows whether the sim and ETS's secure commissioning work on that mask, not an attributable difference; also first to cover group-keys:undeclared, ia-table:<=100, iface:0021/ip-interface, iface:0021/tunnelling, maker:Enertex, mask:0021, objects:none, secobj:ets, tables:tunnelling/ets-default, tunnels:8",
+   "covers": [
+    "group-keys:undeclared",
+    "ia-table:<=100",
+    "iface:0021/ip-interface",
+    "iface:0021/tunnelling",
+    "maker:Enertex",
+    "mask:0021",
+    "objects:none",
+    "secobj:ets",
+    "tables:tunnelling/ets-default",
+    "tunnels:8"
+   ]
+  },
+  {
+   "app": "M-0083_A-0213-13-518D",
+   "mask": "07B0",
+   "name": "Room Actuator 6 channel output, 8 channel input",
+   "file": "AKR-IOxxx-01S_MDT_KP_V13a.knxprod",
+   "defaults_seconds": 124,
+   "plain": "identical",
+   "why": "first to cover group-keys:>1100, ia-table:>250, iface:07B0/tp, maker:MDT, mask:07B0, modules, objects:very many 201-1000, tables:tp/prop-image",
+   "covers": [
+    "group-keys:>1100",
+    "ia-table:>250",
+    "iface:07B0/tp",
+    "maker:MDT",
+    "mask:07B0",
+    "modules",
+    "objects:very many 201-1000",
+    "tables:tp/prop-image"
+   ]
+  },
+  {
+   "app": "M-00B6_A-4945-10-C905-O00C5",
+   "mask": "07B0",
+   "name": "KNX IP interface secure",
+   "file": "APEKIE1SECTP01.knxprod",
+   "defaults_seconds": 98,
+   "plain": "identical",
+   "why": "first to cover ia-table:undeclared, iface:07B0/ip-interface, iface:07B0/tunnelling, maker:Ekinex, tables:tunnelling/prop-image",
+   "covers": [
+    "ia-table:undeclared",
+    "iface:07B0/ip-interface",
+    "iface:07B0/tunnelling",
+    "maker:Ekinex",
+    "tables:tunnelling/prop-image"
+   ]
+  },
+  {
+   "app": "M-0009_A-E80C-10-27A9",
+   "mask": "07B0",
+   "name": "STYB601B",
+   "file": "TYBS601B_v1.0.6_t2.knxprod",
+   "defaults_seconds": 168,
+   "plain": "identical",
+   "why": "first to cover group-keys:<=255, maker:Hager, objects:some 11-50, secobj:lp-index, tables:tp/ets-default",
+   "covers": [
+    "group-keys:<=255",
+    "maker:Hager",
+    "objects:some 11-50",
+    "secobj:lp-index",
+    "tables:tp/ets-default"
+   ]
+  },
+  {
+   "app": "M-0071_A-6391-11-346B",
+   "mask": "07B0",
+   "name": "KIPI SC 1.1",
+   "file": "KIPI_SC_1.1_EIFAItR_Cert.knxprod",
+   "defaults_seconds": 133,
+   "plain": "identical",
+   "why": "first to cover group-keys:256-1100, maker:Zennio, objects:huge >1000, tunnels:5",
+   "covers": [
+    "group-keys:256-1100",
+    "maker:Zennio",
+    "objects:huge >1000",
+    "tunnels:5"
+   ]
+  },
+  {
+   "app": "M-0048_A-0103-11-72A2",
+   "mask": "07B0",
+   "name": "LUXA 103 S360",
+   "file": "KNX_DB_D_GB_E_F_I_NL_Theben_AG_ETS5_2506.knxprod",
+   "defaults_seconds": 146,
+   "plain": "identical",
+   "why": "first to cover ia-table:101-250, maker:Theben, objects:many 51-200",
+   "covers": [
+    "ia-table:101-250",
+    "maker:Theben",
+    "objects:many 51-200"
+   ]
+  },
+  {
+   "app": "M-0008_A-F060-10-5848",
+   "mask": "07B0",
+   "name": "Gira F1 KNX Bridge TP",
+   "file": "20499100.knxprod",
+   "defaults_seconds": 162,
+   "plain": "identical",
+   "why": "first to cover maker:Gira, objects:few <=10",
+   "covers": [
+    "maker:Gira",
+    "objects:few <=10"
+   ]
+  },
+  {
+   "app": "M-00C5_A-0411-10-3FD6",
+   "mask": "07B0",
+   "name": "KNX IO 430 secure",
+   "file": "Weinzierl-430-KNX-IO-secure-5580-ETS5.knxprod",
+   "defaults_seconds": 129,
+   "plain": "identical",
+   "why": "first to cover maker:Weinzierl",
+   "covers": [
+    "maker:Weinzierl"
+   ]
+  },
+  {
+   "app": "M-0007_A-6179-82-036E",
+   "mask": "07B0",
+   "name": "Movement Twilight Brightness Temperature Bluetooth/8.2",
+   "file": "BM_A4_11_13X_V8-2_9AKK108471A0162.knxprod",
+   "defaults_seconds": 133,
+   "plain": "identical",
+   "why": "first to cover maker:Busch-Jaeger",
+   "covers": [
+    "maker:Busch-Jaeger"
+   ]
+  },
+  {
+   "app": "M-011E_A-BCBE-10-95C4",
+   "mask": "07B0",
+   "name": "RC0800S Room Control Unit,16A, Secure",
+   "file": "RCUxxxxS_Families_en_de_es_fr_it_1.knxprod",
+   "defaults_seconds": 133,
+   "plain": "identical",
+   "why": "first to cover maker:M-011E",
+   "covers": [
+    "maker:M-011E"
+   ]
+  },
+  {
+   "app": "M-00C8_A-2720-71-89E1",
+   "mask": "07B0",
+   "name": "Generation 7",
+   "file": "PD_Gen71_DX.knxprod",
+   "defaults_seconds": 146,
+   "plain": "identical",
+   "why": "first to cover maker:M-00C8",
+   "covers": [
+    "maker:M-00C8"
+   ]
+  },
+  {
+   "app": "M-011F_A-0694-10-F07A-O0083",
+   "mask": "07B0",
+   "name": "Motivity, Secure",
+   "file": "MOT-xxxx-02S_Tense_KP_V10.knxprod",
+   "defaults_seconds": 147,
+   "plain": "identical",
+   "why": "first to cover maker:M-011F",
+   "covers": [
+    "maker:M-011F"
+   ]
+  },
+  {
+   "app": "M-0085_A-008E-10-FAC5",
+   "mask": "07B0",
+   "name": "KNX Universal Dimming Actuator,1-Fold/1.0",
+   "file": "GVS_ADUD-01_02.3_V1.0_20250428_ETS5.knxprod",
+   "defaults_seconds": 148,
+   "plain": "identical",
+   "why": "first to cover maker:GVS",
+   "covers": [
+    "maker:GVS"
+   ]
+  },
+  {
+   "app": "M-0001_A-20DF-22-4073-O000A",
+   "mask": "07B0",
+   "name": "07B0 A1S3 Switching, Inputs 20DF22",
+   "file": "UP_511S32__20DF22_ETS5.knxprod",
+   "defaults_seconds": 150,
+   "plain": "identical",
+   "why": "first to cover maker:Siemens",
+   "covers": [
+    "maker:Siemens"
+   ]
+  },
+  {
+   "app": "M-008E_A-C030-22-0932-O000A",
+   "mask": "07B0",
+   "name": "DALI Gateway Colour 2fold V2.20",
+   "file": "DALI_Gateways_Colour_V22_Steinel.knxprod",
+   "defaults_seconds": 151,
+   "plain": "identical",
+   "why": "first to cover maker:Steinel",
+   "covers": [
+    "maker:Steinel"
+   ]
+  },
+  {
+   "app": "M-00EF_A-DA11-22-A545",
+   "mask": "07B0",
+   "name": "DaliControl e64 Pro_V2.2.0",
+   "file": "ETS_4101-145-02_DALIControle64Pro_V2.2.0.knxprod",
+   "defaults_seconds": 151,
+   "plain": "identical",
+   "why": "first to cover maker:M-00EF",
+   "covers": [
+    "maker:M-00EF"
+   ]
+  },
+  {
+   "app": "M-00C9_A-10CF-10-8D0B",
+   "mask": "07B0",
+   "name": "Weather_Secure Application",
+   "file": "71238_Windancer_2-0_KNX_sec_1-0_d-en-es-fr-it.knxprod",
+   "defaults_seconds": 161,
+   "plain": "identical",
+   "why": "first to cover maker:M-00C9",
+   "covers": [
+    "maker:M-00C9"
+   ]
+  },
+  {
+   "app": "M-0002_A-A0EF-11-7855-O0048",
+   "mask": "07B0",
+   "name": "Valve Drive Continuous/1.1",
+   "file": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
+   "defaults_seconds": 170,
+   "plain": "identical",
+   "why": "first to cover maker:ABB",
+   "covers": [
+    "maker:ABB"
+   ]
+  },
+  {
+   "app": "M-0004_A-303B-24-277D-O00A6",
+   "mask": "07B0",
+   "name": "Dimming 303B22",
+   "file": "All_390051SLEDX_v2.4_20250114.knxprod.knxprod",
+   "defaults_seconds": 175,
+   "plain": "identical",
+   "why": "first to cover maker:Jung",
+   "covers": [
+    "maker:Jung"
+   ]
+  }
+ ]
+}

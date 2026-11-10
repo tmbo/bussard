@@ -434,11 +434,19 @@ impl Device {
             // A property-only procedure on mask 0021 (bussard issue #390): the
             // Jung IPS 300 SREG KNX IP interface.
             profile::MaskFamily::Other if mask == 0x0021 && product.property_only => {
+                let secure = overrides.secure.map(|a| {
+                    crate::secure::DataSecureSession::new(
+                        a.tool_key,
+                        a.initial_tx_seq,
+                        a.initial_rx_seq,
+                    )
+                });
                 return Ok(Self::build_property_device(
                     address,
                     product,
                     Profile::SystemB { mask },
                     overrides.prog_mode,
+                    secure,
                     events,
                 ));
             }
@@ -1354,6 +1362,34 @@ mod tests {
         )?;
         let order = dev.property_value(0, 0x0F).ok_or("object 0 PID 15")?;
         assert_eq!(&order[..3], b"IPS");
+        Ok(())
+    }
+
+    /// The Enertex IP Secure Interface (mask 0021, bussard issue #423): a
+    /// property-only device with a `security:` block gets the security
+    /// object and the Data Secure session, as a System B device does.
+    #[test]
+    fn test_from_product_with_overrides_property_only_device_is_secure()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pd = property_only_product();
+        let overrides = ProfileOverrides {
+            secure: Some(SecureActivation {
+                tool_key: crate::secure::Key16::new([0x11; 16]),
+                initial_tx_seq: 0,
+                initial_rx_seq: 0,
+            }),
+            ..ProfileOverrides::default()
+        };
+        let dev = Device::from_product_with_overrides(
+            IndividualAddress::new(1, 1, 200),
+            &pd,
+            LoadState::Loaded,
+            overrides,
+            std::sync::Arc::new(crate::bus::event::RecordingSink::new()),
+        )?
+        .with_factory_security();
+        assert!(dev.security_object().is_some());
+        assert!(dev.secure.is_some());
         Ok(())
     }
 

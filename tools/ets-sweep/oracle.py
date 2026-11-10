@@ -158,17 +158,64 @@ def entry_ia(entry: dict) -> str:
 
 
 def row(app: str, capture: Path, product: Path, mask: str, variant: str = "plain-defaults",
-        ia: str = DEFAULT_IA) -> str:
+        ia: str = DEFAULT_IA, keyring: Path | None = None) -> str:
     """The oracle row of a sweep capture: the device at the address ETS gave
-    it (1.1.1 unless `ia`), no note, no recorded coverage, and the device
-    state of a System 7 mask (`device_state`)."""
-    return "|".join([ia, str(capture), str(product), app, "", "", device_state(mask, variant)]).rstrip("|")
+    it (1.1.1 unless `ia`), no note, no recorded coverage, the device state
+    of a System 7 mask (`device_state`) and, for a Data Secure capture, the
+    keyring that decodes it (`keyring=`, #423)."""
+    options = " ".join(o for o in (device_state(mask, variant), f"keyring={keyring}" if keyring else "") if o)
+    return "|".join([ia, str(capture), str(product), app, "", "", options]).rstrip("|")
+
+
+# The oracle's variants beyond the sweep's (`defaults.VARIANTS`): the Data
+# Secure variant (#423), whose captures secure.py writes under
+# `<app>/secure-defaults/` and whose outcomes are results/secure.json.
+SECURE = "secure"
+
+
+def variant_run_dir(variant: str) -> str:
+    """The run directory name of a variant under `<captures>/<app>/`."""
+    import secure
+
+    return secure.VARIANT if variant == SECURE else variant
+
+
+def variant_results(variant: str) -> Path:
+    """The outcome manifest the oracle reads for a variant."""
+    import secure
+
+    return secure.RESULTS if variant == SECURE else defaults.results_path(variant)
+
+
+def keyring_password() -> str:
+    """The password of a vendor secure run's keyring export: the sweep's
+    project password (secure.py exports under it), from the environment."""
+    import secure
+
+    pw = os.environ.get(secure.PASSWORD_ENV, "")
+    if not pw:
+        raise RuntimeError(f"the secure variant needs ${secure.PASSWORD_ENV} (the keyring's password)")
+    return pw
+
+
+def import_key_store(model: Path, keyring: Path, password: str) -> None:
+    """The model's key store `bussard.keys`, imported from the run's keyring,
+    so bussard plans the security object's writes (PID 5, 54, 61) with the
+    keys ETS used, as the syn-secure row does (#858, `synthetic/capture.py`
+    `secure_model`)."""
+    (model / "bussard.keys").unlink(missing_ok=True)
+    env = {k: v for k, v in os.environ.items() if k not in ("BUSSARD_KEYRING", "BUSSARD_DIR")}
+    r = subprocess.run([str(oracle_model.BUSSARD), "--dir", str(model), "keys", "import", str(keyring)],
+                       capture_output=True, text=True, timeout=300,
+                       env={**env, "BUSSARD_NO_DOTENV": "1", "BUSSARD_KEYRING_PASSWORD": password})
+    if r.returncode:
+        raise RuntimeError("keys import failed: " + ANSI.sub("", r.stderr + r.stdout).strip()[-300:])
 
 
 def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool = False,
             variant: str = "plain-defaults", links: dict | None = None) -> dict:
-    run_dir = captures / app / variant
-    work_dir = work / app / variant if work else run_dir
+    run_dir = captures / app / variant_run_dir(variant)
+    work_dir = work / app / variant_run_dir(variant) if work else run_dir
     capture = run_dir / "ets.pcapng"
     product = defaults.product_path(entry["file"])
     # The product file is imported once and shared by every row of it; with
@@ -179,9 +226,18 @@ def run_row(app: str, entry: dict, captures: Path, work: Path | None, seed: bool
     ia = entry_ia(entry)
     model = oracle_model.build(work_dir / "model", product, app, ia=ia, mask=entry.get("mask", ""),
                                friendly_name=device_name(run_dir, product, app), shared=shared, links=links)
+    env = {**os.environ, "BUSSARD_NO_DOTENV": "1"}
+    keyring = None
+    if variant == SECURE:
+        keyring = run_dir / "project.knxkeys"
+        if not keyring.is_file():
+            return {"verdict": "no-keyring", "ia": ia}
+        pw = keyring_password()
+        import_key_store(model, keyring, pw)
+        env["BUSSARD_KEYRING_PASSWORD"] = pw
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--out", str(work_dir / "oracle"),
-                        "--row", row(app, capture, product, entry.get("mask", ""), variant, ia)],
-                       capture_output=True, text=True, timeout=1800, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
+                        "--row", row(app, capture, product, entry.get("mask", ""), variant, ia, keyring)],
+                       capture_output=True, text=True, timeout=1800, env=env)
     text = ANSI.sub("", r.stdout + r.stderr)
     summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
     m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s*(.*)", summary)
@@ -225,10 +281,12 @@ def main() -> int:
     ap.add_argument("--seed-models", action="store_true",
                     help="take the model the sweep imported next to a capture as the product import instead of importing (once per product file)")
     ap.add_argument("--defaults", type=Path, help="the sweep results (default: the variant's, results/defaults.json)")
-    ap.add_argument("--variant", default="plain-defaults", choices=sorted(defaults.VARIANTS),
-                    help="links: the links variant (#478); each row's model gets the links ETS showed (objects.json)")
+    ap.add_argument("--variant", default="plain-defaults", choices=sorted(defaults.VARIANTS) + [SECURE],
+                    help="links: the links variant (#478); each row's model gets the links ETS showed (objects.json). "
+                         "secure: the Data Secure variant (#423, results/secure.json); each row decodes with its "
+                         "keyring and plans with a key store imported from it ($ETS_SWEEP_PROJECT_PASSWORD)")
     args = ap.parse_args()
-    args.defaults = args.defaults or defaults.results_path(args.variant)
+    args.defaults = args.defaults or variant_results(args.variant)
     args.out = args.out or (OUT if args.variant == "plain-defaults" else OUT.with_name(f"oracle-{args.variant}.json"))
     res = json.loads(args.defaults.read_text())
     out = json.loads(args.out.read_text()) if args.out.exists() else {}
@@ -242,7 +300,7 @@ def main() -> int:
             continue
         try:
             v = run_row(app, entry, args.captures, args.work, args.seed_models, variant=args.variant,
-                        links=variant_links(args.captures / app / args.variant) if args.variant != "plain-defaults" else None)
+                        links=variant_links(args.captures / app / args.variant) if args.variant == "links" else None)
         except Exception as exc:  # noqa: BLE001 - recorded, the next row runs
             v = {"verdict": "oracle-error", "error": str(exc)[:400]}
         v.update({"name": entry.get("name"), "mask": entry.get("mask"), "capture_when": entry["when"],
