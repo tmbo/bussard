@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import apply_rows  # noqa: E402
 import defaults  # noqa: E402
 import followups  # noqa: E402
+import links_subset  # noqa: E402
 import nightly  # noqa: E402
 import oracle  # noqa: E402
 import oracle_model  # noqa: E402
@@ -145,7 +146,7 @@ class TestNightly(unittest.TestCase):
         cmds = [c[3:] for c in nightly.commands("sweep", 3, False)]
         self.assertEqual([c[1:] for c in cmds],
                          [["--redo-failed", "--shard", "0/3"], ["--redo-failed", "--shard", "1/3"],
-                          ["--redo-failed", "--shard", "2/3"], ["--variant", "links"]])
+                          ["--redo-failed", "--shard", "2/3"], ["--variant", "links", "--representative"]])
         self.assertEqual(nightly.commands("followups", 1, False)[0][-1][-12:], "followups.py")
         self.assertEqual(nightly.commands("followups", 1, True)[0][-1], "--create")
         self.assertIn("--redo", nightly.commands("oracle", 1, False)[0])
@@ -352,19 +353,35 @@ class TestSeries(unittest.TestCase):
         calls = []
 
         def flow(name, **kw):
-            calls.append((name, kw.get("number"), kw.get("ga")))
+            calls.append((name, kw))
             if name == "objects":
                 return {"objects": self.SONOS}
-            if kw["ga"] == "1/0/2":
-                return {"linked": False, "refused": "ETS refused 1/0/2 for object 16: ..."}
-            return {"linked": True}
+            out = [{"number": n, "ga": g, "linked": True} for n, g in kw["links"]]
+            out[1] = {"number": 16, "ga": "1/0/2", "linked": False, "refused": "ETS refused 1/0/2 for object 16: ..."}
+            return {"links": out, "objects": [{"number": 12, "gas": ["1/0/1", "1/0/3"]}]}
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
         out = series.links_hook(3)(flow, tmp)
         self.assertEqual(out["links"], [[12, "1/0/1"], [20, "1/0/3"], [12, "1/0/3"]])
         self.assertEqual(out["refused"], [{"number": 16, "ga": "1/0/2", "reason": "ETS refused 1/0/2 for object 16: ..."}])
-        self.assertEqual(calls[-1][0], "objects")
-        self.assertTrue((tmp / "objects.json").exists())
+        # Two driver calls: the table read (it selects the device and opens
+        # the table) and every link on that same table; no last read.
+        self.assertEqual([c[0] for c in calls], ["objects", "links"])
+        self.assertEqual(calls[1][1], {"ia": "1.1.1", "open": False,
+                                       "links": [[12, "1/0/1"], [16, "1/0/2"], [20, "1/0/3"], [12, "1/0/3"]]})
+        self.assertEqual(json.loads((tmp / "objects.json").read_text()), [{"number": 12, "gas": ["1/0/1", "1/0/3"]}])
+
+    def test_links_hook_without_candidates_makes_no_links_call(self):
+        calls = []
+        tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
+        out = series.links_hook(3)(lambda name, **kw: calls.append(name) or {"objects": []}, tmp)
+        self.assertEqual((calls, out), (["objects"], {"links": [], "refused": []}))
+
+    def test_link_steps_initial_then_second(self):
+        plan = series.plan_links(self.SONOS, n=3)
+        self.assertEqual(series.link_steps(plan), [[12, "1/0/1"], [16, "1/0/2"], [20, "1/0/3"], [12, "1/0/3"]])
+        self.assertEqual(series.link_steps({"initial": [(1, "1/0/1")], "add": None, "second": None}), [[1, "1/0/1"]])
 
     def test_plan_links_empty_table(self):
         self.assertEqual(series.plan_links([]), {"initial": [], "add": None, "second": None})
@@ -1718,46 +1735,473 @@ class TestDriverLinkDialog(unittest.TestCase):
         self.assertFalse(out)
         mocks[4].assert_not_called()
 
-    def flow_link(self, open_states: list[bool], framed: bool):
+    def test_flow_link_closes_a_leftover_dialog_first(self):
+        from unittest import mock
+
+        with mock.patch.object(self.d, "close_link_dialog", side_effect=RuntimeError("stop")) as close, \
+                mock.patch.object(self.d, "close_size_prompt", return_value=False), \
+                mock.patch.object(self.d, "require_project"):
+            with self.assertRaisesRegex(RuntimeError, "stop"):
+                self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"})
+        close.assert_called_once()
+
+
+class TestDriverCatalogColumns(unittest.TestCase):
+    """The catalog's columns come from its header row: ETS showed 'Sic' and
+    'Hersteller' before 'Name' on 2026-11-10 and every cell moved (#478)."""
+
+    HEADER = [{"text": "Sic Hersteller", "x": 1090, "y": 1409, "w": 147, "h": 18},
+              {"text": "Name", "x": 1469, "y": 1410, "w": 62, "h": 17},
+              {"text": "Bestellnummer", "x": 2302, "y": 1409, "w": 162, "h": 18},
+              {"text": "Medie Applikation", "x": 2559, "y": 1409, "w": 203, "h": 24},
+              {"text": "Version", "x": 2897, "y": 1409, "w": 79, "h": 18}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    def test_catalog_columns_from_the_header(self):
+        cols = self.d.catalog_columns(self.HEADER)
+        self.assertEqual(cols["name"], (1449, 2282))
+        self.assertEqual(cols["order"], (2282, 2539))
+        self.assertEqual(cols["application"], (2610, 2877))
+        self.assertEqual(cols["version"][0], 2877)
+        # The cells of the Hager TXB601B row land in their columns.
+        for key, x in (("order", 2292), ("application", 2630), ("version", 2891), ("name", 1460)):
+            self.assertTrue(cols[key][0] <= x < cols[key][1], (key, x, cols[key]))
+        self.assertFalse(cols["name"][0] <= 1125 < cols["name"][1])
+
+    def test_catalog_columns_fall_back_without_a_header(self):
+        self.assertEqual(self.d.catalog_columns([]), self.d.CATALOG_COLS)
+
+
+class FakeEts:
+    """The screen of ETS's object table and its link dialog, for the link
+    flow: menus open the dialog, Abbrechen closes it, Verbinden closes it
+    unless the address is refused (`refuse`: those ETS frames red and greys
+    out), and the table rows show what was linked."""
+
+    BUTTONS = TestDriverLinkDialog.BUTTONS
+    TITLE = TestDriverLinkDialog.TITLE
+
+    def __init__(self, d, rows, refuse=(), leftover=False, stuck=False, late_menus=0, blind_menus=0,
+                 size_prompt=(), leftover_prompt=False):
+        self.d, self.rows, self.refuse, self.stuck = d, [dict(r, gas=list(r["gas"])) for r in rows], set(refuse), stuck
+        # Right-clicks whose menu comes too late for menu_click (it then
+        # stays open as a popup until Escape).
+        self.late_menus = late_menus
+        # Right-clicks whose menu shows but has no MenuItem for UI
+        # Automation: OCR finds the entry.
+        self.blind_menus = blind_menus
+        self.menu_open = False
+        # Addresses for which ETS asks about another object size after
+        # Verbinden (its question is a dialog of its own; OK links).
+        self.size_prompt = set(size_prompt)
+        self.prompt = leftover_prompt
+        self.pending = None
+        self.dialog = leftover
+        self.typed = ""
+        self.row = None
+        self.now = 0.0
+        self.events: list[tuple] = []
+        self.opened = 0
+        self.reads = 0
+
+    def link_dialog_open(self):
+        return self.dialog
+
+    def menu_click(self, title, timeout=5.0, settle=0.5):
+        if self.blind_menus:
+            self.blind_menus -= 1
+            raise RuntimeError(f"menu item {title!r} not in any popup; popups: []")
+        self.menu_open = False
+        self.events.append(("menu", title))
+        self.dialog = True
+        self.typed = ""
+
+    def right_click(self, coords):
+        self.events.append(("right", coords[1]))
+        if self.late_menus:
+            self.late_menus -= 1
+        else:
+            self.menu_open = True
+        self.row = next(r for r in self.rows if r["y"] == coords[1])
+
+    def find_text(self, pattern, bbox=None, min_ratio=0.8):
+        if self.prompt and pattern.startswith("abweichende"):
+            return {"text": pattern, "x": 1460, "y": 1170, "w": 900, "h": 30}
+        if self.prompt and pattern == "OK":
+            return {"text": "OK", "x": 2600, "y": 1445, "w": 24, "h": 22}
+        if self.prompt and pattern == "Abbrechen":
+            return {"text": "Abbrechen", "x": 2720, "y": 1445, "w": 80, "h": 22}
+        if pattern == "Verbinden mit" and self.menu_open:
+            return {"text": "Verbinden mit...", "x": 1050, "y": 900, "w": 200, "h": 30, "ratio": 1.0}
+        return None
+
+    def click(self, x, y, *a, **k):
+        if self.prompt:
+            self.prompt = False
+            if x < 2700:
+                self.events.append(("ok",))
+                if self.pending:
+                    self.pending["gas"].append(self.typed)
+            else:
+                self.events.append(("prompt-abbrechen",))
+            self.pending = None
+            return
+        if self.menu_open and not self.dialog:
+            self.events.append(("menu-ocr",))
+            self.menu_open = False
+            self.dialog = True
+            self.typed = ""
+            return
+        if not self.dialog:
+            self.events.append(("click", x, y))
+            return
+        if x > 2300:
+            self.events.append(("abbrechen",))
+            self.dialog = False
+        elif y > 1830:
+            self.events.append(("verbinden", self.typed))
+            if self.typed not in self.refuse and not self.stuck:
+                self.dialog = False
+                if self.typed in self.size_prompt:
+                    self.prompt, self.pending = True, self.row
+                else:
+                    self.row["gas"].append(self.typed)
+        else:
+            self.events.append(("field",))
+
+    def click_text(self, pattern, bbox=None, *a, **k):
+        hit = self.find_text(pattern, bbox)
+        if not hit:
+            raise RuntimeError(f"text {pattern!r} not on screen in {bbox}")
+        self.click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+        return hit
+
+    def ets_popups(self):
+        return ["menu"] if self.menu_open else []
+
+    def keys(self, seq, pause=0.05):
+        if seq == "{ESC}":
+            self.events.append(("esc",))
+            self.menu_open = False
+            return
+        if seq != "^a":
+            self.typed = seq
+
+    def ocr(self, bbox=None, zoom=1, **_):
+        d = self.d
+        if bbox == d.LINK_BUTTONS:
+            return self.BUTTONS
+        if bbox == d.LINK_VERBINDEN:
+            return self.BUTTONS[:1]
+        if bbox == d.LINK_LIST:
+            return [{"text": "1/0/1", "x": 1700, "y": 1000, "w": 300, "h": 30}]
+        if bbox == d.LINK_FIELD:
+            return [{"text": self.typed, "x": 1610, "y": 1700, "w": 100, "h": 30}]
+        if bbox and bbox[0] == d.GO_COLS["ga"][0] - 400:
+            hit = [r for r in self.rows if abs(r["y"] - (bbox[1] + 18)) < 3]
+            return [{"text": ", ".join(hit[0]["gas"]), "x": 1840, "y": bbox[1], "w": 100, "h": 30}] if hit and hit[0]["gas"] else []
+        return []
+
+    def grab(self, bbox=None):
+        if bbox == self.d.LINK_FIELD:
+            return TestDriverLinkDialog().field(self.typed in self.refuse)
+        return FakeImage(40, 10).put(5, 3, 30, 7, (150, 150, 150) if self.typed in self.refuse or self.stuck else (30, 30, 30))
+
+    def read_objects(self, numbers=None):
+        self.reads += 1
+        return [dict(r, gas=list(r["gas"])) for r in self.rows]
+
+    def table_numbers(self):
+        return {r["y"]: r["number"] for r in self.rows}
+
+    def open_device_objects(self, ia):
+        self.opened += 1
+
+    def sleep(self, s):
+        self.now += s
+
+    def time(self):
+        self.now += 0.01
+        return self.now
+
+    def patches(self):
         import types
         from unittest import mock
 
         d = self.d
         pw = types.ModuleType("pywinauto")
         pw.mouse = mock.MagicMock()
-        row = {"number": 12, "y": 707, "gas": ["1/0/1"]}
-        patches = self.screen(open_states, framed) + [
-            mock.patch.dict(sys.modules, {"pywinauto": pw}),
-            mock.patch.multiple(d, require_project=mock.DEFAULT, open_device_objects=mock.DEFAULT,
-                                menu_click=mock.DEFAULT, scale=mock.DEFAULT),
-            mock.patch.object(d, "_object_row", return_value=row)]
-        return self.run_patched(patches, lambda: d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"}))
+        pw.mouse.right_click.side_effect = self.right_click
+        return [mock.patch.dict(sys.modules, {"pywinauto": pw}),
+                mock.patch.multiple(d, require_project=mock.DEFAULT, scale=mock.Mock(return_value=1.0),
+                                    link_dialog_open=self.link_dialog_open, menu_click=self.menu_click,
+                                    click=self.click, keys=self.keys, ocr=self.ocr, grab=self.grab,
+                                    read_objects=self.read_objects, table_numbers=self.table_numbers,
+                                    open_device_objects=self.open_device_objects, log=mock.DEFAULT,
+                                    ets_popups=self.ets_popups,
+                                    find_text=self.find_text),
+                mock.patch.object(d, "click_text", side_effect=self.click_text),
+                mock.patch.object(d.time, "sleep", side_effect=self.sleep),
+                mock.patch.object(d.time, "time", side_effect=self.time)]
 
-    def test_flow_link_refused_address_cancels_and_reports(self):
-        # States: no leftover, the dialog opened, then Abbrechen closes it.
-        out, mocks = self.flow_link([False, True, True, False, False], framed=True)
-        self.assertFalse(out["linked"])
-        self.assertRegex(out["refused"], r"ETS refused 1/0/2 for object 12: the address field shows an error "
-                                         r"and 'Verbinden' is disabled \(the dialog offers 1/0/1, 1/0/3")
-        # The only button click is Abbrechen, never Verbinden.
-        clicks = [c.args for c in mocks[4].call_args_list]
-        self.assertTrue(all(x > 2300 for x, _ in clicks[1:]), clicks)
+    def run(self, fn):
+        import contextlib
 
-    def test_flow_link_dialog_that_stays_open_is_cancelled(self):
-        # Not framed: Verbinden is clicked three times, the dialog stays,
-        # the greyed button names the refusal, Abbrechen closes it.
-        out, mocks = self.flow_link([False] + [True] * 5 + [False, False], framed=False)
-        self.assertFalse(out["linked"])
-        self.assertIn("'Verbinden' is disabled", out["refused"])
+        with contextlib.ExitStack() as stack:
+            for p in self.patches():
+                stack.enter_context(p)
+            return fn()
 
-    def test_flow_link_closes_a_leftover_dialog_first(self):
+
+class TestDriverLinksFlow(unittest.TestCase):
+    """All links of a device from one opened object table, each a few
+    clicks with polls in between (#478)."""
+
+    # The ise KNX Sonos as the links run of 2026-11-10 read it.
+    ROWS = [{"number": 12, "y": 707, "gas": [], "size": "1 bit", "flags": "KLÜ"},
+            {"number": 16, "y": 787, "gas": [], "size": "1 byte", "flags": "KLÜ"},
+            {"number": 20, "y": 867, "gas": [], "size": "1 bit", "flags": "KLÜ"}]
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    def links(self, ets, **req):
+        return ets.run(lambda: self.d.flow_links({"project": "ets-sweep", "ia": "1.1.1", **req}))
+
+    def test_flow_links_opens_the_table_once_for_every_link(self):
+        ets = FakeEts(self.d, self.ROWS)
+        out = self.links(ets, links=[[12, "1/0/1"], [16, "1/0/2"], [20, "1/0/3"], [12, "1/0/3"]])
+        self.assertEqual(ets.opened, 1)
+        self.assertEqual([r["linked"] for r in out["links"]], [True] * 4)
+        self.assertEqual(out["links"][3]["row"]["gas"], ["1/0/1", "1/0/3"])
+        self.assertEqual(out["objects"][0]["gas"], ["1/0/1", "1/0/3"])
+        # The step list of one link: the row's menu, the dialog's field, Verbinden.
+        self.assertEqual([e[0] for e in ets.events],
+                         ["right", "menu", "field", "verbinden"] * 4)
+        # The table is read whole twice (before and after), never per link:
+        # the view did not move.
+        self.assertEqual(ets.reads, 2)
+
+    def test_flow_links_uses_the_open_table(self):
+        ets = FakeEts(self.d, self.ROWS)
+        out = self.links(ets, links=[[20, "1/0/1"]], open=False, final=False)
+        self.assertEqual(ets.opened, 0)
+        self.assertFalse(out["opened"])
+        self.assertNotIn("objects", out)
+
+    def test_flow_links_opens_when_the_table_shows_none_of_the_objects(self):
+        ets = FakeEts(self.d, self.ROWS)
+        with self.assertRaisesRegex(RuntimeError, "object 99 not in the table"):
+            ets.run(lambda: self.d.flow_links({"project": "ets-sweep", "ia": "1.1.1", "links": [[99, "1/0/1"]],
+                                               "open": False, "final": False}))
+        self.assertEqual(ets.opened, 1)
+
+    def test_flow_links_refused_address_cancels_and_goes_on(self):
+        ets = FakeEts(self.d, self.ROWS, refuse={"1/0/2"})
+        out = self.links(ets, links=[[12, "1/0/1"], [12, "1/0/2"], [20, "1/0/3"]])
+        self.assertEqual([r["linked"] for r in out["links"]], [True, False, True])
+        self.assertRegex(out["links"][1]["refused"], r"ETS refused 1/0/2 for object 12: the address field shows an error "
+                                                     r"and 'Verbinden' is disabled \(the dialog offers 1/0/1")
+        # The refused link never clicks Verbinden: its dialog ends with Abbrechen.
+        self.assertEqual([e[0] for e in ets.events[4:8]], ["right", "menu", "field", "abbrechen"])
+        self.assertFalse(ets.dialog)
+
+    def test_flow_links_dialog_that_stays_open_is_cancelled(self):
+        # Not framed, Verbinden clicked three times, the dialog stays: the
+        # greyed button names the refusal, Abbrechen closes it.
+        ets = FakeEts(self.d, self.ROWS, stuck=True)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertFalse(out["links"][0]["linked"])
+        self.assertIn("'Verbinden' is disabled", out["links"][0]["refused"])
+        self.assertEqual([e[0] for e in ets.events].count("verbinden"), 3)
+        self.assertFalse(ets.dialog)
+
+    def test_flow_links_right_clicks_again_after_a_late_menu(self):
+        ets = FakeEts(self.d, self.ROWS, late_menus=1)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual([e[0] for e in ets.events], ["right", "right", "menu", "field", "verbinden"])
+
+    def test_flow_links_takes_the_menu_entry_by_ocr(self):
+        ets = FakeEts(self.d, self.ROWS, blind_menus=1)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual([e[0] for e in ets.events], ["right", "menu-ocr", "field", "verbinden"])
+
+    def test_flow_links_leaves_no_menu_when_it_fails(self):
+        ets = FakeEts(self.d, self.ROWS, late_menus=3)
+        with self.assertRaisesRegex(RuntimeError, "no context menu"):
+            self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertFalse(ets.menu_open)
+        self.assertEqual([e[0] for e in ets.events].count("right"), 3)
+
+    def test_flow_links_closes_a_leftover_dialog_first(self):
+        ets = FakeEts(self.d, self.ROWS, leftover=True)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["closed_link_dialog"])
+        self.assertEqual(ets.events[0], ("abbrechen",))
+
+    def test_flow_links_reads_the_table_again_when_the_view_moved(self):
+        ets = FakeEts(self.d, self.ROWS)
+        moved = iter([{707 + 80: 12}])
+        ets.table_numbers = lambda: next(moved, {r["y"]: r["number"] for r in ets.rows})
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual(ets.reads, 2)
+
+    def test_flow_link_is_one_link_of_flow_links(self):
+        ets = FakeEts(self.d, self.ROWS)
+        out = ets.run(lambda: self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 16, "ga": "1/0/2"}))
+        self.assertTrue(out["linked"])
+        self.assertEqual(out["row"]["gas"], ["1/0/2"])
+        self.assertEqual(ets.opened, 1)
+
+    def test_flow_links_answers_the_size_question_with_ok(self):
+        ets = FakeEts(self.d, self.ROWS, size_prompt={"1/0/2"})
+        out = self.links(ets, links=[[12, "1/0/2"]], final=False)
+        self.assertTrue(out["links"][0]["linked"])
+        self.assertEqual([e[0] for e in ets.events], ["right", "menu", "field", "verbinden", "ok"])
+
+    def test_flow_links_cancels_a_leftover_size_question_first(self):
+        ets = FakeEts(self.d, self.ROWS, leftover_prompt=True)
+        out = self.links(ets, links=[[12, "1/0/1"]], final=False)
+        self.assertTrue(out["closed_link_dialog"])
+        self.assertEqual(ets.events[0], ("prompt-abbrechen",))
+
+    def test_flow_links_keeps_a_linked_row_the_last_read_missed(self):
+        ets = FakeEts(self.d, self.ROWS)
+        read = ets.read_objects
+        calls = {"n": 0}
+
+        def read_objects(numbers=None):
+            calls["n"] += 1
+            rows = read(numbers)
+            return rows if calls["n"] == 1 else [r for r in rows if r["number"] != 12]
+        ets.read_objects = read_objects
+        out = self.links(ets, links=[[12, "1/0/1"]])
+        self.assertEqual([(r["number"], r["gas"]) for r in out["objects"]], [(12, ["1/0/1"]), (16, []), (20, [])])
+
+    def test_view_changed(self):
+        rows = self.ROWS
+        self.assertFalse(self.d.view_changed(rows, {707: 12, 867: 20}))
+        self.assertTrue(self.d.view_changed(rows, {}))
+        self.assertTrue(self.d.view_changed(rows, {707: 16}))
+        self.assertTrue(self.d.view_changed(rows, {947: 24}))
+
+    def test_wait_for_polls_until_true_or_timeout(self):
         from unittest import mock
 
-        with mock.patch.object(self.d, "close_link_dialog", side_effect=RuntimeError("stop")) as close, \
-                mock.patch.object(self.d, "require_project"):
-            with self.assertRaisesRegex(RuntimeError, "stop"):
-                self.d.flow_link({"project": "ets-sweep", "ia": "1.1.1", "number": 12, "ga": "1/0/2"})
-        close.assert_called_once()
+        clock = {"t": 0.0}
+        answers = iter([None, None, "ok"])
+        with mock.patch.object(self.d.time, "time", side_effect=lambda: clock["t"]), \
+                mock.patch.object(self.d.time, "sleep", side_effect=lambda s: clock.__setitem__("t", clock["t"] + s)), \
+                mock.patch.object(self.d, "log") as log:
+            self.assertEqual(self.d.wait_for("x", lambda: next(answers), 5, 0.5), "ok")
+            self.assertEqual(clock["t"], 1.0)
+            self.assertIn("wait x 1.00s ok", log.call_args.args[0])
+            self.assertFalse(self.d.wait_for("y", lambda: False, 1, 0.5))
+            self.assertIn("timeout", log.call_args.args[0])
+
+    def test_tree_node_of(self):
+        self.assertTrue(self.d.tree_node_of("> 1.1.1 ise KNX Sonos", "1.1.1"))
+        self.assertTrue(self.d.tree_node_of("m 1.1.1 KCI 4 S0", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("1.1 TP Linie", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("> 1.1.10 Dimmer", "1.1.1"))
+        self.assertFalse(self.d.tree_node_of("> 1.1.1.5", "1.1.1"))
+
+    def test_glyph_digit_zero_has_a_hole(self):
+        black = (20, 20, 20)
+        one = FakeImage(108, 32).put(50, 9, 53, 23, black).convert("L")
+        zero = FakeImage(108, 32).put(48, 9, 56, 23, black).put(50, 11, 54, 21, (255, 255, 255)).convert("L")
+        wide = FakeImage(108, 32).put(40, 9, 60, 23, black).convert("L")
+        self.assertEqual(self.d.glyph_digit(one), 1)
+        self.assertEqual(self.d.glyph_digit(zero), 0)
+        self.assertIsNone(self.d.glyph_digit(wide))
+        self.assertIsNone(self.d.glyph_digit(FakeImage(108, 32).convert("L")))
+
+    def test_repeated_number(self):
+        self.assertEqual(self.d.repeated_number("7 7 7"), 7)
+        self.assertEqual(self.d.repeated_number("12 12 12"), 12)
+        self.assertEqual(self.d.repeated_number("lll"), 1)
+        self.assertEqual(self.d.repeated_number("O O O"), 0)
+        self.assertIsNone(self.d.repeated_number("7 1 7"))
+        self.assertIsNone(self.d.repeated_number("77"))
+        self.assertIsNone(self.d.repeated_number(""))
+
+    def test_field_text_normalised(self):
+        self.assertEqual(self.d._ga_text("l/O/ 3"), "1/0/3")
+
+
+class TestLinksSubset(unittest.TestCase):
+    """The representative subset of the links variant (#478)."""
+
+    # A 0705 product as the model import writes it, cut to what `features` reads.
+    MDT = {"id": "M-0083_A-000E-23-2274", "mask_version": "0705", "is_secure_enabled": False,
+           "ets_download_plugin": False, "com_object_table": {"code_segment": "AS-4400", "offset": 0},
+           "com_objects": {"O-1": {"object_size": "1 Bit"}, "M-0083_A-000E-23-2274_MD-1_O-2": {"object_size": "2 Bytes"}},
+           "com_object_refs": {"R-1": {"ref_id": "O-1", "object_size": "14 Bytes"}, "R-2": {"ref_id": "O-1", "object_size": None}},
+           "module_instances": [{"x": 1}], "module_dynamics": {},
+           "load_procedures": [{"ops": ["Connect", {"AbsSegment": {"lsm_idx": 1, "size": 513}},
+                                        {"AbsSegment": {"lsm_idx": 2, "size": 511}}]}]}
+    SECURE_07B0 = {"id": "M-0008_A-0004", "mask_version": "07B0", "is_secure_enabled": True, "ets_download_plugin": True,
+                   "com_object_table": None, "com_objects": {f"O-{i}": {"object_size": "1 Byte"} for i in range(60)},
+                   "com_object_refs": {}, "module_instances": [], "module_dynamics": {},
+                   "load_procedures": [{"ops": [{"LoadImageProp": {"obj_idx": 1, "prop_id": 27}}]}]}
+
+    def test_features_of_a_0705_in_memory(self):
+        self.assertEqual(links_subset.features(self.MDT, {"differs"}), {
+            "mask:0705", "tables:0705/abs-segment", "go-table:0705/own-segment", "assoc:0705/standard 448-511 B",
+            "objects:0705/few <=10", "size:0705/1 Bit", "size:0705/14 Bytes", "size:0705/2 Bytes",
+            "modules:0705", "module-objects:0705", "oracle:0705/differs"})
+
+    def test_features_of_a_secure_07b0_through_properties(self):
+        f = links_subset.features(self.SECURE_07B0)
+        self.assertLessEqual({"tables:07B0/prop-image", "go-table:07B0/property", "secure:07B0", "plugin:M-0008",
+                              "objects:07B0/many 51-200", "size:07B0/1 Byte"}, f)
+        self.assertFalse(any(x.startswith("assoc:") for x in f))
+
+    def test_table_style_ets_default_and_relative(self):
+        self.assertEqual(links_subset.table_style({"load_procedures": []}), "ets-default")
+        rel = {"load_procedures": [{"ops": [{"RelSegment": {"lsm_idx": 2, "size": 600}},
+                                            {"LoadImageProp": {"obj_idx": 1}}]}]}
+        self.assertEqual(links_subset.table_style(rel), "rel-segment")
+        self.assertEqual(links_subset.assoc_size(rel), 600)
+
+    def test_greedy_cover_most_new_labels_then_cost(self):
+        apps = {"a": {"x", "y"}, "b": {"x", "y", "z"}, "c": {"z", "w"}, "d": {"w"}, "e": {"z", "w"}}
+        self.assertEqual(links_subset.greedy_cover(apps, {"c": 5, "e": 1}), [("b", ["x", "y", "z"]), ("e", ["w"])])
+
+    def test_greedy_cover_pins_first(self):
+        apps = {"a": {"x"}, "b": {"x", "y"}}
+        self.assertEqual(links_subset.greedy_cover(apps, pinned=["a", "gone"]), [("a", ["x"]), ("b", ["y"])])
+
+    def test_why_names_the_pin_or_the_labels(self):
+        self.assertEqual(links_subset.why("M-1", ["mask:0705"]), "first to cover mask:0705")
+        pin = next(iter(links_subset.PINNED))
+        self.assertTrue(links_subset.why(pin, []).startswith("series representative"))
+
+    def test_committed_subset_is_a_reasoned_cover(self):
+        rows = links_subset.load()
+        apps = [r["app"] for r in rows]
+        self.assertEqual(len(apps), len(set(apps)))
+        self.assertTrue(20 <= len(rows) <= 40, len(rows))
+        self.assertTrue(all(r["why"] for r in rows))
+        self.assertLessEqual(set(links_subset.PINNED), set(apps))
+        covered = {c for r in rows for c in r["covers"]}
+        for mask in ("07B0", "0705", "0701"):
+            self.assertIn(f"mask:{mask}", covered)
+            self.assertIn(f"size:{mask}/1 Bit", covered)
+        self.assertLessEqual({"secure:07B0", "modules:07B0", "module-objects:07B0", "tables:07B0/prop-image",
+                              "tables:07B0/rel-segment", "tables:0705/prop-image", "tables:0705/abs-segment"}, covered)
+
+    def test_representative_keeps_the_subset_order(self):
+        todo = [{"id": "A"}, {"id": "B"}, {"id": "C"}]
+        out = defaults.representative(todo, [{"app": "C"}, {"app": "Z"}, {"app": "A"}])
+        self.assertEqual([j["id"] for j in out], ["C", "A"])
 
 
 class TestOemIdentity(unittest.TestCase):

@@ -132,23 +132,35 @@ def pcap_slice(data: bytes, offset: int) -> tuple[bytes, int]:
     return bytes(out), n
 
 
+def link_steps(plan: dict) -> list[list]:
+    """The links the links variant makes, in order: the initial links, then
+    the second address (`plan_links`)."""
+    return [list(p) for p in plan["initial"] + ([plan["second"]] if plan["second"] else [])]
+
+
 def links_hook(n: int = 3):
     """`sweep.run_one(before_download=...)` for the links variant: reads the
-    object table, links `n` objects plus a second address on the first
-    (`plan_links`), reads the table again into objects.json."""
+    object table (the `objects` flow selects the device and opens its table),
+    links `n` objects plus a second address on the first (`plan_links`) in
+    ONE `links` flow on that same table, and keeps the table it read after
+    the links as objects.json. Two driver calls per device, one device
+    selection (#478); it was an `objects` and a `link` call per link, each
+    selecting the device and opening its table again, and a last `objects`."""
 
     def hook(flow, out: Path, ia: str = "1.1.1") -> dict:
         objects = flow("objects", ia=ia)["objects"]
-        plan = plan_links(objects, n)
+        steps = link_steps(plan_links(objects, n))
         done, refused = [], []
-        for number, ga in plan["initial"] + ([plan["second"]] if plan["second"] else []):
-            r = flow("link", ia=ia, number=number, ga=ga)
-            if r.get("linked") is False:
-                # ETS refused the address; the driver cancelled its dialog.
-                refused.append({"number": number, "ga": ga, "reason": r.get("refused")})
-                continue
-            done.append([number, ga])
-        after = flow("objects", ia=ia)["objects"]
+        after = objects
+        if steps:
+            r = flow("links", ia=ia, links=steps, open=False)
+            for link in r["links"]:
+                if link.get("linked") is False:
+                    # ETS refused the address; the driver cancelled its dialog.
+                    refused.append({"number": link["number"], "ga": link["ga"], "reason": link.get("refused")})
+                    continue
+                done.append([link["number"], link["ga"]])
+            after = r["objects"]
         (out / "objects.json").write_text(json.dumps(after, indent=1, ensure_ascii=False))
         return {"links": done, "refused": refused}
 
@@ -224,10 +236,15 @@ def run_series(c, rep: dict, only_steps: str = "abcd") -> dict:
                 continue
             out = series / name
             out.mkdir(parents=True, exist_ok=True)
+            links = [[number, ga] for action, number, ga in changes if action == "link"]
+            if links:
+                # All of a step's links from one opened table (#478).
+                for r in flow("links", ia="1.1.1", links=links, final=False)["links"]:
+                    if r.get("linked") is False:
+                        raise RuntimeError(f"{name}: {r.get('refused')}")
             for action, number, ga in changes:
-                r = flow(action, ia="1.1.1", number=number, ga=ga)
-                if r.get("linked") is False:
-                    raise RuntimeError(f"{name}: {r.get('refused')}")
+                if action != "link":
+                    flow(action, ia="1.1.1", number=number, ga=ga)
             objects = flow("objects", ia="1.1.1")["objects"]
             (out / "objects.json").write_text(json.dumps(objects, indent=1, ensure_ascii=False))
             try:

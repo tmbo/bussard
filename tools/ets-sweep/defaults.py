@@ -7,6 +7,7 @@ application at its vendor defaults into knx-sim, and the capture is kept.
 
     uv run tools/ets-sweep/defaults.py [--filter SUBSTR,...] [--mask 07B0,0705] [--limit N]
                                        [--shard k/n] [--redo] [--redo-failed]
+                                       [--variant links [--representative]]
 
 Jobs come from tools/ets-sweep/catalog-apps.json (every corpus file's
 applications, their mask and order numbers). One job per application id (the
@@ -334,6 +335,20 @@ def jobs() -> list[dict]:
     return out
 
 
+def representative(todo: list[dict], subset: list[dict] | None = None) -> list[dict]:
+    """The jobs of the representative subset (`links-subset.json`, #478), in
+    the subset's order; an application the subset names but the catalog
+    lacks is reported and left out."""
+    import links_subset
+
+    rows = links_subset.load() if subset is None else subset
+    by_id = {j["id"]: j for j in todo}
+    missing = [r["app"] for r in rows if r["app"] not in by_id]
+    if missing:
+        print(f"representative: not in catalog-apps.json: {', '.join(missing)}", flush=True)
+    return [by_id[r["app"]] for r in rows if r["app"] in by_id]
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--filter", default="", help="comma-separated substrings of the application id, name or file")
@@ -350,6 +365,8 @@ def main() -> int:
     ap.add_argument("--variant", default="plain-defaults", choices=sorted(VARIANTS),
                     help="links: link a few objects before the download (#478), "
                          "for the applications the defaults sweep captured; results/links.json")
+    ap.add_argument("--representative", action="store_true",
+                    help="only the applications of links-subset.json (links_subset.py, #478)")
     args = ap.parse_args()
 
     results_file = results_path(args.variant)
@@ -366,6 +383,8 @@ def main() -> int:
         return 0
     todo = jobs()
     everything = {j["id"]: j for j in todo}
+    if args.representative:
+        todo = representative(todo)
     wanted = [w.lower() for w in args.filter.split(",") if w]
     if wanted:
         todo = [j for j in todo if any(w in (j["id"] + " " + (j["name"] or "") + " " + j["file"]).lower() for w in wanted)]

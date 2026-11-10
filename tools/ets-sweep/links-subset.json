@@ -1,0 +1,363 @@
+{
+ "issue": 478,
+ "derived_by": "tools/ets-sweep/links_subset.py select",
+ "apps": [
+  {
+   "app": "M-0007_A-20BA-11-05A3-O000A",
+   "mask": "0705",
+   "name": "Venetian blind, valve, input/1.1",
+   "file": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+   "defaults_seconds": 89,
+   "why": "series representative: 0705 with the tables loaded through properties (LdCtrlLoadImageProp, Busch-Jaeger 6173/11 U); also first to cover assoc:0705/standard 448-511 B, go-table:0705/own-segment, mask:0705, objects:0705/very many >200, size:0705/1 Bit, size:0705/1 Byte, size:0705/2 Bytes, size:2 Bit, size:4 Bit, size:4 Bytes, tables:0705/prop-image",
+   "covers": [
+    "assoc:0705/standard 448-511 B",
+    "go-table:0705/own-segment",
+    "mask:0705",
+    "objects:0705/very many >200",
+    "size:0705/1 Bit",
+    "size:0705/1 Byte",
+    "size:0705/2 Bytes",
+    "size:2 Bit",
+    "size:4 Bit",
+    "size:4 Bytes",
+    "tables:0705/prop-image"
+   ]
+  },
+  {
+   "app": "M-0083_A-000E-23-2274",
+   "mask": "0705",
+   "name": "Switching 1-fold AKK UP",
+   "file": "MDT_KP_AKK_03_Switch_Actuator_V23.knxprod",
+   "defaults_seconds": 91,
+   "why": "series representative: 0705 with load control through memory (MDT AKK); also first to cover module-objects:0705, modules:0705, objects:0705/some 11-50, tables:0705/abs-segment",
+   "covers": [
+    "module-objects:0705",
+    "modules:0705",
+    "objects:0705/some 11-50",
+    "tables:0705/abs-segment"
+   ]
+  },
+  {
+   "app": "M-00B6_A-4537-03-DE59",
+   "mask": "0705",
+   "name": "APEKE72TP",
+   "file": "APEKE72TP03.knxprod",
+   "defaults_seconds": 158,
+   "why": "series representative: 0705 with the group-object table in a segment of its own (Ekinex EK-E72); also first to cover assoc:0705/medium <448 B, objects:0705/many 51-200",
+   "covers": [
+    "assoc:0705/medium <448 B",
+    "objects:0705/many 51-200"
+   ]
+  },
+  {
+   "app": "M-0071_A-4131-32-17BF",
+   "mask": "0701",
+   "name": "ACTinBOX MAX6 3.2",
+   "file": "ACTINBOX_MAX6_3.2_EI.knxprod",
+   "defaults_seconds": 156,
+   "why": "series representative: 0701, memory-mapped load-state machines (Zennio ACTinBOX MAX6); also first to cover assoc:0701/large >=512 B, go-table:0701/own-segment, mask:0701, objects:0701/many 51-200, size:0701/1 Bit, size:0701/1 Byte, size:0701/2 Bytes, tables:0701/abs-segment",
+   "covers": [
+    "assoc:0701/large >=512 B",
+    "go-table:0701/own-segment",
+    "mask:0701",
+    "objects:0701/many 51-200",
+    "size:0701/1 Bit",
+    "size:0701/1 Byte",
+    "size:0701/2 Bytes",
+    "tables:0701/abs-segment"
+   ]
+  },
+  {
+   "app": "M-007C_A-0002-30-DC22",
+   "mask": "07B0",
+   "name": "ise smart connect KNX Sonos",
+   "file": "1-0001-002_iseSmartConnectKNXSonos_V3.0.knxprod",
+   "defaults_seconds": 83,
+   "why": "ETS refused a link of another object size here (ise KNX Sonos, 2026-11-10): the refusal path; also first to cover go-table:07B0/property, mask:07B0, objects:07B0/very many >200, oracle:07B0/differs, plugin:M-007C, size:07B0/1 Bit, size:07B0/1 Byte, size:07B0/14 Bytes, tables:07B0/ets-default",
+   "covers": [
+    "go-table:07B0/property",
+    "mask:07B0",
+    "objects:07B0/very many >200",
+    "oracle:07B0/differs",
+    "plugin:M-007C",
+    "size:07B0/1 Bit",
+    "size:07B0/1 Byte",
+    "size:07B0/14 Bytes",
+    "tables:07B0/ets-default"
+   ]
+  },
+  {
+   "app": "M-00C5_A-0704-10-6B92",
+   "mask": "0701",
+   "name": "KNX IP BAOS 770",
+   "file": "Weinzierl_770_KNX_IP_BAOS_ETS4.knxprod",
+   "defaults_seconds": 116,
+   "why": "first to cover assoc:0701/standard 448-511 B, objects:0701/very many >200, oracle:0701/not-comparable, size:0701/14 Bytes, size:10 Bytes, size:3 Bit, size:3 Bytes, size:5 Bit, size:6 Bit, size:6 Bytes, size:7 Bit, size:8 Bytes",
+   "covers": [
+    "assoc:0701/standard 448-511 B",
+    "objects:0701/very many >200",
+    "oracle:0701/not-comparable",
+    "size:0701/14 Bytes",
+    "size:10 Bytes",
+    "size:3 Bit",
+    "size:3 Bytes",
+    "size:5 Bit",
+    "size:6 Bit",
+    "size:6 Bytes",
+    "size:7 Bit",
+    "size:8 Bytes"
+   ]
+  },
+  {
+   "app": "M-00EF_A-DA11-22-A545",
+   "mask": "07B0",
+   "name": "DaliControl e64 Pro_V2.2.0",
+   "file": "ETS_4101-145-02_DALIControle64Pro_V2.2.0.knxprod",
+   "defaults_seconds": 151,
+   "why": "first to cover module-objects:07B0, modules:07B0, objects:07B0/many 51-200, oracle:07B0/was-differs, secure:07B0, size:07B0/2 Bytes, tables:07B0/prop-image",
+   "covers": [
+    "module-objects:07B0",
+    "modules:07B0",
+    "objects:07B0/many 51-200",
+    "oracle:07B0/was-differs",
+    "secure:07B0",
+    "size:07B0/2 Bytes",
+    "tables:07B0/prop-image"
+   ]
+  },
+  {
+   "app": "M-00A6_A-0014-10-2517",
+   "mask": "0021",
+   "name": "IP Secure Interface",
+   "file": "1168-ETS-KNXIPSecureInterface-1.001.knxprod",
+   "defaults_seconds": 180,
+   "why": "first to cover go-table:0021/property, mask:0021, objects:0021/few <=10, oracle:0021/not-comparable, secure:0021, tables:0021/ets-default",
+   "covers": [
+    "go-table:0021/property",
+    "mask:0021",
+    "objects:0021/few <=10",
+    "oracle:0021/not-comparable",
+    "secure:0021",
+    "tables:0021/ets-default"
+   ]
+  },
+  {
+   "app": "M-0009_A-20B3-10-C338",
+   "mask": "0701",
+   "name": "STXB601B",
+   "file": "PS_TXB601B_V106_T2.KNXPROD",
+   "defaults_seconds": 100,
+   "why": "first to cover assoc:0701/small <128 B, objects:0701/few <=10, oracle:0701/was-differs, plugin:M-0009",
+   "covers": [
+    "assoc:0701/small <128 B",
+    "objects:0701/few <=10",
+    "oracle:0701/was-differs",
+    "plugin:M-0009"
+   ]
+  },
+  {
+   "app": "M-0076_A-0022-15-D6FE",
+   "mask": "0701",
+   "name": "SK08-UNI",
+   "file": "Arc_S8.knxprod",
+   "defaults_seconds": 83,
+   "why": "first to cover assoc:0701/medium <448 B, oracle:0701/differs",
+   "covers": [
+    "assoc:0701/medium <448 B",
+    "oracle:0701/differs"
+   ]
+  },
+  {
+   "app": "M-0009_A-E0EE-10-ADF8",
+   "mask": "07B0",
+   "name": "STXF121",
+   "file": "PS_TXF121_V106_T6.KNXPROD",
+   "defaults_seconds": 91,
+   "why": "first to cover size:12 Bytes, size:9 Bytes",
+   "covers": [
+    "size:12 Bytes",
+    "size:9 Bytes"
+   ]
+  },
+  {
+   "app": "M-00FD_A-1101-35-1D8C",
+   "mask": "07B0",
+   "name": "RDG200KN",
+   "file": "RDG200KN__110135_ets5.knxprod",
+   "defaults_seconds": 101,
+   "why": "first to cover assoc:07B0/large >=512 B, tables:07B0/rel-segment",
+   "covers": [
+    "assoc:07B0/large >=512 B",
+    "tables:07B0/rel-segment"
+   ]
+  },
+  {
+   "app": "M-0071_A-4231-11-7CAF",
+   "mask": "07B0",
+   "name": "KCI 4 S0 1.1",
+   "file": "KCI_4_S0_1_1_EIFAItRSP.knxprod",
+   "defaults_seconds": 104,
+   "why": "first to cover objects:07B0/some 11-50, oracle:07B0/not-comparable",
+   "covers": [
+    "objects:07B0/some 11-50",
+    "oracle:07B0/not-comparable"
+   ]
+  },
+  {
+   "app": "M-0006_A-E00D-01-28AB-O0009",
+   "mask": "0701",
+   "name": "S75341104",
+   "file": "PS_75341104_V0097.KNXPROD",
+   "defaults_seconds": 109,
+   "why": "first to cover objects:0701/some 11-50, plugin:M-0006",
+   "covers": [
+    "objects:0701/some 11-50",
+    "plugin:M-0006"
+   ]
+  },
+  {
+   "app": "M-0083_A-0255-21-0ECA",
+   "mask": "0705",
+   "name": "Time Switch with colour display",
+   "file": "MDT_KP_SCN_02_Time_Switch_V21.knxprod",
+   "defaults_seconds": 126,
+   "why": "first to cover oracle:0705/differs, size:0705/14 Bytes",
+   "covers": [
+    "oracle:0705/differs",
+    "size:0705/14 Bytes"
+   ]
+  },
+  {
+   "app": "M-009A_A-200F-00-1CE1",
+   "mask": "07B0",
+   "name": "DINUY_IRKNT044",
+   "file": "IRKNT044.knxprod",
+   "defaults_seconds": 82,
+   "why": "first to cover size:5 Bytes",
+   "covers": [
+    "size:5 Bytes"
+   ]
+  },
+  {
+   "app": "M-00FC_A-00C0-00-D71C-O009A",
+   "mask": "0705",
+   "name": "[879 414 knx] Dimmer - Dimming actuator LED RLC",
+   "file": "879_414_knx.knxprod",
+   "defaults_seconds": 84,
+   "why": "first to cover assoc:0705/large >=512 B",
+   "covers": [
+    "assoc:0705/large >=512 B"
+   ]
+  },
+  {
+   "app": "M-0004_A-B015-21-F7AD-O007C",
+   "mask": "07B0",
+   "name": "Sonos-Gateway",
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "defaults_seconds": 88,
+   "why": "first to cover plugin:M-0004",
+   "covers": [
+    "plugin:M-0004"
+   ]
+  },
+  {
+   "app": "M-00B6_A-4945-10-C905-O00C5",
+   "mask": "07B0",
+   "name": "KNX IP interface secure",
+   "file": "APEKIE1SECTP01.knxprod",
+   "defaults_seconds": 98,
+   "why": "first to cover objects:07B0/few <=10",
+   "covers": [
+    "objects:07B0/few <=10"
+   ]
+  },
+  {
+   "app": "M-0080_A-70A0-10-BD8F",
+   "mask": "0705",
+   "name": "KNX module for NOVA NON TW",
+   "file": "ESYLUX SMARTDRIVER xX  KNX.KNXPROD",
+   "defaults_seconds": 101,
+   "why": "first to cover assoc:0705/small <128 B",
+   "covers": [
+    "assoc:0705/small <128 B"
+   ]
+  },
+  {
+   "app": "M-0004_A-10FA-12-8ACE-O000A",
+   "mask": "0705",
+   "name": "Switching, dim., venet. blind, value, scene 10FA12",
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "defaults_seconds": 103,
+   "why": "first to cover objects:0705/few <=10",
+   "covers": [
+    "objects:0705/few <=10"
+   ]
+  },
+  {
+   "app": "M-0007_A-A0AB-14-2841-O0002",
+   "mask": "07B0",
+   "name": "DALI Basic 2f/1.4",
+   "file": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+   "defaults_seconds": 103,
+   "why": "first to cover plugin:M-0007",
+   "covers": [
+    "plugin:M-0007"
+   ]
+  },
+  {
+   "app": "M-0002_A-A0AA-14-2BB7",
+   "mask": "07B0",
+   "name": "DALI Basic 1f/1.4",
+   "file": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
+   "defaults_seconds": 119,
+   "why": "first to cover plugin:M-0002",
+   "covers": [
+    "plugin:M-0002"
+   ]
+  },
+  {
+   "app": "M-0048_A-E032-20-2E0E-O0228",
+   "mask": "07B0",
+   "name": "iONprime CP 4 KNX",
+   "file": "KNX_DB_D_GB_F_iONprime_CP_4_KNX_V2_0_knxprod_2601.knxprod",
+   "defaults_seconds": 124,
+   "why": "first to cover plugin:M-0048",
+   "covers": [
+    "plugin:M-0048"
+   ]
+  },
+  {
+   "app": "M-0008_A-0004-75-0A9A-O007C",
+   "mask": "07B0",
+   "name": "Gira S1",
+   "file": "Gira_S1_v7.5.knxprod",
+   "defaults_seconds": 132,
+   "why": "first to cover plugin:M-0008",
+   "covers": [
+    "plugin:M-0008"
+   ]
+  },
+  {
+   "app": "M-0083_A-0054-14-0D63",
+   "mask": "0705",
+   "name": "Central Operation Unit Smart",
+   "file": "MDT_KP_BE_Central_Operation_Unit_Smart_V14.knxprod",
+   "defaults_seconds": 138,
+   "why": "first to cover oracle:0705/was-differs",
+   "covers": [
+    "oracle:0705/was-differs"
+   ]
+  },
+  {
+   "app": "M-0004_A-C001-02-1792-O000A",
+   "mask": "0701",
+   "name": "Radio-converter C00102",
+   "file": "Gesamt_JUNG_ETS5_EN.knxprod",
+   "defaults_seconds": 162,
+   "why": "first to cover go-table:0701/in-app-segment",
+   "covers": [
+    "go-table:0701/in-app-segment"
+   ]
+  }
+ ]
+}

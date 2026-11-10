@@ -296,6 +296,44 @@ with Abbrechen before the next link and the next import.
 (`apply_rows.links_from_objects`) and writes `results/oracle-links.json`;
 `summary.py` adds the links variant's parity per mask family.
 
+**Links variant, representative subset.** A links row takes minutes (the
+ise KNX Sonos 371 s, 2026-11-10), so the nightly run and a check by hand take
+`defaults.py --variant links --representative`: only the applications of
+`links-subset.json`, a greedy cover over the captured applications
+(`links_subset.py select` re-derives it from the imported product models
+under `captures/ets-sweep/.oracle-products` and `results/defaults.json`,
+`oracle.json` and the nightly manifests). It covers each mask family, how
+the address and association tables load (LdCtrlLoadImageProp, System B
+relative segments, absolute segments, ETS's own procedure), where the
+group-object table lives, association table sizes, Data Secure, few and many
+objects, objects of 1 bit, 1 byte, 2 and 14 bytes and every other size once,
+modules and module objects, each manufacturer with an EtsDownloadPlugin and
+the applications the plain oracle found differing; the partial-download
+series' representatives and the first refused link (ise KNX Sonos) are
+pinned. Each row says why it is there (`links_subset.py show`).
+
+**Link flow.** The hook reads the object table once (`objects`: the device
+selected, its Kommunikationsobjekte table opened) and makes every link in
+one `links` call on that same table: per link the row's context menu,
+"Verbinden mit...", the address typed, "Verbinden", then a read of that row
+only; the whole table is read again only when its numbers moved. Each pause
+is a poll for the state the next click needs (`wait_for`, logged in
+`driver.log` as `wait <name> <seconds>`), and each request's log line counts
+its clicks and OCR passes (`/ets/links 35.1s clicks=14 ocr=92`: three
+links on the MDT AKK). After the first link of a table, ETS's context menu
+shows "Verbinden mit..." on screen but not to UI Automation (2026-11-10); the
+driver then clicks the entry by OCR, and closes a menu that never came
+before it right-clicks again. The catalog's columns are read from its header
+row: ETS showed "Sic" and "Hersteller" before "Name" that day and every
+cell moved.
+A number OCR skips (Windows OCR reads no lone digit) is read from the cell's
+glyph repeated three times, else a lone narrow glyph is a 0 (it has a hole)
+or a 1; a row whose number stays unread is left out, never guessed. Before,
+every such row was taken as 1, and the links oracle modelled the neighbour
+of the object ETS linked (MDT AKK object 0, DALI Basic 2f object 2). ETS's
+question about another object size is answered with OK and cancelled when a
+failed link leaves it open.
+
 **Partial-download series, representative products.**
 
     uv run tools/ets-sweep/series.py partial [--only M-00B6] [--steps abcd] [--oracle]
