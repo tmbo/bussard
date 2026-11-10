@@ -211,6 +211,16 @@ fn mark_table_images(hardware: &HardwareCatalog, applications: &mut [Application
     }
 }
 
+/// Sets [`ApplicationProgram::is_ip_enabled`] on every application a
+/// `Hardware2Program` of IP-enabled hardware lists
+/// ([`hardware::Hardware::ip_enabled_apps`], issue #1023). Like the table
+/// image, a cached program is parsed without it, so this runs on every read.
+fn mark_ip_enabled(hardware: &HardwareCatalog, applications: &mut [ApplicationProgram]) {
+    for app in applications.iter_mut() {
+        app.is_ip_enabled = hardware.ip_enabled_apps.contains(&app.id);
+    }
+}
+
 /// Sets [`ApplicationProgram::factory_properties`] from the property values
 /// of the `LoadedImage` of the `Hardware2Program`s listing each application
 /// ([`hardware::Hardware::factory_properties`], issue #951), their objects
@@ -548,6 +558,7 @@ fn assemble(
     }
     applications.sort_by(|a, b| a.id.cmp(&b.id));
     mark_table_images(&catalog.hardware, &mut applications);
+    mark_ip_enabled(&catalog.hardware, &mut applications);
     mark_factory_properties(
         &catalog.hardware,
         catalog.master.as_ref(),
@@ -617,6 +628,28 @@ mod tests {
         mark_table_images(&hardware, &mut apps);
         assert!(apps[0].ets_table_image);
         assert!(!apps[1].ets_table_image);
+    }
+
+    /// Issue #1023: the flag follows the catalogue, also over a cached
+    /// program that carried a stale value.
+    #[test]
+    fn test_mark_ip_enabled_follows_the_hardware_catalog() {
+        let mut hardware = HardwareCatalog::default();
+        hardware.ip_enabled_apps.insert("M-1_A-1".to_string());
+        let mut apps = vec![
+            ApplicationProgram {
+                id: "M-1_A-1".to_string(),
+                ..Default::default()
+            },
+            ApplicationProgram {
+                id: "M-1_A-2".to_string(),
+                is_ip_enabled: true,
+                ..Default::default()
+            },
+        ];
+        mark_ip_enabled(&hardware, &mut apps);
+        assert!(apps[0].is_ip_enabled);
+        assert!(!apps[1].is_ip_enabled);
     }
 
     /// Issue #951: the image's property values land on the program with

@@ -54,6 +54,12 @@ pub struct FlashInputs<'a> {
     /// download into a device with a KNX IP interface built in writes (issue
     /// #455).
     knxnet: Option<bussard_model::knxnet::KnxnetConfig>,
+    /// The friendly name ETS writes when `[knxnet]` sets none: the device's
+    /// catalogue product text in the project language (issue #1023).
+    default_friendly_name: Option<String>,
+    /// A parameter-only download (`--parameters-only`): it never writes the
+    /// KNXnet/IP block, so its plan does not source it.
+    parameters_only: bool,
     /// The device being downloaded into.
     target: IndividualAddress,
 }
@@ -83,9 +89,16 @@ impl<'a> FlashInputs<'a> {
             &bussard_product::dynamic::DynamicMemo::new(app),
         );
         let object_flags = bussard_download::linked_object_flags(model, target);
-        let knxnet = model
-            .and_then(|m| m.devices.get(&target))
-            .and_then(|d| d.device.knxnet.clone());
+        let model_device = model.and_then(|m| m.devices.get(&target));
+        let knxnet = model_device.and_then(|d| d.device.knxnet.clone());
+        let order = model_device
+            .and_then(|d| d.device.product.as_ref())
+            .and_then(|p| p.order_number.as_deref());
+        let language = model_device.and_then(|d| d.device.lock.language.as_deref());
+        let default_friendly_name = product
+            .hardware
+            .product_text(&app.id, order, language)
+            .map(|text| bussard_download::ets_friendly_name(&text));
         (
             FlashInputs {
                 app,
@@ -96,10 +109,20 @@ impl<'a> FlashInputs<'a> {
                 table_images,
                 object_flags,
                 knxnet,
+                default_friendly_name,
+                parameters_only: false,
                 target,
             },
             malformed,
         )
+    }
+
+    /// The inputs of a parameter-only download (`--parameters-only`), whose
+    /// plan leaves the KNXnet/IP block out: that download never writes it.
+    #[must_use]
+    pub fn for_parameters_only(mut self, parameters_only: bool) -> Self {
+        self.parameters_only = parameters_only;
+        self
     }
 
     /// The application program.
@@ -156,12 +179,15 @@ impl<'a> FlashInputs<'a> {
         )?;
         // A property-only procedure (an IP interface, issue #390) writes the
         // object itself; `apply` keeps its `[knxnet]` table (issue #391).
+        // A parameter-only download never writes the block (issue #1023).
         if !plan.is_property_only()
+            && !self.parameters_only
             && let Some(program) = bussard_download::knxnet_ip_program(
                 self.app,
                 mask,
                 self.target,
                 self.knxnet.as_ref(),
+                self.default_friendly_name.as_deref(),
             )
             .map_err(PlanError::KnxnetIpUnsourced)?
         {
@@ -718,6 +744,79 @@ mod tests {
                 object_type: 11,
                 occurrence: 0
             }));
+        let _ = std::fs::remove_dir_all(&dir);
+        Ok(())
+    }
+
+    /// Issue #1023: an imported ise smart connect device (IP-enabled
+    /// hardware, no tunnelling addresses) has no `[knxnet]` table. A full
+    /// flash writes ETS's block from the defaults and the product text (the
+    /// `M-007C_A-0001-10-2A85` capture, ops 57 to 64); a parameter-only plan
+    /// leaves the block out and needs no source for it.
+    #[test]
+    fn test_flash_inputs_plan_ip_enabled_without_knxnet_table() -> TestResult {
+        let (dir, model) = fixture("knxnet-ise")?;
+        let mut product = product()?;
+        product.applications[0].is_ip_enabled = true;
+        let app = product.applications[0].clone();
+        let target: IndividualAddress = "1.1.4".parse()?;
+        // No product text: a full flash has no name to write, a
+        // parameter-only one does not need it.
+        let (inputs, _) = FlashInputs::from_model(&product, &app, "1.1.4", Some(&model), target);
+        let refused = inputs.plan(0x07B0).err().ok_or("no name")?;
+        assert!(
+            matches!(&refused, PlanError::KnxnetIpUnsourced(why) if why.contains("friendly_name")),
+            "{refused}"
+        );
+        let plan = inputs.for_parameters_only(true).plan(0x07B0)?;
+        assert!(plan.knxnet_ip().is_none());
+        // The catalogue names the product.
+        let order = "1-0004-005".to_string();
+        product
+            .hardware
+            .order_to_apps
+            .insert(order.clone(), vec![app.id.clone()]);
+        product.hardware.products.insert(
+            "M-007C_H-ISKIMUKX01-1_P-1.2D0004.2D005".to_string(),
+            bussard_product::hardware::ProductInfo {
+                order_number: Some(order),
+                hardware_name: Some("ise smart connect KNX Programmable".to_string()),
+                text: Some("ise smart connect KNX Programmable".to_string()),
+                texts: BTreeMap::from([(
+                    "de-DE".to_string(),
+                    "ise smart connect KNX Programmable".to_string(),
+                )]),
+            },
+        );
+        let (inputs, _) = FlashInputs::from_model(&product, &app, "1.1.4", Some(&model), target);
+        let plan = inputs.plan(0x07B0)?;
+        let program = plan.knxnet_ip().ok_or("the full flash writes the block")?;
+        assert_eq!(program.object, bussard_download::PropObject::Index(6));
+        let shape: Vec<(u8, u16, u16, String)> = program
+            .writes
+            .iter()
+            .map(|w| {
+                (
+                    w.prop_id,
+                    w.start,
+                    w.count,
+                    bussard_model::text::hex(&w.value),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (51, 1, 1, "0000".to_string()),
+                (66, 1, 1, "e000170c".to_string()),
+                (67, 1, 1, "20".to_string()),
+                (76, 1, 15, "69736520736d61727420636f6e6e65".to_string()),
+                (76, 16, 15, "6374204b4e582050726f6772616d6d".to_string()),
+                (55, 1, 1, "04".to_string()),
+            ]
+        );
+        let plan = inputs.for_parameters_only(true).plan(0x07B0)?;
+        assert!(plan.knxnet_ip().is_none());
         let _ = std::fs::remove_dir_all(&dir);
         Ok(())
     }

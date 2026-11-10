@@ -16,14 +16,29 @@
 //! | 55 | IP assignment method | `[knxnet] assignment` (`04` DHCP) |
 //! | 53 | additional individual addresses | `[knxnet] tunnels`, `AdditionalAddressesCount` of them |
 //!
+//! Hardware that declares `IsIPEnabled="true"` while its application declares
+//! no tunnelling addresses gets the same block without PID 53 on mask 07B0
+//! (issue #1023). The sweep captured it on all ten such rows (eight ise smart
+//! connect gateways, `M-007C_A-0001-10-2A85` ops 57 to 64, the Jung
+//! Sonos-Gateway `M-0004_A-B015-21-F7AD-O007C` and, by type, the
+//! Data-Secure Gira `M-0008_A-C02A-21-B6D8-O007C`, 2026-11-09): PIDs 51, 66,
+//! 67, 76 and 55 with the values above, the friendly name being the device's
+//! name in the project (its product text, cut to 30 characters). On another
+//! mask such hardware is planned as before, without the block: no capture
+//! shows what ETS writes there.
+//!
 //! PIDs 51, 66 and 67 held the same value in all eleven captures (projects
 //! with ETS's default backbone settings); bussard writes those values. The
-//! rest comes from the device file's `[knxnet]` table (issue #391): a device
-//! whose table is missing, lists another number of tunnels than the
-//! application declares, or names no friendly name is refused at plan time,
+//! rest comes from the device file's `[knxnet]` table (issue #391). When the
+//! table sets no friendly name, the device's catalogue product text stands
+//! in, as ETS names a new device by it ([`ets_friendly_name`], issue #1023).
+//! A device with tunnelling addresses whose table is missing or lists
+//! another number of tunnels than the application declares is refused at
+//! plan time, and so is one with no friendly name from either source,
 //! because a download that left the IP side unconfigured would report a
-//! success the device does not match. A static assignment is refused too:
-//! no capture shows which properties ETS writes for one.
+//! success the device does not match. A device without tunnelling addresses
+//! needs no table: ETS's defaults (DHCP) apply. A static assignment is
+//! refused: no capture shows which properties ETS writes for one.
 //!
 //! The carrier follows the captures. A Data-Secure-capable application
 //! (`IsSecureEnabled`, the ALLinBOX v2 2.3 family, 1331-16, 6391-11) gets the
@@ -115,44 +130,77 @@ pub struct KnxnetIpProgram {
 /// The KNXnet/IP parameter writes a full download of `app` into `target`
 /// makes, from the device file's `[knxnet]` table `config` (see the module
 /// docs). `Ok(None)` when the application declares no tunnelling addresses
-/// (`AdditionalAddressesCount` absent or 0): the device has no KNX IP
-/// interface to configure.
+/// (`AdditionalAddressesCount` absent or 0) and its hardware is not
+/// IP-enabled on mask 07B0 ([`ApplicationProgram::is_ip_enabled`]): the
+/// device has no KNX IP interface to configure.
+///
+/// `default_name` is the device's name as ETS writes it to
+/// `PID_FRIENDLY_NAME` when the project sets none
+/// ([`ets_friendly_name`] of the catalogue product's text): it stands in for
+/// an unset `friendly_name`. A device without tunnelling addresses and
+/// without a `[knxnet]` table gets ETS's own settings, DHCP and that name.
 ///
 /// # Errors
 ///
-/// A sentence naming the value that has no source: no `[knxnet]` table, a
-/// tunnel list of another length than the application declares, no or an
-/// unencodable friendly name, or a static assignment.
+/// A sentence naming the value that has no source: no `[knxnet]` table on a
+/// device with tunnelling addresses, a tunnel list of another length than
+/// the application declares, no friendly name in the table or the product,
+/// an unencodable one, or a static assignment.
 pub fn knxnet_ip_program(
     app: &ApplicationProgram,
     device_mask: u16,
     target: IndividualAddress,
     config: Option<&KnxnetConfig>,
+    default_name: Option<&str>,
 ) -> Result<Option<KnxnetIpProgram>, String> {
-    let Some(slots) = app.additional_addresses_count.filter(|n| *n > 0) else {
+    let slots = app.additional_addresses_count.unwrap_or(0);
+    // IP-enabled hardware without tunnelling addresses: captured on 07B0
+    // only (issue #1023).
+    let ip_side = app.is_ip_enabled && device_mask == 0x07B0;
+    if slots == 0 && !ip_side {
         return Ok(None);
+    }
+    let what = if slots > 0 {
+        format!(
+            "{} has a KNX IP interface built in ({slots} tunnelling addresses); a full download \
+             writes its KNXnet/IP parameters after the application, as ETS does",
+            app.id
+        )
+    } else {
+        format!(
+            "{} runs on IP-enabled hardware (no tunnelling addresses); a full download writes \
+             its KNXnet/IP parameters after the application, as ETS does",
+            app.id
+        )
     };
-    let what = format!(
-        "{} has a KNX IP interface built in ({slots} tunnelling addresses); a full download \
-         writes its KNXnet/IP parameters after the application, as ETS does",
-        app.id
-    );
-    let Some(config) = config else {
-        return Err(format!(
-            "{what}, and devices/{target}.toml has no [knxnet] table to take them from. Add one \
-             with `friendly_name` and the {slots} `tunnels`"
-        ));
+    // Without tunnelling addresses every value has a source without the
+    // table: ETS's defaults (DHCP) and the device's name (issue #1023).
+    let ets_defaults = KnxnetConfig::default();
+    let config = match config {
+        Some(config) => config,
+        None if slots == 0 => &ets_defaults,
+        None => {
+            return Err(format!(
+                "{what}, and devices/{target}.toml has no [knxnet] table to take them from. Add \
+                 one with `friendly_name` and the {slots} `tunnels`"
+            ));
+        }
     };
     if config.tunnels.len() != usize::from(slots) {
         return Err(format!(
-            "{what}: [knxnet] lists {} tunnel address(es), the application holds {slots}; list \
-             exactly {slots}",
-            config.tunnels.len()
+            "{what}: [knxnet] lists {} tunnel address(es), the application holds {slots}; {}",
+            config.tunnels.len(),
+            if slots == 0 {
+                "remove `tunnels`".to_string()
+            } else {
+                format!("list exactly {slots}")
+            }
         ));
     }
-    let Some(name) = config.friendly_name.as_deref() else {
+    let Some(name) = config.friendly_name.as_deref().or(default_name) else {
         return Err(format!(
-            "{what}: [knxnet] has no `friendly_name` to write to PID_FRIENDLY_NAME"
+            "{what}: [knxnet] has no `friendly_name` to write to PID_FRIENDLY_NAME, and the \
+             product names no text for the device; add one to devices/{target}.toml"
         ));
     };
     let Some(name) = encode_friendly_name(name) else {
@@ -208,17 +256,33 @@ pub fn knxnet_ip_program(
         PID_IP_ASSIGNMENT_METHOD,
         vec![config.assignment.method_bits()],
     ));
-    writes.push(KnxnetIpWrite {
-        prop_id: PID_ADDITIONAL_INDIVIDUAL_ADDRESSES,
-        start: 1,
-        count: slots,
-        value: config
-            .tunnels
-            .iter()
-            .flat_map(|ia| ia.raw().to_be_bytes())
-            .collect(),
-    });
+    if slots > 0 {
+        writes.push(KnxnetIpWrite {
+            prop_id: PID_ADDITIONAL_INDIVIDUAL_ADDRESSES,
+            start: 1,
+            count: slots,
+            value: config
+                .tunnels
+                .iter()
+                .flat_map(|ia| ia.raw().to_be_bytes())
+                .collect(),
+        });
+    }
     Ok(Some(KnxnetIpProgram { object, writes }))
+}
+
+/// The friendly name ETS writes for a device whose project sets none: its
+/// name in the project, which ETS starts from the catalogue product's text,
+/// trimmed and cut to the property's 30 characters (41 of 41 IP-enabled
+/// sweep captures, 2026-11-10: "ise smart connect KNX Programm" for "ise
+/// smart connect KNX Programmable", "ALLinBOX 1612 v3" for " ALLinBOX 1612
+/// v3").
+pub fn ets_friendly_name(product_text: &str) -> String {
+    product_text
+        .trim()
+        .chars()
+        .take(FRIENDLY_NAME_OCTETS)
+        .collect()
 }
 
 /// Writes `program` to the device behind `l4`, each write read back right
@@ -311,7 +375,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let target: IndividualAddress = "1.1.1".parse()?;
         let config = sweep_config()?;
-        let program = knxnet_ip_program(&app(Some(5), false), 0x07B0, target, Some(&config))?
+        let program = knxnet_ip_program(&app(Some(5), false), 0x07B0, target, Some(&config), None)?
             .ok_or("an IP-enabled application gets the writes")?;
         assert_eq!(program.object, PropObject::Index(6));
         let shape: Vec<(u8, u16, u16, String)> = program
@@ -349,7 +413,7 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let target: IndividualAddress = "1.1.1".parse()?;
         let config = sweep_config()?;
-        let program = knxnet_ip_program(&app(Some(5), true), 0x07B0, target, Some(&config))?
+        let program = knxnet_ip_program(&app(Some(5), true), 0x07B0, target, Some(&config), None)?
             .ok_or("writes")?;
         assert_eq!(
             program.object,
@@ -377,7 +441,7 @@ mod tests {
     {
         let target: IndividualAddress = "1.1.1".parse()?;
         let config = sweep_config()?;
-        let program = knxnet_ip_program(&app(Some(5), false), 0x0701, target, Some(&config))?
+        let program = knxnet_ip_program(&app(Some(5), false), 0x0701, target, Some(&config), None)?
             .ok_or("writes")?;
         assert_eq!(program.object, PropObject::Index(5));
         let names: Vec<(u16, u16)> = program
@@ -390,16 +454,146 @@ mod tests {
         Ok(())
     }
 
+    /// The ise smart connect KNX Sonos sweep capture
+    /// (`M-007C_A-0002-30-DC22`, plain-defaults, ops 221 to 228): IP-enabled
+    /// hardware, no tunnelling addresses; obj 6 PIDs 51, 66, 67, 76 (15 +
+    /// 15) and 55, no PID 53.
+    #[test]
+    fn test_knxnet_ip_program_ip_enabled_hardware_without_tunnels()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.1".parse()?;
+        let mut ise = app(None, false);
+        ise.id = "M-007C_A-0002-30-DC22".to_string();
+        ise.is_ip_enabled = true;
+        let config = KnxnetConfig {
+            friendly_name: Some("ise KNX Sonos".to_string()),
+            ..KnxnetConfig::default()
+        };
+        let program = knxnet_ip_program(&ise, 0x07B0, target, Some(&config), None)?
+            .ok_or("IP-enabled hardware gets the writes")?;
+        assert_eq!(program.object, PropObject::Index(6));
+        let shape: Vec<(u8, u16, u16, String)> = program
+            .writes
+            .iter()
+            .map(|w| {
+                (
+                    w.prop_id,
+                    w.start,
+                    w.count,
+                    bussard_model::text::hex(&w.value),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (51, 1, 1, "0000".to_string()),
+                (66, 1, 1, "e000170c".to_string()),
+                (67, 1, 1, "20".to_string()),
+                (76, 1, 15, "697365204b4e5820536f6e6f730000".to_string()),
+                (76, 16, 15, "00".repeat(15)),
+                (55, 1, 1, "04".to_string()),
+            ]
+        );
+        // The Data-Secure Gira `M-0008_A-C02A-21-B6D8-O007C` (ops 118 to
+        // 123): by type 11, the name in one write of 30, no PID 53.
+        ise.is_secure_enabled = true;
+        let program =
+            knxnet_ip_program(&ise, 0x07B0, target, Some(&config), None)?.ok_or("writes")?;
+        let pids: Vec<(u8, u16)> = program
+            .writes
+            .iter()
+            .map(|w| (w.prop_id, w.count))
+            .collect();
+        assert_eq!(pids, [(51, 1), (66, 1), (67, 1), (76, 30), (55, 1)]);
+        Ok(())
+    }
+
+    /// IP-enabled hardware without tunnelling addresses: no table or a
+    /// table and no product text, or a table with tunnels, is refused;
+    /// another mask than 07B0 is planned without the block, as no capture
+    /// shows one.
+    #[test]
+    fn test_knxnet_ip_program_ip_enabled_hardware_refusals()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.1".parse()?;
+        let mut ise = app(None, false);
+        ise.is_ip_enabled = true;
+        let err = knxnet_ip_program(&ise, 0x07B0, target, None, None)
+            .err()
+            .ok_or("no name anywhere")?;
+        assert!(err.contains("friendly_name"), "{err}");
+        let err = knxnet_ip_program(&ise, 0x07B0, target, Some(&sweep_config()?), None)
+            .err()
+            .ok_or("tunnels")?;
+        assert!(err.contains("remove `tunnels`"), "{err}");
+        assert_eq!(knxnet_ip_program(&ise, 0x57B0, target, None, None)?, None);
+        assert_eq!(knxnet_ip_program(&ise, 0x0701, target, None, None)?, None);
+        Ok(())
+    }
+
+    /// An imported ise device has no `[knxnet]` table: the block comes
+    /// from ETS's defaults and the product text, as in the
+    /// `M-007C_A-0001-10-2A85` capture (ops 57 to 64).
+    #[test]
+    fn test_knxnet_ip_program_without_table_takes_the_ets_defaults()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target: IndividualAddress = "1.1.1".parse()?;
+        let mut ise = app(None, false);
+        ise.is_ip_enabled = true;
+        let name = ets_friendly_name("ise smart connect KNX Programmable");
+        assert_eq!(name, "ise smart connect KNX Programm");
+        let program =
+            knxnet_ip_program(&ise, 0x07B0, target, None, Some(&name))?.ok_or("writes")?;
+        let shape: Vec<(u8, u16, u16, String)> = program
+            .writes
+            .iter()
+            .map(|w| {
+                (
+                    w.prop_id,
+                    w.start,
+                    w.count,
+                    bussard_model::text::hex(&w.value),
+                )
+            })
+            .collect();
+        assert_eq!(
+            shape,
+            [
+                (51, 1, 1, "0000".to_string()),
+                (66, 1, 1, "e000170c".to_string()),
+                (67, 1, 1, "20".to_string()),
+                (76, 1, 15, "69736520736d61727420636f6e6e65".to_string()),
+                (76, 16, 15, "6374204b4e582050726f6772616d6d".to_string()),
+                (55, 1, 1, "04".to_string()),
+            ]
+        );
+        // The table's own name wins over the product's.
+        let named = KnxnetConfig {
+            friendly_name: Some("Hall".to_string()),
+            ..KnxnetConfig::default()
+        };
+        let program =
+            knxnet_ip_program(&ise, 0x07B0, target, Some(&named), Some(&name))?.ok_or("writes")?;
+        assert_eq!(program.writes[3].value[..4], *b"Hall");
+        // A device with tunnelling addresses still needs its table.
+        let err = knxnet_ip_program(&app(Some(5), false), 0x07B0, target, None, Some(&name))
+            .err()
+            .ok_or("no table")?;
+        assert!(err.contains("no [knxnet] table"), "{err}");
+        Ok(())
+    }
+
     #[test]
     fn test_knxnet_ip_program_none_without_tunnelling_addresses()
     -> Result<(), Box<dyn std::error::Error>> {
         let target: IndividualAddress = "1.1.1".parse()?;
         assert_eq!(
-            knxnet_ip_program(&app(None, false), 0x07B0, target, None)?,
+            knxnet_ip_program(&app(None, false), 0x07B0, target, None, None)?,
             None
         );
         assert_eq!(
-            knxnet_ip_program(&app(Some(0), false), 0x07B0, target, None)?,
+            knxnet_ip_program(&app(Some(0), false), 0x07B0, target, None, None)?,
             None
         );
         Ok(())
@@ -410,25 +604,25 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let target: IndividualAddress = "1.1.1".parse()?;
         let ip = app(Some(5), false);
-        let err = knxnet_ip_program(&ip, 0x07B0, target, None)
+        let err = knxnet_ip_program(&ip, 0x07B0, target, None, None)
             .err()
             .ok_or("no table")?;
         assert!(err.contains("no [knxnet] table"), "{err}");
         let mut short = sweep_config()?;
         short.tunnels.truncate(2);
-        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&short))
+        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&short), None)
             .err()
             .ok_or("two tunnels")?;
         assert!(err.contains("lists 2 tunnel"), "{err}");
         let mut unnamed = sweep_config()?;
         unnamed.friendly_name = None;
-        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&unnamed))
+        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&unnamed), None)
             .err()
             .ok_or("no name")?;
         assert!(err.contains("friendly_name"), "{err}");
         let mut fixed = sweep_config()?;
         fixed.assignment = IpAssignment::Static;
-        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&fixed))
+        let err = knxnet_ip_program(&ip, 0x07B0, target, Some(&fixed), None)
             .err()
             .ok_or("static")?;
         assert!(err.contains("static"), "{err}");
