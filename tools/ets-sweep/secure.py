@@ -4,7 +4,7 @@
 # ///
 """The KNX Data Secure variant of the ETS sweep (epic #419, part 4 #423).
 
-    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo]
+    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo | --redo-failed]
     uv run tools/ets-sweep/secure.py cert --serial 00FA12345678 --fdsk <32 hex>   # print a label
     uv run tools/ets-sweep/secure.py cert --check "<36-character label>"          # calibrate the format
     uv run tools/ets-sweep/secure.py jobs                                         # list the secure-capable jobs
@@ -200,6 +200,10 @@ def jobs() -> list[dict]:
 STOP_ERRORS = ("screen grab failed", "not the RDP layout", "desktop in use", "Speicherplatz")
 
 
+# Consecutive rows failed in the driver before the run stops.
+MAX_DRIVER_ERRORS = 3
+
+
 def save(results: dict) -> None:
     RESULTS.parent.mkdir(exist_ok=True)
     RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
@@ -241,18 +245,26 @@ def run(args) -> int:
     vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
     done = 0
     import_errors = 0
+    driver_errors = 0
     for job in todo:
-        # A row whose import failed is run again (nothing of it reached ETS).
-        if job["id"] in results and not args.redo and not results[job["id"]].get("import_failed"):
+        # A row whose import failed is run again (nothing of it reached ETS);
+        # --redo-failed also runs again what is neither captured nor skipped,
+        # as defaults.py's does.
+        prev = results.get(job["id"])
+        if prev and not args.redo and not prev.get("import_failed") and not (
+                args.redo_failed and not str(prev.get("outcome", "")).startswith(("captured", "skipped"))):
             continue
         path = defaults.product_path(job["file"])
         imp = import_product(c, path, pw)
         if imp.get("outcome") not in ("imported", "done_unverified"):
             error = (imp.get("message") or imp.get("error") or "")[:300]
+            # ETS reports a full disk as a failed import ('refused'); that is
+            # the VM's, not the product's: the row is run again.
+            refused = imp.get("outcome") == "refused" and "Speicherplatz" not in error
             results[job["id"]] = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"),
                                   "when": datetime.now(timezone.utc).isoformat(),
-                                  "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
-                                  "error": error, "import_failed": imp.get("outcome") != "refused"}
+                                  "outcome": "skipped-import-failed" if refused else "driver-error",
+                                  "error": error, "import_failed": not refused}
             save(results)
             print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed: {error[:120]}", flush=True)
             # defaults.py's stop rules: a desktop that cannot be used, or a
@@ -261,7 +273,7 @@ def run(args) -> int:
             if any(k in error for k in STOP_ERRORS):
                 print(f"stopping: {error[:160]}", flush=True)
                 break
-            import_errors += imp.get("outcome") != "refused"
+            import_errors += not refused
             if import_errors >= defaults.MAX_IMPORT_ERRORS:
                 print(f"stopping: {import_errors} imports in a row failed", flush=True)
                 break
@@ -298,10 +310,18 @@ def run(args) -> int:
                 entry["decode"] = {"verdict": "no-keyring", "error": str(exc)[:200]}
         results[job["id"]] = entry
         save(results)
+        # A driver error in a row of its own is the row's; a run of them is
+        # ETS stuck in a state the driver does not recover from (seven rows
+        # in the Gebäude view, 2026-11-10): stop. The failed rows are saved;
+        # `run --redo-failed` runs them again.
+        driver_errors = driver_errors + 1 if entry["outcome"].startswith("driver-error") else 0
         print(f"{entry['outcome']:13} {(entry.get('decode') or {}).get('verdict', '-'):10} {job['id']}"
               + (f"  {entry['error'][:100]}" if entry.get("error") else ""), flush=True)
         done += 1
         if args.limit and done >= args.limit:
+            break
+        if driver_errors >= MAX_DRIVER_ERRORS:
+            print(f"stopping: {driver_errors} rows in a row failed in the driver", flush=True)
             break
     return 0
 
@@ -313,6 +333,8 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
+    p.add_argument("--redo-failed", action="store_true",
+                   help="run again what is neither captured nor skipped (a driver error, an ETS failure)")
     p.add_argument("--representative", action="store_true",
                    help="only the applications of secure-subset.json (secure_subset.py, #423)")
     p = sub.add_parser("cert")
