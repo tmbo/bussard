@@ -2125,10 +2125,14 @@ def catalog_import_button() -> dict | None:
     """The Katalog panel's Import button wherever the panel sits."""
     # The first word: OCR joins an enabled 'Herunterladen' next to it into one
     # line ('Import Herunterladen', 2026-10-28).
-    # The first two words: the panel's close icon left of the button joins the
-    # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06).
-    hits = [l for l in ocr((680, 200, 1100, 2440))
-            if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:2])]
+    # The first three words: the panel's close icon left of the button joins the
+    # line as 'X Import' (31 imports in a row refused, 2026-11-08 04:06), and
+    # with the collapse arrow as 'v X Import' after a restart (2026-11-10 09:40).
+    # The strip reaches x 1300: after the reset of 2026-11-10 the Katalog
+    # tree column was wider and the word Import started at x 1067, past
+    # the old right edge (1100), so OCR read only the icons.
+    hits = [l for l in ocr((680, 200, 1300, 2440))
+            if any(_norm(w) in ("import", "impart", "imp0rt") for w in l["text"].split()[:3])]
     if not hits:
         return None
     hit = dict(min(hits, key=lambda l: abs(l["y"] - 1354)))
