@@ -1,0 +1,1 @@
+- ETS sweep driver: the Katalog Import button is found when OCR reads the collapse arrow and close icon before it ("v X Import", 2026-11-10) (#478).
