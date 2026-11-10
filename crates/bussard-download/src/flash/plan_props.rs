@@ -975,6 +975,10 @@ mod tests {
             </LoadProcedure>
            </LoadProcedures>
           </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-0083_A-1_PB-1">
+           <ParameterRefRef RefId="M-0083_A-1_P-18_R-8" />
+           <ParameterRefRef RefId="M-0083_A-1_P-36_R-36" />
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
          </ApplicationProgram></KNX>"#;
         Ok(parse_application_program("M-0083_A-1", xml.as_bytes())?)
     }

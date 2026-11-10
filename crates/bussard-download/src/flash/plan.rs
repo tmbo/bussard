@@ -4671,6 +4671,25 @@ mod tests {
         params: &str,
         identity: bool,
     ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        ops_app_showing(ops, params, &[], identity)
+    }
+
+    /// [`ops_app`] with a `ParameterRef` `P-<n>_R-<n>` for each of `shown`,
+    /// each shown in the Dynamic section.
+    fn ops_app_showing(
+        ops: &str,
+        params: &str,
+        shown: &[u32],
+        identity: bool,
+    ) -> Result<ApplicationProgram, Box<dyn std::error::Error>> {
+        let refs: String = shown
+            .iter()
+            .map(|n| format!(r#"<ParameterRef Id="M-00FA_A-2500-10-51CB_P-{n}_R-{n}" RefId="M-00FA_A-2500-10-51CB_P-{n}" />"#))
+            .collect();
+        let refrefs: String = shown
+            .iter()
+            .map(|n| format!(r#"<ParameterRefRef RefId="M-00FA_A-2500-10-51CB_P-{n}_R-{n}" />"#))
+            .collect();
         let identity = if identity {
             r#"ApplicationNumber="9472" ApplicationVersion="16""#
         } else {
@@ -4684,8 +4703,10 @@ mod tests {
             <ParameterType Id="M-00FA_A-2500-10-51CB_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
            </ParameterTypes>
            <Parameters>{params}</Parameters>
+           <ParameterRefs>{refs}</ParameterRefs>
            <LoadProcedures><LoadProcedure>{ops}</LoadProcedure></LoadProcedures>
           </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-00FA_A-2500-10-51CB_PB-1">{refrefs}</ParameterBlock></ChannelIndependentBlock></Dynamic>
          </ApplicationProgram></KNX>"#
         );
         Ok(parse_application_program(
@@ -4756,7 +4777,7 @@ mod tests {
                 r#"<LdCtrlDeclarePropDesc ObjIdx="4" PropId="13" PropType="PDT_GENERIC_05" MaxElements="1" Writable="true" />
                    <LdCtrlWriteProp ObjIdx="4" PropId="13" Count="1" InlineData="0000000000" />"#,
             ] {
-                let plan = plan_ops(&ops_app(ops, param, identity)?)?;
+                let plan = plan_ops(&ops_app_showing(ops, param, &[1], identity)?)?;
                 let writes: Vec<(Vec<u8>, bool)> = writes_to(&plan, 13)
                     .into_iter()
                     .filter_map(|s| match s {

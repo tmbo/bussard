@@ -633,6 +633,24 @@ mod tests {
                 )
             })
             .collect();
+        // Each property named by index is declared, as the Hager programs
+        // these tests follow declare theirs: an unreached parameter of an
+        // undeclared one would keep the base (issue #1024).
+        let attr = |loc: &str, name: &str| -> Option<String> {
+            let rest = &loc[loc.find(&format!("{name}=\""))? + name.len() + 2..];
+            Some(rest[..rest.find('"')?].to_string())
+        };
+        let declarations: std::collections::BTreeSet<String> = locations
+            .iter()
+            .filter_map(|(loc, _)| {
+                Some(format!(
+                    r#"<LdCtrlDeclarePropDesc ObjIdx="{}" PropId="{}" PropType="PDT_UNSIGNED_CHAR" MaxElements="1" />"#,
+                    attr(loc, "ObjectIndex")?,
+                    attr(loc, "PropertyId")?
+                ))
+            })
+            .collect();
+        let declarations: String = declarations.into_iter().collect();
         let xml = format!(
             r#"<KNX xmlns="http://knx.org/xml/project/20">
          <ApplicationProgram Id="M-1_A-1" ApplicationNumber="1" ApplicationVersion="1"
@@ -642,6 +660,7 @@ mod tests {
             <ParameterType Id="M-1_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
            </ParameterTypes>
            <Parameters>{params}</Parameters>
+           <LoadProcedures><LoadProcedure>{declarations}</LoadProcedure></LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#
         );
