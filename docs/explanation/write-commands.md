@@ -41,8 +41,9 @@ would change, then refuse at the prompt.
   the `state_hash` of the approved plan (`plan --json`).
 - **Backs up** the pre-apply tables to
   `<dir>/captures/backups/<ia>-<timestamp>.json`, and the parameter memory to
-  `<dir>/captures/backups/parameters/` when parameters change. If a backup
-  cannot be written, the apply refuses.
+  `<dir>/captures/backups/parameters/` when parameters change, with the
+  interface-object properties parameters are placed in. If a backup cannot be
+  written, the apply refuses.
 - **Verifies** by reading the tables and parameters back. A System 7 table
   write ends with a basic restart, as in ETS, and the read-back waits for the
   device to answer again.
@@ -72,8 +73,9 @@ plans empty and writes nothing.
 `bussard restore --parameters <backup.json> <ADDRESS>` replays a parameter
 backup with the parameter-only download. It refuses a backup of another
 device, application or mask, and a device that does not run the application.
-It writes only placed octets, keeps device-managed octets as the device holds
-them, backs up what it overwrites and verifies by read-back.
+It writes only placed octets and the parameter properties the backup holds,
+keeps device-managed octets as the device holds them, backs up what it
+overwrites and verifies by read-back.
 
 ## `restart` restarts one device
 

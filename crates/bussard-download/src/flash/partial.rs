@@ -309,6 +309,32 @@ impl FlashPlan {
         plan
     }
 
+    /// The plan with each write of a parameter property set to `values`
+    /// ((object, property id, start element) to its value; issue #944): what
+    /// a restore of a property-only program writes. A write `values` does not
+    /// name, and every write not composed from parameters, keeps its value.
+    pub fn with_property_values(
+        &self,
+        values: &BTreeMap<(super::PropObject, u32, u16), Vec<u8>>,
+    ) -> FlashPlan {
+        let mut plan = self.clone();
+        for step in &mut plan.steps {
+            if let FlashStep::WriteProp {
+                object,
+                prop_id,
+                start_element,
+                value,
+                from_parameters: true,
+                ..
+            } = step
+                && let Some(v) = values.get(&(*object, *prop_id, *start_element))
+            {
+                v.clone_into(value);
+            }
+        }
+        plan
+    }
+
     /// The System B parameter-only steps (module docs).
     fn system_b_parameter_steps(
         &self,

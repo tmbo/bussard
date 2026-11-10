@@ -280,6 +280,7 @@ impl BussardMcp {
             target,
             &detail.plan,
             &detail.regions,
+            &detail.properties,
         )
         .map_err(|e| format!("refusing to write {target} without a parameter backup: {e}"))?;
         let record = crate::jobs::record_file(&dir, snapshot.as_deref());

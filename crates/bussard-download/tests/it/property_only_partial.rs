@@ -1,9 +1,8 @@
 //! The parameter-only download of a program whose parameters all live in
 //! interface-object properties (issue #944, the Hager 07B0 shape): the
 //! `par` procedure's partial download on the object its `par` allocation
-//! names, around every property the parameters are placed in. The service
-//! refuses to send it to a device until the ETS capture of #572 A.4 confirms
-//! the sequence; this test keeps the download itself exercised on the mock.
+//! names, around every property the parameters are placed in, as ETS sends
+//! it (the `run=params` row of the ETS sweep's E804 capture, #572 A.4).
 
 use std::collections::BTreeMap;
 
@@ -439,5 +438,34 @@ fn test_parameters_only_reads_the_description_of_an_undeclared_property() -> Tes
         partial.steps
     );
     assert_eq!(partial.steps.iter().filter(|s| **s == describe).count(), 1);
+    Ok(())
+}
+
+#[test]
+fn test_with_property_values_sets_the_parameter_property_writes() -> TestResult {
+    // A restore of a property-only program (issue #944): the backup's value
+    // replaces the model's in the parameter property write, nothing else.
+    let app = app()?;
+    let plan = plan_of(&app, &BTreeMap::new())?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let values = BTreeMap::from([((PropObject::Index(10), 52, 1), vec![0x07, 0x08])]);
+    let restored = partial.with_property_values(&values);
+    let writes = |p: &bussard_download::FlashPlan| -> Vec<Vec<u8>> {
+        p.steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::WriteProp {
+                    object: PropObject::Index(10),
+                    prop_id: 52,
+                    value,
+                    ..
+                } => Some(value.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(writes(&partial), vec![vec![0x05, 0x09]]);
+    assert_eq!(writes(&restored), vec![vec![0x07, 0x08]]);
+    assert_eq!(restored.steps.len(), partial.steps.len());
     Ok(())
 }

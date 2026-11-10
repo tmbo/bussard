@@ -4,10 +4,12 @@
 //! parameter memory, and every parameter placed in a declared property that
 //! an `LdCtrlWriteProp` without `InlineData` writes. After a full flash the
 //! plan reads the properties back and finds nothing to change; one changed
-//! parameter is planned as one property write. `apply` and `flash
-//! --parameters-only` refuse to send that download until the ETS capture of
-//! #572 A.4 confirms it; the download itself is tested on the mock device in
-//! `bussard-download` (`property_only_partial.rs`).
+//! parameter is planned as one property write, which `apply` and `flash
+//! --parameters-only` send as the `par` procedure's partial download. ETS
+//! sends the same download (the `run=params` row of the ETS sweep's capture
+//! of `M-0009_A-E804-10-98AD`, 2026-11-10: identical, `props=ok(2935)
+//! loadctl=ok(4)`, #572 A.4). The backup taken first holds the properties,
+//! and `restore --parameters` puts them back.
 
 include!("support/param_mock.rs");
 
@@ -174,8 +176,51 @@ fn test_plan_after_flash_of_a_property_only_program_is_clean() -> TestResult {
     Ok(())
 }
 
+/// Stores the synthetic archive in `products/` and pins it for 1.1.4 in
+/// `bussard.lock`, as `bussard import-product` would: `restore --parameters`
+/// takes no `--product`.
+fn pin_product(bench: &Bench) -> TestResult {
+    use sha2::Digest as _;
+    let model = bench.tmp.join("knx");
+    let store = model.join("products");
+    std::fs::create_dir_all(&store)?;
+    let file = store.join("prop-test.knxprod");
+    std::fs::copy(bench.product()?, &file)?;
+    let sha: String = sha2::Sha256::digest(std::fs::read(&file)?)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    std::fs::write(
+        model.join("bussard.lock"),
+        format!(
+            "version = 3\n\n[[product]]\nsha256 = \"{sha}\"\nfile = \"products/prop-test.knxprod\"\n\
+             filename = \"prop-test.knxprod\"\norigin = {{ kind = \"file\", path = \"prop-test.knxprod\" }}\n\
+             applications = [\"M-00FA_A-0002\"]\n\n[[device]]\naddress = \"1.1.4\"\n\
+             application = \"M-00FA_A-0002\"\nproduct_sha256 = \"{sha}\"\nmask = \"07B0\"\n"
+        ),
+    )?;
+    Ok(())
+}
+
+/// The parameter backups `apply` and `flash --parameters-only` wrote, oldest
+/// first.
+fn parameter_backups(bench: &Bench) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    let dir = bench
+        .tmp
+        .join("knx")
+        .join("captures")
+        .join("backups")
+        .join("parameters");
+    let mut out: Vec<PathBuf> = std::fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .collect();
+    out.sort();
+    Ok(out)
+}
+
 #[test]
-fn test_plan_one_changed_property_parameter_and_apply_refuses() -> TestResult {
+fn test_apply_writes_a_changed_property_parameter_and_restore_puts_it_back() -> TestResult {
     let Some(bench) = Bench::start_with_app(
         "prop-only-apply",
         MockDevice::running([0, 0]),
@@ -206,21 +251,38 @@ fn test_plan_one_changed_property_parameter_and_apply_refuses() -> TestResult {
     let changes = plan["changes"].as_array().ok_or("no changes")?;
     assert_eq!(changes.len(), 1, "{plan}");
 
-    // No ETS capture confirms the parameter-only download of such a program
-    // yet (#572 A.4): `apply` refuses it, names the capture, writes nothing.
+    // `apply` sends the parameter-only download: the property, inside the
+    // load-state sequence of object 4, no memory write.
     let flashed = bench.device();
     let out = bench.bussard(&["apply", "1.1.4", "--product", bench.product()?, "--yes"])?;
     let (stdout, stderr) = text(&out);
-    assert!(
-        !out.status.success(),
-        "stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(stderr.contains("refusing to apply to 1.1.4"), "{stderr}");
-    assert!(stderr.contains("#572"), "{stderr}");
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     let dev = bench.device();
-    assert_eq!(dev.property_writes, flashed.property_writes, "{stderr}");
-    assert_eq!(dev.load_events, flashed.load_events, "{stderr}");
+    assert_eq!(
+        dev.properties.get(&PARAM_PROPERTY),
+        Some(&(1, vec![0x05, 0x14])),
+        "{stderr}"
+    );
     assert_eq!(dev.memory_writes, flashed.memory_writes, "{stderr}");
+    // Unload, StartLoading, the `par` allocation, LoadCompleted on the
+    // application object (index 3 on the mock), as in ETS's capture.
+    let events: Vec<(u8, u8)> = dev.load_events[flashed.load_events.len()..].to_vec();
+    assert_eq!(events, vec![(3, 4), (3, 1), (3, 3), (3, 2)], "{stderr}");
+    assert_eq!(plan_problems(&plan_json(&bench)?), Vec::<String>::new());
+
+    // The backup taken before the write holds the property as it was.
+    let backups = parameter_backups(&bench)?;
+    let first = backups.first().ok_or("no parameter backup")?;
+    let backup: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(first)?)?;
+    assert_eq!(
+        backup["properties"],
+        serde_json::json!([{"object": "index 10", "prop_id": 52, "start_element": 1, "count": 2,
+                            "bytes": "0509"}]),
+        "{backup}"
+    );
+
+    // `flash --parameters-only` writes the next change the same way.
+    write_device(&bench, "\"lvl@P-1_R-2\" = \"21\"\n")?;
     let out = bench.bussard(&[
         "flash",
         "1.1.4",
@@ -230,24 +292,28 @@ fn test_plan_one_changed_property_parameter_and_apply_refuses() -> TestResult {
         "--yes",
     ])?;
     let (stdout, stderr) = text(&out);
-    assert!(
-        !out.status.success(),
-        "stdout:\n{stdout}\nstderr:\n{stderr}"
-    );
-    assert!(
-        format!("{stdout}{stderr}").contains("#572"),
-        "{stdout}{stderr}"
-    );
-    assert_eq!(bench.device().property_writes, flashed.property_writes);
-
-    // A full flash writes the changed property; the plan is clean again.
-    let out = bench.bussard(&["flash", "1.1.4", "--product", bench.product()?, "--yes"])?;
-    let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert_eq!(
         bench.device().properties.get(&PARAM_PROPERTY),
-        Some(&(1, vec![0x05, 0x14]))
+        Some(&(1, vec![0x05, 0x15]))
     );
-    assert_eq!(plan_problems(&plan_json(&bench)?), Vec::<String>::new());
+
+    // The first backup restores the property; the device runs on.
+    pin_product(&bench)?;
+    let kept = first.to_str().ok_or("path")?;
+    let out = bench.bussard(&["restore", "--parameters", kept, "1.1.4", "--yes"])?;
+    let (stdout, stderr) = text(&out);
+    assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
+    assert!(
+        stdout.contains("writes 1 parameter property to 1.1.4"),
+        "{stdout}"
+    );
+    let dev = bench.device();
+    assert_eq!(
+        dev.properties.get(&PARAM_PROPERTY),
+        Some(&(1, vec![0x05, 0x09])),
+        "{stderr}"
+    );
+    assert_eq!(dev.memory_writes, flashed.memory_writes, "{stderr}");
     Ok(())
 }

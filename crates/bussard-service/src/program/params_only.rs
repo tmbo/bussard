@@ -204,6 +204,9 @@ pub struct ParamsPlanned {
     pub params: ParamPlan,
     /// The properties a parameter is placed in that differ (issue #706).
     pub properties: Vec<ParamProperty>,
+    /// Every property a parameter is placed in, as read: backed up before
+    /// the write with the memory (issue #944).
+    pub read_properties: Vec<ParamProperty>,
 }
 
 impl ParamsPlanned {
@@ -294,12 +297,6 @@ pub fn plan_parameters_only(
         .into_iter()
         .cloned()
         .collect();
-    // Issue #944: no ETS capture confirms this download yet (#572).
-    if !properties.is_empty()
-        && let Some(why) = crate::params::uncaptured_property_download(target, &partial)
-    {
-        return Err(why);
-    }
     Ok(ParamsPlanned {
         partial,
         regions,
@@ -310,6 +307,7 @@ pub fn plan_parameters_only(
             kept: decoded.kept,
         },
         properties,
+        read_properties: read.properties.clone(),
     })
 }
 
@@ -367,18 +365,19 @@ pub async fn write_parameters_only(
         Err(Declined::Refused(refusal)) => return Err(ParamsWriteError::Refused(refusal)),
     }
     let target = write.session.target;
-    // A backup of no memory (a program whose parameters all live in
-    // properties, issue #944) restores nothing: no write.
-    if planned.regions.is_empty() {
+    // A backup of nothing restores nothing: no write. A program whose
+    // parameters all live in properties backs those up (issue #944).
+    if !super::apply::backs_up_anything(&planned.regions, &planned.read_properties) {
         return Err(ParamsWriteError::Backup(BackupError::NoParameterMemory));
     }
-    // Back up the parameter memory before the first write; no backup, no
-    // write.
+    // Back up the parameter memory and properties before the first write;
+    // no backup, no write.
     let backup = bussard_download::write_parameter_memory_backup(
         write.dir,
         target,
         write.plan,
         &planned.regions,
+        &planned.read_properties,
     )
     .map_err(|e| ParamsWriteError::Backup(BackupError::Parameters(e)))?;
     observer.event(Event::Note(Note::Say(format!(

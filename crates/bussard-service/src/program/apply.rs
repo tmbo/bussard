@@ -66,21 +66,36 @@ pub fn back_up_parameters(
     target: IndividualAddress,
     detail: &ParamDetail,
 ) -> Result<PathBuf, BackupError> {
-    bussard_download::write_parameter_memory_backup(dir, target, &detail.plan, &detail.regions)
-        .map_err(BackupError::Parameters)
+    bussard_download::write_parameter_memory_backup(
+        dir,
+        target,
+        &detail.plan,
+        &detail.regions,
+        &detail.properties,
+    )
+    .map_err(BackupError::Parameters)
+}
+
+/// Whether a parameter backup of `regions` and `properties` records
+/// anything to restore: a memory region, or a parameter property the device
+/// was read for (a program whose parameters all live in properties has no
+/// region, issue #944).
+pub fn backs_up_anything(
+    regions: &bussard_download::ParamRegions,
+    properties: &[bussard_download::ParamProperty],
+) -> bool {
+    !regions.is_empty() || properties.iter().any(|p| p.device.is_some())
 }
 
 /// Whether the parameter backup a parameter-only write takes first would
-/// restore anything: a program whose parameters all live in properties
-/// (issue #944) has no memory region, and the backup records no property, so
-/// the write must not start. A full flash rewrites everything and needs no
-/// such check.
+/// restore anything ([`backs_up_anything`]); the write must not start when it
+/// would not. A full flash rewrites everything and needs no such check.
 ///
 /// # Errors
 ///
 /// [`BackupError::NoParameterMemory`] when the backup would be empty.
 pub fn check_parameter_backup(detail: &ParamDetail) -> Result<(), BackupError> {
-    if detail.regions.is_empty() {
+    if !backs_up_anything(&detail.regions, &detail.properties) {
         return Err(BackupError::NoParameterMemory);
     }
     Ok(())
@@ -95,12 +110,12 @@ pub enum BackupError {
     /// The parameter memory backup.
     #[error(transparent)]
     Parameters(backup::BackupError),
-    /// The parameter backup would hold nothing: the parameters live in
-    /// interface-object properties, which the backup does not record.
+    /// The parameter backup would hold nothing: no parameter memory region
+    /// and no parameter property could be read.
     #[error(
-        "the parameter backup would be empty: the device's parameters live in interface-object \
-         properties, which the parameter backup does not record, so nothing could be restored \
-         from it; nothing is written"
+        "the parameter backup would be empty: neither the device's parameter memory nor the \
+         properties its parameters live in could be read, so nothing could be restored from \
+         it; nothing is written"
     )]
     NoParameterMemory,
 }
