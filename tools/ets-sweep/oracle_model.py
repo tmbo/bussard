@@ -30,6 +30,7 @@ device's objects their group addresses: `{"31": {"send": "1/0/9", "listen":
 from __future__ import annotations
 
 import hashlib
+import html
 import os
 import re
 import shutil
@@ -65,6 +66,65 @@ def additional_addresses(product: Path, app: str) -> tuple[int, bool]:
     return 0, False
 
 
+def _hardware_xml(product: Path) -> list[str]:
+    """The `Hardware.xml` texts of a product file, empty when it does not open."""
+    try:
+        z = zipfile.ZipFile(product)
+        return [z.read(n).decode("utf-8", "replace") for n in z.namelist() if n.endswith("/Hardware.xml")]
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+
+HARDWARE_BLOCK = re.compile(r"<Hardware [^>]*>.*?</Hardware>", re.S)
+
+
+def hardware_of(product: Path, app: str) -> tuple[bool, list[tuple[str, str, str]]]:
+    """Whether the hardware listing `app` declares `IsIPEnabled="true"`, and
+    its products as `(id, order number, Text)` (issue #1023: the ise smart
+    connect gateways have a KNX IP side and no tunnelling addresses)."""
+    ip, products = False, []
+    for text in _hardware_xml(product):
+        for block in HARDWARE_BLOCK.finditer(text):
+            body = block.group(0)
+            if f'RefId="{app}"' not in body:
+                continue
+            head = re.match(r"<Hardware [^>]*>", body).group(0)
+            ip = ip or 'IsIPEnabled="true"' in head or 'IsIPEnabled="1"' in head
+            for m in re.finditer(r"<Product [^>]*>", body):
+                tag = m.group(0)
+                attr = lambda k: (re.search(rf'\b{k}="([^"]*)"', tag) or [None, ""])[1]
+                products.append((attr("Id"), attr("OrderNumber"), attr("Text")))
+    return ip, products
+
+
+def project_device_name(product: Path, app: str, order: str | None, language: str = LANGUAGE) -> str | None:
+    """The device's name in the sweep's ETS project, as ETS writes it to
+    `PID_FRIENDLY_NAME` (issue #1023): the `Text` of the catalog product the
+    driver added (by order number), in the project language when the file
+    translates it, trimmed and cut to the property's 30 characters. 41 of 41 IP-enabled
+    sweep captures (2026-11-10): "ise smart connect KNX Programm" for
+    "ise smart connect KNX Programmable", "ise KNX Sonos" where the catalog
+    row reads "ise smart connect KNX Sonos". `None` when no product matches."""
+    _, products = hardware_of(product, app)
+    match = [p for p in products if order and p[1] == order] or (products if len(products) == 1 else [])
+    if not match:
+        return None
+    pid, _, text = match[0]
+    for xml in _hardware_xml(product):
+        for lang in re.finditer(r'<Language Identifier="([^"]+)">(.*?)</Language>', xml, re.S):
+            if lang.group(1) != language:
+                continue
+            m = re.search(rf'<TranslationElement RefId="{re.escape(pid)}">\s*'
+                          r'(?:<Translation [^>]*/>\s*)*?<Translation AttributeName="Text" Text="([^"]*)"',
+                          lang.group(2))
+            if m:
+                text = m.group(1)
+    # ETS trims the name: " ALLinBOX 1612 v3" (`M-0071_A-4A71-23-34FD`) is
+    # written without its leading space.
+    text = html.unescape(text).strip()
+    return text[:30] or None
+
+
 def knxnet_table(ia: str, count: int, friendly_name: str | None, bus_interfaces: bool = False) -> str:
     """The `[knxnet]` table the sweep's ETS project holds for an IP-enabled
     device (bussard issue #455): DHCP, the device's name in the project (the
@@ -80,16 +140,19 @@ def knxnet_table(ia: str, count: int, friendly_name: str | None, bus_interfaces:
     hosts = [255 - i for i in range(count)] if bus_interfaces else [256 - count + i for i in range(count)]
     tunnels = ", ".join(f'"{area}.{line}.{h}"' for h in hosts)
     name = f'friendly_name = "{friendly_name}"\n' if friendly_name else ""
-    return f'\n[knxnet]\nassignment = "dhcp"\n{name}tunnels = [{tunnels}]\n'
+    tunnels = f"tunnels = [{tunnels}]\n" if count else ""
+    return f'\n[knxnet]\nassignment = "dhcp"\n{name}{tunnels}'
 
 
 def ensure_knxnet(out: Path, product: Path, app: str, ia: str = "1.1.1",
                   friendly_name: str | None = None) -> None:
     """Adds the `[knxnet]` table to the device file of an IP-enabled device
-    that has none (a model the sweep imported before issue #455)."""
+    that has none (a model the sweep imported before issue #455): one with
+    tunnelling addresses, or on `IsIPEnabled` hardware without them (#1023)."""
     count, bus_interfaces = additional_addresses(product, app)
+    ip, _ = hardware_of(product, app) if not count else (True, [])
     path = out / "devices" / f"{ia}.toml"
-    if count and path.exists() and "[knxnet]" not in path.read_text():
+    if (count or ip) and path.exists() and "[knxnet]" not in path.read_text():
         with path.open("a") as fh:
             fh.write(knxnet_table(ia, count, friendly_name, bus_interfaces))
 

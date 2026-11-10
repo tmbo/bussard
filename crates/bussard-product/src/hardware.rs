@@ -88,6 +88,16 @@ pub struct Hardware {
     /// held.
     #[serde(default)]
     pub factory_properties: BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>>,
+    /// The application programs a `Hardware2Program` of a
+    /// `<Hardware IsIPEnabled="true">` block lists: hardware with a KNX IP
+    /// side, whose KNXnet/IP parameter object ETS writes after a download
+    /// even when the application declares no tunnelling addresses (the ise
+    /// smart connect gateways, issue #1023,
+    /// [`crate::ApplicationProgram::is_ip_enabled`]). None of the 99 such
+    /// programs of the ETS sweep corpus is also listed by hardware without
+    /// the flag (2026-11-10).
+    #[serde(default)]
+    pub ip_enabled_apps: BTreeSet<String>,
 }
 
 impl Hardware {
@@ -100,6 +110,7 @@ impl Hardware {
         self.hardware2program.extend(other.hardware2program);
         self.order_to_bus_current.extend(other.order_to_bus_current);
         self.table_image_apps.extend(other.table_image_apps);
+        self.ip_enabled_apps.extend(other.ip_enabled_apps);
         for (app, entries) in other.factory_properties {
             merge_factory_properties(&mut self.factory_properties, &app, entries);
         }
@@ -135,6 +146,9 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
     let mut factory_properties: BTreeMap<String, Vec<crate::loaded_image::LoadedImageEntry>> =
         BTreeMap::new();
     let mut current_hw_name: Option<String> = None;
+    // Whether the current `<Hardware>` declares `IsIPEnabled="true"`.
+    let mut current_hw_ip = false;
+    let mut ip_enabled_apps: BTreeSet<String> = BTreeSet::new();
 
     // Order numbers and app refs collected within the current <Hardware> block,
     // for the order-number join. Kept separate from the h2p-id keying above.
@@ -162,6 +176,8 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                         &mut block_bus_current,
                     );
                     current_hw_name = attr_value(&e, b"Name", context)?;
+                    current_hw_ip = attr_value(&e, b"IsIPEnabled", context)?
+                        .is_some_and(|v| v.trim().eq_ignore_ascii_case("true") || v.trim() == "1");
                     block_bus_current =
                         attr_value(&e, b"BusCurrent", context)?.and_then(|v| parse_bus_current(&v));
                 }
@@ -210,6 +226,9 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                         if current_table_image {
                             table_image_apps.insert(ref_id.clone());
                         }
+                        if current_hw_ip {
+                            ip_enabled_apps.insert(ref_id.clone());
+                        }
                         merge_factory_properties(
                             &mut factory_properties,
                             &ref_id,
@@ -239,7 +258,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                 _ => {}
             },
             Event::End(e) => match e.local_name().as_ref() {
-                b"Hardware" => current_hw_name = None,
+                b"Hardware" => {
+                    current_hw_name = None;
+                    current_hw_ip = false;
+                }
                 b"Hardware2Program" => {
                     current_h2p_id = None;
                     current_table_image = false;
@@ -281,6 +303,7 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         // disagree (or carry no image), so a later file's listing cannot
         // bring a value back ([`Hardware::extend`]).
         factory_properties,
+        ip_enabled_apps,
     })
 }
 
@@ -482,6 +505,30 @@ mod tests {
                 .as_deref(),
             Some("Switch actuator")
         );
+        Ok(())
+    }
+
+    /// The ise smart connect KNX Sonos `Hardware.xml` shape (issue #1023):
+    /// the IP-enabled block's programs are marked, the other block's not.
+    #[test]
+    fn test_parse_hardware_marks_ip_enabled_apps()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11"><ManufacturerData><Manufacturer RefId="M-007C"><Hardware>
+          <Hardware Id="M-007C_H-ISSOCOKX01-1" Name="KIM Sonos" IsIPEnabled="true">
+            <Hardware2Programs><Hardware2Program Id="M-007C_H-ISSOCOKX01-1_HP-0002-30-DC22">
+              <ApplicationProgramRef RefId="M-007C_A-0002-30-DC22" />
+            </Hardware2Program></Hardware2Programs>
+          </Hardware>
+          <Hardware Id="H-2" Name="plain">
+            <Hardware2Programs><Hardware2Program Id="H-2_HP-1">
+              <ApplicationProgramRef RefId="M-007C_A-0009-10-0001" />
+            </Hardware2Program></Hardware2Programs>
+          </Hardware>
+        </Hardware></Manufacturer></ManufacturerData></KNX>"#;
+        let hw = parse_hardware(xml)?;
+        assert!(hw.ip_enabled_apps.contains("M-007C_A-0002-30-DC22"));
+        assert!(!hw.ip_enabled_apps.contains("M-007C_A-0009-10-0001"));
+        assert_eq!(hw.ip_enabled_apps.len(), 1);
         Ok(())
     }
 

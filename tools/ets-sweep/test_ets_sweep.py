@@ -510,6 +510,39 @@ class TestOracleModel(unittest.TestCase):
         self.assertIn('tunnels = ["1.1.255", "1.1.254", "1.1.253"]',
                       oracle_model.knxnet_table("1.1.1", 3, None, bus_interfaces=True))
 
+    def test_ip_enabled_hardware_without_tunnels(self):
+        """IsIPEnabled hardware without tunnelling addresses gets a [knxnet]
+        table with no tunnels, named by the product text in the project
+        language, trimmed and cut to 30 characters (#1023, ise smart connect
+        captures)."""
+        import zipfile
+
+        app = "M-007C_A-0001-10-2A85"
+        path = self.tmp / "ise.knxprod"
+        hw = ('<KNX><ManufacturerData><Manufacturer RefId="M-007C"><Hardware>'
+              '<Hardware Id="H-1" Name="KIM" IsIPEnabled="true"><Products>'
+              '<Product Id="H-1_P-1" Text="x" OrderNumber="1-0004-005" /></Products>'
+              f'<Hardware2Programs><Hardware2Program Id="H-1_HP-1"><ApplicationProgramRef RefId="{app}" />'
+              '</Hardware2Program></Hardware2Programs></Hardware></Hardware>'
+              '<Languages><Language Identifier="de-DE"><TranslationUnit RefId="H-1_P-1">'
+              '<TranslationElement RefId="H-1_P-1"><Translation AttributeName="Text" '
+              'Text=" ise smart connect KNX Programmable" /></TranslationElement></TranslationUnit>'
+              '</Language></Languages></Manufacturer></ManufacturerData></KNX>')
+        with zipfile.ZipFile(path, "w") as z:
+            z.writestr("M-007C/Hardware.xml", hw)
+            z.writestr(f"M-007C/{app}.xml", f'<ApplicationProgram Id="{app}"></ApplicationProgram>')
+        self.assertEqual(oracle_model.hardware_of(path, app)[0], True)
+        self.assertEqual(oracle_model.hardware_of(path, "M-007C_A-0009-10-0000"), (False, []))
+        self.assertEqual(oracle_model.project_device_name(path, app, "1-0004-005"), "ise smart connect KNX Programm")
+        self.assertEqual(oracle_model.knxnet_table("1.1.1", 0, "ise"),
+                         '\n[knxnet]\nassignment = "dhcp"\nfriendly_name = "ise"\n')
+        devices = self.tmp / "m" / "devices"
+        devices.mkdir(parents=True)
+        (devices / "1.1.1.toml").write_text('address = "1.1.1"\n')
+        oracle_model.ensure_knxnet(self.tmp / "m", path, app, friendly_name="ise")
+        self.assertIn("[knxnet]", (devices / "1.1.1.toml").read_text())
+        self.assertNotIn("tunnels", (devices / "1.1.1.toml").read_text())
+
     def test_shared_import_seed_copies_without_devices(self):
         seed = self.shared()
         (seed / "devices").mkdir()
