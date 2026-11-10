@@ -843,6 +843,86 @@ class TestImage(unittest.TestCase):
         self.assertEqual((par["fill_diff_octets"], par["fill_diff_offsets"]), (1, [0]))
         self.assertIn("1 of them ETS never wrote", "\n".join(memimage.render(report)))
 
+    def unread_fill_capture(self) -> str:
+        """A System B download of 1.1.5 that allocates obj4 with fill 0xAA and
+        never reads its base nor writes into it (issue #1026, the ise
+        `M-007C_A-0001-10-2A85` shape), then writes the address table."""
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        tool, dev = "0.0.0", "1.1.5"
+
+        def rel_seg(size: int, fill: int) -> bytes:
+            return bytes([3, 0x0B]) + struct.pack("!I", size) + bytes([fill, 0xAA])
+
+        frames = [
+            cemi_ldata(tool, dev, t_connect()),
+            cemi_ldata(tool, dev, prop_write(4, 5, 1, 1, rel_seg(16, 1), seq=0)),
+            cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, rel_seg(4, 0), seq=1)),
+            cemi_ldata(dev, tool, prop_response(1, 7, 1, 1, struct.pack("!I", 0x1000)), mc=0x29),
+            cemi_ldata(tool, dev, mem_write(0x1000, b"\x00\x01\x08\x01", seq=2)),
+            cemi_ldata(tool, dev, t_disconnect()),
+        ]
+        udp_capture(
+            path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)]
+        )
+        return path
+
+    def test_compare_unread_fill_compares_against_the_fill(self):
+        """Issue #1026: a fill-allocated object ETS never read the base of holds
+        the fill, so bussard's image is compared against it object-relative."""
+        ets = self.tmpdir()
+        main(["image", self.unread_fill_capture(), "--device", "1.1.5", "--out", ets])
+        table = self.step(2, "table", 1, "t.bin", 4)
+        same = self.write_plan(
+            [self.step(1, "parameters", 4, "p.bin", 16), table],
+            {"p.bin": b"\xaa" * 16, "t.bin": b"\x00\x01\x08\x01"},
+        )
+        report = memimage.compare(same, ets)
+        par = report["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.IDENTICAL, 16))
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+        self.assertFalse(report["coverage"]["thin"])
+        # An octet that is not the fill is one ETS never wrote: it differs.
+        other = self.write_plan(
+            [self.step(1, "parameters", 4, "p.bin", 16), table],
+            {"p.bin": b"\xaa" * 5 + b"\x01" + b"\xaa" * 10, "t.bin": b"\x00\x01\x08\x01"},
+        )
+        report = memimage.compare(other, ets)
+        par = report["regions"][0]
+        self.assertEqual(par["verdict"], memimage.DIFFERS)
+        self.assertEqual((par["diff_octets"], par["first_offset"]), (1, 5))
+        self.assertEqual(report["verdict"], memimage.DIFFERS)
+        # Octets past the allocation are not compared.
+        longer = self.write_plan(
+            [self.step(1, "parameters", 4, "p.bin", 20), table],
+            {"p.bin": b"\xaa" * 16 + b"\x01" * 4, "t.bin": b"\x00\x01\x08\x01"},
+        )
+        par = memimage.compare(longer, ets)["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.IDENTICAL, 16))
+        # An image at offset 12 sits at segment octets 12.. : four compared.
+        at = self.step(1, "parameters", 4, "p.bin", 8)
+        at["image"]["offset"] = 12
+        shifted = self.write_plan(
+            [at, table], {"p.bin": b"\xaa" * 3 + b"\x01" + b"\x02" * 4, "t.bin": b"\x00\x01\x08\x01"}
+        )
+        par = memimage.compare(shifted, ets)["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.DIFFERS, 4))
+        self.assertEqual((par["diff_octets"], par["fill_diff_offsets"]), (1, [3]))
+        # A masked octet is neither compared nor listed as a fill difference.
+        masked_step = self.step(1, "parameters", 4, "p.bin", 16)
+        masked_step["image"]["mask_file"] = "m.bin"
+        masked = self.write_plan(
+            [masked_step, table],
+            {
+                "p.bin": b"\xaa" * 2 + b"\x01" + b"\xaa" * 6 + b"\x02" + b"\xaa" * 6,
+                "m.bin": b"\xff" * 2 + b"\x00" + b"\xff" * 13,
+                "t.bin": b"\x00\x01\x08\x01",
+            },
+        )
+        par = memimage.compare(masked, ets)["regions"][0]
+        self.assertEqual((par["verdict"], par["compared"]), (memimage.DIFFERS, 15))
+        self.assertEqual((par["diff_octets"], par["fill_diff_offsets"]), (1, [9]))
+
     def test_compare_full_coverage_stays_identical(self):
         ets = self.tmpdir()
         main(["image", self.download_capture(), "--device", "1.1.5", "--out", ets])
