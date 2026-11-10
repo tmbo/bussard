@@ -2465,9 +2465,10 @@ pub type PropertyValues = BTreeMap<(PropertyObjectRef, u32), Vec<u8>>;
 /// offset in the property value, as a memory parameter is placed in its
 /// segment. A parameter the evaluated configuration `config` reaches takes its
 /// effective value (an override, an `<Assign>` result, else the vendor
-/// default); one it does not reach takes its vendor default (the `Value` its
-/// refs agree on, else its own starting value), since a property has no
-/// template to keep. Module parameters are not modelled here.
+/// default). One it does not reach takes its vendor default (the `Value` its
+/// refs agree on, else its own starting value), except in a property named by
+/// `ObjectIndex` that no `LdCtrlDeclarePropDesc` declares, where it leaves its
+/// octets zero (issue #1024). Module parameters are not modelled here.
 ///
 /// # Errors
 ///
@@ -2510,10 +2511,13 @@ pub fn compose_property_value(
 /// (issue #945).
 ///
 /// A parameter the configuration reaches takes its effective value (an
-/// override, an `<Assign>` result, else the vendor default); one it does not
+/// override, an `<Assign>` result, else the vendor default). One it does not
 /// reach takes its vendor default (the `Value` its refs agree on, else its own
-/// starting value). Union members follow the memory union rule. Module parameters are not
-/// modelled here.
+/// starting value), except in a property named by `ObjectIndex` that no
+/// `LdCtrlDeclarePropDesc` declares: there it places nothing and its octets
+/// keep the base the property is composed over (the `InlineData` template,
+/// else zero; issue #1024). Union members follow the memory union rule. Module
+/// parameters are not modelled here.
 #[derive(Debug, Clone)]
 pub struct PropertyParameters<'a> {
     /// The program the parameters belong to.
@@ -2537,6 +2541,10 @@ struct ResolvedPropertyParameter<'a> {
     value: Option<String>,
     /// Where that value comes from.
     source: ValueSource,
+    /// Whether the parameter leaves its octets to the base: it is unreached
+    /// and its property is named by index without an `LdCtrlDeclarePropDesc`
+    /// (see [`unreached_keeps_base`]). Its `value` still sizes the property.
+    keeps_base: bool,
 }
 
 impl<'a> PropertyParameters<'a> {
@@ -2587,6 +2595,7 @@ impl<'a> PropertyParameters<'a> {
             .keys()
             .filter_map(|id| union_of.get(id).map(|&(ui, _)| ui))
             .collect();
+        let declared = declared_properties(app);
         let union_member_kept = |param: &crate::application::Parameter| -> bool {
             reached.contains_key(param.id.as_str())
                 || hidden_union_member_written(app, &union_of, &occupied, param.id.as_str())
@@ -2598,6 +2607,9 @@ impl<'a> PropertyParameters<'a> {
             .filter_map(|param| {
                 let loc = param.property.as_ref()?;
                 let object = PropertyObjectRef::of(loc)?;
+                let key = (object, loc.property_id);
+                let keeps_base = !reached.contains_key(param.id.as_str())
+                    && unreached_keeps_base(&declared, key);
                 let (value, source) = match reached.get(param.id.as_str()) {
                     Some(ref_id) => (
                         config.value(app, None, ref_id),
@@ -2616,11 +2628,12 @@ impl<'a> PropertyParameters<'a> {
                 };
                 Some(ResolvedPropertyParameter {
                     param,
-                    key: (object, loc.property_id),
+                    key,
                     offset: loc.offset as usize,
                     bit_offset: loc.bit_offset,
                     value,
                     source,
+                    keeps_base,
                 })
             })
             .collect();
@@ -2688,13 +2701,93 @@ impl<'a> PropertyParameters<'a> {
                 p.source,
             )?;
             let image = out.entry(p.key).or_default();
+            if p.keeps_base {
+                // Checked and sized as a placement, but the octets stay the
+                // base's: ETS writes nothing of an unreached parameter into an
+                // undeclared property (issue #1024).
+                let mut scratch = Vec::new();
+                let written = place_checked(
+                    app,
+                    pname,
+                    &mut scratch,
+                    p.offset,
+                    p.bit_offset,
+                    &placement,
+                    None,
+                )?;
+                if image.len() < written.end {
+                    image.resize(written.end, 0);
+                }
+                continue;
+            }
             place_checked(app, pname, image, p.offset, p.bit_offset, &placement, None)?;
         }
         Ok(out)
     }
 }
 
-/// The value a property-located parameter the walk does not reach takes: its
+/// The properties the program's load procedures declare with an
+/// `LdCtrlDeclarePropDesc`, named as a parameter's `<Property>` names them
+/// (an index, or a type and occurrence).
+fn declared_properties(app: &ApplicationProgram) -> HashSet<(PropertyObjectRef, u32)> {
+    app.load_procedures
+        .iter()
+        .flat_map(|lp| lp.ops.iter())
+        .filter_map(|op| match op {
+            LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(prop_id),
+                ..
+            } => {
+                let object = match (obj_idx, obj_type) {
+                    (Some(index), _) => PropertyObjectRef::Index(*index),
+                    (None, Some(object_type)) => PropertyObjectRef::Type {
+                        object_type: *object_type,
+                        occurrence: occurrence.unwrap_or(0),
+                    },
+                    (None, None) => return None,
+                };
+                Some((object, *prop_id))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether a parameter the walk does not reach leaves its octets to the base
+/// of the property `key`: the property is named by `ObjectIndex` and the
+/// program declares no description for it.
+///
+/// Issue #1024, from the `plain-defaults` captures of every row with an
+/// unreached parameter of non-zero default in a range both ETS and bussard
+/// write:
+///
+/// - declared, by index: 74 Hager rows, ETS writes 53,322 such parameters at
+///   their default (the 2,042 zeros there are the sibling disagreement of
+///   issue #971);
+/// - declared, by type: the Gira `M-0008_A-C02A-21-B6D8-O007C` object type
+///   40960 PID 69, 29 at their default;
+/// - undeclared, by type: the Enertex IPS 300 SREG `M-00A6_A-0014-10-2517`
+///   object type 11 PID 204/205 and type 50001 PID 211, 10 at their default
+///   (issue #390);
+/// - undeclared, by index: five ise rows, object 8, ETS writes all 129 as
+///   zero (`M-007C_A-0006-20-C776` PID 69 is `00000000 00000000 00000000`
+///   with "Send date", `Value="2"`, unreached; `M-007C_A-0001-10-2A85` PID
+///   71 is `000001` with "Text wrapping", `Value="2"`, unreached).
+///
+/// Type, `Access`, union, `InlineData`, the parameter's place in the Dynamic
+/// section and the program's attributes do not separate the groups.
+fn unreached_keeps_base(
+    declared: &HashSet<(PropertyObjectRef, u32)>,
+    key: (PropertyObjectRef, u32),
+) -> bool {
+    matches!(key.0, PropertyObjectRef::Index(_)) && !declared.contains(&key)
+}
+
+/// The value a property-located parameter the walk does not reach takes where
+/// it does not keep the base ([`unreached_keeps_base`]): its
 /// `InitialValue` (issue #473), else the `Value` its refs give it when they all
 /// give the same one (the IPS 300 SREG ref of issue #390), else its own
 /// `Value`. Refs that
@@ -5445,7 +5538,7 @@ mod tests {
              <Property ObjectType="11" PropertyId="205" Offset="4" BitOffset="0" />
             </Parameter>
             <Parameter Id="M-4_A-1_P-3" Name="c" ParameterType="M-4_A-1_PT-u8" Value="7">
-             <Property ObjectIndex="3" PropertyId="204" Offset="0" BitOffset="0" />
+             <Property ObjectType="50001" PropertyId="211" Offset="0" BitOffset="0" />
             </Parameter>
            </Parameters>
            <ParameterRefs>
@@ -5467,10 +5560,122 @@ mod tests {
             Some(&vec![192, 168, 1, 2, 0, 0, 0, 0])
         );
         // An unreached parameter takes its ref's vendor default.
+        let limit = PropertyObjectRef::Type {
+            object_type: 50001,
+            occurrence: 0,
+        };
+        assert_eq!(values.get(&(limit, 211)), Some(&vec![9]));
+        Ok(())
+    }
+
+    /// The ise smart connect KNX Vaillant shape (`M-007C_A-0006-20-C776`
+    /// object 8 PID 69, issue #1024): a property named by index with no
+    /// `LdCtrlDeclarePropDesc`. The reached `P-1` keeps its value; the
+    /// unreached `P-3` (`Value="2"`, behind a `choose` the defaults do not
+    /// take) leaves its octets to the base, so over nothing they are zero, as
+    /// ETS writes `00000000 00000000 00000000`.
+    #[test]
+    fn test_compose_property_value_leaves_an_unreached_parameter_of_an_undeclared_property_zero()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-07B0" Name="P">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-u32" Name="u32"><TypeNumber SizeInBit="32" Type="unsignedInt" minInclusive="0" maxInclusive="9" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-1" Name="function" ParameterType="M-4_A-1_PT-u32" Value="1">
+             <Property ObjectIndex="8" PropertyId="69" Offset="0" BitOffset="0" />
+            </Parameter>
+            <Parameter Id="M-4_A-1_P-2" Name="gate" ParameterType="M-4_A-1_PT-u32" Value="0" />
+            <Parameter Id="M-4_A-1_P-3" Name="send date" ParameterType="M-4_A-1_PT-u32" Value="2">
+             <Property ObjectIndex="8" PropertyId="69" Offset="8" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" />
+            <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" />
+            <ParameterRef Id="M-4_A-1_P-3_R-3" RefId="M-4_A-1_P-3" />
+           </ParameterRefs>
+           <LoadProcedures><LoadProcedure>
+            <LdCtrlWriteProp ObjIdx="8" PropId="69" Count="3" />
+           </LoadProcedure></LoadProcedures>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-4_A-1_PB-1">
+           <ParameterRefRef RefId="M-4_A-1_P-1_R-1" />
+           <ParameterRefRef RefId="M-4_A-1_P-2_R-2" />
+           <choose ParamRefId="M-4_A-1_P-2_R-2">
+            <when test="1"><ParameterRefRef RefId="M-4_A-1_P-3_R-3" /></when>
+           </choose>
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let key = (PropertyObjectRef::Index(8), 69);
+        let values = compute_property_values(&app, &config)?;
         assert_eq!(
-            values.get(&(PropertyObjectRef::Index(3), 204)),
-            Some(&vec![9])
+            values.get(&key),
+            Some(&vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0])
         );
+        // Over a base (an `InlineData` template) the unreached octets keep it.
+        let base = vec![0xAA; 12];
+        let value = compose_property_value(&app, &config, key.0, key.1, base)?;
+        assert_eq!(
+            value,
+            Some(vec![
+                0, 0, 0, 1, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA
+            ])
+        );
+        // Reached, it takes its value as before.
+        let overrides = BTreeMap::from([("P-2_R-2".to_string(), "1".to_string())]);
+        let config = crate::dynamic::evaluate_dynamic(&app, &overrides);
+        let values = compute_property_values(&app, &config)?;
+        assert_eq!(
+            values.get(&key),
+            Some(&vec![0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2])
+        );
+        Ok(())
+    }
+
+    /// The same shape with an `LdCtrlDeclarePropDesc` for the property (the
+    /// Hager rows of issue #1024): the unreached parameter takes its vendor
+    /// default.
+    #[test]
+    fn test_compose_property_value_takes_the_default_of_an_unreached_parameter_of_a_declared_property()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
+         <ApplicationProgram Id="M-4_A-1" MaskVersion="MV-07B0" Name="P">
+          <Static>
+           <ParameterTypes>
+            <ParameterType Id="M-4_A-1_PT-u8" Name="u8"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-4_A-1_P-2" Name="gate" ParameterType="M-4_A-1_PT-u8" Value="0" />
+            <Parameter Id="M-4_A-1_P-3" Name="position" ParameterType="M-4_A-1_PT-u8" Value="5">
+             <Property ObjectIndex="12" PropertyId="53" Offset="1" BitOffset="0" />
+            </Parameter>
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" />
+            <ParameterRef Id="M-4_A-1_P-3_R-3" RefId="M-4_A-1_P-3" />
+           </ParameterRefs>
+           <LoadProcedures><LoadProcedure>
+            <LdCtrlDeclarePropDesc ObjIdx="12" PropId="53" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" />
+            <LdCtrlWriteProp ObjIdx="12" PropId="53" Count="2" />
+           </LoadProcedure></LoadProcedures>
+          </Static>
+          <Dynamic><ChannelIndependentBlock><ParameterBlock Id="M-4_A-1_PB-1">
+           <ParameterRefRef RefId="M-4_A-1_P-2_R-2" />
+           <choose ParamRefId="M-4_A-1_P-2_R-2">
+            <when test="1"><ParameterRefRef RefId="M-4_A-1_P-3_R-3" /></when>
+           </choose>
+          </ParameterBlock></ChannelIndependentBlock></Dynamic>
+         </ApplicationProgram></KNX>"#;
+        let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
+        let config = crate::dynamic::evaluate_dynamic(&app, &BTreeMap::new());
+        let value =
+            compose_property_value(&app, &config, PropertyObjectRef::Index(12), 53, vec![0; 2])?;
+        assert_eq!(value, Some(vec![0, 5]));
         Ok(())
     }
 
@@ -5506,6 +5711,10 @@ mod tests {
             <ParameterRef Id="M-4_A-1_P-1_R-3" RefId="M-4_A-1_P-1" />
             <ParameterRef Id="M-4_A-1_P-1_R-146" RefId="M-4_A-1_P-1" Value="1" />
            </ParameterRefs>
+           <LoadProcedures><LoadProcedure>
+            <LdCtrlDeclarePropDesc ObjIdx="7" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="3" />
+            <LdCtrlWriteProp ObjIdx="7" PropId="208" Count="3" />
+           </LoadProcedure></LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
@@ -5525,7 +5734,8 @@ mod tests {
     #[test]
     fn test_compose_property_value_takes_the_initial_value_before_a_ref_value()
     -> std::result::Result<(), Box<dyn std::error::Error>> {
-        // Issue #473 order, kept for an unshown property-located parameter: a
+        // Issue #473 order, kept for an unshown parameter of a declared
+        // property: a
         // `TypeText` `InitialValue` wins over its one ref's `Value`, which
         // wins over its own `Value`.
         let xml = r#"<KNX xmlns="http://knx.org/xml/project/20">
@@ -5546,6 +5756,10 @@ mod tests {
             <ParameterRef Id="M-4_A-1_P-1_R-1" RefId="M-4_A-1_P-1" Value="ef" />
             <ParameterRef Id="M-4_A-1_P-2_R-2" RefId="M-4_A-1_P-2" Value="gh" />
            </ParameterRefs>
+           <LoadProcedures><LoadProcedure>
+            <LdCtrlDeclarePropDesc ObjIdx="7" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="4" />
+            <LdCtrlWriteProp ObjIdx="7" PropId="208" Count="4" />
+           </LoadProcedure></LoadProcedures>
           </Static>
          </ApplicationProgram></KNX>"#;
         let app = parse_application_program("M-4_A-1", xml.as_bytes())?;
