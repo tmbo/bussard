@@ -204,6 +204,9 @@ pub struct ParamsPlanned {
     pub params: ParamPlan,
     /// The properties a parameter is placed in that differ (issue #706).
     pub properties: Vec<ParamProperty>,
+    /// Every property a parameter is placed in, as read: backed up before
+    /// the write with the memory (issue #944).
+    pub read_properties: Vec<ParamProperty>,
 }
 
 impl ParamsPlanned {
@@ -294,12 +297,6 @@ pub fn plan_parameters_only(
         .into_iter()
         .cloned()
         .collect();
-    // Issue #944: no ETS capture confirms this download yet (#572).
-    if !properties.is_empty()
-        && let Some(why) = crate::params::uncaptured_property_download(target, &partial)
-    {
-        return Err(why);
-    }
     Ok(ParamsPlanned {
         partial,
         regions,
@@ -310,6 +307,7 @@ pub fn plan_parameters_only(
             kept: decoded.kept,
         },
         properties,
+        read_properties: read.properties.clone(),
     })
 }
 
@@ -367,18 +365,18 @@ pub async fn write_parameters_only(
         Err(Declined::Refused(refusal)) => return Err(ParamsWriteError::Refused(refusal)),
     }
     let target = write.session.target;
-    // A backup of no memory (a program whose parameters all live in
-    // properties, issue #944) restores nothing: no write.
-    if planned.regions.is_empty() {
-        return Err(ParamsWriteError::Backup(BackupError::NoParameterMemory));
-    }
-    // Back up the parameter memory before the first write; no backup, no
-    // write.
+    // A backup of nothing restores nothing: no write. A program whose
+    // parameters all live in properties backs those up (issue #944).
+    super::apply::check_backup_covers(&planned.regions, &planned.read_properties)
+        .map_err(ParamsWriteError::Backup)?;
+    // Back up the parameter memory and properties before the first write;
+    // no backup, no write.
     let backup = bussard_download::write_parameter_memory_backup(
         write.dir,
         target,
         write.plan,
         &planned.regions,
+        &planned.read_properties,
     )
     .map_err(|e| ParamsWriteError::Backup(BackupError::Parameters(e)))?;
     observer.event(Event::Note(Note::Say(format!(
@@ -680,6 +678,37 @@ mod tests {
             bussard_download::describe_group_object_change(&change),
             "shows object(s) 7, hides object(s) 3, 4"
         );
+    }
+
+    #[test]
+    fn test_check_backup_covers_refuses_an_unread_property_the_write_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #944 review: PID 52 was read, PID 53's read failed. The
+        // write would send both, the backup could hold only PID 52, and a
+        // restore would leave PID 53 at the written value: refused.
+        let prop = |pid: u32, device: Option<Vec<u8>>| bussard_download::ParamProperty {
+            object: bussard_download::PropObject::Index(10),
+            prop_id: pid,
+            start_element: 1,
+            count: 1,
+            model: vec![1],
+            device,
+            parameters: Vec::new(),
+        };
+        let read = prop(52, Some(vec![0]));
+        let unread = prop(53, None);
+        let result =
+            super::super::apply::check_backup_covers(&ParamRegions::new(), &[read.clone(), unread]);
+        match result {
+            Err(BackupError::UnreadParameterProperty { properties }) => {
+                assert_eq!(properties, "object 10 PID 53");
+            }
+            other => {
+                return Err(format!("expected the unread-property refusal, got {other:?}").into());
+            }
+        }
+        assert!(super::super::apply::check_backup_covers(&ParamRegions::new(), &[read]).is_ok());
+        Ok(())
     }
 
     #[test]

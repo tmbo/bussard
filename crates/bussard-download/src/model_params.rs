@@ -846,13 +846,16 @@ pub fn region_rows(
         .collect()
 }
 
-/// Writes the pre-download parameter memory to
+/// Writes the pre-download parameter memory, and the parameter properties
+/// the device holds (`properties`, as [`crate::read_parameter_properties`]
+/// read them; one not read is left out), to
 /// `<dir>/captures/backups/parameters/<ia>-<ts>.json`.
 pub fn write_parameter_memory_backup(
     dir: &Path,
     target: IndividualAddress,
     plan: &FlashPlan,
     regions: &ParamRegions,
+    properties: &[crate::ParamProperty],
 ) -> Result<std::path::PathBuf, crate::BackupError> {
     let now = std::time::SystemTime::now();
     let backup = ParameterBackup {
@@ -868,6 +871,20 @@ pub fn write_parameter_memory_backup(
                 length: r.bytes.len(),
                 bytes: encode_hex(&r.bytes),
                 source: format!("parameter segment {}", r.segment_id),
+            })
+            .collect(),
+        properties: properties
+            .iter()
+            .filter_map(|p| {
+                p.device
+                    .as_ref()
+                    .map(|bytes| crate::backup::ParameterPropertyValue {
+                        object: crate::backup::prop_object_key(&p.object),
+                        prop_id: p.prop_id,
+                        start_element: p.start_element,
+                        count: p.count,
+                        bytes: encode_hex(bytes),
+                    })
             })
             .collect(),
     };

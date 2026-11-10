@@ -519,6 +519,47 @@ pub struct ParameterBackup {
     pub read_time: String,
     /// Every parameter region, as read.
     pub regions: Vec<ParameterMemory>,
+    /// Every interface-object property the program's parameters are placed
+    /// in, as read (issue #944): a program whose parameters all live in
+    /// properties has no region at all.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub properties: Vec<ParameterPropertyValue>,
+}
+
+/// One interface-object property value of a [`ParameterBackup`]: the
+/// elements `start_element ..` of `count` that a program's parameters are
+/// placed in, as the device held them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParameterPropertyValue {
+    /// The interface object, as [`prop_object_key`] writes it: `index 10`,
+    /// or `type 417 occurrence 0`.
+    pub object: String,
+    /// The property id.
+    pub prop_id: u32,
+    /// The 1-based element the value starts at.
+    pub start_element: u16,
+    /// How many elements the value spans.
+    pub count: u16,
+    /// The value, hex-encoded (uppercase, no separators).
+    pub bytes: String,
+}
+
+impl ParameterPropertyValue {
+    /// The decoded value octets.
+    pub fn octets(&self) -> Option<Vec<u8>> {
+        bussard_model::text::from_hex(&self.bytes).ok()
+    }
+}
+
+/// How a [`ParameterPropertyValue`] names its interface object.
+pub fn prop_object_key(object: &crate::PropObject) -> String {
+    match object {
+        crate::PropObject::Index(i) => format!("index {i}"),
+        crate::PropObject::Type {
+            object_type,
+            occurrence,
+        } => format!("type {object_type} occurrence {occurrence}"),
+    }
 }
 
 /// Where parameter backups live: `<model dir>/captures/backups/parameters`.
@@ -738,6 +779,33 @@ mod tests {
             Err(err) => assert!(err.to_string().contains("indexes outside"), "{err}"),
             Ok(other) => panic!("a tsap past the address table must be refused, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_parameter_backup_properties_round_trip_and_default()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // A backup of memory only carries no `properties` key; one of a
+        // property-only program (issue #944) lists them.
+        let memory_only = r#"{"address":"1.1.4","mask":"07B0","application":"M-00FA_A-0002",
+            "unix_timestamp":1,"read_time":"t","regions":[]}"#;
+        let backup: ParameterBackup = serde_json::from_str(memory_only)?;
+        assert!(backup.properties.is_empty());
+        assert!(!serde_json::to_string(&backup)?.contains("properties"));
+        let with = ParameterBackup {
+            properties: vec![ParameterPropertyValue {
+                object: prop_object_key(&crate::PropObject::Index(10)),
+                prop_id: 52,
+                start_element: 1,
+                count: 2,
+                bytes: encode_hex(&[5, 9]),
+            }],
+            ..backup
+        };
+        let back: ParameterBackup = serde_json::from_str(&serde_json::to_string(&with)?)?;
+        assert_eq!(back, with);
+        assert_eq!(back.properties[0].object, "index 10");
+        assert_eq!(back.properties[0].octets(), Some(vec![5, 9]));
+        Ok(())
     }
 
     #[test]

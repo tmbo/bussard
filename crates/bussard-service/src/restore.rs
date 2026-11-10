@@ -107,6 +107,40 @@ pub enum RestoreError {
         /// The region's base address.
         base: u32,
     },
+    /// A backup property is not one the application's parameters are placed
+    /// in on the device.
+    #[error(
+        "the backup's property {property} is not one the application's parameters live in on \
+         the device; refusing to replay it"
+    )]
+    Property {
+        /// The property, in words (`index 10 PID 52 from element 1`).
+        property: String,
+    },
+    /// A backup property's value does not decode, or has another length
+    /// than the value the application composes for it.
+    #[error(
+        "the backup's property {property} holds {backup} octets, but the application's \
+         parameters fill {expected} there; refusing to replay it"
+    )]
+    PropertyLength {
+        /// The property, in words.
+        property: String,
+        /// The backup's length (0 when it does not decode as hex).
+        backup: usize,
+        /// The length of the value the application composes.
+        expected: usize,
+    },
+    /// A parameter property neither the backup nor the device read holds a
+    /// value for: the restore cannot tell what to write.
+    #[error(
+        "the property {property} holds parameters, but neither the backup nor the device's read \
+         gives its value; refusing to restore"
+    )]
+    PropertyUnknown {
+        /// The property, in words.
+        property: String,
+    },
     /// The parameter-only download could not be cut.
     #[error("{0}")]
     Partial(#[from] PartialPlanError),
@@ -119,6 +153,9 @@ pub struct RestorePlan {
     pub partial: Option<FlashPlan>,
     /// How many octets the download writes.
     pub octets: usize,
+    /// The parameter properties whose value the restore changes (issue
+    /// #944), in words (`index 10 PID 52 from element 1`).
+    pub properties: Vec<String>,
     /// Every run the restore writes, and every run where the backup differs
     /// from the device but the restore leaves the device's value
     /// (`written: false`: no parameter placed there under the model's
@@ -316,17 +353,31 @@ impl RestorePlan {
             self.octet_ranges.iter().filter(|r| r.written).collect();
         let left: Vec<&OctetAttribution> =
             self.octet_ranges.iter().filter(|r| !r.written).collect();
-        if self.octets == 0 {
+        if self.octets == 0 && self.properties.is_empty() {
             out.push_str(&format!(
                 "{target} already holds the backup's parameter octets; nothing to write\n"
             ));
-        } else {
+        } else if self.octets > 0 {
             out.push_str(&format!(
                 "writes {} parameter octet(s) to {target}:\n",
                 self.octets
             ));
             for r in &written {
                 out.push_str(&format!("  ~ {}\n", r.sentence));
+            }
+        }
+        if !self.properties.is_empty() {
+            out.push_str(&format!(
+                "writes {} parameter propert{} to {target}:\n",
+                self.properties.len(),
+                if self.properties.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            ));
+            for p in &self.properties {
+                out.push_str(&format!("  ~ {p}\n"));
             }
         }
         if !left.is_empty() {
@@ -346,10 +397,24 @@ impl RestorePlan {
 
     /// The one question to ask before the write.
     pub fn question(&self, target: IndividualAddress, gateway: &str) -> String {
-        format!(
-            "restore {} parameter octet(s) from the backup to {target} via {gateway}?",
-            self.octets
-        )
+        if self.properties.is_empty() {
+            format!(
+                "restore {} parameter octet(s) from the backup to {target} via {gateway}?",
+                self.octets
+            )
+        } else {
+            format!(
+                "restore {} parameter octet(s) and {} parameter propert{} from the backup to \
+                 {target} via {gateway}?",
+                self.octets,
+                self.properties.len(),
+                if self.properties.len() == 1 {
+                    "y"
+                } else {
+                    "ies"
+                }
+            )
+        }
     }
 }
 
@@ -388,6 +453,80 @@ pub fn check_identity(
         });
     }
     Ok(())
+}
+
+/// A parameter property in words, as the backup names its object.
+fn property_words(object: &bussard_download::PropObject, prop_id: u32, start: u16) -> String {
+    format!(
+        "{} PID {prop_id} from element {start}",
+        bussard_download::backup::prop_object_key(object)
+    )
+}
+
+/// Each parameter property's value, by (object, property id, start element).
+type PropertyValues = BTreeMap<(bussard_download::PropObject, u32, u16), Vec<u8>>;
+
+/// The value every parameter property gets in a restore of `backup` (issue
+/// #944): the backup's, else the device's as read (a property the backup
+/// does not hold keeps it). Also the properties whose value changes.
+fn backup_properties(
+    detail: &ParamDetail,
+    backup: &ParameterBackup,
+) -> Result<(PropertyValues, Vec<String>), RestoreError> {
+    let key = |p: &bussard_download::ParamProperty| {
+        (
+            bussard_download::backup::prop_object_key(&p.object),
+            p.prop_id,
+            p.start_element,
+        )
+    };
+    for b in &backup.properties {
+        if !detail
+            .properties
+            .iter()
+            .any(|p| key(p) == (b.object.clone(), b.prop_id, b.start_element))
+        {
+            return Err(RestoreError::Property {
+                property: format!(
+                    "{} PID {} from element {}",
+                    b.object, b.prop_id, b.start_element
+                ),
+            });
+        }
+    }
+    let mut values = BTreeMap::new();
+    let mut changed = Vec::new();
+    for p in &detail.properties {
+        let words = property_words(&p.object, p.prop_id, p.start_element);
+        let stored = backup
+            .properties
+            .iter()
+            .find(|b| (b.object.clone(), b.prop_id, b.start_element) == key(p));
+        let value = match stored {
+            Some(b) => {
+                let bytes = b.octets().unwrap_or_default();
+                if bytes.len() != p.model.len() {
+                    return Err(RestoreError::PropertyLength {
+                        property: words,
+                        backup: bytes.len(),
+                        expected: p.model.len(),
+                    });
+                }
+                bytes
+            }
+            None => p
+                .device
+                .clone()
+                .ok_or_else(|| RestoreError::PropertyUnknown {
+                    property: words.clone(),
+                })?,
+        };
+        if p.device.as_deref() != Some(value.as_slice()) {
+            changed.push(words);
+        }
+        values.insert((p.object, p.prop_id, p.start_element), value);
+    }
+    Ok((values, changed))
 }
 
 /// The backup's memory per code segment, matched to the device's parameter
@@ -442,12 +581,14 @@ pub fn build_restore_plan(
 ) -> Result<RestorePlan, RestoreError> {
     check_identity(target, detail, backup)?;
     let wanted = backup_memory(detail, backup)?;
+    let (props, properties) = backup_properties(detail, backup)?;
     let (overrides, bases) = bussard_download::model_parameters(model, target);
     let managed = device_managed_octets(app, &overrides, &bases);
     let partial = detail
         .plan
         .parameters_only(&detail.regions)?
-        .restoring(&wanted, &managed);
+        .restoring(&wanted, &managed)
+        .with_property_values(&props);
     let current = bussard_download::regions_memory(&detail.regions);
     let attribute = |changed: &BTreeMap<String, Vec<(usize, u8)>>| {
         attribute_octets(
@@ -482,8 +623,9 @@ pub fn build_restore_plan(
         ));
     }
     Ok(RestorePlan {
-        partial: (octets > 0).then_some(partial),
+        partial: (octets > 0 || !properties.is_empty()).then_some(partial),
         octets,
+        properties,
         octet_ranges,
         notes,
     })
