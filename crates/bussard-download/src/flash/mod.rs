@@ -129,7 +129,7 @@ pub use factory::PropertyWrite;
 pub use function_prop::invoke_function_property;
 pub use knxnet_ip::{
     ETS_PROJECT_INSTALLATION_ID, ETS_ROUTING_MULTICAST, ETS_ROUTING_TTL, KnxnetIpProgram,
-    KnxnetIpWrite, knxnet_ip_program, write_knxnet_ip,
+    KnxnetIpWrite, ets_friendly_name, knxnet_ip_program, write_knxnet_ip,
 };
 pub use labels::trace;
 use labels::{LabelCtx, step_label};

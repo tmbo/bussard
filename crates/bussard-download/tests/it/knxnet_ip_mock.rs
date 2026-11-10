@@ -29,7 +29,7 @@ fn allinbox_program() -> TestResult<KnxnetIpProgram> {
             .collect::<Result<_, _>>()?,
         ..KnxnetConfig::default()
     };
-    knxnet_ip_program(&app, 0x07B0, ia("1.1.1")?, Some(&config))?
+    knxnet_ip_program(&app, 0x07B0, ia("1.1.1")?, Some(&config), None)?
         .ok_or_else(|| "an IP-enabled application gets the writes".into())
 }
 

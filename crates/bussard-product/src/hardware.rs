@@ -40,6 +40,14 @@ pub struct ProductInfo {
     pub order_number: Option<String>,
     /// The hardware display name, e.g. `"Beispielaktor 4fach"` (en-US resolved).
     pub hardware_name: Option<String>,
+    /// The product's own `Text` attribute, untranslated.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// The product's `Text` per language (`de-DE` → text), from the
+    /// `<Languages>` section: what ETS names a new device in a project of
+    /// that language (issue #1023).
+    #[serde(default)]
+    pub texts: BTreeMap<String, String>,
 }
 
 /// The parsed pieces of a `Hardware.xml`.
@@ -101,6 +109,51 @@ pub struct Hardware {
 }
 
 impl Hardware {
+    /// The name ETS gives a new device running `app` in a project of
+    /// `language`: the `Text` of its catalogue product, translated when the
+    /// file carries that language, trimmed (issue #1023: ETS writes it as
+    /// the KNXnet/IP friendly name). `order` picks the product when the
+    /// application runs on several; `None` when the products listing the
+    /// application name it differently and `order` does not settle it.
+    pub fn product_text(
+        &self,
+        app: &str,
+        order: Option<&str>,
+        language: Option<&str>,
+    ) -> Option<String> {
+        let listing: Vec<&ProductInfo> = self
+            .products
+            .values()
+            .filter(|p| {
+                p.order_number
+                    .as_deref()
+                    .and_then(|o| self.order_to_apps.get(o))
+                    .is_some_and(|apps| apps.iter().any(|a| a == app))
+            })
+            .collect();
+        let ordered: Vec<&ProductInfo> = listing
+            .iter()
+            .copied()
+            .filter(|p| order.is_some() && p.order_number.as_deref() == order)
+            .collect();
+        let chosen = if ordered.is_empty() { listing } else { ordered };
+        let names: BTreeSet<String> = chosen
+            .iter()
+            .filter_map(|p| {
+                language
+                    .and_then(|l| p.texts.get(l))
+                    .or(p.text.as_ref())
+                    .or(p.hardware_name.as_ref())
+                    .map(|t| t.trim().to_string())
+            })
+            .filter(|t| !t.is_empty())
+            .collect();
+        match names.len() {
+            1 => names.into_iter().next(),
+            _ => None,
+        }
+    }
+
     /// Merges another parsed `Hardware` into this one (multi-manufacturer or
     /// multi-file archives). Product and Hardware2Program ids are globally
     /// unique, so those maps just absorb the other's entries; order numbers can
@@ -158,6 +211,10 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
 
     // Translation state for the `<Languages>` section: product `Text` → en-US.
     let mut translations = TranslationCollector::new();
+    // Every language's product `Text`: element id → language → text.
+    let mut cur_lang: Option<String> = None;
+    let mut cur_element: Option<String> = None;
+    let mut all_texts: HashMap<String, BTreeMap<String, String>> = HashMap::new();
 
     loop {
         match reader.read_event().map_err(|source| ProductError::Xml {
@@ -191,14 +248,15 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                     if let Some(id) = attr_value(&e, b"Id", context)? {
                         // Prefer the product's own `Text` as the display name,
                         // falling back to the enclosing hardware `Name`.
-                        let name = attr_value(&e, b"Text", context)?
-                            .filter(|s| !s.is_empty())
-                            .or_else(|| current_hw_name.clone());
+                        let text = attr_value(&e, b"Text", context)?.filter(|s| !s.is_empty());
+                        let name = text.clone().or_else(|| current_hw_name.clone());
                         products.insert(
                             id,
                             ProductInfo {
                                 order_number: order,
                                 hardware_name: name,
+                                text,
+                                texts: BTreeMap::new(),
                             },
                         );
                     }
@@ -238,10 +296,12 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                     }
                 }
                 b"Language" => {
-                    translations.enter_language(attr_value(&e, b"Identifier", context)?.as_deref());
+                    cur_lang = attr_value(&e, b"Identifier", context)?;
+                    translations.enter_language(cur_lang.as_deref());
                 }
                 b"TranslationElement" => {
-                    translations.enter_element(attr_value(&e, b"RefId", context)?.as_deref());
+                    cur_element = attr_value(&e, b"RefId", context)?;
+                    translations.enter_element(cur_element.as_deref());
                 }
                 b"Translation" => {
                     // Hardware.xml keys the product `Text` translation directly
@@ -249,11 +309,23 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                     // TranslationElement. Capture from whichever is current.
                     let m = crate::attrs::attrs_map(&e, context)?;
                     translations.record(&m, &["Text"]);
+                    if let (Some(lang), Some(element), Some("Text"), Some(text)) = (
+                        cur_lang.as_deref(),
+                        cur_element.as_deref(),
+                        crate::attrs::get(&m, b"AttributeName"),
+                        crate::attrs::get(&m, b"Text"),
+                    ) {
+                        all_texts
+                            .entry(element.to_string())
+                            .or_default()
+                            .insert(lang.to_string(), text.to_string());
+                    }
                 }
                 b"TranslationUnit" => {
                     // Fall back to the unit's RefId as the element key when no
                     // TranslationElement wraps the Translation.
-                    translations.enter_element(attr_value(&e, b"RefId", context)?.as_deref());
+                    cur_element = attr_value(&e, b"RefId", context)?;
+                    translations.enter_element(cur_element.as_deref());
                 }
                 _ => {}
             },
@@ -267,9 +339,14 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
                     current_table_image = false;
                     current_factory.clear();
                 }
-                b"Language" => translations.exit_language(),
-                b"TranslationElement" => translations.exit_element(),
-                b"TranslationUnit" => translations.exit_element(),
+                b"Language" => {
+                    cur_lang = None;
+                    translations.exit_language();
+                }
+                b"TranslationElement" | b"TranslationUnit" => {
+                    cur_element = None;
+                    translations.exit_element();
+                }
                 _ => {}
             },
             _ => {}
@@ -284,6 +361,11 @@ pub fn parse_hardware(xml: &str) -> Result<Hardware> {
         &mut block_bus_current,
     );
 
+    for (id, info) in products.iter_mut() {
+        if let Some(texts) = all_texts.remove(id) {
+            info.texts = texts;
+        }
+    }
     // Apply en-US product-name translations, keyed by product id.
     if !translations.is_empty() {
         for (id, info) in products.iter_mut() {
@@ -529,6 +611,49 @@ mod tests {
         assert!(hw.ip_enabled_apps.contains("M-007C_A-0002-30-DC22"));
         assert!(!hw.ip_enabled_apps.contains("M-007C_A-0009-10-0001"));
         assert_eq!(hw.ip_enabled_apps.len(), 1);
+        Ok(())
+    }
+
+    /// Issue #1023: the product text in the project language names the
+    /// device; the order number settles an application two products run
+    /// (the ise Programmable, one and two Ethernet ports).
+    #[test]
+    fn test_product_text_by_language_and_order()
+    -> std::result::Result<(), Box<dyn std::error::Error>> {
+        let xml = r#"<KNX xmlns="http://knx.org/xml/project/11"><ManufacturerData><Manufacturer RefId="M-007C"><Hardware>
+          <Hardware Id="H-1" Name="KIM" IsIPEnabled="true"><Products>
+            <Product Id="H-1_P-1" Text="ise smart connect KNX Programmable" OrderNumber="1-0004-005" /></Products>
+            <Hardware2Programs><Hardware2Program Id="H-1_HP-1"><ApplicationProgramRef RefId="A-1" /></Hardware2Program></Hardware2Programs>
+          </Hardware>
+          <Hardware Id="H-2" Name="KIM2" IsIPEnabled="true"><Products>
+            <Product Id="H-2_P-1" Text="ise smart connect KNX Programmable (2 x Ethernet)" OrderNumber="1-0005-006" /></Products>
+            <Hardware2Programs><Hardware2Program Id="H-2_HP-1"><ApplicationProgramRef RefId="A-1" /></Hardware2Program></Hardware2Programs>
+          </Hardware>
+          <Hardware Id="H-3" Name="Sonos"><Products>
+            <Product Id="H-3_P-1" Text="Sonos" OrderNumber="1-0001-002" /></Products>
+            <Hardware2Programs><Hardware2Program Id="H-3_HP-1"><ApplicationProgramRef RefId="A-2" /></Hardware2Program></Hardware2Programs>
+          </Hardware>
+        </Hardware>
+        <Languages><Language Identifier="de-DE"><TranslationUnit RefId="H-3_P-1">
+          <TranslationElement RefId="H-3_P-1"><Translation AttributeName="Text" Text=" ise KNX Sonos " /></TranslationElement>
+        </TranslationUnit></Language></Languages>
+        </Manufacturer></ManufacturerData></KNX>"#;
+        let hw = parse_hardware(xml)?;
+        assert_eq!(
+            hw.product_text("A-2", None, Some("de-DE")).as_deref(),
+            Some("ise KNX Sonos")
+        );
+        assert_eq!(
+            hw.product_text("A-2", None, Some("fr-FR")).as_deref(),
+            Some("Sonos")
+        );
+        assert_eq!(hw.product_text("A-1", None, Some("de-DE")), None);
+        assert_eq!(
+            hw.product_text("A-1", Some("1-0004-005"), Some("de-DE"))
+                .as_deref(),
+            Some("ise smart connect KNX Programmable")
+        );
+        assert_eq!(hw.product_text("A-9", None, None), None);
         Ok(())
     }
 

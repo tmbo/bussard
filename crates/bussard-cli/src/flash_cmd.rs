@@ -266,6 +266,7 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     // the table images from the links.
     let (inputs, malformed) =
         FlashInputs::from_model(&product_data, app, address, model.as_ref(), target);
+    let inputs = inputs.for_parameters_only(args.parameters_only);
     for warning in malformed {
         eprintln!("{warning}");
     }
