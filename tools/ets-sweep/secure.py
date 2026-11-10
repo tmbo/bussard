@@ -195,6 +195,26 @@ def jobs() -> list[dict]:
     return out
 
 
+def save(results: dict) -> None:
+    RESULTS.parent.mkdir(exist_ok=True)
+    RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+
+
+def import_product(c, path: Path, pw: str) -> dict:
+    """Imports the product file into ETS's catalog, as defaults.py does
+    before a file's jobs: ETS adds a device only from its catalog, and the
+    catalog is reset between sweeps (`reset_catalog`)."""
+    import catalog
+    import vm
+
+    try:
+        remote = catalog.upload_if_missing(c, path)
+        return vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": 3600, "project": PROJECT,
+                                                            "project_password": pw}, timeout=3700)
+    except Exception as exc:  # noqa: BLE001 - recorded, the next job runs
+        return {"outcome": "error", "error": str(exc)[:300]}
+
+
 def run(args) -> int:
     import defaults
     import sweep
@@ -219,6 +239,16 @@ def run(args) -> int:
         if job["id"] in results and not args.redo:
             continue
         path = defaults.product_path(job["file"])
+        imp = import_product(c, path, pw)
+        if imp.get("outcome") not in ("imported", "done_unverified"):
+            results[job["id"]] = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"),
+                                  "when": datetime.now(timezone.utc).isoformat(),
+                                  "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
+                                  "error": (imp.get("message") or imp.get("error") or "")[:300]}
+            save(results)
+            print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed", flush=True)
+            c = vm.connect()
+            continue
         secure, serial_prop = sim_security(job["id"])
         serial, fdsk = synthetic_identity(job["id"])
         props = (defaults.seed_properties(path, job["id"], job["prev"]) or []) + serial_prop
@@ -244,8 +274,7 @@ def run(args) -> int:
             except OSError as exc:
                 entry["decode"] = {"verdict": "no-keyring", "error": str(exc)[:200]}
         results[job["id"]] = entry
-        RESULTS.parent.mkdir(exist_ok=True)
-        RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+        save(results)
         print(f"{entry['outcome']:13} {(entry.get('decode') or {}).get('verdict', '-'):10} {job['id']}"
               + (f"  {entry['error'][:100]}" if entry.get("error") else ""), flush=True)
         done += 1
