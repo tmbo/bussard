@@ -320,6 +320,9 @@ PID_LOAD_STATE_CONTROL = 5
 # --dry-run --dump-images` through the environment and never written to disk.
 ORACLE_SALT_ENV = "BUSSARD_ORACLE_SALT"
 PID_GRP_KEY_TABLE = 53
+# PID_GO_SECURITY_FLAGS: one flag octet per group object (KNX 3/5/1 §6.3.15),
+# hashed like key material when the write is key-sized, never a key itself.
+PID_GO_SECURITY_FLAGS = 61
 GROUP_KEY_ENTRY_LEN = 18  # group address (2) + key (16)
 SENDER_ENTRY_LEN = 8  # individual address (2) + sequence number (6)
 
@@ -1286,7 +1289,7 @@ def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
                 "object": obj,
                 "pid": int(rec["pid"]),
                 "index": rec.get("start_element"),
-                "count": rec.get("count"),
+                "count": _plan_count(rec, data),
                 "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
                 "data": data if isinstance(data, str) else None,
                 "sha256": rec.get("sha256"),
@@ -1309,6 +1312,17 @@ def _plan_property_steps(plan: dict) -> List[Dict[str, object]]:
     return out
 
 
+def _plan_count(rec: dict, data: object) -> Optional[int]:
+    """The element count of a plan record: its own, else for the security
+    object's GO flags (PID 61, one octet per element) the octet count."""
+    if rec.get("count") is not None:
+        return rec.get("count")
+    if rec.get("object_type") == SECURITY_OBJECT_TYPE and rec.get("pid") == PID_GO_SECURITY_FLAGS:
+        length = rec.get("length", len(data) // 2 if isinstance(data, str) else None)
+        return int(length) if length else None
+    return None
+
+
 def _structured_entry(step: dict, rec: dict) -> Dict[str, object]:
     """One structured `property` record of a plan step as a comparable entry."""
     if rec.get("object_type") is not None:
@@ -1324,7 +1338,7 @@ def _structured_entry(step: dict, rec: dict) -> Dict[str, object]:
         "object": obj,
         "pid": int(rec["pid"]),
         "index": rec.get("start_element"),
-        "count": rec.get("count"),
+        "count": _plan_count(rec, data),
         "length": int(rec.get("length", len(data) // 2 if isinstance(data, str) else 0)),
         "data": data if isinstance(data, str) else None,
         "sha256": rec.get("sha256"),
@@ -1485,6 +1499,9 @@ def _value_check(ours: Dict[str, object], theirs: Dict[str, object]) -> Tuple[st
     `why` says what differs; on `equal` it may carry a note (PID 54's
     sequence numbers).
     """
+    flags = _go_flags_check(ours, theirs)
+    if flags is not None:
+        return flags
     if _is_security_object(ours) and _is_security_object(theirs):
         pid = int(ours["pid"])
         ours_entries, ets_entries = ours.get("entries"), theirs.get("entries")
@@ -1649,8 +1666,11 @@ def resolve_index_writes(
 
 
 def _run_part(entry: Dict[str, object]) -> Dict[str, object]:
-    """One write of an element run, as the diff lists it."""
+    """One write of an element run, as the diff lists it. A GO-flags part
+    keeps its value (hex or hash): the run is judged part by part."""
     part = {"index": entry.get("index"), "count": entry.get("count"), "length": entry["length"]}
+    if _go_flags(entry):
+        part["data"] = entry.get("data")
     if "seq" in entry:
         part["ets_seq"] = entry["seq"]
     else:
@@ -1658,10 +1678,67 @@ def _run_part(entry: Dict[str, object]) -> Dict[str, object]:
     return part
 
 
+def _go_flags(entry: Dict[str, object]) -> bool:
+    """A write of the security object's group-object security flags (PID
+    61) with a start element and one octet per element. ETS splits them by
+    the device's max APDU under Data Secure (44 per telegram into the MDT
+    AKR-IO86.01S at max APDU 66, ets-sweep secure capture of 2026-11-10;
+    `66 - 13 - 9`), the dry run by its nominal 233 (211 per telegram), so
+    they are compared as an element run (#423)."""
+    count, index = entry.get("count"), entry.get("index")
+    return (
+        _is_security_object(entry)
+        and int(entry["pid"]) == PID_GO_SECURITY_FLAGS
+        and isinstance(index, int)
+        and isinstance(count, int)
+        and count > 0
+        and int(entry["length"]) == count
+        and isinstance(entry.get("data"), str)
+    )
+
+
+def _go_flags_check(ours: Dict[str, object], theirs: Dict[str, object]) -> Optional[Tuple[str, str]]:
+    """A merged GO-flags run against the other side's, part by part: each
+    part of either side (hex, or the hash of its octets) is checked against
+    the same elements of the other side's plain value. None when neither
+    side has a plain value for the run (then the parts cannot be checked)."""
+    if not (_go_flags(ours) and _go_flags(theirs)) or not (ours.get("parts") or theirs.get("parts")):
+        return None
+    if ours["index"] != theirs["index"] or ours["count"] != theirs["count"]:
+        return "differs", "GO flags: elements %s+%s vs %s+%s" % (ours["index"], ours["count"],
+                                                                   theirs["index"], theirs["count"])
+
+    def plain(run: Dict[str, object]) -> Optional[bytes]:
+        parts = run.get("parts") or [dict(_run_part(run), data=run.get("data"))]
+        if any(str(p.get("data") or "").startswith("redacted:") for p in parts):
+            return None
+        return bytes.fromhex("".join(str(p["data"]) for p in parts))
+
+    for value, other in ((plain(ours), theirs), (plain(theirs), ours)):
+        if value is None:
+            continue
+        for part in other.get("parts") or [dict(_run_part(other), data=other.get("data"))]:
+            offset = int(part["index"]) - int(other["index"])
+            octets = value[offset:offset + int(part["count"])]
+            data = str(part.get("data") or "")
+            same = (sha256(octets)[:8] == data[len("redacted:"):] if data.startswith("redacted:")
+                    else octets.hex() == data)
+            if not same:
+                return "differs", "GO flags differ in elements %s+%s" % (part["index"], part["count"])
+        hashed = any(str(p.get("data") or "").startswith("redacted:")
+                     for r in (ours, theirs)
+                     for p in (r.get("parts") or [{"data": r.get("data")}]))
+        return ("hash-equal" if hashed else "equal"), ""
+    return None
+
+
 def _mergeable(entry: Dict[str, object]) -> bool:
     """Whether a write can join an element run: a plain value, a start
     element and a count that divides its length. The security object's
-    writes never do: their key and sender tables are judged per record."""
+    writes never do: their key and sender tables are judged per record. The
+    GO flags (PID 61) do, hashed or not (`_go_flags`)."""
+    if _go_flags(entry):
+        return True
     count, index, data = entry.get("count"), entry.get("index"), entry.get("data")
     return (
         not _is_security_object(entry)
@@ -1700,6 +1777,9 @@ def merge_element_runs(writes: List[Dict[str, object]]) -> List[Dict[str, object
             and int(prev["index"]) + int(prev["count"]) == int(w["index"])
             and int(prev["length"]) // int(prev["count"]) == int(w["length"]) // int(w["count"])
         ):
+            if _go_flags(prev) != _go_flags(w):
+                out.append(w)
+                continue
             parts = prev.get("parts") or [_run_part(prev)]
             out[-1] = dict(
                 prev,
