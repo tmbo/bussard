@@ -252,34 +252,11 @@ def run_series(c, rep: dict, only_steps: str = "abcd") -> dict:
                 (out / "objects.png").write_bytes(base64.b64decode(shot["png_base64"]))
             except Exception as exc:  # noqa: BLE001 - a screenshot is evidence, not a step
                 say(f"{name}: no screenshot: {exc}")
-            flow("select_connection", name="knx-sim")
-            offset = remote_size(c)
-            since = sweep.vm_now(c)
-            log_from = len(sim.lines())
-            say(f"{app} {name}: download {mode}")
-            r = flow("download", ia="1.1.1", mode=mode)
-            end = wait_download(c, sim, since, log_from)
-            hist: list[str] = []
-            for _ in range(24):
-                hist = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines") or []
-                if sweep.ets_status(hist) != "unknown":
-                    break
-                time.sleep(5)
-            full = out / "sim-full.pcap"
-            sim.fetch_pcap(full)
-            sliced, frames = pcap_slice(full.read_bytes(), offset)
-            (out / "ets.pcapng").write_bytes(sliced)
-            full.unlink()
-            (out / "sim.log").write_text("\n".join(sim.lines()[log_from:]) + "\n")
-            ops = subprocess.run(["uv", "run", "--quiet", str(sweep.KNXTRACE), "ops", str(out / "ets.pcapng"),
-                                  "--device", "1.1.1"], capture_output=True, text=True)
-            (out / "ops.txt").write_text(ops.stdout + ops.stderr)
-            with c.open_sftp().open(f"{sweep.RemoteSim.DIR}/sim.yaml".replace("\\", "/")) as fh:
-                (out / "sim.yaml").write_bytes(fh.read())
-            step = {"mode": mode, "changes": changes, "download": r, "end": end, "ets": sweep.ets_status(hist),
-                    "history": sweep.newest_history_entry(hist), "frames": frames}
+            step = download_step(c, flow, sim, out, app, name, mode)
+            step["changes"] = changes
             (out / "driver.json").write_text(json.dumps({"app": app, "variant": name, **step}, indent=1,
                                                         ensure_ascii=False))
+            end, frames = step["end"], step["frames"]
             result["steps"][name] = {"ets": step["ets"], "end": end, "frames": frames}
             say(f"{app} {name}: {end}, ETS {step['ets']}, {frames} frames")
             if step["ets"] != "ok":
@@ -287,6 +264,42 @@ def run_series(c, rep: dict, only_steps: str = "abcd") -> dict:
     finally:
         sim.stop()
     return result
+
+
+def download_step(c, flow, sim, out: Path, app: str, name: str, mode: str, ia: str = "1.1.1") -> dict:
+    """One download of a series into the running `sim`: select the sim's
+    connection, download `mode`, wait for its end, and keep the step's slice
+    of the sim's pcap (`ets.pcapng`), its sim log, `ops.txt` and `sim.yaml`
+    in `out`. Returns {mode, download, end, ets, history, frames}."""
+    import sweep
+    import vm
+
+    flow("select_connection", name="knx-sim")
+    offset = remote_size(c)
+    since = sweep.vm_now(c)
+    log_from = len(sim.lines())
+    say(f"{app} {name}: download {mode}")
+    r = flow("download", ia=ia, mode=mode)
+    end = wait_download(c, sim, since, log_from)
+    hist: list[str] = []
+    for _ in range(24):
+        hist = vm.driver(c, "POST", "/ets/history", {}, timeout=120).get("lines") or []
+        if sweep.ets_status(hist) != "unknown":
+            break
+        time.sleep(5)
+    full = out / "sim-full.pcap"
+    sim.fetch_pcap(full)
+    sliced, frames = pcap_slice(full.read_bytes(), offset)
+    (out / "ets.pcapng").write_bytes(sliced)
+    full.unlink()
+    (out / "sim.log").write_text("\n".join(sim.lines()[log_from:]) + "\n")
+    ops = subprocess.run(["uv", "run", "--quiet", str(sweep.KNXTRACE), "ops", str(out / "ets.pcapng"),
+                          "--device", ia], capture_output=True, text=True)
+    (out / "ops.txt").write_text(ops.stdout + ops.stderr)
+    with c.open_sftp().open(f"{sweep.RemoteSim.DIR}/sim.yaml".replace("\\", "/")) as fh:
+        (out / "sim.yaml").write_bytes(fh.read())
+    return {"mode": mode, "download": r, "end": end, "ets": sweep.ets_status(hist),
+            "history": sweep.newest_history_entry(hist), "frames": frames}
 
 
 def remote_size(c) -> int:

@@ -1,0 +1,175 @@
+{
+ "issue": 424,
+ "derived_by": "tools/ets-sweep/params_subset.py select",
+ "apps": [
+  {
+   "app": "M-0009_A-E804-10-98AD",
+   "mask": "07B0",
+   "name": "STYMS616D",
+   "file": "PS_TYMS616D_V1.0.3_T2.KNXPROD",
+   "defaults_seconds": 267,
+   "why": "every parameter in an interface-object property (Hager TYMS616D, 07B0): the parameter-only download of #572 A.4 / #944; also first to cover calculations:07B0, channels:07B0, mask:07B0, placement:07B0/property, switches:07B0/many >200, type:Enum, type:Int, type:Other, type:Text, unions:07B0",
+   "covers": [
+    "calculations:07B0",
+    "channels:07B0",
+    "mask:07B0",
+    "placement:07B0/property",
+    "switches:07B0/many >200",
+    "type:Enum",
+    "type:Int",
+    "type:Other",
+    "type:Text",
+    "unions:07B0"
+   ]
+  },
+  {
+   "app": "M-0009_A-E802-13-7620",
+   "mask": "07B0",
+   "name": "STYMS646R",
+   "file": "PS_TYMS646R_V1.3.2_T12.KNXPROD",
+   "defaults_seconds": 261,
+   "why": "Hager TYMS646R (07B0), the third application of the 2026-11-08 attempt that set nothing; also first to cover oracle:07B0/was-differs",
+   "covers": [
+    "oracle:07B0/was-differs"
+   ]
+  },
+  {
+   "app": "M-0083_A-00B1-32-7488",
+   "mask": "0705",
+   "name": "Binary Input 16-fold",
+   "file": "MDT_KP_BE_02_Binary_Input_V32a.knxprod",
+   "defaults_seconds": 93,
+   "why": "first to cover calculations:0705, channels:0705, mask:0705, modules:0705, placement:0705/memory, switches:0705/few <=20, type:Color, type:Float, unions:0705",
+   "covers": [
+    "calculations:0705",
+    "channels:0705",
+    "mask:0705",
+    "modules:0705",
+    "placement:0705/memory",
+    "switches:0705/few <=20",
+    "type:Color",
+    "type:Float",
+    "unions:0705"
+   ]
+  },
+  {
+   "app": "M-0009_A-20B5-11-99A1",
+   "mask": "0701",
+   "name": "STXB692F",
+   "file": "PS_TXB692F_V110_T5.KNXPROD",
+   "defaults_seconds": 101,
+   "why": "first to cover calculations:0701, channels:0701, mask:0701, oracle:0701/differs, placement:0701/property, switches:0701/many >200, unions:0701",
+   "covers": [
+    "calculations:0701",
+    "channels:0701",
+    "mask:0701",
+    "oracle:0701/differs",
+    "placement:0701/property",
+    "switches:0701/many >200",
+    "unions:0701"
+   ]
+  },
+  {
+   "app": "M-00A6_A-0014-10-2517",
+   "mask": "0021",
+   "name": "IP Secure Interface",
+   "file": "1168-ETS-KNXIPSecureInterface-1.001.knxprod",
+   "defaults_seconds": 180,
+   "why": "first to cover calculations:0021, mask:0021, oracle:0021/not-comparable, placement:0021/property, switches:0021/few <=20",
+   "covers": [
+    "calculations:0021",
+    "mask:0021",
+    "oracle:0021/not-comparable",
+    "placement:0021/property",
+    "switches:0021/few <=20"
+   ]
+  },
+  {
+   "app": "M-0048_A-DA22-21-9D41-O00EF",
+   "mask": "07B0",
+   "name": "DALI-Gateway S64 KNX V2",
+   "file": "KNX_DB_D_GB_E_F_I_NL_Theben_AG_ETS5_2506.knxprod",
+   "defaults_seconds": 115,
+   "why": "first to cover modules:07B0, oracle:07B0/differs, placement:07B0/memory, switches:07B0/some 21-200",
+   "covers": [
+    "modules:07B0",
+    "oracle:07B0/differs",
+    "placement:07B0/memory",
+    "switches:07B0/some 21-200"
+   ]
+  },
+  {
+   "app": "M-00C8_A-2A01-10-2FC4-O00C8",
+   "mask": "0705",
+   "name": "VOC",
+   "file": "WS-VOC-HVAC-KNX_93806.knxprod",
+   "defaults_seconds": 84,
+   "why": "first to cover oracle:0705/differs, placement:0705/both, switches:0705/many >200",
+   "covers": [
+    "oracle:0705/differs",
+    "placement:0705/both",
+    "switches:0705/many >200"
+   ]
+  },
+  {
+   "app": "M-0007_A-A085-11-76F9-O0002",
+   "mask": "0701",
+   "name": "Power Supply, Diagnosis, 320mA/1.1",
+   "file": "IBUS_ETS5_BJE_XX_V24-12-20_9AKK107046A7479-Rev_K.knxprod",
+   "defaults_seconds": 102,
+   "why": "first to cover oracle:0701/was-differs, placement:0701/memory, switches:0701/few <=20",
+   "covers": [
+    "oracle:0701/was-differs",
+    "placement:0701/memory",
+    "switches:0701/few <=20"
+   ]
+  },
+  {
+   "app": "M-0064_A-7133-10-D9AF-O00C5",
+   "mask": "07B0",
+   "name": "KNX IP Interface secure 7133/1.0",
+   "file": "MTN6502-0105_ETS5x_2019_51_ALL9.knxprod",
+   "defaults_seconds": 105,
+   "why": "first to cover oracle:07B0/not-comparable, placement:07B0/both, switches:07B0/few <=20",
+   "covers": [
+    "oracle:07B0/not-comparable",
+    "placement:07B0/both",
+    "switches:07B0/few <=20"
+   ]
+  },
+  {
+   "app": "M-00B6_A-4741-01-0C14",
+   "mask": "0705",
+   "name": "APEKGA1TP",
+   "file": "APEKGA1TP01.knxprod",
+   "defaults_seconds": 165,
+   "why": "first to cover oracle:0705/was-differs, switches:0705/some 21-200",
+   "covers": [
+    "oracle:0705/was-differs",
+    "switches:0705/some 21-200"
+   ]
+  },
+  {
+   "app": "M-0009_A-207E-10-B0EC",
+   "mask": "0701",
+   "name": "TLA025A V1.0",
+   "file": "PS_TXA025_V104.KNXPROD",
+   "defaults_seconds": 82,
+   "why": "first to cover switches:0701/some 21-200",
+   "covers": [
+    "switches:0701/some 21-200"
+   ]
+  },
+  {
+   "app": "M-0009_A-E0ED-10-0B6F",
+   "mask": "0701",
+   "name": "STXA664D",
+   "file": "PS_TXA664D_V105_T5.KNXPROD",
+   "defaults_seconds": 105,
+   "why": "first to cover oracle:0701/not-comparable",
+   "covers": [
+    "oracle:0701/not-comparable"
+   ]
+  }
+ ]
+}
