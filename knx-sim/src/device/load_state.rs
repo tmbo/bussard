@@ -416,6 +416,24 @@ impl Device {
         Some(out)
     }
 
+    /// The entry count of table `lsm_index` (its first word in memory) while
+    /// the table is `Loading` or `Loaded`: `loaded_table_count` once it is
+    /// `Loaded`, and while `Loading` the count already written, if any. ETS writes the security object's
+    /// GO flags (PID 61) and group keys before the tables' `LoadCompleted`,
+    /// so a secured download checks them against the table it is loading:
+    /// the Steinel DALI Gateway Colour 2fold's flags run to element 4136,
+    /// past the 4095 fallback (ETS sweep secure capture of 2026-11-10,
+    /// bussard issue #423).
+    pub(super) fn table_count_being_loaded(&self, lsm_index: u8) -> Option<u16> {
+        if self.sys7.is_some() || self.load_state(lsm_index) != Some(LoadState::Loading) {
+            return self.loaded_table_count(lsm_index);
+        }
+        let base = self.loadables.get(&lsm_index)?.base;
+        let word = self.memory.read_bounded(base, 2)?;
+        // A table being loaded whose count is not written yet says nothing.
+        Some(u16::from_be_bytes([word[0], word[1]])).filter(|n| *n > 0)
+    }
+
     /// The entry count of a System B table object (by LSM index), read from the
     /// big-endian count word at its segment base, but only once that object is
     /// `Loaded` (a table being rewritten has no trustworthy count yet). `None`
