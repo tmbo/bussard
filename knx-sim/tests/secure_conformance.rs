@@ -873,3 +873,19 @@ fn test_security_object_go_flags_follow_the_table_being_loaded() -> TestResult {
     assert!(t.rejections().is_empty(), "{:#?}", t.rejections());
     Ok(())
 }
+
+/// A loaded group-object table with no objects refuses every GO flag: the
+/// count is 0, not the 4095 fallback (review of #1044).
+#[test]
+fn test_security_object_go_flags_refused_by_an_empty_loaded_table() -> TestResult {
+    let mut t = SecureTool::new(SecAlgorithm::AuthOnly);
+    t.control(0x80);
+    t.secure_ndt(0x3D1, &[0x00, 0xff, 0xff, 0xff, 0xff]);
+    t.load_table_extended(3, 0x8000, &hex("0000")?)?;
+    t.secure_hex("01d4 0011 001005 01000000000000000000")?;
+    assert_eq!(
+        t.secure_hex("01ce 0011 00103d 01 0001 03")?,
+        hex("01cf 0011 00103d 01 0001 f7")?
+    );
+    Ok(())
+}
