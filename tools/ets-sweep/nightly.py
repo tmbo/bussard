@@ -15,7 +15,8 @@ Started by launchd (`schedule/dev.bussard.ets-sweep.nightly.plist`) or cron
   build      `cargo build -p bussard-cli` and knx-sim, so the oracle runs this
              checkout's bussard
   sweep      every shard of `defaults.py --redo-failed`, one after the other
-             (one VM, one ETS), then the links variant
+             (one VM, one ETS), then the links variant on the representative
+             subset (`--representative`, links-subset.json, #478)
   oracle     `oracle.py --redo` and the same for the links variant: every
              row again, so a bussard change shows as a verdict change
   summary    `summary.py`: manifest, parity summary, verdict changes
@@ -60,7 +61,7 @@ def commands(step: str, shards: int, create_issues: bool) -> list[list[str]]:
                 ["cargo", "build", "-q", "--manifest-path", str(REPO / "knx-sim" / "Cargo.toml")]]
     if step == "sweep":
         return [uv("defaults.py", "--redo-failed", "--shard", f"{k}/{shards}") for k in range(shards)] \
-            + [uv("defaults.py", "--variant", "links")]
+            + [uv("defaults.py", "--variant", "links", "--representative")]
     if step == "oracle":
         # Every row again: a verdict change comes from a new bussard as often
         # as from a new capture (seconds per row with the shared imports).

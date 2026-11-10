@@ -46,6 +46,11 @@ def log(msg: str) -> None:
     print(time.strftime("%H:%M:%S"), msg, flush=True)
 
 
+# What a request cost on the screen, logged with its time (`/ets/link 9.1s
+# clicks=4 ocr=12`): the measure of the link flow's speed (#478).
+COUNTS = {"clicks": 0, "ocr": 0}
+
+
 try:
     from pywinauto import Desktop
     from pywinauto.application import Application
@@ -210,6 +215,7 @@ def ocr(bbox=None, lang: str = "de", zoom: int = 1) -> list[dict]:
         img = ImageOps.autocontrast(ImageOps.grayscale(img.resize((img.width * zoom, img.height * zoom))), cutoff=1)
     ox, oy = (bbox[0], bbox[1]) if bbox else (0, 0)
     out = []
+    COUNTS["ocr"] += 1
     for line in winocr.recognize_pil_sync(img, lang)["lines"]:
         rects = [w["bounding_rect"] for w in line["words"]]
         # OCR pixels -> physical pixels (/zoom) -> layout coordinates (/s).
@@ -253,6 +259,7 @@ def click(x: int, y: int, button: str = "left", double: bool = False) -> None:
                 mouse.double_click(button=button, coords=at)
             else:
                 mouse.click(button=button, coords=at)
+            COUNTS["clicks"] += 1
             return
         except Exception as exc:  # noqa: BLE001 - pywintypes.error is no OSError
             # SetCursorPos fails with 258 'Wartevorgang abgebrochen' while the
@@ -331,10 +338,26 @@ def menu_items() -> list[str]:
     return [t for t in out if "SeparatorMenuItem" not in t]
 
 
-def menu_click(item_title: str, timeout: float = 5.0) -> None:
-    """Click a MenuItem by title in an open popup (UIA works there)."""
+def menu_click(item_title: str, timeout: float = 5.0, settle: float = 0.5) -> None:
+    """Click a MenuItem by title in an open popup (UIA works there), then
+    wait `settle` seconds (0 when the caller polls for what comes next)."""
     menu_item(item_title, timeout).click_input()
-    time.sleep(0.5)
+    COUNTS["clicks"] += 1
+    time.sleep(settle)
+
+
+def wait_for(name: str, cond, timeout: float, interval: float = 0.2):
+    """Poll `cond()` until it returns something truthy or `timeout` seconds
+    passed; returns its last value. Every wait is logged with its duration
+    (`wait <name> 0.84s ok`), the measure the link path's pauses were cut by
+    (#478)."""
+    t0 = time.time()
+    while True:
+        value = cond()
+        if value or time.time() - t0 >= timeout:
+            log(f"wait {name} {time.time() - t0:.2f}s {'ok' if value else 'timeout'}")
+            return value
+        time.sleep(interval)
 
 
 def choose(title: str, bbox=None, uia_timeout: float = 1.5) -> str:
@@ -1212,6 +1235,49 @@ def search_term(order: str) -> str:
     return re.sub(r"(?<=[0-9.\-])x+$", "", order.strip(), flags=re.IGNORECASE) or order
 
 
+# The catalog's result columns (layout x ranges) as measured on 2026-10-28:
+# name, order number, application, version.
+CATALOG_COLS = {"name": (1130, 1970), "order": (1970, 2240), "application": (2300, 2560), "version": (2560, 2740)}
+CATALOG_HEADS = {"name": "Name", "order": "Bestellnummer", "application": "Applikation", "version": "Version"}
+
+
+def word_x(line: dict, word: str) -> int | None:
+    """The left x of `word` inside an OCR line, by its share of the line's
+    characters (OCR joins neighbouring headers: 'Medie Applikation')."""
+    at = line["text"].find(word)
+    if at < 0:
+        return None
+    return line["x"] + line["w"] * at // max(len(line["text"]), 1)
+
+
+def catalog_columns(header: list[dict]) -> dict[str, tuple[int, int]]:
+    """The x ranges of the catalog's name, order, application and version
+    columns from its header row's OCR lines: each column from just left of
+    its header to just left of the next one's. ETS showed two more columns
+    ('Sic', 'Hersteller') before 'Name' on 2026-11-10 and every cell moved
+    330 px to the right: the rows' order cell read empty and every add
+    failed as a version mismatch (#478). Columns whose header OCR missed
+    keep the measured ranges."""
+    found = {}
+    for key, word in CATALOG_HEADS.items():
+        xs = [x for l in header if (x := word_x(l, word)) is not None]
+        if xs:
+            found[key] = min(xs) - 20
+    if len(found) < len(CATALOG_HEADS):
+        return dict(CATALOG_COLS)
+    order = ["name", "order", "application", "version"]
+    cols = {}
+    for i, key in enumerate(order):
+        lo = found[key]
+        hi = found[order[i + 1]] if i + 1 < len(order) else lo + (CATALOG_COLS["version"][1] - CATALOG_COLS["version"][0])
+        cols[key] = (lo, hi)
+    # The order column ends where 'Medie' starts, not at 'Applikation'.
+    medie = [x for l in header if (x := word_x(l, "Medi")) is not None]
+    if medie and cols["order"][0] < min(medie) - 20 < cols["order"][1]:
+        cols["order"] = (cols["order"][0], min(medie) - 20)
+    return cols
+
+
 def catalog_rows(expand: bool = True) -> list[dict]:
     """The catalog result rows as {y, name, order, application, version,
     online, manufacturer}, grouped from OCR lines by height. A manufacturer
@@ -1222,8 +1288,11 @@ def catalog_rows(expand: bool = True) -> list[dict]:
     searches) is expanded first."""
     dy = catalog_dy()
     x0, y0, x1, y1 = LAYOUT["catalog_rows"]
+    # The header row sits 31 px above the scanned area (y 1409 at dy 0).
+    cols = catalog_columns(ocr((x0, y0 + dy - 50, x1, y0 + dy + 5)))
+    name_x = cols["name"][0]
     lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
-    if expand and not any(l["x"] >= 1130 for l in lines):
+    if expand and not any(l["x"] >= name_x for l in lines):
         # No product rows: expand collapsed manufacturer headers (left column;
         # the first one sits just above the scanned area).
         heads = [l for l in ocr((x0, y0 + dy, 1300, min(y1 + dy, 2440))) if l["x"] < 800 and l["y"] > y0 + dy + 10]
@@ -1232,7 +1301,7 @@ def catalog_rows(expand: bool = True) -> list[dict]:
             time.sleep(1)
         lines = ocr((x0, y0 + 40 + dy, x1, min(y1 + dy, 2440)))
     # The first group's header, just above the scanned rows (left column).
-    band = [l for l in ocr((x0, y0 + dy, 1130, y0 + 40 + dy)) if l["y"] > y0 + dy + 5]
+    band = [l for l in ocr((x0, y0 + dy, name_x, y0 + 40 + dy)) if l["y"] > y0 + dy + 5]
     manufacturer = " ".join(l["text"] for l in sorted(band, key=lambda l: l["x"])).strip()
     rows: list[dict] = []
     for line in sorted(lines, key=lambda l: l["y"]):
@@ -1246,21 +1315,22 @@ def catalog_rows(expand: bool = True) -> list[dict]:
     for r in rows:
         def cell(lo: int, hi: int) -> str:
             return " ".join(c["text"] for c in r["cells"] if lo <= c["x"] < hi).strip()
-        version = cell(2560, 2740)
-        order = cell(1970, 2240)
+        version = cell(*cols["version"])
+        order = cell(*cols["order"])
         if not version and order:
             # A short version ("1.1") can vanish at native size: read the
             # cell magnified, at more than one zoom.
             for zoom in (3, 2, 4):
-                version = " ".join(l["text"] for l in ocr((2560, r["y"] - 20, 2740, r["y"] + 20), zoom=zoom)).strip()
+                version = " ".join(l["text"] for l in ocr((cols["version"][0], r["y"] - 20, cols["version"][1], r["y"] + 20),
+                                                          zoom=zoom)).strip()
                 if version:
                     break
         if not version and not order:
             # A manufacturer group header: it names the rows below it.
             manufacturer = " ".join(c["text"] for c in sorted(r["cells"], key=lambda c: c["x"])).strip()
             continue
-        out.append({"y": r["y"], "name": cell(1130, 1970), "order": cell(1970, 2240),
-                    "application": cell(2300, 2560), "version": version, "online": row_is_online(r["y"]),
+        out.append({"y": r["y"], "name": cell(*cols["name"]), "order": order,
+                    "application": cell(*cols["application"]), "version": version, "online": row_is_online(r["y"]),
                     "manufacturer": manufacturer})
     return out
 
@@ -1605,10 +1675,14 @@ def open_device_objects(ia: str) -> None:
     click(t["x"] + t["w"] // 2, t["y"] + t["h"] // 2)
     # OCR joins the tab strip into one line ('Kanäle 5 Kommunikationsobjekte 22');
     # it takes a few seconds to switch from the line's tabs.
-    t0, tabs = time.time(), ""
-    while time.time() - t0 < 8 and "Kommunikationsobjekte" not in tabs:
-        time.sleep(1)
-        tabs = " ".join(l["text"] for l in ocr((680, 150, 1600, 220)))
+    seen = {"tabs": ""}
+
+    def tabs_shown() -> bool:
+        seen["tabs"] = " ".join(l["text"] for l in ocr((680, 150, 1600, 220)))
+        return "Kommunikationsobjekte" in seen["tabs"]
+    time.sleep(0.3)
+    wait_for("device tabs", tabs_shown, 8, 0.3)
+    tabs = seen["tabs"]
     if "Kommunikationsobjekte" not in tabs:
         raise RuntimeError(f"the object table did not open: {tabs!r}")
     # The tab where OCR reads it: its place moves with the tabs before it (a
@@ -1623,7 +1697,30 @@ def open_device_objects(ia: str) -> None:
         click(tab["x"] + tab["w"] * at // max(len(text), 1), tab["y"] + tab["h"] // 2)
     else:
         click(1090, 188)
-    time.sleep(1)
+    # The table is there when its number column reads a number; a table of
+    # object 1 alone never does (OCR skips a lone '1'): it waits out the 3 s.
+    time.sleep(0.3)
+    wait_for("object table", table_numbers, 3)
+
+
+def table_numbers() -> dict[int, int]:
+    """The object numbers the open table's number column shows: row centre y
+    -> number (magnified: a lone '1' in a selected row went unread at 1x)."""
+    out = {}
+    for l in ocr((GO_COLS["number"][0], GO_TABLE[1], GO_COLS["number"][1], GO_TABLE[3]), zoom=2):
+        if l["text"].strip().isdigit():
+            out[l["y"] + l["h"] // 2] = int(l["text"].strip())
+    return out
+
+
+def view_changed(rows: list[dict], numbers: dict[int, int]) -> bool:
+    """True when the table no longer shows `rows` where they were: a number
+    read now that `rows` lack or that moved by a row (14 px), or no number
+    at all. The link flow re-reads the whole table only then (#478)."""
+    if not numbers:
+        return True
+    at = {r["number"]: r["y"] for r in rows}
+    return any(n not in at or abs(at[n] - y) >= 14 for y, n in numbers.items())
 
 
 def read_objects(numbers: list[int] | None = None) -> list[dict]:
@@ -1747,10 +1844,10 @@ def close_link_dialog() -> bool:
     else:
         log("closing a link dialog with Escape ('Abbrechen' not read)")
         keys("{ESC}")
-    time.sleep(1.5)
-    if link_dialog_open():
+    # Was a fixed 1.5 s, and 1.5 s more after an Escape.
+    if not wait_for("link dialog cancelled", lambda: not link_dialog_open(), 1.5):
         keys("{ESC}")
-        time.sleep(1.5)
+        wait_for("link dialog cancelled", lambda: not link_dialog_open(), 1.5)
     return not link_dialog_open()
 
 
@@ -1796,40 +1893,88 @@ def link_refusal(button: dict) -> str | None:
     return " and ".join(why) + f" (the dialog offers {', '.join(offered) or 'no address'}, addresses of the object's size)"
 
 
-@flow("link")
-def flow_link(req: dict) -> dict:
-    """Link object `number` of device `ia` to group address `ga` ('1/0/9'):
-    the object's context menu 'Verbinden mit...', the address typed into
-    the dialog's field, 'Erstellen & Verbinden' (ETS creates the address
-    when the project lacks it) or 'Verbinden'. Verified in the table."""
-    require_project(req["project"])
-    # A link dialog a failed link left open covers the object table and the
-    # Katalog panel: every import after it failed (2026-11-10, #478).
-    closed = close_link_dialog()
+# Where ETS asks whether an address of another object size may take the
+# object's datatype ('... abweichende Objektgröße ...', syn-minimal,
+# 2026-10-31), and its OK button.
+SIZE_PROMPT = (1260, 1100, 2850, 1260)
+SIZE_PROMPT_OK = (2450, 1410, 2700, 1500)
+
+
+def _ga_text(text: str) -> str:
+    """An address as OCR reads it in the dialog's field, normalised: no
+    spaces, the letters it takes for 1 and 0 back to digits."""
+    return re.sub(r"\s", "", text).translate(str.maketrans({"l": "1", "I": "1", "|": "1", "O": "0", "o": "0"}))
+
+
+def field_shows(ga: str) -> bool:
+    """True when the link dialog's address field reads `ga`: the typed text
+    has landed and ETS has judged it (red frame or not)."""
+    return any(ga in _ga_text(l["text"]) for l in ocr(LINK_FIELD, zoom=2))
+
+
+def gas_at(y: int) -> list[str]:
+    """The addresses the object table's row at `y` shows (the address column
+    and the text left of it, magnified as `read_objects` reads them)."""
+    band = (GO_COLS["ga"][0] - 400, y - 18, GO_COLS["size"][1], y + 18)
+    found: list[str] = []
+    for l in ocr(band, zoom=3):
+        for ga in GA_RE.findall(l["text"].replace(" ", "")):
+            if ga not in found:
+                found.append(ga)
+    return found
+
+
+def link_row(row: dict, number: int, ga: str) -> dict:
+    """The dialog part of one link in the open object table: the row's
+    context menu 'Verbinden mit...', the address typed into the dialog's
+    field, 'Erstellen & Verbinden' (ETS creates the address when the project
+    lacks it) or 'Verbinden'. {"linked": True} once the dialog closed, or
+    {"linked": False, "refused": why} when ETS refused the address and the
+    dialog was cancelled. Raises (after closing the dialog) on anything else.
+
+    Every pause is a poll for the state the next click needs (#478): the
+    menu item (menu_item polls), the dialog open, the typed address in the
+    field, the dialog closed."""
     from pywinauto import mouse
 
-    open_device_objects(req["ia"])
-    row = _object_row(int(req["number"]), req.get("numbers"))
-    if req["ga"] in row["gas"]:
-        return {"linked": True, "already": True, "row": row, "closed_link_dialog": closed}
     s = scale()
-    mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
-    time.sleep(1.2)
-    menu_click("Verbinden mit...")
+    # The second link's context menu showed on screen without a MenuItem UI
+    # Automation could see (ise KNX Sonos and MDT AKK, 2026-11-10: 'not in
+    # any popup', then the open menu covered the Katalog panel for the next
+    # import): the entry is clicked by OCR then. A menu that does not come
+    # is closed and the row right-clicked again.
+    for attempt in range(3):
+        mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
+        COUNTS["clicks"] += 1
+        try:
+            if not wait_for("context menu", ets_popups, 3):
+                raise RuntimeError("no context menu")
+            try:
+                menu_click("Verbinden mit...", timeout=MENU_UIA["timeout"], settle=0)
+            except RuntimeError:
+                log(f"link: 'Verbinden mit...' not in the menu's UI Automation tree; by OCR")
+                # Once blind, the table's menus stay so for the flow: look
+                # only briefly next time.
+                MENU_UIA["timeout"] = 0.3
+                click_text("Verbinden mit", (900, max(0, row["y"] - 800), 1700, min(2484, row["y"] + 800)))
+            break
+        except RuntimeError as exc:
+            log(f"link: context menu for object {number} failed (attempt {attempt + 1}): {exc}; closing it")
+            close_menus()
+            if attempt == 2:
+                raise
     # The dialog can take several seconds to open (syn-minimal, 2026-10-31).
-    t0 = time.time()
-    while not link_dialog_open():
-        if time.time() - t0 > 12:
-            # One that opens late must not stay (#478).
-            time.sleep(3)
-            closed = close_link_dialog()
-            raise RuntimeError(f"the link dialog did not open{'; it did later, closed with Abbrechen' if closed else ''}")
-        time.sleep(1)
+    if not wait_for("link dialog open", link_dialog_open, 12):
+        # One that opens late must not stay (#478).
+        time.sleep(3)
+        closed = close_link_dialog()
+        raise RuntimeError(f"the link dialog did not open{'; it did later, closed with Abbrechen' if closed else ''}")
     click(1720, 1718)  # the address field left of 'Neue Gruppenadresse'
-    time.sleep(0.3)
     keys("^a")
-    keys(req["ga"])
-    time.sleep(1.2)
+    keys(ga)
+    # Was a fixed 1.2 s: the field reading the address is the state the
+    # red-frame check needs. OCR that cannot read the field costs the 2 s.
+    wait_for("address in field", lambda: field_shows(ga), 2, 0.1)
     # The button reads 'Erstellen & Verbinden' for a new address and
     # 'Verbinden' for an existing one; OCR prefixes its link icon ('00').
     buttons = [l for l in ocr(LINK_VERBINDEN) if "Verbinden" in l["text"]]
@@ -1839,12 +1984,12 @@ def flow_link(req: dict) -> dict:
     b = buttons[0]
 
     def refuse(refused: str) -> dict:
-        reason = f"ETS refused {req['ga']} for object {req['number']}: {refused}"
+        reason = f"ETS refused {ga} for object {number}: {refused}"
         closed = close_link_dialog()
         log(f"link: {reason}; {'closed with Abbrechen' if closed else 'dialog left open'}")
         if not closed:
             raise RuntimeError(f"{reason}; the link dialog did not close with Abbrechen")
-        return {"linked": False, "refused": reason, "row": row}
+        return {"linked": False, "refused": reason}
 
     # ETS takes only an address of the object's size (its list offers just
     # those); for another one it frames the field red and greys 'Verbinden'
@@ -1854,11 +1999,11 @@ def flow_link(req: dict) -> dict:
     if red_frame(grab(LINK_FIELD)):
         return refuse(link_refusal(b) or "the address field shows an error")
     # The first click after typing only commits the field at times (the
-    # dialog stayed open, 2026-10-28): click until the dialog closes.
+    # dialog stayed open, 2026-10-28): click until the dialog closes. Was a
+    # fixed 2 s after each click.
     for _ in range(3):
         click(b["x"] + b["w"] - 60, b["y"] + b["h"] // 2)
-        time.sleep(2)
-        if not link_dialog_open():
+        if wait_for("link dialog closed", lambda: not link_dialog_open(), 2.5):
             break
     else:
         refused = link_refusal(b)
@@ -1866,23 +2011,159 @@ def flow_link(req: dict) -> dict:
             return refuse(refused)
         closed = close_link_dialog()
         raise RuntimeError(f"the link dialog did not close; {'closed with Abbrechen' if closed else 'left open'}")
-    time.sleep(1)
-    # An address the project already holds with another object size: ETS asks
-    # whether to take the object's datatype for it ('... abweichende
-    # Objektgröße ...', syn-minimal, 2026-10-31). OK takes it.
-    if find_text("abweichende Objektgröße", (1260, 1100, 2850, 1260), min_ratio=0.7):
-        click_text("OK", (2450, 1410, 2700, 1500))
-        time.sleep(1.5)
-    row = _object_row(int(req["number"]), req.get("numbers"))
-    if req["ga"] not in row["gas"]:
+    return {"linked": True}
+
+
+# How long `link_row` looks for the menu entry by UI Automation before OCR;
+# `flow_links` resets it per call.
+MENU_UIA = {"timeout": 1.5}
+
+
+def close_menus() -> bool:
+    """Close context menus ETS has open (Escape until none is left, at most
+    three): a late one covers the table and the Katalog panel. True when one
+    was open."""
+    had = False
+    for _ in range(3):
+        if not ets_popups():
+            break
+        had = True
+        keys("{ESC}")
+        wait_for("menu closed", lambda: not ets_popups(), 1.5)
+    return had
+
+
+def find_row(number: int, rows: list[dict], numbers: list[int] | None = None) -> tuple[dict | None, list[dict]]:
+    """The table row of object `number`, and the rows it was found among.
+    Looks in `rows` (the last read) first; when it is not there the view
+    changed: read again, then scroll the table to its top and down a page at
+    a time (the mouse wheel over the rows) until the row shows or the table
+    ends."""
+    hit = next((r for r in rows if r["number"] == number), None)
+    if hit:
+        return hit, rows
+    rows = read_objects(numbers)
+    hit = next((r for r in rows if r["number"] == number), None)
+    if hit:
+        return hit, rows
+    from pywinauto import mouse
+
+    s = scale()
+    at = (int(1500 * s), int((GO_TABLE[1] + GO_TABLE[3]) // 2 * s))
+    mouse.scroll(coords=at, wheel_dist=40)
+    seen: list[int] = []
+    for _ in range(12):
+        time.sleep(0.3)
+        rows = read_objects(numbers)
+        hit = next((r for r in rows if r["number"] == number), None)
+        shown = [r["number"] for r in rows]
+        if hit or not shown or shown == seen or max(shown) > number:
+            return hit, rows
+        seen = shown
+        mouse.scroll(coords=at, wheel_dist=-5)
+    return None, rows
+
+
+def verify_link(row: dict, rows: list[dict], number: int, ga: str,
+                numbers: list[int] | None = None) -> tuple[dict, list[dict]]:
+    """The row of object `number` once the table shows `ga` on it, and the
+    rows of the table as last read. Answers ETS's question about another
+    object size with OK. Reads only the row while the view stays put (its
+    numbers where they were); the whole table when it moved or the row did
+    not show the address (a selected row's blue text reads badly: a click
+    below the rows clears the selection first). Raises when the address is
+    not on the row."""
+    seen: dict = {}
+
+    def settled():
+        seen["gas"] = gas_at(row["y"])
+        if ga in seen["gas"]:
+            return "shown"
+        return "prompt" if find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7) else None
+    state = wait_for("row shows the address", settled, 2.5)
+    if state == "prompt":
+        # An address the project already holds with another object size:
+        # ETS asks whether to take the object's datatype for it. OK takes it.
+        click_text("OK", SIZE_PROMPT_OK)
+        state = wait_for("row shows the address", lambda: settled() == "shown" and "shown", 2.5)
+    if state == "shown" and not view_changed(rows, table_numbers()):
+        new = {**row, "gas": seen["gas"]}
+        return new, [new if r is row else r for r in rows]
+    if state != "shown":
         # OCR reads nothing on the selected row (blue text): click below the
         # rows to clear the selection and read again (syn-minimal, 2026-10-31).
         click(1500, GO_TABLE[3] - 20)
-        time.sleep(1)
-        row = _object_row(int(req["number"]), req.get("numbers"))
-    if req["ga"] not in row["gas"]:
-        raise RuntimeError(f"object {req['number']} shows {row['gas']} after linking {req['ga']}")
-    return {"linked": True, "row": row}
+        time.sleep(0.5)
+    hit, rows = find_row(number, [], numbers)
+    if hit is not None and ga not in hit["gas"] and state == "shown":
+        # The row showed the address before the view moved: read it once
+        # more without its selection.
+        click(1500, GO_TABLE[3] - 20)
+        time.sleep(0.5)
+        hit, rows = find_row(number, [], numbers)
+    if hit is None or ga not in hit["gas"]:
+        raise RuntimeError(f"object {number} shows {hit and hit['gas']} after linking {ga}")
+    return hit, rows
+
+
+@flow("links")
+def flow_links(req: dict) -> dict:
+    """Link objects of device `ia` from ONE opened object table (#478):
+    `links` [[number, ga], ...] in order. The device is selected and its
+    'Kommunikationsobjekte' table opened once (`open` false: the `objects`
+    flow just did, so the table showing is used, and opened only when none
+    of the objects is on it); each link is then the row's dialog
+    (`link_row`) and a check of the row (`verify_link`). A refused address
+    is cancelled and reported, the next link goes on. Returns each link's
+    outcome and, unless `final` is false, the table after the links
+    (`objects`, as the `objects` flow reads it)."""
+    require_project(req["project"])
+    # A link dialog a failed link left open covers the object table and the
+    # Katalog panel: every import after it failed (2026-11-10, #478).
+    closed = close_link_dialog()
+    MENU_UIA["timeout"] = 1.5
+    numbers = req.get("numbers")
+    wanted = [(int(n), str(g)) for n, g in req["links"]]
+    opened = bool(req.get("open", True))
+    if opened:
+        open_device_objects(req["ia"])
+    rows = read_objects(numbers)
+    if not opened and not any(r["number"] == n for r in rows for n, _ in wanted):
+        open_device_objects(req["ia"])
+        opened = True
+        rows = read_objects(numbers)
+    out = []
+    try:
+        for number, ga in wanted:
+            row, rows = find_row(number, rows, numbers)
+            if row is None:
+                raise RuntimeError(f"object {number} not in the table (hidden by a parameter?): {[r['number'] for r in rows]}")
+            if ga in row["gas"]:
+                out.append({"number": number, "ga": ga, "linked": True, "already": True, "row": row})
+                continue
+            r = link_row(row, number, ga)
+            if r["linked"]:
+                row, rows = verify_link(row, rows, number, ga, numbers)
+            out.append({"number": number, "ga": ga, **r, "row": row})
+    except Exception:
+        # Leave nothing open over the table and the Katalog panel: the next
+        # import looks for its button there.
+        close_menus()
+        close_link_dialog()
+        raise
+    result = {"links": out, "opened": opened, "closed_link_dialog": closed}
+    if req.get("final", True):
+        result["objects"] = read_objects(numbers)
+    return result
+
+
+@flow("link")
+def flow_link(req: dict) -> dict:
+    """Link object `number` of device `ia` to group address `ga` ('1/0/9'):
+    one link of `flow_links`, the table opened for it. Verified in the table."""
+    out = flow_links({**req, "links": [[req["number"], req["ga"]]], "open": True, "final": False})
+    r = out["links"][0]
+    return {**{k: v for k, v in r.items() if k not in ("number", "ga")}, "closed_link_dialog": out["closed_link_dialog"]}
 
 
 @flow("unlink")
@@ -1898,6 +2179,7 @@ def flow_unlink(req: dict) -> dict:
         return {"unlinked": True, "already": True, "row": row}
     s = scale()
     mouse.right_click(coords=(int(1000 * s), int(row["y"] * s)))
+    COUNTS["clicks"] += 1
     time.sleep(1.2)
     menu_click("Trennen")
     time.sleep(2)
@@ -2493,6 +2775,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": f"bad json: {exc}"})
             return
         t0 = time.time()
+        before = dict(COUNTS)
         try:
             if self.path == "/tree":
                 win = find_window(req.get("window"))
@@ -2556,7 +2839,7 @@ class Handler(BaseHTTPRequestHandler):
             log(f"{self.path} failed: {traceback.format_exc()}")
             self._send(500, {"ok": False, "error": repr(exc), "trace": traceback.format_exc()[-2000:]})
         finally:
-            log(f"{self.path} {time.time() - t0:.1f}s")
+            log(f"{self.path} {time.time() - t0:.1f}s " + " ".join(f"{k}={COUNTS[k] - before[k]}" for k in COUNTS))
 
 
 # Requests being served: an upload restarts the driver only between flows,
