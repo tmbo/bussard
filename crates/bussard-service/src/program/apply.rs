@@ -76,29 +76,48 @@ pub fn back_up_parameters(
     .map_err(BackupError::Parameters)
 }
 
-/// Whether a parameter backup of `regions` and `properties` records
-/// anything to restore: a memory region, or a parameter property the device
-/// was read for (a program whose parameters all live in properties has no
-/// region, issue #944).
-pub fn backs_up_anything(
-    regions: &bussard_download::ParamRegions,
-    properties: &[bussard_download::ParamProperty],
-) -> bool {
-    !regions.is_empty() || properties.iter().any(|p| p.device.is_some())
-}
-
-/// Whether the parameter backup a parameter-only write takes first would
-/// restore anything ([`backs_up_anything`]); the write must not start when it
-/// would not. A full flash rewrites everything and needs no such check.
+/// Whether a parameter backup of `regions` and `properties` holds what a
+/// restore needs: a memory region or a parameter property that was read (a
+/// program whose parameters all live in properties has no region, issue
+/// #944), and every parameter property the write would change read first.
+/// A property whose read failed counts as differing and is written, but the
+/// backup cannot record it, so a later restore could not put it back: the
+/// write must not start then.
 ///
 /// # Errors
 ///
-/// [`BackupError::NoParameterMemory`] when the backup would be empty.
-pub fn check_parameter_backup(detail: &ParamDetail) -> Result<(), BackupError> {
-    if !backs_up_anything(&detail.regions, &detail.properties) {
+/// [`BackupError::NoParameterMemory`] when the backup would be empty,
+/// [`BackupError::UnreadParameterProperty`] when a property it would leave
+/// out could not be read.
+pub fn check_backup_covers(
+    regions: &bussard_download::ParamRegions,
+    properties: &[bussard_download::ParamProperty],
+) -> Result<(), BackupError> {
+    if regions.is_empty() && !properties.iter().any(|p| p.device.is_some()) {
         return Err(BackupError::NoParameterMemory);
     }
+    let unread: Vec<String> = properties
+        .iter()
+        .filter(|p| p.device.is_none())
+        .map(bussard_download::ParamProperty::label)
+        .collect();
+    if !unread.is_empty() {
+        return Err(BackupError::UnreadParameterProperty {
+            properties: unread.join(", "),
+        });
+    }
     Ok(())
+}
+
+/// [`check_backup_covers`] for the parameter backup a parameter-only write
+/// of `detail` takes first; the write must not start when it fails. A full
+/// flash rewrites everything and needs no such check.
+///
+/// # Errors
+///
+/// As [`check_backup_covers`].
+pub fn check_parameter_backup(detail: &ParamDetail) -> Result<(), BackupError> {
+    check_backup_covers(&detail.regions, &detail.properties)
 }
 
 /// A backup that could not be written.
@@ -118,6 +137,17 @@ pub enum BackupError {
          it; nothing is written"
     )]
     NoParameterMemory,
+    /// A parameter property the write would change could not be read, so
+    /// the backup cannot record it (issue #944).
+    #[error(
+        "the parameter backup would miss {properties}: the device did not answer the read of \
+         that property, so the backup could not put it back; nothing is written. Read the \
+         device again, or run a full flash"
+    )]
+    UnreadParameterProperty {
+        /// The properties, in words (`object 10 PID 53`).
+        properties: String,
+    },
 }
 
 /// What one write of a device needs.

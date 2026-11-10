@@ -1564,7 +1564,8 @@ impl BussardMcp {
             program::apply::BackupError::Parameters(e) => {
                 format!("refusing to write {target} without a parameter backup: {e}")
             }
-            e @ program::apply::BackupError::NoParameterMemory => {
+            e @ (program::apply::BackupError::NoParameterMemory
+            | program::apply::BackupError::UnreadParameterProperty { .. }) => {
                 format!("refusing to write {target} without a parameter backup: {e}")
             }
         })?;

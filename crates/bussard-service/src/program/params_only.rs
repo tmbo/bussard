@@ -367,9 +367,8 @@ pub async fn write_parameters_only(
     let target = write.session.target;
     // A backup of nothing restores nothing: no write. A program whose
     // parameters all live in properties backs those up (issue #944).
-    if !super::apply::backs_up_anything(&planned.regions, &planned.read_properties) {
-        return Err(ParamsWriteError::Backup(BackupError::NoParameterMemory));
-    }
+    super::apply::check_backup_covers(&planned.regions, &planned.read_properties)
+        .map_err(ParamsWriteError::Backup)?;
     // Back up the parameter memory and properties before the first write;
     // no backup, no write.
     let backup = bussard_download::write_parameter_memory_backup(
@@ -679,6 +678,37 @@ mod tests {
             bussard_download::describe_group_object_change(&change),
             "shows object(s) 7, hides object(s) 3, 4"
         );
+    }
+
+    #[test]
+    fn test_check_backup_covers_refuses_an_unread_property_the_write_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Issue #944 review: PID 52 was read, PID 53's read failed. The
+        // write would send both, the backup could hold only PID 52, and a
+        // restore would leave PID 53 at the written value: refused.
+        let prop = |pid: u32, device: Option<Vec<u8>>| bussard_download::ParamProperty {
+            object: bussard_download::PropObject::Index(10),
+            prop_id: pid,
+            start_element: 1,
+            count: 1,
+            model: vec![1],
+            device,
+            parameters: Vec::new(),
+        };
+        let read = prop(52, Some(vec![0]));
+        let unread = prop(53, None);
+        let result =
+            super::super::apply::check_backup_covers(&ParamRegions::new(), &[read.clone(), unread]);
+        match result {
+            Err(BackupError::UnreadParameterProperty { properties }) => {
+                assert_eq!(properties, "object 10 PID 53");
+            }
+            other => {
+                return Err(format!("expected the unread-property refusal, got {other:?}").into());
+            }
+        }
+        assert!(super::super::apply::check_backup_covers(&ParamRegions::new(), &[read]).is_ok());
+        Ok(())
     }
 
     #[test]

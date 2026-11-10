@@ -118,18 +118,18 @@ pub enum RestoreError {
         property: String,
     },
     /// A backup property's value does not decode, or has another length
-    /// than the device's.
+    /// than the value the application composes for it.
     #[error(
-        "the backup's property {property} holds {backup} octets, the device's {device}; \
-         refusing to replay it"
+        "the backup's property {property} holds {backup} octets, but the application's \
+         parameters fill {expected} there; refusing to replay it"
     )]
     PropertyLength {
         /// The property, in words.
         property: String,
         /// The backup's length (0 when it does not decode as hex).
         backup: usize,
-        /// The device's length.
-        device: usize,
+        /// The length of the value the application composes.
+        expected: usize,
     },
     /// A parameter property neither the backup nor the device read holds a
     /// value for: the restore cannot tell what to write.
@@ -509,7 +509,7 @@ fn backup_properties(
                     return Err(RestoreError::PropertyLength {
                         property: words,
                         backup: bytes.len(),
-                        device: p.model.len(),
+                        expected: p.model.len(),
                     });
                 }
                 bytes
