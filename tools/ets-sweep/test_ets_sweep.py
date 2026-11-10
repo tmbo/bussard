@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -20,6 +21,7 @@ import apply_rows  # noqa: E402
 import defaults  # noqa: E402
 import followups  # noqa: E402
 import links_subset  # noqa: E402
+import secure_subset  # noqa: E402
 import nightly  # noqa: E402
 import oracle  # noqa: E402
 import oracle_model  # noqa: E402
@@ -2367,6 +2369,62 @@ class TestCatalogManufacturer(unittest.TestCase):
         self.assertEqual(r["catalog_row"]["manufacturer"], "Other Brand AG")
         self.assertIn(("download", "1.1.1"), flows)
         self.assertEqual(r["outcome"], "captured", r)
+
+
+class TestSecureSubset(unittest.TestCase):
+    """The representative subset of the Data Secure variant (#423)."""
+
+    TP = {"id": "M-0083_A-0001-10-AAAA", "mask_version": "07B0", "is_secure_enabled": True,
+          "com_objects": {f"O-{i}": {} for i in range(30)},
+          "security_capacity": {"group_key_table_entries": 1500, "individual_address_entries": 100},
+          "load_procedures": [{"ops": [{"WriteProp": {"obj_idx": 9, "prop_id": 51, "inline_data": [1]}}]}]}
+    IFACE = {"id": "M-00B6_A-0002-10-BBBB", "mask_version": "07B0", "is_secure_enabled": True,
+             "additional_addresses_count": 8, "com_objects": {}, "load_procedures": []}
+
+    def test_features_tp_device_with_security_mode_by_index(self):
+        self.assertEqual(secure_subset.features(self.TP), {
+            "mask:07B0", "iface:07B0/tp", "secobj:lp-index", "tables:tp/ets-default", "objects:some 11-50",
+            "group-keys:>1100", "ia-table:<=100", "maker:MDT"})
+
+    def test_features_ip_interface(self):
+        f = secure_subset.features(self.IFACE)
+        self.assertTrue({"iface:07B0/tunnelling", "iface:07B0/ip-interface", "tunnels:8", "secobj:ets",
+                         "objects:none", "group-keys:undeclared", "maker:Ekinex"} <= f, f)
+
+    def test_plain_identical_needs_memory_and_load_control(self):
+        self.assertTrue(secure_subset.plain_identical({"verdict": "identical", "loadctl": {"verdict": "identical"}}))
+        self.assertFalse(secure_subset.plain_identical({"verdict": "identical", "loadctl": {"verdict": "missing"}}))
+        self.assertFalse(secure_subset.plain_identical({"verdict": "differs", "loadctl": {"verdict": "identical"}}))
+        self.assertFalse(secure_subset.plain_identical(None))
+
+    def test_committed_subset_has_a_reason_per_row(self):
+        rows = secure_subset.load()
+        self.assertTrue(15 <= len(rows) <= 25, len(rows))
+        self.assertTrue(all(r["why"] for r in rows))
+        self.assertEqual(len({r["app"] for r in rows}), len(rows))
+
+
+class TestOracleSecureVariant(unittest.TestCase):
+    """The oracle's Data Secure variant (#423): the run directory, the
+    results file and the row's keyring."""
+
+    def test_variant_run_dir_and_results(self):
+        self.assertEqual(oracle.variant_run_dir("secure"), "secure-defaults")
+        self.assertEqual(oracle.variant_run_dir("links"), "links")
+        self.assertEqual(oracle.variant_results("secure"), secure.RESULTS)
+        self.assertEqual(oracle.variant_results("links"), defaults.results_path("links"))
+
+    def test_row_names_the_keyring(self):
+        cap, prod, kr = Path("/c/ets.pcapng"), Path("/p/x.knxprod"), Path("/c/project.knxkeys")
+        self.assertEqual(oracle.row("M-1_A-1", cap, prod, "07B0", "secure", keyring=kr),
+                         "1.1.1|/c/ets.pcapng|/p/x.knxprod|M-1_A-1|||keyring=/c/project.knxkeys")
+        self.assertEqual(oracle.row("M-1_A-1", cap, prod, "0705", "secure", keyring=kr),
+                         "1.1.1|/c/ets.pcapng|/p/x.knxprod|M-1_A-1|||state=fresh keyring=/c/project.knxkeys")
+
+    def test_keyring_password_required(self):
+        with mock.patch.dict(os.environ, {secure.PASSWORD_ENV: ""}):
+            with self.assertRaises(RuntimeError):
+                oracle.keyring_password()
 
 
 if __name__ == "__main__":

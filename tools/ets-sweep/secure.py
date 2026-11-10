@@ -4,7 +4,7 @@
 # ///
 """The KNX Data Secure variant of the ETS sweep (epic #419, part 4 #423).
 
-    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--filter ...] [--limit N] [--redo]
+    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo]
     uv run tools/ets-sweep/secure.py cert --serial 00FA12345678 --fdsk <32 hex>   # print a label
     uv run tools/ets-sweep/secure.py cert --check "<36-character label>"          # calibrate the format
     uv run tools/ets-sweep/secure.py jobs                                         # list the secure-capable jobs
@@ -25,6 +25,9 @@ For every application the defaults sweep captured whose program declares
    the capture (`project.knxkeys`, gitignored with every capture) and
    `knxtrace devices --keyring` decides whether the capture decodes end to
    end: every `A_SecureData` frame verified, none without a key.
+
+`--representative` runs only the applications of `secure-subset.json`
+(`secure_subset.py`, the owner's choice of 2026-11-10), in its order.
 
 Outputs per application under `captures/ets-sweep/<app>/secure-defaults/`;
 outcomes in `results/secure.json` (`captured` + `decoded` / `partial` /
@@ -200,6 +203,12 @@ def run(args) -> int:
     pw = password()
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
     todo = jobs()
+    if args.representative:
+        import secure_subset
+
+        order = [r["app"] for r in secure_subset.load()]
+        by_id = {j["id"]: j for j in todo}
+        todo = [by_id[a] for a in order if a in by_id]
     wanted = [w.lower() for w in args.filter.split(",") if w]
     if wanted:
         todo = [j for j in todo if any(w in (j["id"] + " " + j["file"]).lower() for w in wanted)]
@@ -218,7 +227,8 @@ def run(args) -> int:
                           flow_extra={"project_password": pw,
                                       "certificate": certificate_text(serial, fdsk)},
                           after_download=export_hook(pw))
-        entry = {"file": job["file"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat(),
+        entry = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"), "ia": r.get("ia"),
+                 "seconds": r.get("seconds"), "when": datetime.now(timezone.utc).isoformat(),
                  "outcome": r["outcome"], "error": r.get("error"), "ets": r.get("ets"), "ops": r.get("ops"),
                  "repair": (r.get("repair") or {}).get("dir")}
         out = sweep.CAPTURES / job["id"] / VARIANT
@@ -251,6 +261,8 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
+    p.add_argument("--representative", action="store_true",
+                   help="only the applications of secure-subset.json (secure_subset.py, #423)")
     p = sub.add_parser("cert")
     p.add_argument("--serial", help="12 hex digits")
     p.add_argument("--fdsk", help="32 hex digits")
