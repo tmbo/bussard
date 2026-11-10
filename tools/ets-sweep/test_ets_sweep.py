@@ -13,6 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from unittest import mock
 from pathlib import Path
 
@@ -26,6 +27,7 @@ import nightly  # noqa: E402
 import oracle  # noqa: E402
 import oracle_model  # noqa: E402
 import params  # noqa: E402
+import params_subset  # noqa: E402
 import secure  # noqa: E402
 import series  # noqa: E402
 import summary  # noqa: E402
@@ -44,57 +46,235 @@ _spec.loader.exec_module(capture)
 
 class TestParams(unittest.TestCase):
     MODEL = {"parameters": {
-        "P-1": {"kind": {"Enum": {"values": [0, 1]}}, "default": "0", "text": "Lesen beim Start",
-                "labels": [[0, "nein"], [1, "ja"]]},
         "P-2": {"kind": {"Int": {"min": 0, "max": 255, "signed": False}}, "default": "1", "text": "Zyklus"},
-        "P-3": {"kind": "Float", "default": "4.5E1", "text": "Wert"},
-        "P-4": {"kind": {"Enum": {"values": [0]}}, "default": "0", "text": "Nur einer", "labels": [[0, "x"]]},
-        "P-5": {"kind": {"Enum": {"values": [0, 1]}}, "default": "0", "text": "", "labels": [[0, "a"], [1, "b"]]},
+        "P-3": {"kind": {"Float": {"min": 13917383856470496379, "max": 4694006190116186358}}, "text": "Wert"},
+        "P-6": {"kind": {"Int": {"min": 1, "max": 10}}, "default": "1", "text": "Zyklus"},
     }}
     DEVICE = {"blocks": [
         {"text": "Kühlung", "inactive": {"enable": [{"reference": "P-95_R-138", "text": "Raumtemperaturregler Funktion",
                                                       "set_to": "Kühlung", "default": "Heizung"}]}},
         {"text": "Lüftung", "inactive": {"enable": [{"reference": "P-9_R-9", "text": "VentilationEnabled",
                                                       "set_to": ">0", "default": "0"}]}},
+        {"text": "- A1: Zwangssteuerung", "inactive": {"enable": [{"reference": "P-27_R-36", "text": "Zwangssteuerung",
+                                                                    "set_to": "1", "default": "0"}]}},
         {"text": "Allgemein", "active": True},
     ]}
-
-    def test_candidates_enum_and_int_with_labels_only(self):
-        self.assertEqual([c["id"] for c in params.candidates(self.MODEL)], ["P-1", "P-2"])
+    # A survey as the driver's param_pages flow returns it (rows=True).
+    SURVEY = [
+        {"crumb": "Allgemein", "page": "Allgemein", "rows": [
+            {"label": "Raumtemperaturregler Funktion", "n": 0, "kind": "dropdown", "value": "Heizung"},
+            {"label": "Zyklus", "n": 0, "kind": "number", "value": "5"},
+            {"label": "Hinweis", "n": 0, "kind": "none", "value": "Bitte beachten"},
+            {"label": "Name", "n": 0, "kind": "text", "value": ""},
+        ]},
+        {"crumb": "Ausgang 1 > Ausgang 1: Funktionsfreigabe", "page": "Ausgang 1: Funktionsfreigabe", "rows": [
+            {"label": "Ausgangskontakt", "n": 0, "kind": "radio", "value": "Schließer",
+             "options": [{"text": "Schließer"}, {"text": "Öffner"}]},
+            {"label": "Zwangssteuerung", "n": 0, "kind": "checkbox", "value": "0"},
+            {"label": "Szene", "n": 0, "kind": "checkbox", "value": "0"},
+            {"label": "Einzig", "n": 0, "kind": "radio", "value": "a", "options": [{"text": "a"}]},
+            {"label": "Unbekannt", "n": 0, "kind": "number", "value": "3"},
+        ]},
+    ]
 
     def test_visible_enablers_skip_conditions(self):
-        self.assertEqual([(e["text"], e["shown"], e["enables"]) for e in params.visible_enablers(self.DEVICE)],
-                         [("Raumtemperaturregler Funktion", "Kühlung", "Kühlung")])
+        self.assertEqual([(e["text"], e["value"]) for e in params.visible_enablers(self.DEVICE)],
+                         [("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")])
 
-    def test_generate_deterministic_enablers_first_values_off_default(self):
-        visible = params.visible_enablers(self.DEVICE)
-        a = params.generate(self.MODEL, seed=7, n=3, changes=3, visible=visible)
-        self.assertEqual(a, params.generate(self.MODEL, seed=7, n=3, changes=3, visible=visible))
-        for config in a:
-            self.assertEqual(config["changes"][0]["text"], "Raumtemperaturregler Funktion")
-            for ch in config["changes"][1:]:
-                self.assertNotEqual(ch["shown"], {"P-1": "nein", "P-2": "1"}[ch["id"]])
+    def test_number_ranges_shared_range_and_no_encoded_floats(self):
+        self.assertEqual(params.number_ranges(self.MODEL), {"zyklus": (1, 10, "Int")})
+
+    def test_survey_rows_settable_with_options(self):
+        labels = [r["label"] for r in params.survey_rows(self.SURVEY)]
+        self.assertEqual(labels, ["Raumtemperaturregler Funktion", "Zyklus", "Name", "Ausgangskontakt",
+                                  "Zwangssteuerung", "Szene", "Unbekannt"])
+
+    def test_generate_deterministic_switches_first_values_off_default(self):
+        enablers = params.visible_enablers(self.DEVICE)
+        a = params.generate(self.SURVEY, seed=7, index=0, changes=6, model=self.MODEL, enablers=enablers)
+        self.assertEqual(a, params.generate(self.SURVEY, seed=7, index=0, changes=6, model=self.MODEL,
+                                            enablers=enablers))
+        self.assertNotEqual(a, params.generate(self.SURVEY, seed=7, index=1, changes=6, model=self.MODEL,
+                                               enablers=enablers))
+        changes = a["changes"]
+        switches = [c for c in changes if c.get("switch")]
+        self.assertEqual(len(switches), 2)
+        self.assertEqual(changes[:2], switches)
+        self.assertEqual({(c["label"], c["value"]) for c in switches},
+                         {("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")})
+        by_label = {c["label"]: c for c in changes}
+        # No range for 'Unbekannt' in the model: never chosen.
+        self.assertNotIn("Unbekannt", by_label)
+        if "Zyklus" in by_label:
+            self.assertIn(int(by_label["Zyklus"]["value"]), range(1, 11))
+            self.assertNotEqual(by_label["Zyklus"]["value"], "5")
+        if "Szene" in by_label:
+            self.assertEqual(by_label["Szene"]["value"], "1")
+        if "Ausgangskontakt" in by_label:
+            self.assertTrue(0 <= by_label["Ausgangskontakt"]["pick"] < 1)
         self.assertEqual(params.variant_name(7, 2), "params-7-2")
+
+    def test_dependent_changes_only_on_new_pages(self):
+        after = self.SURVEY + [{"crumb": "Ausgang 1 > - A1: Zwangssteuerung", "page": "- A1: Zwangssteuerung",
+                                "rows": [{"label": "Priorität", "n": 0, "kind": "checkbox", "value": "0"}]}]
+        more = params.dependent_changes(self.SURVEY, after, 1, 0, self.MODEL)
+        self.assertEqual([(c["label"], c["value"], c["dependent"]) for c in more], [("Priorität", "1", True)])
+
+    def test_partial_change_skips_switches(self):
+        enablers = params.visible_enablers(self.DEVICE)
+        c = params.partial_change(self.SURVEY, enablers)
+        self.assertEqual((c["label"], c["value"]), ("Zyklus", "6"))
 
     def test_apply_hook_records_set_unreachable_failed(self):
         tmp = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, ignore_errors=True))
-        config = {"seed": 1, "index": 0, "changes": [
-            {"id": "a", "text": "A", "kind": "enum", "value": "1", "shown": "ja"},
-            {"id": "b", "text": "B", "kind": "int", "value": "5", "shown": "5"},
-            {"id": "c", "text": "C", "kind": "enum", "value": "0", "shown": "nein"}]}
+        calls = []
 
         def flow(name, **body):
+            calls.append(name)
             if name == "param_pages":
-                return {"pages": ["Allgemein"]}
-            if body["text"] == "C":
-                raise RuntimeError("set_param: no control on the row")
-            return {"set": body["text"] == "A", "page": "Allgemein"}
+                return {"pages": self.SURVEY}
+            if name == "ensure_layout":
+                return {}
+            if body["label"] == "Szene":
+                raise RuntimeError("set_param: the dropdown opened no list")
+            if body["label"] == "Zwangssteuerung":
+                return {"set": False, "unreachable": "no row 'Zwangssteuerung' on the page"}
+            return {"set": True, "value": body.get("value"), "row": {"value": body.get("value")}}
 
-        summary_ = params.apply_hook(config)(flow, tmp)
-        self.assertEqual(summary_, {"set": 1, "unreachable": 1, "failed": 1})
+        with unittest.mock.patch.object(params, "SURVEYS", tmp / "surveys"):
+            summary_ = params.apply_hook("M-X", 3, 0, 6, self.MODEL, params.visible_enablers(self.DEVICE))(flow, tmp)
         saved = json.loads((tmp / "params.json").read_text())
-        self.assertEqual([c["result"] for c in saved["changes"]], ["set", "unreachable", "failed"])
+        results = {c["label"]: c["result"] for c in saved["changes"]}
+        self.assertEqual(results["Zwangssteuerung"], "unreachable")
+        self.assertEqual(results.get("Szene", "failed"), "failed")
+        self.assertEqual(summary_["unreachable"], 1)
+        self.assertEqual(sum(summary_.values()), len(saved["changes"]))
+        self.assertEqual(calls[-1], "ensure_layout")
+        self.assertTrue((tmp / "surveys" / "M-X.json").exists())
+
+
+class TestParamsModel(unittest.TestCase):
+    """The model a parameter-set row is compared with, from what ETS showed
+    (#424): a label on a page and channel names one reference."""
+    MODEL = {
+        "parameters": {
+            "P-1": {"kind": {"Int": {"min": 0, "max": 23}}, "text": "      Sendeverzögerung\r\n      nach Buswiederkehr"},
+            "P-2": {"kind": {"Int": {"min": 0, "max": 59}}, "text": "Sendeverzögerung nach Buswiederkehr"},
+            "P-3": {"kind": {"Enum": {"values": [0, 1, 2]}}, "text": "Preset",
+                    "labels": [[0, "Inaktiv"], [1, "1 Presetobjekt"], [2, "2 Presetobjekten"]]},
+            "P-4": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Zwangssteuerung"},
+        },
+        "parameter_refs": {"P-1_R-1": {"parameter": "P-1"}, "P-2_R-2": {"parameter": "P-2"},
+                           "P-3_R-31": {"parameter": "P-3"}, "P-3_R-39": {"parameter": "P-3"},
+                           "P-4_R-41": {"parameter": "P-4"}, "P-4_R-49": {"parameter": "P-4"}},
+        "dynamic": [
+            {"block": {"text": "Ausgänge 1-16: Allgemein", "nodes": [
+                {"block": {"text": "- A1-16: Statusanzeigen schalten", "nodes": [
+                    {"choose": {"ref": "x", "when": [{"nodes": [{"p": "P-1_R-1"}, {"p": "P-2_R-2"}]}]}}]}}]}},
+            {"channel": {"text": "Ausgang 1", "nodes": [{"block": {"text": "Ausgang 1: Funktionsfreigabe", "nodes": [
+                {"p": "P-3_R-31"}, {"p": "P-4_R-41"}]}}]}},
+            {"channel": {"text": "Ausgang 9", "nodes": [{"block": {"text": "Ausgang 9: Funktionsfreigabe", "nodes": [
+                {"p": "P-3_R-39"}, {"p": "P-4_R-49"}]}}]}},
+        ],
+    }
+    FINAL = [
+        {"crumb": "- Al-16: Statusanzeigen schalten", "page": "- Al-16: Statusanzeigen sch...", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "1"},
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "0"}]},
+        {"crumb": "Ausgang 9 > Ausgang 9: Funktionsfreigabe", "page": "Ausgang 9: Funktionsfreigabe", "rows": [
+            {"label": "Preset", "kind": "dropdown", "value": "2 Presetobjekten"},
+            {"label": "Zwangssteuerung", "kind": "checkbox", "value": "1"}]},
+    ]
+
+    def change(self, crumb, label, kind, shown, n=0):
+        return {"page": {"crumb": crumb, "page": crumb.rsplit(">", 1)[-1].strip()}, "label": label, "n": n,
+                "kind": kind, "result": "set", "shown": shown, "set_to": shown}
+
+    def test_model_changes_maps_channel_page_and_occurrence(self):
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "1"),
+                self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", "2 Presetobjekten"),
+                self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung", "checkbox", "1"),
+                {**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Szene", "checkbox", "1"),
+                 "result": "unreachable"}]
+        values, problems = params.model_changes(self.MODEL, self.FINAL, done)
+        self.assertEqual(problems, [])
+        self.assertEqual(values, {"param@P-1_R-1": "1", "param@P-3_R-39": "2", "param@P-4_R-49": "1"})
+        self.assertIn('"param@P-3_R-39" = "2"', params.device_toml_with(values))
+
+    def test_model_changes_refuses_a_label_the_tree_lists_more_often(self):
+        final = [{"crumb": "- Al-16: Statusanzeigen schalten", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "1"}]}]
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "1")]
+        values, problems = params.model_changes(self.MODEL, final, done)
+        self.assertEqual(values, {})
+        self.assertIn("2 references", problems[0])
+
+    def test_model_changes_asks_the_evaluator_between_branches(self):
+        # Two references of one label on the page (a choose's branches), ETS
+        # shows one row: the evaluator's shown reference is taken; at the
+        # default nothing is stored.
+        final = [{"crumb": "- Al-16: Statusanzeigen schalten", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "7"}]}]
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "7")]
+        asked = []
+
+        def shown(values):
+            asked.append(dict(values))
+            return {"P-2_R-2"}
+        values, problems = params.model_changes(self.MODEL, final, done, shown)
+        self.assertEqual((values, problems), ({"param@P-2_R-2": "7"}, []))
+        self.assertEqual(asked, [{"param@P-1_R-1": "7", "param@P-2_R-2": "7"}])
+        model = json.loads(json.dumps(self.MODEL))
+        model["parameters"]["P-1"]["default"] = model["parameters"]["P-2"]["default"] = "7"
+        self.assertEqual(params.model_changes(model, final, done, shown), ({}, []))
+
+    def test_float_values_in_the_locale_ets_shows(self):
+        model = {"parameters": {"P-9": {"kind": {"Float": {"min": 0.5, "max": 2.5}}, "text": "Faktor"}},
+                 "parameter_refs": {"P-9_R-9": {"parameter": "P-9"}}}
+        row = {"page": {"crumb": "A", "page": "A"}, "label": "Faktor", "n": 0, "kind": "number", "before": "1,5"}
+        import random
+        for seed in range(20):
+            c = params.change_for(row, random.Random(seed), params.number_ranges(model), "t")
+            self.assertNotIn(".", c["value"], c)
+            self.assertNotEqual(c["value"], "1,5")
+        self.assertEqual(params.value_of(model, "P-9_R-9", {"kind": "number", "shown": "2,5"}), "2.5")
+
+    def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
+        done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
+                 "set_to": "2 Presetobjekten"},
+                {**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung", "checkbox", ""),
+                 "set_to": "0"},
+                {**self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", ""),
+                 "set_to": "1"},
+                {**self.change("Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Preset", "dropdown", ""), "set_to": "x"}]
+
+        def flow(name, **body):
+            self.assertEqual(name, "read_param")
+            return {"shown": True, "row": {"value": "1"}}
+
+        params.read_back(flow, "1.1.1", self.FINAL, done)
+        self.assertEqual([(d["result"], d.get("shown")) for d in done],
+                         [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
+
+
+class TestParamsSubset(unittest.TestCase):
+    def test_features_placement_types_dynamic(self):
+        model = {"mask_version": "07B0",
+                 "parameters": {"a": {"memory": None, "property": {"object_index": 10, "property_id": 52}},
+                                "b": {"memory": {"offset": 3}}},
+                 "parameter_types": {"t1": {"kind": {"Enum": {}}}, "t2": {"kind": {"Text": {}}}, "t3": {"kind": "None"}},
+                 "unions": [{"id": "u"}], "module_instances": [], "calculations": [],
+                 "dynamic": [{"channel": {"nodes": [{"choose": {"when": [{"nodes": [{"choose": {}}]}]}}]}}]}
+        self.assertEqual(params_subset.features(model, {"differs"}),
+                         {"mask:07B0", "placement:07B0/both", "type:Enum", "type:Text", "unions:07B0",
+                          "channels:07B0", "switches:07B0/few <=20", "oracle:07B0/differs"})
+
+    def test_committed_subset_pins_the_property_only_program(self):
+        apps = [r["app"] for r in params_subset.load()]
+        self.assertEqual(apps[0], "M-0009_A-E804-10-98AD")
+        self.assertLessEqual(len(apps), 15)
+        self.assertTrue(all(r["why"] for r in params_subset.load()))
 
 
 class TestSecure(unittest.TestCase):
@@ -1389,6 +1569,113 @@ def load_driver():
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     return module
+
+
+class TestDriverParamEditor(unittest.TestCase):
+    """The parameter editor's pure helpers (#424): rows told apart by their
+    pixels as measured on ETS 6.4.1 (Hager TYMS616D, 2026-11-10)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    WHITE, GREY, BORDER, BLUE = (255, 255, 255), (242, 242, 242), (204, 204, 204), (219, 234, 255)
+
+    def px_of(self, shapes):
+        """A pixel function from shapes: (kind, x0, y0, x1, y1, colour);
+        'fill' paints the box, 'frame' its 1 px border, 'ring' a circle of
+        radius 16 centred at (x0, y0) (x1 the colour of its centre)."""
+        def px(x, y):
+            colour = self.WHITE
+            for kind, x0, y0, x1, y1, c in shapes:
+                if kind == "fill" and x0 <= x <= x1 and y0 <= y <= y1:
+                    colour = c
+                elif kind == "frame" and x0 <= x <= x1 and y0 <= y <= y1 and (x in (x0, x1) or y in (y0, y1)):
+                    colour = c
+                elif kind == "ring":
+                    r2 = (x - x0) ** 2 + (y - y0) ** 2
+                    if 14 ** 2 <= r2 <= 16 ** 2:
+                        colour = c
+                    elif x1 and r2 <= 8 ** 2:
+                        colour = (195, 208, 221)
+            return colour
+        return px
+
+    def test_classify_dropdown_by_grey_fill(self):
+        px = self.px_of([("fill", 1625, 320, 2204, 366, self.GREY)])
+        cells = [{"text": "Inaktiv", "x": 1637, "y": 334, "w": 68, "h": 18}]
+        got = self.d.classify_control(px, 343, cells)
+        self.assertEqual((got["kind"], got["value"]), ("dropdown", "Inaktiv"))
+
+    def test_classify_checkbox_checked_and_clear(self):
+        clear = self.px_of([("frame", 1625, 529, 1657, 561, self.BORDER)])
+        self.assertEqual(self.d.classify_control(clear, 545, [])["value"], "0")
+        checked = self.px_of([("fill", 1625, 387, 1657, 419, self.BLUE), ("fill", 1636, 400, 1646, 404, (113, 152, 204))])
+        got = self.d.classify_control(checked, 403, [])
+        self.assertEqual((got["kind"], got["value"]), ("checkbox", "1"))
+
+    def test_classify_number_field_with_spinner(self):
+        px = self.px_of([("frame", 1625, 383, 2182, 427, self.BORDER), ("fill", 2165, 395, 2172, 399, (80, 80, 80)),
+                         ("fill", 2165, 411, 2172, 415, (80, 80, 80))])
+        got = self.d.classify_control(px, 405, [])
+        self.assertEqual((got["kind"], got["box"][1]), ("number", 2182))
+
+    def test_classify_radio_options_from_one_ocr_line(self):
+        # OCR joined both options and read the second circle as an 'O'.
+        px = self.px_of([("ring", 1641, 803, 1, 0, self.BORDER), ("ring", 1798, 803, 0, 0, self.BORDER)])
+        cells = [{"text": "O", "x": 1625, "y": 787, "w": 32, "h": 32},
+                 {"text": "Schalten O Rollladen und Jalousie", "x": 1668, "y": 793, "w": 385, "h": 20}]
+        got = self.d.classify_control(px, 803, cells)
+        self.assertEqual(got["kind"], "radio")
+        self.assertEqual([o["text"] for o in got["options"]], ["Schalten", "Rollladen und Jalousie"])
+        self.assertEqual(got["value"], "Schalten")
+
+    def test_split_at_circles_leading_circle_letter(self):
+        cells = [{"text": "Schalten", "x": 1668, "y": 795, "w": 87, "h": 18},
+                 {"text": "O Rollladen und Jalousie", "x": 1783, "y": 793, "w": 270, "h": 20}]
+        got = self.d.split_at_circles(cells, [1640, 1792])
+        self.assertEqual([(c["text"], c["x"] > 1792) for c in got], [("Schalten", False), ("Rollladen und Jalousie", True)])
+
+    def test_merge_labels_wrapped_lines(self):
+        lines = [{"text": "Umschalten, Dauer/Zeitbetrieb", "x": 1146, "y": 439, "w": 322, "h": 21},
+                 {"text": "für Schaltobjekt", "x": 1144, "y": 471, "w": 166, "h": 24},
+                 {"text": "Zusätzliches Schaltobjekt", "x": 1144, "y": 573, "w": 264, "h": 24},
+                 {"text": "Inaktiv", "x": 1637, "y": 331, "w": 68, "h": 18}]
+        got = self.d.merge_labels(lines)
+        self.assertEqual([l["text"] for l in got], ["Umschalten, Dauer/Zeitbetrieb für Schaltobjekt",
+                                                     "Zusätzliches Schaltobjekt"])
+
+    def test_alike_digits_must_agree(self):
+        self.assertTrue(self.d._alike("Ausqanq 11: Funktionsfreiqabe", "Ausgang 11: Funktionsfreigabe"))
+        self.assertTrue(self.d._alike("- Al-16: Handbetrieb schalten", "- A1-16: Handbetrieb schalten"))
+        self.assertFalse(self.d._alike("Ausgang 1: Funktionsfreigabe", "Ausgang 2: Funktionsfreigabe"))
+
+    def test_page_consistent_channel_and_lagging_highlight(self):
+        ok = self.d.page_consistent
+        self.assertTrue(ok({"crumb": "Ausgang 2 > Ausgang 2: Funktionsfreigabe", "page": "Ausgang 2: Funktionsfreigabe"}))
+        # A channel node selected highlights its first page.
+        self.assertTrue(ok({"crumb": "Ausgang 2", "page": "Ausgang 2: Funktionsfreigabe"}))
+        self.assertTrue(ok({"crumb": "Ausgang 5 > ...", "page": "Ausgang 4: Funktionsfreigabe"}))
+        # The breadcrumb moved on, the highlight not yet.
+        self.assertFalse(ok({"crumb": "Ausgang 1 > - A1: Zeiten für Schaltobjekt", "page": "Ausgang 1: Funktionsfreigabe"}))
+
+    def test_channel_node_of_keeps_two_channels_pages_of_one_name(self):
+        node = {"crumb": "Ausgang 5 > ...", "page": "Ausgang 5: Funktionsfreigabe"}
+        page = {"crumb": "Ausgang 5 > Ausgang 5: Funktionsfreigabe", "page": "Ausgang 5: Funktionsfreigabe"}
+        self.assertTrue(self.d.channel_node_of(node, page))
+        self.assertTrue(self.d.channel_node_of({"crumb": "Ausgang 5", "page": page["page"]}, page))
+        k1 = {"crumb": "K1 > Allgemein", "page": "Allgemein"}
+        k2 = {"crumb": "K2 > Allgemein", "page": "Allgemein"}
+        self.assertFalse(self.d.channel_node_of(k1, k2))
+
+    def test_choose_value_pick_among_others(self):
+        row = {"label": "Preset", "value": "Inaktiv"}
+        opts = ["Inaktiv", "1 Presetobjekt", "2 Presetobjekten"]
+        self.assertEqual(self.d.choose_value(row, {"pick": 0.7}, opts), "2 Presetobjekten")
+        self.assertEqual(self.d.choose_value(row, {"pick": 0.0}, opts), "1 Presetobjekt")
+        self.assertEqual(self.d.choose_value(row, {"value": "Inaktiv"}, opts), "Inaktiv")
+        with self.assertRaises(LookupError):
+            self.d.choose_value(row, {"pick": 0.5}, ["Inaktiv"])
 
 
 class TestDriverProjectNames(unittest.TestCase):

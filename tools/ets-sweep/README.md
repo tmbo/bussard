@@ -466,34 +466,74 @@ keeps a screenshot. The certificate's 4-bit check is plain CRC-4 (see
 (#201, 2026-11-03). `secure.py cert --check "<label>"` prints a label's
 serial and whether its check matches, never the key.
 
-## Part 5: generated parameter sets (#424), not yet run
+## Part 5: generated parameter sets (#424)
 
-    uv run tools/ets-sweep/params.py plan --app <application id> [--seed 1] [--n 3]   # offline
-    uv run tools/ets-sweep/params.py run --filter <application id> --limit 1
+    uv run tools/ets-sweep/params.py run --filter <application id> --n 1      # or --representative
+    uv run tools/ets-sweep/params.py plan --app <application id> [--seed 1]   # offline, from the last survey
     uv run tools/ets-sweep/params.py oracle --filter <application id>
+    uv run tools/ets-sweep/params.py partial --filter <application id>        # parameter-only download
+    uv run tools/ets-sweep/params_subset.py select|show                       # params-subset.json
 
-`plan` draws N configurations per application, seeded: half of each
-configuration's changes switch a page on (the parameter and value bussard's
-`device --json` names for an inactive page, so only parameters ETS shows at
-defaults), the rest are other enumeration and integer parameters of the
-product model, each off its default. `run` adds the device as the defaults
-sweep does, sets the changes through the driver (`param_pages`, `set_param`:
-the device's parameter view, the page list and each parameter's row read by
-OCR), downloads, and exports the project (`export_project`) next to the
-capture in `captures/ets-sweep/<app>/params-<seed>-<n>/`; `params.json` there
-says per change whether it was set, unreachable (not on any page the editor
-found) or failed. `oracle` imports each export with `bussard import` and runs
-the oracle row with the export as the product data, so the model holds
-exactly what ETS downloaded; verdicts in `results/oracle-params.json`.
+`run` adds the device as the defaults sweep does and has the driver survey
+its parameter pages (`param_pages` with `rows`: every page of the tree, each
+row's label, control and value), kept in `results/param-surveys/<app>.json`.
+The configuration is drawn from that survey, seeded: page switches first
+(rows whose label bussard's `device --json` names as enabling an inactive
+page, set to the enabling value), then other rows (a checkbox toggled, a
+radio or dropdown on another option ETS offers, a number in the range of the
+model's parameter of that label, a text), then one or two rows of the pages
+the switches made appear. Each change is set by `set_param` and read back;
+after the last one the pages are surveyed again and every change is read
+back once more as ETS shows it (a field exactly, through the clipboard). The
+oracle's model is built from those shown values, never from what the driver
+meant to set: a change that does not read back makes the run
+`driver-error-params`, and it is not compared. `params.json` in the run
+directory holds the surveys and, per change, whether it was set, unreachable
+(ETS does not show the page or row), failed or lost, and what ETS showed.
+`oracle` maps each change to one parameter reference: its label on its page
+and channel in the product's Dynamic tree; where the tree has more
+references of that label than ETS shows rows (the branches of a choose),
+bussard's shared Dynamic evaluator decides (`bussard device` marks a stored
+value "not shown under the current values"), else the run is `unmapped` and
+not compared. Then it runs the row with that model. No
+project is exported: ETS exports the product data of every device a project
+ever held, 17.5 GB and more than 14 minutes for `ets-sweep` (2026-11-10). `--representative` runs `params-subset.json`, a
+greedy cover of masks, parameter placement (memory, property), parameter
+types, unions, modules, channels, page-switch density, calculations and
+oracle verdicts (`params_subset.py`, like `links_subset.py`).
 
-The parameter editor was written without ETS at hand (2026-10-30) and first
-ran on 2026-10-31 (the synthetic run variants `partial` and `calc-input`):
-the view is the device's `Parameter` tab (the device's context menu has no
-parameter entry; the first version picked another entry and restarted the
-device), the page list ends at x 1120 and the labels start at x 1140, both
-above the catalogue pane (y 1300). Setting an integer by typing into its
-field works (`Delay (s)`); enumerations and multi-page products are
-unverified.
+The parameter view (ETS 6.4.1, measured 2026-11-10 on the Hager TYMS616D):
+
+- the device's `Parameter` tab; the driver drags the Katalog splitter down
+  (grip to y 2290) so the page tree and the rows get the screen's height,
+  and `ensure_layout` (any catalog flow) puts it back;
+- the page tree holds channels (`Ausgang 1` .. `16`) with their pages
+  collapsed; Down selects the next entry and expands a channel, and the
+  tree scrolls itself, so pages are walked with the keyboard (Home first).
+  A page is named by the breadcrumb above the rows and the tree's selected
+  entry (blue text); a channel node highlights its first page. OCR reads
+  `Al` for `A1` and `Ausqanq` for `Ausgang` low in the tree, so entries
+  match by their digits exactly and their letters closely;
+- the rows: label from x 1140 (wrapped labels joined), control from x
+  1625, told apart by pixels: dropdown (grey fill 242), number field (white
+  box framed ~21 px above and below the row, spinner arrows at its right
+  end), text field (no spinner), checkbox (32 px box, light blue fill when
+  checked, no text beside it), radio buttons (32 px rings along the row,
+  the selected one with a dark centre; OCR may read one line across both
+  options and a ring as `O`). A row changed from its default is yellow;
+- a dropdown's open list is a popup with UI Automation (ListItem > Text),
+  and it covers the dropdown until it closes; a number field's value reads
+  by OCR only magnified and repeated (a lone digit), and exactly by the
+  clipboard after a click into it. Down in a focused number field counts it
+  down (a walk after such a click left 19 s for 20 s), so the walk never
+  clicks a field and `set_param` reaches pages by clicks and the wheel.
+
+Why the first editor (2026-10-30) set nothing on the Hager programs on
+2026-11-08 (`{'set': 0, 'unreachable': 3, 'failed': 2}`): the page list was
+read once, collapsed and cut at y 1300, so a parameter of `Ausgang 9` was
+looked for on `Ausgang 1`; a 0/1 parameter is a checkbox with no text on its
+row ("no control on the row"); and the generator took parameters from the
+whole product model, mostly on pages ETS does not show at defaults.
 
 ## Synthetic products: signing (#596)
 

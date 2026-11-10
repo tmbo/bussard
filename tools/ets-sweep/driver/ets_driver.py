@@ -1205,108 +1205,723 @@ def export_keyring_once(req: dict) -> dict:
 @flow("export_project")
 def flow_export_project(req: dict) -> dict:
     """Exports the project (`.knxproj`) to `path` in the VM (#424): `bussard
-    import` of it is the model state a parameter-set row compares against."""
-    return export_from_tab_menu(req["project"], r"^(Projekt )?export", req["path"], req.get("project_password"))
+    import` of it is the model state a parameter-set row compares against.
+    ETS 6.4.1 has no context menu on the project tab; the export is the
+    project tile's 'Export' on the start page (checked 2026-11-10), a
+    Windows save dialog, then ETS's progress dialog until the file is
+    written. ETS exports the product data of every device the project ever
+    held: 17.5 GB for `ets-sweep` after the sweep (2026-11-10), more than
+    14 minutes, so `wait` (seconds) bounds it."""
+    project, path = req["project"], req["path"]
+    require_project(project)
+    click(200, 40)  # the start page tab
+    wait_for("start page", lambda: find_text(project, (0, 1150, 4112, 1320)), 10, 0.5)
+    tile = project_tile(project)
+    click(tile["x"] + tile["w"] // 2, tile["y"] - 150, button="right")
+    try:
+        menu_click("Export", timeout=5, settle=0)
+        dialog = wait_popup(10)
+        save_as(dialog, path)
+        done = wait_for("project exported", lambda: os.path.exists(path) and not find_text(
+            "Exportiere Projektdateien", (1500, 900, 2600, 1100)), float(req.get("wait", 1800)), 2)
+        if not done:
+            # The file appears while ETS still writes it: only a closed
+            # progress dialog is a finished export.
+            raise RuntimeError(f"the export of {project!r} did not finish within {req.get('wait', 1800)} s")
+    finally:
+        close_menus()
+        hit = project_tab_hit(project)
+        if hit:
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            wait_for("project tab", lambda: window_project() == project, 5, 0.3)
+    return {"path": path, "exported": os.path.exists(path)}
 
 
 # ---------------------------------------------------------------- parameter editor (#424)
-# Checked against ETS 6.4.1 on 2026-10-31 (syn-minimal): the device's
-# 'Parameter' tab, next to 'Kommunikationsobjekte' above the object table,
-# shows the page list on the left (to x 1120) and each parameter as a row of
-# label (from x 1140) and control (from x 1625), above the catalogue pane
-# (y 1300). The device's context menu has
-# no parameter entry: the first version of this flow matched another entry
-# and restarted the device. Read by OCR, as the main window has no tree.
-PARAM_PAGES = (680, 260, 1120, 1300)
-PARAM_AREA = (1125, 260, 3300, 1300)
+# Measured on ETS 6.4.1 on 2026-11-10 (Hager TYMS616D, E804). The device's
+# 'Parameter' tab, next to 'Kommunikationsobjekte', shows the page tree on
+# the left and each parameter as a row of label (x 1140..1610) and control
+# (from x 1625). The main window has no UI Automation tree, so the view is
+# read by OCR and pixels; a dropdown's open list is a popup with one
+# (ListItem > Text per option).
+#
+# Why the first version (2026-10-30) set nothing on the Hager programs
+# (2026-11-08): the page list is a tree whose channels ('Ausgang 1' .. 16)
+# hold their pages collapsed and run past the visible list, so the pages
+# it clicked were not those of the parameter; a 0/1 parameter is a checkbox
+# with no text on its row ('no control on the row'); and the generator took
+# parameters from the whole product model, most of them on pages ETS does
+# not show at defaults. Now the parameter view is made tall (the Katalog
+# splitter dragged down, put back by `restore_catalog_splitter` at the next
+# catalog flow), pages are walked with the keyboard (Down selects the next
+# page and expands a channel; the tree scrolls itself), each page is
+# identified by the breadcrumb ETS shows above it, and each row's control is
+# told apart by its pixels: checkbox, radio buttons, dropdown, number field
+# (spinner) or text field.
+PARAM_LIST = (690, 290, 1115, 2270)
+PARAM_ROWS = (1125, 290, 3400, 2270)
+BREADCRUMB = (680, 235, 3300, 285)
+CONTROL_X = 1625
+LABEL_X_MAX = 1610
+# The splitter grip between the centre view and the Katalog panel when the
+# parameter view is tall: the panel keeps its header (Import at y ~2339).
+PARAM_TALL_GRIP = 2290
 
 
 def open_device_parameters(ia: str) -> str:
     """Opens the parameter view of device `ia`: the device selected in the
-    Topologie tree, then its 'Parameter' tab."""
+    Topologie tree, then its 'Parameter' tab; the view made tall."""
+    if parameter_view_of(ia):
+        param_view_tall()
+        return "Parameter"
     open_device_objects(ia)
     for _ in range(3):
-        time.sleep(1.5)
-        tab = find_text("Parameter", (680, 150, 1600, 220))
-        if tab is None:
+        if not click_tab("Parameter"):
             raise RuntimeError("no 'Parameter' tab above the device's view")
-        text = tab["text"]
-        at = max(text.find("Parameter"), 0) + len("Parameter") // 2
-        click(tab["x"] + tab["w"] * at // max(len(text), 1), tab["y"] + tab["h"] // 2)
-        time.sleep(2)
         wait_busy()
         # The object table's header is gone once the parameter view shows.
-        if not find_text("Objektfunktion", (680, 220, 3400, 260)):
+        if wait_for("parameter view", lambda: not find_text("Objektfunktion", (680, 220, 3400, 260)), 5, 0.3):
+            param_view_tall()
             return "Parameter"
     raise RuntimeError("the 'Parameter' tab did not open")
 
 
-def param_page_lines() -> list[dict]:
-    return [l for l in ocr(PARAM_PAGES) if len(l["text"].strip()) > 1]
+def parameter_view_of(ia: str) -> bool:
+    """True when the centre view shows device `ia`'s parameter pages
+    already: its breadcrumb names the device and no object table shows."""
+    crumb = " ".join(l["text"] for l in ocr(BREADCRUMB))
+    return tree_node_of(crumb, ia) and find_text("Objektfunktion", (680, 220, 3400, 260)) is None \
+        and find_text("Parameter", (680, 150, 1600, 220)) is not None
+
+
+def param_view_tall() -> str | None:
+    """Drag the Katalog splitter down so the page tree and the parameter
+    rows get the screen's height (a page of ~40 rows shows whole)."""
+    from pywinauto import mouse
+
+    btn = catalog_import_button()
+    if btn and btn["y"] - 48 >= PARAM_TALL_GRIP - 30:
+        return None
+    y0 = (btn["y"] if btn else 1354) - 48
+    s_ = scale()
+    mouse.press(coords=(int(1703 * s_), int(y0 * s_)))
+    time.sleep(0.3)
+    for k in range(1, 11):
+        mouse.move(coords=(int(1703 * s_), int((y0 + (PARAM_TALL_GRIP - y0) * k / 10) * s_)))
+        time.sleep(0.05)
+    mouse.release(coords=(int(1703 * s_), int(PARAM_TALL_GRIP * s_)))
+    wait_for("tall parameter view", lambda: (catalog_import_button() or {}).get("y", 0) > 2200, 3, 0.3)
+    return f"param view tall from {y0}"
+
+
+def _dark(p) -> bool:
+    """A border, glyph or tick pixel: no channel bright (yellow highlight
+    and light blue fill are not dark)."""
+    return max(p[:3]) < 225
+
+
+def _grey(p) -> bool:
+    """A dropdown's fill (242, 242, 242)."""
+    return all(236 <= c <= 247 for c in p[:3])
+
+
+def _blue(p) -> bool:
+    """Text of the selected page, or a checked checkbox's fill/tick."""
+    r, g, b = p[:3]
+    return b > 150 and b - r > 30
+
+
+def merge_labels(lines: list[dict]) -> list[dict]:
+    """The label column's OCR lines joined where ETS wrapped a label: the
+    next line starts within 16 px below the last one at the same indent."""
+    out: list[dict] = []
+    for l in sorted((l for l in lines if l["x"] < LABEL_X_MAX and l["text"].strip()), key=lambda l: l["y"]):
+        last = out[-1] if out else None
+        if last and 0 <= l["y"] - (last["y"] + last["h"]) < 16 and abs(l["x"] - last["x"]) < 30:
+            last["text"] = f"{last['text']} {l['text']}"
+            last["h"] = l["y"] + l["h"] - last["y"]
+            last["w"] = max(last["w"], l["w"])
+        else:
+            out.append(dict(l))
+    return out
+
+
+def _circle_like(t: str) -> bool:
+    return t.strip() in ("O", "o", "0", "Q", "C", "()", "@", "®", "©", "•", "◉")
+
+
+def ring_at(px, cx: int, cy: int) -> bool:
+    """A radio button's circle (diameter ~32) centred near (cx, cy): its
+    ring dark 12..17 px out on all four sides. (The selected one's dot
+    reaches 9 px out, a text glyph not this far up and down.)"""
+    def any_dark(points):
+        return any(_dark(px(x, y)) for x, y in points)
+    return any_dark((cx + e, cy - d) for d in range(12, 18) for e in (-1, 0, 1)) \
+        and any_dark((cx + e, cy + d) for d in range(12, 18) for e in (-1, 0, 1)) \
+        and any_dark((cx - d, cy + e) for d in range(12, 18) for e in (-2, 0, 2)) \
+        and any_dark((cx + d, cy + e) for d in range(12, 18) for e in (-2, 0, 2)) \
+        and not any_dark((cx + e, cy - d) for d in (19, 20, 21) for e in (-1, 0, 1)) \
+        and not any_dark((cx + e, cy + d) for d in (19, 20, 21) for e in (-1, 0, 1))
+
+
+def radio_circles(px, cy: int, cells: list[dict], x_max: int = 3300) -> list[int]:
+    """The centres of the radio circles on the row, found along it: a dark
+    pixel on the row is a ring's left edge when a ring is centred 15 or 16
+    px right of it. OCR reads the options in one line at times
+    ('Schalten O Rollladen und Jalousie'), so its cells do not place them."""
+    if not cells:
+        return []
+    out: list[int] = []
+    x = CONTROL_X - 4
+    while x < x_max:
+        if _dark(px(x, cy)):
+            hit = next((x + d for d in (15, 16, 14, 17) if ring_at(px, x + d, cy)), None)
+            if hit is not None:
+                out.append(hit)
+                x = hit + 18
+                continue
+        x += 1
+    return out
+
+
+def split_at_circles(cells: list[dict], circles: list[int]) -> list[dict]:
+    """OCR cells cut where a radio circle sits inside one ('Schalten O
+    Rollladen und Jalousie' over the second circle): the text split at the
+    word boundary nearest the circle's share of the width, the circle's 'O'
+    dropped."""
+    out: list[dict] = []
+    for c in cells:
+        words = c["text"].split()
+        at = next((cx for cx in circles if c["x"] - 4 <= cx <= c["x"] + 40), None)
+        if len(words) > 1 and _circle_like(words[0]) and at is not None:
+            # The circle read as the line's first letter ('O Rollladen ...').
+            c = {**c, "text": " ".join(words[1:]), "x": at + 20, "w": c["w"] - (at + 20 - c["x"])}
+        parts = [c]
+        for cx in circles:
+            last = parts[-1]
+            if not (last["x"] + 10 < cx < last["x"] + last["w"] - 10):
+                continue
+            words = last["text"].split()
+            cw = last["w"] / max(len(last["text"]), 1)
+            pos, cut = 0, 0
+            for k, w in enumerate(words):
+                if last["x"] + (pos + len(w) / 2) * cw > cx:
+                    break
+                cut = k + 1
+                pos += len(w) + 1
+            left, right = words[:cut], words[cut:]
+            if right and _circle_like(right[0]):
+                right = right[1:]
+            if left and _circle_like(left[-1]):
+                left = left[:-1]
+            parts[-1] = {**last, "text": " ".join(left), "w": int(cx - 16 - last["x"])}
+            parts.append({**last, "text": " ".join(right), "x": cx + 20, "w": int(last["x"] + last["w"] - cx - 20)})
+        out += [p for p in parts if p["text"]]
+    return out
+
+
+def classify_control(px, cy: int, cells: list[dict]) -> dict:
+    """What control sits on the row centred at `cy` (layout y): `px(x, y)`
+    gives a pixel (layout coordinates), `cells` the OCR lines right of the
+    label column on that row. Returns {kind, value, options?, box?}:
+    - dropdown: grey fill across x 1640..1760; value its text;
+    - number / text: a white box with borders above and below the row at
+      x 1700; number when spinner arrows sit at its right end;
+    - checkbox: a ~32 px box at CONTROL_X with no text beside it; value
+      '1' when checked (light blue fill or a tick inside), else '0';
+    - radio: option texts right of ~32 px circles; value the option whose
+      circle has a dark centre;
+    - none: a heading or note."""
+    # Above and below the text, inside the box (a dropdown is ~46 px tall).
+    if sum(_grey(px(x, y)) for x in range(1640, 1760, 4) for y in (cy - 12, cy + 12)) > 40:
+        right = next((x for x in range(1760, 3300, 2) if not _grey(px(x, cy)) and not _dark(px(x, cy))), 3300)
+        text = " ".join(c["text"] for c in cells if c["x"] < right)
+        return {"kind": "dropdown", "value": text.strip(), "box": [CONTROL_X, right]}
+    # A field's borders run ~21 px above and below the row's centre; a
+    # radio option's text at x 1700 stays within ~9 px.
+    above = any(_dark(px(1700, y)) for y in range(cy - 26, cy - 12))
+    below = any(_dark(px(1700, y)) for y in range(cy + 12, cy + 27))
+    if above and below:
+        top = max(y for y in range(cy - 26, cy - 12) if _dark(px(1700, y)))
+        probe = top + 3
+        right = next((x for x in range(1710, 3300, 2) if _dark(px(x, probe))), 3300)
+        spinner = any(_dark(px(x, y)) for x in range(right - 28, right - 4, 2) for y in range(cy - 10, cy + 10, 2))
+        inside = [c for c in cells if c["x"] < right]
+        unit = " ".join(c["text"] for c in cells if c["x"] > right).strip()
+        return {"kind": "number" if spinner else "text", "value": " ".join(c["text"] for c in inside).strip(),
+                "box": [CONTROL_X, right], "unit": unit}
+    circles = radio_circles(px, cy, cells)
+    # A checkbox: grey border when clear, light blue fill (219, 234, 255)
+    # without a grey border when checked.
+    box = sum(_dark(px(x, y)) or _blue(px(x, y)) for x in range(CONTROL_X, CONTROL_X + 34, 2)
+              for y in range(cy - 15, cy + 16, 3)) > 6
+    if circles:
+        # Each option's text: the cells between its circle and the next
+        # (OCR splits '0 = Aus, 1 = Ein' and drops the lone '1').
+        pieces = split_at_circles(cells, circles)
+        opts = []
+        for i, cx in enumerate(circles):
+            end = circles[i + 1] if i + 1 < len(circles) else 99999
+            text = " ".join(c["text"] for c in pieces if cx < c["x"] < end and not _circle_like(c["text"])).strip()
+            # The selected circle has a filled centre (195, 208, 221).
+            opts.append({"text": text, "x": cx, "selected": _dark(px(cx, cy))})
+        chosen = next((o["text"] for o in opts if o["selected"]), "")
+        return {"kind": "radio", "value": chosen, "options": opts}
+    if box:
+        checked = sum(_blue(px(x, y)) or _dark(px(x, y)) for x in range(CONTROL_X + 6, CONTROL_X + 27, 2)
+                      for y in range(cy - 9, cy + 10, 2)) > 3
+        return {"kind": "checkbox", "value": "1" if checked else "0"}
+    return {"kind": "none", "value": " ".join(c["text"] for c in cells).strip()}
+
+
+def param_rows() -> list[dict]:
+    """The rows of the shown parameter page: {label, n, kind, value, y, ...};
+    `n` counts earlier rows of the same label on the page (Hager's three
+    'Einschaltverzögerung' fields for h, min and s)."""
+    park_mouse()
+    # The breadcrumb changes before the rows do: read until two reads agree.
+    last: dict = {"lines": None}
+
+    def settled():
+        lines = ocr(PARAM_ROWS)
+        same = last["lines"] is not None and [l["text"] for l in lines] == [l["text"] for l in last["lines"]]
+        last["lines"] = lines
+        return same
+    wait_for("rows settled", settled, 3, 0.25)
+    img = grab(PARAM_ROWS).convert("RGB")
+    s = img.width / (PARAM_ROWS[2] - PARAM_ROWS[0])
+
+    def px(x: int, y: int):
+        x = min(max(int((x - PARAM_ROWS[0]) * s), 0), img.width - 1)
+        y = min(max(int((y - PARAM_ROWS[1]) * s), 0), img.height - 1)
+        return img.getpixel((x, y))
+
+    lines = last["lines"]
+    cells = [l for l in lines if l["x"] >= LABEL_X_MAX]
+    rows, seen = [], {}
+    for label in merge_labels(lines):
+        cy = label["y"] + label["h"] // 2
+        on_row = sorted((c for c in cells if abs(c["y"] + c["h"] // 2 - cy) < 20), key=lambda c: c["x"])
+        row = {"label": label["text"].strip(), "y": cy, **classify_control(px, cy, on_row)}
+        if row["kind"] in ("number", "text"):
+            row["value"] = field_ocr(img, s, row)
+        key = _norm(row["label"])
+        row["n"] = seen.get(key, 0)
+        seen[key] = row["n"] + 1
+        rows.append(row)
+    return rows
+
+
+def selected_page() -> dict:
+    """The page shown: ETS's breadcrumb above the rows ('<device> > Ausgang
+    1 > - A1: Zeiten für Schaltobjekt') and the selected entry of the page
+    tree (blue text), with its y."""
+    crumb = " ".join(l["text"] for l in ocr(BREADCRUMB)).strip()
+    img = grab(PARAM_LIST).convert("RGB")
+    s = img.width / (PARAM_LIST[2] - PARAM_LIST[0])
+    page, y = None, None
+    for l in ocr(PARAM_LIST):
+        if len(l["text"].strip()) < 2:
+            continue
+        blue = sum(_blue(img.getpixel((min(int((x - PARAM_LIST[0]) * s), img.width - 1),
+                                       min(int((yy - PARAM_LIST[1]) * s), img.height - 1))))
+                   for x in range(l["x"], l["x"] + l["w"], 3) for yy in range(l["y"], l["y"] + l["h"], 3))
+        if blue > 6:
+            page, y = l["text"].strip(), l["y"]
+    # The device part of the breadcrumb is the same on every page.
+    path = crumb.split(">", 1)[1].strip() if ">" in crumb else crumb
+    return {"crumb": path, "page": page, "y": y}
+
+
+def _page_key(t: str) -> str:
+    """A page or label text as OCR may read it: 'Al-16' is 'A1-16' (an l
+    after a capital A before a digit, hyphen, colon or the end)."""
+    t = re.sub(r"(?<=A)l(?=[\d\-:\s]|$)", "1", t or "")
+    return _norm(t)
+
+
+def _alike(a: str | None, b: str | None, ratio: float = 0.85) -> bool:
+    """OCR reads the same entry differently at times ('Ausqanq 10' low in
+    the tree, 'Al' for 'A1'): the same digits and letters close. Digits
+    must agree exactly ('Ausgang 1: ...' is not 'Ausgang 2: ...')."""
+    a, b = _page_key(a or ""), _page_key(b or "")
+    if a == b:
+        return True
+    if not a or not b or re.sub(r"\D", "", a) != re.sub(r"\D", "", b):
+        return False
+    return difflib.SequenceMatcher(None, a, b).ratio() >= ratio
+
+
+def same_page(a: dict, b: dict) -> bool:
+    """The same page: the breadcrumb (read in one line at the top) alike,
+    and the selected tree entry alike."""
+    return _alike(a.get("crumb"), b.get("crumb"), 0.9) and _alike(a.get("page"), b.get("page"))
+
+
+def channel_node_of(prev: dict, page: dict) -> bool:
+    """Whether `prev`, read just before `page`, was the channel node of
+    `page`'s channel showing `page` highlighted: the same page text, the
+    same channel (the breadcrumb's first part), and a breadcrumb that does
+    not end in that page (`Ausgang 5` or `Ausgang 5 > ...`). Two channels'
+    pages of one name ('K1 > Allgemein', 'K2 > Allgemein') are two pages."""
+    if not _alike(prev.get("page"), page.get("page")):
+        return False
+    parts = [p.strip() for p in (prev.get("crumb") or "").split(">")]
+    theirs = [p.strip() for p in (page.get("crumb") or "").split(">")]
+    if not parts or not theirs or not _alike(parts[0], theirs[0]):
+        return False
+    return len(parts) == 1 or parts[-1].endswith("...") or not _alike(parts[-1], prev.get("page"))
+
+
+def page_consistent(p: dict) -> bool:
+    """The breadcrumb and the tree's selection name the same page: ETS
+    updates the breadcrumb first and the highlight a moment later. A
+    breadcrumb ETS shortened ('Ausgang 5 > ...') cannot tell."""
+    last = (p.get("crumb") or "").rsplit(">", 1)[-1].strip()
+    if not last:
+        return False
+    if not p.get("page"):
+        # A channel node ('Ausgang 1'): ETS highlights no entry in blue.
+        return True
+    if last.endswith("...") or p["page"].endswith("..."):
+        return True
+    # A channel node selected ('Ausgang 2') highlights its first page
+    # ('Ausgang 2: Funktionsfreigabe').
+    return _alike(last, p["page"]) or _norm(p["page"]).startswith(_norm(last))
+
+
+def first_page() -> dict:
+    """Select the first page of the tree and return it: a click on a
+    visible entry puts the keyboard focus in the tree, Home selects its
+    first entry (the tree scrolls back up by itself)."""
+    lines = [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
+    if not lines:
+        raise RuntimeError("the parameter view shows no page tree")
+    top = min(lines, key=lambda l: l["y"])
+    click(top["x"] + top["w"] // 2, top["y"] + top["h"] // 2)
+    time.sleep(0.3)
+    keys("{HOME}")
+    seen: dict = {}
+
+    def at_top():
+        seen["p"] = selected_page()
+        lines = [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
+        return seen["p"].get("y") is not None and lines and seen["p"]["y"] <= min(l["y"] for l in lines) + 5
+    wait_for("first page", at_top, 3, 0.3)
+    return seen["p"]
+
+
+def next_page(current: dict) -> dict | None:
+    """Down in the page tree: the next page (a channel expands when
+    selected), or None at the end of the tree. The page counts once two
+    reads agree and its breadcrumb matches the selection.
+
+    Only safe while the keyboard focus is in the tree: `first_page` puts it
+    there, and nothing between two calls may click into the rows (Down in a
+    number field counts it down: a walk that read fields by the clipboard
+    left 19 s for a default of 20 s, 2026-11-10)."""
+    keys("{DOWN}")
+    seen: dict = {"p": None}
+
+    def moved():
+        p = selected_page()
+        stable = seen["p"] is not None and same_page(p, seen["p"])
+        seen["p"] = p
+        return stable and not same_page(p, current) and page_consistent(p)
+    return seen["p"] if wait_for("next page", moved, 3, 0.2) else None
+
+
+def walk_pages(limit: int = 400):
+    """Every page of the tree in order, selecting each: yields
+    (index, page). Channels are expanded on the way."""
+    page = first_page()
+    for i in range(limit):
+        yield i, page
+        nxt = next_page(page)
+        if nxt is None:
+            return
+        page = nxt
 
 
 @flow("param_pages")
 def flow_param_pages(req: dict) -> dict:
-    """The pages of device `ia`'s parameter view, as ETS lists them."""
+    """Device `ia`'s parameter pages as ETS lists them (channels expanded),
+    each {crumb, page}; with `rows`, each page's rows (`param_rows`): the
+    survey a parameter set is drawn from (#424)."""
     require_project(req["project"])
     entry = open_device_parameters(req["ia"])
-    return {"pages": [l["text"].strip() for l in param_page_lines()], "menu_entry": entry}
+    pages: list[dict] = []
+    for i, page in walk_pages(int(req.get("limit", 400))):
+        if not page.get("page"):
+            # A channel node ('Ausgang 5'): Down selects its first page next.
+            continue
+        if pages and channel_node_of(pages[-1], page):
+            # A channel node read with its first page's highlight
+            # ('Ausgang 5 > ...'): keep the page itself, selected next.
+            pages.pop()
+        if req.get("rows"):
+            page = {**page, "rows": param_rows()}
+        pages.append({**page, "index": len(pages)})
+    return {"pages": pages, "menu_entry": entry}
 
 
-def _row_cells(label: dict, lines: list[dict]) -> list[dict]:
-    """The OCR lines on the label's row right of it (the control's text)."""
-    cy = label["y"] + label["h"] // 2
-    return sorted((l for l in lines if abs(l["y"] + l["h"] // 2 - cy) < 18 and l["x"] > label["x"] + label["w"]),
-                  key=lambda l: l["x"])
+def tree_entries() -> list[dict]:
+    return [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
+
+
+def scroll_tree(notches: int) -> bool:
+    """Turn the wheel over the page tree (positive: up); True when the
+    visible entries changed."""
+    from pywinauto import mouse
+
+    before = [l["text"] for l in tree_entries()]
+    s_ = scale()
+    for _ in range(abs(notches)):
+        mouse.scroll(coords=(int(900 * s_), int(1200 * s_)), wheel_dist=10 if notches > 0 else -10)
+    return bool(wait_for("tree scrolled", lambda: [l["text"] for l in tree_entries()] != before, 1.5, 0.2))
+
+
+def go_to_page(target: dict, limit: int = 60) -> dict:
+    """Select the page `target` ({crumb, page}) by clicking its entry in
+    the page tree, scrolled with the wheel to find it: no keys, since the
+    focus may sit in a field the last change typed into. Raises
+    LookupError when no entry shows it (a page the configuration hides)."""
+    if same_page(selected_page(), target):
+        return selected_page()
+    tried: set = set()
+    while scroll_tree(5):
+        pass
+    for _ in range(limit):
+        for l in tree_entries():
+            key = (_norm(l["text"]), l["y"])
+            if not _alike(l["text"], target.get("page")) or key in tried:
+                continue
+            tried.add(key)
+            click(l["x"] + l["w"] // 2, l["y"] + l["h"] // 2)
+            if wait_for("page by click", lambda: same_page(selected_page(), target), 2.5, 0.25):
+                return selected_page()
+        if not scroll_tree(-5):
+            break
+        tried = set()
+    raise LookupError(f"page {target.get('crumb')!r} not in the tree")
+
+
+def find_param_row(rows: list[dict], label: str, n: int = 0) -> dict | None:
+    want = _norm(label)
+    hits = [r for r in rows if _norm(r["label"]) == want]
+    if len(hits) <= n:
+        hits = [r for r in rows if difflib.SequenceMatcher(None, want, _norm(r["label"])).ratio() >= 0.9]
+    return hits[n] if len(hits) > n else None
+
+
+def dropdown_options(row: dict) -> list[str]:
+    """Open the row's dropdown and read its options (popup, UI Automation);
+    the list stays open for `pick_option`."""
+    x0, x1 = row["box"]
+    click((x0 + x1) // 2, row["y"])
+    pop = wait_for("dropdown list", lambda: next((p for p in ets_popups()
+                                                  if p.descendants(control_type="ListItem")), None), 3, 0.2)
+    if pop is None:
+        raise RuntimeError(f"the dropdown of {row['label']!r} opened no list")
+    out = []
+    for it in pop.descendants(control_type="ListItem"):
+        texts = [t.window_text() for t in it.descendants(control_type="Text")]
+        out.append(" ".join(t for t in texts if t).strip())
+    return out
+
+
+def pick_option(text: str) -> bool:
+    """Click the open dropdown's option `text`."""
+    for pop in ets_popups():
+        for it in pop.descendants(control_type="ListItem"):
+            texts = " ".join(t.window_text() for t in it.descendants(control_type="Text")).strip()
+            if texts == text:
+                it.click_input()
+                COUNTS["clicks"] += 1
+                # The open list covers the dropdown: read the row after.
+                wait_for("dropdown closed", lambda: not any(p.descendants(control_type="ListItem")
+                                                            for p in ets_popups()), 2, 0.15)
+                return True
+    return False
+
+
+def choose_value(row: dict, req: dict, options: list[str] | None = None) -> str:
+    """The value to set: `value` as given, else (with `pick`, a float in
+    [0, 1)) one of the other options of the row, chosen by `pick`."""
+    if req.get("value") not in (None, ""):
+        return str(req["value"])
+    others = [o for o in (options or []) if _norm(o) != _norm(row.get("value") or "")]
+    if not others:
+        raise LookupError(f"{row['label']!r} offers no other value than {row.get('value')!r}")
+    return others[min(int(float(req.get("pick", 0)) * len(others)), len(others) - 1)]
+
+
+def clipboard_text() -> str:
+    import win32clipboard
+
+    win32clipboard.OpenClipboard()
+    try:
+        return win32clipboard.GetClipboardData(win32clipboard.CF_UNICODETEXT)
+    except TypeError:  # no text on the clipboard
+        return ""
+    finally:
+        win32clipboard.CloseClipboard()
+
+
+def field_ocr(img, s: float, row: dict) -> str:
+    """A field's content read off the screenshot without touching it: OCR,
+    and for a lone number OCR skips, its ink repeated (`cell_number`).
+    Best effort; `field_value` reads it exactly but clicks the field."""
+    from PIL import ImageOps
+
+    x0, x1 = row["box"]
+    box = tuple(int(v) for v in ((x0 + 6 - PARAM_ROWS[0]) * s, (row["y"] - 14 - PARAM_ROWS[1]) * s,
+                                 (x1 - 32 - PARAM_ROWS[0]) * s, (row["y"] + 14 - PARAM_ROWS[1]) * s))
+    crop = img.crop(box)
+    import winocr
+
+    COUNTS["ocr"] += 1
+    big = ImageOps.autocontrast(ImageOps.grayscale(crop.resize((crop.width * 3, crop.height * 3))), cutoff=1)
+    text = " ".join(l["text"] for l in winocr.recognize_pil_sync(big.convert("RGB"), "de")["lines"]).strip()
+    if text:
+        return text
+    n = cell_number(ImageOps.grayscale(crop))
+    return "" if n is None else str(n)
+
+
+def field_value(row: dict) -> str:
+    """A number or text field's content, by the clipboard: OCR reads no
+    lone digit in a field, magnified or not (2026-11-10). The field is
+    clicked, selected and copied; nothing is typed."""
+    import win32clipboard
+
+    win32clipboard.OpenClipboard()
+    win32clipboard.EmptyClipboard()
+    win32clipboard.CloseClipboard()
+    click(CONTROL_X + 30, row["y"])
+    keys("^a")
+    keys("^c")
+    return (wait_for("field copied", clipboard_text, 1.5, 0.1) or "").strip()
+
+
+def type_into(row: dict, value: str, page: dict | None = None) -> None:
+    """Replace a field's content: click, select all, type, Tab. The field
+    takes keys a moment after the click: typed 0.2 s after it, the 1 for
+    the hours of Hager's 'Sendeverzögerung' was lost (2026-11-10). Right
+    after a page walk the first click into a field switched the page to
+    another tree entry once ('Ausgang 10', 2026-11-10), and the keys went to
+    the tree: with `page`, the page is checked after the click and selected
+    again, and nothing is typed while another page shows."""
+    for attempt in range(2):
+        click(CONTROL_X + 30, row["y"])
+        time.sleep(0.5)
+        if page is None or same_page(selected_page(), page):
+            break
+        go_to_page(page)
+    else:
+        raise LookupError(f"the page left {page.get('crumb')!r} when its field was clicked")
+    keys("^a")
+    time.sleep(0.1)
+    keys(value)
+    time.sleep(0.3)
+    keys("{TAB}")
+
+
+def set_row(row: dict, req: dict, page: dict | None = None) -> tuple[str, str]:
+    """Set `row` as `req` asks; returns (the value asked, what to compare
+    the row's value with afterwards)."""
+    kind = row["kind"]
+    if kind == "checkbox":
+        value = str(req.get("value") or ("0" if row["value"] == "1" else "1"))
+        if value != row["value"]:
+            click(CONTROL_X + 16, row["y"])
+        return value, value
+    if kind == "radio":
+        value = choose_value(row, req, [o["text"] for o in row["options"]])
+        opt = next((o for o in row["options"] if _norm(o["text"]) == _norm(value)), None)
+        if opt is None:
+            raise LookupError(f"{row['label']!r} has no option {value!r}: {[o['text'] for o in row['options']]}")
+        click(opt["x"], row["y"])
+        return value, opt["text"]
+    if kind == "dropdown":
+        options = dropdown_options(row)
+        value = choose_value(row, req, options)
+        if not pick_option(value):
+            keys("{ESC}")
+            raise LookupError(f"{row['label']!r} has no option {value!r}: {options}")
+        return value, value
+    if kind in ("number", "text"):
+        value = choose_value(row, req)
+        type_into(row, value, page)
+        return value, value
+    raise LookupError(f"{row['label']!r}: no control ETS lets the driver set ({kind})")
 
 
 @flow("set_param")
 def flow_set_param(req: dict) -> dict:
-    """Sets the parameter labelled `text` to `value` (as ETS shows it) on the
-    first page of `pages` that shows it. `kind` enum: the option of that name
-    on the label's row (radio buttons), else the row's dropdown (a popup,
-    UI Automation). `kind` int: the row's field, select all, type, Tab. The
-    row is read again afterwards. A label on no page: {"set": false}."""
+    """Set the parameter of row `label` (the `n`-th row of that label) on
+    page `page` ({crumb, page} from `param_pages`) of device `ia`. With
+    `value` the value as ETS shows it ('1'/'0' for a checkbox), else `pick`
+    chooses another option of a radio or dropdown row (a checkbox toggles).
+    The row is read again until it shows the value. A page or row not
+    shown: {"set": false, "unreachable": why}."""
     require_project(req["project"])
-    want, value = _norm(req["text"]), str(req["value"])
-    seen: list[str] = []
-    for page in req.get("pages") or [None]:
-        if page is not None:
-            hit = next((l for l in param_page_lines() if l["text"].strip() == page), None)
-            if hit is None:
-                continue
-            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
-            time.sleep(1.5)
-        lines = ocr(PARAM_AREA)
-        label = next((l for l in lines if _norm(l["text"]) == want), None) \
-            or next((l for l in lines if want and want in _norm(l["text"])), None)
-        if label is None:
-            seen += [l["text"] for l in lines[:6]]
-            continue
-        cells = _row_cells(label, lines)
-        if not cells:
-            raise RuntimeError(f"no control on the row of {req['text']!r} (page {page!r})")
-        option = next((c for c in cells if _norm(c["text"]) == _norm(value)), None)
-        if req.get("kind") == "enum" and option is not None and len(cells) > 1:
-            click(option["x"] - 30, option["y"] + option["h"] // 2)  # the radio button left of its text
-        elif req.get("kind") == "enum":
-            cell = cells[0]
-            click(cell["x"] + cell["w"] // 2, cell["y"] + cell["h"] // 2)
-            time.sleep(1)
-            choose(value, (cell["x"] - 50, cell["y"], cell["x"] + 1200, min(cell["y"] + 1400, 2484)))
-        else:
-            cell = cells[0]
-            click(cell["x"] + cell["w"] // 2, cell["y"] + cell["h"] // 2)
-            time.sleep(0.5)
-            keys("^a")
-            keys(value)
-            keys("{TAB}")
-        time.sleep(1.5)
+    open_device_parameters(req["ia"])
+    try:
+        page = go_to_page(req["page"])
+    except LookupError as exc:
+        return {"set": False, "unreachable": str(exc)}
+    rows = param_rows()
+    row = find_param_row(rows, req["label"], int(req.get("n", 0)))
+    if row is None:
+        return {"set": False, "unreachable": f"no row {req['label']!r} on the page",
+                "seen": [r["label"] for r in rows][:30], "page": page}
+    if req.get("kind") and req["kind"] != row["kind"]:
+        return {"set": False, "unreachable": f"{req['label']!r} is a {row['kind']} now, not a {req['kind']}",
+                "row": row}
+    try:
+        value, expect = set_row(row, req, page)
+    except LookupError as exc:
+        return {"set": False, "unreachable": str(exc), "row": row}
+    seen: dict = {}
+
+    def shows():
         wait_busy()
-        after = _row_cells(label, ocr(PARAM_AREA))
-        shown = " ".join(c["text"] for c in after)
-        return {"set": _norm(value) in _norm(shown), "page": page, "row": shown[:200]}
-    return {"set": False, "seen": seen[:24]}
+        after = find_param_row(param_rows(), req["label"], int(req.get("n", 0)))
+        if after is not None and after["kind"] in ("number", "text"):
+            after["value"] = field_value(after)
+        seen["row"] = after
+        return after is not None and _norm(after.get("value") or "") == _norm(expect)
+    ok = wait_for("parameter shows value", shows, 4, 0.4)
+    if not ok and row["kind"] in ("number", "text") and seen.get("row"):
+        # Once more: a field that lost the keys keeps its old value.
+        try:
+            type_into(seen["row"], value, page)
+        except LookupError as exc:
+            return {"set": False, "unreachable": str(exc), "row": row}
+        ok = wait_for("parameter shows value", shows, 4, 0.4)
+    return {"set": bool(ok), "value": value, "before": row.get("value"), "row": seen.get("row"), "page": page}
+
+
+@flow("read_param")
+def flow_read_param(req: dict) -> dict:
+    """The value ETS shows for row `label` (`n`-th of that label) on page
+    `page` of device `ia`, as `set_param` reads it back (a field by the
+    clipboard): {"shown": false, "why": ...} when the page or row is not
+    shown. The parameter-set run reads every change once more after the
+    last one, so the model holds what ETS shows, not what was meant."""
+    require_project(req["project"])
+    open_device_parameters(req["ia"])
+    try:
+        page = go_to_page(req["page"])
+    except LookupError as exc:
+        return {"shown": False, "why": str(exc)}
+    row = find_param_row(param_rows(), req["label"], int(req.get("n", 0)))
+    if row is None:
+        return {"shown": False, "why": f"no row {req['label']!r} on the page", "page": page}
+    if row["kind"] in ("number", "text"):
+        row["value"] = field_value(row)
+    return {"shown": True, "row": row, "page": page}
 
 
 def _digits(t: str) -> str:
