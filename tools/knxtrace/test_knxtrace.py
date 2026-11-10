@@ -2836,6 +2836,56 @@ class TestElementRuns(unittest.TestCase):
         self.assertEqual(len(memimage.merge_element_runs(writes)), 2)
 
 
+class TestGoFlagsRuns(unittest.TestCase):
+    """The security object's GO flags (PID 61) compare as element runs
+    (#423): ETS split 872 flags into 19 x 44 + 36 under Data Secure into
+    the MDT AKR-IO86.01S (max APDU 66, ets-sweep secure capture of
+    2026-11-10), the dry run into 4 x 211 + 28. ETS's parts are hashed
+    (key-sized writes on object 17); each part is checked against the same
+    elements of bussard's plain value."""
+
+    FLAGS = bytes([0x00] * 40 + [0x03] + [0x00] * 59)
+
+    def image_dir(self, ets_writes) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        with open(os.path.join(out, "properties.json"), "w") as fh:
+            json.dump(ets_writes, fh)
+        return out
+
+    def ets(self, flags: bytes, per: int):
+        out = []
+        for n, i in enumerate(range(0, len(flags), per)):
+            part = flags[i:i + per]
+            out.append({"seq": 20 + n, "service": "A_PropertyExtValue_WriteCon",
+                        "object": {"type": 17, "instance": 1}, "pid": 61, "count": len(part),
+                        "index": 1 + i, "length": len(part),
+                        "data": "redacted:" + memimage.sha256(part)[:8], "secured": "tool"})
+        return out
+
+    def plan(self, per: int) -> dict:
+        records = [{"object_type": 17, "instance": 1, "pid": 61, "start_element": 1 + i,
+                    "length": len(self.FLAGS[i:i + per]), "data": self.FLAGS[i:i + per].hex()}
+                   for i in range(0, len(self.FLAGS), per)]
+        return {"steps": [{"index": 22, "label": "security object", "properties": records}]}
+
+    def test_compare_properties_go_flags_split_differently(self):
+        props = memimage.compare_properties(self.plan(30), self.image_dir(self.ets(self.FLAGS, 11)))
+        self.assertEqual(props["verdict"], memimage.IDENTICAL, props)
+        self.assertEqual([(m["key"], m["value"]) for m in props["matched"]], [(["type17.1", 61, 100], "hash-equal")])
+        self.assertEqual(props["element_runs"], 1)
+
+    def test_compare_properties_go_flags_value_differs(self):
+        other = bytes([0x00] * 41 + [0x03] + [0x00] * 58)
+        props = memimage.compare_properties(self.plan(30), self.image_dir(self.ets(other, 11)))
+        self.assertEqual(props["verdict"], memimage.DIFFERS)
+        self.assertEqual(props["matched"][0]["value"], "differs")
+        self.assertIn("elements 34+11", props["matched"][0]["why"])
+
+    def test_merge_element_runs_go_flags_merge_hashed(self):
+        self.assertEqual(len(memimage.merge_element_runs(self.ets(self.FLAGS, 11))), 1)
+
+
 class TestUnloadPass(unittest.TestCase):
     """`unload_pass`: ETS's Unload command ahead of the download (#488)."""
 
