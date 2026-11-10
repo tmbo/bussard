@@ -326,6 +326,13 @@ driver then clicks the entry by OCR, and closes a menu that never came
 before it right-clicks again. The catalog's columns are read from its header
 row: ETS showed "Sic" and "Hersteller" before "Name" that day and every
 cell moved.
+A number OCR skips (Windows OCR reads no lone digit) is read from the cell's
+glyph repeated three times, else a lone narrow glyph is a 0 (it has a hole)
+or a 1; a row whose number stays unread is left out, never guessed. Before,
+every such row was taken as 1, and the links oracle modelled the neighbour
+of the object ETS linked (MDT AKK object 0, DALI Basic 2f object 2). ETS's
+question about another object size is answered with OK and cancelled when a
+failed link leaves it open.
 
 **Partial-download series, representative products.**
 
