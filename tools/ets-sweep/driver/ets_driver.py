@@ -724,6 +724,12 @@ def line_1_1() -> tuple[int, int]:
             return hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2
         main = next((l for l in lines if "Haupt" in l["text"]), None) or next(
             (l for l in lines if l["text"].strip().startswith("IP") or "1.0" in l["text"]), None)
+        if not main and any(_norm(l["text"]) == "gewerke" for l in lines):
+            # The Gebäude view in the tree's place: ets-sweep-secure reopens
+            # its 'Gebäude' panels after ETS loaded it (2026-11-10, seven rows
+            # failed here). Restore the sweep layout and look again.
+            ensure_layout()
+            continue
         if not main:
             # Collapsed down to the backbone (seen 2026-10-28): select it and
             # expand it with the arrow key, then look again.

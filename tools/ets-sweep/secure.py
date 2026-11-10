@@ -200,6 +200,10 @@ def jobs() -> list[dict]:
 STOP_ERRORS = ("screen grab failed", "not the RDP layout", "desktop in use", "Speicherplatz")
 
 
+# Consecutive rows failed in the driver before the run stops.
+MAX_DRIVER_ERRORS = 3
+
+
 def save(results: dict) -> None:
     RESULTS.parent.mkdir(exist_ok=True)
     RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
@@ -241,6 +245,7 @@ def run(args) -> int:
     vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
     done = 0
     import_errors = 0
+    driver_errors = 0
     for job in todo:
         # A row whose import failed is run again (nothing of it reached ETS).
         if job["id"] in results and not args.redo and not results[job["id"]].get("import_failed"):
@@ -298,10 +303,17 @@ def run(args) -> int:
                 entry["decode"] = {"verdict": "no-keyring", "error": str(exc)[:200]}
         results[job["id"]] = entry
         save(results)
+        # A driver error in a row of its own is the row's; a run of them is
+        # ETS stuck in a state the driver does not recover from (seven rows
+        # in the Gebäude view, 2026-11-10): stop, the rows stay to do.
+        driver_errors = driver_errors + 1 if entry["outcome"].startswith("driver-error") else 0
         print(f"{entry['outcome']:13} {(entry.get('decode') or {}).get('verdict', '-'):10} {job['id']}"
               + (f"  {entry['error'][:100]}" if entry.get("error") else ""), flush=True)
         done += 1
         if args.limit and done >= args.limit:
+            break
+        if driver_errors >= MAX_DRIVER_ERRORS:
+            print(f"stopping: {driver_errors} rows in a row failed in the driver", flush=True)
             break
     return 0
 
