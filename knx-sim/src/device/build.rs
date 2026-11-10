@@ -753,11 +753,18 @@ impl Device {
     /// procedure names by type are reached by type through the extended
     /// property services. The device object holds what the procedure's
     /// compares expect, and every property it writes is writable.
+    ///
+    /// `secure` gives it the security object and Data Secure session a
+    /// System B device gets: the Enertex IP Secure Interface
+    /// (`M-00A6_A-0014-10-2517`, mask 0021, `IsSecureEnabled`) is
+    /// commissioned by ETS 6.4.1 with an S-A_Sync to it like any Data Secure
+    /// device (ETS sweep secure capture of 2026-11-10, bussard issue #423).
     pub(super) fn build_property_device(
         address: IndividualAddress,
         product: &ProductData,
         profile: Profile,
         prog_mode: bool,
+        secure: Option<crate::secure::DataSecureSession>,
         events: std::sync::Arc<dyn EventSink>,
     ) -> Self {
         let mut objects: BTreeMap<u8, InterfaceObject> = BTreeMap::new();
@@ -804,12 +811,14 @@ impl Device {
             l4: Default::default(),
             group_comm: None,
             prog_mode,
-            security_object: None,
+            security_object: secure
+                .as_ref()
+                .map(|_| SecurityObject::new_activated().with_capacity(product.security_capacity)),
             knxnet_by_type: knxnet,
             typed_objects,
             knxnet_slots: 0,
             ip_secure: None,
-            secure: None,
+            secure,
             restart_process_time_s: DEFAULT_RESTART_PROCESS_TIME_S,
             max_allocation: None,
             master_reset: MasterResetSupport::Supported,
