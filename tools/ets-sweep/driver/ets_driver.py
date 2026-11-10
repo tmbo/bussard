@@ -570,6 +570,12 @@ def _keep_delete_dialog_image() -> None:
     except Exception as exc:  # noqa: BLE001 - a diagnostic only
         log(f"delete dialog screenshot failed: {exc}")
 
+# How often confirm_delete looks for the confirmation after its click, 1.5 s
+# apart (12 s): a Data Secure device's delete took longer than the single
+# 1.5 s look of before (ets-sweep-secure, 2026-11-10).
+DELETE_POLLS = 8
+
+
 def confirm_delete() -> None:
     """Answer the delete confirmation with 'Ja'. A dialog left open fails
     every import after it (2026-11-08, #997): when 'Ja' is not found, or the
@@ -588,8 +594,16 @@ def confirm_delete() -> None:
             raise RuntimeError(f"button 'Ja' not on screen in {bbox}; OCR read {seen}; dialog {'closed with Nein' if closed else 'left open'}")
         log(f"'Ja' not read by OCR; clicking beside 'Nein' at ({hit['click_x']}, {hit['click_y']})")
     click(hit["click_x"], hit["click_y"])
-    time.sleep(1.5)
-    if leftover_delete_dialog(ocr(LAYOUT["delete_dialog"])):
+    # Deleting a Data Secure device takes longer: ETS shows its progress
+    # ('Löschen ...', 'Gerät ... gelöscht', only 'Abbrechen') before the
+    # confirmation is gone (ets-sweep-secure, 2026-11-10). Wait for it rather
+    # than press Enter into that dialog.
+    for _ in range(DELETE_POLLS):
+        time.sleep(1.5)
+        still = leftover_delete_dialog(ocr(LAYOUT["delete_dialog"]))
+        if not still:
+            break
+    if still:
         # The click on the word did not take (2026-11-09 11:25, at (2457,
         # 1456) inside the highlighted button, image in cap/delete-dialog.png)
         # while 'Ja' is the dialog's focused default button: Enter confirms it.
@@ -622,20 +636,58 @@ def project_tab_hit(name: str) -> dict | None:
     """The tab of project `name` in the tab strip. OCR splits a hyphenated
     name into fragments ('ets', '-sweep', '-secure', 2026-11-04): when no
     single line matches, adjacent fragments on one row are joined."""
+    lines = ocr(LAYOUT["tab_strip"])
+    whole = whole_name_hits(lines, name)
+    if whole:
+        return whole[0]
+    # A misread name (OCR's 'ets-sweep' as 'ets-swee p'): the fuzzy match,
+    # unless it is the first fragment of another project's name ('ets-sweep'
+    # before '-secure', #423).
     hit = find_text(name, LAYOUT["tab_strip"])
-    if hit and re.sub(r"\s", "", hit["text"]) == name:
-        return hit
-    lines = sorted(ocr(LAYOUT["tab_strip"]), key=lambda l: l["x"])
+    if hit and (followed_closely(lines, hit) or re.match(re.escape(_norm(name)) + r"[a-z0-9]", _norm(hit["text"]))):
+        return None
+    return hit
+
+
+def followed_closely(lines: list[dict], hit: dict) -> bool:
+    """Whether another OCR line starts right after `hit` on its row: `hit`
+    is then a fragment of a longer name, not a whole one."""
+    return any(abs(l["y"] - hit["y"]) <= 10 and 0 <= l["x"] - (hit["x"] + hit["w"]) <= 60 for l in lines)
+
+
+def whole_name_hits(lines: list[dict], name: str) -> list[dict]:
+    """`joined_texts` hits of `name` that no further fragment follows: a
+    name OCR split ('ets-sweep', '-secure') never passes for the project
+    named by its first fragment (#423)."""
+    return [h for h in joined_texts(lines, name) if not followed_closely(lines, h)]
+
+
+def joined_texts(lines: list[dict], name: str) -> list[dict]:
+    """Every OCR line, or run of adjacent lines on one row, whose text
+    without blanks is exactly `name`, left to right: OCR splits a hyphenated
+    name into fragments ('ets-sweep', '-secure' under a start page tile,
+    2026-11-10)."""
+    out = []
+    rows: list[list[dict]] = []
+    for line in sorted(lines, key=lambda l: l["y"]):
+        if rows and line["y"] - rows[-1][0]["y"] <= 10:
+            rows[-1].append(line)
+        else:
+            rows.append([line])
+    lines = [l for row in rows for l in sorted(row, key=lambda l: l["x"])]
     for i in range(len(lines)):
         for j in range(i + 1, min(i + 5, len(lines) + 1)):
             group = lines[i:j]
             if any(abs(l["y"] - group[0]["y"]) > 10 for l in group):
                 break
+            if any(b["x"] - (a["x"] + a["w"]) > 60 for a, b in zip(group, group[1:])):
+                break
             if "".join(re.sub(r"\s", "", l["text"]) for l in group) == name:
                 x1 = max(l["x"] + l["w"] for l in group)
-                return {"text": name, "x": group[0]["x"], "y": group[0]["y"],
-                        "w": x1 - group[0]["x"], "h": max(l["h"] for l in group)}
-    return hit
+                out.append({"text": name, "x": group[0]["x"], "y": group[0]["y"],
+                            "w": x1 - group[0]["x"], "h": max(l["h"] for l in group)})
+                break
+    return out
 
 
 @flow("project_tab")
@@ -763,9 +815,42 @@ def decline_compat_mode() -> str | None:
     return joined[:400]
 
 
-def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
+def start_page_tile(project: str) -> dict | None:
+    """The tile of `project` on ETS's start page (`project_tile`, whose name
+    must match exactly: 'ets-sweep' is a prefix of 'ets-sweep-secure',
+    #423), or None when the start page shows none."""
+    try:
+        return project_tile(project)
+    except RuntimeError:
+        return None
+
+
+def open_start_page() -> bool:
+    """Shows ETS's start page (the project tiles) while a project is open:
+    the 'ETS6 Professional' tab at the left of the tab strip."""
+    click(200, 40)  # the start page tab, as export_keyring_once
+    time.sleep(3)
+    return True
+
+
+def open_project_tile(hit: dict, project: str, password: str | None = None) -> None:
+    """Clicks a project tile and waits until ETS shows `project`, answering
+    the project password prompt of a protected project (the secure pass's
+    `ets-sweep-secure`, #423) with `password`."""
+    click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+    t0 = time.time()
+    while time.time() - t0 < 120 and window_project() != project:
+        if password:
+            set_project_password(password)
+        time.sleep(3)
+    time.sleep(5)
+
+
+def ensure_ets_running(project: str = "ets-sweep", password: str | None = None) -> list[str]:
     """Start ETS and open `project` when ETS is not running (it closed after a
-    compatibility prompt, 2026-10-28)."""
+    compatibility prompt, 2026-10-28), or bring `project` to the front when
+    ETS shows another one: its tab, else its tile on the start page
+    (`password` answers a protected project's prompt)."""
     import subprocess
 
     did: list[str] = []
@@ -782,19 +867,21 @@ def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
         if find_text("Einstellungen", (600, 100, 1200, 180), min_ratio=0.9) and find_text("Schließen", (3100, 2300, 3500, 2420)):
             click_text("Schließen", (3100, 2300, 3500, 2420))
             time.sleep(1.5)
-        tab = find_text(project, (0, 0, 4112, 90), min_ratio=0.9)
-        if tab:
+        tab = project_tab_hit(project)
+        if tab and _norm(tab["text"]) == _norm(project):
             click(tab["x"] + tab["w"] // 2, tab["y"] + tab["h"] // 2)
             time.sleep(3)
         else:
-            hit = find_text(project, (0, 700, 4112, 2400), min_ratio=0.9)
+            hit = start_page_tile(project)
+            if not hit and window_project() and open_start_page():
+                # Another project is open in front (the plain sweep's
+                # 'ets-sweep' before a secure run, 2026-11-10): its tiles are
+                # on the start page.
+                did.append("start page")
+                hit = start_page_tile(project)
             if not hit:
                 raise RuntimeError(f"ETS shows {window_project()!r} and no tile or tab for {project!r}")
-            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
-            t0 = time.time()
-            while time.time() - t0 < 120 and window_project() != project:
-                time.sleep(3)
-            time.sleep(5)
+            open_project_tile(hit, project, password)
         did.append("opened project")
         did.append(str(ensure_layout()))
         return did
@@ -825,17 +912,13 @@ def ensure_ets_running(project: str = "ets-sweep") -> list[str]:
         hit = None
         t1 = time.time()
         while not hit and time.time() - t1 < 60:
-            hit = find_text(project, (0, 700, 4112, 2400), min_ratio=0.9)
+            hit = start_page_tile(project)
             if not hit:
                 time.sleep(5)
         if not hit:
             raise RuntimeError(f"ETS started, but no project tile {project!r} on the overview")
-        click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+        open_project_tile(hit, project, password)
         did.append("opened project")
-        t0 = time.time()
-        while time.time() - t0 < 120 and window_project() != project:
-            time.sleep(3)
-        time.sleep(5)
     did.append(str(ensure_layout()))
     return did
 
@@ -908,12 +991,19 @@ def set_project_password(password: str) -> bool:
         click(button["x"] + button["w"] // 2, button["y"] + button["h"] // 2)
     else:
         keys("{ENTER}")
-    time.sleep(2)
-    after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
-    if "Projektpasswort" in after:
-        keys("{ESC}")
-        raise RuntimeError(f"the project password dialog stayed open: {after[:200]}")
-    return True
+    # Opening a protected project keeps its prompt on screen while ETS
+    # decrypts and loads the project (more than 2 s for ets-sweep-secure,
+    # 2026-11-10: the project opened after the driver had given up).
+    t0 = time.time()
+    while True:
+        time.sleep(2)
+        after = " ".join(l["text"] for l in ocr(PASSWORD_DIALOG))
+        if "Projektpasswort" not in after:
+            return True
+        if time.time() - t0 > 30 or re.search(r"(falsch|ungültig|Ungültig|nicht korrekt)", after):
+            break
+    keys("{ESC}")
+    raise RuntimeError(f"the project password dialog stayed open: {after[:200]}")
 
 
 def enter_certificate(certificate: str) -> bool:
@@ -1004,10 +1094,13 @@ def save_as(dialog, path: str) -> None:
 def project_tile(project: str) -> dict:
     """The tile of `project` on ETS's start page (its name under the icon)."""
     lines = ocr((0, 1150, 4112, 1320))
-    hits = [l for l in lines if re.sub(r"\s", "", l["text"]) == project]
-    if not hits:
-        raise RuntimeError(f"no tile for project {project!r}: {[l['text'] for l in lines][:12]}")
-    return hits[0]
+    # A name OCR split in two ('ets-sweep', '-secure') must not pass for the
+    # project whose name is its first fragment: whole names are matched on
+    # the joined row (`joined_texts`), and a fragment followed closely by
+    # another one is not a whole name.
+    for hit in whole_name_hits(lines, project):
+        return hit
+    raise RuntimeError(f"no tile for project {project!r}: {[l['text'] for l in lines][:12]}")
 
 
 @flow("export_keyring")
@@ -2501,7 +2594,8 @@ def ensure_layout() -> dict:
         ctypes.windll.user32.ShowWindow(w.handle, 3)  # SW_MAXIMIZE
         time.sleep(1.5)
         did.append("maximized")
-    for _ in range(2):
+    for _ in range(4):
+        # Three 'Gebäude' panels were stacked in ets-sweep-secure (2026-11-10).
         # Any panel above the Topologie panel (ETS reopens 'Gebäude' after a
         # restart) pushes the Katalog panel down: close the top panel while it
         # is not Topologie (its close button sits at the panel header's right).
@@ -2721,7 +2815,7 @@ def flow_reset_catalog(req: dict) -> dict:
     did.append(f"cleared {len(moved)} manufacturers")
     if req.get("delete", True):
         shutil.rmtree(aside, ignore_errors=True)
-    did += ensure_ets_running(req.get("project", "ets-sweep"))
+    did += ensure_ets_running(req.get("project", "ets-sweep"), req.get("project_password"))
     return {"did": did, "manufacturers": moved}
 
 
@@ -2994,7 +3088,8 @@ class Handler(BaseHTTPRequestHandler):
                     out.setdefault("ok", True)
                     self._send(200, out)
                     return
-                started = ensure_ets_running(req.get("project", "ets-sweep")) if name != "windows" else []
+                started = (ensure_ets_running(req.get("project", "ets-sweep"), req.get("project_password"))
+                           if name != "windows" else [])
                 if name not in ("windows", "state"):
                     import ctypes
 

@@ -4,7 +4,7 @@
 # ///
 """The KNX Data Secure variant of the ETS sweep (epic #419, part 4 #423).
 
-    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--filter ...] [--limit N] [--redo]
+    ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/secure.py run [--representative] [--filter ...] [--limit N] [--redo]
     uv run tools/ets-sweep/secure.py cert --serial 00FA12345678 --fdsk <32 hex>   # print a label
     uv run tools/ets-sweep/secure.py cert --check "<36-character label>"          # calibrate the format
     uv run tools/ets-sweep/secure.py jobs                                         # list the secure-capable jobs
@@ -25,6 +25,9 @@ For every application the defaults sweep captured whose program declares
    the capture (`project.knxkeys`, gitignored with every capture) and
    `knxtrace devices --keyring` decides whether the capture decodes end to
    end: every `A_SecureData` frame verified, none without a key.
+
+`--representative` runs only the applications of `secure-subset.json`
+(`secure_subset.py`, the owner's choice of 2026-11-10), in its order.
 
 Outputs per application under `captures/ets-sweep/<app>/secure-defaults/`;
 outcomes in `results/secure.json` (`captured` + `decoded` / `partial` /
@@ -192,6 +195,31 @@ def jobs() -> list[dict]:
     return out
 
 
+# An import error that fails every row after it: stop the run (defaults.py's
+# desktop checks, and ETS's 'not enough disk space').
+STOP_ERRORS = ("screen grab failed", "not the RDP layout", "desktop in use", "Speicherplatz")
+
+
+def save(results: dict) -> None:
+    RESULTS.parent.mkdir(exist_ok=True)
+    RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+
+
+def import_product(c, path: Path, pw: str) -> dict:
+    """Imports the product file into ETS's catalog, as defaults.py does
+    before a file's jobs: ETS adds a device only from its catalog, and the
+    catalog is reset between sweeps (`reset_catalog`)."""
+    import catalog
+    import vm
+
+    try:
+        remote = catalog.upload_if_missing(c, path)
+        return vm.driver(c, "POST", "/ets/catalog_import", {"path": remote, "timeout": 3600, "project": PROJECT,
+                                                            "project_password": pw}, timeout=3700)
+    except Exception as exc:  # noqa: BLE001 - recorded, the next job runs
+        return {"outcome": "error", "error": str(exc)[:300]}
+
+
 def run(args) -> int:
     import defaults
     import sweep
@@ -200,16 +228,50 @@ def run(args) -> int:
     pw = password()
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
     todo = jobs()
+    if args.representative:
+        import secure_subset
+
+        order = [r["app"] for r in secure_subset.load()]
+        by_id = {j["id"]: j for j in todo}
+        todo = [by_id[a] for a in order if a in by_id]
     wanted = [w.lower() for w in args.filter.split(",") if w]
     if wanted:
         todo = [j for j in todo if any(w in (j["id"] + " " + j["file"]).lower() for w in wanted)]
     c = vm.connect()
     vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
     done = 0
+    import_errors = 0
     for job in todo:
-        if job["id"] in results and not args.redo:
+        # A row whose import failed is run again (nothing of it reached ETS).
+        if job["id"] in results and not args.redo and not results[job["id"]].get("import_failed"):
             continue
         path = defaults.product_path(job["file"])
+        imp = import_product(c, path, pw)
+        if imp.get("outcome") not in ("imported", "done_unverified"):
+            error = (imp.get("message") or imp.get("error") or "")[:300]
+            results[job["id"]] = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"),
+                                  "when": datetime.now(timezone.utc).isoformat(),
+                                  "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
+                                  "error": error, "import_failed": imp.get("outcome") != "refused"}
+            save(results)
+            print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed: {error[:120]}", flush=True)
+            # defaults.py's stop rules: a desktop that cannot be used, or a
+            # run of failed imports (a dialog ETS left open, a full disk:
+            # 'nicht genug Speicherplatz', 2026-11-10) fails every row after it.
+            if any(k in error for k in STOP_ERRORS):
+                print(f"stopping: {error[:160]}", flush=True)
+                break
+            import_errors += imp.get("outcome") != "refused"
+            if import_errors >= defaults.MAX_IMPORT_ERRORS:
+                print(f"stopping: {import_errors} imports in a row failed", flush=True)
+                break
+            try:
+                c = vm.connect()
+            except Exception as exc:  # noqa: BLE001 - the VM is gone: stop, the rows stay to do
+                print(f"stopping: ssh reconnect failed: {exc}", flush=True)
+                break
+            continue
+        import_errors = 0
         secure, serial_prop = sim_security(job["id"])
         serial, fdsk = synthetic_identity(job["id"])
         props = (defaults.seed_properties(path, job["id"], job["prev"]) or []) + serial_prop
@@ -218,7 +280,8 @@ def run(args) -> int:
                           flow_extra={"project_password": pw,
                                       "certificate": certificate_text(serial, fdsk)},
                           after_download=export_hook(pw))
-        entry = {"file": job["file"], "mask": job["mask"], "when": datetime.now(timezone.utc).isoformat(),
+        entry = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"), "ia": r.get("ia"),
+                 "seconds": r.get("seconds"), "when": datetime.now(timezone.utc).isoformat(),
                  "outcome": r["outcome"], "error": r.get("error"), "ets": r.get("ets"), "ops": r.get("ops"),
                  "repair": (r.get("repair") or {}).get("dir")}
         out = sweep.CAPTURES / job["id"] / VARIANT
@@ -234,8 +297,7 @@ def run(args) -> int:
             except OSError as exc:
                 entry["decode"] = {"verdict": "no-keyring", "error": str(exc)[:200]}
         results[job["id"]] = entry
-        RESULTS.parent.mkdir(exist_ok=True)
-        RESULTS.write_text(json.dumps(dict(sorted(results.items())), indent=1, ensure_ascii=False) + "\n")
+        save(results)
         print(f"{entry['outcome']:13} {(entry.get('decode') or {}).get('verdict', '-'):10} {job['id']}"
               + (f"  {entry['error'][:100]}" if entry.get("error") else ""), flush=True)
         done += 1
@@ -251,6 +313,8 @@ def main() -> int:
     p.add_argument("--filter", default="")
     p.add_argument("--limit", type=int, default=0)
     p.add_argument("--redo", action="store_true")
+    p.add_argument("--representative", action="store_true",
+                   help="only the applications of secure-subset.json (secure_subset.py, #423)")
     p = sub.add_parser("cert")
     p.add_argument("--serial", help="12 hex digits")
     p.add_argument("--fdsk", help="32 hex digits")
