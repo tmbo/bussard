@@ -43,10 +43,11 @@ directories: `captures/ets-sweep/<app>/params-<seed>-<n>/` with
 `results/params.json`.
 
 `oracle` builds bussard's model from `params.json`: each change's label on
-its page and channel names one parameter reference in the product's Dynamic
-tree (`ref_places`; as many references of that label on the page as ETS
-shows rows, else the run is `unmapped`, not compared), its shown value the
-device file's value (`"param@<ref>" = ...`). The row
+its page and channel names its parameter references in the product's
+Dynamic tree (`ref_places`); where the tree has more of them than ETS shows
+rows, bussard's shared Dynamic evaluator decides which is shown
+(`bussard_shown_refs`), else the run is `unmapped`, not compared. The shown
+value is the device file's value (`"param@<ref>" = ...`). The row
 `1.1.1|<capture>|<product>|<app>` then compares ETS's download with
 bussard's plan for that model. Verdicts in `results/oracle-params.json`.
 There is no project export: ETS exports the product data of every device
@@ -305,48 +306,71 @@ def page_parts(page: dict) -> tuple[str | None, str]:
 
 def enum_value(model: dict, ref: str, shown: str) -> str | None:
     """The value of enumeration reference `ref` whose label ETS shows as
-    `shown`."""
+    `shown`: the one label alike, else the one label it begins (OCR loses
+    the end of a radio option's text at times: '0 = Aus' for '0 = Aus,
+    1 = Ein')."""
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
-    hits = [str(v) for v, t in p.get("labels") or [] if alike(str(t), shown, 0.9)]
+    labels = [(str(v), str(t)) for v, t in p.get("labels") or []]
+    hits = [v for v, t in labels if alike(t, shown, 0.9)]
+    if len(hits) != 1 and len(norm(shown)) >= 3:
+        hits = [v for v, t in labels if norm(t).startswith(norm(shown))]
     return hits[0] if len(hits) == 1 else None
 
 
-def map_change(model: dict, places: list[dict], change: dict, rows_on_page: int) -> tuple[str, str] | str:
-    """(reference, value) of one change as ETS shows it after the run
-    (`shown`), or why it cannot be mapped: the label on the change's page
-    and channel must name as many references in the tree as ETS shows rows
-    of that label there, so the change's occurrence picks one."""
-    channel, page = page_parts(change["page"])
-    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"]
-             and alike(re.sub(r"^\s*-\s*", "", p["page"]), re.sub(r"^\s*-\s*", "", page))
-             and (channel is None or (p["channel"] and alike(p["channel"], channel)))]
-    cands = list(dict.fromkeys(cands))
-    if not cands:
-        return f"no reference labelled {change['label']!r} on {page!r}"
-    if len(cands) != rows_on_page:
-        return f"{len(cands)} references labelled {change['label']!r} on {page!r}, ETS shows {rows_on_page}"
-    ref = cands[change.get("n", 0)]
+def ref_default(model: dict, ref: str) -> str:
+    """The default of reference `ref`: its own value, else its parameter's."""
+    r = (model.get("parameter_refs") or {}).get(ref) or {}
+    p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
+    return str(r.get("value") if r.get("value") not in (None, "") else p.get("default", ""))
+
+
+def value_of(model: dict, ref: str, change: dict) -> str | None:
+    """The device file's value of reference `ref` for what ETS shows
+    (`change['shown']`), None when it does not convert."""
     shown = str(change.get("shown", ""))
     kind = change["kind"]
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
     pkind = p.get("kind") if isinstance(p.get("kind"), dict) else {}
-    if kind in ("radio", "dropdown") or (kind == "checkbox" and "Enum" in pkind):
-        if kind == "checkbox":
-            values = [str(v) for v, _ in p.get("labels") or []]
-            value = shown if shown in values else None
-        else:
-            value = enum_value(model, ref, shown)
-        return (ref, value) if value is not None else f"{change['label']!r}: no value labelled {shown!r}"
+    # A control of another type than the parameter's is not its row; a
+    # virtual parameter (an information text) is never downloaded.
+    fits = {"radio": ("Enum",), "dropdown": ("Enum",), "checkbox": ("Enum", "Int"),
+            "number": ("Int", "Float"), "text": ("Text",)}.get(kind, ())
+    if p.get("is_virtual") or not any(k in pkind for k in fits):
+        return None
+    if kind in ("radio", "dropdown"):
+        return enum_value(model, ref, shown)
+    if kind == "checkbox" and "Enum" in pkind:
+        return shown if shown in [str(v) for v, _ in p.get("labels") or []] else None
     if kind in ("checkbox", "number"):
-        return (ref, shown) if re.fullmatch(r"-?\d+(\.\d+)?", shown) else f"{change['label']!r}: {shown!r} is no number"
-    return ref, shown
+        return shown if re.fullmatch(r"-?\d+(\.\d+)?", shown) else None
+    return shown
 
 
-def model_changes(model: dict, survey_after: list[dict], done: list[dict]) -> tuple[dict, list[str]]:
+def candidates_of(places: list[dict], change: dict) -> list[str]:
+    """The references labelled like the change on its page and channel, in
+    tree order."""
+    channel, page = page_parts(change["page"])
+    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"]
+             and alike(re.sub(r"^\s*-\s*", "", p["page"]), re.sub(r"^\s*-\s*", "", page))
+             and (channel is None or (p["channel"] and alike(p["channel"], channel)))]
+    return list(dict.fromkeys(cands))
+
+
+def model_changes(model: dict, survey_after: list[dict], done: list[dict],
+                  shown_refs=None) -> tuple[dict, list[str]]:
     """The device file's parameter values for the changes ETS shows after
-    the run, {"<name>@<ref>": value}, and the changes that do not map."""
+    the run, {"param@<ref>": value}, and the changes that do not map.
+
+    A change's label on its page and channel names its candidate
+    references (`candidates_of`). When the tree lists more of them than
+    ETS shows rows of that label (the branches of a choose), `shown_refs`
+    decides: called with every candidate stored, it returns the references
+    bussard's shared Dynamic evaluator shows under those values (`bussard
+    device`: a stored parameter "not shown under the current values" is
+    left out), and the change's occurrence picks among those. Without it,
+    or when the count still differs, the change is a problem."""
     places = ref_places(model)
     rows_of: dict[tuple, int] = {}
     for page in survey_after:
@@ -355,17 +379,85 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict]) -> tu
             rows_of[key] = rows_of.get(key, 0) + 1
     values: dict[str, str] = {}
     problems: list[str] = []
+    open_: list[tuple[dict, list[str], int]] = []
     for d in done:
         if d.get("result") != "set":
             continue
         n_rows = rows_of.get((norm(d["page"].get("crumb") or ""), norm(d["label"])), 0)
-        got = map_change(model, places, d, n_rows)
-        if isinstance(got, str):
-            problems.append(got)
+        cands = candidates_of(places, d)
+        _, page = page_parts(d["page"])
+        if not cands:
+            problems.append(f"no reference labelled {d['label']!r} on {page!r}")
             continue
-        ref, value = got
-        values[f"param@{ref}"] = value
+        if len(cands) == n_rows:
+            cands = [cands[d.get("n", 0)]]
+        def virtual(ref: str) -> bool:
+            r = (model.get("parameter_refs") or {}).get(ref) or {}
+            return bool(((model.get("parameters") or {}).get(r.get("parameter") or "") or {}).get("is_virtual"))
+        if all(virtual(r) for r in cands):
+            # An information text ETS never downloads: nothing to model.
+            continue
+        # A candidate whose values ETS's text does not name is not the row.
+        converted = [(ref, v) for ref in cands if (v := value_of(model, ref, d)) is not None]
+        if not converted:
+            problems.append(f"{d['label']!r}: no value for {d.get('shown')!r}")
+            continue
+        if len(cands) > 1 and all(str(v) == ref_default(model, r) for r, v in converted):
+            # ETS shows the default: whichever reference it is, the model's
+            # default stands (and bussard's evaluator flags no hidden value
+            # at its default, so it could not tell them apart).
+            continue
+        if len(cands) > 1:
+            open_.append((d, converted, n_rows))
+            continue
+        values[f"param@{converted[0][0]}"] = str(converted[0][1])
+    # Each open change on its own: its candidates stored over the mapped
+    # values, so the candidates of another change switch no branch here.
+    definite = dict(values)
+    for d, converted, n_rows in open_:
+        cands = [r for r, _ in converted]
+        shown = shown_refs({**definite, **{f"param@{r}": str(v) for r, v in converted}}) if shown_refs else None
+        visible = [r for r in cands if shown is not None and r in shown]
+        _, page = page_parts(d["page"])
+        if len(visible) != n_rows:
+            problems.append(f"{len(cands)} references labelled {d['label']!r} on {page!r}, "
+                            f"{len(visible)} shown, ETS shows {n_rows}")
+            continue
+        ref = visible[d.get("n", 0)]
+        values[f"param@{ref}"] = str(value_of(model, ref, d))
     return values, problems
+
+
+def bussard_shown_refs(model_dir: Path):
+    """`model_changes`'s `shown_refs` for the model in `model_dir`: writes
+    the values to its device file and returns the stored references
+    `bussard device 1.1.1 <scope> --json` shows (not `ignored`), over the
+    device-level parameters and every channel."""
+    import oracle_model
+
+    def run(*args) -> dict:
+        r = subprocess.run([str(oracle_model.BUSSARD), "device", "1.1.1", *args, "--json", "--dir", str(model_dir)],
+                           capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            return {}
+
+    def shown(values: dict) -> set[str]:
+        (model_dir / "devices" / "1.1.1.toml").write_text(device_toml_with(values))
+        # The oracle's models pin no channels in the lock, so every stored
+        # parameter is listed at device level; a channel's own, where the
+        # lock has channels, with it.
+        top = run()
+        handles = ["device"] + [c["handle"] for c in top.get("channels") or [] if c.get("handle")]
+        out: set[str] = set()
+        for h in handles:
+            for p in (run(h).get("scope") or {}).get("parameters") or []:
+                if not p.get("ignored") and p.get("reference"):
+                    out.add(p["reference"])
+        return out
+
+    return shown
 
 
 def device_toml_with(values: dict) -> str:
@@ -594,7 +686,6 @@ def oracle(args) -> int:
     """Each captured configuration against bussard's plan for the values
     ETS showed after the run (`params.json`: the read-back, see `read_back`)."""
     import defaults
-    import oracle_model
     import sweep
 
     results = json.loads(RESULTS.read_text()) if RESULTS.exists() else {}
@@ -614,17 +705,11 @@ def oracle(args) -> int:
         job = jobs.get(app)
         run_dir = sweep.CAPTURES / app / name
         recorded = json.loads((run_dir / "params.json").read_text())
-        shared, _ = shared_for(job, args.work)
-        model = model_json(shared, app)
-        values, problems = model_changes(model, recorded.get("pages_final") or recorded.get("pages_after") or [],
-                                         recorded.get("changes") or [])
-        if problems:
+        model_dir, problems = change_model(job, args.work, args.work / app / name / "model", recorded)
+        if model_dir is None:
             out[key] = {"verdict": "unmapped", "problems": problems[:8]}
         else:
             product = defaults.product_path(job["file"])
-            model_dir = oracle_model.build(args.work / app / name / "model", product, app, mask=job["mask"],
-                                           shared=shared)
-            (model_dir / "devices" / "1.1.1.toml").write_text(device_toml_with(values))
             # The address ETS gave the device (1.1.0 for a coupler, #876).
             ia = str(entry.get("ia") or "1.1.1")
             if ia != "1.1.1":
@@ -637,8 +722,7 @@ def oracle(args) -> int:
                 text = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
                 summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
                 m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)", summary)
-                out[key] = {"verdict": m.group(2) if m else "oracle-error", "summary": summary.strip(),
-                            "values": len(values)}
+                out[key] = {"verdict": m.group(2) if m else "oracle-error", "summary": summary.strip()}
         out[key]["set"] = (entry.get("params") or {}).get("set")
         out[key]["when"] = datetime.now(timezone.utc).isoformat()
         ORACLE_OUT.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
@@ -676,12 +760,12 @@ def change_model(job: dict, work: Path, out: Path, recorded: dict) -> tuple[Path
 
     shared, _ = shared_for(job, work)
     model = model_json(shared, job["id"])
-    values, problems = model_changes(model, recorded.get("pages_final") or recorded.get("pages_after") or [],
-                                     recorded.get("changes") or [])
-    if problems:
-        return None, problems
     model_dir = oracle_model.build(out, defaults.product_path(job["file"]), job["id"], mask=job["mask"],
                                    shared=shared)
+    values, problems = model_changes(model, recorded.get("pages_final") or recorded.get("pages_after") or [],
+                                     recorded.get("changes") or [], bussard_shown_refs(model_dir))
+    if problems:
+        return None, problems
     (model_dir / "devices" / "1.1.1.toml").write_text(device_toml_with(values))
     return model_dir, []
 

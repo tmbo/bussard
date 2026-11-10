@@ -474,9 +474,12 @@ meant to set: a change that does not read back makes the run
 `driver-error-params`, and it is not compared. `params.json` in the run
 directory holds the surveys and, per change, whether it was set, unreachable
 (ETS does not show the page or row), failed or lost, and what ETS showed.
-`oracle` maps each change to one parameter reference (its label on its page
-and channel in the product's Dynamic tree, as many references as ETS shows
-rows of that label, else `unmapped`) and runs the row with that model. No
+`oracle` maps each change to one parameter reference: its label on its page
+and channel in the product's Dynamic tree; where the tree has more
+references of that label than ETS shows rows (the branches of a choose),
+bussard's shared Dynamic evaluator decides (`bussard device` marks a stored
+value "not shown under the current values"), else the run is `unmapped` and
+not compared. Then it runs the row with that model. No
 project is exported: ETS exports the product data of every device a project
 ever held, 17.5 GB and more than 14 minutes for `ets-sweep` (2026-11-10). `--representative` runs `params-subset.json`, a
 greedy cover of masks, parameter placement (memory, property), parameter

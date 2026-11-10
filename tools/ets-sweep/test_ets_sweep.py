@@ -208,6 +208,25 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertIn("2 references", problems[0])
 
+    def test_model_changes_asks_the_evaluator_between_branches(self):
+        # Two references of one label on the page (a choose's branches), ETS
+        # shows one row: the evaluator's shown reference is taken; at the
+        # default nothing is stored.
+        final = [{"crumb": "- Al-16: Statusanzeigen schalten", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "7"}]}]
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "7")]
+        asked = []
+
+        def shown(values):
+            asked.append(dict(values))
+            return {"P-2_R-2"}
+        values, problems = params.model_changes(self.MODEL, final, done, shown)
+        self.assertEqual((values, problems), ({"param@P-2_R-2": "7"}, []))
+        self.assertEqual(asked, [{"param@P-1_R-1": "7", "param@P-2_R-2": "7"}])
+        model = json.loads(json.dumps(self.MODEL))
+        model["parameters"]["P-1"]["default"] = model["parameters"]["P-2"]["default"] = "7"
+        self.assertEqual(params.model_changes(model, final, done, shown), ({}, []))
+
     def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
         done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
                  "set_to": "2 Presetobjekten"},
