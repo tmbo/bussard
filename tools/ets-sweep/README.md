@@ -330,9 +330,12 @@ A number OCR skips (Windows OCR reads no lone digit) is read from the cell's
 glyph repeated three times, else a lone narrow glyph is a 0 (it has a hole)
 or a 1; a row whose number stays unread is left out, never guessed. Before,
 every such row was taken as 1, and the links oracle modelled the neighbour
-of the object ETS linked (MDT AKK object 0, DALI Basic 2f object 2). ETS's
-question about another object size is answered with OK and cancelled when a
-failed link leaves it open.
+of the object ETS linked (MDT AKK object 0, DALI Basic 2f object 2). A lone
+narrow glyph is a 1 whatever OCR reads (it read the ise Vaillant's selected
+1 as 0), and a linked row the last read numbers otherwise keeps the link's
+number. ETS's questions after a link (another object size; datatypes of
+different main types, ise KNX Hue) are answered with OK and cancelled when a
+failed link leaves one open.
 
 **Partial-download series, representative products.**
 

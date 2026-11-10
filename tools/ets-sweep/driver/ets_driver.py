@@ -1741,19 +1741,42 @@ def ink_box(img, dark: int = 150) -> tuple[int, int, int, int] | None:
     return (xs[0], ys[0], xs[-1] + 1, ys[-1] + 1) if xs and ys else None
 
 
-def glyph_digit(img) -> int | None:
-    """0 or 1 for a lone narrow glyph in a number cell (greyscale), else
-    None: a 0 has a hole (light pixels between dark ones across its middle
-    row), a 1 has none. Wider ink is more than one digit, left to OCR."""
+def has_hole(img) -> bool:
+    """True when the ink of a number cell (greyscale) has light pixels
+    between dark ones across its middle row: a 0 (or a 6, 8, 9)."""
     box = ink_box(img)
     if box is None:
-        return None
+        return False
     x0, y0, x1, y1 = box
-    if x1 - x0 > img.height // 3:
-        return None
     mid = [img.getpixel((x, (y0 + y1) // 2)) < 150 for x in range(x0, x1)]
-    first, last = mid.index(True) if True in mid else 0, len(mid) - 1 - mid[::-1].index(True) if True in mid else 0
-    return 0 if any(not d for d in mid[first:last + 1]) else 1
+    first, last = mid.index(True), len(mid) - 1 - mid[::-1].index(True)
+    return any(not d for d in mid[first:last + 1])
+
+
+def lone_one(img) -> bool:
+    """True when a number cell (greyscale) holds a lone 1: one glyph at most
+    0.45 times as wide as it is tall, without a hole. A 1 measured 6 x 17
+    pixels, a 0 or a 7 is half as wide as tall or more (2026-11-10)."""
+    box = ink_box(img)
+    if box is None:
+        return False
+    x0, y0, x1, y1 = box
+    return (x1 - x0) <= 0.45 * (y1 - y0) and not has_hole(img)
+
+
+def cell_digit(img, ocr_number: int | None) -> int | None:
+    """The number of a cell OCR's plain pass skipped, from the repeated-glyph
+    OCR (`ocr_number`) checked against the ink: OCR read the selected row's
+    lone 1 of the ise KNX Vaillant as 0 (2026-11-10), so a 1 must be a lone
+    narrow glyph and a 0 a glyph with a hole that is not one; a lone 1 is
+    taken by its shape whatever OCR read. None when they disagree."""
+    if lone_one(img):
+        # Only a 1 is that narrow: whatever OCR made of it (0 and 4 for the
+        # Vaillant's selected row).
+        return 1
+    if ocr_number == 1 or ocr_number == 0 and not has_hole(img):
+        return None
+    return ocr_number
 
 
 def repeated_number(text: str) -> int | None:
@@ -1825,14 +1848,12 @@ def read_objects(numbers: list[int] | None = None) -> list[dict]:
             continue
         img = grab((722, r["y"] - 16, 830, r["y"] + 16)).convert("L")
         # Read the cell's digits by OCR of the glyphs repeated ('7 7 7'):
-        # Windows OCR skips a lone digit but reads a word of them. Else a
-        # lone narrow glyph is a 0 (it has a hole) or a 1. Until 2026-11-10
+        # Windows OCR skips a lone digit but reads a word of them; a 0 or 1
+        # it reads must match the glyph's shape (`cell_digit`). Until 2026-11-10
         # every narrow glyph was taken as 1: the MDT AKK's object 0 and the
         # DALI Basic's object 2 were recorded as 1, and the links oracle
         # modelled the neighbour of the object ETS linked (#478).
-        n = cell_number(img)
-        if n is None:
-            n = glyph_digit(img)
+        n = cell_digit(img, cell_number(img))
         if n is not None and (prev is None or prev < n) and (nxt is None or nxt > n):
             r["number"] = n
     rows = {cy: r for cy, r in rows.items() if r["number"] is not None}
@@ -1968,12 +1989,16 @@ def link_refusal(button: dict) -> str | None:
     return " and ".join(why) + f" (the dialog offers {', '.join(offered) or 'no address'}, addresses of the object's size)"
 
 
-# Where ETS asks whether an address of another object size may take the
-# object's datatype ('... abweichende Objektgröße ...', syn-minimal,
-# 2026-10-31), and its OK button.
-SIZE_PROMPT = (1260, 1100, 2850, 1260)
-SIZE_PROMPT_OK = (2450, 1410, 2700, 1500)
-SIZE_PROMPT_CANCEL = (2650, 1410, 2900, 1500)
+# ETS's questions after a link: a dialog titled 'Mit Gruppenadresse
+# verbinden' as well, with a question icon, its title at y ~1068 (the link
+# dialog's is at ~610), OK and Abbrechen at y ~1456 where its width puts
+# them. Seen: an address of another object size ('... abweichende
+# Objektgröße ...', syn-minimal 2026-10-31, 879 414 knx) and datatypes of
+# different main types ('Sollen Datentypen aus verschiedenen
+# Hauptdatentypen zugewiesen werden?', ise KNX Hue, 2026-11-10). Both are
+# answered OK, as a person linking the object would.
+QUESTION_TITLE = (1400, 1030, 2850, 1110)
+QUESTION_BUTTONS = (1260, 1410, 2850, 1510)
 
 
 def _ga_text(text: str) -> str:
@@ -2095,20 +2120,30 @@ def link_row(row: dict, number: int, ga: str) -> dict:
 MENU_UIA = {"timeout": 1.5}
 
 
-def close_size_prompt() -> bool:
-    """Cancel ETS's question about another object size (a 'Mit
-    Gruppenadresse verbinden' dialog of its own, below the link dialog's
-    title, so `close_link_dialog` does not see it): left open after a failed
-    link it covered the Katalog panel and five imports failed (879 414 knx,
-    2026-11-10). True when one was open."""
-    if not find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7):
-        return False
-    hit = find_text("Abbrechen", SIZE_PROMPT_CANCEL)
+def link_question_open() -> bool:
+    """True while ETS's question after a link is open (`QUESTION_TITLE`)."""
+    return find_text("Mit Gruppenadresse verbinden", QUESTION_TITLE) is not None
+
+
+def answer_link_question(label: str) -> bool:
+    """Click `label` ('OK' or 'Abbrechen') in ETS's question after a link
+    (Enter or Escape when OCR misses the button); True once it closed."""
+    hit = button_hit(ocr(QUESTION_BUTTONS), label)
     if hit:
-        click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+        click(hit["click_x"], hit["click_y"])
     else:
-        keys("{ESC}")
-    wait_for("size question closed", lambda: not find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7), 3, 0.3)
+        keys("{ENTER}" if label == "OK" else "{ESC}")
+    return bool(wait_for("link question closed", lambda: not link_question_open(), 3, 0.3))
+
+
+def close_link_question() -> bool:
+    """Cancel ETS's question after a link when one is open: left open after
+    a failed link it covered the Katalog panel and every import after it
+    failed (879 414 knx and ise KNX Hue, 2026-11-10). True when one was open."""
+    if not link_question_open():
+        return False
+    log("closing a question after a link with Abbrechen")
+    answer_link_question("Abbrechen")
     return True
 
 
@@ -2173,14 +2208,11 @@ def verify_link(row: dict, rows: list[dict], number: int, ga: str,
         seen["gas"] = gas_at(row["y"])
         if ga in seen["gas"]:
             return "shown"
-        # ETS's question about another object size (a dialog titled 'Mit
-        # Gruppenadresse verbinden' as well, its OK at y ~1456).
-        return "prompt" if find_text("abweichende Objektgröße", SIZE_PROMPT, min_ratio=0.7) else None
+        return "prompt" if link_question_open() else None
     state = wait_for("row shows the address", settled, 2.5)
     if state == "prompt":
-        # An address the project already holds with another object size:
-        # ETS asks whether to take the object's datatype for it. OK takes it.
-        click_text("OK", SIZE_PROMPT_OK)
+        # ETS asks about the address's size or datatype: OK takes the link.
+        answer_link_question("OK")
         state = wait_for("row shows the address", lambda: settled() == "shown" and "shown", 2.5)
     if state == "shown" and not view_changed(rows, table_numbers()):
         new = {**row, "gas": seen["gas"]}
@@ -2197,6 +2229,12 @@ def verify_link(row: dict, rows: list[dict], number: int, ga: str,
         click(1500, GO_TABLE[3] - 20)
         time.sleep(0.5)
         hit, rows = find_row(number, [], numbers)
+    if hit is not None and ga not in hit["gas"]:
+        # ETS shows the address seconds late at times (ise KNX viega object
+        # 40, 2026-11-10): look at the row a while longer before failing.
+        late = wait_for("row shows the address late", lambda: ga in gas_at(hit["y"]) and gas_at(hit["y"]), 4, 0.5)
+        if late:
+            hit = {**hit, "gas": late}
     if hit is None or ga not in hit["gas"]:
         raise RuntimeError(f"object {number} shows {hit and hit['gas']} after linking {ga}")
     return hit, rows
@@ -2216,7 +2254,7 @@ def flow_links(req: dict) -> dict:
     require_project(req["project"])
     # A link dialog a failed link left open covers the object table and the
     # Katalog panel: every import after it failed (2026-11-10, #478).
-    closed = close_size_prompt() | close_link_dialog()
+    closed = close_link_question() | close_link_dialog()
     MENU_UIA["timeout"] = 1.5
     numbers = req.get("numbers")
     wanted = [(int(n), str(g)) for n, g in req["links"]]
@@ -2245,7 +2283,7 @@ def flow_links(req: dict) -> dict:
         # Leave nothing open over the table and the Katalog panel: the next
         # import looks for its button there.
         close_menus()
-        close_size_prompt()
+        close_link_question()
         close_link_dialog()
         raise
     result = {"links": out, "opened": opened, "closed_link_dialog": closed}
@@ -2265,7 +2303,17 @@ def with_linked_rows(objects: list[dict], links: list[dict]) -> list[dict]:
         row = link.get("row")
         if link.get("linked") and row and row.get("number") not in have:
             rows[row["number"]] = row
-    return sorted(objects + list(rows.values()), key=lambda r: r["y"])
+    # A row of the last read at the place of an added one is that object
+    # under a misread number (the ise KNX Hue's object 1 read as 0 after its
+    # link, 2026-11-10: objects.json held both, and the links oracle modelled
+    # a link ETS never made). The number the link was made and verified on
+    # stands.
+    kept = [r for r in objects if all(abs(r["y"] - a["y"]) >= 14 for a in rows.values())]
+    for r in objects:
+        if r not in kept:
+            log(f"objects: row at y {r['y']} read as {r['number']}, linked as "
+                f"{next(a['number'] for a in rows.values() if abs(r['y'] - a['y']) < 14)}; the link's number stands")
+    return sorted(kept + list(rows.values()), key=lambda r: r["y"])
 
 
 @flow("link")
