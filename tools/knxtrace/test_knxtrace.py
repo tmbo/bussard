@@ -3016,15 +3016,22 @@ class TestStateDiff(unittest.TestCase):
     # AbsSegment of the address table at 0x4000, 0x20 octets.
     SEG = bytes.fromhex("030040000020ff038000")
 
-    def capture(self, writes, records=(), props=()) -> str:
-        """A capture of 1.1.5: the load-control records of object 1, the
-        property writes (obj, pid, count, index, data), then the memory
-        writes."""
+    def capture(self, writes, records=(), props=(), types=(), calls=()) -> str:
+        """A capture of 1.1.5: the device's answers to PID_OBJECT_TYPE reads
+        (index, type), the load-control records of object 1, the function
+        property commands (type, pid, data), the property writes (obj, pid,
+        count, index, data), then the memory writes."""
         path = tempfile.mkstemp(suffix=".pcapng")[1]
         self.addCleanup(os.unlink, path)
         tool, dev = "0.0.0", "1.1.5"
         frames = [cemi_ldata(tool, dev, t_connect())]
+        for n, (index, obj_type) in enumerate(types):
+            frames.append(cemi_ldata(dev, tool, prop_response(index, 1, 1, 1, struct.pack("!H", obj_type), seq=n),
+                                     mc=0x29))
         seq = 0
+        for obj_type, pid, data in calls:
+            frames.append(cemi_ldata(tool, dev, func_command(obj_type, pid, data, seq=seq)))
+            seq += 1
         for rec in records:
             frames.append(cemi_ldata(tool, dev, prop_write(1, 5, 1, 1, rec, seq=seq)))
             seq += 1
@@ -3082,21 +3089,39 @@ class TestStateDiff(unittest.TestCase):
     def test_statediff_property_only_step_compares_elements(self):
         # Issue #944: a parameter-only download of a property-only program
         # writes no memory. ETS rewrites all 3 elements of obj 10 PID 55,
-        # bussard the changed one; both end equal.
+        # bussard the changed one; both end equal. The headline stays the
+        # memory's (nothing written), the properties have their own verdict.
         base = self.capture([], props=[(10, 55, 3, 1, b"\x00\x14\x00")])
         ets = self.capture([], [self.START, self.DONE], props=[(10, 55, 3, 1, b"\x01\x14\x00")])
         ours = self.capture([], [self.START, self.DONE], props=[(10, 55, 1, 1, b"\x01")])
         r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
-        self.assertEqual(r["verdict"], memimage.IDENTICAL, r)
+        self.assertEqual(r["verdict"], memimage.NOT_COMPARABLE, r)
+        self.assertEqual(r["properties"]["verdict"], memimage.IDENTICAL)
         self.assertEqual((r["properties"]["compared"], r["properties"]["differing"]), (3, 0))
+        self.assertEqual(len(r["properties"]["matched"]), 3)
 
-    def test_statediff_property_value_differs(self):
-        base = self.capture([], props=[(10, 55, 2, 1, b"\x00\x14")])
-        ets = self.capture([], props=[(10, 55, 1, 2, b"\x15")])
-        ours = self.capture([], props=[(10, 55, 1, 2, b"\x16")])
+    def test_statediff_property_value_differs_keeps_the_memory_headline(self):
+        base = self.capture([(0x4000, b"\x02")], props=[(10, 55, 2, 1, b"\x00\x14")])
+        ets = self.capture([(0x4000, b"\x03")], props=[(10, 55, 1, 2, b"\x15")])
+        ours = self.capture([(0x4000, b"\x03")], props=[(10, 55, 1, 2, b"\x16")])
         r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
-        self.assertEqual(r["verdict"], memimage.DIFFERS)
+        self.assertEqual(r["verdict"], memimage.IDENTICAL)
+        self.assertEqual(r["properties"]["verdict"], memimage.DIFFERS)
         self.assertEqual(r["properties"]["differences"], [{"property": "obj10 PID 55 [2]", "bussard": "16", "ets": "15"}])
+        self.assertEqual(r["properties"]["value_counts"], {"differs": 1})
+
+    def test_statediff_properties_skip_imgdiff_exemptions_and_function_calls(self):
+        # Object 6 is the security object (type 17): its send sequence (PID
+        # 59) is a counter imgdiff never compares; the verify-mode switch
+        # (obj0 PID 14) neither; a function property command is a call.
+        ets = self.capture([], types=[(6, 17)], calls=[(17, 51, b"\x01")],
+                           props=[(6, 59, 1, 1, b"\x00\x00\x00\x00\x10\x00"), (0, 14, 1, 1, b"\x04")])
+        ours = self.capture([], types=[(6, 17)], props=[(6, 59, 1, 1, b"\x00\x00\x00\x00\x20\x00")])
+        r = self.run_cli("--ets", ets, "--bussard", ours)
+        props = r["properties"]
+        self.assertEqual(props["verdict"], memimage.NOT_COMPARABLE, props)
+        self.assertEqual(sorted(e["key"][1] for e in props["not_compared"]), [14, 59])
+        self.assertEqual(props["compared"], 0)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

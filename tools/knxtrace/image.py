@@ -1604,6 +1604,36 @@ def _captured_object_types(image_dir: str) -> Dict[int, int]:
         return {}
 
 
+def type_instances(types: Dict[int, int]) -> Dict[int, Tuple[int, int]]:
+    """Each interface object index with its (type, instance): instance i of
+    type t is the i-th index, in index order, whose type is t."""
+    out: Dict[int, Tuple[int, int]] = {}
+    seen: Dict[int, int] = {}
+    for index in sorted(types):
+        t = types[index]
+        seen[t] = seen.get(t, 0) + 1
+        out[index] = (t, seen[t])
+    return out
+
+
+def property_exemption(label: str, pid: int) -> Optional[str]:
+    """Why a property (`_obj_label` form, PID) is listed and never compared
+    in a device state: the writes `NOT_COMPARED_ETS_WRITES` names (the
+    security object's mode, tool key and send sequence, PID_PROGMODE) and
+    the verify-mode switch (obj0 PID_DEVICE_CONTROL, issue #705)."""
+    reason = NOT_COMPARED_ETS_WRITES.get((label, pid))
+    if reason is None and label == "obj0" and pid == PID_DEVICE_CONTROL:
+        reason = "PID_DEVICE_CONTROL: the verify-mode switch (#705)"
+    return reason
+
+
+def value_check(ours: Dict[str, object], theirs: Dict[str, object]) -> Tuple[str, str]:
+    """`_value_check` for another module (`statediff`): (outcome, why) of two
+    property values, the security object's group key and sender tables by
+    entry."""
+    return _value_check(ours, theirs)
+
+
 def resolve_index_writes(
     ours: List[Dict[str, object]],
     ets: List[Dict[str, object]],
@@ -1624,12 +1654,7 @@ def resolve_index_writes(
     """
     if not types:
         return ets
-    instance_of: Dict[int, Tuple[int, int]] = {}
-    seen: Dict[int, int] = {}
-    for index in sorted(types):
-        t = types[index]
-        seen[t] = seen.get(t, 0) + 1
-        instance_of[index] = (t, seen[t])
+    instance_of = type_instances(types)
     ours_typed = {(_obj_label(w["object"]), int(w["pid"])) for w in ours if "type" in w["object"]}
     ets_props = {(_obj_label(e["object"]), int(e["pid"])) for e in ets}
     out: List[Dict[str, object]] = []

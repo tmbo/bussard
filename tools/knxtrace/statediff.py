@@ -24,11 +24,15 @@ whose parameters all live in interface-object properties writes no memory
 in a parameter-only download): the final value of every property element
 (object, PID, element index; a write of `count` elements at `index` sets
 each) either side wrote in the step, over the base's writes. The load-state
-machine's own PID 5 is left to the load-control comparison. A step that
-wrote properties and no memory is compared on its properties. A value that
-may be key material (a key PID on any object but the device object, as
-`property_writes` hashes it) compares as one element per write, so two
-tools match there only when they write it in the same shape.
+machine's own PID 5 is left to the load-control comparison, function
+property commands to the fcall comparison. Their verdict is reported apart
+from the memory's (`properties`, the keys the oracle reads as `props=`),
+as imgdiff reports it; the headline stays the memory's. The writes imgdiff
+never compares (the security object's mode, tool key and send sequence,
+PID_PROGMODE, the verify-mode switch) are listed, not compared, and the
+security object's tables compare whole by imgdiff's value check. Objects
+named by index meet those named by type through the object types the
+captures read.
 """
 
 from __future__ import annotations
@@ -78,21 +82,42 @@ def segments(ops_list: List[Optional[DeviceOps]]) -> Dict[int, Tuple[int, int]]:
 PID_LOAD_STATE_CONTROL = 5
 
 
-def property_elements(ops: Optional[DeviceOps]) -> Dict[Tuple[str, int, int], str]:
+# Function property commands are calls, not state: the fcall comparison
+# (`image.compare_function_properties`) covers them.
+FUNCTION_SERVICES = frozenset({"A_FunctionPropertyExt_Command", "M_FuncPropCommand.req"})
+
+
+def object_labels(ops_list: List[Optional[DeviceOps]]) -> Dict[int, str]:
+    """Each interface object index a capture resolved to its type, as the
+    label `image` keys types by (`type17.1`): from every capture's reads of
+    PID_OBJECT_TYPE and PID_IO_LIST (`image.object_types`)."""
+    types: Dict[int, int] = {}
+    for ops in ops_list:
+        if ops is not None:
+            types.update(memimage.object_types(ops))
+    return {i: "type%d.%d" % ti for i, ti in memimage.type_instances(types).items()}
+
+
+def property_elements(ops: Optional[DeviceOps], labels: Optional[Dict[int, str]] = None
+                      ) -> Dict[Tuple[str, int, int], str]:
     """Every property element the tool wrote in one capture, as hex (the
     last write wins): (object, PID, element index) -> value. A write of
-    `count` elements of `length` octets starting at `index` sets each; a
-    write without a count (an extended function property) is one element
-    at index 0."""
+    `count` elements of `length` octets starting at `index` sets each. The
+    object is its type label when `labels` resolves its index, so a write by
+    index and one by type of the same object meet. Function property
+    commands are left out (`FUNCTION_SERVICES`)."""
     out: Dict[Tuple[str, int, int], str] = {}
     if ops is None:
         return out
     for w in memimage.property_writes(ops):
         pid = w.get("pid")
-        if not isinstance(pid, int) or pid == PID_LOAD_STATE_CONTROL:
+        if not isinstance(pid, int) or pid == PID_LOAD_STATE_CONTROL or w.get("service") in FUNCTION_SERVICES:
             continue
         obj = w["object"]
-        key = "obj%d" % obj["index"] if "index" in obj else "type%d.%d" % (obj["type"], obj["instance"])
+        if "index" in obj:
+            key = (labels or {}).get(int(obj["index"])) or "obj%d" % obj["index"]
+        else:
+            key = "type%d.%d" % (obj["type"], obj["instance"])
         data = str(w["data"])
         count = w.get("count") or 1
         start = w.get("index") or 0
@@ -105,23 +130,64 @@ def property_elements(ops: Optional[DeviceOps]) -> Dict[Tuple[str, int, int], st
     return out
 
 
+def _whole(elements: Dict[Tuple[str, int, int], str], label: str, pid: int) -> str:
+    """A property's value from its elements, in element order."""
+    return "".join(v for (k, p, _), v in sorted(elements.items(), key=lambda kv: kv[0][2])
+                   if k == label and p == pid)
+
+
 def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
                        bussard: Optional[DeviceOps]) -> Dict[str, object]:
     """The property elements either side wrote in the step, compared on
-    their final values (see the module doc)."""
+    their final values (see the module doc). The writes `image` never
+    compares (`image.property_exemption`) are listed under `not_compared`;
+    the security object's properties compare whole, by `image.value_check`
+    (the group key table and the sender table by entry, the sender
+    table's sequence numbers a note)."""
+    labels = object_labels(list(base) + [ets, bussard])
     before: Dict[Tuple[str, int, int], str] = {}
     for ops in base:
-        before.update(property_elements(ops))
-    ets_step, ours_step = property_elements(ets), property_elements(bussard)
+        before.update(property_elements(ops, labels))
+    ets_step, ours_step = property_elements(ets, labels), property_elements(bussard, labels)
     ets_final, ours_final = dict(before), dict(before)
     ets_final.update(ets_step)
     ours_final.update(ours_step)
     touched = sorted(set(ets_step) | set(ours_step))
-    differences = []
+    differences, notes = [], []
     matched, ets_only, bussard_only, value = [], [], [], 0
+    not_compared: List[Dict[str, object]] = []
+    whole_done = set()
     for key in touched:
-        a, b = ours_final.get(key), ets_final.get(key)
+        label, pid, _ = key
         name = "%s PID %d [%d]" % key
+        reason = memimage.property_exemption(label, pid)
+        if reason is not None:
+            # imgdiff's shape, which the oracle summary prints.
+            if not any(e["key"] == [label, pid] for e in not_compared):
+                not_compared.append({"key": [label, pid], "reason": reason})
+            continue
+        if label.startswith("type%d." % memimage.SECURITY_OBJECT_TYPE):
+            if (label, pid) in whole_done:
+                continue
+            whole_done.add((label, pid))
+            name = "%s PID %d" % (label, pid)
+            a, b = _whole(ours_final, label, pid), _whole(ets_final, label, pid)
+            if not a or not b:
+                (ets_only if not a else bussard_only).append(name)
+                differences.append({"property": name, "bussard": a or "--", "ets": b or "--"})
+                continue
+            obj = {"type": memimage.SECURITY_OBJECT_TYPE, "instance": int(label.split(".")[1])}
+            outcome, why = memimage.value_check({"object": obj, "pid": pid, "data": a},
+                                                {"object": obj, "pid": pid, "data": b})
+            if outcome in ("equal", "hash-equal"):
+                matched.append(name)
+                if why:
+                    notes.append("%s: %s" % (name, why))
+            else:
+                value += 1
+                differences.append({"property": name, "bussard": a, "ets": b, "why": why})
+            continue
+        a, b = ours_final.get(key), ets_final.get(key)
         if a is not None and a == b:
             matched.append(name)
             continue
@@ -132,15 +198,17 @@ def compare_properties(base: List[DeviceOps], ets: Optional[DeviceOps],
         else:
             value += 1
         differences.append({"property": name, "bussard": a or "--", "ets": b or "--"})
+    compared = len(matched) + len(differences)
     # The keys the offline oracle's summary reads (as for imgdiff's
     # property parity): props=ok(<matched>) or props=differs(...).
     return {
-        "verdict": (memimage.NOT_COMPARABLE if not touched else memimage.DIFFERS if differences
+        "verdict": (memimage.NOT_COMPARABLE if not compared else memimage.DIFFERS if differences
                     else memimage.IDENTICAL),
-        "compared": len(touched), "differing": len(differences),
+        "compared": compared, "differing": len(differences),
         "ets_step": len(ets_step), "bussard_step": len(ours_step),
         "matched": matched, "ets_only": ets_only, "bussard_only": bussard_only,
         "value_counts": {"differs": value},
+        "not_compared": not_compared, "notes": notes,
         "differences": differences[:64],
     }
 
@@ -213,10 +281,12 @@ def compare_states(
         out_regions.append(reg)
     compared = len(touched)
     differing = sum(int(r["diff_octets"]) for r in out_regions)
+    # The headline is the memory's, as imgdiff's: the property writes have
+    # their own verdict under `properties`, which a row pins with props=.
     props = compare_properties(base, ets, bussard)
-    if not compared and props["verdict"] == memimage.NOT_COMPARABLE:
-        verdict, reason = memimage.NOT_COMPARABLE, "neither side wrote memory or properties in this step"
-    elif differing or props["verdict"] == memimage.DIFFERS:
+    if not compared:
+        verdict, reason = memimage.NOT_COMPARABLE, "neither side wrote memory in this step"
+    elif differing:
         verdict, reason = memimage.DIFFERS, ""
     else:
         verdict, reason = memimage.IDENTICAL, ""
@@ -230,8 +300,7 @@ def compare_states(
         "system": "apply",
         "verdict": verdict,
         "reason": reason,
-        "coverage": {"placed": compared + int(props["compared"]), "compared": compared + int(props["compared"]),
-                     "percent": 100.0 if compared or props["compared"] else 0.0,
+        "coverage": {"placed": compared, "compared": compared, "percent": 100.0 if compared else 0.0,
                      "min_percent": 0.0, "pages": 0, "blind_pages": [], "thin": False, "reason": ""},
         "regions": out_regions,
         "octets": {"ets_step": len(ets_step), "bussard_step": len(ours_step), "compared": compared,
@@ -266,5 +335,9 @@ def render(report: Dict[str, object]) -> List[str]:
                      % (props["ets_step"], props["bussard_step"], props["compared"], props["differing"]))
         for d in props.get("differences") or []:
             lines.append("      %-28s bussard %s  ets %s" % (d["property"], d["bussard"][:40], d["ets"][:40]))
+    for e in props.get("not_compared") or []:
+        lines.append("  not compared: %s PID %s (%s)" % (e["key"][0], e["key"][1], e["reason"]))
+    for note in props.get("notes") or []:
+        lines.append("  note: %s" % note)
     lines.extend(memimage.render_load_controls(report.get("load_controls")))
     return lines
