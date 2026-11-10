@@ -237,18 +237,6 @@
    ]
   },
   {
-   "app": "M-0002_A-A0EF-11-7855-O0048",
-   "mask": "07B0",
-   "name": "Valve Drive Continuous/1.1",
-   "file": "IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod",
-   "defaults_seconds": 170,
-   "plain": "identical",
-   "why": "first to cover maker:ABB",
-   "covers": [
-    "maker:ABB"
-   ]
-  },
-  {
    "app": "M-0004_A-303B-24-277D-O00A6",
    "mask": "07B0",
    "name": "Dimming 303B22",
@@ -258,6 +246,18 @@
    "why": "first to cover maker:Jung",
    "covers": [
     "maker:Jung"
+   ]
+  },
+  {
+   "app": "M-0002_A-4363-11-5D38-O01EC",
+   "mask": "07B0",
+   "name": "Movement Constant Light Switch/1.1",
+   "file": "9AKK108472A0317_deenzh_A_ETS_Application_.knxprod_XX_BMH_U2.55.1.knxprod",
+   "defaults_seconds": 185,
+   "plain": "identical",
+   "why": "first to cover maker:ABB",
+   "covers": [
+    "maker:ABB"
    ]
   }
  ]

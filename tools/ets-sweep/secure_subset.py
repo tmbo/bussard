@@ -13,7 +13,8 @@ application (2026-11-10, as for the links variant #478), so
 `secure-subset.json`: a greedy cover (`links_subset.greedy_cover`) over the
 secure-capable applications (`IsSecureEnabled`) the defaults sweep captured
 whose plain oracle row is identical, memory and load control both, so a
-difference of the secure row is the secure download's. Each application
+difference of the secure row is the secure download's, and whose product
+file is at most MAX_PRODUCT_MB (the sweep VM's disk). Each application
 covers a set of labels:
 
     mask:<mask>                    the mask family
@@ -48,6 +49,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -65,6 +67,23 @@ MAKERS = {"M-0001": "Siemens", "M-0002": "ABB", "M-0004": "Jung", "M-0007": "Bus
           "M-0009": "Hager", "M-0048": "Theben", "M-0071": "Zennio", "M-0083": "MDT", "M-0085": "GVS",
           "M-008E": "Steinel", "M-00A6": "Enertex", "M-00B6": "Ekinex", "M-00C5": "Weinzierl"}
 MAKER_MIN = 3
+
+# Product files larger than this are left out: ETS's import of the 152 MB ABB
+# catalogue (`IBUS_ETS5_ABB_XX_V24-12-20_9AKK107046A7479-Rev_P.knxprod`)
+# failed twice on the sweep VM's disk ("nicht genug Speicherplatz",
+# 2026-11-10), while every other subset row imported.
+MAX_PRODUCT_MB = 100
+CORPUS = Path(os.environ.get("BUSSARD_PRODUCT_CORPUS", links_subset.REPO / "tests-support" / "product-corpus")) \
+    / "cache" / "vendor"  # as defaults.CORPUS
+
+
+def product_mb(file: str) -> float:
+    """The size of a corpus product file in MB, 0 when it is not there."""
+    try:
+        return (CORPUS / file).stat().st_size / 1e6
+    except OSError:
+        return 0.0
+
 
 # In the subset whatever their plain verdict.
 PINNED = {
@@ -133,6 +152,8 @@ def select(products: Path, results: Path) -> list[dict]:
             continue
         model = json.loads(models[app].read_text())
         if not model.get("is_secure_enabled"):
+            continue
+        if product_mb(r.get("file") or "") > MAX_PRODUCT_MB:
             continue
         if app in PINNED or plain_identical(oracle.get(app)):
             apps[app] = features(model)
