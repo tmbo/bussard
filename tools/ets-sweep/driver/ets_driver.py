@@ -1112,8 +1112,32 @@ def export_keyring_once(req: dict) -> dict:
 @flow("export_project")
 def flow_export_project(req: dict) -> dict:
     """Exports the project (`.knxproj`) to `path` in the VM (#424): `bussard
-    import` of it is the model state a parameter-set row compares against."""
-    return export_from_tab_menu(req["project"], r"^(Projekt )?export", req["path"], req.get("project_password"))
+    import` of it is the model state a parameter-set row compares against.
+    ETS 6.4.1 has no context menu on the project tab; the export is the
+    project tile's 'Export' on the start page (checked 2026-11-10), a
+    Windows save dialog, then ETS's progress dialog until the file is
+    written. ETS exports the product data of every device the project ever
+    held: 17.5 GB for `ets-sweep` after the sweep (2026-11-10), more than
+    14 minutes, so `wait` (seconds) bounds it."""
+    project, path = req["project"], req["path"]
+    require_project(project)
+    click(200, 40)  # the start page tab
+    wait_for("start page", lambda: find_text(project, (0, 1150, 4112, 1320)), 10, 0.5)
+    tile = project_tile(project)
+    click(tile["x"] + tile["w"] // 2, tile["y"] - 150, button="right")
+    try:
+        menu_click("Export", timeout=5, settle=0)
+        dialog = wait_popup(10)
+        save_as(dialog, path)
+        wait_for("project exported", lambda: os.path.exists(path) and not find_text(
+            "Exportiere Projektdateien", (1500, 900, 2600, 1100)), float(req.get("wait", 1800)), 2)
+    finally:
+        close_menus()
+        hit = project_tab_hit(project)
+        if hit:
+            click(hit["x"] + hit["w"] // 2, hit["y"] + hit["h"] // 2)
+            wait_for("project tab", lambda: window_project() == project, 5, 0.3)
+    return {"path": path, "exported": os.path.exists(path)}
 
 
 # ---------------------------------------------------------------- parameter editor (#424)
@@ -1668,7 +1692,30 @@ def field_value(row: dict) -> str:
     return (wait_for("field copied", clipboard_text, 1.5, 0.1) or "").strip()
 
 
-def set_row(row: dict, req: dict) -> tuple[str, str]:
+def type_into(row: dict, value: str, page: dict | None = None) -> None:
+    """Replace a field's content: click, select all, type, Tab. The field
+    takes keys a moment after the click: typed 0.2 s after it, the 1 for
+    the hours of Hager's 'Sendeverzögerung' was lost (2026-11-10). Right
+    after a page walk the first click into a field switched the page to
+    another tree entry once ('Ausgang 10', 2026-11-10), and the keys went to
+    the tree: with `page`, the page is checked after the click and selected
+    again, and nothing is typed while another page shows."""
+    for attempt in range(2):
+        click(CONTROL_X + 30, row["y"])
+        time.sleep(0.5)
+        if page is None or same_page(selected_page(), page):
+            break
+        go_to_page(page)
+    else:
+        raise LookupError(f"the page left {page.get('crumb')!r} when its field was clicked")
+    keys("^a")
+    time.sleep(0.1)
+    keys(value)
+    time.sleep(0.3)
+    keys("{TAB}")
+
+
+def set_row(row: dict, req: dict, page: dict | None = None) -> tuple[str, str]:
     """Set `row` as `req` asks; returns (the value asked, what to compare
     the row's value with afterwards)."""
     kind = row["kind"]
@@ -1693,11 +1740,7 @@ def set_row(row: dict, req: dict) -> tuple[str, str]:
         return value, value
     if kind in ("number", "text"):
         value = choose_value(row, req)
-        click(CONTROL_X + 30, row["y"])
-        time.sleep(0.2)
-        keys("^a")
-        keys(value)
-        keys("{TAB}")
+        type_into(row, value, page)
         return value, value
     raise LookupError(f"{row['label']!r}: no control ETS lets the driver set ({kind})")
 
@@ -1725,7 +1768,7 @@ def flow_set_param(req: dict) -> dict:
         return {"set": False, "unreachable": f"{req['label']!r} is a {row['kind']} now, not a {req['kind']}",
                 "row": row}
     try:
-        value, expect = set_row(row, req)
+        value, expect = set_row(row, req, page)
     except LookupError as exc:
         return {"set": False, "unreachable": str(exc), "row": row}
     seen: dict = {}
@@ -1738,7 +1781,35 @@ def flow_set_param(req: dict) -> dict:
         seen["row"] = after
         return after is not None and _norm(after.get("value") or "") == _norm(expect)
     ok = wait_for("parameter shows value", shows, 4, 0.4)
+    if not ok and row["kind"] in ("number", "text") and seen.get("row"):
+        # Once more: a field that lost the keys keeps its old value.
+        try:
+            type_into(seen["row"], value, page)
+        except LookupError as exc:
+            return {"set": False, "unreachable": str(exc), "row": row}
+        ok = wait_for("parameter shows value", shows, 4, 0.4)
     return {"set": bool(ok), "value": value, "before": row.get("value"), "row": seen.get("row"), "page": page}
+
+
+@flow("read_param")
+def flow_read_param(req: dict) -> dict:
+    """The value ETS shows for row `label` (`n`-th of that label) on page
+    `page` of device `ia`, as `set_param` reads it back (a field by the
+    clipboard): {"shown": false, "why": ...} when the page or row is not
+    shown. The parameter-set run reads every change once more after the
+    last one, so the model holds what ETS shows, not what was meant."""
+    require_project(req["project"])
+    open_device_parameters(req["ia"])
+    try:
+        page = go_to_page(req["page"])
+    except LookupError as exc:
+        return {"shown": False, "why": str(exc)}
+    row = find_param_row(param_rows(), req["label"], int(req.get("n", 0)))
+    if row is None:
+        return {"shown": False, "why": f"no row {req['label']!r} on the page", "page": page}
+    if row["kind"] in ("number", "text"):
+        row["value"] = field_value(row)
+    return {"shown": True, "row": row, "page": page}
 
 
 def _digits(t: str) -> str:

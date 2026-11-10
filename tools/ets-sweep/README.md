@@ -467,10 +467,18 @@ page, set to the enabling value), then other rows (a checkbox toggled, a
 radio or dropdown on another option ETS offers, a number in the range of the
 model's parameter of that label, a text), then one or two rows of the pages
 the switches made appear. Each change is set by `set_param` and read back;
-`params.json` in the run directory says per change whether it was set,
-unreachable (ETS does not show the page or row) or failed. The download and
-the project export follow; `oracle` imports each export and runs the row with
-it as the product data. `--representative` runs `params-subset.json`, a
+after the last one the pages are surveyed again and every change is read
+back once more as ETS shows it (a field exactly, through the clipboard). The
+oracle's model is built from those shown values, never from what the driver
+meant to set: a change that does not read back makes the run
+`driver-error-params`, and it is not compared. `params.json` in the run
+directory holds the surveys and, per change, whether it was set, unreachable
+(ETS does not show the page or row), failed or lost, and what ETS showed.
+`oracle` maps each change to one parameter reference (its label on its page
+and channel in the product's Dynamic tree, as many references as ETS shows
+rows of that label, else `unmapped`) and runs the row with that model. No
+project is exported: ETS exports the product data of every device a project
+ever held, 17.5 GB and more than 14 minutes for `ets-sweep` (2026-11-10). `--representative` runs `params-subset.json`, a
 greedy cover of masks, parameter placement (memory, property), parameter
 types, unions, modules, channels, page-switch density, calculations and
 oracle verdicts (`params_subset.py`, like `links_subset.py`).

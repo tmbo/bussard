@@ -3,6 +3,7 @@
   control (checkbox, radio buttons, dropdown, number or text field) and value
   from the screen, and sets a change by page and label with a read-back.
   `params.py run` draws each configuration from that survey (page switches
-  first, then other rows, then rows of the pages that appeared),
-  `--representative` runs `tools/ets-sweep/params-subset.json`, and
-  `params.py partial` captures ETS's parameter-only download (#424).
+  first, then other rows, then rows of the pages that appeared), builds the
+  oracle's model from the values ETS shows afterwards, `--representative`
+  runs `tools/ets-sweep/params-subset.json`, and `params.py partial` captures
+  ETS's parameter-only download (#424).

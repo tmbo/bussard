@@ -152,6 +152,80 @@ class TestParams(unittest.TestCase):
         self.assertTrue((tmp / "surveys" / "M-X.json").exists())
 
 
+class TestParamsModel(unittest.TestCase):
+    """The model a parameter-set row is compared with, from what ETS showed
+    (#424): a label on a page and channel names one reference."""
+    MODEL = {
+        "parameters": {
+            "P-1": {"kind": {"Int": {"min": 0, "max": 23}}, "text": "      Sendeverzögerung\r\n      nach Buswiederkehr"},
+            "P-2": {"kind": {"Int": {"min": 0, "max": 59}}, "text": "Sendeverzögerung nach Buswiederkehr"},
+            "P-3": {"kind": {"Enum": {"values": [0, 1, 2]}}, "text": "Preset",
+                    "labels": [[0, "Inaktiv"], [1, "1 Presetobjekt"], [2, "2 Presetobjekten"]]},
+            "P-4": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Zwangssteuerung"},
+        },
+        "parameter_refs": {"P-1_R-1": {"parameter": "P-1"}, "P-2_R-2": {"parameter": "P-2"},
+                           "P-3_R-31": {"parameter": "P-3"}, "P-3_R-39": {"parameter": "P-3"},
+                           "P-4_R-41": {"parameter": "P-4"}, "P-4_R-49": {"parameter": "P-4"}},
+        "dynamic": [
+            {"block": {"text": "Ausgänge 1-16: Allgemein", "nodes": [
+                {"block": {"text": "- A1-16: Statusanzeigen schalten", "nodes": [
+                    {"choose": {"ref": "x", "when": [{"nodes": [{"p": "P-1_R-1"}, {"p": "P-2_R-2"}]}]}}]}}]}},
+            {"channel": {"text": "Ausgang 1", "nodes": [{"block": {"text": "Ausgang 1: Funktionsfreigabe", "nodes": [
+                {"p": "P-3_R-31"}, {"p": "P-4_R-41"}]}}]}},
+            {"channel": {"text": "Ausgang 9", "nodes": [{"block": {"text": "Ausgang 9: Funktionsfreigabe", "nodes": [
+                {"p": "P-3_R-39"}, {"p": "P-4_R-49"}]}}]}},
+        ],
+    }
+    FINAL = [
+        {"crumb": "- Al-16: Statusanzeigen schalten", "page": "- Al-16: Statusanzeigen sch...", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "1"},
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "0"}]},
+        {"crumb": "Ausgang 9 > Ausgang 9: Funktionsfreigabe", "page": "Ausgang 9: Funktionsfreigabe", "rows": [
+            {"label": "Preset", "kind": "dropdown", "value": "2 Presetobjekten"},
+            {"label": "Zwangssteuerung", "kind": "checkbox", "value": "1"}]},
+    ]
+
+    def change(self, crumb, label, kind, shown, n=0):
+        return {"page": {"crumb": crumb, "page": crumb.rsplit(">", 1)[-1].strip()}, "label": label, "n": n,
+                "kind": kind, "result": "set", "shown": shown, "set_to": shown}
+
+    def test_model_changes_maps_channel_page_and_occurrence(self):
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "1"),
+                self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", "2 Presetobjekten"),
+                self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung", "checkbox", "1"),
+                {**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Szene", "checkbox", "1"),
+                 "result": "unreachable"}]
+        values, problems = params.model_changes(self.MODEL, self.FINAL, done)
+        self.assertEqual(problems, [])
+        self.assertEqual(values, {"param@P-1_R-1": "1", "param@P-3_R-39": "2", "param@P-4_R-49": "1"})
+        self.assertIn('"param@P-3_R-39" = "2"', params.device_toml_with(values))
+
+    def test_model_changes_refuses_a_label_the_tree_lists_more_often(self):
+        final = [{"crumb": "- Al-16: Statusanzeigen schalten", "rows": [
+            {"label": "Sendeverzögerung nach Buswiederkehr", "kind": "number", "value": "1"}]}]
+        done = [self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", "1")]
+        values, problems = params.model_changes(self.MODEL, final, done)
+        self.assertEqual(values, {})
+        self.assertIn("2 references", problems[0])
+
+    def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
+        done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
+                 "set_to": "2 Presetobjekten"},
+                {**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung", "checkbox", ""),
+                 "set_to": "0"},
+                {**self.change("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr", "number", ""),
+                 "set_to": "1"},
+                {**self.change("Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Preset", "dropdown", ""), "set_to": "x"}]
+
+        def flow(name, **body):
+            self.assertEqual(name, "read_param")
+            return {"shown": True, "row": {"value": "1"}}
+
+        params.read_back(flow, "1.1.1", self.FINAL, done)
+        self.assertEqual([(d["result"], d.get("shown")) for d in done],
+                         [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
+
+
 class TestParamsSubset(unittest.TestCase):
     def test_features_placement_types_dynamic(self):
         model = {"mask_version": "07B0",
