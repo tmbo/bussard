@@ -258,10 +258,13 @@ def run(args) -> int:
         imp = import_product(c, path, pw)
         if imp.get("outcome") not in ("imported", "done_unverified"):
             error = (imp.get("message") or imp.get("error") or "")[:300]
+            # ETS reports a full disk as a failed import ('refused'); that is
+            # the VM's, not the product's: the row is run again.
+            refused = imp.get("outcome") == "refused" and "Speicherplatz" not in error
             results[job["id"]] = {"file": job["file"], "mask": job["mask"], "name": job["prev"].get("name"),
                                   "when": datetime.now(timezone.utc).isoformat(),
-                                  "outcome": "skipped-import-failed" if imp.get("outcome") == "refused" else "driver-error",
-                                  "error": error, "import_failed": imp.get("outcome") != "refused"}
+                                  "outcome": "skipped-import-failed" if refused else "driver-error",
+                                  "error": error, "import_failed": not refused}
             save(results)
             print(f"{results[job['id']]['outcome']:13} -          {job['id']}  import failed: {error[:120]}", flush=True)
             # defaults.py's stop rules: a desktop that cannot be used, or a
@@ -270,7 +273,7 @@ def run(args) -> int:
             if any(k in error for k in STOP_ERRORS):
                 print(f"stopping: {error[:160]}", flush=True)
                 break
-            import_errors += imp.get("outcome") != "refused"
+            import_errors += not refused
             if import_errors >= defaults.MAX_IMPORT_ERRORS:
                 print(f"stopping: {import_errors} imports in a row failed", flush=True)
                 break
