@@ -27,18 +27,8 @@ use bussard_mgmt::LoadState;
 /// Whether an `AppliesTo` value names the `par` procedure and not the `full`
 /// one (`"par"`, but not `"full,par"`).
 pub(super) fn is_par_only(applies_to: &str) -> bool {
-    let mut tokens = applies_to.split(',').map(str::trim);
-    let par = tokens.clone().any(|t| t.eq_ignore_ascii_case("par"));
-    par && !tokens.any(|t| t.eq_ignore_ascii_case("full"))
-}
-
-/// Whether an `AppliesTo` value names the `par` procedure at all (`"par"`
-/// or `"full,par"`).
-pub(super) fn applies_to_par(applies_to: &str) -> bool {
-    applies_to
-        .split(',')
-        .map(str::trim)
-        .any(|t| t.eq_ignore_ascii_case("par"))
+    use bussard_product::application::applies_to_names;
+    applies_to_names(applies_to, "par") && !applies_to_names(applies_to, "full")
 }
 
 impl FlashPlan {
@@ -127,14 +117,6 @@ mod tests {
     use super::*;
     use crate::flash::SegmentFill;
     use crate::preflight::ResidentObject;
-
-    #[test]
-    fn test_applies_to_par_names_par_with_or_without_full() {
-        assert!(applies_to_par("par"));
-        assert!(applies_to_par("full, par"));
-        assert!(!applies_to_par("full,grp"));
-        assert!(!applies_to_par("full"));
-    }
 
     #[test]
     fn test_is_par_only_names_par_without_full() {

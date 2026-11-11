@@ -91,7 +91,9 @@ pub use param_plan::{
     ParamValue, SYS7_NOTE, group_object_change, param_plan, planned_parameter_regions,
     read_current_parameter_memory, read_parameter_regions, regions_memory,
 };
-pub use param_props::{ParamProperty, changed_properties, read_parameter_properties};
+pub use param_props::{
+    ParamProperty, changed_properties, read_checked_properties, read_parameter_properties,
+};
 pub use plan::{ObjectGa, PlanReport, plan};
 pub use preflight::{
     Freshness, ProbeScope, ResidentObject, ResidentState, assess_freshness, format_app_id,

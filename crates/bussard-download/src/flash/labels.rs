@@ -332,10 +332,16 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
              parameters and links, keep the individual address; wait for the reboot and reconnect \
              (a Data Secure device: plain descriptor probes for up to 30 s, then S-A_Sync with retries)"
         ),
+        FlashStep::ReadTableReference { obj_idx } => format!(
+            "read obj{obj_idx} PID_TABLE_REFERENCE (the base pointer before the parameter-only \
+             download)"
+        ),
+        FlashStep::CompareTableReference { obj_idx } => format!(
+            "check obj{obj_idx} PID_TABLE_REFERENCE is unchanged (the base pointer after the load)"
+        ),
         FlashStep::MasterReset {
             erase_code,
             channel_number,
-            ..
         } => format!(
             "master reset (erase code {erase_code}, channel {channel_number}) — reconnect and resume"
         ),

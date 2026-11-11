@@ -1604,6 +1604,18 @@ pub(super) async fn read_load_state_resumable<C: Connector>(
     resume!(session, read_load_state(session.l4(), obj).await)
 }
 
+/// Session-aware, resume-on-drop [`bussard_mgmt::read_table_reference`]
+/// (issue #1052): a read, so replaying it is safe.
+pub(super) async fn read_table_reference_resumable<C: Connector>(
+    session: &mut Session<C>,
+    obj: u8,
+) -> Result<u32, WriteError> {
+    resume!(
+        session,
+        bussard_mgmt::read_table_reference(session.l4(), obj).await
+    )
+}
+
 /// Session-aware, resume-on-drop [`load::write_load_control_ext`] (issue
 /// #961): a load-state control to the `occurrence`-th object of
 /// `object_type`, replayed after a connection death like

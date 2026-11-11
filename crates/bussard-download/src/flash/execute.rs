@@ -388,6 +388,9 @@ struct SystemB<'a> {
     // The objects a parameter-only download found `Loaded` before its first
     // `Unload` (issue #543), so a replayed `Unload` does not check again.
     partial_checked: BTreeSet<u8>,
+    // The base pointer each object reported before the parameter-only
+    // download unloaded it (issue #1052, [`FlashStep::ReadTableReference`]).
+    table_references: BTreeMap<u8, u32>,
 }
 
 impl StepExecutor for SystemB<'_> {
@@ -730,6 +733,7 @@ impl StepExecutor for SystemB<'_> {
                 from_parameters: false,
                 ..
             } if plan.spliced_from_template
+                && !plan.is_parameters_only()
                 && object.index().is_some_and(|obj_idx| {
                     !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                 }) => {}
@@ -1091,7 +1095,6 @@ impl StepExecutor for SystemB<'_> {
             FlashStep::MasterReset {
                 erase_code,
                 channel_number,
-                ..
             } => {
                 // KNX 3/5/2 §3.7.1.2.3: a Master Reset is the confirmed
                 // A_Restart (restart type 1) with the op's erase code and
@@ -1305,6 +1308,42 @@ impl StepExecutor for SystemB<'_> {
                     let _ = session.l4().send_data_unacked(apci, &payload).await;
                 }
             }
+            // The parameter-only procedure's base pointer, read before the
+            // unload and checked after the load (KNX 3/5/3 §3.9.3.6, issue
+            // #1052). An object the device does not list is skipped, as its
+            // unload and load are.
+            FlashStep::ReadTableReference { obj_idx } => {
+                if let Some(obj) =
+                    resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
+                {
+                    let value =
+                        super::session::read_table_reference_resumable(session, obj).await?;
+                    self.table_references.insert(obj, value);
+                }
+            }
+            FlashStep::CompareTableReference { obj_idx } => {
+                if let Some(obj) =
+                    resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
+                {
+                    let actual =
+                        super::session::read_table_reference_resumable(session, obj).await?;
+                    let expected = self.table_references.get(&obj).copied();
+                    if Some(actual) != expected {
+                        return Err(WriteError::PropCompareMismatch {
+                            address: session.l4().target(),
+                            object_index: obj,
+                            property_id: TABLE_REFERENCE_PID,
+                            expected: expected
+                                .map(|e| e.to_be_bytes().to_vec())
+                                .unwrap_or_default(),
+                            actual: actual.to_be_bytes().to_vec(),
+                            mask_note: " (the base pointer moved between the unload and the \
+                                        load of the parameter-only download)"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
             // System 7 steps never reach this executor: `flash_sys7` runs a
             // System 7 plan (dispatched at the top of `flash_steps`).
             other => {
@@ -1408,6 +1447,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         mcb_verified: BTreeSet::new(),
         verified: None,
         partial_checked: BTreeSet::new(),
+        table_references: BTreeMap::new(),
     };
     let threshold = reconnect_exchange_threshold(plan);
     run_steps(session, plan, threshold, &mut progress, &mut exec).await?;
@@ -1703,6 +1743,9 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
         }
     }
 }
+
+/// `PID_TABLE_REFERENCE`, the base pointer of a loadable object.
+const TABLE_REFERENCE_PID: u8 = 7;
 
 /// Runs a load procedure's `LdCtrlMasterReset` in the confirmed form (KNX
 /// 3/5/2 §3.7.1.2.3) and waits out the reboot, as ETS does (issue #611).

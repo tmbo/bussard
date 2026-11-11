@@ -3721,8 +3721,7 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
         master_resets[0],
         FlashStep::MasterReset {
             erase_code: 4,
-            channel_number: 0,
-            ..
+            channel_number: 0
         }
     ));
 
@@ -8478,43 +8477,46 @@ async fn test_flash_prefilled_segment_without_image_passes_the_mcb_check() -> Te
     Ok(())
 }
 
-/// Issue #1052: the parameter-only download of a property-only program
-/// without a `par` allocation (the `M-0009_A-E802-13-7620` shape) resets the
-/// parameters as ETS does, reconnects, rewrites every property of its `par`
-/// procedure (the fixed object 9 one included) and reads the parameter
-/// properties back equal to the model.
-#[tokio::test]
-async fn test_parameters_only_without_par_allocation_resets_and_rewrites_the_properties()
--> TestResult {
-    // SAFETY: nextest runs each test in its own process; the variable only
-    // shortens the wait after each restart and is read when one runs.
-    unsafe {
-        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
-    }
+// ===========================================================================
+// Issue #1052: the parameter-only download by the mask's `par` procedure, on
+// a MockDevice that answers master resets and keeps objects 0 to 10.
+// ===========================================================================
+
+/// `A_PropertyValue_Read` and its response.
+const A_PROPERTY_VALUE_READ_REQ: u16 = 0x3D5;
+const A_PROPERTY_VALUE_RESPONSE_RES: u16 = 0x3D6;
+
+/// What a [`par_device`] test hook sees and changes.
+#[derive(Default)]
+struct ParDeviceState {
+    /// The erase code of each master reset, in order.
+    resets: Vec<u8>,
+    /// While set, object 9 PID 208 reads back as `EE EE` whatever it holds.
+    corrupt_object_9: bool,
+}
+
+/// A System B device with objects 0 to 10 (object 5 an application program
+/// too when `ap2`), the properties the par test program writes, and a hook
+/// that answers master resets and can corrupt object 9's read.
+fn par_device(
+    target: bussard_model::IndividualAddress,
+    object_9: bool,
+    ap2: bool,
+    state: &Arc<Mutex<ParDeviceState>>,
+) -> MockDevice {
     use bussard_testkit::consts::{
         OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
         OT_GROUP_OBJECT_TABLE,
     };
-    /// `A_Restart` with the master-reset restart type, and its response
-    /// (KNX 3/3/7).
-    const A_RESTART_MASTER_RESET: u16 = 0x381;
-    const A_RESTART_RESPONSE: u16 = 0x3A1;
-    let resets: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
-    let app = crate::property_only_partial::nopar_app()?;
-    let defaults = crate::property_only_partial::nopar_plan(&app, &no_overrides())?;
-    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
-    let plan = crate::property_only_partial::nopar_plan(&app, &overrides)?;
-
-    // Objects 0 to 10 answer the walk, so object 9 is written too.
-    let target = ia("1.1.1")?;
-    let device = MockDevice::system_b(target)
+    let ot5 = if ap2 { OT_APPLICATION_PROGRAM } else { 1000 };
+    let mut device = MockDevice::system_b(target)
         .with_object_types(&[
             OT_DEVICE,
             OT_ADDRESS_TABLE,
             OT_ASSOCIATION_TABLE,
             OT_GROUP_OBJECT_TABLE,
             OT_APPLICATION_PROGRAM,
-            1000,
+            ot5,
             1001,
             1002,
             1003,
@@ -8522,32 +8524,83 @@ async fn test_parameters_only_without_par_allocation_resets_and_rewrites_the_pro
             1005,
         ])
         .with_writable_property(4, 13, 5, &[0; 5])
-        .with_writable_property(9, 208, 1, &[0, 0])
         .with_writable_property(10, 52, 1, &[0, 0])
-        // Answer each master reset (A_Restart, restart type 1) with error
-        // code 0 and no process time, recording its erase code.
-        .with_hook({
-            let resets = Arc::clone(&resets);
-            move |_, apci, data| {
-                if apci != A_RESTART_MASTER_RESET {
-                    return None;
-                }
-                if let (Ok(mut seen), Some(&erase_code)) = (resets.lock(), data.first()) {
-                    seen.push(erase_code);
-                }
-                Some(bussard_testkit::Reaction::Answer(
-                    A_RESTART_RESPONSE,
-                    vec![0, 0, 0],
-                ))
-            }
-        });
-    let gw = MockGateway::builder().device(device).start().await?;
+        .with_writable_property(12, 208, 1, &[0]);
+    if ap2 {
+        device = device.with_writable_property(5, 13, 5, &[0; 5]);
+    }
+    if object_9 {
+        device = device.with_writable_property(9, 208, 1, &[0, 0]);
+    }
+    let state = Arc::clone(state);
+    device.with_hook(move |_, apci, data| {
+        let Ok(mut seen) = state.lock() else {
+            return None;
+        };
+        if apci == A_RESTART_MASTER_RESET {
+            seen.resets.extend(data.first());
+            return Some(bussard_testkit::Reaction::Answer(
+                A_RESTART_RESPONSE,
+                vec![0, 0, 0],
+            ));
+        }
+        if apci == A_PROPERTY_VALUE_READ_REQ
+            && seen.corrupt_object_9
+            && data.get(..2) == Some(&[9, 208][..])
+        {
+            let mut answer = data.get(..4).unwrap_or_default().to_vec();
+            answer.extend([0xEE, 0xEE]);
+            return Some(bussard_testkit::Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE_RES,
+                answer,
+            ));
+        }
+        None
+    })
+}
+
+/// Opens a reconnecting session to `target` on `gw`.
+async fn par_session(
+    gw: &MockGateway,
+    target: bussard_model::IndividualAddress,
+) -> TestResult<Session<LeaseConnector>> {
+    // SAFETY: nextest runs each test in its own process; the variable only
+    // shortens the wait after each restart and is read when one runs.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
     let (handle, _actor) =
         bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
     handle.wait_connected(Duration::from_secs(5)).await;
     let source = handle.group_source();
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
-    let mut session = Session::open(connector, None, None).await?;
+    Ok(Session::open(connector, None, None).await?)
+}
+
+/// The full download of the defaults, then the parameter-only download of
+/// "Level" = 20, of the program of `procedures`; `between` runs on the
+/// device in between. Returns the outcome and the read-back of every
+/// checked property.
+async fn par_run(
+    procedures: &str,
+    device: MockDevice,
+    state: &Arc<Mutex<ParDeviceState>>,
+    between: impl FnOnce(&mut MockDevice),
+    factory: Vec<bussard_product::application::FactoryProperty>,
+) -> TestResult<(
+    Result<bussard_download::FlashOutcome, bussard_mgmt::load::WriteError>,
+    Vec<bussard_download::ParamProperty>,
+    Vec<bussard_download::ParamProperty>,
+    MockDevice,
+)> {
+    let target = ia("1.1.1")?;
+    let mut app = crate::property_only_partial::par_app(procedures)?;
+    app.factory_properties = factory;
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
     let outcome = flash(
         &mut session,
         &defaults,
@@ -8556,23 +8609,10 @@ async fn test_parameters_only_without_par_allocation_resets_and_rewrites_the_pro
     )
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
-    // A parameter reset that left object 9 changed: the partial download
-    // writes it back after its own reset.
-    gw.with_device(target, |d| {
-        *d = d.clone().with_writable_property(9, 208, 1, &[0, 0]);
-    })?;
-    // The full download's master resets: the links' (6) and the
-    // parameters' (5).
-    let full: Vec<u8> = std::mem::take(&mut *resets.lock().map_err(|e| e.to_string())?);
-    assert_eq!(full, [6, 5]);
-
+    gw.with_device(target, between)?;
+    lock_par(state)?.resets.clear();
+    let before = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
     let regions = bussard_download::read_parameter_regions(session.l4(), &plan, &[]).await;
-    let properties = bussard_download::read_parameter_properties(session.l4(), &plan, &app).await;
-    assert_eq!(
-        bussard_download::changed_properties(&properties).len(),
-        1,
-        "{properties:?}"
-    );
     let partial = plan.parameters_only(&regions)?;
     let outcome = flash(
         &mut session,
@@ -8580,19 +8620,164 @@ async fn test_parameters_only_without_par_allocation_resets_and_rewrites_the_pro
         bussard_download::FlashOptions::default(),
         |_| {},
     )
-    .await?;
-    assert!(outcome.ok(), "{outcome:?}");
-    assert_eq!(outcome.load_state, LoadState::Loaded);
-    let after = bussard_download::read_parameter_properties(session.l4(), &plan, &app).await;
+    .await;
+    let after = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
     let _ = session.into_disconnect().await;
+    let dev = gw.with_device(target, |d| d.clone())?;
+    Ok((outcome, before, after, dev))
+}
+
+fn lock_par(
+    state: &Arc<Mutex<ParDeviceState>>,
+) -> Result<std::sync::MutexGuard<'_, ParDeviceState>, String> {
+    state.lock().map_err(|e| e.to_string())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_resets_rewrites_and_reads_back() -> TestResult {
+    // The E802 shape: the partial download resets the parameters (erase code
+    // 5, not the full download's 6), writes object 9 back after a reset that
+    // changed it, and every checked property reads back as written.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, true, false, &state);
+    let (outcome, _, after, dev) = par_run(
+        &crate::property_only_partial::e802_procedures(),
+        device,
+        &state,
+        |d| *d = d.clone().with_writable_property(9, 208, 1, &[0, 0]),
+        Vec::new(),
+    )
+    .await?;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(lock_par(&state)?.resets, [5]);
     assert!(
         bussard_download::changed_properties(&after).is_empty(),
         "{after:?}"
     );
-    let dev = gw.with_device(target, |d| d.clone())?;
+    assert!(after.iter().any(|p| p.prop_id == 208));
     assert_eq!(dev.property(10, 52), Some(&[0x05, 0x14][..]));
     assert_eq!(dev.property(9, 208), Some(&[0x01, 0x02][..]));
-    // The parameter reset only.
-    assert_eq!(*resets.lock().map_err(|e| e.to_string())?, [5]);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_fails_the_read_back_when_the_device_differs()
+-> TestResult {
+    // After the reset the device holds another value in object 9 than the
+    // procedure writes (here: it reads back `EE EE`): the read-back reports
+    // the difference, so the download is not reported verified.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, true, false, &state);
+    let corrupt = Arc::clone(&state);
+    let (outcome, _, after, _) = par_run(
+        &crate::property_only_partial::e802_procedures(),
+        device,
+        &state,
+        move |_| {
+            if let Ok(mut s) = corrupt.lock() {
+                s.corrupt_object_9 = true;
+            }
+        },
+        Vec::new(),
+    )
+    .await?;
+    assert!(outcome?.ok());
+    let changed = bussard_download::changed_properties(&after);
+    assert_eq!(changed.len(), 1, "{after:?}");
+    assert_eq!(changed[0].prop_id, 208);
+    assert_eq!(changed[0].device, Some(vec![0xEE, 0xEE]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_never_skips_a_write_to_a_missing_object() -> TestResult
+{
+    // A device without object 9 PID 208: the read before the download finds
+    // nothing to back up (the service refuses there, `check_backup_covers`),
+    // and the download itself fails on the write instead of skipping it.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, false, false, &state);
+    let target = ia("1.1.1")?;
+    let app =
+        crate::property_only_partial::par_app(&crate::property_only_partial::e802_procedures())?;
+    let plan = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    let before = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
+    let object_9 = before
+        .iter()
+        .find(|p| p.prop_id == 208)
+        .ok_or("object 9 is a checked property")?;
+    assert_eq!(object_9.device, None);
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        !outcome.as_ref().is_ok_and(|o| o.ok()),
+        "a write to a missing object must fail: {outcome:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_writes_a_held_property_only_when_it_differs()
+-> TestResult {
+    // A catalogue LoadedImage holds object 9's value after the parameter
+    // reset (issue #951): the partial download reads it and writes it only
+    // because the device holds something else.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, true, false, &state);
+    let (outcome, _, after, dev) = par_run(
+        &crate::property_only_partial::e802_procedures(),
+        device,
+        &state,
+        |d| *d = d.clone().with_writable_property(9, 208, 1, &[0, 0]),
+        vec![bussard_product::application::FactoryProperty {
+            object: 9,
+            prop_id: 208,
+            start: 0,
+            data: vec![1, 2],
+            mask: Vec::new(),
+        }],
+    )
+    .await?;
+    assert!(outcome?.ok());
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "{after:?}"
+    );
+    assert_eq!(dev.property(9, 208), Some(&[0x01, 0x02][..]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_loads_object_5_with_application_program_2() -> TestResult
+{
+    // A MergeId 5 block: the par procedure unloads, loads and completes
+    // object 5 too, and its write reads back.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, true, true, &state);
+    let procedures = format!(
+        r#"
+              <LoadProcedure MergeId="4">{}
+              </LoadProcedure>
+              <LoadProcedure MergeId="5"><LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" Verify="false" InlineData="05" /></LoadProcedure>"#,
+        crate::property_only_partial::E802_MERGE_4
+    );
+    let (outcome, _, after, dev) = par_run(&procedures, device, &state, |_| {}, Vec::new()).await?;
+    let outcome = outcome?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "{after:?}"
+    );
+    assert_eq!(dev.property(12, 208), Some(&[0x05][..]));
     Ok(())
 }

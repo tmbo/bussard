@@ -136,6 +136,58 @@ impl FlashPlan {
     }
 }
 
+impl FlashPlan {
+    /// The properties a parameter-only download of this plan writes and
+    /// reads back (issue #1052): [`FlashPlan::parameter_properties`], and
+    /// for a plan that carries the mask's parameter-only procedure
+    /// ([`FlashPlan::parameters_only`]) every other property that procedure
+    /// writes too, with the value it writes last. Read before the download
+    /// (the backup must hold each, or nothing is written) and after it (each
+    /// must read back as written), so a write the device did not take, or a
+    /// value a parameter reset changed and nothing wrote back, fails the
+    /// download instead of passing unnoticed.
+    pub fn checked_properties(&self) -> Vec<ParamProperty> {
+        let mut out = self.parameter_properties();
+        let Some(par) = self.par_procedure() else {
+            return out;
+        };
+        let mut fixed: Vec<ParamProperty> = Vec::new();
+        for step in par {
+            if step.load_state_control().is_some() {
+                continue;
+            }
+            let Some(write) = step.property_write() else {
+                continue;
+            };
+            let key = (write.object, write.prop_id, write.start_element);
+            if out
+                .iter()
+                .any(|p| (p.object, p.prop_id, p.start_element) == key)
+            {
+                continue;
+            }
+            let property = ParamProperty {
+                object: write.object,
+                prop_id: write.prop_id,
+                start_element: write.start_element,
+                count: write.count.max(1),
+                model: write.value.to_vec(),
+                device: None,
+                parameters: Vec::new(),
+            };
+            match fixed
+                .iter_mut()
+                .find(|p| (p.object, p.prop_id, p.start_element) == key)
+            {
+                Some(p) => *p = property,
+                None => fixed.push(property),
+            }
+        }
+        out.extend(fixed);
+        out
+    }
+}
+
 /// Reads what the device holds in each of `plan`'s parameter properties
 /// ([`FlashPlan::parameter_properties`]) of `app`: one property read each, on
 /// the connection the parameter memory is read on, so the parameter read
@@ -147,7 +199,26 @@ pub async fn read_parameter_properties<Ch: L4Channel>(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Vec<ParamProperty> {
-    let mut out = plan.parameter_properties();
+    read_properties(l4, plan.parameter_properties(), app).await
+}
+
+/// [`read_parameter_properties`] of [`FlashPlan::checked_properties`]: what
+/// a parameter-only download backs up before it writes and compares after
+/// (issue #1052).
+pub async fn read_checked_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+    app: &ApplicationProgram,
+) -> Vec<ParamProperty> {
+    read_properties(l4, plan.checked_properties(), app).await
+}
+
+/// Reads the device side of each of `out`.
+async fn read_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    mut out: Vec<ParamProperty>,
+    app: &ApplicationProgram,
+) -> Vec<ParamProperty> {
     for property in &mut out {
         property.parameters = property.parameter_names(app);
         let elem = (property.model.len() / usize::from(property.count)).max(1);

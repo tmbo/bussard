@@ -470,20 +470,36 @@ fn test_with_property_values_sets_the_parameter_property_writes() -> TestResult 
     Ok(())
 }
 
-/// A merged property-only 07B0 program without a `par` allocation (issue
-/// #1052, the shape of `M-0009_A-E802-13-7620`, bussard's own synthetic
-/// data): its MergeId 4 block resets the links (`full,grp`, erase code 6)
-/// and the parameters (`full,par`, erase code 5), writes object 9 PID 208
-/// from fixed data, and writes object 10 PID 52 from "Delay" and "Level".
-const NOPAR_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+/// The `MergeId` 4 block of [`par_app_xml`]'s default: the Hager
+/// `M-0009_A-E802-13-7620` shape (bussard's own synthetic data, issue
+/// #1052): a link reset (`full,grp`, erase code 6), a parameter reset
+/// (`full,par`, erase code 5), object 9 PID 208 from fixed data, and object
+/// 10 PID 52 from "Delay" and "Level".
+pub(crate) const E802_MERGE_4: &str = r#"
+                <LdCtrlMasterReset AppliesTo="full,grp" EraseCode="6" ChannelNumber="0" />
+                <LdCtrlMasterReset AppliesTo="full,par" EraseCode="5" ChannelNumber="0" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="9" PropId="208" Count="2" Verify="false" InlineData="0102" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="9" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />"#;
+
+/// A merged property-only 07B0 program whose `<LoadProcedures>` are
+/// `procedures` (bussard's own synthetic data, issue #1052): object 10 PID
+/// 52 holds "Delay" (default 5) and "Level" (default 9).
+pub(crate) fn par_app_xml(procedures: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="utf-8"?>
 <KNX xmlns="http://knx.org/xml/project/23">
   <ManufacturerData>
     <Manufacturer RefId="M-00FA">
       <ApplicationPrograms>
         <ApplicationProgram Id="M-00FA_A-0003" ApplicationNumber="3" ApplicationVersion="1"
-            MaskVersion="MV-07B0" Name="bussard property-only no-par test app"
+            MaskVersion="MV-07B0" Name="bussard par procedure test app"
             LoadProcedureStyle="MergedProcedure" MinEtsVersion="5.0">
           <Static>
+            <Code>
+              <RelativeSegment Id="M-00FA_A-0003_RS-1" Size="6" LoadStateMachine="4" Offset="0"><Data>AAECAwQF</Data></RelativeSegment>
+            </Code>
             <ParameterTypes>
               <ParameterType Id="M-00FA_A-0003_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
             </ParameterTypes>
@@ -501,16 +517,7 @@ const NOPAR_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
             <ComObjectRefs>
               <ComObjectRef Id="M-00FA_A-0003_O-1_R-1" RefId="M-00FA_A-0003_O-1" />
             </ComObjectRefs>
-            <LoadProcedures>
-              <LoadProcedure MergeId="2" />
-              <LoadProcedure MergeId="4">
-                <LdCtrlMasterReset AppliesTo="full,grp" EraseCode="6" ChannelNumber="0" />
-                <LdCtrlMasterReset AppliesTo="full,par" EraseCode="5" ChannelNumber="0" />
-                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="9" PropId="208" Count="2" Verify="false" InlineData="0102" />
-                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="9" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
-                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
-                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />
-              </LoadProcedure>
+            <LoadProcedures>{procedures}
             </LoadProcedures>
           </Static>
           <Dynamic>
@@ -527,19 +534,31 @@ const NOPAR_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
     </Manufacturer>
   </ManufacturerData>
 </KNX>
-"#;
+"#
+    )
+}
 
-/// [`NOPAR_APP_XML`], parsed.
-pub(crate) fn nopar_app() -> TestResult<ApplicationProgram> {
+/// The E802-shaped procedures: an empty `MergeId` 2 and [`E802_MERGE_4`].
+pub(crate) fn e802_procedures() -> String {
+    format!(
+        r#"
+              <LoadProcedure MergeId="2" />
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+              </LoadProcedure>"#
+    )
+}
+
+/// The program of `procedures`, parsed.
+pub(crate) fn par_app(procedures: &str) -> TestResult<ApplicationProgram> {
     Ok(parse_application_program(
         "M-00FA_A-0003",
-        NOPAR_APP_XML.as_bytes(),
+        par_app_xml(procedures).as_bytes(),
     )?)
 }
 
-/// The full plan of [`NOPAR_APP_XML`] spliced into the built-in 07B0
-/// template, as `flash` builds it.
-pub(crate) fn nopar_plan(
+/// The full plan of `app` spliced into the built-in 07B0 template, as
+/// `flash` builds it (with the parameter-only procedure it carries).
+pub(crate) fn par_plan(
     app: &ApplicationProgram,
     overrides: &BTreeMap<String, String>,
 ) -> TestResult<bussard_download::FlashPlan> {
@@ -563,62 +582,286 @@ pub(crate) fn nopar_plan(
     )?)
 }
 
-#[test]
-fn test_parameters_only_of_a_property_only_program_without_par_allocation_runs_the_par_procedure()
--> TestResult {
-    let app = nopar_app()?;
-    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
-    let plan = nopar_plan(&app, &overrides)?;
-
-    // ETS's partial download of M-0009_A-E802-13-7620 (sweep capture
-    // `params-partial/b-partial-param`): obj4 Unload and StartLoading, no
-    // allocation, the `full,par` reset (erase code 5) and not the `full,grp`
-    // one, the MergeId 4 property writes, PID 13, LoadCompleted, restart.
-    let partial = plan.parameters_only(&BTreeMap::new())?;
-    let shape: Vec<String> = partial
-        .steps
+/// The steps of `plan` in words, the ones a parameter-only test compares.
+pub(crate) fn shape(plan: &bussard_download::FlashPlan) -> Vec<String> {
+    plan.steps
         .iter()
         .filter_map(|s| match s {
-            FlashStep::Unload { target, .. } => Some(format!("unload {target:?}")),
-            FlashStep::StartLoading { target } => Some(format!("start {target:?}")),
-            FlashStep::AllocateSegment { .. } => Some("allocate".to_string()),
+            FlashStep::ReadTableReference { obj_idx } => Some(format!("table-ref {obj_idx}")),
+            FlashStep::CompareTableReference { obj_idx } => Some(format!("same-ref {obj_idx}")),
+            FlashStep::Unload { target, .. } => Some(format!("unload {}", target.unwrap_or(0))),
+            FlashStep::StartLoading { target } => Some(format!("start {}", target.unwrap_or(0))),
+            FlashStep::AllocateSegment { target, size, .. } => {
+                Some(format!("allocate {} {size}", target.unwrap_or(0)))
+            }
             FlashStep::MasterReset { erase_code, .. } => Some(format!("reset {erase_code}")),
             FlashStep::WriteProp {
                 object: PropObject::Index(i),
                 prop_id,
+                start_element,
                 ..
-            } => Some(format!("write {i}/{prop_id}")),
-            FlashStep::LoadCompleted { target } => Some(format!("complete {target:?}")),
+            } => Some(format!("write {i}/{prop_id}@{start_element}")),
+            FlashStep::FactoryHeldProp {
+                object: PropObject::Index(i),
+                prop_id,
+                ..
+            } => Some(format!("held {i}/{prop_id}")),
+            FlashStep::LoadImageProp {
+                obj_idx, prop_id, ..
+            } => Some(format!("mcb {obj_idx}/{prop_id}")),
+            FlashStep::LoadCompleted { target } => {
+                Some(format!("complete {}", target.unwrap_or(0)))
+            }
             FlashStep::Restart => Some("restart".to_string()),
             FlashStep::WriteRelMem { .. } | FlashStep::WriteMem { .. } => {
                 Some("memory".to_string())
             }
             _ => None,
         })
-        .collect();
+        .collect()
+}
+
+#[test]
+fn test_parameters_only_runs_the_par_procedure_without_par_allocation() -> TestResult {
+    // ETS's partial download of M-0009_A-E802-13-7620 (sweep capture
+    // `params-partial/b-partial-param`): the base pointer read (op 25), obj4
+    // Unload and StartLoading (26, 27), no allocation, the base pointer check
+    // (28), the `full,par` reset (29) and not the `full,grp` one, the MergeId
+    // 4 property writes, PID 13 (353), LoadCompleted (354), restart (355).
+    let app = par_app(&e802_procedures())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = par_plan(&app, &overrides)?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
     assert_eq!(
-        shape,
+        shape(&partial),
         [
-            "unload Some(4)",
-            "start Some(4)",
+            "table-ref 4",
+            "unload 4",
+            "start 4",
+            "same-ref 4",
             "reset 5",
-            "write 9/208",
-            "write 10/52",
-            "write 4/13",
-            "complete Some(4)",
+            "write 9/208@1",
+            "write 10/52@1",
+            "write 4/13@1",
+            "complete 4",
             "restart"
         ],
         "{:?}",
         partial.steps
     );
+    assert!(partial.resets_parameters_first());
+    // The captured shape: nothing to flag as unconfirmed.
+    assert!(partial.par_procedure_unconfirmed().is_empty());
+    // The read-back covers the fixed write as well as the parameters'.
+    let checked: Vec<(PropObject, u32)> = plan
+        .checked_properties()
+        .iter()
+        .map(|p| (p.object, p.prop_id))
+        .collect();
+    assert!(
+        checked.contains(&(PropObject::Index(9), 208)),
+        "{checked:?}"
+    );
+    assert!(
+        checked.contains(&(PropObject::Index(10), 52)),
+        "{checked:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_refuses_a_par_procedure_that_drops_a_segment() -> TestResult {
+    // A `full`-only allocation on object 4: the par procedure unloads it and
+    // allocates nothing, so the object would load again without its memory.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="2"><LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" /></LoadProcedure>
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+              </LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    assert_eq!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::DropsSegment { object: 4, size: 6 })
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_refuses_a_reset_that_erases_what_it_does_not_write_back() -> TestResult {
+    // Erase code 4 resets the application program, which a parameter-only
+    // download does not load again.
+    let app = par_app(&e802_procedures().replace(
+        r#"AppliesTo="full,par" EraseCode="5""#,
+        r#"AppliesTo="full,par" EraseCode="4""#,
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    assert!(matches!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::ResetLosesState { erase_code: 4, .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_keeps_a_held_write_after_the_reset() -> TestResult {
+    // A catalogue LoadedImage holding object 9's value after the parameter
+    // reset (issue #951): the par procedure leaves the write out as held, as
+    // the full download does, and the executor writes it only when the
+    // device holds something else.
+    let mut app = par_app(&e802_procedures())?;
+    app.factory_properties = vec![bussard_product::application::FactoryProperty {
+        object: 9,
+        prop_id: 208,
+        start: 0,
+        data: vec![1, 2],
+        mask: Vec::new(),
+    }];
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let steps = shape(&partial);
+    assert!(steps.contains(&"held 9/208".to_string()), "{steps:?}");
+    assert_eq!(
+        partial.par_procedure_unconfirmed(),
+        ["a write left out as held after the parameter reset (#951)"]
+    );
+    assert!(!steps.contains(&"write 9/208@1".to_string()), "{steps:?}");
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_par_procedure_leaves_out_mergeid_1() -> TestResult {
+    // The par procedure has no MergeId 1: its `full,par` write is not sent,
+    // as ETS does not send E804's MergeId 1 write in its partial download.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="1"><LdCtrlWriteProp AppliesTo="full,par" ObjIdx="9" PropId="51" Verify="false" InlineData="01" /></LoadProcedure>
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+              </LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    assert!(shape(&plan).contains(&"write 9/51@1".to_string()));
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    assert!(!shape(&partial).contains(&"write 9/51@1".to_string()));
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_par_procedure_sends_only_the_par_range_of_a_property() -> TestResult {
+    // Two writes to one property: elements 1 and 2 `full` only, 3 and 4
+    // `full,par`. The par procedure sends the second alone.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+                <LdCtrlWriteProp AppliesTo="full" ObjIdx="11" PropId="208" StartElement="1" Count="2" Verify="false" InlineData="0101" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="11" PropId="208" StartElement="3" Count="2" Verify="false" InlineData="0202" />
+              </LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let full = shape(&plan);
+    assert!(full.contains(&"write 11/208@1".to_string()), "{full:?}");
+    let partial = shape(&plan.parameters_only(&BTreeMap::new())?);
+    assert!(
+        partial.contains(&"write 11/208@3".to_string()),
+        "{partial:?}"
+    );
+    assert!(
+        !partial.contains(&"write 11/208@1".to_string()),
+        "{partial:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_par_procedure_runs_mergeid_7_without_applies_to() -> TestResult {
+    // The E804 shape (#1038): a MergeId 1 write and a MergeId 7 write without
+    // AppliesTo, and a `par` allocation in Mode 0. ETS's partial download
+    // sends the MergeId 7 write and its MCB checks, not the MergeId 1 one.
+    let app = par_app(
+        r#"
+              <LoadProcedure MergeId="1"><LdCtrlWriteProp ObjIdx="9" PropId="51" Verify="false" InlineData="01" /></LoadProcedure>
+              <LoadProcedure MergeId="2">
+                <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+                <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6" Mode="0" Fill="0" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="4">
+                <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="7">
+                <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />
+                <LdCtrlWriteProp ObjIdx="9" PropId="51" Verify="false" InlineData="02" />
+              </LoadProcedure>"#,
+    )?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    assert_eq!(
+        shape(&partial),
+        [
+            "table-ref 4",
+            "unload 4",
+            "start 4",
+            "allocate 4 6",
+            "same-ref 4",
+            "write 10/52@1",
+            "write 4/13@1",
+            "complete 4",
+            "mcb 4/27",
+            "write 9/51@1",
+            "restart"
+        ],
+        "{:?}",
+        partial.steps
+    );
+    // The code image is not rewritten (a differential download); the MCB
+    // check compares it.
+    assert!(partial.steps.iter().any(|s| matches!(
+        s,
+        FlashStep::LoadImageProp {
+            obj_idx: 4,
+            image: Some(_),
+            ..
+        }
+    )));
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_par_procedure_brackets_object_5_with_application_program_2() -> TestResult {
+    // A MergeId 5 block loads Application Program 2: the par procedure runs
+    // object 5's rows as the master states them.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+              </LoadProcedure>
+              <LoadProcedure MergeId="5"><LdCtrlWriteProp AppliesTo="full,par" ObjIdx="12" PropId="208" Verify="false" InlineData="05" /></LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let partial_plan = plan.parameters_only(&BTreeMap::new())?;
+    assert_eq!(
+        partial_plan.par_procedure_unconfirmed(),
+        ["object 5 (Application Program 2) loaded with object 4"]
+    );
+    let partial = shape(&partial_plan);
+    for step in [
+        "table-ref 5",
+        "unload 5",
+        "start 5",
+        "same-ref 5",
+        "write 12/208@1",
+        "complete 5",
+    ] {
+        assert!(partial.contains(&step.to_string()), "{step}: {partial:?}");
+    }
     Ok(())
 }
 
 #[test]
 fn test_parameters_only_without_par_allocation_off_the_template_is_still_refused() -> TestResult {
-    // The same blocks planned without the master template: no `par`
-    // procedure frames them, so there is no load to write them in.
-    let app = nopar_app()?;
+    // The same blocks planned without the master template: no par procedure
+    // frames them, so there is no load to write them in.
+    let app = par_app(&e802_procedures())?;
     let plan = plan_of(&app, &BTreeMap::new())?;
     assert_eq!(
         plan.parameters_only(&BTreeMap::new()).err(),

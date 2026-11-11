@@ -614,10 +614,6 @@ pub enum LoadOp {
         /// The channel number (`ChannelNumber`) the erase applies to (`0` for
         /// the whole device in every observed procedure).
         channel_number: Option<u32>,
-        /// `AppliesTo` filter (`"full,par"` on the Hager 07B0 actuators'
-        /// parameter reset, issue #1052).
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        applies_to: Option<String>,
     },
     /// `<LdCtrlUnload LsmIdx=…>`, or `ObjType=… Occurrence=…` for an object
     /// named by type (issue #961).
@@ -965,21 +961,32 @@ impl LoadProcedure {
     /// such a procedure.
     pub fn lists_partial_downloads(&self) -> bool {
         self.applies_to.iter().flatten().any(|scope| {
-            let mut tokens = scope.split(',').map(str::trim).filter(|t| !t.is_empty());
+            let mut tokens = applies_to_tokens(scope);
             tokens.clone().next().is_some() && tokens.all(|t| t.eq_ignore_ascii_case("grp"))
         })
     }
+}
+
+/// The downloads an `AppliesTo` value names (`"full,par"` gives `full` and
+/// `par`), trimmed, empty tokens left out. The one parser of the attribute.
+pub fn applies_to_tokens(applies_to: &str) -> impl Iterator<Item = &str> + Clone {
+    applies_to
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether an `AppliesTo` value names `download` (`"par"`, `"full"`, ...),
+/// case-insensitively.
+pub fn applies_to_names(applies_to: &str, download: &str) -> bool {
+    applies_to_tokens(applies_to).any(|t| t.eq_ignore_ascii_case(download))
 }
 
 /// Whether an `AppliesTo` value names only partial downloads (`par`, `grp`)
 /// and not the complete one (`full`, `all`, `auto`). An empty value applies to
 /// every download.
 pub fn applies_to_partial_only(applies_to: &str) -> bool {
-    let tokens: Vec<&str> = applies_to
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tokens: Vec<&str> = applies_to_tokens(applies_to).collect();
     !tokens.is_empty()
         && tokens
             .iter()
@@ -3756,7 +3763,6 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         b"LdCtrlMasterReset" => LoadOp::MasterReset {
             erase_code: u(b"EraseCode"),
             channel_number: u(b"ChannelNumber"),
-            applies_to: s(b"AppliesTo"),
         },
         b"LdCtrlUnload" => LoadOp::Unload {
             lsm_idx: u(b"LsmIdx"),
@@ -4804,7 +4810,6 @@ mod tests {
             LoadOp::MasterReset {
                 erase_code: Some(4),
                 channel_number: Some(0),
-                applies_to: None,
             }
         ));
         assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
