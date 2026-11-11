@@ -324,17 +324,55 @@ def ref_places(model: dict) -> list[dict]:
     return out
 
 
+def page_pattern(template: str) -> "re.Pattern | None":
+    """The pattern of a page text with `{{...}}` placeholders, anchored at
+    both ends: the literal text as it is (runs of spaces as any space, case
+    folded), each placeholder non-empty text. A placeholder at the very end
+    may be empty, as ETS leaves an unset text parameter out ('Eingang
+    {{ChNo}}: {{0}}' shown as 'Eingang A:'). None for a page text of
+    placeholders only, which could be any page."""
+    t = re.sub(r"^\s*-\s*", "", template or "").strip()
+    parts = re.split(r"\{\{[^}]*\}\}", t)
+    if not "".join(parts).strip():
+        return None
+
+    def lit(x: str) -> str:
+        return r"\s*".join(re.escape(w) for w in x.split()) if x.strip() else ""
+    out = ""
+    for i, part in enumerate(parts):
+        out += lit(part) if part.strip() else ""
+        if i < len(parts) - 1:
+            last = i == len(parts) - 2 and not parts[-1].strip()
+            out += r"(?:\s*.+?)?" if last else r"\s*.+?\s*"
+    return re.compile("^" + out + "$", re.IGNORECASE)
+
+
 def page_matches(template: str, shown: str) -> bool:
     """Whether a page ETS shows as `shown` is the tree's page `template`:
-    alike, or, for a module's page text with `{{...}}` placeholders
-    ('Eingang {{ChNo}}: {{0}}' shown as 'Eingang A:'), the fixed parts in
-    order with anything between."""
+    alike, or, for a module's page text with `{{...}}` placeholders, the
+    whole shown text by `page_pattern` (never a page text of placeholders
+    only)."""
     t = re.sub(r"^\s*-\s*", "", template or "")
-    v = re.sub(r"^\s*-\s*", "", shown or "")
+    v = re.sub(r"^\s*-\s*", "", shown or "").strip()
     if "{{" not in t:
         return alike(t, v)
-    parts = [norm(x) for x in re.split(r"\{\{[^}]*\}\}", t)]
-    return re.fullmatch(".*?".join(re.escape(x) for x in parts), norm(v)) is not None
+    pattern = page_pattern(t)
+    return pattern is not None and pattern.match(v) is not None
+
+
+def literal_len(template: str) -> int:
+    return len(norm(re.sub(r"\{\{[^}]*\}\}", "", template or "")))
+
+
+def best_pages(places: list[dict], shown: str) -> set:
+    """The tree's page texts a shown page is: of those that match, the ones
+    with the most literal text ('Eingang {{ChNo}}: Sperre' over 'Eingang
+    {{ChNo}}: {{0}}' for 'Eingang A: Sperre')."""
+    matching = {p["page"] for p in places if p["page"] and page_matches(p["page"], shown)}
+    if not matching:
+        return set()
+    top = max(literal_len(t) for t in matching)
+    return {t for t in matching if literal_len(t) == top}
 
 
 def page_parts(page: dict) -> tuple[str | None, str]:
@@ -403,8 +441,8 @@ def candidates_of(places: list[dict], change: dict) -> list[str]:
     """The references labelled like the change on its page and channel, in
     tree order."""
     channel, page = page_parts(change["page"])
-    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"]
-             and page_matches(p["page"], page)
+    pages = best_pages(places, page)
+    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"] in pages
              and (channel is None or (p["channel"] and alike(p["channel"], channel)))]
     return list(dict.fromkeys(cands))
 
@@ -467,10 +505,19 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     definite = dict(values)
     for d, converted, n_rows in open_:
         cands = [r for r, _ in converted]
-        shown = shown_refs({**definite, **{f"param@{r}": str(v) for r, v in converted}}) if shown_refs else None
+        probes = module_probes(places, cands)
+        stored = {**definite, **{f"param@{r}": str(v) for r, v in converted}}
+        for ref in probes.values():
+            stored.setdefault(f"param@{ref}", ref_default(model, ref))
+        shown = shown_refs(stored) if shown_refs else None
         visible = [r for r in cands if shown is not None and r in shown]
         _, page = page_parts(d["page"])
-        visible = module_instance_refs(places, page_orders or [survey_after], d, visible, n_rows)
+        if probes and shown is not None:
+            picked = module_instance_refs(places, page_orders or [survey_after], d, cands, shown, probes)
+            if picked is None:
+                problems.append(f"{d['label']!r} on {page!r}: the page order does not tell the module instance")
+                continue
+            visible = picked
         if len(visible) != n_rows:
             problems.append(f"{len(cands)} references labelled {d['label']!r} on {page!r}, "
                             f"{len(visible)} shown, ETS shows {n_rows}")
@@ -480,28 +527,48 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     return values, problems
 
 
-def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: dict, visible: list[str],
-                         n_rows: int) -> list[str]:
+def module_probes(places: list[dict], cands: list[str]) -> dict[str, str]:
+    """For candidates spread over several module instances: per instance,
+    in tree order, a reference on the same page (its first), whose being
+    shown tells that the instance's page is shown. {} for one instance."""
+    by_ref = {p["ref"]: p for p in places}
+    instances = list(dict.fromkeys(by_ref[r]["instance"] for r in cands if r in by_ref))
+    if len(instances) < 2 or None in instances:
+        return {}
+    page = by_ref[cands[0]]["page"]
+    out: dict[str, str] = {}
+    for p in places:
+        if p["instance"] in instances and p["page"] == page and p["instance"] not in out:
+            out[p["instance"]] = p["ref"]
+    return out
+
+
+def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: dict, cands: list[str],
+                         shown: set, probes: dict[str, str]) -> list[str] | None:
     """The shown candidates of the module instance whose page the change is
-    on, when several instances of one module show the label: ETS lists the
-    instances' pages in tree order, so the change's page is the k-th page of
-    its channel matching the module's page text (in the first of `surveys`
-    that holds the page), and the k-th instance among those the evaluator
-    shows. `visible` unchanged otherwise."""
-    instance_of = {p["ref"]: p for p in places}
-    instances = list(dict.fromkeys(instance_of[r]["instance"] for r in visible if r in instance_of))
-    if len(visible) <= n_rows or len(instances) < 2 or None in instances:
-        return visible
-    template = instance_of[visible[0]]["page"] or ""
+    on: the instances whose page the evaluator shows (`probes` in `shown`),
+    in tree order, are the pages ETS lists in order, so the change's page,
+    the k-th page of its channel that is this module page (`best_pages`, in
+    the first of `surveys` that holds it), is the k-th of them. The
+    candidates of that instance the evaluator shows; [] when the instance
+    hides the label (the row is then unmapped), None when the page order
+    does not tell the instance."""
+    by_ref = {p["ref"]: p for p in places}
+    template = by_ref[cands[0]]["page"]
+    shown_instances = [i for i, ref in probes.items() if ref in shown]
     channel, _ = page_parts(change["page"])
     for survey in surveys:
-        same = [p for p in survey if page_matches(template, page_parts(p)[1])
+        same = [p for p in survey if template in best_pages(places, page_parts(p)[1])
                 and (channel is None or alike(page_parts(p)[0] or "", channel))]
         k = next((i for i, p in enumerate(same)
                   if norm(p.get("crumb") or "") == norm(change["page"].get("crumb") or "")), None)
-        if k is not None and k < len(instances):
-            return [r for r in visible if instance_of[r]["instance"] == instances[k]]
-    return visible
+        if k is None:
+            continue
+        if k >= len(shown_instances) or len(same) != len(shown_instances):
+            return None
+        chosen = shown_instances[k]
+        return [r for r in cands if by_ref[r]["instance"] == chosen and r in shown]
+    return None
 
 
 def bussard_shown_refs(model_dir: Path):

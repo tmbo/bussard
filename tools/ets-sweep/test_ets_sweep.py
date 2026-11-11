@@ -271,6 +271,51 @@ class TestParamsModel(unittest.TestCase):
                                                 lambda v: {r.split("@")[1] for r in v}, [[], order])
         self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "2"}, []))
 
+    def test_page_matches_anchored_sibling_and_placeholder_only(self):
+        main, sibling = "Eingang {{ChNo}}: {{0}}", "Eingang {{ChNo}}: Sperre"
+        self.assertTrue(params.page_matches(main, "Eingang A:"))
+        self.assertTrue(params.page_matches(sibling, "Eingang A: Sperre"))
+        self.assertFalse(params.page_matches(sibling, "Eingang A:"))
+        self.assertFalse(params.page_matches(main, "Eingang"))
+        self.assertFalse(params.page_matches(main, "Ausgang A:"))
+        self.assertFalse(params.page_matches("{{0}}", "Eingang A:"))
+        places = [{"page": main}, {"page": sibling}]
+        self.assertEqual(params.best_pages(places, "Eingang A: Sperre"), {sibling})
+        self.assertEqual(params.best_pages(places, "Eingang A:"), {main})
+
+    THREE = {
+        "parameters": {"MD-2_P-23": {"kind": {"Text": {}}, "text": "Beschreibung"},
+                       "MD-2_P-32": {"kind": {"Enum": {"values": [0, 1, 2]}}, "text": "Wert Kontakt geöffnet",
+                                     "labels": [[0, "Aus"], [1, "Ein"], [2, "nicht aktiv"]]}},
+        "parameter_refs": {"MD-2_P-23_R-1": {"parameter": "MD-2_P-23"}, "MD-2_P-32_R-50": {"parameter": "MD-2_P-32"}},
+        "dynamic": [{"channel": {"text": "Eingänge", "nodes": [
+            {"module": {"id": f"MD-2_M-{i}", "def": "MD-2"}} for i in (2, 3, 4)]}}],
+        "module_dynamics": {"MD-2": [{"block": {"text": "Eingang {{ChNo}}: {{0}}", "nodes": [
+            {"p": "MD-2_P-23_R-1"}, {"p": "MD-2_P-32_R-50"}]}}]},
+    }
+    ORDER = [{"crumb": f"Eingänge > Eingang {c}:", "page": f"Eingang {c}:"} for c in "ABC"]
+
+    def three(self, page_index):
+        # M-2's page is shown but hides the label; M-3 and M-4 show it.
+        def shown(values):
+            return {"MD-2_M-2_P-23_R-1", "MD-2_M-3_P-23_R-1", "MD-2_M-4_P-23_R-1",
+                    "MD-2_M-3_P-32_R-50", "MD-2_M-4_P-32_R-50"}
+        done = [{"page": self.ORDER[page_index], "label": "Wert Kontakt geöffnet", "n": 0, "kind": "dropdown",
+                 "result": "set", "shown": "Ein", "set_to": "Ein", "rows_with_label": 1}]
+        return params.model_changes(self.THREE, [], done, shown, [self.ORDER])
+
+    def test_model_changes_counts_instances_whose_page_is_shown(self):
+        # The change on the second page (M-3's) is M-3's, though M-2 hides
+        # the label: the instance comes from the shown pages, not the
+        # instances showing the label.
+        self.assertEqual(self.three(1), ({"param@MD-2_M-3_P-32_R-50": "1"}, []))
+        self.assertEqual(self.three(2), ({"param@MD-2_M-4_P-32_R-50": "1"}, []))
+
+    def test_model_changes_unmapped_when_the_instance_hides_the_label(self):
+        values, problems = self.three(0)
+        self.assertEqual(values, {})
+        self.assertIn("0 shown, ETS shows 1", problems[0])
+
     def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
         done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
                  "set_to": "2 Presetobjekten"},
