@@ -1674,6 +1674,46 @@ class TestDriverParamEditor(unittest.TestCase):
         # The breadcrumb moved on, the highlight not yet.
         self.assertFalse(ok({"crumb": "Ausgang 1 > - A1: Zeiten für Schaltobjekt", "page": "Ausgang 1: Funktionsfreigabe"}))
 
+    def walk(self, last, pages, stuck_at=None):
+        """walk_pages over `pages`, End selecting `last`; Down from
+        `stuck_at` moves nothing the first time."""
+        from unittest import mock
+
+        seq = [{"crumb": c, "page": c.rsplit(">", 1)[-1].strip()} for c in pages]
+        state = {"i": 0, "stuck": stuck_at}
+
+        def next_page(current):
+            if state["stuck"] is not None and current["crumb"] == state["stuck"]:
+                state["stuck"] = None
+                return None
+            state["i"] += 1
+            return seq[state["i"]] if state["i"] < len(seq) else None
+        first = {**seq[0], "last": {"crumb": last, "page": last.rsplit(">", 1)[-1].strip()}}
+        with mock.patch.object(self.d, "first_page", return_value=first), \
+                mock.patch.object(self.d, "next_page", side_effect=next_page), \
+                mock.patch.object(self.d, "log"):
+            got = [p["crumb"] for _, p in self.d.walk_pages()]
+        return got, self.d.WALK["short"]
+
+    def test_walk_pages_goes_past_a_collapsed_last_channel(self):
+        # End selects the node of 'Ausgang 9', collapsed; its pages appear
+        # once the walk expands it and are walked too.
+        pages = ["Allgemein", "Ausgang 9", "Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Ausgang 9 > - A9: Zeiten"]
+        self.assertEqual(self.walk("Ausgang 9", pages), (pages, False))
+
+    def test_walk_pages_retries_a_slow_down_before_the_last_entry(self):
+        pages = ["Allgemein", "Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Information > Versionen"]
+        self.assertEqual(self.walk("Information > Versionen", pages, stuck_at="Allgemein"), (pages, False))
+
+    def test_walk_pages_short_when_down_moves_nothing_twice(self):
+        from unittest import mock
+
+        first = {"crumb": "Allgemein", "page": "Allgemein", "last": {"crumb": "Information > Versionen", "page": "Versionen"}}
+        with mock.patch.object(self.d, "first_page", return_value=first), \
+                mock.patch.object(self.d, "next_page", return_value=None), mock.patch.object(self.d, "log"):
+            got = [p["crumb"] for _, p in self.d.walk_pages()]
+        self.assertEqual((got, self.d.WALK["short"]), (["Allgemein"], True))
+
     def test_channel_node_of_keeps_two_channels_pages_of_one_name(self):
         node = {"crumb": "Ausgang 5 > ...", "page": "Ausgang 5: Funktionsfreigabe"}
         page = {"crumb": "Ausgang 5 > Ausgang 5: Funktionsfreigabe", "page": "Ausgang 5: Funktionsfreigabe"}

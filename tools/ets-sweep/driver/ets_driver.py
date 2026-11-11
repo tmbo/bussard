@@ -1702,19 +1702,22 @@ def next_page(current: dict) -> dict | None:
 
 def walk_pages(limit: int = 400):
     """Every page of the tree in order, selecting each: yields
-    (index, page). Channels are expanded on the way. Ends at the tree's
-    last page (`first_page`); a Down that moves nothing before it is
-    pressed once more (logged) and, failing again, ends the walk short
-    (`WALK["short"]`)."""
+    (index, page). Channels are expanded on the way. The walk goes on
+    until Down moves nothing; the tree's last entry (`first_page`, End)
+    only tells a short walk from a finished one: a Down that moves nothing
+    before it is pressed once more (logged) and, failing again, ends the
+    walk short (`WALK["short"]`). Past it the walk continues, since End
+    selects a collapsed channel's node whose pages appear only once the
+    walk expands it (Hager 'Ausgang 9')."""
     page = first_page()
     last = page.pop("last", None)
+    reached = last is None
     WALK["short"] = False
     for i in range(limit):
         yield i, page
-        if last is not None and same_page(page, last):
-            return
+        reached = reached or same_page(page, last)
         nxt = next_page(page)
-        if nxt is None and last is not None:
+        if nxt is None and not reached:
             log(f"walk: Down did not move from {page.get('crumb')!r}; once more")
             nxt = next_page(page)
             if nxt is None:
@@ -2015,7 +2018,9 @@ def flow_read_param(req: dict) -> dict:
         return {"shown": False, "why": f"no row {req['label']!r} on the page", "page": page}
     if row["kind"] in ("number", "text"):
         row["value"] = field_value(row)
-    rows_with_label = sum(1 for r in rows if _alike(r["label"], req["label"], 0.9))
+    # The exact match `find_param_row` and `params.model_changes` count by:
+    # 'Sendeverzögerung Ein' and '... Aus' are two labels.
+    rows_with_label = sum(1 for r in rows if _norm(r["label"]) == _norm(req["label"]))
     return {"shown": True, "row": row, "page": page, "rows_with_label": rows_with_label}
 
 
