@@ -249,13 +249,21 @@ class TestParamsModel(unittest.TestCase):
                  "set_to": "1"},
                 {**self.change("Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Preset", "dropdown", ""), "set_to": "x"}]
 
+        shows = {("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset"): "2 Presetobjekten",
+                 ("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung"): "1",
+                 ("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr"): "1"}
+
         def flow(name, **body):
             self.assertEqual(name, "read_param")
-            return {"shown": True, "row": {"value": "1"}}
+            value = shows.get((body["page"]["crumb"], body["label"]))
+            if value is None:
+                return {"shown": False, "why": "no row 'Preset' on the page"}
+            return {"shown": True, "row": {"value": value}, "rows_with_label": 1}
 
         params.read_back(flow, "1.1.1", self.FINAL, done)
         self.assertEqual([(d["result"], d.get("shown")) for d in done],
                          [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
+        self.assertEqual(done[0]["rows_with_label"], 1)
 
 
 class TestParamsSubset(unittest.TestCase):
@@ -1614,6 +1622,13 @@ class TestDriverParamEditor(unittest.TestCase):
         got = self.d.classify_control(checked, 403, [])
         self.assertEqual((got["kind"], got["value"]), ("checkbox", "1"))
 
+    def test_classify_fixed_value_text_is_no_checkbox(self):
+        # Hager TXB692F 'Ausgangskontakt  Schließer': a fixed setting shown
+        # as text in the control column; its glyphs are dark near CONTROL_X.
+        px = self.px_of([("fill", 1627, 380, 1631, 396, (60, 60, 60)), ("fill", 1640, 383, 1700, 393, (60, 60, 60))])
+        got = self.d.classify_control(px, 389, [{"text": "Schließer", "x": 1626, "y": 377, "w": 95, "h": 18}])
+        self.assertEqual((got["kind"], got["value"]), ("none", "Schließer"))
+
     def test_classify_number_field_with_spinner(self):
         px = self.px_of([("frame", 1625, 383, 2182, 427, self.BORDER), ("fill", 2165, 395, 2172, 399, (80, 80, 80)),
                          ("fill", 2165, 411, 2172, 415, (80, 80, 80))])
@@ -1658,6 +1673,46 @@ class TestDriverParamEditor(unittest.TestCase):
         self.assertTrue(ok({"crumb": "Ausgang 5 > ...", "page": "Ausgang 4: Funktionsfreigabe"}))
         # The breadcrumb moved on, the highlight not yet.
         self.assertFalse(ok({"crumb": "Ausgang 1 > - A1: Zeiten für Schaltobjekt", "page": "Ausgang 1: Funktionsfreigabe"}))
+
+    def walk(self, last, pages, stuck_at=None):
+        """walk_pages over `pages`, End selecting `last`; Down from
+        `stuck_at` moves nothing the first time."""
+        from unittest import mock
+
+        seq = [{"crumb": c, "page": c.rsplit(">", 1)[-1].strip()} for c in pages]
+        state = {"i": 0, "stuck": stuck_at}
+
+        def next_page(current):
+            if state["stuck"] is not None and current["crumb"] == state["stuck"]:
+                state["stuck"] = None
+                return None
+            state["i"] += 1
+            return seq[state["i"]] if state["i"] < len(seq) else None
+        first = {**seq[0], "last": {"crumb": last, "page": last.rsplit(">", 1)[-1].strip()}}
+        with mock.patch.object(self.d, "first_page", return_value=first), \
+                mock.patch.object(self.d, "next_page", side_effect=next_page), \
+                mock.patch.object(self.d, "log"):
+            got = [p["crumb"] for _, p in self.d.walk_pages()]
+        return got, self.d.WALK["short"]
+
+    def test_walk_pages_goes_past_a_collapsed_last_channel(self):
+        # End selects the node of 'Ausgang 9', collapsed; its pages appear
+        # once the walk expands it and are walked too.
+        pages = ["Allgemein", "Ausgang 9", "Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Ausgang 9 > - A9: Zeiten"]
+        self.assertEqual(self.walk("Ausgang 9", pages), (pages, False))
+
+    def test_walk_pages_retries_a_slow_down_before_the_last_entry(self):
+        pages = ["Allgemein", "Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Information > Versionen"]
+        self.assertEqual(self.walk("Information > Versionen", pages, stuck_at="Allgemein"), (pages, False))
+
+    def test_walk_pages_short_when_down_moves_nothing_twice(self):
+        from unittest import mock
+
+        first = {"crumb": "Allgemein", "page": "Allgemein", "last": {"crumb": "Information > Versionen", "page": "Versionen"}}
+        with mock.patch.object(self.d, "first_page", return_value=first), \
+                mock.patch.object(self.d, "next_page", return_value=None), mock.patch.object(self.d, "log"):
+            got = [p["crumb"] for _, p in self.d.walk_pages()]
+        self.assertEqual((got, self.d.WALK["short"]), (["Allgemein"], True))
 
     def test_channel_node_of_keeps_two_channels_pages_of_one_name(self):
         node = {"crumb": "Ausgang 5 > ...", "page": "Ausgang 5: Funktionsfreigabe"}

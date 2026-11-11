@@ -1337,6 +1337,13 @@ def _blue(p) -> bool:
     return b > 150 and b - r > 30
 
 
+def _tick(p) -> bool:
+    """A checkbox's tick: a darker blue (113, 152, 204), not its light fill
+    (219, 234, 255) nor the grey border."""
+    r, g, b = p[:3]
+    return r < 175 and b > 170 and b - r > 50
+
+
 def merge_labels(lines: list[dict]) -> list[dict]:
     """The label column's OCR lines joined where ETS wrapped a label: the
     next line starts within 16 px below the last one at the same indent."""
@@ -1457,10 +1464,15 @@ def classify_control(px, cy: int, cells: list[dict]) -> dict:
         return {"kind": "number" if spinner else "text", "value": " ".join(c["text"] for c in inside).strip(),
                 "box": [CONTROL_X, right], "unit": unit}
     circles = radio_circles(px, cy, cells)
-    # A checkbox: grey border when clear, light blue fill (219, 234, 255)
-    # without a grey border when checked.
-    box = sum(_dark(px(x, y)) or _blue(px(x, y)) for x in range(CONTROL_X, CONTROL_X + 34, 2)
-              for y in range(cy - 15, cy + 16, 3)) > 6
+    # A checkbox: a ~32 px square at CONTROL_X, its left side a grey border
+    # when clear, light blue fill (219, 234, 255) when checked. A value ETS
+    # shows as plain text in the control column (a fixed setting, Hager
+    # TXB692F 'Ausgangskontakt  Schließer') is no checkbox: its glyphs read
+    # as one (2026-11-11).
+    side = max(sum(_dark(px(x, y)) or _blue(px(x, y)) for y in range(cy - 13, cy + 14))
+               for x in (CONTROL_X, CONTROL_X + 1, CONTROL_X + 2, CONTROL_X + 3))
+    text_at_control = any(c["x"] < CONTROL_X + 40 and not _circle_like(c["text"]) for c in cells)
+    box = side >= 20 and not text_at_control
     if circles:
         # Each option's text: the cells between its circle and the next
         # (OCR splits '0 = Aus, 1 = Ein' and drops the lone '1').
@@ -1474,10 +1486,31 @@ def classify_control(px, cy: int, cells: list[dict]) -> dict:
         chosen = next((o["text"] for o in opts if o["selected"]), "")
         return {"kind": "radio", "value": chosen, "options": opts}
     if box:
-        checked = sum(_blue(px(x, y)) or _dark(px(x, y)) for x in range(CONTROL_X + 6, CONTROL_X + 27, 2)
-                      for y in range(cy - 9, cy + 10, 2)) > 3
+        # The tick (113, 152, 204) decides, not the light blue fill: a box
+        # just cleared kept the fill while focused, and read as checked
+        # (four "1 -> 0" changes on 2026-11-11).
+        checked = sum(_tick(px(x, y)) for x in range(CONTROL_X + 6, CONTROL_X + 27)
+                      for y in range(cy - 9, cy + 10)) > 3
         return {"kind": "checkbox", "value": "1" if checked else "0"}
     return {"kind": "none", "value": " ".join(c["text"] for c in cells).strip()}
+
+
+def ocr_ink(bbox: tuple[int, int, int, int], pad: int = 12) -> list[dict]:
+    """OCR of the part of `bbox` that holds ink. Windows OCR placed the
+    lines of a mostly blank 2275 x 1980 crop 21 px right and 24 px up
+    (Hager TXB692F, five rows, 2026-11-11), so every row was read beside its
+    control; the same rows OCR'd in a crop around them sit right."""
+    from PIL import ImageOps
+
+    img = ImageOps.grayscale(grab(bbox))
+    s = img.width / (bbox[2] - bbox[0])
+    box = ImageOps.invert(img).point(lambda v: 255 if v > 60 else 0).getbbox()
+    if box is None:
+        return []
+    x0, y0, x1, y1 = (int(v / s) for v in box)
+    inner = (max(bbox[0], bbox[0] + x0 - pad), max(bbox[1], bbox[1] + y0 - pad),
+             min(bbox[2], bbox[0] + x1 + pad), min(bbox[3], bbox[1] + y1 + pad))
+    return ocr(inner)
 
 
 def param_rows() -> list[dict]:
@@ -1489,8 +1522,12 @@ def param_rows() -> list[dict]:
     last: dict = {"lines": None}
 
     def settled():
-        lines = ocr(PARAM_ROWS)
-        same = last["lines"] is not None and [l["text"] for l in lines] == [l["text"] for l in last["lines"]]
+        lines = ocr_ink(PARAM_ROWS)
+        # Texts and places: a page slides in, its rows read with the right
+        # text 22 px above their controls (2026-11-11), and a click there
+        # missed the checkbox.
+        same = last["lines"] is not None and [(l["text"], l["x"] // 4, l["y"] // 4) for l in lines] == \
+            [(l["text"], l["x"] // 4, l["y"] // 4) for l in last["lines"]]
         last["lines"] = lines
         return same
     wait_for("rows settled", settled, 3, 0.25)
@@ -1526,7 +1563,7 @@ def selected_page() -> dict:
     img = grab(PARAM_LIST).convert("RGB")
     s = img.width / (PARAM_LIST[2] - PARAM_LIST[0])
     page, y = None, None
-    for l in ocr(PARAM_LIST):
+    for l in ocr_ink(PARAM_LIST):
         if len(l["text"].strip()) < 2:
             continue
         blue = sum(_blue(img.getpixel((min(int((x - PARAM_LIST[0]) * s), img.width - 1),
@@ -1596,31 +1633,54 @@ def page_consistent(p: dict) -> bool:
     return _alike(last, p["page"]) or _norm(p["page"]).startswith(_norm(last))
 
 
+def settled_page(timeout: float = 3.0) -> dict | None:
+    """The selected page once two reads agree and the breadcrumb matches
+    the selection (`page_consistent`), or None."""
+    seen: dict = {"p": None}
+
+    def stable():
+        p = selected_page()
+        ok = seen["p"] is not None and same_page(p, seen["p"]) and page_consistent(p)
+        seen["p"] = p
+        return ok
+    return seen["p"] if wait_for("page settled", stable, timeout, 0.25) else None
+
+
 def first_page() -> dict:
-    """Select the first page of the tree and return it: a click on a
-    visible entry puts the keyboard focus in the tree, Home selects its
-    first entry (the tree scrolls back up by itself)."""
-    lines = [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
+    """Select the first page of the tree and return it, with the tree's
+    last page under "last" (End, then Home): a click on a visible entry
+    puts the keyboard focus in the tree, End and Home select its last and
+    first entry (the tree scrolls by itself). The walk ends at the last
+    page, not at the first Down that seems to change nothing."""
+    lines = [l for l in ocr_ink(PARAM_LIST) if len(l["text"].strip()) > 1]
     if not lines:
         raise RuntimeError("the parameter view shows no page tree")
     top = min(lines, key=lambda l: l["y"])
     click(top["x"] + top["w"] // 2, top["y"] + top["h"] // 2)
     time.sleep(0.3)
+    keys("{END}")
+    last = settled_page(5) or selected_page()
     keys("{HOME}")
     seen: dict = {}
 
     def at_top():
-        seen["p"] = selected_page()
-        lines = [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
-        return seen["p"].get("y") is not None and lines and seen["p"]["y"] <= min(l["y"] for l in lines) + 5
-    wait_for("first page", at_top, 3, 0.3)
-    return seen["p"]
+        p = settled_page(2)
+        if p is None or same_page(p, last):
+            return False
+        seen["p"] = p
+        lines = [l for l in ocr_ink(PARAM_LIST) if len(l["text"].strip()) > 1]
+        return p.get("y") is not None and lines and p["y"] <= min(l["y"] for l in lines) + 5
+    if not wait_for("first page", at_top, 6, 0.3):
+        seen["p"] = settled_page(3) or selected_page()
+    return {**seen["p"], "last": last}
 
 
 def next_page(current: dict) -> dict | None:
     """Down in the page tree: the next page (a channel expands when
-    selected), or None at the end of the tree. The page counts once two
-    reads agree and its breadcrumb matches the selection.
+    selected), or None when the selection does not move. The page counts
+    once two reads agree and its breadcrumb matches the selection. A Down
+    ETS takes long to show (a page just switched on, right after a device
+    was added) is waited for once more before it counts as the end.
 
     Only safe while the keyboard focus is in the tree: `first_page` puts it
     there, and nothing between two calls may click into the rows (Down in a
@@ -1634,19 +1694,41 @@ def next_page(current: dict) -> dict | None:
         stable = seen["p"] is not None and same_page(p, seen["p"])
         seen["p"] = p
         return stable and not same_page(p, current) and page_consistent(p)
-    return seen["p"] if wait_for("next page", moved, 3, 0.2) else None
+    if wait_for("next page", moved, 4, 0.2):
+        return seen["p"]
+    late = settled_page(4)
+    return late if late is not None and not same_page(late, current) else None
 
 
 def walk_pages(limit: int = 400):
     """Every page of the tree in order, selecting each: yields
-    (index, page). Channels are expanded on the way."""
+    (index, page). Channels are expanded on the way. The walk goes on
+    until Down moves nothing; the tree's last entry (`first_page`, End)
+    only tells a short walk from a finished one: a Down that moves nothing
+    before it is pressed once more (logged) and, failing again, ends the
+    walk short (`WALK["short"]`). Past it the walk continues, since End
+    selects a collapsed channel's node whose pages appear only once the
+    walk expands it (Hager 'Ausgang 9')."""
     page = first_page()
+    last = page.pop("last", None)
+    reached = last is None
+    WALK["short"] = False
     for i in range(limit):
         yield i, page
+        reached = reached or same_page(page, last)
         nxt = next_page(page)
+        if nxt is None and not reached:
+            log(f"walk: Down did not move from {page.get('crumb')!r}; once more")
+            nxt = next_page(page)
+            if nxt is None:
+                WALK["short"] = True
         if nxt is None:
             return
         page = nxt
+
+
+# Whether the last walk ended before the tree's last page.
+WALK: dict = {"short": False}
 
 
 @flow("param_pages")
@@ -1668,11 +1750,11 @@ def flow_param_pages(req: dict) -> dict:
         if req.get("rows"):
             page = {**page, "rows": param_rows()}
         pages.append({**page, "index": len(pages)})
-    return {"pages": pages, "menu_entry": entry}
+    return {"pages": pages, "menu_entry": entry, "short": WALK["short"]}
 
 
 def tree_entries() -> list[dict]:
-    return [l for l in ocr(PARAM_LIST) if len(l["text"].strip()) > 1]
+    return [l for l in ocr_ink(PARAM_LIST) if len(l["text"].strip()) > 1]
 
 
 def scroll_tree(notches: int) -> bool:
@@ -1689,9 +1771,11 @@ def scroll_tree(notches: int) -> bool:
 
 def go_to_page(target: dict, limit: int = 60) -> dict:
     """Select the page `target` ({crumb, page}) by clicking its entry in
-    the page tree, scrolled with the wheel to find it: no keys, since the
-    focus may sit in a field the last change typed into. Raises
-    LookupError when no entry shows it (a page the configuration hides)."""
+    the page tree, scrolled with the wheel to find it, else by walking the
+    tree (a page in a collapsed channel). No keys before a tree entry was
+    clicked, since the focus may sit in a field the last change typed
+    into. Raises LookupError when no page is it (a page the configuration
+    hides)."""
     if same_page(selected_page(), target):
         return selected_page()
     tried: set = set()
@@ -1709,6 +1793,12 @@ def go_to_page(target: dict, limit: int = 60) -> dict:
         if not scroll_tree(-5):
             break
         tried = set()
+    # A page of a channel ETS shows collapsed (after a download): walk the
+    # tree, which expands channels. `first_page` clicks a tree entry first,
+    # so the keys go to the tree, not to a field.
+    for _, page in walk_pages():
+        if same_page(page, target):
+            return page
     raise LookupError(f"page {target.get('crumb')!r} not in the tree")
 
 
@@ -1922,12 +2012,16 @@ def flow_read_param(req: dict) -> dict:
         page = go_to_page(req["page"])
     except LookupError as exc:
         return {"shown": False, "why": str(exc)}
-    row = find_param_row(param_rows(), req["label"], int(req.get("n", 0)))
+    rows = param_rows()
+    row = find_param_row(rows, req["label"], int(req.get("n", 0)))
     if row is None:
         return {"shown": False, "why": f"no row {req['label']!r} on the page", "page": page}
     if row["kind"] in ("number", "text"):
         row["value"] = field_value(row)
-    return {"shown": True, "row": row, "page": page}
+    # The exact match `find_param_row` and `params.model_changes` count by:
+    # 'Sendeverzögerung Ein' and '... Aus' are two labels.
+    rows_with_label = sum(1 for r in rows if _norm(r["label"]) == _norm(req["label"]))
+    return {"shown": True, "row": row, "page": page, "rows_with_label": rows_with_label}
 
 
 def _digits(t: str) -> str:
