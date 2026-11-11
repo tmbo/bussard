@@ -49,6 +49,14 @@ class TestParams(unittest.TestCase):
         "P-2": {"kind": {"Int": {"min": 0, "max": 255, "signed": False}}, "default": "1", "text": "Zyklus"},
         "P-3": {"kind": {"Float": {"min": 13917383856470496379, "max": 4694006190116186358}}, "text": "Wert"},
         "P-6": {"kind": {"Int": {"min": 1, "max": 10}}, "default": "1", "text": "Zyklus"},
+        "P-7": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Raumtemperaturregler Funktion"},
+        "P-8": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Ausgangskontakt"},
+        "P-10": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Zwangssteuerung"},
+        "P-11": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Szene"},
+        "P-12": {"kind": {"Text": {"len": 14}}, "text": "Name"},
+        "P-13": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Priorität"},
+        # A number field whose label only an enumeration has: no change.
+        "P-14": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Unbekannt"},
     }}
     DEVICE = {"blocks": [
         {"text": "Kühlung", "inactive": {"enable": [{"reference": "P-95_R-138", "text": "Raumtemperaturregler Funktion",
@@ -81,8 +89,22 @@ class TestParams(unittest.TestCase):
         self.assertEqual([(e["text"], e["value"]) for e in params.visible_enablers(self.DEVICE)],
                          [("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")])
 
+    def test_fits_model_skips_rows_no_parameter_type_shows(self):
+        kinds = params.label_kinds({"parameters": {
+            "a": {"kind": {"Int": {"min": 0, "max": 255}}, "text": "volle Bandbreite Dimmzeit"},
+            "b": {"kind": "None", "text": "Herunterladen"},
+            "c": {"kind": {"Text": {"len": 14}}, "text": "Name"}}})
+        row = lambda label, kind: {"label": label, "kind": kind}
+        self.assertFalse(params.fits_model(row("volle Bandbreite Dimmzeit", "text"), kinds))
+        self.assertTrue(params.fits_model(row("volle Bandbreite Dimmzeit", "number"), kinds))
+        self.assertFalse(params.fits_model(row("Herunterladen", "dropdown"), kinds))
+        self.assertTrue(params.fits_model(row("Name", "text"), kinds))
+        self.assertFalse(params.fits_model(row("Unbekannt", "checkbox"), kinds))
+
     def test_number_ranges_shared_range_and_no_encoded_floats(self):
-        self.assertEqual(params.number_ranges(self.MODEL), {"zyklus": (1, 10, "Int")})
+        ranges = params.number_ranges(self.MODEL)
+        self.assertEqual(ranges["zyklus"], (1, 10, "Int"))
+        self.assertNotIn("wert", ranges)
 
     def test_survey_rows_settable_with_options(self):
         labels = [r["label"] for r in params.survey_rows(self.SURVEY)]
@@ -103,7 +125,7 @@ class TestParams(unittest.TestCase):
         self.assertEqual({(c["label"], c["value"]) for c in switches},
                          {("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")})
         by_label = {c["label"]: c for c in changes}
-        # No range for 'Unbekannt' in the model: never chosen.
+        # 'Unbekannt' is a number field the model has no number for: never chosen.
         self.assertNotIn("Unbekannt", by_label)
         if "Zyklus" in by_label:
             self.assertIn(int(by_label["Zyklus"]["value"]), range(1, 11))
@@ -340,6 +362,23 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual([(d["result"], d.get("shown")) for d in done],
                          [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
         self.assertEqual(done[0]["rows_with_label"], 1)
+
+
+class TestVmDriver(unittest.TestCase):
+    def test_driver_down_raises_instead_of_an_empty_answer(self):
+        from unittest import mock
+        import vm
+
+        ch = mock.MagicMock()
+        ch.recv.return_value = b""
+        c = mock.MagicMock()
+        c.get_transport.return_value.open_channel.return_value = ch
+        with self.assertRaises(RuntimeError) as err:
+            vm.driver(c, "POST", "/ets/devices", {})
+        self.assertIn("does not answer", str(err.exception))
+        ch.recv.side_effect = [b"HTTP/1.0 500 x\r\n\r\n<html>", b""]
+        r = vm.driver(c, "POST", "/ets/devices", {})
+        self.assertFalse(r["ok"])
 
 
 class TestParamsSubset(unittest.TestCase):

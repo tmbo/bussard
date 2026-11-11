@@ -109,12 +109,18 @@ def driver(c: paramiko.SSHClient, method: str, path: str, body: dict | None = No
             break
         buf += chunk
     ch.close()
+    if not buf:
+        # Nothing listens on the port: the driver is down. Said so here, not
+        # as an empty answer every caller misreads (the partial series failed
+        # with KeyError: 'devices', 2026-11-11).
+        raise RuntimeError(f"the driver does not answer {method} {path} (not running in the VM?)")
     header, _, raw = buf.partition(b"\r\n\r\n")
     status = header.split(b" ", 2)[1].decode() if b" " in header else "?"
     try:
         return json.loads(raw)
     except json.JSONDecodeError:
-        return {"status": status, "raw": raw.decode("utf-8", "replace")}
+        return {"ok": False, "status": status, "raw": raw.decode("utf-8", "replace"),
+                "error": f"the driver answered {method} {path} with no JSON (HTTP {status})"}
 
 
 def driver_token(c: paramiko.SSHClient) -> str:
@@ -131,8 +137,16 @@ def install(c: paramiko.SSHClient) -> None:
     """Upload the driver. A running driver re-execs itself when the file changes;
     the first start happens by hand in the VM's desktop session (see README)."""
     src = Path(__file__).resolve().parent / "driver" / "ets_driver.py"
+    compile(src.read_text(encoding="utf-8"), str(src), "exec")  # never upload a driver that does not parse
     run(c, f'mkdir "{REMOTE_DIR}"')
-    c.open_sftp().put(str(src), REMOTE_DIR.replace("\\", "/") + "/ets_driver.py")
+    # Upload beside it, then replace it in one rename: the running driver
+    # re-execs on a changed mtime, and a replacement that read the file half
+    # written died before it logged a line (2026-11-11 14:38Z, the second
+    # time a reinstall left no driver).
+    c.open_sftp().put(str(src), REMOTE_DIR.replace("\\", "/") + "/ets_driver.py.new")
+    code, out = run(c, f'move /y "{REMOTE_DIR}\\ets_driver.py.new" "{REMOTE_DIR}\\ets_driver.py"')
+    if code != 0:
+        raise RuntimeError(f"could not replace the driver: {out.strip()[:200]}")
     print("uploaded", src.name)
     exe = REPO / "knx-sim" / "target-win" / "x86_64-pc-windows-gnu" / "release" / "knx-sim.exe"
     if exe.exists():
@@ -144,8 +158,28 @@ def install(c: paramiko.SSHClient) -> None:
     if code != 0:
         print("driver is not running; start it once in a PowerShell window of the VM's desktop session:")
         print("  " + START_CMD)
+        raise RuntimeError("no driver process runs in the VM")
     else:
         print("running driver will re-exec itself within a few seconds")
+        if not wait_restarted(c):
+            raise RuntimeError("the driver did not answer /health within 60 s after the upload; "
+                               "see driver-start.log in the VM; only the owner restarts it in the desktop session")
+        print("driver restarted and answers /health")
+
+
+def wait_restarted(c: paramiko.SSHClient, timeout: float = 60) -> bool:
+    """Whether the driver answers /health again after an upload (it re-execs
+    within a few seconds)."""
+    time.sleep(5)
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        try:
+            if driver(c, "GET", "/health", timeout=10).get("ok"):
+                return True
+        except (RuntimeError, OSError, paramiko.SSHException):
+            pass
+        time.sleep(3)
+    return False
 
 
 def main(argv: list[str]) -> int:
@@ -186,7 +220,11 @@ def main(argv: list[str]) -> int:
         Path(args[0]).write_bytes(base64.b64decode(out["png_base64"]))
         print("wrote", args[0])
     elif cmd == "install":
-        install(c)
+        try:
+            install(c)
+        except RuntimeError as exc:
+            print(f"DRIVER DOWN: {exc}")
+            return 3
     else:
         print(__doc__)
         return 2

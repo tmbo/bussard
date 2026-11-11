@@ -146,6 +146,32 @@ def number_ranges(model: dict) -> dict[str, tuple[float, float, str]]:
     return out
 
 
+# The parameter types a control of each kind shows (`value_of` the same).
+FITS = {"radio": ("Enum",), "dropdown": ("Enum",), "checkbox": ("Enum", "Int"),
+        "number": ("Int", "Float"), "text": ("Text",)}
+
+
+def label_kinds(model: dict) -> dict[str, set]:
+    """Per label (`norm`) the parameter types the model's parameters of
+    that text have ('Enum', 'Int', 'Text', ...)."""
+    out: dict[str, set] = {}
+    for p in (model.get("parameters") or {}).values():
+        kind = p.get("kind")
+        name = next(iter(kind), None) if isinstance(kind, dict) else kind
+        if name:
+            out.setdefault(norm(p.get("text") or ""), set()).add(name)
+    return out
+
+
+def fits_model(row: dict, kinds: dict[str, set]) -> bool:
+    """Whether a survey row can be a model parameter: one of that label has
+    a type the row's control shows. A time field the driver read as text
+    (Ekinex 'volle Bandbreite Dimmzeit') or a button read as a dropdown
+    (Ekinex 'Herunterladen') is none, and no change is drawn for it
+    (2026-11-11)."""
+    return bool(kinds.get(norm(row["label"]), set()) & set(FITS.get(row["kind"], ())))
+
+
 def survey_rows(survey: list[dict]) -> list[dict]:
     """The rows of a survey a configuration may change: a control the
     driver can set, with a label."""
@@ -201,6 +227,9 @@ def generate(survey: list[dict], seed: int, index: int, changes: int = 5, model:
     enablers, seed, index)."""
     rng = random.Random(f"{seed}:{index}")
     rows = survey_rows(survey)
+    if (model or {}).get("parameters"):
+        kinds = label_kinds(model)
+        rows = [r for r in rows if fits_model(r, kinds)]
     ranges = number_ranges(model or {})
     by_label: dict[str, dict] = {}
     for e in enablers or []:
@@ -238,6 +267,9 @@ def dependent_changes(before: list[dict], after: list[dict], seed: int, index: i
     rng = random.Random(f"{seed}:{index}:dependent")
     seen = {norm(p.get("crumb") or "") for p in before}
     rows = survey_rows([p for p in after if norm(p.get("crumb") or "") not in seen])
+    if (model or {}).get("parameters"):
+        kinds = label_kinds(model)
+        rows = [r for r in rows if fits_model(r, kinds)]
     rng.shuffle(rows)
     ranges = number_ranges(model or {})
     out = []
@@ -293,34 +325,51 @@ def device_ref(instance: str | None, ref: str) -> str:
 
 def ref_places(model: dict) -> list[dict]:
     """Where each parameter reference sits in the product's Dynamic tree, in
-    tree order: {ref, channel, page, label, instance}, `channel` the
-    enclosing channel's text (None outside one), `page` the innermost
-    block's text (a module's page text may hold `{{...}}` placeholders),
-    `instance` the module instance (None outside one), `ref` in device form.
-    A plain walk of the tree's structure: which branch is shown is not
-    decided here (that is the shared Dynamic evaluator's job), so a page
-    may list a label more often than ETS shows it."""
+    tree order: {ref, channel, page, pages, label, instance, group}.
+    `channel` is the enclosing channel's text (None outside one; it may be
+    `{{0}}`, the channel's text parameter). `pages` are the texts of every
+    enclosing block, outer first, `page` the innermost: ETS shows a nested
+    block as a section of its parent page at times (Theben's 'Allgemein'
+    holding 'Verhalten'). A block without a text is named by its parameter
+    (`param_ref`, the ABB 'Page1' block). `instance` is the module instance
+    (None outside one), `group` the instance, or the channel when its text
+    is a placeholder: the pages of a group's siblings look alike and are
+    told apart by their order. `ref` is in device form. A plain walk of the
+    tree's structure: which branch is shown is not decided here (that is
+    the shared Dynamic evaluator's job), so a page may list a label more
+    often than ETS shows it."""
     out: list[dict] = []
     modules = model.get("module_dynamics") or {}
 
-    def walk(nodes, channel, page, instance, depth=0):
+    def block_text(b: dict) -> str | None:
+        if b.get("text"):
+            return b["text"]
+        if b.get("param_ref"):
+            return ref_label(model, b["param_ref"]) or None
+        return None
+
+    def walk(nodes, channel, pages, instance, group, depth=0):
         for n in nodes or []:
             if "channel" in n:
                 c = n["channel"]
-                walk(c.get("nodes"), c.get("text"), page, instance, depth)
+                text = c.get("text")
+                g = group or (c.get("id") if text and "{{" in text else None)
+                walk(c.get("nodes"), text, pages, instance, g, depth)
             elif "block" in n:
                 b = n["block"]
-                walk(b.get("nodes"), channel, b.get("text") or page, instance, depth)
+                text = block_text(b)
+                walk(b.get("nodes"), channel, pages + [text] if text else pages, instance, group, depth)
             elif "choose" in n:
                 for w in n["choose"].get("when") or []:
-                    walk(w.get("nodes"), channel, page, instance, depth)
+                    walk(w.get("nodes"), channel, pages, instance, group, depth)
             elif "module" in n and depth < 4:
                 m = n["module"]
-                walk(modules.get(m.get("def")) or [], channel, page, m.get("id"), depth + 1)
+                walk(modules.get(m.get("def")) or [], channel, pages, m.get("id"), m.get("id"), depth + 1)
             elif "p" in n:
-                out.append({"ref": device_ref(instance, n["p"]), "channel": channel, "page": page,
-                            "label": ref_label(model, n["p"]), "instance": instance})
-    walk(model.get("dynamic"), None, None, None)
+                out.append({"ref": device_ref(instance, n["p"]), "channel": channel,
+                            "page": pages[-1] if pages else None, "pages": list(pages),
+                            "label": ref_label(model, n["p"]), "instance": instance, "group": group})
+    walk(model.get("dynamic"), None, [], None, None)
     return out
 
 
@@ -368,7 +417,7 @@ def best_pages(places: list[dict], shown: str) -> set:
     """The tree's page texts a shown page is: of those that match, the ones
     with the most literal text ('Eingang {{ChNo}}: Sperre' over 'Eingang
     {{ChNo}}: {{0}}' for 'Eingang A: Sperre')."""
-    matching = {p["page"] for p in places if p["page"] and page_matches(p["page"], shown)}
+    matching = {t for p in places for t in p.get("pages") or [p["page"]] if t and page_matches(t, shown)}
     if not matching:
         return set()
     top = max(literal_len(t) for t in matching)
@@ -422,8 +471,7 @@ def value_of(model: dict, ref: str, change: dict) -> str | None:
     # virtual parameter in an editable control stays: it is downloaded
     # through the calculations it feeds (MDT's module 'Wert Kontakt
     # geöffnet', MD-2_P-32).
-    fits = {"radio": ("Enum",), "dropdown": ("Enum",), "checkbox": ("Enum", "Int"),
-            "number": ("Int", "Float"), "text": ("Text",)}.get(kind, ())
+    fits = FITS.get(kind, ())
     if not any(k in pkind for k in fits):
         return None
     if kind in ("radio", "dropdown"):
@@ -442,9 +490,23 @@ def candidates_of(places: list[dict], change: dict) -> list[str]:
     tree order."""
     channel, page = page_parts(change["page"])
     pages = best_pages(places, page)
-    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"] in pages
-             and (channel is None or (p["channel"] and alike(p["channel"], channel)))]
+    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9)
+             and set(p.get("pages") or [p["page"]]) & pages
+             and (channel is None or channel_matches(p["channel"], channel))]
     return list(dict.fromkeys(cands))
+
+
+def channel_matches(template: str | None, shown: str) -> bool:
+    """Whether a channel ETS shows as `shown` can be the tree's channel
+    `template`: alike, or by its placeholder pattern; a channel text of a
+    placeholder only (`{{0}}`, its text parameter) can be any channel, told
+    apart from its siblings by order (`group_refs`)."""
+    if not template:
+        return False
+    if "{{" not in template:
+        return alike(template, shown)
+    pattern = page_pattern(template)
+    return pattern is None or pattern.match(shown.strip()) is not None
 
 
 def model_changes(model: dict, survey_after: list[dict], done: list[dict],
@@ -528,46 +590,48 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
 
 
 def module_probes(places: list[dict], cands: list[str]) -> dict[str, str]:
-    """For candidates spread over several module instances: per instance,
-    in tree order, a reference on the same page (its first), whose being
-    shown tells that the instance's page is shown. {} for one instance."""
+    """For candidates spread over several groups (module instances, or
+    channels named by a placeholder): per group, in tree order, a reference
+    on the same page (its first), whose being shown tells that the group's
+    page is shown. {} for one group."""
     by_ref = {p["ref"]: p for p in places}
-    instances = list(dict.fromkeys(by_ref[r]["instance"] for r in cands if r in by_ref))
-    if len(instances) < 2 or None in instances:
+    groups = list(dict.fromkeys(by_ref[r]["group"] for r in cands if r in by_ref))
+    if len(groups) < 2 or None in groups:
         return {}
     page = by_ref[cands[0]]["page"]
     out: dict[str, str] = {}
     for p in places:
-        if p["instance"] in instances and p["page"] == page and p["instance"] not in out:
-            out[p["instance"]] = p["ref"]
+        if p["group"] in groups and p["page"] == page and p["group"] not in out:
+            out[p["group"]] = p["ref"]
     return out
 
 
 def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: dict, cands: list[str],
                          shown: set, probes: dict[str, str]) -> list[str] | None:
-    """The shown candidates of the module instance whose page the change is
-    on: the instances whose page the evaluator shows (`probes` in `shown`),
-    in tree order, are the pages ETS lists in order, so the change's page,
-    the k-th page of its channel that is this module page (`best_pages`, in
-    the first of `surveys` that holds it), is the k-th of them. The
-    candidates of that instance the evaluator shows; [] when the instance
-    hides the label (the row is then unmapped), None when the page order
-    does not tell the instance."""
+    """The shown candidates of the group (module instance, or channel named
+    by a placeholder) whose page the change is on: the groups whose page
+    the evaluator shows (`probes` in `shown`), in tree order, are the pages
+    ETS lists in order, so the change's page, the k-th page that is this
+    page (`best_pages`, in the first of `surveys` that holds it), is the
+    k-th of them. The candidates of that group the evaluator shows; [] when
+    the group hides the label (the row is then unmapped), None when the
+    page order does not tell the group."""
     by_ref = {p["ref"]: p for p in places}
     template = by_ref[cands[0]]["page"]
-    shown_instances = [i for i, ref in probes.items() if ref in shown]
+    shown_groups = [g for g, ref in probes.items() if ref in shown]
     channel, _ = page_parts(change["page"])
+    tpl_channel = by_ref[cands[0]]["channel"]
     for survey in surveys:
         same = [p for p in survey if template in best_pages(places, page_parts(p)[1])
-                and (channel is None or alike(page_parts(p)[0] or "", channel))]
+                and (channel is None or channel_matches(tpl_channel, page_parts(p)[0] or ""))]
         k = next((i for i, p in enumerate(same)
                   if norm(p.get("crumb") or "") == norm(change["page"].get("crumb") or "")), None)
         if k is None:
             continue
-        if k >= len(shown_instances) or len(same) != len(shown_instances):
+        if k >= len(shown_groups) or len(same) != len(shown_groups):
             return None
-        chosen = shown_instances[k]
-        return [r for r in cands if by_ref[r]["instance"] == chosen and r in shown]
+        chosen = shown_groups[k]
+        return [r for r in cands if by_ref[r]["group"] == chosen and r in shown]
     return None
 
 
