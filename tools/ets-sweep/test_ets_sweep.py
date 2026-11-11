@@ -309,6 +309,21 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual(params.summary_verdict(out, "1.1.1")["verdict"], "not-comparable")
         self.assertEqual(params.summary_verdict("1.1.1  (note)", "1.1.1")["verdict"], "oracle-error")
 
+    def test_pinned_verdict_follows_the_exit_code(self):
+        found = {"verdict": "not-comparable", "summary": "1.1.1 apply not-comparable ... props=ok(2935)"}
+        self.assertEqual(params.pinned_verdict(found, 0, True, "r")["verdict"], "identical")
+        failed = params.pinned_verdict(found, 1, True, "r")
+        self.assertEqual((failed["verdict"], failed["headline"]), ("differs", "not-comparable"))
+        self.assertEqual(params.pinned_verdict(found, 1, False, "r")["verdict"], "not-comparable")
+        self.assertEqual(params.pinned_verdict({"verdict": "identical"}, 1, False, "r")["verdict"], "differs")
+
+    def test_placement_property_only_counts_union_memory(self):
+        props = [{"property": {"object_index": 10}, "memory": None}]
+        self.assertTrue(params.placement_property_only({"parameters": props, "unions": []}))
+        self.assertFalse(params.placement_property_only(
+            {"parameters": props, "unions": [{"id": "U-1", "memory": {"offset": 0}}]}))
+        self.assertFalse(params.placement_property_only({"parameters": props + [{"memory": {"offset": 3}}]}))
+
     def test_best_pages_exact_over_close(self):
         places = [{"page": "FS: Ampel"}, {"page": "LS: Ampel"}]
         self.assertEqual(params.best_pages(places, "FS: Ampel"), {"FS: Ampel"})

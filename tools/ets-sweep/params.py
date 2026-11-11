@@ -1039,7 +1039,23 @@ def partial_oracle(job: dict, work: Path) -> dict:
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--rows", str(rows),
                         "--out", str(work / app / "params-partial" / "oracle")],
                        capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
-    return {**summary_verdict(r.stdout + r.stderr, "1.1.1"), "exit": r.returncode, "rows": str(rows)}
+    return pinned_verdict(summary_verdict(r.stdout + r.stderr, "1.1.1"), r.returncode, bool(pins), str(rows))
+
+
+def pinned_verdict(found: dict, exit_code: int, pinned: bool, rows: str) -> dict:
+    """The row's verdict as the oracle judged it: a pinned row (expect=,
+    props=, loadctl=) passes or fails on the oracle's exit code, not on the
+    headline it pins (`not-comparable` for a property-only program, which
+    reads the same whether its properties matched or not). A pinned row
+    that passes is `identical`, one that fails `differs`, with the headline
+    kept under `headline`."""
+    out = {**found, "exit": exit_code, "rows": rows}
+    if pinned and found.get("verdict") in VERDICTS:
+        out["headline"] = found["verdict"]
+        out["verdict"] = "identical" if exit_code == 0 else "differs"
+    elif exit_code != 0 and found.get("verdict") == "identical":
+        out["verdict"] = "differs"
+    return out
 
 
 VERDICTS = ("identical", "differs", "not-comparable")
@@ -1066,10 +1082,20 @@ def property_only(job: dict, work: Path) -> bool:
     found = sorted(shared.glob(f".bussard/products/*/{job['id']}@*.json"))
     if not found:
         return False
-    params_ = json.loads(found[0].read_text()).get("parameters") or {}
-    params_ = params_.values() if isinstance(params_, dict) else params_
-    params_ = list(params_)
-    return bool(params_) and not any(p.get("memory") for p in params_) and any(p.get("property") for p in params_)
+    return placement_property_only(json.loads(found[0].read_text()))
+
+
+def placement_property_only(product: dict) -> bool:
+    """Whether an imported product model places every parameter in an
+    interface-object property: no parameter has memory, and no union has
+    either (a union member's memory sits on its union)."""
+    def items(v):
+        v = v or {}
+        return list(v.values() if isinstance(v, dict) else v)
+    params_ = items(product.get("parameters"))
+    unions = items(product.get("unions"))
+    return bool(params_) and not any(p.get("memory") for p in params_) \
+        and not any(u.get("memory") for u in unions) and any(p.get("property") for p in params_)
 
 
 def partial(args) -> int:
@@ -1216,7 +1242,8 @@ def main() -> int:
     if args.cmd == "partial" and args.oracle_only:
         for job in captured_jobs([w.lower() for w in args.filter.split(",") if w]):
             r = partial_oracle(job, args.work)
-            print(f"{r['verdict']:14} {job['id']} {r.get('summary') or r.get('error', '')}", flush=True)
+            print(f"{r['verdict']:14} {job['id']} exit={r.get('exit')} {r.get('summary') or r.get('error', '')}",
+                  flush=True)
         return 0
     if args.cmd == "partial":
         return partial(args)
