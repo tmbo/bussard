@@ -343,6 +343,8 @@ captures in-process from RFC 5737 TEST-NET-1 addresses.
 | `normalize.py` | Frame stream to per-device operation sequence. |
 | `opsdiff.py` | The differ and its classification rules. |
 | `image.py` | Composes the memory and the property writes (`properties.json`) a download wrote and diffs both against a `bussard flash --dry-run --dump-images` directory (see [the offline oracle](../../dev/testing-campaign.md#before-a-flash-the-offline-oracle)). |
+| `statediff.py` | The device state after a partial download: ETS's capture against the one knx-sim recorded of bussard. |
+| `sequence.py` | The order of the state-changing operations against ETS's (`seq=` in the oracle summary, issue #1055), and the reads only one side sends. |
 | `test_knxtrace.py` | Tests, on synthetic captures and the `knx-sim` fixtures. |
 
 See [`dev/testing-campaign.md`](../../dev/testing-campaign.md) for how this
