@@ -390,7 +390,7 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     for d in done:
         if d.get("result") != "set":
             continue
-        n_rows = rows_of.get((norm(d["page"].get("crumb") or ""), norm(d["label"])), 0)
+        n_rows = d.get("rows_with_label") or rows_of.get((norm(d["page"].get("crumb") or ""), norm(d["label"])), 0)
         cands = candidates_of(places, d)
         _, page = page_parts(d["page"])
         if not cands:
@@ -546,25 +546,24 @@ def find_row(survey: list[dict], change: dict) -> dict | None:
 
 def read_back(flow, ia: str, final: list[dict], done: list[dict]) -> None:
     """Record what ETS shows for every set change once all changes are in
-    (`shown`), from the final survey, a number or text field exactly by the
-    driver's `read_param`. A change whose row ETS no longer shows, or whose
-    value is not the one set, is `lost`: the run is a driver error and
-    never compared (the model is built from `shown` alone)."""
+    (`shown`), each read on its page by the driver's `read_param` (a number
+    or text field exactly, through the clipboard), with how many rows of its
+    label the page shows (`rows_with_label`, what `model_changes` maps by).
+    A change whose row ETS no longer shows, or whose value is not the one
+    set, is `lost`: the run is a driver error and never compared (the
+    model is built from `shown` alone). `final` (the last survey) is kept
+    for the record; the read does not depend on the walk reaching every
+    page."""
     for d in done:
         if d.get("result") != "set":
             continue
-        row = find_row(final, d)
-        if row is None:
-            d.update({"result": "lost", "why": "the row is not shown after the last change"})
+        r = flow("read_param", ia=ia, page=d["page"], label=d["label"], n=d.get("n", 0))
+        if not r.get("shown"):
+            d.update({"result": "lost", "why": r.get("why") or "the row is not shown after the last change"})
             continue
-        shown = row.get("value", "")
-        if d["kind"] in ("number", "text"):
-            r = flow("read_param", ia=ia, page=d["page"], label=d["label"], n=d.get("n", 0))
-            shown = ((r.get("row") or {}).get("value") if r.get("shown") else None)
-            if shown is None:
-                d.update({"result": "lost", "why": r.get("why")})
-                continue
+        shown = (r.get("row") or {}).get("value", "")
         d["shown"] = shown
+        d["rows_with_label"] = r.get("rows_with_label")
         if norm(str(shown)) != norm(str(d.get("set_to") or "")):
             d.update({"result": "lost", "why": f"ETS shows {shown!r}, not {d.get('set_to')!r}"})
 

@@ -249,13 +249,21 @@ class TestParamsModel(unittest.TestCase):
                  "set_to": "1"},
                 {**self.change("Ausgang 1 > Ausgang 1: Funktionsfreigabe", "Preset", "dropdown", ""), "set_to": "x"}]
 
+        shows = {("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset"): "2 Presetobjekten",
+                 ("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Zwangssteuerung"): "1",
+                 ("- Al-16: Statusanzeigen schalten", "Sendeverzögerung nach Buswiederkehr"): "1"}
+
         def flow(name, **body):
             self.assertEqual(name, "read_param")
-            return {"shown": True, "row": {"value": "1"}}
+            value = shows.get((body["page"]["crumb"], body["label"]))
+            if value is None:
+                return {"shown": False, "why": "no row 'Preset' on the page"}
+            return {"shown": True, "row": {"value": value}, "rows_with_label": 1}
 
         params.read_back(flow, "1.1.1", self.FINAL, done)
         self.assertEqual([(d["result"], d.get("shown")) for d in done],
                          [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
+        self.assertEqual(done[0]["rows_with_label"], 1)
 
 
 class TestParamsSubset(unittest.TestCase):
@@ -1613,6 +1621,13 @@ class TestDriverParamEditor(unittest.TestCase):
         checked = self.px_of([("fill", 1625, 387, 1657, 419, self.BLUE), ("fill", 1636, 400, 1646, 404, (113, 152, 204))])
         got = self.d.classify_control(checked, 403, [])
         self.assertEqual((got["kind"], got["value"]), ("checkbox", "1"))
+
+    def test_classify_fixed_value_text_is_no_checkbox(self):
+        # Hager TXB692F 'Ausgangskontakt  Schließer': a fixed setting shown
+        # as text in the control column; its glyphs are dark near CONTROL_X.
+        px = self.px_of([("fill", 1627, 380, 1631, 396, (60, 60, 60)), ("fill", 1640, 383, 1700, 393, (60, 60, 60))])
+        got = self.d.classify_control(px, 389, [{"text": "Schließer", "x": 1626, "y": 377, "w": 95, "h": 18}])
+        self.assertEqual((got["kind"], got["value"]), ("none", "Schließer"))
 
     def test_classify_number_field_with_spinner(self):
         px = self.px_of([("frame", 1625, 383, 2182, 427, self.BORDER), ("fill", 2165, 395, 2172, 399, (80, 80, 80)),
