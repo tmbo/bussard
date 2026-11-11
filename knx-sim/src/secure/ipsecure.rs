@@ -60,7 +60,7 @@ const HANDSHAKE_CTR: [u8; 16] = {
 };
 
 /// PBKDF2-HMAC-SHA256, 65536 rounds, 16 octets, over the Latin-1 password.
-fn pbkdf2_16(password: &str, salt: &[u8]) -> [u8; 16] {
+pub(crate) fn pbkdf2_16(password: &str, salt: &[u8]) -> [u8; 16] {
     let latin1: Vec<u8> = password
         .chars()
         .map(|c| u8::try_from(u32::from(c)).unwrap_or(b'?'))

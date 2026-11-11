@@ -35,6 +35,19 @@ impl Bus {
         self.devices.insert(device.address(), device);
     }
 
+    /// Resolves the group keys of every `activated` start state given by
+    /// group address against the device's loaded address table (bussard
+    /// issue #1054). Run once any replay has loaded the tables, before the
+    /// gateway opens; the error names the device.
+    pub fn settle_activated_tables(&mut self) -> Result<(), String> {
+        for (address, device) in &mut self.devices {
+            device
+                .settle_activated_tables()
+                .map_err(|e| format!("device {address}: {e}"))?;
+        }
+        Ok(())
+    }
+
     /// Number of devices on the bus.
     pub fn device_count(&self) -> usize {
         self.devices.len()

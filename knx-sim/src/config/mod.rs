@@ -161,25 +161,107 @@ impl From<LsmAccessConfig> for crate::device::LsmAccess {
 /// Omitting the block leaves the device plain (the default), so existing configs
 /// and devices are unaffected.
 ///
-/// All key material is SYNTHETIC and lives only in this config; it is never read
-/// from a user's real key files. The `tool_key` is 32 hex characters (16 raw
-/// bytes).
+/// `status: activated` is the state a tool's secured download leaves behind
+/// (bussard issue #1054): security mode on, the security object `Loaded`, the
+/// tool key set, and, when given, the group key table, the security individual
+/// address table (the senders) and the group-object security flags. The tool
+/// key and the group keys come from `tool_key`/`group_keys` or from an ETS
+/// keyring export (`keyring`); an explicit value wins over the keyring's.
+///
+/// ```yaml
+/// security:
+///   status: activated
+///   keyring: { file: project.knxkeys, password: "SyntheticKeyring1!" }
+///   group_keys:
+///     - { address: "1/0/1", key: "00112233445566778899aabbccddeeff" }
+///   senders:
+///     - { address: "1.1.20", seq: 0 }
+///   go_security_flags:
+///     - { object: 1, flags: 3 }
+/// ```
+///
+/// All key material is SYNTHETIC: a keyring named here is the export of a
+/// fabricated device under a public password, never a user's installation.
+/// The `tool_key` is 32 hex characters (16 raw bytes).
 #[derive(Debug, Clone, Deserialize)]
 pub struct SecurityConfig {
-    /// The activation flag. Must be `activated` to secure the device; any other
-    /// value (or omitting the whole block) leaves it plain.
+    /// The activation flag: `activated`, `factory` or `plain`.
     pub status: SecurityStatus,
-    /// The synthetic tool key as 32 hex characters (16 bytes). Required when
-    /// `status: activated`.
-    pub tool_key: String,
+    /// The synthetic tool key (the FDSK for `factory`) as 32 hex characters
+    /// (16 bytes). Required unless `keyring` lists the device.
+    #[serde(default)]
+    pub tool_key: Option<String>,
+    /// An ETS keyring export (`.knxkeys`) the `activated` state takes the
+    /// device's tool key, its sending sequence and the group keys from. The
+    /// device is found by its individual address, else by its serial number
+    /// (a `properties` override of object 0 PID 11).
+    #[serde(default)]
+    pub keyring: Option<KeyringSource>,
+    /// Group key table rows of the `activated` state, by group address
+    /// (resolved against the loaded address table once any `replay` has run)
+    /// or by address-table `index`.
+    #[serde(default)]
+    pub group_keys: Vec<GroupKeyConfig>,
+    /// Security individual address table rows of the `activated` state: the
+    /// secured senders the device admits and their last sequence numbers.
+    #[serde(default)]
+    pub senders: Vec<SenderConfig>,
+    /// Group-object security flags of the `activated` state (PID 61).
+    #[serde(default)]
+    pub go_security_flags: Vec<GoFlagConfig>,
     /// The device's initial send sequence (spec §5.8), for wrapping responses.
-    /// Defaults to 0.
+    /// Defaults to 0; 0 takes the keyring's `SequenceNumber` when a keyring
+    /// lists the device.
     #[serde(default)]
     pub initial_tx_seq: u64,
     /// The device's initial receive-freshness floor (spec §5.9): a first inbound
     /// frame must strictly exceed this. Defaults to 0.
     #[serde(default)]
     pub initial_rx_seq: u64,
+}
+
+/// An ETS keyring export and its password (`security.keyring`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct KeyringSource {
+    /// The `.knxkeys` file, relative to the config file.
+    pub file: PathBuf,
+    /// The keyring password. Public by construction: only a synthetic keyring
+    /// belongs in a simulator config.
+    pub password: String,
+}
+
+/// One group key table row of the `activated` state (`security.group_keys`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GroupKeyConfig {
+    /// The group address (`main/middle/sub`) the key belongs to.
+    #[serde(default)]
+    pub address: Option<String>,
+    /// The address-table index (1-based TSAP) instead of an address.
+    #[serde(default)]
+    pub index: Option<u16>,
+    /// The key as 32 hex characters.
+    pub key: String,
+}
+
+/// One security individual address table row (`security.senders`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct SenderConfig {
+    /// The sender's individual address.
+    pub address: String,
+    /// The sender's last sequence number the device saw (default 0).
+    #[serde(default)]
+    pub seq: u64,
+}
+
+/// One group-object security flag element (`security.go_security_flags`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct GoFlagConfig {
+    /// The PID 61 element: the group object number the association table
+    /// uses (1-based).
+    pub object: u16,
+    /// The flags: bit 0 authentication, bit 1 confidentiality (0x03 for a
+    /// secured object, as ETS writes it).
+    pub flags: u8,
 }
 
 /// One property value override of a device (`properties:` in its config).
@@ -208,24 +290,131 @@ pub enum SecurityStatus {
 }
 
 impl SecurityConfig {
-    /// Convert to the device-layer activation, parsing the synthetic tool key.
-    /// Returns a plain (`None`) activation only when `status: plain`; an
-    /// `activated` block with a bad key is an error.
-    fn to_activation(&self) -> Result<crate::device::SecureActivation, String> {
+    /// The device-layer activation and the `activated` tables of the device
+    /// at `address` (serial number `serial`, when known), reading the keyring
+    /// relative to `base_dir`. A `plain` status is an error here (the caller
+    /// keeps the device plain without asking), as is a missing tool key or
+    /// tables on a `factory` device.
+    pub fn resolve(
+        &self,
+        base_dir: &Path,
+        address: IndividualAddress,
+        serial: Option<[u8; 6]>,
+    ) -> Result<
+        (
+            crate::device::SecureActivation,
+            crate::device::ActivatedTables,
+        ),
+        String,
+    > {
+        use crate::secure::Key16;
         if !matches!(
             self.status,
             SecurityStatus::Activated | SecurityStatus::Factory
         ) {
             return Err("security block present but status is not `activated` or `factory`".into());
         }
-        let tool_key = crate::secure::Key16::from_hex(&self.tool_key)
-            .ok_or_else(|| "tool_key must be 32 hex characters (16 bytes)".to_string())?;
-        Ok(crate::device::SecureActivation {
-            tool_key,
-            initial_tx_seq: self.initial_tx_seq,
-            initial_rx_seq: self.initial_rx_seq,
-        })
+        let has_tables = self.keyring.is_some()
+            || !self.group_keys.is_empty()
+            || !self.senders.is_empty()
+            || !self.go_security_flags.is_empty();
+        if self.status == SecurityStatus::Factory && has_tables {
+            return Err(
+                "`keyring`, `group_keys`, `senders` and `go_security_flags` describe an \
+                 `activated` device; a `factory` device has only its FDSK (`tool_key`)"
+                    .into(),
+            );
+        }
+        let ring = match &self.keyring {
+            Some(source) => {
+                let path = if source.file.is_absolute() {
+                    source.file.clone()
+                } else {
+                    base_dir.join(&source.file)
+                };
+                let xml = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("keyring {}: {e}", path.display()))?;
+                Some(
+                    crate::secure::keyring::Keyring::parse(&xml, &source.password)
+                        .map_err(|e| format!("keyring {}: {e}", path.display()))?,
+                )
+            }
+            None => None,
+        };
+        let listed = ring.as_ref().and_then(|r| r.device(address.0, serial));
+        let tool_key = match &self.tool_key {
+            Some(hex) => Key16::from_hex(hex)
+                .ok_or_else(|| "tool_key must be 32 hex characters (16 bytes)".to_string())?,
+            None => listed.and_then(|d| d.tool_key.clone()).ok_or_else(|| {
+                if ring.is_some() {
+                    format!("the keyring has no tool key for {address} and no `tool_key` is given")
+                } else {
+                    "tool_key is required (or a `keyring` that lists the device)".to_string()
+                }
+            })?,
+        };
+        let initial_tx_seq = match (self.initial_tx_seq, listed.and_then(|d| d.sequence)) {
+            (0, Some(seq)) => seq,
+            (seq, _) => seq,
+        };
+        let mut tables = crate::device::ActivatedTables::default();
+        let mut explicit = Vec::new();
+        for row in &self.group_keys {
+            let key = Key16::from_hex(&row.key)
+                .ok_or_else(|| format!("group key {:?}: not 32 hex characters", row.key))?;
+            match (&row.address, row.index) {
+                (Some(ga), None) => {
+                    let ga: crate::wire::GroupAddress =
+                        ga.parse().map_err(|e| format!("group_keys: {e}"))?;
+                    explicit.push(ga.raw());
+                    tables.group_keys_by_address.push((ga.raw(), key, true));
+                }
+                (None, Some(index)) => tables.group_keys_by_index.push((index, key)),
+                _ => {
+                    return Err("a group_keys row names either `address` or `index`".into());
+                }
+            }
+        }
+        if let Some(ring) = &ring {
+            for (ga, key) in &ring.group_keys {
+                if !explicit.contains(ga) {
+                    tables.group_keys_by_address.push((*ga, key.clone(), false));
+                }
+            }
+        }
+        for s in &self.senders {
+            let ia: IndividualAddress = s.address.parse().map_err(|e| format!("senders: {e}"))?;
+            tables.senders.push((ia.0, s.seq));
+        }
+        tables.go_flags = self
+            .go_security_flags
+            .iter()
+            .map(|f| (f.object, f.flags))
+            .collect();
+        Ok((
+            crate::device::SecureActivation {
+                tool_key,
+                initial_tx_seq,
+                initial_rx_seq: self.initial_rx_seq,
+            },
+            tables,
+        ))
     }
+}
+
+/// The serial number a device's `properties` give it (object 0, PID 11, six
+/// octets), if any.
+pub fn serial_override(properties: &[PropertyOverride]) -> Option<[u8; 6]> {
+    let p = properties.iter().find(|p| p.object == 0 && p.pid == 11)?;
+    let hex: String = p.value.chars().filter(|c| !c.is_whitespace()).collect();
+    if hex.len() != 12 {
+        return None;
+    }
+    let mut out = [0u8; 6];
+    for (i, b) in out.iter_mut().enumerate() {
+        *b = u8::from_str_radix(hex.get(i * 2..i * 2 + 2)?, 16).ok()?;
+    }
+    Some(out)
 }
 
 /// One device entry in the config.
@@ -631,15 +820,17 @@ impl SimConfig {
             };
             // Only an `activated` security block produces a session; a `plain`
             // block (or an absent one) leaves the device plain (spec §6.4).
-            let secure = match &dc.security {
-                Some(sec) if sec.status != SecurityStatus::Plain => Some(
-                    sec.to_activation()
+            let (secure, activated_tables) = match &dc.security {
+                Some(sec) if sec.status != SecurityStatus::Plain => {
+                    let (activation, tables) = sec
+                        .resolve(base_dir, address, serial_override(&dc.properties))
                         .map_err(|reason| ConfigError::BadDeviceOption {
                             device: dc.address.clone(),
                             reason,
-                        })?,
-                ),
-                _ => None,
+                        })?;
+                    (Some(activation), Some(tables))
+                }
+                _ => (None, None),
             };
             let overrides = crate::device::ProfileOverrides {
                 mask: dc.mask.clone(),
@@ -676,6 +867,20 @@ impl SimConfig {
             let device = match &dc.security {
                 Some(sec) if sec.status == SecurityStatus::Factory => {
                     device.with_factory_security()
+                }
+                _ => device,
+            };
+            let device = match activated_tables {
+                Some(tables)
+                    if dc.security.as_ref().map(|s| s.status)
+                        == Some(SecurityStatus::Activated) =>
+                {
+                    device.with_activated_tables(tables).map_err(|reason| {
+                        ConfigError::BadDeviceOption {
+                            device: dc.address.clone(),
+                            reason,
+                        }
+                    })?
                 }
                 _ => device,
             };
@@ -919,25 +1124,118 @@ devices:
         let cfg = SimConfig::from_yaml(yaml)?;
         let sec = cfg.devices[0].security.as_ref().expect("security parses");
         assert_eq!(sec.status, SecurityStatus::Activated);
-        assert_eq!(sec.tool_key, "0102030405060708090a0b0c0d0e0f10");
+        assert_eq!(
+            sec.tool_key.as_deref(),
+            Some("0102030405060708090a0b0c0d0e0f10")
+        );
         assert_eq!(sec.initial_tx_seq, 200);
         assert_eq!(sec.initial_rx_seq, 1000);
         // The synthetic key parses into a valid activation.
-        assert!(sec.to_activation().is_ok());
+        assert!(
+            sec.resolve(Path::new("."), IndividualAddress::new(1, 1, 2), None)
+                .is_ok()
+        );
         // The second device has no security block (plain, the default).
         assert!(cfg.devices[1].security.is_none());
         Ok(())
     }
 
-    #[test]
-    fn test_security_bad_tool_key_rejected() {
-        let sec = SecurityConfig {
-            status: SecurityStatus::Activated,
-            tool_key: "not-hex".into(),
+    /// A `security` block with only a status and the given tool key.
+    fn security(status: SecurityStatus, tool_key: Option<&str>) -> SecurityConfig {
+        SecurityConfig {
+            status,
+            tool_key: tool_key.map(str::to_string),
+            keyring: None,
+            group_keys: Vec::new(),
+            senders: Vec::new(),
+            go_security_flags: Vec::new(),
             initial_tx_seq: 0,
             initial_rx_seq: 0,
-        };
-        assert!(sec.to_activation().is_err(), "a bad tool key is rejected");
+        }
+    }
+
+    #[test]
+    fn test_security_bad_tool_key_rejected() {
+        let sec = security(SecurityStatus::Activated, Some("not-hex"));
+        let ia = IndividualAddress::new(1, 1, 2);
+        assert!(
+            sec.resolve(Path::new("."), ia, None).is_err(),
+            "a bad tool key is rejected"
+        );
+        let none = security(SecurityStatus::Activated, None);
+        assert!(none.resolve(Path::new("."), ia, None).is_err());
+    }
+
+    #[test]
+    fn test_security_resolve_activated_from_the_keyring() -> Result<(), String> {
+        // The synthetic keyring of the secure examples: tool key 0x42 * 16 and
+        // sequence 42 for 1.1.10, a group key for 1/2/3.
+        let yaml = r#"
+status: activated
+keyring: { file: examples/secure/synthetic.knxkeys, password: "synthetic-keyring-pw" }
+group_keys:
+  - { address: "1/2/4", key: "00112233445566778899aabbccddeeff" }
+  - { index: 3, key: "ffeeddccbbaa99887766554433221100" }
+senders:
+  - { address: "1.1.20", seq: 7 }
+go_security_flags:
+  - { object: 2, flags: 3 }
+"#;
+        let sec: SecurityConfig = serde_norway::from_str(yaml).map_err(|e| e.to_string())?;
+        let base = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let (activation, tables) = sec.resolve(base, IndividualAddress::new(1, 1, 10), None)?;
+        assert_eq!(
+            Some(activation.tool_key),
+            crate::secure::Key16::from_hex(&"42".repeat(16))
+        );
+        assert_eq!(activation.initial_tx_seq, 42);
+        // The explicit address is required, the keyring's is not.
+        let by_address: Vec<(u16, bool)> = tables
+            .group_keys_by_address
+            .iter()
+            .map(|(ga, _, required)| (*ga, *required))
+            .collect();
+        assert_eq!(by_address, vec![(0x0A04, true), (0x0A03, false)]);
+        assert_eq!(tables.group_keys_by_index.len(), 1);
+        assert_eq!(tables.senders, vec![(0x1114, 7)]);
+        assert_eq!(tables.go_flags, vec![(2, 3)]);
+        // Another device of the keyring has no tool key there.
+        assert!(
+            sec.resolve(base, IndividualAddress::new(1, 1, 11), None)
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_security_resolve_refuses_tables_on_a_factory_device() {
+        let mut sec = security(
+            SecurityStatus::Factory,
+            Some("0102030405060708090a0b0c0d0e0f10"),
+        );
+        sec.senders.push(SenderConfig {
+            address: "1.1.20".into(),
+            seq: 0,
+        });
+        let err = sec
+            .resolve(Path::new("."), IndividualAddress::new(1, 1, 2), None)
+            .err()
+            .unwrap_or_default();
+        assert!(err.contains("`activated`"), "{err}");
+    }
+
+    #[test]
+    fn test_serial_override_reads_object_0_pid_11() {
+        let props = vec![PropertyOverride {
+            object: 0,
+            pid: 11,
+            value: "00fa d473 0c98".into(),
+        }];
+        assert_eq!(
+            serial_override(&props),
+            Some([0x00, 0xFA, 0xD4, 0x73, 0x0C, 0x98])
+        );
+        assert_eq!(serial_override(&[]), None);
     }
 
     #[test]

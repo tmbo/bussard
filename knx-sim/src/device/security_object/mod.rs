@@ -354,6 +354,11 @@ pub struct SecurityObject {
     group_key_capacity: u16,
     /// Rows the security individual address table (PID 54) holds.
     ia_capacity: u16,
+    /// Group keys of an `activated` start state given by group address
+    /// (raw), waiting for a loaded address table: `(address, key, required)`.
+    /// A required one that does not resolve is an error; a keyring's keys for
+    /// addresses the device does not use are dropped.
+    pending_group_keys: Vec<(u16, crate::secure::Key16, bool)>,
 }
 
 impl std::fmt::Debug for SecurityObject {
@@ -395,6 +400,7 @@ impl SecurityObject {
             report_control: 0,
             group_key_capacity: MAX_GROUP_KEY_ROWS,
             ia_capacity: MAX_IA_TABLE_ROWS,
+            pending_group_keys: Vec::new(),
         }
     }
 
@@ -428,6 +434,129 @@ impl SecurityObject {
             security_mode: 0,
             ..self
         }
+    }
+
+    /// Presets the tables of an `activated` start state (bussard issue
+    /// #1054), as if a tool had loaded them: the group key table rows
+    /// `(address-table index, key)`, the security individual address table
+    /// rows `(sender IA, sequence)` and the group-object security flags
+    /// `(element, flags)`. Each non-empty list replaces its table; flags
+    /// below the highest element given are 0. Refused beyond a table's
+    /// capacity, for an index 0 or a flag octet above 0x03.
+    pub fn preset_tables(
+        &mut self,
+        group_keys: &[(u16, crate::secure::Key16)],
+        senders: &[(u16, u64)],
+        go_flags: &[(u16, u8)],
+    ) -> Result<(), String> {
+        if group_keys.len() > usize::from(self.group_key_capacity) {
+            return Err(format!(
+                "{} group keys, the table holds {}",
+                group_keys.len(),
+                self.group_key_capacity
+            ));
+        }
+        if senders.len() > usize::from(self.ia_capacity) {
+            return Err(format!(
+                "{} senders, the table holds {}",
+                senders.len(),
+                self.ia_capacity
+            ));
+        }
+        if !group_keys.is_empty() {
+            let mut table = Table::new(GRP_KEY_ROW);
+            for (row, (index, key)) in group_keys.iter().enumerate() {
+                if *index == 0 {
+                    return Err("a group key row names address-table index 0".into());
+                }
+                let mut bytes = index.to_be_bytes().to_vec();
+                bytes.extend_from_slice(key.bytes());
+                table.write(u16::try_from(row + 1).map_err(|e| e.to_string())?, &bytes);
+            }
+            self.group_keys = table;
+        }
+        if !senders.is_empty() {
+            let mut table = Table::new(IA_ROW);
+            for (row, (ia, seq)) in senders.iter().enumerate() {
+                let mut bytes = ia.to_be_bytes().to_vec();
+                bytes.extend_from_slice(&seq.to_be_bytes()[2..]);
+                table.write(u16::try_from(row + 1).map_err(|e| e.to_string())?, &bytes);
+            }
+            self.ia_table = table;
+        }
+        if !go_flags.is_empty() {
+            let mut table = Table::new(GO_FLAG);
+            let last = go_flags.iter().map(|(n, _)| *n).max().unwrap_or(0);
+            if last > 0 {
+                table.write(1, &vec![0u8; usize::from(last)]);
+            }
+            for (element, flags) in go_flags {
+                if *element == 0 || *flags & !GO_FLAG_MASK != 0 {
+                    return Err(format!(
+                        "group-object security flag element {element} = {flags:#04x}: elements \
+                         start at 1, flags are 0x00..=0x03"
+                    ));
+                }
+                table.write(*element, &[*flags]);
+            }
+            self.go_flags = table;
+        }
+        Ok(())
+    }
+
+    /// Holds group keys given by group address (raw) until the address table
+    /// is loaded ([`Self::resolve_pending_group_keys`]). `required` keys must
+    /// resolve.
+    pub fn defer_group_keys(&mut self, keys: Vec<(u16, crate::secure::Key16, bool)>) {
+        self.pending_group_keys.extend(keys);
+    }
+
+    /// Whether group keys wait for an address table.
+    pub fn has_pending_group_keys(&self) -> bool {
+        !self.pending_group_keys.is_empty()
+    }
+
+    /// Writes the deferred group keys whose address `addresses` (the loaded
+    /// address table, raw, in TSAP order) holds. Returns the required
+    /// addresses it does not hold, which stay unresolved; the keys of other
+    /// addresses are dropped.
+    pub fn resolve_pending_group_keys(&mut self, addresses: &[u16]) -> Result<Vec<u16>, String> {
+        let mut rows = Vec::new();
+        let mut missing = Vec::new();
+        for (ga, key, required) in std::mem::take(&mut self.pending_group_keys) {
+            match addresses.iter().position(|a| *a == ga) {
+                Some(i) => rows.push((u16::try_from(i + 1).map_err(|e| e.to_string())?, key)),
+                None if required => missing.push(ga),
+                None => {}
+            }
+        }
+        self.add_group_keys(&rows)?;
+        Ok(missing)
+    }
+
+    /// Appends group key rows to the table: the keys of an `activated` start
+    /// state given by group address, resolved once the address table is
+    /// loaded. A row for an index the table already holds is replaced.
+    pub fn add_group_keys(&mut self, rows: &[(u16, crate::secure::Key16)]) -> Result<(), String> {
+        for (index, key) in rows {
+            let existing = (1..=self.group_keys.count())
+                .find(|r| self.group_key_address_index(*r as u16) == Some(*index));
+            let row = match existing {
+                Some(r) => r,
+                None => self.group_keys.count() + 1,
+            };
+            if row > usize::from(self.group_key_capacity) {
+                return Err(format!(
+                    "group key for address-table index {index}: the table holds {}",
+                    self.group_key_capacity
+                ));
+            }
+            let mut bytes = index.to_be_bytes().to_vec();
+            bytes.extend_from_slice(key.bytes());
+            self.group_keys
+                .write(u16::try_from(row).map_err(|e| e.to_string())?, &bytes);
+        }
+        Ok(())
     }
 
     /// The group key table's capacity in rows

@@ -586,3 +586,78 @@ impl Device {
         self.security_object.as_ref()
     }
 }
+
+/// The security tables of an `activated` start state (bussard issue #1054):
+/// what a tool's earlier secured download left in the security object, given
+/// in the config instead of replayed.
+#[derive(Debug, Clone, Default)]
+pub struct ActivatedTables {
+    /// Group key rows by address-table index: `(index, key)`.
+    pub group_keys_by_index: Vec<(u16, crate::secure::Key16)>,
+    /// Group keys by group address (raw), resolved against the loaded
+    /// address table: `(address, key, required)`. A required one must
+    /// resolve; the others (a keyring's keys) are dropped when the device
+    /// does not use the address.
+    pub group_keys_by_address: Vec<(u16, crate::secure::Key16, bool)>,
+    /// Security individual address table rows: `(sender IA, sequence)`.
+    pub senders: Vec<(u16, u64)>,
+    /// Group-object security flags: `(PID 61 element, flags)`.
+    pub go_flags: Vec<(u16, u8)>,
+}
+
+impl Device {
+    /// Presets the security object's tables of an `activated` start state
+    /// (bussard issue #1054). The keys given by group address wait for
+    /// [`Device::settle_activated_tables`], which runs once the address table
+    /// is where it will be (after any replay). Refused on a device without a
+    /// security object (no `security` block).
+    pub fn with_activated_tables(mut self, tables: ActivatedTables) -> Result<Self, String> {
+        let obj = self
+            .security_object
+            .as_mut()
+            .ok_or("activated security tables need a `security` block")?;
+        obj.preset_tables(
+            &tables.group_keys_by_index,
+            &tables.senders,
+            &tables.go_flags,
+        )?;
+        obj.defer_group_keys(tables.group_keys_by_address);
+        Ok(self)
+    }
+
+    /// Resolves the group keys of the `activated` start state given by group
+    /// address against the loaded address table, once any replay has run: a
+    /// required key whose address the table does not hold (or a device
+    /// without a loaded address table) is an error, a keyring key for an
+    /// address the device does not use is dropped.
+    pub fn settle_activated_tables(&mut self) -> Result<(), String> {
+        let addresses: Option<Vec<u16>> = (self.load_state(1) == Some(super::LoadState::Loaded))
+            .then(|| self.base_of(1))
+            .flatten()
+            .map(|base| {
+                super::group_comm::address_table(&self.memory, base)
+                    .iter()
+                    .map(|ga| ga.raw())
+                    .collect()
+            });
+        let Some(obj) = self.security_object.as_mut() else {
+            return Ok(());
+        };
+        if !obj.has_pending_group_keys() {
+            return Ok(());
+        }
+        let missing = obj.resolve_pending_group_keys(&addresses.unwrap_or_default())?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        let names: Vec<String> = missing
+            .iter()
+            .map(|ga| crate::wire::GroupAddress(*ga).to_string())
+            .collect();
+        Err(format!(
+            "group key for {}: the device's address table does not hold the address (load the \
+             application first, e.g. with `replay`, or give the row by `index`)",
+            names.join(", ")
+        ))
+    }
+}

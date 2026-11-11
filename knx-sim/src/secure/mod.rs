@@ -20,6 +20,7 @@
 
 pub mod crypto;
 pub mod ipsecure;
+pub mod keyring;
 
 use crate::wire::CemiLData;
 
@@ -333,7 +334,7 @@ impl Key16 {
     }
 
     /// The raw key bytes. Internal to the crypto path; do not log the result.
-    fn bytes(&self) -> &[u8; 16] {
+    pub(crate) fn bytes(&self) -> &[u8; 16] {
         &self.0
     }
 }

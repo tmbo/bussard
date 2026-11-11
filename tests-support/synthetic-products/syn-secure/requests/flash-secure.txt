@@ -1,0 +1,134 @@
+# Golden request stream (epic #596), written by
+# crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with
+# BUSSARD_UPDATE_GOLDENS=1 (dev/testing.md).
+#
+# command: bussard flash 1.1.10 --yes
+# product: syn-secure (M-00FA_A-2900-10-0000)
+# device:  a fresh knx-sim device, security `activated` under the synthetic tool key
+# format:  tools/knxtrace/knxtrace.py ops, without the operation numbers
+#          and the capture header
+#
+# devices/1.1.10.toml:
+#   address = "1.1.10"
+#   name = "sim loop (defaults)"
+#
+#   [links]
+#   1.send = "1/0/1"
+
+connect T_Connect
+secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system_broadcast=False service=S-A_Sync_Req protected_len=16 key=tool mac=ok sync_detail=S-A_Sync_Req serial=none challenge_len=6
+authorize Authorize_Request key=FFFFFFFF(free-access) secured=tool
+descriptor type0 type=0 secured=tool
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1 secured=tool
+prop-read obj0/PID_71 count=1 index=0 secured=tool
+prop-read obj0/PID_1 count=1 index=1 secured=tool
+prop-read obj1/PID_1 count=1 index=1 secured=tool
+prop-read obj2/PID_1 count=1 index=1 secured=tool
+prop-read obj3/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_1 count=1 index=1 secured=tool
+prop-read obj5/PID_1 count=1 index=1 secured=tool
+prop-read obj6/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1 secured=tool
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1 secured=tool
+prop-read obj0/PID_MANUFACTURER_ID count=1 index=1 secured=tool
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0 secured=tool
+prop-read type17.1/PID61 count=1 index=0 secured=tool
+prop-read obj1/PID_27 count=1 index=0 secured=tool
+prop-read obj2/PID_27 count=1 index=0 secured=tool
+prop-read obj3/PID_27 count=1 index=0 secured=tool
+prop-read obj4/PID_27 count=1 index=0 secured=tool
+load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+function-prop type17.1/PID5 len=10 sha=ab0c4a5b secured=tool
+load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=False fill_byte=0x00 secured=tool
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00 secured=tool
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00 secured=tool
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=6 fill=False fill_byte=0x00 secured=tool
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+mem-write 0x6000 addr_int=24576 len=50 sha=777414dc extended=False secured=tool
+mem-write 0x6032 addr_int=24626 len=50 sha=c4612d48 extended=False secured=tool
+mem-write 0x6064 addr_int=24676 len=50 sha=c4612d48 extended=False secured=tool
+mem-write 0x6096 addr_int=24726 len=50 sha=c4612d48 extended=False secured=tool
+mem-write 0x60c8 addr_int=24776 len=50 sha=c4612d48 extended=False secured=tool
+mem-write 0x60fa addr_int=24826 len=6 sha=ce8bee52 extended=False secured=tool
+mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False secured=tool
+mem-write 0xc000 addr_int=49152 len=6 sha=7b9453f4 extended=False secured=tool
+mem-write 0xa000 addr_int=40960 len=4 sha=bf2fcd6c extended=False secured=tool
+function-prop type17.1/PID5 len=10 sha=96eeff56 secured=tool
+prop-write type17.1/PID54 count=1 index=0 len=2 sha=96a296d2 secured=tool
+prop-write type17.1/PID53 count=1 index=1 len=18 key_material=True secured=tool
+prop-write type17.1/PID61 count=1 index=1 len=1 sha=084fed08 secured=tool
+function-prop type17.1/PID5 len=10 sha=337a3271 secured=tool
+prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=11325e72 secured=tool
+load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+restart Restart type=master-reset erase_code=1 channel=0 secured=tool
+connect T_Connect
+descriptor type0 type=0
+secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system_broadcast=False service=S-A_Sync_Req protected_len=16 key=tool mac=ok sync_detail=S-A_Sync_Req serial=none challenge_len=6
+authorize Authorize_Request key=FFFFFFFF(free-access) secured=tool
+prop-read obj4/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1 secured=tool
+mem-read 0x6000 addr_int=24576 count=4 secured=tool
+mem-read 0x8000 addr_int=32768 count=4 secured=tool
+mem-read 0xc000 addr_int=49152 count=4 secured=tool
+mem-read 0xa000 addr_int=40960 count=4 secured=tool
+descriptor type0 type=0 secured=tool
+prop-read obj0/PID_1 count=1 index=1 secured=tool
+prop-read obj1/PID_1 count=1 index=1 secured=tool
+prop-read obj2/PID_1 count=1 index=1 secured=tool
+prop-read obj3/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_1 count=1 index=1 secured=tool
+prop-read obj5/PID_1 count=1 index=1 secured=tool
+prop-read obj6/PID_1 count=1 index=1 secured=tool
+prop-read obj1/PID_23 count=1 index=0 secured=tool
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+mem-read 0xa000 addr_int=40960 count=2 secured=tool
+mem-read 0xa002 addr_int=40962 count=2 secured=tool
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0 secured=tool
+prop-read obj2/PID_23 count=1 index=0 secured=tool
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+mem-read 0xc000 addr_int=49152 count=2 secured=tool
+mem-read 0xc002 addr_int=49154 count=4 secured=tool
+prop-read obj3/PID_23 count=1 index=0 secured=tool
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+mem-read 0x8000 addr_int=32768 count=2 secured=tool
+prop-read obj0/PID_1 count=1 index=1 secured=tool
+prop-read obj1/PID_1 count=1 index=1 secured=tool
+prop-read obj2/PID_1 count=1 index=1 secured=tool
+prop-read obj3/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_1 count=1 index=1 secured=tool
+prop-read obj5/PID_1 count=1 index=1 secured=tool
+prop-read obj6/PID_1 count=1 index=1 secured=tool
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+mem-read 0x6000 addr_int=24576 count=50 secured=tool
+mem-read 0x6032 addr_int=24626 count=50 secured=tool
+mem-read 0x6064 addr_int=24676 count=50 secured=tool
+mem-read 0x6096 addr_int=24726 count=50 secured=tool
+mem-read 0x60c8 addr_int=24776 count=50 secured=tool
+mem-read 0x60fa addr_int=24826 count=6 secured=tool
+function-prop type17.1/PID5 secured=tool
+prop-read type17.1/PID53 count=1 index=0 key_material=True secured=tool
+prop-read type17.1/PID61 count=1 index=0 secured=tool
+prop-read type17.1/PID61 count=1 index=1 secured=tool
+prop-read type17.1/PID54 count=1 index=0 secured=tool
+disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x006000..0x006100 len=256 sha=9dd1a6fb
+    0x008000..0x008004 len=4 sha=e5e121e5
+    0x00a000..0x00a004 len=4 sha=bf2fcd6c
+    0x00c000..0x00c006 len=6 sha=7b9453f4

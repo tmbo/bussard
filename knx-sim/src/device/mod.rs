@@ -9,6 +9,7 @@
 mod apci;
 mod build;
 mod data_secure;
+pub use data_secure::ActivatedTables;
 mod group_comm;
 mod group_dispatch;
 mod interface_object;
