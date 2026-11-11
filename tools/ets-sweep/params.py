@@ -267,35 +267,112 @@ def alike(a: str, b: str, ratio: float = 0.85) -> bool:
 def ref_label(model: dict, ref: str) -> str:
     """The text ETS shows for parameter reference `ref`: the reference's
     own text, else its parameter's."""
+    ref = model_ref(ref)
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
     return " ".join((r.get("text") or p.get("text") or "").split())
 
 
+def model_ref(ref: str) -> str:
+    """The product model's reference of a device-form one: a module
+    instance's `MD-2_M-3_P-32_R-44` is the module's `MD-2_P-32_R-44`."""
+    m = re.match(r"^(MD-\d+)_M-\d+(?:_MI-\d+)?(_.+)$", ref)
+    return m.group(1) + m.group(2) if m else ref
+
+
+def device_ref(instance: str | None, ref: str) -> str:
+    """The device-form reference of `ref` inside module instance `instance`
+    (`MD-2_M-3` + `MD-2_P-32_R-44` -> `MD-2_M-3_P-32_R-44`), as bussard's
+    device files key it (`device_view::device_ref`); the ref itself outside
+    a module."""
+    if not instance or "_" not in instance:
+        return ref
+    module_def = instance.split("_", 1)[0]
+    return instance + ref[len(module_def):] if ref.startswith(module_def) else ref
+
+
 def ref_places(model: dict) -> list[dict]:
     """Where each parameter reference sits in the product's Dynamic tree, in
-    tree order: {ref, channel, page, label}, `channel` the enclosing
-    channel's text (None outside one), `page` the innermost block's text.
+    tree order: {ref, channel, page, label, instance}, `channel` the
+    enclosing channel's text (None outside one), `page` the innermost
+    block's text (a module's page text may hold `{{...}}` placeholders),
+    `instance` the module instance (None outside one), `ref` in device form.
     A plain walk of the tree's structure: which branch is shown is not
     decided here (that is the shared Dynamic evaluator's job), so a page
     may list a label more often than ETS shows it."""
     out: list[dict] = []
+    modules = model.get("module_dynamics") or {}
 
-    def walk(nodes, channel, page):
+    def walk(nodes, channel, page, instance, depth=0):
         for n in nodes or []:
             if "channel" in n:
                 c = n["channel"]
-                walk(c.get("nodes"), c.get("text"), page)
+                walk(c.get("nodes"), c.get("text"), page, instance, depth)
             elif "block" in n:
                 b = n["block"]
-                walk(b.get("nodes"), channel, b.get("text") or page)
+                walk(b.get("nodes"), channel, b.get("text") or page, instance, depth)
             elif "choose" in n:
                 for w in n["choose"].get("when") or []:
-                    walk(w.get("nodes"), channel, page)
+                    walk(w.get("nodes"), channel, page, instance, depth)
+            elif "module" in n and depth < 4:
+                m = n["module"]
+                walk(modules.get(m.get("def")) or [], channel, page, m.get("id"), depth + 1)
             elif "p" in n:
-                out.append({"ref": n["p"], "channel": channel, "page": page, "label": ref_label(model, n["p"])})
-    walk(model.get("dynamic"), None, None)
+                out.append({"ref": device_ref(instance, n["p"]), "channel": channel, "page": page,
+                            "label": ref_label(model, n["p"]), "instance": instance})
+    walk(model.get("dynamic"), None, None, None)
     return out
+
+
+def page_pattern(template: str) -> "re.Pattern | None":
+    """The pattern of a page text with `{{...}}` placeholders, anchored at
+    both ends: the literal text as it is (runs of spaces as any space, case
+    folded), each placeholder non-empty text. A placeholder at the very end
+    may be empty, as ETS leaves an unset text parameter out ('Eingang
+    {{ChNo}}: {{0}}' shown as 'Eingang A:'). None for a page text of
+    placeholders only, which could be any page."""
+    t = re.sub(r"^\s*-\s*", "", template or "").strip()
+    parts = re.split(r"\{\{[^}]*\}\}", t)
+    if not "".join(parts).strip():
+        return None
+
+    def lit(x: str) -> str:
+        return r"\s*".join(re.escape(w) for w in x.split()) if x.strip() else ""
+    out = ""
+    for i, part in enumerate(parts):
+        out += lit(part) if part.strip() else ""
+        if i < len(parts) - 1:
+            last = i == len(parts) - 2 and not parts[-1].strip()
+            out += r"(?:\s*.+?)?" if last else r"\s*.+?\s*"
+    return re.compile("^" + out + "$", re.IGNORECASE)
+
+
+def page_matches(template: str, shown: str) -> bool:
+    """Whether a page ETS shows as `shown` is the tree's page `template`:
+    alike, or, for a module's page text with `{{...}}` placeholders, the
+    whole shown text by `page_pattern` (never a page text of placeholders
+    only)."""
+    t = re.sub(r"^\s*-\s*", "", template or "")
+    v = re.sub(r"^\s*-\s*", "", shown or "").strip()
+    if "{{" not in t:
+        return alike(t, v)
+    pattern = page_pattern(t)
+    return pattern is not None and pattern.match(v) is not None
+
+
+def literal_len(template: str) -> int:
+    return len(norm(re.sub(r"\{\{[^}]*\}\}", "", template or "")))
+
+
+def best_pages(places: list[dict], shown: str) -> set:
+    """The tree's page texts a shown page is: of those that match, the ones
+    with the most literal text ('Eingang {{ChNo}}: Sperre' over 'Eingang
+    {{ChNo}}: {{0}}' for 'Eingang A: Sperre')."""
+    matching = {p["page"] for p in places if p["page"] and page_matches(p["page"], shown)}
+    if not matching:
+        return set()
+    top = max(literal_len(t) for t in matching)
+    return {t for t in matching if literal_len(t) == top}
 
 
 def page_parts(page: dict) -> tuple[str | None, str]:
@@ -314,6 +391,7 @@ def enum_value(model: dict, ref: str, shown: str) -> str | None:
     `shown`: the one label alike, else the one label it begins (OCR loses
     the end of a radio option's text at times: '0 = Aus' for '0 = Aus,
     1 = Ein')."""
+    ref = model_ref(ref)
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
     labels = [(str(v), str(t)) for v, t in p.get("labels") or []]
@@ -325,6 +403,7 @@ def enum_value(model: dict, ref: str, shown: str) -> str | None:
 
 def ref_default(model: dict, ref: str) -> str:
     """The default of reference `ref`: its own value, else its parameter's."""
+    ref = model_ref(ref)
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
     return str(r.get("value") if r.get("value") not in (None, "") else p.get("default", ""))
@@ -333,16 +412,19 @@ def ref_default(model: dict, ref: str) -> str:
 def value_of(model: dict, ref: str, change: dict) -> str | None:
     """The device file's value of reference `ref` for what ETS shows
     (`change['shown']`), None when it does not convert."""
+    ref = model_ref(ref)
     shown = str(change.get("shown", ""))
     kind = change["kind"]
     r = (model.get("parameter_refs") or {}).get(ref) or {}
     p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
     pkind = p.get("kind") if isinstance(p.get("kind"), dict) else {}
-    # A control of another type than the parameter's is not its row; a
-    # virtual parameter (an information text) is never downloaded.
+    # A control of another type than the parameter's is not its row. A
+    # virtual parameter in an editable control stays: it is downloaded
+    # through the calculations it feeds (MDT's module 'Wert Kontakt
+    # geöffnet', MD-2_P-32).
     fits = {"radio": ("Enum",), "dropdown": ("Enum",), "checkbox": ("Enum", "Int"),
             "number": ("Int", "Float"), "text": ("Text",)}.get(kind, ())
-    if p.get("is_virtual") or not any(k in pkind for k in fits):
+    if not any(k in pkind for k in fits):
         return None
     if kind in ("radio", "dropdown"):
         return enum_value(model, ref, shown)
@@ -359,14 +441,14 @@ def candidates_of(places: list[dict], change: dict) -> list[str]:
     """The references labelled like the change on its page and channel, in
     tree order."""
     channel, page = page_parts(change["page"])
-    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"]
-             and alike(re.sub(r"^\s*-\s*", "", p["page"]), re.sub(r"^\s*-\s*", "", page))
+    pages = best_pages(places, page)
+    cands = [p["ref"] for p in places if alike(p["label"], change["label"], 0.9) and p["page"] in pages
              and (channel is None or (p["channel"] and alike(p["channel"], channel)))]
     return list(dict.fromkeys(cands))
 
 
 def model_changes(model: dict, survey_after: list[dict], done: list[dict],
-                  shown_refs=None) -> tuple[dict, list[str]]:
+                  shown_refs=None, page_orders: list[list[dict]] | None = None) -> tuple[dict, list[str]]:
     """The device file's parameter values for the changes ETS shows after
     the run, {"param@<ref>": value}, and the changes that do not map.
 
@@ -399,9 +481,9 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
         if len(cands) == n_rows:
             cands = [cands[d.get("n", 0)]]
         def virtual(ref: str) -> bool:
-            r = (model.get("parameter_refs") or {}).get(ref) or {}
+            r = (model.get("parameter_refs") or {}).get(model_ref(ref)) or {}
             return bool(((model.get("parameters") or {}).get(r.get("parameter") or "") or {}).get("is_virtual"))
-        if all(virtual(r) for r in cands):
+        if d["kind"] == "text" and all(virtual(r) for r in cands):
             # An information text ETS never downloads: nothing to model.
             continue
         # A candidate whose values ETS's text does not name is not the row.
@@ -423,9 +505,19 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     definite = dict(values)
     for d, converted, n_rows in open_:
         cands = [r for r, _ in converted]
-        shown = shown_refs({**definite, **{f"param@{r}": str(v) for r, v in converted}}) if shown_refs else None
+        probes = module_probes(places, cands)
+        stored = {**definite, **{f"param@{r}": str(v) for r, v in converted}}
+        for ref in probes.values():
+            stored.setdefault(f"param@{ref}", ref_default(model, ref))
+        shown = shown_refs(stored) if shown_refs else None
         visible = [r for r in cands if shown is not None and r in shown]
         _, page = page_parts(d["page"])
+        if probes and shown is not None:
+            picked = module_instance_refs(places, page_orders or [survey_after], d, cands, shown, probes)
+            if picked is None:
+                problems.append(f"{d['label']!r} on {page!r}: the page order does not tell the module instance")
+                continue
+            visible = picked
         if len(visible) != n_rows:
             problems.append(f"{len(cands)} references labelled {d['label']!r} on {page!r}, "
                             f"{len(visible)} shown, ETS shows {n_rows}")
@@ -433,6 +525,50 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
         ref = visible[d.get("n", 0)]
         values[f"param@{ref}"] = str(value_of(model, ref, d))
     return values, problems
+
+
+def module_probes(places: list[dict], cands: list[str]) -> dict[str, str]:
+    """For candidates spread over several module instances: per instance,
+    in tree order, a reference on the same page (its first), whose being
+    shown tells that the instance's page is shown. {} for one instance."""
+    by_ref = {p["ref"]: p for p in places}
+    instances = list(dict.fromkeys(by_ref[r]["instance"] for r in cands if r in by_ref))
+    if len(instances) < 2 or None in instances:
+        return {}
+    page = by_ref[cands[0]]["page"]
+    out: dict[str, str] = {}
+    for p in places:
+        if p["instance"] in instances and p["page"] == page and p["instance"] not in out:
+            out[p["instance"]] = p["ref"]
+    return out
+
+
+def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: dict, cands: list[str],
+                         shown: set, probes: dict[str, str]) -> list[str] | None:
+    """The shown candidates of the module instance whose page the change is
+    on: the instances whose page the evaluator shows (`probes` in `shown`),
+    in tree order, are the pages ETS lists in order, so the change's page,
+    the k-th page of its channel that is this module page (`best_pages`, in
+    the first of `surveys` that holds it), is the k-th of them. The
+    candidates of that instance the evaluator shows; [] when the instance
+    hides the label (the row is then unmapped), None when the page order
+    does not tell the instance."""
+    by_ref = {p["ref"]: p for p in places}
+    template = by_ref[cands[0]]["page"]
+    shown_instances = [i for i, ref in probes.items() if ref in shown]
+    channel, _ = page_parts(change["page"])
+    for survey in surveys:
+        same = [p for p in survey if template in best_pages(places, page_parts(p)[1])
+                and (channel is None or alike(page_parts(p)[0] or "", channel))]
+        k = next((i for i, p in enumerate(same)
+                  if norm(p.get("crumb") or "") == norm(change["page"].get("crumb") or "")), None)
+        if k is None:
+            continue
+        if k >= len(shown_instances) or len(same) != len(shown_instances):
+            return None
+        chosen = shown_instances[k]
+        return [r for r in cands if by_ref[r]["instance"] == chosen and r in shown]
+    return None
 
 
 def bussard_shown_refs(model_dir: Path):
@@ -773,8 +909,11 @@ def change_model(job: dict, work: Path, out: Path, recorded: dict) -> tuple[Path
     model = model_json(shared, job["id"])
     model_dir = oracle_model.build(out, defaults.product_path(job["file"]), job["id"], mask=job["mask"],
                                    shared=shared)
+    # The surveys order a module's pages (one per instance); the last one
+    # counts the rows.
+    surveys = [recorded.get(k) or [] for k in ("pages_final", "pages_after", "pages")]
     values, problems = model_changes(model, recorded.get("pages_final") or recorded.get("pages_after") or [],
-                                     recorded.get("changes") or [], bussard_shown_refs(model_dir))
+                                     recorded.get("changes") or [], bussard_shown_refs(model_dir), surveys)
     if problems:
         return None, problems
     (model_dir / "devices" / "1.1.1.toml").write_text(device_toml_with(values))

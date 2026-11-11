@@ -1793,6 +1793,7 @@ def go_to_page(target: dict, limit: int = 60) -> dict:
         if not scroll_tree(-5):
             break
         tried = set()
+    log(f"go_to_page: no tree entry like {target.get('page')!r}; seen {[l['text'] for l in tree_entries()][:40]}")
     # A page of a channel ETS shows collapsed (after a download): walk the
     # tree, which expands channels. `first_page` clicks a tree entry first,
     # so the keys go to the tree, not to a field.
