@@ -1032,11 +1032,15 @@ def partial_oracle(job: dict, work: Path) -> dict:
     # this download: the row pins the memory headline and judges the
     # properties (#944, the E804 capture: props=ok(2935) loadctl=ok(4)).
     pins = "expect=not-comparable props=identical loadctl=identical " if property_only(job, work) else ""
+    # No memory is written in a pinned row, so no coverage is recorded for it.
     line = (f"1.1.1|{b}|{defaults.product_path(job['file'])}|{app}|ETS partial download after "
-            f"{change.get('label', '?')} set to {change.get('shown', '?')}|100.0|{pins}run=params base={a} "
+            f"{change.get('label', '?')} set to {change.get('shown', '?')}|{'0' if pins else '100.0'}|"
+            f"{pins}run=params base={a} "
             f"dir={model}{lsm}")
     rows.write_text(line + "\n")
-    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--rows", str(rows),
+    # --check makes the exit code the row's judgement (pins included);
+    # without it the oracle exits 0 whatever it found.
+    r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--rows", str(rows), "--check",
                         "--out", str(work / app / "params-partial" / "oracle")],
                        capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
     return pinned_verdict(summary_verdict(r.stdout + r.stderr, "1.1.1"), r.returncode, bool(pins), str(rows))
