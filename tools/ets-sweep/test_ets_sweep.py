@@ -240,6 +240,37 @@ class TestParamsModel(unittest.TestCase):
             self.assertNotEqual(c["value"], "1,5")
         self.assertEqual(params.value_of(model, "P-9_R-9", {"kind": "number", "shown": "2,5"}), "2.5")
 
+    MODULE_MODEL = {
+        "parameters": {"MD-2_P-32": {"kind": {"Enum": {"values": [0, 1, 2]}}, "text": "    Wert Kontakt geöffnet",
+                                     "labels": [[0, "Aus"], [1, "Ein"], [2, "nicht aktiv"]], "is_virtual": True}},
+        "parameter_refs": {"MD-2_P-32_R-50": {"parameter": "MD-2_P-32"}},
+        "dynamic": [{"channel": {"text": "Eingänge A-P", "nodes": [
+            {"module": {"id": "MD-2_M-2", "def": "MD-2"}}, {"module": {"id": "MD-2_M-3", "def": "MD-2"}}]}}],
+        "module_dynamics": {"MD-2": [{"block": {"text": "Eingang {{ChNo}}: {{0}}", "nodes": [{"p": "MD-2_P-32_R-50"}]}}]},
+    }
+
+    def test_ref_places_walk_module_instances_in_device_form(self):
+        places = params.ref_places(self.MODULE_MODEL)
+        self.assertEqual([(p["ref"], p["instance"], p["channel"]) for p in places],
+                         [("MD-2_M-2_P-32_R-50", "MD-2_M-2", "Eingänge A-P"),
+                          ("MD-2_M-3_P-32_R-50", "MD-2_M-3", "Eingänge A-P")])
+        self.assertEqual(params.model_ref("MD-2_M-3_P-32_R-50"), "MD-2_P-32_R-50")
+        self.assertEqual(params.device_ref("MD-2_M-3", "MD-2_P-32_R-50"), "MD-2_M-3_P-32_R-50")
+        self.assertTrue(params.page_matches("Eingang {{ChNo}}: {{0}}", "Eingang B:"))
+        self.assertFalse(params.page_matches("Eingang {{ChNo}}: {{0}}", "Ausgang B:"))
+
+    def test_model_changes_picks_the_module_instance_by_page_order(self):
+        # Two instances show the label; the change is on the second
+        # instance's page ('Eingang B:'), so the second instance's ref is
+        # stored, with the virtual parameter's value (it feeds calculations).
+        order = [{"crumb": "Eingänge A-P > Eingang A:", "page": "Eingang A:"},
+                 {"crumb": "Eingänge A-P > Eingang B:", "page": "Eingang B:"}]
+        done = [{"page": order[1], "label": "Wert Kontakt geöffnet", "n": 0, "kind": "dropdown", "result": "set",
+                 "shown": "nicht aktiv", "set_to": "nicht aktiv", "rows_with_label": 1}]
+        values, problems = params.model_changes(self.MODULE_MODEL, [], done,
+                                                lambda v: {r.split("@")[1] for r in v}, [[], order])
+        self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "2"}, []))
+
     def test_read_back_records_shown_and_loses_what_does_not_read_back(self):
         done = [{**self.change("Ausgang 9 > Ausgang 9: Funktionsfreigabe", "Preset", "dropdown", ""),
                  "set_to": "2 Presetobjekten"},
