@@ -1120,9 +1120,13 @@ def compare(
         # Matching octets from a thin capture are not evidence (issue #347).
         overall = NOT_COMPARABLE
         reason = "thin: " + cov["reason"] if IDENTICAL in verdicts else "nothing compared"
-    if plan.get("system") == IP_SECURE_SYSTEM:
-        # `bussard interface secure --dry-run` (issue #398) writes no memory:
-        # the property parity is the verdict.
+    if plan.get("system") == IP_SECURE_SYSTEM or (
+        plan.get("system") == "properties" and not results
+    ):
+        # `bussard interface secure --dry-run` (issue #398) and a property-only
+        # plan (mask 0021, issue #1043) write no memory and drive no load-state
+        # machine: the property parity is the verdict. ETS's commissioning
+        # writes stay listed under `properties`, not counted.
         overall = str(props.get("verdict", NOT_COMPARABLE))
         reason = str(props.get("reason") or "")
     return {

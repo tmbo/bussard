@@ -67,12 +67,12 @@
 #                                written octets are thin by design
 #                props=VERDICT   the verdict the property-write parity must
 #                                give (identical, differs or not-comparable);
-#                                unchecked when absent. For a property-only
-#                                plan (a KNX IP interface, mask 0021), whose
-#                                memory verdict is always not-comparable,
-#                                and for a row with a known property
-#                                difference (props=differs, the note names
-#                                the issue or decision, #683).
+#                                unchecked when absent. For a row with a
+#                                known property difference (props=differs,
+#                                the note names the issue or decision, #683).
+#                                A property-only plan (a KNX IP interface,
+#                                mask 0021) writes no memory: its headline
+#                                is the property parity already (#1043).
 #                                Without this option the headline verdict
 #                                counts the property writes: a row whose
 #                                memory is identical but whose property
