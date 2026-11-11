@@ -122,6 +122,9 @@ def session_facts() -> dict:
         "session": os.environ.get("SESSIONNAME"),
         "user": os.environ.get("USERNAME"),
         "python": sys.version.split()[0],
+        # Which process answers: `vm.py install` waits for another pid
+        # than the one that answered before the upload.
+        "pid": os.getpid(),
         "windows": [w for w in wins if w["title"]],
     }
 

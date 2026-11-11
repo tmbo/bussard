@@ -152,24 +152,32 @@ FITS = {"radio": ("Enum",), "dropdown": ("Enum",), "checkbox": ("Enum", "Int"),
 
 
 def label_kinds(model: dict) -> dict[str, set]:
-    """Per label (`norm`) the parameter types the model's parameters of
-    that text have ('Enum', 'Int', 'Text', ...)."""
+    """Per label ETS shows (`ref_label`: the reference's own text, else its
+    parameter's) the parameter types behind it ('Enum', 'Int', 'Text', ...)."""
     out: dict[str, set] = {}
-    for p in (model.get("parameters") or {}).values():
+    params_ = model.get("parameters") or {}
+    for ref, r in (model.get("parameter_refs") or {}).items():
+        p = params_.get(r.get("parameter") or "") or {}
         kind = p.get("kind")
         name = next(iter(kind), None) if isinstance(kind, dict) else kind
-        if name:
-            out.setdefault(norm(p.get("text") or ""), set()).add(name)
+        label = ref_label(model, ref)
+        if name and label:
+            out.setdefault(label, set()).add(name)
     return out
 
 
 def fits_model(row: dict, kinds: dict[str, set]) -> bool:
-    """Whether a survey row can be a model parameter: one of that label has
+    """Whether a survey row can be a model parameter: a reference whose
+    label is alike (OCR slips, a module page's placeholder text aside) has
     a type the row's control shows. A time field the driver read as text
     (Ekinex 'volle Bandbreite Dimmzeit') or a button read as a dropdown
     (Ekinex 'Herunterladen') is none, and no change is drawn for it
     (2026-11-11)."""
-    return bool(kinds.get(norm(row["label"]), set()) & set(FITS.get(row["kind"], ())))
+    want = set(FITS.get(row["kind"], ()))
+    exact = kinds.get(" ".join((row["label"] or "").split()))
+    if exact is not None:
+        return bool(exact & want)
+    return any(types & want for label, types in kinds.items() if alike(label, row["label"], 0.9))
 
 
 def survey_rows(survey: list[dict]) -> list[dict]:
@@ -567,7 +575,7 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     definite = dict(values)
     for d, converted, n_rows in open_:
         cands = [r for r, _ in converted]
-        probes = module_probes(places, cands)
+        probes = module_probes(places, cands, matched_page(places, d, cands[0]))
         stored = {**definite, **{f"param@{r}": str(v) for r, v in converted}}
         for ref in probes.values():
             stored.setdefault(f"param@{ref}", ref_default(model, ref))
@@ -589,7 +597,18 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     return values, problems
 
 
-def module_probes(places: list[dict], cands: list[str]) -> dict[str, str]:
+def matched_page(places: list[dict], change: dict, ref: str) -> str | None:
+    """The page text `ref` was matched on for `change` (`candidates_of`):
+    its innermost page, or the enclosing block whose text ETS shows (a
+    nested block shown as a section of its parent page)."""
+    by_ref = {p["ref"]: p for p in places}
+    place = by_ref.get(ref) or {}
+    _, shown_page = page_parts(change["page"])
+    matched = [t for t in place.get("pages") or [place.get("page")] if t in best_pages(places, shown_page)]
+    return matched[-1] if matched else place.get("page")
+
+
+def module_probes(places: list[dict], cands: list[str], template: str | None = None) -> dict[str, str]:
     """For candidates spread over several groups (module instances, or
     channels named by a placeholder): per group, in tree order, a reference
     on the same page (its first), whose being shown tells that the group's
@@ -598,10 +617,10 @@ def module_probes(places: list[dict], cands: list[str]) -> dict[str, str]:
     groups = list(dict.fromkeys(by_ref[r]["group"] for r in cands if r in by_ref))
     if len(groups) < 2 or None in groups:
         return {}
-    page = by_ref[cands[0]]["page"]
+    page = template or by_ref[cands[0]]["page"]
     out: dict[str, str] = {}
     for p in places:
-        if p["group"] in groups and p["page"] == page and p["group"] not in out:
+        if p["group"] in groups and p["group"] not in out and page in (p.get("pages") or [p["page"]]):
             out[p["group"]] = p["ref"]
     return out
 
@@ -617,7 +636,7 @@ def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: 
     the group hides the label (the row is then unmapped), None when the
     page order does not tell the group."""
     by_ref = {p["ref"]: p for p in places}
-    template = by_ref[cands[0]]["page"]
+    template = matched_page(places, change, cands[0])
     shown_groups = [g for g, ref in probes.items() if ref in shown]
     channel, _ = page_parts(change["page"])
     tpl_channel = by_ref[cands[0]]["channel"]

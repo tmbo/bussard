@@ -138,6 +138,7 @@ def install(c: paramiko.SSHClient) -> None:
     the first start happens by hand in the VM's desktop session (see README)."""
     src = Path(__file__).resolve().parent / "driver" / "ets_driver.py"
     compile(src.read_text(encoding="utf-8"), str(src), "exec")  # never upload a driver that does not parse
+    before = health_pid(c)
     run(c, f'mkdir "{REMOTE_DIR}"')
     # Upload beside it, then replace it in one rename: the running driver
     # re-execs on a changed mtime, and a replacement that read the file half
@@ -161,24 +162,34 @@ def install(c: paramiko.SSHClient) -> None:
         raise RuntimeError("no driver process runs in the VM")
     else:
         print("running driver will re-exec itself within a few seconds")
-        if not wait_restarted(c):
-            raise RuntimeError("the driver did not answer /health within 60 s after the upload; "
-                               "see driver-start.log in the VM; only the owner restarts it in the desktop session")
+        if not wait_restarted(c, before):
+            raise RuntimeError("no new driver answered /health within 120 s after the upload (the old one "
+                               f"was pid {before}); see driver-start.log in the VM; only the owner restarts it "
+                               "in the desktop session")
         print("driver restarted and answers /health")
 
 
-def wait_restarted(c: paramiko.SSHClient, timeout: float = 60) -> bool:
-    """Whether the driver answers /health again after an upload (it re-execs
-    within a few seconds)."""
-    time.sleep(5)
+def health_pid(c: paramiko.SSHClient) -> int | None:
+    """The pid of the driver answering /health, None when none answers (or
+    an old driver without the field)."""
+    try:
+        return driver(c, "GET", "/health", timeout=10).get("pid")
+    except (RuntimeError, OSError, paramiko.SSHException):
+        return None
+
+
+def wait_restarted(c: paramiko.SSHClient, before: int | None, timeout: float = 120, pause: float = 3) -> bool:
+    """Whether a driver other than `before` (the pid that answered before
+    the upload) answers /health: the old driver keeps answering while a
+    flow runs, and only another pid shows the replacement started. With no
+    pid before (none answered, or a driver too old to say), any answer
+    with a pid counts."""
     t0 = time.time()
     while time.time() - t0 < timeout:
-        try:
-            if driver(c, "GET", "/health", timeout=10).get("ok"):
-                return True
-        except (RuntimeError, OSError, paramiko.SSHException):
-            pass
-        time.sleep(3)
+        pid = health_pid(c)
+        if pid is not None and pid != before:
+            return True
+        time.sleep(pause)
     return False
 
 
