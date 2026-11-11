@@ -301,6 +301,18 @@ class TestParamsModel(unittest.TestCase):
                                                 lambda v: {r.split("@")[1] for r in v}, [[], order])
         self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "2"}, []))
 
+    def test_summary_verdict_reads_the_table_line_not_the_heading(self):
+        out = ("1.1.1  (ETS partial download after Sendeverzögerung set to 1)\n"
+               "  knx-sim on 127.0.0.1:5\n"
+               "device    system verdict ...\n"
+               "1.1.1     apply  not-comparable  0.0% (100)  -  props=ok(2935)  loadctl=ok(4)\n")
+        self.assertEqual(params.summary_verdict(out, "1.1.1")["verdict"], "not-comparable")
+        self.assertEqual(params.summary_verdict("1.1.1  (note)", "1.1.1")["verdict"], "oracle-error")
+
+    def test_best_pages_exact_over_close(self):
+        places = [{"page": "FS: Ampel"}, {"page": "LS: Ampel"}]
+        self.assertEqual(params.best_pages(places, "FS: Ampel"), {"FS: Ampel"})
+
     def test_page_matches_anchored_sibling_and_placeholder_only(self):
         main, sibling = "Eingang {{ChNo}}: {{0}}", "Eingang {{ChNo}}: Sperre"
         self.assertTrue(params.page_matches(main, "Eingang A:"))

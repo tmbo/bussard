@@ -428,6 +428,11 @@ def best_pages(places: list[dict], shown: str) -> set:
     matching = {t for p in places for t in p.get("pages") or [p["page"]] if t and page_matches(t, shown)}
     if not matching:
         return set()
+    # An exact match wins over a close one ('FS: Ampel' is not 'LS: Ampel').
+    exact = {t for t in matching if "{{" not in t and norm(re.sub(r"^\s*-\s*", "", t)) == norm(
+        re.sub(r"^\s*-\s*", "", shown or ""))}
+    if exact:
+        return exact
     top = max(literal_len(t) for t in matching)
     return {t for t in matching if literal_len(t) == top}
 
@@ -594,6 +599,9 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
             continue
         ref = visible[d.get("n", 0)]
         values[f"param@{ref}"] = str(value_of(model, ref, d))
+        # Resolved in change order (page switches first): a later change's
+        # page may need this one's value to be shown.
+        definite[f"param@{ref}"] = values[f"param@{ref}"]
     return values, problems
 
 
@@ -949,10 +957,7 @@ def oracle(args) -> int:
                 r = subprocess.run(["bash", str(ORACLE), "--dir", str(model_dir), "--out",
                                     str(args.work / app / name / "oracle"), "--row", row],
                                    capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
-                text = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
-                summary = next((l for l in text.splitlines() if l.startswith(ia + " ")), "")
-                m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)\s+(\S+)", summary)
-                out[key] = {"verdict": m.group(2) if m else "oracle-error", "summary": summary.strip()}
+                out[key] = summary_verdict(r.stdout + r.stderr, ia)
         out[key]["set"] = (entry.get("params") or {}).get("set")
         out[key]["when"] = datetime.now(timezone.utc).isoformat()
         ORACLE_OUT.write_text(json.dumps(dict(sorted(out.items())), indent=1, ensure_ascii=False) + "\n")
@@ -1023,16 +1028,48 @@ def partial_oracle(job: dict, work: Path) -> dict:
     lsm = " lsm=memory" if job["mask"] == "0701" else ""
     rows = work / app / "params-partial" / "rows.txt"
     change = (recorded.get("changes") or [{}])[0]
+    # A program whose parameters all live in properties writes no memory in
+    # this download: the row pins the memory headline and judges the
+    # properties (#944, the E804 capture: props=ok(2935) loadctl=ok(4)).
+    pins = "expect=not-comparable props=identical loadctl=identical " if property_only(job, work) else ""
     line = (f"1.1.1|{b}|{defaults.product_path(job['file'])}|{app}|ETS partial download after "
-            f"{change.get('label', '?')} set to {change.get('shown', '?')}|100.0|run=params base={a} dir={model}{lsm}")
+            f"{change.get('label', '?')} set to {change.get('shown', '?')}|100.0|{pins}run=params base={a} "
+            f"dir={model}{lsm}")
     rows.write_text(line + "\n")
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--rows", str(rows),
                         "--out", str(work / app / "params-partial" / "oracle")],
                        capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
-    text = re.sub(r"\x1b\[[0-9;]*m", "", r.stdout + r.stderr)
-    summary = next((l for l in text.splitlines() if l.startswith("1.1.1 ")), "")
-    m = re.match(r"1\.1\.1\s+(\S+)\s+(\S+)", summary)
-    return {"verdict": m.group(2) if m else "oracle-error", "summary": summary.strip(), "rows": str(rows)}
+    return {**summary_verdict(r.stdout + r.stderr, "1.1.1"), "exit": r.returncode, "rows": str(rows)}
+
+
+VERDICTS = ("identical", "differs", "not-comparable")
+
+
+def summary_verdict(output: str, ia: str) -> dict:
+    """The verdict of `ia`'s line in the offline oracle's summary table
+    (`<ia>  <system>  <verdict>  ...`), not its section heading ('1.1.1
+    (note)'), which also starts with the address."""
+    text = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    for line in reversed(text.splitlines()):
+        m = re.match(re.escape(ia) + r"\s+(\S+)\s+(\S+)", line)
+        if m and m.group(2) in VERDICTS:
+            return {"verdict": m.group(2), "summary": line.strip()}
+    return {"verdict": "oracle-error", "summary": ""}
+
+
+def property_only(job: dict, work: Path) -> bool:
+    """Whether every parameter of the application lives in an interface
+    object property (no memory placement)."""
+    shared, _ = shared_for(job, work)
+    # The imported product model (`<app>@<lang>.json`) holds each
+    # parameter's placement; the model cache does not.
+    found = sorted(shared.glob(f".bussard/products/*/{job['id']}@*.json"))
+    if not found:
+        return False
+    params_ = json.loads(found[0].read_text()).get("parameters") or {}
+    params_ = params_.values() if isinstance(params_, dict) else params_
+    params_ = list(params_)
+    return bool(params_) and not any(p.get("memory") for p in params_) and any(p.get("property") for p in params_)
 
 
 def partial(args) -> int:

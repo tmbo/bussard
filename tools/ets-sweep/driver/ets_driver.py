@@ -1822,7 +1822,11 @@ def dropdown_options(row: dict) -> list[str]:
     pop = wait_for("dropdown list", lambda: next((p for p in ets_popups()
                                                   if p.descendants(control_type="ListItem")), None), 3, 0.2)
     if pop is None:
-        raise RuntimeError(f"the dropdown of {row['label']!r} opened no list")
+        # A dropdown ETS shows but does not open (read-only, Ekinex 4741
+        # 'Last Typ', 2026-11-11): nothing was changed, so the change is
+        # unreachable, not a failed write.
+        keys("{ESC}")
+        raise LookupError(f"the dropdown of {row['label']!r} opened no list (read-only?)")
     out = []
     for it in pop.descendants(control_type="ListItem"):
         texts = [t.window_text() for t in it.descendants(control_type="Text")]
