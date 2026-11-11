@@ -122,6 +122,9 @@ def session_facts() -> dict:
         "session": os.environ.get("SESSIONNAME"),
         "user": os.environ.get("USERNAME"),
         "python": sys.version.split()[0],
+        # Which process answers: `vm.py install` waits for another pid
+        # than the one that answered before the upload.
+        "pid": os.getpid(),
         "windows": [w for w in wins if w["title"]],
     }
 
@@ -3852,6 +3855,19 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
         except OSError:
             continue
         if now != stamp:
+            # The file settles first (an upload in progress changes it
+            # again), and a replacement is spawned only from a file that
+            # compiles: one that read a half-written upload died before it
+            # logged a line, and no driver was left (2026-11-11 14:38Z).
+            time.sleep(2)
+            try:
+                if me.stat().st_mtime != now:
+                    continue
+                compile(me.read_text(encoding="utf-8"), str(me), "exec")
+            except (OSError, SyntaxError, ValueError) as exc:
+                log(f"source changed but does not compile, keeping the running driver: {exc!r}")
+                stamp = now
+                continue
             t_idle = time.time()
             while IN_FLIGHT and time.time() - t_idle < 1800:
                 time.sleep(0.5)
@@ -3867,10 +3883,13 @@ def _reload_watch(srv: ThreadingHTTPServer) -> None:
             # 16:33 with server_close() first, 2026-11-08 04:09 and 08:43 with
             # shutdown() first). The replacement retries the bind for 30 s
             # while this process still holds the port.
+            # Its start-up output goes to driver-start.log: a replacement
+            # that fails before it opens the log is visible there.
+            start_log = open(me.parent / "driver-start.log", "a", encoding="utf-8")  # noqa: SIM115 (handed to the child)
             subprocess.Popen(
                 [sys.executable, str(me)],
                 creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-                close_fds=True,
+                close_fds=True, stdout=start_log, stderr=subprocess.STDOUT,
             )
             log("replacement spawned")
             srv.shutdown()

@@ -49,7 +49,16 @@ class TestParams(unittest.TestCase):
         "P-2": {"kind": {"Int": {"min": 0, "max": 255, "signed": False}}, "default": "1", "text": "Zyklus"},
         "P-3": {"kind": {"Float": {"min": 13917383856470496379, "max": 4694006190116186358}}, "text": "Wert"},
         "P-6": {"kind": {"Int": {"min": 1, "max": 10}}, "default": "1", "text": "Zyklus"},
+        "P-7": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Raumtemperaturregler Funktion"},
+        "P-8": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Ausgangskontakt"},
+        "P-10": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Zwangssteuerung"},
+        "P-11": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Szene"},
+        "P-12": {"kind": {"Text": {"len": 14}}, "text": "Name"},
+        "P-13": {"kind": {"Int": {"min": 0, "max": 1}}, "text": "Priorität"},
+        # A number field whose label only an enumeration has: no change.
+        "P-14": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Unbekannt"},
     }}
+    MODEL["parameter_refs"] = {f"{pid}_R-1": {"parameter": pid} for pid in MODEL["parameters"]}
     DEVICE = {"blocks": [
         {"text": "Kühlung", "inactive": {"enable": [{"reference": "P-95_R-138", "text": "Raumtemperaturregler Funktion",
                                                       "set_to": "Kühlung", "default": "Heizung"}]}},
@@ -81,8 +90,29 @@ class TestParams(unittest.TestCase):
         self.assertEqual([(e["text"], e["value"]) for e in params.visible_enablers(self.DEVICE)],
                          [("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")])
 
+    def test_fits_model_skips_rows_no_parameter_type_shows(self):
+        kinds = params.label_kinds({"parameters": {
+            "a": {"kind": {"Int": {"min": 0, "max": 255}}, "text": "volle Bandbreite Dimmzeit"},
+            "b": {"kind": "None", "text": "Herunterladen"},
+            "c": {"kind": {"Text": {"len": 14}}, "text": "Name"},
+            "d": {"kind": {"Enum": {"values": [0, 1]}}, "text": "Sperrobjekt"}},
+            "parameter_refs": {"a_R": {"parameter": "a"}, "b_R": {"parameter": "b"}, "c_R": {"parameter": "c"},
+                               # The reference's own wording is what ETS shows.
+                               "d_R": {"parameter": "d", "text": "Sperrobjekt Kanal A"}}})
+        row = lambda label, kind: {"label": label, "kind": kind}
+        self.assertFalse(params.fits_model(row("volle Bandbreite Dimmzeit", "text"), kinds))
+        self.assertTrue(params.fits_model(row("volle Bandbreite Dimmzeit", "number"), kinds))
+        self.assertFalse(params.fits_model(row("Herunterladen", "dropdown"), kinds))
+        self.assertTrue(params.fits_model(row("Name", "text"), kinds))
+        self.assertFalse(params.fits_model(row("Unbekannt", "checkbox"), kinds))
+        self.assertTrue(params.fits_model(row("Sperrobjekt Kanal A", "dropdown"), kinds))
+        # An OCR slip in the label still finds it.
+        self.assertTrue(params.fits_model(row("Sperrobjekt Kanal Ä", "dropdown"), kinds))
+
     def test_number_ranges_shared_range_and_no_encoded_floats(self):
-        self.assertEqual(params.number_ranges(self.MODEL), {"zyklus": (1, 10, "Int")})
+        ranges = params.number_ranges(self.MODEL)
+        self.assertEqual(ranges["zyklus"], (1, 10, "Int"))
+        self.assertNotIn("wert", ranges)
 
     def test_survey_rows_settable_with_options(self):
         labels = [r["label"] for r in params.survey_rows(self.SURVEY)]
@@ -103,7 +133,7 @@ class TestParams(unittest.TestCase):
         self.assertEqual({(c["label"], c["value"]) for c in switches},
                          {("Raumtemperaturregler Funktion", "Kühlung"), ("Zwangssteuerung", "1")})
         by_label = {c["label"]: c for c in changes}
-        # No range for 'Unbekannt' in the model: never chosen.
+        # 'Unbekannt' is a number field the model has no number for: never chosen.
         self.assertNotIn("Unbekannt", by_label)
         if "Zyklus" in by_label:
             self.assertIn(int(by_label["Zyklus"]["value"]), range(1, 11))
@@ -311,6 +341,19 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual(self.three(1), ({"param@MD-2_M-3_P-32_R-50": "1"}, []))
         self.assertEqual(self.three(2), ({"param@MD-2_M-4_P-32_R-50": "1"}, []))
 
+    def test_model_changes_module_label_in_a_nested_block(self):
+        # The label sits in a block 'Verhalten' nested in the module page,
+        # which ETS shows as a section of that page: the instance comes from
+        # the page the change was matched on.
+        model = json.loads(json.dumps(self.THREE))
+        model["module_dynamics"]["MD-2"] = [{"block": {"text": "Eingang {{ChNo}}: {{0}}", "nodes": [
+            {"p": "MD-2_P-23_R-1"}, {"block": {"text": "Verhalten", "nodes": [{"p": "MD-2_P-32_R-50"}]}}]}}]
+        done = [{"page": self.ORDER[1], "label": "Wert Kontakt geöffnet", "n": 0, "kind": "dropdown",
+                 "result": "set", "shown": "Ein", "set_to": "Ein", "rows_with_label": 1}]
+        values, problems = params.model_changes(model, [], done, lambda v: {r.split("@")[1] for r in v},
+                                                [self.ORDER])
+        self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "1"}, []))
+
     def test_model_changes_unmapped_when_the_instance_hides_the_label(self):
         values, problems = self.three(0)
         self.assertEqual(values, {})
@@ -340,6 +383,39 @@ class TestParamsModel(unittest.TestCase):
         self.assertEqual([(d["result"], d.get("shown")) for d in done],
                          [("set", "2 Presetobjekten"), ("lost", "1"), ("set", "1"), ("lost", "")])
         self.assertEqual(done[0]["rows_with_label"], 1)
+
+
+class TestVmDriver(unittest.TestCase):
+    def test_driver_down_raises_instead_of_an_empty_answer(self):
+        from unittest import mock
+        import vm
+
+        ch = mock.MagicMock()
+        ch.recv.return_value = b""
+        c = mock.MagicMock()
+        c.get_transport.return_value.open_channel.return_value = ch
+        with self.assertRaises(RuntimeError) as err:
+            vm.driver(c, "POST", "/ets/devices", {})
+        self.assertIn("does not answer", str(err.exception))
+        ch.recv.side_effect = [b"HTTP/1.0 500 x\r\n\r\n<html>", b""]
+        r = vm.driver(c, "POST", "/ets/devices", {})
+        self.assertFalse(r["ok"])
+
+
+class TestVmInstall(unittest.TestCase):
+    def test_wait_restarted_waits_for_another_pid(self):
+        from unittest import mock
+        import vm
+
+        # The old driver (pid 7) answers while a flow runs, then nothing
+        # answers, then the replacement (pid 9).
+        answers = iter([7, 7, None, 9])
+        with mock.patch.object(vm, "health_pid", side_effect=lambda c: next(answers)):
+            self.assertTrue(vm.wait_restarted(None, 7, timeout=5, pause=0))
+        with mock.patch.object(vm, "health_pid", return_value=7):
+            self.assertFalse(vm.wait_restarted(None, 7, timeout=0.05, pause=0))
+        with mock.patch.object(vm, "health_pid", return_value=None):
+            self.assertFalse(vm.wait_restarted(None, None, timeout=0.05, pause=0))
 
 
 class TestParamsSubset(unittest.TestCase):
