@@ -12,7 +12,8 @@
 //!   table gets a descriptor for ([`dynamic_group_object_descriptors`]);
 //! - [`DeviceAnalysis::ignored_overrides`] names exactly the stored values the image does
 //!   not carry: on refs without a slot (and, for a ref without memory, that
-//!   the evaluation does not reach), or replaced by an `<Assign>`.
+//!   the evaluation does not reach), or replaced by an `<Assign>`; and on a
+//!   module instance's refs the evaluation does not reach (issue #1050).
 //!
 //! The view runs over the product model, the download over the application
 //! XML. The test sits here, not in `bussard-prod`, because the object table
@@ -31,7 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_download::compute::dynamic_group_object_descriptors;
 use bussard_download::model_params::parameter_overrides;
 
-use bussard_model::dynamic::evaluate_dynamic;
+use bussard_model::dynamic::{evaluate_dynamic, selector_key, split_selector};
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 use bussard_product::image::dynamic_parameter_slots;
 use bussard_product::{
@@ -214,20 +215,34 @@ fn compare(
             .into_iter()
             .map(|o| o.reference)
             .collect();
+    // A module instance's ref (issue #1050), by its selector key: the image
+    // carries none of an instance or a body branch the evaluation does not
+    // reach.
+    let module_reached: BTreeSet<String> = config
+        .parameters
+        .iter()
+        .filter_map(|p| {
+            let instance = config.modules.get(p.module?)?;
+            Some(selector_key(Some(&instance.id), &p.param_ref_id))
+        })
+        .collect();
     let expected: BTreeSet<String> = values
         .iter()
-        .filter(|(r, _)| !r.starts_with("MD-") && held.contains(r.as_str()))
-        .filter(|(r, _)| {
-            // The image carries the stored value of a ref the evaluation
-            // reaches (as its slot, or as the source of an `<Assign>`),
-            // unless an `<Assign>` replaces it.
-            let in_effect = reached.contains(r.as_str())
-                && (placed_shown.contains(r.as_str()) || !config.is_assigned(None, r));
-            !in_effect
+        .filter(|(r, _)| match split_selector(r) {
+            (Some(_), _) => !module_reached.contains(r.as_str()),
+            (None, _) => {
+                // The image carries the stored value of a ref the evaluation
+                // reaches (as its slot, or as the source of an `<Assign>`),
+                // unless an `<Assign>` replaces it.
+                let in_effect = reached.contains(r.as_str())
+                    && (placed_shown.contains(r.as_str()) || !config.is_assigned(None, r));
+                held.contains(r.as_str()) && !in_effect
+            }
         })
         .filter(|(r, v)| {
-            let module = None;
-            config.vendor_default(app, module, r).as_deref() != Some(v.as_str())
+            let (instance, reference) = split_selector(r);
+            let module = instance.and_then(|id| config.modules.iter().position(|m| m.id == id));
+            config.vendor_default(app, module, &reference).as_deref() != Some(v.as_str())
         })
         .map(|(r, _)| r.clone())
         .collect();

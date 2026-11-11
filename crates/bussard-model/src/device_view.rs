@@ -51,8 +51,8 @@ use crate::blocks::{
     BlockDef, BlockKind, def_ref, object_number, parent_indexes, ref_param_id, subtree,
 };
 use crate::dynamic::{
-    ChannelRef, CompareOp, DynamicConfig, RefGate, RefIndex, RefOccurrence, WhenTest,
-    evaluate_dynamic, split_selector,
+    ChannelRef, CompareOp, DynamicConfig, DynamicNode, RefGate, RefIndex, RefOccurrence, WalkPath,
+    WhenTest, evaluate_dynamic, selector_key, split_selector, walk,
 };
 use crate::flags::Flags;
 use crate::loader::Model;
@@ -1254,6 +1254,79 @@ impl<'a> Pages<'a> {
             needs,
             now,
         }
+    }
+
+    /// What the configuration needs to reach module ref `reference` (the
+    /// app-relative ref in its definition, `MD-2_P-23_R-1`) of instance
+    /// `instance` (`MD-2_M-3`), in words (issue #1050): the failing `<when>`s
+    /// in front of the `<Module>` in the application's Dynamic section, else
+    /// those in front of the ref in the module body (when the body places it
+    /// once), else "module instance … reached".
+    fn module_ref_needs(&self, instance: &str, reference: &str) -> String {
+        let words = |gates: &[RefGate]| -> Option<String> {
+            let mut needs: Vec<String> = Vec::new();
+            for n in self.failing_gates(gates) {
+                let w = self.gate_words(&gates[n]);
+                if !needs.contains(&w) {
+                    needs.push(w);
+                }
+            }
+            (!needs.is_empty()).then(|| needs.join(" and "))
+        };
+        let fallback = || format!("module instance {instance} reached");
+        let mut module: Option<(&str, Vec<RefGate>)> = None;
+        walk(
+            &self.product.dynamic,
+            &mut WalkPath::new(None),
+            &mut |node, path| {
+                if let DynamicNode::Module { id, module_def, .. } = node
+                    && id == instance
+                    && module.is_none()
+                {
+                    module = Some((module_def.as_str(), path.gates()));
+                }
+                !matches!(node, DynamicNode::Repeat { .. })
+            },
+        );
+        let Some((module_def, outer)) = module else {
+            return fallback();
+        };
+        if let Some(needs) = words(&outer) {
+            return needs;
+        }
+        let Some(body) = self.product.module_dynamics.get(module_def) else {
+            return fallback();
+        };
+        let mut occurrences: Vec<Vec<RefGate>> = Vec::new();
+        walk(
+            body,
+            &mut WalkPath::new(Some(module_def)),
+            &mut |node, path| {
+                if matches!(node, DynamicNode::ParameterRefRef(r) if r == reference) {
+                    occurrences.push(path.gates());
+                }
+                true
+            },
+        );
+        let [inner] = occurrences.as_slice() else {
+            return fallback();
+        };
+        // The body's own refs in the instance's selector form, as the device
+        // stores and the evaluation reads them.
+        let inner: Vec<RefGate> = inner
+            .iter()
+            .cloned()
+            .map(|mut g| {
+                if g.param_ref_id
+                    .strip_prefix(module_def)
+                    .is_some_and(|rest| rest.starts_with('_'))
+                {
+                    g.param_ref_id = selector_key(Some(instance), &g.param_ref_id);
+                }
+                g
+            })
+            .collect();
+        words(&inner).unwrap_or_else(fallback)
     }
 
     /// A condition in words: the controlling parameter's text and the values
@@ -2586,7 +2659,8 @@ impl Pages<'_> {
 pub struct IgnoredOverride {
     /// The key the device file uses (the lock's, else the in-memory key).
     pub key: String,
-    /// The app-relative `ParameterRef` id.
+    /// The app-relative `ParameterRef` id, in a module instance's selector
+    /// form (`MD-4_M-19_MI-1_P-12_R-12`) for a module ref.
     pub reference: String,
     /// The stored value, rendered as the file writes it.
     pub value: String,
@@ -2623,6 +2697,18 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         .filter(|p| p.module.is_none() && !config.is_assigned(None, &p.param_ref_id))
         .map(|p| p.param_ref_id.as_str())
         .collect();
+    // The module refs the evaluation reaches, by their selector key (issue
+    // #1050). A ref of an instance it does not reach, or behind a `<when>`
+    // of the body that fails, is never written. A reached one counts as in
+    // effect even off its page, as an application ref's `<Assign>` source.
+    let module_reached: HashSet<String> = config
+        .parameters
+        .iter()
+        .filter_map(|p| {
+            let instance = config.modules.get(p.module?)?;
+            Some(selector_key(Some(&instance.id), &p.param_ref_id))
+        })
+        .collect();
     let mut out = Vec::new();
     for (mem_key, value) in &device.parameters {
         if crate::files::is_hidden_mem_key(mem_key) {
@@ -2634,12 +2720,25 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         if head == "label" {
             continue;
         }
-        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
-            continue;
+        let needs = match split_selector(reference) {
+            (Some(instance), in_def) => {
+                if module_reached.contains(reference)
+                    || !pg.product.parameter_refs.contains_key(&in_def)
+                {
+                    continue;
+                }
+                pg.module_ref_needs(&instance, &in_def)
+            }
+            (None, _) => {
+                let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
+                    continue;
+                };
+                if in_effect.contains(reference) {
+                    continue;
+                }
+                needs
+            }
         };
-        if in_effect.contains(reference) {
-            continue;
-        }
         let def = pg.product.parameters.get(ref_param_id(reference));
         let locked = device.lock.parameters.get(reference);
         let default = pg.evaluated.vendor_default(reference);
