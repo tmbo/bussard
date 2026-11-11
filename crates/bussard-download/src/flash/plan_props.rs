@@ -16,7 +16,7 @@ use super::{AppIdentity, FlashPlan, FlashStep, PlanError, PropObject};
 use bussard_product::application::{ApplicationProgram, LoadGuard, LoadOp, LoadProcedure};
 use bussard_product::dynamic::{DynamicConfig, WhenTest, taken_branches};
 use bussard_product::{PropertyObjectRef, PropertyValues};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The mask whose property-only procedures bussard plans although it does
 /// not download the family (0021, the BCU2-family mask of the Jung IPS 300
@@ -922,6 +922,7 @@ pub(super) fn plan_flash_properties(
         user_memory_above_64k: false,
         typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
+        par_props: BTreeSet::new(),
         par_procedure: false,
         parameters_only: false,
         kept: Vec::new(),

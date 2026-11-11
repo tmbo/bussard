@@ -330,6 +330,7 @@ mod tests {
         let reset = FlashStep::MasterReset {
             erase_code: 5,
             channel_number: 0,
+            par: true,
         };
         let out = describe_untyped_properties(vec![
             write(obj5, 51),

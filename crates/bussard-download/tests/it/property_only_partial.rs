@@ -469,3 +469,160 @@ fn test_with_property_values_sets_the_parameter_property_writes() -> TestResult 
     assert_eq!(restored.steps.len(), partial.steps.len());
     Ok(())
 }
+
+/// A merged property-only 07B0 program without a `par` allocation (issue
+/// #1052, the shape of `M-0009_A-E802-13-7620`, bussard's own synthetic
+/// data): its MergeId 4 block resets the links (`full,grp`, erase code 6)
+/// and the parameters (`full,par`, erase code 5), writes object 9 PID 208
+/// from fixed data, and writes object 10 PID 52 from "Delay" and "Level".
+const NOPAR_APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
+<KNX xmlns="http://knx.org/xml/project/23">
+  <ManufacturerData>
+    <Manufacturer RefId="M-00FA">
+      <ApplicationPrograms>
+        <ApplicationProgram Id="M-00FA_A-0003" ApplicationNumber="3" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="bussard property-only no-par test app"
+            LoadProcedureStyle="MergedProcedure" MinEtsVersion="5.0">
+          <Static>
+            <ParameterTypes>
+              <ParameterType Id="M-00FA_A-0003_PT-0" Name="n"><TypeNumber SizeInBit="8" Type="unsignedInt" maxInclusive="255" /></ParameterType>
+            </ParameterTypes>
+            <Parameters>
+              <Parameter Id="M-00FA_A-0003_P-0" Name="dly" Text="Delay" ParameterType="M-00FA_A-0003_PT-0" Value="5"><Property ObjectIndex="10" PropertyId="52" Offset="0" BitOffset="0" /></Parameter>
+              <Parameter Id="M-00FA_A-0003_P-1" Name="lvl" Text="Level" ParameterType="M-00FA_A-0003_PT-0" Value="9"><Property ObjectIndex="10" PropertyId="52" Offset="1" BitOffset="0" /></Parameter>
+            </Parameters>
+            <ParameterRefs>
+              <ParameterRef Id="M-00FA_A-0003_P-0_R-1" RefId="M-00FA_A-0003_P-0" />
+              <ParameterRef Id="M-00FA_A-0003_P-1_R-2" RefId="M-00FA_A-0003_P-1" />
+            </ParameterRefs>
+            <ComObjects>
+              <ComObject Id="M-00FA_A-0003_O-1" Number="1" ObjectSize="1 Bit" CommunicationFlag="Enabled" WriteFlag="Enabled" />
+            </ComObjects>
+            <ComObjectRefs>
+              <ComObjectRef Id="M-00FA_A-0003_O-1_R-1" RefId="M-00FA_A-0003_O-1" />
+            </ComObjectRefs>
+            <LoadProcedures>
+              <LoadProcedure MergeId="2" />
+              <LoadProcedure MergeId="4">
+                <LdCtrlMasterReset AppliesTo="full,grp" EraseCode="6" ChannelNumber="0" />
+                <LdCtrlMasterReset AppliesTo="full,par" EraseCode="5" ChannelNumber="0" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="9" PropId="208" Count="2" Verify="false" InlineData="0102" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="9" PropId="208" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />
+              </LoadProcedure>
+            </LoadProcedures>
+          </Static>
+          <Dynamic>
+            <ChannelIndependentBlock>
+              <ParameterBlock Id="M-00FA_A-0003_PB-1" Name="main">
+                <ParameterRefRef RefId="M-00FA_A-0003_P-0_R-1" />
+                <ParameterRefRef RefId="M-00FA_A-0003_P-1_R-2" />
+                <ComObjectRefRef RefId="M-00FA_A-0003_O-1_R-1" />
+              </ParameterBlock>
+            </ChannelIndependentBlock>
+          </Dynamic>
+        </ApplicationProgram>
+      </ApplicationPrograms>
+    </Manufacturer>
+  </ManufacturerData>
+</KNX>
+"#;
+
+/// [`NOPAR_APP_XML`], parsed.
+pub(crate) fn nopar_app() -> TestResult<ApplicationProgram> {
+    Ok(parse_application_program(
+        "M-00FA_A-0003",
+        NOPAR_APP_XML.as_bytes(),
+    )?)
+}
+
+/// The full plan of [`NOPAR_APP_XML`] spliced into the built-in 07B0
+/// template, as `flash` builds it.
+pub(crate) fn nopar_plan(
+    app: &ApplicationProgram,
+    overrides: &BTreeMap<String, String>,
+) -> TestResult<bussard_download::FlashPlan> {
+    let template = bussard_product::master::MasterTemplate::builtin_for_mask("07B0")
+        .ok_or("a built-in 07B0 template")?;
+    let tables = bussard_download::build_table_images(
+        None,
+        ia("1.1.1")?,
+        app,
+        overrides,
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan_flash_default(
+        app,
+        "1.1.1",
+        0x07B0,
+        overrides,
+        &BTreeMap::new(),
+        Some(&template.ops),
+        &tables,
+    )?)
+}
+
+#[test]
+fn test_parameters_only_of_a_property_only_program_without_par_allocation_runs_the_par_procedure()
+-> TestResult {
+    let app = nopar_app()?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = nopar_plan(&app, &overrides)?;
+
+    // ETS's partial download of M-0009_A-E802-13-7620 (sweep capture
+    // `params-partial/b-partial-param`): obj4 Unload and StartLoading, no
+    // allocation, the `full,par` reset (erase code 5) and not the `full,grp`
+    // one, the MergeId 4 property writes, PID 13, LoadCompleted, restart.
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let shape: Vec<String> = partial
+        .steps
+        .iter()
+        .filter_map(|s| match s {
+            FlashStep::Unload { target, .. } => Some(format!("unload {target:?}")),
+            FlashStep::StartLoading { target } => Some(format!("start {target:?}")),
+            FlashStep::AllocateSegment { .. } => Some("allocate".to_string()),
+            FlashStep::MasterReset { erase_code, .. } => Some(format!("reset {erase_code}")),
+            FlashStep::WriteProp {
+                object: PropObject::Index(i),
+                prop_id,
+                ..
+            } => Some(format!("write {i}/{prop_id}")),
+            FlashStep::LoadCompleted { target } => Some(format!("complete {target:?}")),
+            FlashStep::Restart => Some("restart".to_string()),
+            FlashStep::WriteRelMem { .. } | FlashStep::WriteMem { .. } => {
+                Some("memory".to_string())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            "unload Some(4)",
+            "start Some(4)",
+            "reset 5",
+            "write 9/208",
+            "write 10/52",
+            "write 4/13",
+            "complete Some(4)",
+            "restart"
+        ],
+        "{:?}",
+        partial.steps
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_without_par_allocation_off_the_template_is_still_refused() -> TestResult {
+    // The same blocks planned without the master template: no `par`
+    // procedure frames them, so there is no load to write them in.
+    let app = nopar_app()?;
+    let plan = plan_of(&app, &BTreeMap::new())?;
+    assert_eq!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::NoParAllocation)
+    );
+    Ok(())
+}

@@ -1091,6 +1091,7 @@ impl StepExecutor for SystemB<'_> {
             FlashStep::MasterReset {
                 erase_code,
                 channel_number,
+                ..
             } => {
                 // KNX 3/5/2 §3.7.1.2.3: a Master Reset is the confirmed
                 // A_Restart (restart type 1) with the op's erase code and

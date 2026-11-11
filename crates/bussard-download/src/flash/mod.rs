@@ -98,7 +98,7 @@
 
 use bussard_mgmt::load::LoadState;
 pub use bussard_product::SegmentFill;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 mod declare;
 mod describe;
@@ -627,6 +627,11 @@ pub enum FlashStep {
         /// The channel number from the op's `ChannelNumber` attribute (`0` = the
         /// whole device).
         channel_number: u8,
+        /// Whether the op's `AppliesTo` names the parameter-only download
+        /// (`par`): such a reset is a step of that download too (issue #1052,
+        /// the Hager `M-0009_A-E802-13-7620` parameter reset `AppliesTo="full,par"
+        /// EraseCode="5"`).
+        par: bool,
     },
 
     // --- KNX Data Secure security interface object (issue #156) --------------
@@ -1264,6 +1269,12 @@ pub struct FlashPlan {
     /// [`FlashPlan::use_par_procedure`]). Empty when the product declares no
     /// `par` allocation.
     par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)>,
+    /// The properties an `LdCtrlWriteProp` or `LdCtrlDeclarePropDesc` whose
+    /// `AppliesTo` names `par` writes or declares (issue #1052): steps of the
+    /// parameter-only download whether or not a parameter is placed in
+    /// them (`M-0009_A-E802-13-7620` object 9 PID 208, `AppliesTo="full,par"`
+    /// with fixed `InlineData`). Empty on System 7 and property plans.
+    par_props: BTreeSet<(PropObject, u32)>,
     /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
     par_procedure: bool,
     /// Whether [`FlashPlan::parameters_only`] cut this plan down to a

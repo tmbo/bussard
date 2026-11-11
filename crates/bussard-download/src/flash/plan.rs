@@ -695,6 +695,7 @@ pub fn plan_flash(
             LoadOp::MasterReset {
                 erase_code,
                 channel_number,
+                applies_to,
             } => {
                 // The EraseCode/ChannelNumber are single octets on the wire; a
                 // value beyond a u8 is corrupt vendor input. Default the erase
@@ -706,6 +707,9 @@ pub fn plan_flash(
                 steps.push(FlashStep::MasterReset {
                     erase_code,
                     channel_number,
+                    par: applies_to
+                        .as_deref()
+                        .is_some_and(super::par_procedure::applies_to_par),
                 });
             }
 
@@ -1428,6 +1432,7 @@ pub fn plan_flash(
         user_memory_above_64k: crate::apply::uses_user_memory(Some(app)),
         typed_objects_by_list,
         par_allocations,
+        par_props: par_scoped_properties(app),
         par_procedure: false,
         parameters_only: false,
         kept,
@@ -1621,6 +1626,46 @@ pub(super) fn plan_segments(
         }
     }
     std::borrow::Cow::Owned(all)
+}
+
+/// The properties `app`'s load procedures write or declare with an op whose
+/// `AppliesTo` names `par` (issue #1052; [`FlashPlan`]'s `par_props`). An op
+/// whose object cannot be named is left out: the planner refuses it anyway.
+fn par_scoped_properties(app: &ApplicationProgram) -> BTreeSet<(PropObject, u32)> {
+    let mut out = BTreeSet::new();
+    for lp in &app.load_procedures {
+        for (i, op) in lp.ops.iter().enumerate() {
+            if !lp
+                .applies_to_of(i)
+                .is_some_and(super::par_procedure::applies_to_par)
+            {
+                continue;
+            }
+            let (LoadOp::WriteProp {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(prop_id),
+                ..
+            }
+            | LoadOp::DeclarePropDesc {
+                obj_idx,
+                obj_type,
+                occurrence,
+                prop_id: Some(prop_id),
+                ..
+            }) = op
+            else {
+                continue;
+            };
+            if let Ok(object) =
+                super::plan_props::prop_object(i + 1, *obj_idx, *obj_type, *occurrence)
+            {
+                out.insert((object, *prop_id));
+            }
+        }
+    }
+    out
 }
 
 /// The op sequence a download of `app` runs, with every `<choose>` of its
@@ -2607,7 +2652,8 @@ mod tests {
             plan.steps[mr_pos],
             FlashStep::MasterReset {
                 erase_code: 4,
-                channel_number: 0
+                channel_number: 0,
+                ..
             }
         ));
         let alloc_pos = plan
@@ -2972,7 +3018,8 @@ mod tests {
             s,
             FlashStep::MasterReset {
                 erase_code: 1,
-                channel_number: 0
+                channel_number: 0,
+                ..
             }
         )));
         Ok(())

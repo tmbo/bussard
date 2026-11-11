@@ -3721,7 +3721,8 @@ async fn flash_master_reset_reconnects_and_reaches_loaded() -> TestResult {
         master_resets[0],
         FlashStep::MasterReset {
             erase_code: 4,
-            channel_number: 0
+            channel_number: 0,
+            ..
         }
     ));
 
@@ -8474,5 +8475,124 @@ async fn test_flash_prefilled_segment_without_image_passes_the_mcb_check() -> Te
         "ETS writes none of the fill"
     );
     drop(handle);
+    Ok(())
+}
+
+/// Issue #1052: the parameter-only download of a property-only program
+/// without a `par` allocation (the `M-0009_A-E802-13-7620` shape) resets the
+/// parameters as ETS does, reconnects, rewrites every property of its `par`
+/// procedure (the fixed object 9 one included) and reads the parameter
+/// properties back equal to the model.
+#[tokio::test]
+async fn test_parameters_only_without_par_allocation_resets_and_rewrites_the_properties()
+-> TestResult {
+    // SAFETY: nextest runs each test in its own process; the variable only
+    // shortens the wait after each restart and is read when one runs.
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    use bussard_testkit::consts::{
+        OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
+        OT_GROUP_OBJECT_TABLE,
+    };
+    /// `A_Restart` with the master-reset restart type, and its response
+    /// (KNX 3/3/7).
+    const A_RESTART_MASTER_RESET: u16 = 0x381;
+    const A_RESTART_RESPONSE: u16 = 0x3A1;
+    let resets: Arc<Mutex<Vec<u8>>> = Arc::new(Mutex::new(Vec::new()));
+    let app = crate::property_only_partial::nopar_app()?;
+    let defaults = crate::property_only_partial::nopar_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::nopar_plan(&app, &overrides)?;
+
+    // Objects 0 to 10 answer the walk, so object 9 is written too.
+    let target = ia("1.1.1")?;
+    let device = MockDevice::system_b(target)
+        .with_object_types(&[
+            OT_DEVICE,
+            OT_ADDRESS_TABLE,
+            OT_ASSOCIATION_TABLE,
+            OT_GROUP_OBJECT_TABLE,
+            OT_APPLICATION_PROGRAM,
+            1000,
+            1001,
+            1002,
+            1003,
+            1004,
+            1005,
+        ])
+        .with_writable_property(4, 13, 5, &[0; 5])
+        .with_writable_property(9, 208, 1, &[0, 0])
+        .with_writable_property(10, 52, 1, &[0, 0])
+        // Answer each master reset (A_Restart, restart type 1) with error
+        // code 0 and no process time, recording its erase code.
+        .with_hook({
+            let resets = Arc::clone(&resets);
+            move |_, apci, data| {
+                if apci != A_RESTART_MASTER_RESET {
+                    return None;
+                }
+                if let (Ok(mut seen), Some(&erase_code)) = (resets.lock(), data.first()) {
+                    seen.push(erase_code);
+                }
+                Some(bussard_testkit::Reaction::Answer(
+                    A_RESTART_RESPONSE,
+                    vec![0, 0, 0],
+                ))
+            }
+        });
+    let gw = MockGateway::builder().device(device).start().await?;
+    let (handle, _actor) =
+        bussard_transport::bus::Bus::connect(ConnectionConfig::tunnel(gw.addr()));
+    handle.wait_connected(Duration::from_secs(5)).await;
+    let source = handle.group_source();
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open(connector, None, None).await?;
+    let outcome = flash(
+        &mut session,
+        &defaults,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    // A parameter reset that left object 9 changed: the partial download
+    // writes it back after its own reset.
+    gw.with_device(target, |d| {
+        *d = d.clone().with_writable_property(9, 208, 1, &[0, 0]);
+    })?;
+    // The full download's master resets: the links' (6) and the
+    // parameters' (5).
+    let full: Vec<u8> = std::mem::take(&mut *resets.lock().map_err(|e| e.to_string())?);
+    assert_eq!(full, [6, 5]);
+
+    let regions = bussard_download::read_parameter_regions(session.l4(), &plan, &[]).await;
+    let properties = bussard_download::read_parameter_properties(session.l4(), &plan, &app).await;
+    assert_eq!(
+        bussard_download::changed_properties(&properties).len(),
+        1,
+        "{properties:?}"
+    );
+    let partial = plan.parameters_only(&regions)?;
+    let outcome = flash(
+        &mut session,
+        &partial,
+        bussard_download::FlashOptions::default(),
+        |_| {},
+    )
+    .await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    assert_eq!(outcome.load_state, LoadState::Loaded);
+    let after = bussard_download::read_parameter_properties(session.l4(), &plan, &app).await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "{after:?}"
+    );
+    let dev = gw.with_device(target, |d| d.clone())?;
+    assert_eq!(dev.property(10, 52), Some(&[0x05, 0x14][..]));
+    assert_eq!(dev.property(9, 208), Some(&[0x01, 0x02][..]));
+    // The parameter reset only.
+    assert_eq!(*resets.lock().map_err(|e| e.to_string())?, [5]);
     Ok(())
 }

@@ -32,6 +32,15 @@ pub(super) fn is_par_only(applies_to: &str) -> bool {
     par && !tokens.any(|t| t.eq_ignore_ascii_case("full"))
 }
 
+/// Whether an `AppliesTo` value names the `par` procedure at all (`"par"`
+/// or `"full,par"`).
+pub(super) fn applies_to_par(applies_to: &str) -> bool {
+    applies_to
+        .split(',')
+        .map(str::trim)
+        .any(|t| t.eq_ignore_ascii_case("par"))
+}
+
 impl FlashPlan {
     /// Shapes this full System B plan into the product's `AppliesTo="par"`
     /// load procedure, for a device that already holds this application
@@ -118,6 +127,14 @@ mod tests {
     use super::*;
     use crate::flash::SegmentFill;
     use crate::preflight::ResidentObject;
+
+    #[test]
+    fn test_applies_to_par_names_par_with_or_without_full() {
+        assert!(applies_to_par("par"));
+        assert!(applies_to_par("full, par"));
+        assert!(!applies_to_par("full,grp"));
+        assert!(!applies_to_par("full"));
+    }
 
     #[test]
     fn test_is_par_only_names_par_without_full() {

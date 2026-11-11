@@ -335,6 +335,7 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
         FlashStep::MasterReset {
             erase_code,
             channel_number,
+            ..
         } => format!(
             "master reset (erase code {erase_code}, channel {channel_number}) — reconnect and resume"
         ),

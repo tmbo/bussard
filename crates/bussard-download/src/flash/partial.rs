@@ -26,9 +26,14 @@
 //!   (issue #944, the Hager 07B0 actuators) gets the same bracket on the
 //!   object its `par` allocation names, around every property its parameters
 //!   are placed in (with the property's declaration) instead of a memory
-//!   write; without a `par` allocation of the full allocation's size it is
-//!   refused. Every property a parameter is placed in is written on
-//!   whichever object it sits, for a program with memory parameters too.
+//!   write; a `par` allocation of another size than the full one is refused.
+//!   Without a `par` allocation (issue #1052, `M-0009_A-E802-13-7620`) the
+//!   master template's `par` procedure brackets the application program
+//!   object with no allocation, and the procedure's `AppliesTo` naming `par`
+//!   adds its parameter reset (`LdCtrlMasterReset EraseCode="5"`) and every
+//!   property it writes, as ETS sends them; a procedure not spliced into the
+//!   template is refused. Every property a parameter is placed in is written
+//!   on whichever object it sits, for a program with memory parameters too.
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
@@ -209,6 +214,7 @@ impl FlashPlan {
             user_memory_above_64k: self.user_memory_above_64k,
             typed_objects_by_list: self.typed_objects_by_list,
             par_allocations: BTreeMap::new(),
+            par_props: BTreeSet::new(),
             par_procedure: false,
             parameters_only: true,
             kept: self.kept.clone(),
@@ -415,16 +421,32 @@ impl FlashPlan {
                     par_alloc.insert(*target, i);
                 }
             }
+            for (target, at) in &par_alloc {
+                kept_allocs.insert(*at);
+                lsms.insert(*target);
+                objects.extend(*target);
+            }
+            // No `par` allocation (issue #1052, `M-0009_A-E802-13-7620`,
+            // whose MergeId 2 block is empty): the mask's
+            // `ProcedureSubType="par"` procedure still unloads and loads the
+            // application program objects, the ones its `PID_PROGRAM_VERSION`
+            // write names, with no allocation in between. ETS's partial
+            // download of that program (sweep capture
+            // `params-partial/b-partial-param`, ops 26, 27, 353, 354) sends
+            // obj4 Unload and StartLoading, no allocation record, the
+            // property writes, the PID 13 write and LoadCompleted. Only a
+            // procedure spliced from the master template has that bracket.
+            if par_alloc.is_empty() && self.spliced_from_template {
+                for target in self.program_version_objects() {
+                    lsms.insert(Some(target));
+                    objects.insert(target);
+                }
+            }
             // Without the bracket the writes would run outside any load
             // state (and a plan of property writes alone would take the
             // property-only executor, which has no Loaded gate).
-            if par_alloc.is_empty() {
+            if lsms.is_empty() {
                 return Err(PartialPlanError::NoParAllocation);
-            }
-            for (target, at) in par_alloc {
-                kept_allocs.insert(at);
-                lsms.insert(target);
-                objects.extend(target);
             }
         } else if writes == 0 {
             return Err(PartialPlanError::NoParameterSegment);
@@ -473,9 +495,11 @@ impl FlashPlan {
                     }
                     steps.push(step.clone());
                 }
-                // The parameter-only download resets nothing, so a write the
-                // full plan leaves out as held after the reset is written
-                // (issue #951); converted here, one step at a time.
+                // A write the full plan leaves out as held after a reset is
+                // written (issue #951): the parameter-only download keeps no
+                // reset but a `par` one, and a write of the held value
+                // changes nothing after it. Converted here, one step at a
+                // time.
                 FlashStep::FactoryHeldProp {
                     object, prop_id, ..
                 } if matches!(object, super::PropObject::Index(i) if objects.contains(i))
@@ -504,6 +528,18 @@ impl FlashPlan {
                 } if param_props.contains(&(*object, *prop_id)) => {
                     steps.push(step.clone());
                 }
+                // A property-only program's property an `AppliesTo` naming
+                // `par` writes, though no parameter is placed in it (issue
+                // #1052): ETS rewrites `M-0009_A-E802-13-7620` object 9
+                // PID 208 after the parameter reset (capture ops 34 to 43).
+                FlashStep::WriteProp {
+                    object, prop_id, ..
+                }
+                | FlashStep::DeclareProp {
+                    object, prop_id, ..
+                } if property_only && self.par_props.contains(&(*object, *prop_id)) => {
+                    steps.push(step.clone());
+                }
                 FlashStep::LoadImageProp { obj_idx, .. } if objects.contains(obj_idx) => {
                     steps.push(step.clone());
                 }
@@ -520,6 +556,18 @@ impl FlashPlan {
                     steps.push(step.clone());
                 }
                 FlashStep::Restart | FlashStep::Delay { .. } => steps.push(step.clone()),
+                // A master reset whose `AppliesTo` names `par` is a step of
+                // the parameter-only download (issue #1052): ETS sends the
+                // `AppliesTo="full,par" EraseCode="5"` reset of
+                // `M-0009_A-E802-13-7620` after StartLoading and before the
+                // property writes (capture op 29), and not its
+                // `AppliesTo="full,grp"` one. Kept for a property-only
+                // program only, which rewrites every parameter property after
+                // it; a memory program's parameter write is a diff against
+                // the memory read before the download.
+                FlashStep::MasterReset { par: true, .. } if property_only => {
+                    steps.push(step.clone());
+                }
                 // The verify-mode switch ahead of a `Verify="true"` parameter
                 // write (issue #705) stays with that write; the one ahead of a
                 // table write goes with it (ETS's partial download of
@@ -538,6 +586,32 @@ impl FlashPlan {
             }
         }
         Ok(steps)
+    }
+
+    /// The objects a non-parameter `PID_PROGRAM_VERSION` (PID 13) write of
+    /// this plan names and that the plan loads (a `StartLoading`): the
+    /// application program objects the master template's `par` procedure
+    /// unloads and loads (issue #1052).
+    fn program_version_objects(&self) -> BTreeSet<u32> {
+        let loaded: BTreeSet<u32> = self
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::StartLoading {
+                    target: Some(target),
+                } => Some(*target),
+                _ => None,
+            })
+            .collect();
+        self.steps
+            .iter()
+            .filter_map(FlashStep::property_write)
+            .filter(|w| {
+                !w.from_parameters && w.prop_id == u32::from(bussard_mgmt::PID_PROGRAM_VERSION)
+            })
+            .filter_map(|w| w.object.index())
+            .filter(|i| loaded.contains(i))
+            .collect()
     }
 
     /// The System 7 parameter-only steps (module docs).

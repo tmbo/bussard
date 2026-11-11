@@ -853,6 +853,7 @@ pub(super) fn plan_flash_sys7(
         user_memory_above_64k: false,
         typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
+        par_props: BTreeSet::new(),
         par_procedure: false,
         parameters_only: false,
         kept,

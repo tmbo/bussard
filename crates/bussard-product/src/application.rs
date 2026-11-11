@@ -614,6 +614,10 @@ pub enum LoadOp {
         /// The channel number (`ChannelNumber`) the erase applies to (`0` for
         /// the whole device in every observed procedure).
         channel_number: Option<u32>,
+        /// `AppliesTo` filter (`"full,par"` on the Hager 07B0 actuators'
+        /// parameter reset, issue #1052).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        applies_to: Option<String>,
     },
     /// `<LdCtrlUnload LsmIdx=…>`, or `ObjType=… Occurrence=…` for an object
     /// named by type (issue #961).
@@ -3752,6 +3756,7 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
         b"LdCtrlMasterReset" => LoadOp::MasterReset {
             erase_code: u(b"EraseCode"),
             channel_number: u(b"ChannelNumber"),
+            applies_to: s(b"AppliesTo"),
         },
         b"LdCtrlUnload" => LoadOp::Unload {
             lsm_idx: u(b"LsmIdx"),
@@ -4799,6 +4804,7 @@ mod tests {
             LoadOp::MasterReset {
                 erase_code: Some(4),
                 channel_number: Some(0),
+                applies_to: None,
             }
         ));
         assert!(matches!(ops[2], LoadOp::WriteRelMem { .. }));
