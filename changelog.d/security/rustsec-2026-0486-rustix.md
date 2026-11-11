@@ -1,0 +1,1 @@
+- Update rustix to 1.1.6 for RUSTSEC-2026-0486, unsound extended-attribute reads on a zero-length buffer.
