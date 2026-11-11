@@ -1,0 +1,178 @@
+# A synthetic product of the catalogue (#1054), module instances placed in
+# the branches of a choose. Rendered by ../generate.py into xml/; see
+# ../README.md for the schema.
+
+[doc]
+purpose = """
+The MDT M-0083_A-00B1-32 shape (#1050): `<Module>` instances placed directly
+in the `<when>` branches of a `<choose>` in the Dynamic tree, with literal
+arguments (`<TextArg>` for the page name, `<NumericArg Value>` for the bases,
+no allocator). ModuleDef "perch" has a 16-bit parameter at +0 of its parameter
+base (default 4660, 12 34) and a 1-bit com object at its object base, on the
+page "Perch {{ch}}". A choose on "Roost layout" (placed at +3, default 1)
+holds "Perch A" (base 16, object 2) when 1, and "Perch A" (16, 2) and "Perch
+B" (20, 3) when 2. At defaults ETS shows one perch page; the second branch's
+instances are hidden, so ETS writes nothing at +0x14 and no descriptor for
+object 3. #1050: bussard's device view lists every module instance of the
+00B1 as shown. The defaults capture shows whether bussard writes the hidden
+instance; the `params` variant switches the layout to 2 and changes Perch B."""
+construct = "module instances in the branches of a choose, literal arguments"
+issues = [1050, 449, 1054]
+
+[product]
+text = "Roost selector"
+order_number = "NEST-ROOST"
+hardware_name = "NEST-ROOST"
+hardware_serial = "00FA002700B2"
+bus_current = 10
+
+[application]
+number = 0x27B2
+version = 0x10
+name = "Roost selector"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Schlafplatzwähler" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter_type]]
+name = "Layout"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 1, text = "one perch" },
+    { value = 2, text = "two perches" },
+]
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct, part 1: the parameter the choose tests.
+[[parameter]]
+name = "layout"
+type = "Layout"
+text = "Roost layout"
+default = 1
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+# The construct, part 2: the module, a text argument naming its page and two
+# numeric bases.
+[[module_def]]
+name = "perch"
+arguments = [{ name = "ch", type = "Text" }, { name = "param_base", allocates = 4 }, { name = "object_base", allocates = 1 }]
+
+[[module_def.parameter]]
+name = "height"
+type = "Delay"
+text = "Perch height"
+default = 4660
+memory = { segment = "main", offset = 0, bit_offset = 0, base = "param_base" }
+
+[[module_def.com_object]]
+number = 0
+base = "object_base"
+name = "perching"
+text = "Perching"
+function_text = "Perch occupied"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[module_def.block]]
+name = "perch"
+text = "Perch {{ch}}"
+parameters = ["height"]
+com_objects = [0]
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "layout"]
+com_objects = [0, 1]
+
+# The construct, part 3: the instances in the choose's branches.
+[[dynamic.choose]]
+parameter = "layout"
+
+[[dynamic.choose.when]]
+test = "1"
+module = [{ name = "Perch A", module = "perch", args = { ch = "A", param_base = 16, object_base = 2 } }]
+
+[[dynamic.choose.when]]
+test = "2"
+module = [
+    { name = "Perch A", module = "perch", args = { ch = "A", param_base = 16, object_base = 2 } },
+    { name = "Perch B", module = "perch", args = { ch = "B", param_base = 20, object_base = 3 } },
+]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]
