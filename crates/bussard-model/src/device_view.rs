@@ -52,7 +52,7 @@ use crate::blocks::{
 };
 use crate::dynamic::{
     ChannelRef, CompareOp, DynamicConfig, DynamicNode, RefGate, RefIndex, RefOccurrence, WalkPath,
-    WhenTest, evaluate_dynamic, selector_key, split_selector, walk,
+    WhenTest, evaluate_dynamic, selector_key, split_selector, walk, walk_all,
 };
 use crate::flags::Flags;
 use crate::loader::Model;
@@ -693,6 +693,120 @@ struct Pages<'a> {
     by_values: RefCell<HashMap<EnablingValues, Rc<DynamicConfig>>>,
     /// The `<Assign>`s of the product by target ref, collected on first use.
     assigns: OnceCell<HashMap<String, Vec<AssignSite>>>,
+    /// The module refs the evaluation reaches, by their selector key
+    /// (`MD-2_M-3_MI-1_P-23_R-1`), each with whether it places the ref as
+    /// shown (issue #1050).
+    module_reach: HashMap<String, bool>,
+    /// Where each `<Module>` element sits, by element id, collected on
+    /// first use.
+    module_sites: OnceCell<HashMap<&'a str, ModuleSite<'a>>>,
+}
+
+/// Where a `<Module>` element sits (issue #1050).
+struct ModuleSite<'a> {
+    /// Its literal `<NumericArg>`s.
+    args: &'a HashMap<String, i64>,
+    /// The module definition whose body holds the element, `None` in the
+    /// application's own section.
+    section: Option<&'a str>,
+    /// The `<when>`s in front of it in that section.
+    gates: Vec<RefGate>,
+    /// The count ref of the `<Repeat>` around it, if any.
+    repeat: Option<&'a str>,
+}
+
+/// Every `<Module>` element of `product`'s Dynamic sections by element id:
+/// one value-free pass over the application's section and the module
+/// definitions' bodies.
+fn module_sites(product: &ProductModel) -> HashMap<&str, ModuleSite<'_>> {
+    let mut repeats: Vec<(&str, &[DynamicNode])> = Vec::new();
+    walk_all(product, &mut |node, _| {
+        if let DynamicNode::Repeat {
+            param_ref_id: Some(r),
+            children,
+            ..
+        } = node
+        {
+            repeats.push((r.as_str(), children.as_slice()));
+        }
+        true
+    });
+    // An outer `<Repeat>` comes first in the walk, so an inner one wins.
+    let mut repeat_of: HashMap<&str, &str> = HashMap::new();
+    for (count, children) in repeats {
+        walk(children, &mut WalkPath::new(None), &mut |node, _| {
+            if let DynamicNode::Module { id, .. } = node {
+                repeat_of.insert(id.as_str(), count);
+            }
+            true
+        });
+    }
+    let mut out = HashMap::new();
+    walk_all(product, &mut |node, path| {
+        if let DynamicNode::Module { id, args, .. } = node {
+            out.entry(id.as_str()).or_insert_with(|| ModuleSite {
+                args,
+                section: path.module_def,
+                gates: path.gates(),
+                repeat: repeat_of.get(id.as_str()).copied(),
+            });
+        }
+        true
+    });
+    out
+}
+
+/// The levels of module instance key `instance` (`MD-1_M-1`,
+/// `MD-1_M-1_MI-2`, `MD-1_M-1_MI-1_SM-1_M-1_MI-3`), outermost first: the
+/// `<Module>` element id (`MD-1_M-1`, `MD-1_SM-1_M-1`), the key of the
+/// instance whose body holds it (`None` at the top) and the repetition.
+fn instance_levels(instance: &str) -> Option<Vec<(String, Option<String>, u32)>> {
+    fn repetition(part: &str) -> (&str, u32) {
+        match part.rsplit_once("_MI-") {
+            Some((head, n)) if n.bytes().all(|b| b.is_ascii_digit()) => {
+                (head, n.parse().unwrap_or(1))
+            }
+            _ => (part, 1),
+        }
+    }
+    let mut parts = instance.split("_SM-");
+    let (element, rep) = repetition(parts.next()?);
+    let (def, _) = element.split_once("_M-")?;
+    let mut def = def.to_string();
+    let mut levels = vec![(element.to_string(), None, rep)];
+    let mut selector = format!("{element}_MI-{rep}");
+    for part in parts {
+        let (sub, rep) = repetition(part);
+        let (s, m) = sub.split_once("_M-")?;
+        def = format!("{def}_SM-{s}");
+        levels.push((format!("{def}_M-{m}"), Some(selector.clone()), rep));
+        selector = format!("{selector}_SM-{sub}_MI-{rep}");
+    }
+    Some(levels)
+}
+
+/// `gates` of a module body (`section`) in instance `instance`'s selector
+/// form: a ref of the module definition's own keyed by the instance, an
+/// application ref as is.
+fn instance_gates(
+    gates: &[RefGate],
+    section: Option<&str>,
+    instance: Option<&str>,
+) -> Vec<RefGate> {
+    gates
+        .iter()
+        .cloned()
+        .map(|mut g| {
+            if let (Some(def), Some(instance)) = (section, instance)
+                && g.param_ref_id
+                    .strip_prefix(def)
+                    .is_some_and(|rest| rest.starts_with('_'))
+            {
+                g.param_ref_id = selector_key(Some(instance), &g.param_ref_id);
+            }
+            g
+        })
+        .collect()
 }
 
 /// The innermost container id of a placement: its last block, else its
@@ -748,6 +862,15 @@ impl<'a> Pages<'a> {
                 reached_place.entry(p.param_ref_id.clone()).or_insert(id);
             }
         }
+        let mut module_reach: HashMap<String, bool> = HashMap::new();
+        for (p, place) in config.parameters.iter().zip(&config.parameter_placements) {
+            let Some(instance) = p.module.and_then(|m| config.modules.get(m)) else {
+                continue;
+            };
+            *module_reach
+                .entry(selector_key(Some(&instance.id), &p.param_ref_id))
+                .or_default() |= place.shown;
+        }
         let placed_params: HashSet<String> = index
             .parameters()
             .filter_map(|(r, _)| product.parameter_refs.get(r))
@@ -781,6 +904,8 @@ impl<'a> Pages<'a> {
             enabled: (0..blocks.len()).map(|_| OnceCell::new()).collect(),
             by_values: RefCell::new(HashMap::new()),
             assigns: OnceCell::new(),
+            module_reach,
+            module_sites: OnceCell::new(),
         };
         for (i, b) in blocks.iter().enumerate() {
             if !pages.states[i].active && !pages.states[i].parent_inactive {
@@ -1209,37 +1334,11 @@ impl<'a> Pages<'a> {
                     .into_iter()
                     .map(|n| inner[n].clone()),
             );
-            let mut needs: Vec<String> = Vec::new();
-            let mut now: Vec<String> = Vec::new();
-            for g in &failing {
-                let words = self.gate_words(g);
-                if !needs.contains(&words) {
-                    needs.push(words);
-                }
-                let def = self.def_of(&g.param_ref_id);
-                let name = def
-                    .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
-                    .unwrap_or_else(|| g.param_ref_id.clone());
-                let line = format!(
-                    "{name} is {}",
-                    self.current(&g.param_ref_id)
-                        .unwrap_or_else(|| "unset".to_string())
-                );
-                if !now.contains(&line) {
-                    now.push(line);
-                }
-            }
-            if needs.is_empty() {
-                let text = self.blocks[page]
-                    .text
-                    .clone()
-                    .unwrap_or_else(|| self.blocks[page].id.clone());
-                needs.push(format!("the page {text:?} active"));
-            }
-            (
-                Some(needs.join(" and ")),
-                (!now.is_empty()).then(|| now.join(", ")),
-            )
+            let text = self.blocks[page]
+                .text
+                .clone()
+                .unwrap_or_else(|| self.blocks[page].id.clone());
+            self.needs_now(&failing, || format!("the page {text:?} active"))
         };
         RefVisibility {
             shown,
@@ -1256,77 +1355,193 @@ impl<'a> Pages<'a> {
         }
     }
 
-    /// What the configuration needs to reach module ref `reference` (the
-    /// app-relative ref in its definition, `MD-2_P-23_R-1`) of instance
-    /// `instance` (`MD-2_M-3`), in words (issue #1050): the failing `<when>`s
-    /// in front of the `<Module>` in the application's Dynamic section, else
-    /// those in front of the ref in the module body (when the body places it
-    /// once), else "module instance … reached".
-    fn module_ref_needs(&self, instance: &str, reference: &str) -> String {
-        let words = |gates: &[RefGate]| -> Option<String> {
-            let mut needs: Vec<String> = Vec::new();
-            for n in self.failing_gates(gates) {
-                let w = self.gate_words(&gates[n]);
-                if !needs.contains(&w) {
-                    needs.push(w);
-                }
+    /// [`RefVisibility::needs`] and [`RefVisibility::now`] of a ref the
+    /// configuration does not show because of the `failing` conditions;
+    /// `otherwise` words what it needs when no condition fails.
+    fn needs_now(
+        &self,
+        failing: &[RefGate],
+        otherwise: impl FnOnce() -> String,
+    ) -> (Option<String>, Option<String>) {
+        let mut needs: Vec<String> = Vec::new();
+        let mut now: Vec<String> = Vec::new();
+        for g in failing {
+            let words = self.gate_words(g);
+            if !needs.contains(&words) {
+                needs.push(words);
             }
-            (!needs.is_empty()).then(|| needs.join(" and "))
-        };
-        let fallback = || format!("module instance {instance} reached");
-        let mut module: Option<(&str, Vec<RefGate>)> = None;
-        walk(
-            &self.product.dynamic,
-            &mut WalkPath::new(None),
-            &mut |node, path| {
-                if let DynamicNode::Module { id, module_def, .. } = node
-                    && id == instance
-                    && module.is_none()
-                {
-                    module = Some((module_def.as_str(), path.gates()));
-                }
-                !matches!(node, DynamicNode::Repeat { .. })
-            },
-        );
-        let Some((module_def, outer)) = module else {
-            return fallback();
-        };
-        if let Some(needs) = words(&outer) {
-            return needs;
+            let def = self.def_of(&g.param_ref_id);
+            let name = def
+                .and_then(|d| d.text.clone().or_else(|| d.name.clone()))
+                .unwrap_or_else(|| g.param_ref_id.clone());
+            let line = format!(
+                "{name} is {}",
+                self.current(&g.param_ref_id)
+                    .unwrap_or_else(|| "unset".to_string())
+            );
+            if !now.contains(&line) {
+                now.push(line);
+            }
         }
-        let Some(body) = self.product.module_dynamics.get(module_def) else {
-            return fallback();
+        if needs.is_empty() {
+            needs.push(otherwise());
+        }
+        (
+            Some(needs.join(" and ")),
+            (!now.is_empty()).then(|| now.join(", ")),
+        )
+    }
+
+    /// The conditions of module instance `instance` (its key, `MD-2_M-3`),
+    /// outermost first: at each level the `<when>`s in front of its
+    /// `<Module>` and, inside a `<Repeat>`, that the count reaches its
+    /// repetition; with the literal arguments of its innermost `<Module>`.
+    /// `None` for a key no `<Module>` of the product matches (issue #1050).
+    fn instance_conditions(
+        &self,
+        instance: &str,
+    ) -> Option<(Vec<RefGate>, &'a HashMap<String, i64>)> {
+        let product: &'a ProductModel = self.product;
+        let sites = self.module_sites.get_or_init(|| module_sites(product));
+        let mut gates = Vec::new();
+        let mut args = None;
+        for (element, holder, repetition) in instance_levels(instance)? {
+            let site = sites.get(element.as_str())?;
+            gates.extend(instance_gates(&site.gates, site.section, holder.as_deref()));
+            if let Some(count) = site.repeat {
+                gates.extend(instance_gates(
+                    &[RefGate {
+                        param_ref_id: count.to_string(),
+                        test: WhenTest::Compare {
+                            op: CompareOp::Ge,
+                            value: i64::from(repetition),
+                        },
+                        siblings: Vec::new(),
+                    }],
+                    site.section,
+                    holder.as_deref(),
+                ));
+            }
+            args = Some(site.args);
+        }
+        Some((gates, args?))
+    }
+
+    /// [`RefVisibility`] of a module ref by its selector key
+    /// (`MD-2_M-3_MI-1_P-23_R-1`, issue #1050), `None` for a key that names
+    /// no module instance or a ref no module body places. Shown when the
+    /// evaluation places it as shown; otherwise what it needs: the failing
+    /// conditions in front of its instance, else those in front of the ref
+    /// in the module body (when the body places it once).
+    fn module_visibility(&self, key: &str) -> Option<RefVisibility> {
+        let (Some(instance), reference) = split_selector(key) else {
+            return None;
         };
-        let mut occurrences: Vec<Vec<RefGate>> = Vec::new();
-        walk(
-            body,
-            &mut WalkPath::new(Some(module_def)),
-            &mut |node, path| {
-                if matches!(node, DynamicNode::ParameterRefRef(r) if r == reference) {
-                    occurrences.push(path.gates());
-                }
-                true
-            },
-        );
-        let [inner] = occurrences.as_slice() else {
-            return fallback();
-        };
-        // The body's own refs in the instance's selector form, as the device
-        // stores and the evaluation reads them.
-        let inner: Vec<RefGate> = inner
+        let occurrences: Vec<&RefOccurrence> = self
+            .index
+            .parameter(&reference)
             .iter()
-            .cloned()
-            .map(|mut g| {
-                if g.param_ref_id
-                    .strip_prefix(module_def)
-                    .is_some_and(|rest| rest.starts_with('_'))
-                {
-                    g.param_ref_id = selector_key(Some(instance), &g.param_ref_id);
-                }
-                g
-            })
+            .filter(|o| o.module_def.is_some())
             .collect();
-        words(&inner).unwrap_or_else(fallback)
+        if occurrences.is_empty() {
+            return None;
+        }
+        let in_instance = |o: &RefOccurrence, from: usize| {
+            instance_gates(
+                &o.gates[from.min(o.gates.len())..],
+                o.module_def.as_deref(),
+                Some(&instance),
+            )
+        };
+        let inner: Option<Vec<RefGate>> = match occurrences.as_slice() {
+            [only] => Some(in_instance(only, only.container_gates)),
+            _ => None,
+        };
+        let condition = inner.as_ref().filter(|g| !g.is_empty()).map(|gates| {
+            gates
+                .iter()
+                .map(|g| self.gate_words(g))
+                .collect::<Vec<_>>()
+                .join(" and ")
+        });
+        if self.module_reach.get(key).copied().unwrap_or(false) {
+            return Some(RefVisibility {
+                shown: true,
+                on_branch: true,
+                condition,
+                needs: None,
+                now: None,
+            });
+        }
+        let holds = |gates: &[RefGate]| {
+            gates
+                .iter()
+                .all(|g| g.holds(self.evaluated.number(&g.param_ref_id)))
+        };
+        let on_branch = occurrences
+            .iter()
+            .any(|o| holds(&in_instance(o, o.container_gates)));
+        let outer = self
+            .instance_conditions(&instance)
+            .map(|(gates, _)| gates)
+            .unwrap_or_default();
+        let mut failing: Vec<RefGate> = self
+            .failing_gates(&outer)
+            .into_iter()
+            .map(|n| outer[n].clone())
+            .collect();
+        if failing.is_empty()
+            && let [only] = occurrences.as_slice()
+        {
+            let body = in_instance(only, 0);
+            failing.extend(
+                self.failing_gates(&body)
+                    .into_iter()
+                    .map(|n| body[n].clone()),
+            );
+        }
+        let reached = self
+            .evaluated
+            .config
+            .modules
+            .iter()
+            .any(|m| m.id == instance);
+        let page = occurrences
+            .first()
+            .and_then(|o| o.blocks.last())
+            .map(|b| b.text.clone().unwrap_or_else(|| b.id.clone()));
+        let (needs, now) = self.needs_now(&failing, || match page {
+            Some(text) if reached => format!("the page {text:?} active"),
+            _ => format!("module instance {instance} reached"),
+        });
+        Some(RefVisibility {
+            shown: false,
+            on_branch,
+            condition,
+            needs,
+            now,
+        })
+    }
+
+    /// The vendor default of a device-form ref (`P-1_R-1`, or a module
+    /// ref by its selector key): in an instance the configuration does not
+    /// reach, with the literal arguments of its `<Module>` (issue #1050).
+    fn default_of(&self, key: &str) -> Option<String> {
+        let (instance, reference) = split_selector(key);
+        match instance {
+            Some(instance)
+                if !self
+                    .evaluated
+                    .config
+                    .modules
+                    .iter()
+                    .any(|m| m.id == instance) =>
+            {
+                let args = self.instance_conditions(&instance).map(|(_, args)| args);
+                crate::dynamic::vendor_default_with_args(self.product, args, &reference)
+            }
+            _ => self.evaluated.vendor_default(key),
+        }
     }
 
     /// A condition in words: the controlling parameter's text and the values
@@ -2502,8 +2717,11 @@ impl DeviceAnalysis<'_> {
     /// app-relative `ParameterRef` id, with whether the configuration shows
     /// it under the device's values: the page states [`Self::view`] lists,
     /// and the conditions inside each page. A ref on several pages counts as
-    /// shown when one of them shows it. Empty without a product model with
-    /// pages.
+    /// shown when one of them shows it. A module instance's ref the
+    /// evaluation reaches or the device stores is keyed by its selector
+    /// (`MD-2_M-3_MI-1_P-23_R-1`), with the conditions in front of its
+    /// instance and in the module body (issue #1050). Empty without a
+    /// product model with pages.
     pub fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         self.pages
             .as_ref()
@@ -2627,11 +2845,25 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
 }
 
 impl Pages<'_> {
-    /// [`DeviceAnalysis::visibility`] of every ref the pages hold.
+    /// [`DeviceAnalysis::visibility`] of every ref the pages hold, and of
+    /// every module ref the evaluation reaches or the device stores, by its
+    /// selector key ([`Self::module_visibility`], issue #1050).
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
-        // The application's own pages: a module channel's refs are keyed by
-        // instance and the value-free index has no conditions for them.
+        let module_keys: BTreeSet<&str> = self
+            .module_reach
+            .keys()
+            .chain(self.entries.keys())
+            .map(String::as_str)
+            .filter(|k| k.starts_with("MD-"))
+            .collect();
+        for key in module_keys {
+            if let Some(seen) = self.module_visibility(key) {
+                out.insert(key.to_string(), seen);
+            }
+        }
+        // The application's own pages; a module channel's refs are keyed by
+        // instance, and covered above.
         for (i, b) in self.blocks.iter().enumerate() {
             if b.module.is_some() {
                 continue;
@@ -2687,26 +2919,21 @@ impl IgnoredOverride {
 fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
     let visibility = pg.visibility();
     let config = &pg.evaluated.config;
-    // The application-level refs whose stored value the evaluation uses
-    // without showing them: the source of a reached `<Assign>`, which the
-    // image writes and which steers the target. An `<Assign>` target's own
-    // value is replaced, so a stored one stays ignored.
-    let in_effect: HashSet<&str> = config
+    // The refs whose stored value the evaluation uses without showing them:
+    // the source of a reached `<Assign>`, which the image writes and which
+    // steers the target. An `<Assign>` target's own value is replaced, so a
+    // stored one stays ignored. A module instance's ref by its selector key
+    // (issue #1050).
+    let in_effect: HashSet<String> = config
         .parameters
         .iter()
-        .filter(|p| p.module.is_none() && !config.is_assigned(None, &p.param_ref_id))
-        .map(|p| p.param_ref_id.as_str())
-        .collect();
-    // The module refs the evaluation reaches, by their selector key (issue
-    // #1050). A ref of an instance it does not reach, or behind a `<when>`
-    // of the body that fails, is never written. A reached one counts as in
-    // effect even off its page, as an application ref's `<Assign>` source.
-    let module_reached: HashSet<String> = config
-        .parameters
-        .iter()
-        .filter_map(|p| {
-            let instance = config.modules.get(p.module?)?;
-            Some(selector_key(Some(&instance.id), &p.param_ref_id))
+        .filter(|p| !config.is_assigned(p.module, &p.param_ref_id))
+        .filter_map(|p| match p.module {
+            None => Some(p.param_ref_id.clone()),
+            Some(m) => config
+                .modules
+                .get(m)
+                .map(|i| selector_key(Some(&i.id), &p.param_ref_id)),
         })
         .collect();
     let mut out = Vec::new();
@@ -2717,34 +2944,22 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
         let Some((head, reference)) = mem_key.split_once('@') else {
             continue;
         };
-        if head == "label" {
+        // A channel label is the channel's name, never a parameter value.
+        if head == "label" || device.lock.channel_labels.values().any(|l| l == reference) {
             continue;
         }
-        let needs = match split_selector(reference) {
-            (Some(instance), in_def) => {
-                if module_reached.contains(reference)
-                    || !pg.product.parameter_refs.contains_key(&in_def)
-                {
-                    continue;
-                }
-                pg.module_ref_needs(&instance, &in_def)
-            }
-            (None, _) => {
-                let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
-                    continue;
-                };
-                if in_effect.contains(reference) {
-                    continue;
-                }
-                needs
-            }
-        };
-        let def = pg.product.parameters.get(ref_param_id(reference));
-        let locked = device.lock.parameters.get(reference);
-        let default = pg.evaluated.vendor_default(reference);
+        let def = pg.def_of(reference);
+        let default = pg.default_of(reference);
         if default.is_some_and(|d| same_value(def, value, &d)) {
             continue;
         }
+        let Some(needs) = visibility.get(reference).and_then(|v| v.needs.clone()) else {
+            continue;
+        };
+        if in_effect.contains(reference) {
+            continue;
+        }
+        let locked = device.lock.parameters.get(reference);
         out.push(IgnoredOverride {
             key: locked.map_or_else(|| mem_key.clone(), |p| p.key.clone()),
             reference: reference.to_string(),
