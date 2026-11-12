@@ -21,8 +21,8 @@ use bussard_testkit::consts::{OT_ASSOCIATION_TABLE, TUNNEL_IA_RAW};
 use bussard_testkit::{MockDevice, MockGateway};
 use bussard_transport::ConnectionConfig;
 use bussard_transport::cemi::{Apdu, Destination};
-use rmcp::ServiceExt;
 use rmcp::model::CallToolRequestParams;
+use rmcp::{ClientHandler, ServiceExt};
 use serde_json::{Value, json};
 
 const CHANNEL: u8 = 0x55;
@@ -100,8 +100,8 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
 }
 
 /// One running server plus its mock line.
-struct Harness {
-    client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+struct Harness<H: ClientHandler = ()> {
+    client: rmcp::service::RunningService<rmcp::RoleClient, H>,
     server_task: tokio::task::JoinHandle<()>,
     gateway: MockGateway,
     dir: tempfile::TempDir,
@@ -178,7 +178,9 @@ impl Harness {
             dir,
         })
     }
+}
 
+impl<H: ClientHandler> Harness<H> {
     async fn call(&self, tool: &str, args: Value) -> anyhow::Result<Value> {
         call(&self.client, tool, args).await
     }
@@ -306,8 +308,8 @@ async fn serve_config(
 }
 
 /// Calls one tool and returns its structured result.
-async fn call(
-    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+async fn call<H: ClientHandler>(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, H>,
     tool: &str,
     args: Value,
 ) -> anyhow::Result<Value> {
@@ -1880,6 +1882,11 @@ async fn test_knx_plan_device_summary_and_notice_speak_in_names() -> anyhow::Res
 /// wired to the loopback mock: the seam the supported-device gate (issue
 /// #1089) refuses on, with no real gateway ever contacted.
 async fn start_remote_tier() -> anyhow::Result<Harness> {
+    start_remote_tier_with(()).await
+}
+
+/// [`start_remote_tier`] with `client` as the chat app.
+async fn start_remote_tier_with<H: ClientHandler>(client: H) -> anyhow::Result<Harness<H>> {
     fast_mock_timeouts();
     let gateway = MockGateway::builder()
         .channel(CHANNEL)
@@ -1924,7 +1931,7 @@ async fn start_remote_tier() -> anyhow::Result<Harness> {
             let _ = running.waiting().await;
         }
     });
-    let client = ().serve(client_io).await?;
+    let client = client.serve(client_io).await?;
     Ok(Harness {
         client,
         server_task,
@@ -1999,5 +2006,256 @@ async fn test_knx_apply_device_on_loopback_reports_unsupported_without_refusing(
         .await?;
     assert_eq!(applied["ok"], true, "{applied}");
     assert_eq!(applied["support"], "unsupported", "{applied}");
+    h.stop().await
+}
+
+/// The chat app with its human (#1093): declares form-mode elicitation and
+/// answers bussard's question with `action`, recording each question.
+#[derive(Clone)]
+struct Human {
+    action: rmcp::model::ElicitationAction,
+    asked: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl Human {
+    fn new(action: rmcp::model::ElicitationAction) -> Self {
+        Human {
+            action,
+            asked: std::sync::Arc::default(),
+        }
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().map(|a| a.clone()).unwrap_or_default()
+    }
+
+    fn capabilities(&self) -> rmcp::model::ClientCapabilities {
+        let mut capabilities = rmcp::model::ClientCapabilities::default();
+        capabilities.elicitation = Some(
+            rmcp::model::ElicitationCapability::new()
+                .with_form(rmcp::model::FormElicitationCapability::new()),
+        );
+        capabilities
+    }
+
+    fn answer(&self, request: rmcp::model::ElicitRequestParams) -> rmcp::model::ElicitResult {
+        if let rmcp::model::ElicitRequestParams::FormElicitationParams { message, .. } = request
+            && let Ok(mut asked) = self.asked.lock()
+        {
+            asked.push(message);
+        }
+        rmcp::model::ElicitResult::new(self.action.clone())
+    }
+}
+
+impl ClientHandler for Human {
+    async fn create_elicitation(
+        &self,
+        request: rmcp::model::ElicitRequestParams,
+        _context: rmcp::service::RequestContext<rmcp::RoleClient>,
+    ) -> Result<rmcp::model::ElicitResult, rmcp::ErrorData> {
+        Ok(self.answer(request))
+    }
+
+    fn get_info(&self) -> rmcp::model::ClientConfig {
+        rmcp::model::ClientConfig::new(
+            self.capabilities(),
+            rmcp::model::Implementation::new("fake-chat", "0.0.0"),
+        )
+    }
+}
+
+/// Plans 1.1.4, which the plan reports unsupported; returns the digest.
+async fn plan_unsupported<H: ClientHandler>(h: &Harness<H>) -> anyhow::Result<String> {
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["support"]["status"], "unsupported", "{plan}");
+    digest_of(&plan)
+}
+
+/// With elicitation the human answers bussard's own question (#1093): a yes
+/// writes without `allow_unsupported`.
+#[tokio::test]
+async fn test_knx_apply_device_asks_the_human_and_writes_on_yes() -> anyhow::Result<()> {
+    let human = Human::new(rmcp::model::ElicitationAction::Accept);
+    let h = start_remote_tier_with(human.clone()).await?;
+    let digest = plan_unsupported(&h).await?;
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["support"], "forced", "{applied}");
+    let asked = human.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].starts_with("1.1.4 runs") && asked[0].ends_with("Write anyway?"),
+        "{asked:?}"
+    );
+    let (addresses, _) = h.tables()?;
+    assert_eq!(addresses, address_table(&["1/2/0", "1/2/1", "1/2/2"])?);
+    h.stop().await
+}
+
+/// With elicitation the assistant cannot answer for the human (#1093): a
+/// declined question refuses although the assistant passed
+/// `allow_unsupported: true`; nothing is written and the digest is kept.
+#[tokio::test]
+async fn test_knx_apply_device_refuses_when_the_human_declines() -> anyhow::Result<()> {
+    let human = Human::new(rmcp::model::ElicitationAction::Decline);
+    let h = start_remote_tier_with(human.clone()).await?;
+    let digest = plan_unsupported(&h).await?;
+    for _ in 0..2 {
+        let refused = h
+            .call(
+                "knx_apply_device",
+                json!({"address": "1.1.4", "plan_digest": digest, "allow_unsupported": true}),
+            )
+            .await?;
+        assert_eq!(refused["code"], "unsupported_device", "{refused}");
+        assert!(refused["override"].is_null(), "{refused}");
+        let reason = refused["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("The human declined") && reason.contains("stays valid"),
+            "{refused}"
+        );
+    }
+    // The digest stayed valid: the second call asked again.
+    assert_eq!(human.asked().len(), 2);
+    assert_eq!(h.writes()?, 0, "nothing written");
+    h.stop().await
+}
+
+/// Nobody is asked about a write that is refused anyway (#1093 review): an
+/// unknown digest goes to its own refusal.
+#[tokio::test]
+async fn test_knx_apply_device_does_not_ask_about_an_unknown_digest() -> anyhow::Result<()> {
+    let human = Human::new(rmcp::model::ElicitationAction::Accept);
+    let h = start_remote_tier_with(human.clone()).await?;
+    let refused = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": "sha256:00"}),
+        )
+        .await?;
+    assert_eq!(refused["refused"], true, "{refused}");
+    assert!(refused["code"].is_null(), "{refused}");
+    assert!(human.asked().is_empty());
+    assert_eq!(h.writes()?, 0);
+    h.stop().await
+}
+
+/// The `_meta` of a request from a client speaking protocol 2026-07-28.
+fn meta_2026(human: &Human) -> rmcp::model::RequestMetaObject {
+    let mut meta = rmcp::model::RequestMetaObject::default();
+    meta.set_protocol_version(rmcp::model::ProtocolVersion::V_2026_07_28);
+    meta.set_client_info(rmcp::model::Implementation::new("fake-chat", "0.0.0"));
+    meta.set_client_capabilities(human.capabilities());
+    meta
+}
+
+/// From protocol 2026-07-28 the question travels as an `InputRequiredResult`
+/// and the client calls again with the human's answer (#1093).
+#[tokio::test]
+async fn test_knx_apply_device_asks_over_multi_round_trip() -> anyhow::Result<()> {
+    use rmcp::model::{CallToolResponse, InputRequest};
+    let human = Human::new(rmcp::model::ElicitationAction::Accept);
+    let h = start_remote_tier_with(human.clone()).await?;
+    let digest = plan_unsupported(&h).await?;
+    let mut args = serde_json::Map::new();
+    args.insert("address".to_string(), json!("1.1.4"));
+    args.insert("plan_digest".to_string(), json!(digest));
+    let mut params = CallToolRequestParams::new("knx_apply_device").with_arguments(args.clone());
+    params.meta = Some(meta_2026(&human));
+    let first = h.client.call_tool_once(params).await?;
+    let CallToolResponse::InputRequired(input) = first else {
+        anyhow::bail!("expected input_required, got {first:?}");
+    };
+    assert!(
+        human.asked().is_empty(),
+        "the server sent no request itself"
+    );
+    assert_eq!(h.writes()?, 0, "nothing written yet");
+    let state = input
+        .request_state
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("no request state"))?;
+    let mut responses = rmcp::model::InputResponses::new();
+    for (key, request) in input
+        .input_requests
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("no input requests"))?
+    {
+        let InputRequest::Elicitation(request) = request else {
+            anyhow::bail!("not an elicitation");
+        };
+        responses.insert(key, serde_json::to_value(human.answer(request.params))?);
+    }
+    let mut params = CallToolRequestParams::new("knx_apply_device")
+        .with_arguments(args)
+        .with_input_responses(responses)
+        .with_request_state(state);
+    params.meta = Some(meta_2026(&human));
+    let second = h.client.call_tool_once(params).await?;
+    let CallToolResponse::Complete(result) = second else {
+        anyhow::bail!("expected a result, got {second:?}");
+    };
+    let value = result
+        .structured_content
+        .ok_or_else(|| anyhow::anyhow!("no structured content"))?;
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["support"], "forced", "{value}");
+    h.stop().await
+}
+
+/// A table-restore digest bound to another device is refused before anyone
+/// is asked (#1093 review); for its own device the human is asked.
+#[tokio::test]
+async fn test_knx_restore_tables_asks_only_about_its_own_device() -> anyhow::Result<()> {
+    let human = Human::new(rmcp::model::ElicitationAction::Accept);
+    let h = start_remote_tier_with(human.clone()).await?;
+    let backup = h
+        .call("knx_backup_device", json!({"address": "1.1.4"}))
+        .await?;
+    let name = backup["backup"].as_str().unwrap_or_default().to_string();
+    let digest = plan_unsupported(&h).await?;
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(human.asked().len(), 1);
+
+    let plan = h
+        .call(
+            "knx_restore_tables",
+            json!({"address": "1.1.4", "backup": name}),
+        )
+        .await?;
+    let digest = digest_of(&plan)?;
+    let other = h
+        .call(
+            "knx_restore_tables",
+            json!({"address": "1.1.8", "backup": name, "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(other["refused"], true, "{other}");
+    assert!(other["code"].is_null(), "{other}");
+    assert_eq!(human.asked().len(), 1, "not asked about 1.1.8");
+
+    let restored = h
+        .call(
+            "knx_restore_tables",
+            json!({"address": "1.1.4", "backup": name, "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(restored["ok"], true, "{restored}");
+    assert_eq!(restored["support"], "forced", "{restored}");
+    assert_eq!(human.asked().len(), 2);
     h.stop().await
 }

@@ -75,6 +75,10 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
     })?;
     let presented_tool_key = tool_key.is_some();
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // The supported-device verdict on this gateway (issue #1089), as
+    // `describe` and `plan` report it.
+    let support =
+        bussard_service::support::verdict_at(model.as_ref(), target, None).view_on(&config);
     let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), g.refresh_facts);
     let authorize = bussard_service::status::read_only_authorize(&mut facts, target);
 
@@ -107,7 +111,8 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
         .as_ref()
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
-    let report = status_report(target, device, &read, presented_tool_key);
+    let mut report = status_report(target, device, &read, presented_tool_key);
+    report.support = Some(support);
     if json {
         crate::output::report(&report)?;
     } else {
@@ -167,6 +172,17 @@ fn render_text(
             line
         };
         out.push_str(&format!("  {line}\n"));
+    }
+    if let Some(support) = &report.support {
+        let line = support.line();
+        out.push_str(&format!(
+            "  {}\n",
+            if support.is_supported() {
+                line
+            } else {
+                style.warn(&line)
+            }
+        ));
     }
     match (&report.knxnet, knxnet_error) {
         (Some(k), _) => {

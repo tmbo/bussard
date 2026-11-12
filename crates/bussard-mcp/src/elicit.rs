@@ -1,9 +1,12 @@
-//! URL-mode elicitation (#798), shared by the pairing page of
+//! Elicitation (#798), shared by the pairing page of
 //! `knx_enroll_certificates` ([`crate::tools_enroll`]) and the project
-//! password form ([`crate::password_form`]) (issue #911).
+//! password form ([`crate::password_form`]) (issue #911), both in URL mode,
+//! and by the question before a write to a device not on the supported list
+//! (`crate::tools_program::support`, issue #1093), in form mode.
 //!
 //! A page bussard serves on 127.0.0.1 reaches the human as the URL of an
-//! elicitation, never through the assistant. Two transports (MCP
+//! elicitation, never through the assistant; a form-mode question reaches
+//! them the same way. Two transports (MCP
 //! 2026-07-28, client features): from protocol 2026-07-28 the tool answers
 //! with an `InputRequiredResult` holding the `elicitation/create` request
 //! and the client calls the tool again with the human's answer (multi
@@ -62,8 +65,8 @@ pub enum Shown {
     Failed,
 }
 
-/// Shows the URL of `params` to the human by the transport of `context`'s
-/// protocol: `key` names the request in `inputRequests`, `state` is the
+/// Shows `params` (a URL or a form) to the human by the transport of
+/// `context`'s protocol: `key` names the request in `inputRequests`, `state` is the
 /// `requestState` the client's second round carries.
 pub async fn show(
     context: &RequestContext<RoleServer>,

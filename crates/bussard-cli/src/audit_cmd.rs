@@ -272,6 +272,18 @@ pub fn render_text(report: &AuditReport, style: Style) -> String {
     }
     line(String::new());
 
+    line(heading("Supported devices"));
+    let support = &report.support;
+    line(format!(
+        "  {} of {} on bussard's list of supported devices",
+        support.supported,
+        count(support.devices, "device", "devices")
+    ));
+    for row in &support.unsupported {
+        line(format!("    {}", style.warn(&row.line())));
+    }
+    line(String::new());
+
     line(heading("KNX Secure"));
     if report.secure.devices.is_empty() {
         line(format!(

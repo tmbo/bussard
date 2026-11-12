@@ -339,7 +339,8 @@ fn expected(name: &str) -> Result<String, Box<dyn std::error::Error>> {
 /// The typed `AuditReport` serialises to the same bytes as the untyped
 /// `serde_json::Value` the audit was built as before #896. The fixtures were
 /// captured from that code for this exact input: every section, every
-/// optional field null and set, every Secure probe outcome.
+/// optional field null and set, every Secure probe outcome. The `support`
+/// section (#1093) was added to them since.
 #[test]
 fn test_audit_report_json_is_byte_identical_to_the_untyped_report() -> TestResult {
     use bussard_service::audit::{

@@ -134,6 +134,7 @@ Static sections (JSON keys in brackets):
 - **Model** (`model`): device count per line, devices without a name or a location, group addresses without a DPT or a name (including ones only device files link), links to com-objects the device file does not declare, links for addresses with no device file, protected group addresses, project name and import source.
 - **Findings** (`model.findings`): one-sided links only, a group address with senders but no listener or listeners but no sender. Unlinked com-objects (I009: a T or W object in no link) and unused group addresses (I010) are counted in `model.info` as neutral information. The analysis is built from the `validate` diagnostics (I048 and I049 are the findings), so the audit, the viz problems panel and `bussard validate` report the same cases.
 - **Devices per mask** (`masks`): devices grouped by the `product.mask` their file records, with what bussard can do (`plan_apply`, `flash`, `reconstruct`, `describe`). The column comes from the same table the `plan`, `apply`, `flash` and `reconstruct` refusals use.
+- **Supported devices** (`support`): how many devices are on the [list of supported devices](../../explanation/device-support.md#supported-devices) (`devices`, `supported`), and each device that is not (`unsupported`: `address`, `support`) with the line `plan` and `describe` print.
 - **KNX Secure** (`secure`): devices that support Secure and secured devices, and with `--keyring` whether the keyring holds each one's tool key.
 
 Live sections (`live`, with `--live`):

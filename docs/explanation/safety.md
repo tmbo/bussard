@@ -126,7 +126,8 @@ is where a product is checked before it joins the list.
 | Interface | Write to an unsupported device |
 |---|---|
 | CLI | refused; overridable with `--allow-unsupported` |
-| MCP (an LLM over the server) | refused with `code: unsupported_device`; the human must say yes, then the assistant passes `allow_unsupported: true` with the digest of the plan that reported it |
+| MCP, chat app that can show bussard's questions (elicitation) | bussard asks the human itself; a no refuses with `code: unsupported_device`, whatever the assistant passed |
+| MCP, other chat apps | refused with `code: unsupported_device`; the human must say yes, then the assistant passes `allow_unsupported: true` with the digest of the plan that reported it |
 
 The override is the human's. The plan the assistant shows already says the
 device is not on the list, that a backup comes first, and that ETS is the

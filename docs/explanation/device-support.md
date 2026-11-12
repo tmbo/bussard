@@ -135,10 +135,12 @@ reports. `bussard device --supported` prints it.
 - **`live`**: flashed by bussard on a real device and read back.
 
 `flash`, `apply` (also `--line`), `restore`, `replace` and the download half
-of `commission`, and their MCP tools, refuse a device whose application is not
-on the list before anything is written. Reads are never affected: `plan`,
-`describe`, `device`, `backup` and `reconstruct` work on every device, and
-`plan`, `describe` and `device` print the verdict. A group `write`, `assign`
+of `commission`, and their MCP tools, refuse a device whose application is not on the list before
+anything is written. Reads are never affected: `plan`, `describe`, `device`,
+`backup` and `reconstruct` work on every device, and `plan`, `describe`,
+`device`, `status` and `audit` print the verdict. The KNXnet/IP settings of
+an IP interface (its `[knxnet]` table) are not gated: they are standard
+properties, not built from the application program. A group `write`, `assign`
 and `restart` are not gated.
 
 The refusal applies on a gateway that is not loopback, the same rule as the

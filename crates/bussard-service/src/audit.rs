@@ -61,6 +61,38 @@ pub struct AuditReport {
     /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
+    /// The supported-device verdict (issues #1089, #1093): the count, and
+    /// the devices not on the list.
+    pub support: SupportSection,
+}
+
+/// The `support` section: how many devices are on the list of supported
+/// devices, and which are not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportSection {
+    /// The devices in the project.
+    pub devices: usize,
+    /// How many of them are on the list.
+    pub supported: usize,
+    /// The ones that are not, by address, each with its verdict.
+    pub unsupported: Vec<SupportRow>,
+}
+
+/// One device of the `support` section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportRow {
+    /// The device address.
+    pub address: String,
+    /// The verdict for its own application, as `plan` and `describe`
+    /// report it.
+    pub support: crate::support::SupportView,
+}
+
+impl SupportRow {
+    /// One line: the address, then [`crate::support::SupportView::line`].
+    pub fn line(&self) -> String {
+        format!("{}: {}", self.address, self.support.line())
+    }
 }
 
 /// One row of the `masks` section.
@@ -168,6 +200,10 @@ impl crate::report::Report for AuditReport {
             self.masks.len(),
             devices - unsupported
         );
+        out.push_str(&format!(
+            " {} of {} device(s) are on bussard's list of supported devices.",
+            self.support.supported, self.support.devices
+        ));
         if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
             out.push_str(&format!(
                 " {missing} secured device(s) have no tool key in the keyring."
@@ -236,6 +272,23 @@ impl AuditReport {
             devices,
         };
 
+        let rows: Vec<SupportRow> = model
+            .devices
+            .iter()
+            .map(|(addr, loaded)| SupportRow {
+                address: addr.to_string(),
+                support: crate::support::verdict(Some(&loaded.device), None).view(),
+            })
+            .collect();
+        let support = SupportSection {
+            devices: rows.len(),
+            supported: rows.iter().filter(|r| r.support.is_supported()).count(),
+            unsupported: rows
+                .into_iter()
+                .filter(|r| !r.support.is_supported())
+                .collect(),
+        };
+
         AuditReport {
             format_version: AUDIT_FORMAT_VERSION,
             model: analysis,
@@ -243,6 +296,7 @@ impl AuditReport {
             secure,
             live: None,
             products: None,
+            support,
         }
     }
 }
