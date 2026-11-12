@@ -504,7 +504,7 @@ pub fn plan_flash(
     // No per-instance base offsets are supplied here (they live in the project,
     // not in the product data): a module-instance override therefore refuses at
     // pre-flight rather than misplacing a byte — see `compute_parameter_image`.
-    let (param_images, mut placed) =
+    let (mut param_images, mut placed) =
         bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
@@ -536,8 +536,16 @@ pub fn plan_flash(
     // the device to pre-fill it (`Mode` bit 0), so a write into a segment that
     // has no image of its own streams that fill (issue #1026). Keyed by the
     // object the allocation names: a write takes the fill of its own object's
-    // allocation only.
+    // allocation only. A `Mode` 0 allocation still refuses such a write
+    // although #1061 gives the segment its declared fill: follow-up #1084.
     let mut prefill_by_object: BTreeMap<u32, (u8, u32)> = BTreeMap::new();
+    // The fill octet of the allocation this plan sends for each segment it
+    // binds (`fill`, `fill_declared`), the one source of what a data-less
+    // segment holds in its unplaced octets (issue #1061, see
+    // [`bussard_product::unplaced_fill`]), and the segments whose parameter
+    // image already took it.
+    let mut fill_by_segment: BTreeMap<String, (SegmentFill, bool)> = BTreeMap::new();
+    let mut unplaced_filled: BTreeSet<String> = BTreeSet::new();
     // Track the image most-recently streamed into device memory so a following
     // LoadImageProp with no matching per-object image checks the device's MCB CRC
     // against the very bytes we wrote.
@@ -763,7 +771,7 @@ pub fn plan_flash(
                 applies_to,
                 lsm_idx,
                 fill,
-                ..
+                fill_declared,
             } => {
                 // Bind this allocation to the segment whose code image we will
                 // stream. The op does not name the segment id directly; we pair
@@ -847,6 +855,17 @@ pub fn plan_flash(
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
                 if !is_duplicate {
+                    // The image of the segment's unplaced octets follows the
+                    // allocation the full download sends for it. A `par`-only
+                    // restatement does not count: the `par` procedure keeps
+                    // the full image (issue #490, `use_par_procedure`).
+                    if let Some((seg_id, _)) = &seg
+                        && !applies_to
+                            .as_deref()
+                            .is_some_and(super::par_procedure::is_par_only)
+                    {
+                        fill_by_segment.insert(seg_id.clone(), (*fill, *fill_declared));
+                    }
                     if let Some(idx) = lsm_idx {
                         match (fill.prefill(), &seg) {
                             (Some(byte), Some(_)) => prefill_by_object.insert(*idx, (byte, size)),
@@ -954,7 +973,7 @@ pub fn plan_flash(
                 let prefill = obj_idx
                     .filter(|idx| rel_segment_by_object.contains_key(idx))
                     .and_then(|idx| prefill_by_object.get(&idx).copied());
-                let (segment_id, kind, bytes) = resolve_write_image(
+                let (segment_id, kind, mut bytes) = resolve_write_image(
                     &segments,
                     applies_to.as_deref(),
                     current.map(String::as_str),
@@ -965,6 +984,25 @@ pub fn plan_flash(
                     step: step_no,
                     reason,
                 })?;
+                // A data-less segment's unplaced octets take the fill of the
+                // allocation bound to it before its first write (issue #1061).
+                if kind == ImageKind::Parameters
+                    && !unplaced_filled.contains(&segment_id)
+                    && let Some(image) = param_images.get_mut(&segment_id)
+                {
+                    let fill =
+                        bussard_product::unplaced_fill(fill_by_segment.get(&segment_id).copied());
+                    if bussard_product::fill_unplaced_octets(
+                        app,
+                        &segment_id,
+                        image,
+                        placed.get(&segment_id),
+                        fill,
+                    ) {
+                        bytes = image.clone();
+                    }
+                    unplaced_filled.insert(segment_id.clone());
+                }
                 // The op's `Size` bounds what is streamed: the write covers the
                 // allocation, not the whole `RelativeSegment` (issue #564).
                 //
@@ -1385,6 +1423,16 @@ pub fn plan_flash(
     // not secure-capable gets neither (issue #452: 1.1.45 and 1.1.51 allocate
     // a filled segment too, and ETS unloads them with load controls and ends
     // with a bare A_Restart).
+    // A data-less segment the procedure never writes still holds its fill in
+    // the plan's image, so a parameter-only download and the read-back see
+    // the octets the rule gives it (issue #1061).
+    for (seg_id, image) in param_images.iter_mut() {
+        if !unplaced_filled.contains(seg_id) {
+            let fill = bussard_product::unplaced_fill(fill_by_segment.get(seg_id).copied());
+            bussard_product::fill_unplaced_octets(app, seg_id, image, placed.get(seg_id), fill);
+        }
+    }
+
     // A kept octet is written by no step, so it is not placed: the dump's
     // coverage, the parameter-only download and the restore leave it alone.
     for k in &kept {
@@ -2308,6 +2356,8 @@ pub(super) fn bound_write_rel_mem(
 /// 256-octet segment allocated with fill `00`, no memory parameter, no memory
 /// write); the executor streams only what differs from the fill, so nothing,
 /// and an MCB check of the object runs over the octets the device holds.
+/// A `Mode` 0 allocation passes no `prefill`, so such a write still refuses,
+/// although the declared fill of #1061 defines the segment: follow-up #1084.
 pub(super) fn resolve_write_image(
     segments: &HashMap<String, CodeSegment>,
     applies_to: Option<&str>,
@@ -3751,6 +3801,87 @@ mod tests {
             })
             .collect();
         assert_eq!(compares, vec![vec![0x00, 0x83, 0x00, 0x00, 0x04, 0x07]]);
+        Ok(())
+    }
+
+    /// Plans a 07B0 program with a data-less 4-octet segment on LSM 4 (an
+    /// 8-bit parameter of value 7 at octet 1, a memoryless selector `P-9`
+    /// set to `sel`), whose `MergeId="2"` block is `alloc` and whose
+    /// `MergeId="4"` block writes the segment, and returns the plan's image
+    /// (sized to the placements: the program has no Dynamic section).
+    fn dataless_image(alloc: &str, sel: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-7" ApplicationNumber="9" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Fill" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-7_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
+           <ParameterTypes>
+            <ParameterType Id="M-1_A-7_PT-v" Name="v"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-1_A-7_P-1" Name="value" ParameterType="M-1_A-7_PT-v" Value="7"><Memory CodeSegment="M-1_A-7_RS-1" Offset="1" BitOffset="0" /></Parameter>
+            <Parameter Id="M-1_A-7_P-9" Name="sel" ParameterType="M-1_A-7_PT-v" Value="0" />
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-1_A-7_P-1_R-1" RefId="M-1_A-7_P-1" />
+            <ParameterRef Id="M-1_A-7_P-9_R-9" RefId="M-1_A-7_P-9" />
+           </ParameterRefs>
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">{alloc}</LoadProcedure>
+            <LoadProcedure MergeId="4">
+             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="4" Verify="true" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        let app = parse_application_program("M-1_A-7", xml.as_bytes())?;
+        let plan = plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::from([("P-9_R-9".to_string(), sel.to_string())]),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?;
+        let written = plan.steps.iter().find_map(|s| match s {
+            FlashStep::WriteRelMem { image, .. } => Some(image.segment_id.clone()),
+            _ => None,
+        });
+        assert_eq!(written.as_deref(), Some("M-1_A-7_RS-1"));
+        assert_eq!(
+            plan.image_bytes("M-1_A-7_RS-1"),
+            plan.param_images.get("M-1_A-7_RS-1").map(Vec::as_slice)
+        );
+        Ok(plan
+            .image_bytes("M-1_A-7_RS-1")
+            .ok_or("no image for the segment")?
+            .to_vec())
+    }
+
+    /// Issue #1061: the unplaced octets of a data-less segment take the fill
+    /// of the allocation the planner binds to it, also when the op names no
+    /// `LsmIdx` (bound by document order) and when a `<choose>` picks one of
+    /// two full allocations on the same load state machine.
+    #[test]
+    fn test_plan_flash_fills_a_data_less_segment_from_the_bound_allocation() -> TestResult {
+        let no_lsm = r#"<LdCtrlRelSegment AppliesTo="full" Size="4" Mode="0" Fill="165" />"#;
+        assert_eq!(dataless_image(no_lsm, "0")?, vec![0xA5, 7]);
+        let choose = r#"<choose ParamRefId="M-1_A-7_P-9_R-9">
+             <when test="0"><LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="0" Fill="165" /></when>
+             <when test="1"><LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="90" /></when>
+            </choose>"#;
+        assert_eq!(dataless_image(choose, "0")?, vec![0xA5, 7]);
+        assert_eq!(dataless_image(choose, "1")?, vec![0x5A, 7]);
+        // The DA.tp shape declares no fill octet: the erased value stays.
+        let undeclared = r#"<LdCtrlRelSegment LsmIdx="4" Size="4" />"#;
+        assert_eq!(dataless_image(undeclared, "0")?, vec![0xFF, 7]);
+        // A `par`-only restatement after the full allocation does not count.
+        let restated = r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="0" Fill="165" />
+            <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="4" Mode="0" Fill="90" />"#;
+        assert_eq!(dataless_image(restated, "0")?, vec![0xA5, 7]);
         Ok(())
     }
 

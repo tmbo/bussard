@@ -241,6 +241,7 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
         size: Some(2),
         applies_to: None,
         fill: SegmentFill::NONE,
+        fill_declared: true,
     };
     // `Offset="0" Size="1048576" Verify="true"`: the whole table image, the
     // size a sentinel.

@@ -478,15 +478,19 @@ pub enum SegmentKind {
 /// octets 6 and 7 of the Data Relative Allocation record (KNX 3/5/3 §3.5.1.2).
 ///
 /// ETS copies the product's `@Mode` and `@Fill` into the record verbatim, also
-/// when `Mode` is `0` and the fill octet has no effect on the device: the
+/// when `Mode` is `0` and the device does not pre-fill the segment: the
 /// synthetic product `syn-relseg-fill` (`Mode="0" Fill="255"`) is allocated
-/// with `00 ff` (issue #480).
+/// with `00 ff` (issue #480). The declared `Fill` is also the octet ETS writes
+/// into the unplaced octets of a relative segment without `<Data>`, whatever
+/// the `Mode` (`bussard_product::unplaced_fill`, issues #834 and #1061).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SegmentFill {
     /// The `Mode` octet; bit 0 asks the device to fill the segment.
     pub mode: u8,
-    /// The `Fill` octet: the fill byte when bit 0 of `mode` is set, sent
-    /// as given otherwise.
+    /// The `Fill` octet: the byte the device pre-fills the segment with when
+    /// bit 0 of `mode` is set, sent as given otherwise; in both cases the
+    /// image of the unplaced octets of a data-less segment when declared
+    /// (see [`LoadOp::RelSegment`]'s `fill_declared`).
     pub fill: u8,
 }
 
@@ -714,6 +718,14 @@ pub enum LoadOp {
         /// still sent as given (ETS does, issue #480). No attribute at all is
         /// [`SegmentFill::NONE`], the DA.tp shape.
         fill: SegmentFill,
+        /// Whether the op declares its fill octet: a `Fill` that parses next
+        /// to `Mode`, or a `FillByte` that parses in the older spelling.
+        /// `false` for an absent or unparseable octet and for the older
+        /// spelling's bare flag (`Fill="0"`, `Fill="true"`), which
+        /// [`SegmentFill`] carries as `0`; only a declared octet is the image
+        /// of a data-less segment's unplaced octets (issue #1061).
+        #[serde(default)]
+        fill_declared: bool,
     },
     /// `<LdCtrlAbsSegment …>`: an absolute-segment control op.
     AbsSegment {
@@ -3649,7 +3661,10 @@ fn text_color_type(space: &str, size_bits: Option<u32>) -> ParameterType {
     }
 }
 
-fn parse_fill(m: &Attrs) -> SegmentFill {
+/// The `Mode`/`Fill` octets of an `LdCtrlRelSegment` (or the older
+/// `Fill`/`FillByte` spelling) and whether the fill octet is declared: present
+/// and parseable (see [`LoadOp::RelSegment`]'s `fill_declared`).
+fn parse_fill(m: &Attrs) -> (SegmentFill, bool) {
     let byte = |raw: Option<&str>| {
         raw.and_then(|s| {
             let s = s.trim();
@@ -3659,22 +3674,29 @@ fn parse_fill(m: &Attrs) -> SegmentFill {
                 s.parse::<u8>().ok()
             }
         })
-        .unwrap_or(0)
     };
     if let Some(mode) = get(m, b"Mode") {
-        return SegmentFill {
-            mode: byte(Some(mode)),
-            fill: byte(get(m, b"Fill")),
-        };
+        let fill = byte(get(m, b"Fill"));
+        return (
+            SegmentFill {
+                mode: byte(Some(mode)).unwrap_or(0),
+                fill: fill.unwrap_or(0),
+            },
+            fill.is_some(),
+        );
     }
     let Some(raw) = get(m, b"Fill") else {
-        return SegmentFill::NONE;
+        return (SegmentFill::NONE, false);
     };
     let on = matches!(raw.trim(), "1" | "true" | "True" | "TRUE");
-    SegmentFill {
-        mode: u8::from(on),
-        fill: byte(get(m, b"FillByte")),
-    }
+    let fill = byte(get(m, b"FillByte"));
+    (
+        SegmentFill {
+            mode: u8::from(on),
+            fill: fill.unwrap_or(0),
+        },
+        fill.is_some(),
+    )
 }
 
 /// Records the branches the op just appended to the open procedure sits in,
@@ -3790,12 +3812,16 @@ pub(crate) fn push_load_op(cur_lp: &mut Option<LoadProcedure>, e: &BytesStart, m
             seg0: u(b"Seg0"),
             seg1: u(b"Seg1"),
         },
-        b"LdCtrlRelSegment" => LoadOp::RelSegment {
-            lsm_idx: u(b"LsmIdx"),
-            size: u(b"Size"),
-            applies_to: s(b"AppliesTo"),
-            fill: parse_fill(m),
-        },
+        b"LdCtrlRelSegment" => {
+            let (fill, fill_declared) = parse_fill(m);
+            LoadOp::RelSegment {
+                lsm_idx: u(b"LsmIdx"),
+                size: u(b"Size"),
+                applies_to: s(b"AppliesTo"),
+                fill,
+                fill_declared,
+            }
+        }
         b"LdCtrlAbsSegment" => LoadOp::AbsSegment {
             lsm_idx: u(b"LsmIdx"),
             address: u(b"Address"),

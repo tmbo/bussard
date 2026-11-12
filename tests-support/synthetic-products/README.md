@@ -44,6 +44,7 @@ next to it, and zips it on demand.
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
+| [`syn-relseg-dataless`](syn-relseg-dataless/product.toml) | `NEST-MOSS` | 07B0 | data-less RelativeSegment, Mode 0 with Fill 165 | #1061, #1054 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-rf-27b0`](syn-rf-27b0/product.toml) | `NEST-RADIO` | 27B0 | System B on KNX RF (mask 27B0, MT-2) | #604 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
