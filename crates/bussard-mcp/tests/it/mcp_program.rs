@@ -1874,3 +1874,130 @@ async fn test_knx_plan_device_summary_and_notice_speak_in_names() -> anyhow::Res
     );
     h.stop().await
 }
+
+/// A programming-tier server whose tier believes it writes through the
+/// non-loopback `192.0.2.10:3671` (the operator opted in), while its bus is
+/// wired to the loopback mock: the seam the supported-device gate (issue
+/// #1089) refuses on, with no real gateway ever contacted.
+async fn start_remote_tier() -> anyhow::Result<Harness> {
+    fast_mock_timeouts();
+    let gateway = MockGateway::builder()
+        .channel(CHANNEL)
+        .keep_serving()
+        .idle_timeout(Duration::from_secs(60))
+        .device(system_b_device(false)?)
+        .start()
+        .await?;
+    let dir = tempfile::tempdir()?;
+    write_model(dir.path())?;
+    let remote = ConnectionConfig::tunnel(SocketAddrV4::new(
+        std::net::Ipv4Addr::new(192, 0, 2, 10),
+        3671,
+    ));
+    let config = McpConfig {
+        dir: dir.path().to_path_buf(),
+        connection: remote,
+        passive: false,
+        allow_writes: false,
+        no_model_edits: true,
+        capture_db: None,
+        allow_programming: true,
+        allow_remote_gateway: true,
+        plan_ttl: Duration::from_secs(600),
+        keyring: None,
+        allow_home_assistant: false,
+        viz_listen: None,
+    };
+    let state = bussard_mcp::build_state(&config)?;
+    let service = bussard_service::BusService::open(
+        ConnectionConfig::tunnel(gateway.addr()),
+        bussard_service::WritePolicy::transmit(false),
+    )?;
+    if !service.wait_connected(Duration::from_secs(5)).await {
+        anyhow::bail!("the mock tunnel did not come up");
+    }
+    state.bus.wire(service);
+    let (server_io, client_io) = tokio::io::duplex(64 * 1024);
+    let server = bussard_mcp::server::BussardMcp::new(state);
+    let server_task = tokio::spawn(async move {
+        if let Ok(running) = server.serve(server_io).await {
+            let _ = running.waiting().await;
+        }
+    });
+    let client = ().serve(client_io).await?;
+    Ok(Harness {
+        client,
+        server_task,
+        gateway,
+        dir,
+    })
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_refuses_unsupported_device_then_forces_it() -> anyhow::Result<()> {
+    let h = start_remote_tier().await?;
+    // 1.1.4 pins no application: not on the supported list.
+    let shown = h
+        .call("knx_show_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(shown["support"]["status"], "unsupported", "{shown}");
+
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["ok"], true, "plan: {plan}");
+    assert_eq!(plan["support"]["status"], "unsupported", "{plan}");
+    assert_eq!(plan["support"]["override_needed"], true, "{plan}");
+    assert!(
+        plan["next_step"]
+            .as_str()
+            .is_some_and(|s| s.contains("not on bussard's list of supported devices")),
+        "{plan}"
+    );
+    let digest = digest_of(&plan)?;
+
+    // Refused by default; nothing written, the digest stays valid.
+    let refused = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(refused["refused"], true, "{refused}");
+    assert_eq!(refused["code"], "unsupported_device", "{refused}");
+    assert_eq!(refused["support"]["status"], "unsupported");
+    assert_eq!(h.writes()?, 0, "a refused write must not reach the device");
+
+    // The human's override, bound to the plan that reported it.
+    let forced = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest, "allow_unsupported": true}),
+        )
+        .await?;
+    assert_eq!(forced["ok"], true, "forced: {forced}");
+    assert_eq!(forced["support"], "forced", "{forced}");
+    let (addresses, _) = h.tables()?;
+    assert_eq!(addresses, address_table(&["1/2/0", "1/2/1", "1/2/2"])?);
+    h.stop().await
+}
+
+#[tokio::test]
+async fn test_knx_apply_device_on_loopback_reports_unsupported_without_refusing()
+-> anyhow::Result<()> {
+    let h = Harness::start(Duration::from_secs(600)).await?;
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.4"}))
+        .await?;
+    assert_eq!(plan["support"]["status"], "unsupported", "{plan}");
+    assert!(plan["support"]["override_needed"].is_null(), "{plan}");
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.4", "plan_digest": digest_of(&plan)?}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["support"], "unsupported", "{applied}");
+    h.stop().await
+}

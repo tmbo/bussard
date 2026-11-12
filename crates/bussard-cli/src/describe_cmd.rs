@@ -261,6 +261,15 @@ fn render_text(report: &DescribeReport, name: Option<&str>, style: Style) -> Str
         };
         out.push_str(&format!("  {line}\n"));
     }
+    if let Some(support) = &report.support {
+        let line = support_line(support);
+        let line = if support.is_supported() {
+            line
+        } else {
+            style.warn(&line)
+        };
+        out.push_str(&format!("  {line}\n"));
+    }
     if let Some(knxnet) = &report.knxnet {
         out.push_str(&crate::status_cmd::render_knxnet(knxnet, style));
     }
@@ -320,4 +329,21 @@ fn render_text(report: &DescribeReport, name: Option<&str>, style: Style) -> Str
         }
     }
     out
+}
+
+/// The supported-device verdict in one line (issue #1089).
+pub(crate) fn support_line(support: &bussard_service::support::SupportView) -> String {
+    let what = match (&support.application, &support.name) {
+        (Some(app), Some(name)) => format!("{app}, {name}"),
+        (Some(app), None) => app.clone(),
+        (None, Some(name)) => name.clone(),
+        (None, None) => "unknown application".to_string(),
+    };
+    match (support.evidence, support.reason) {
+        (Some(evidence), _) => format!("supported ({evidence}): {what}"),
+        (None, Some(reason)) => {
+            format!("not on the supported list ({reason}): {what}; writes need --allow-unsupported")
+        }
+        (None, None) => format!("not on the supported list: {what}"),
+    }
 }

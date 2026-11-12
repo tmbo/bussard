@@ -191,6 +191,9 @@ pub struct ParameterRestorePlan {
     pub octet_ranges: Vec<OctetAttribution>,
     /// The plan's notes.
     pub notes: Vec<String>,
+    /// The supported-device verdict (issue #1089), when the surface set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
     /// The question and, on the MCP surface, the digest.
     #[serde(flatten)]
     pub approval: Approval,
@@ -217,6 +220,7 @@ impl ParameterRestorePlan {
             octets: plan.octets,
             octet_ranges: plan.octet_ranges.clone(),
             notes: plan.notes.clone(),
+            support: None,
             approval: Approval::question((!noop).then(|| plan.question(target, gateway))),
         }
     }
@@ -248,10 +252,13 @@ impl Report for ParameterRestorePlan {
                 self.address
             )
         } else {
-            "Show the sentences above to the human in full (what is written, what is left as \
-             the device holds it) and ask the question. Call knx_restore_parameters with this \
-             plan_digest only after an explicit yes."
-                .to_string()
+            with_support_note(
+                self.support.as_ref(),
+                &self.address,
+                "Show the sentences above to the human in full (what is written, what is left \
+                 as the device holds it) and ask the question. Call knx_restore_parameters with \
+                 this plan_digest only after an explicit yes.",
+            )
         })
     }
 }
@@ -307,9 +314,25 @@ pub struct TableRestorePlan {
     pub security_object: Option<crate::program::outcome::SecurityObject>,
     /// The plan's notes.
     pub notes: Vec<String>,
+    /// The supported-device verdict (issue #1089), when the surface set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
     /// The question and, on the MCP surface, the digest.
     #[serde(flatten)]
     pub approval: Approval,
+}
+
+/// `step`, after the supported-device note of `support` when the device is
+/// not on the list (issue #1089).
+fn with_support_note(
+    support: Option<&crate::support::SupportView>,
+    address: &str,
+    step: &str,
+) -> String {
+    match support.and_then(|s| s.assistant_note(address)) {
+        Some(note) => format!("{note} {step}"),
+        None => step.to_string(),
+    }
 }
 
 impl Report for TableRestorePlan {
@@ -338,9 +361,13 @@ impl Report for TableRestorePlan {
                 self.address
             )
         } else {
-            "Show the plan above to the human (what is added and removed) and ask the question. \
-             Call knx_restore_tables with this plan_digest only after an explicit yes."
-                .to_string()
+            with_support_note(
+                self.support.as_ref(),
+                &self.address,
+                "Show the plan above to the human (what is added and removed) and ask the \
+                 question. Call knx_restore_tables with this plan_digest only after an explicit \
+                 yes.",
+            )
         })
     }
 }

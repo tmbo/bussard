@@ -5,6 +5,8 @@
 //!   `flash`, `reconstruct` and `audit` use, and must match byte-for-byte.
 //! - the pages under `docs/reference/commands/` document every long flag any subcommand's `--help`
 //!   prints.
+//! - its "Supported devices" table is rendered from the supported-device list
+//!   the binary embeds (issue #1089).
 //! - `docs/reference/mcp-tools.md` states the tool count of every MCP tier the
 //!   built server registers, and names every tool of each tier (issue #704).
 
@@ -107,6 +109,34 @@ fn test_safety_mask_table_marks_property_only_flash() -> TestResult {
     assert!(
         after.contains("`property-only`") && after.contains(&format!("`{mask:04X}`")),
         "the prose below the mask table must explain `property-only` on `{mask:04X}`"
+    );
+    Ok(())
+}
+
+/// Marks the start of the generated supported-device table (issue #1089).
+const SUPPORTED_START: &str = "<!-- supported-table:start -->";
+/// Marks its end.
+const SUPPORTED_END: &str = "<!-- supported-table:end -->";
+
+/// `docs/explanation/device-support.md`'s supported-device table is rendered
+/// from the list the binary embeds (issue #1089), byte for byte.
+#[test]
+fn test_device_support_supported_table_matches_the_list() -> TestResult {
+    let doc = std::fs::read_to_string(docs().join("explanation/device-support.md"))?;
+    let start = doc
+        .find(SUPPORTED_START)
+        .ok_or("no supported-table start marker")?;
+    let end = doc
+        .find(SUPPORTED_END)
+        .ok_or("no supported-table end marker")?;
+    let body = doc[start..end]
+        .split_once('\n')
+        .map(|(_, b)| b)
+        .ok_or("empty table block")?;
+    let expected = bussard_model::supported::SupportedList::embedded().markdown_table();
+    assert_eq!(
+        body, expected,
+        "docs/explanation/device-support.md's supported-device table is stale; replace the block between the markers with:\n{expected}"
     );
     Ok(())
 }

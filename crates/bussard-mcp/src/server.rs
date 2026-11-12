@@ -506,6 +506,11 @@ impl BussardMcp {
         if !args.technical {
             crate::everyday::plain_view(&mut value);
         }
+        // Whether bussard writes it without the override (issue #1089),
+        // after the plain view: it names the application on purpose.
+        value["support"] =
+            serde_json::to_value(bussard_service::support::verdict_at(Some(&model), ia).view())
+                .unwrap_or_default();
         if args.live {
             value["live"] = self.live_part(ia).await;
         }

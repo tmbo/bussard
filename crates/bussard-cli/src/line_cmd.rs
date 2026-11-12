@@ -71,6 +71,7 @@ pub(crate) fn run_plan(
             yes: false,
             resume: false,
             allow_remote_gateway: false,
+            allow_unsupported: false,
         },
         tool_key_source,
         g.mgmt_with_facts(),
@@ -82,6 +83,7 @@ pub(crate) fn run_apply(
     line: &str,
     yes: bool,
     resume: bool,
+    allow_unsupported: bool,
     tool_key_source: ToolKeySource<'_>,
     g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
@@ -94,6 +96,7 @@ pub(crate) fn run_apply(
             yes,
             resume,
             allow_remote_gateway: g.allow_remote_gateway,
+            allow_unsupported,
         },
         tool_key_source,
         g.mgmt_with_facts(),
@@ -110,6 +113,9 @@ struct LineOptions {
     resume: bool,
     /// Permit a write to a non-loopback gateway (`apply` only).
     allow_remote_gateway: bool,
+    /// Write devices that are not on the supported list (`apply` only,
+    /// issue #1089).
+    allow_unsupported: bool,
 }
 
 /// The shared body of `plan --line` and `apply --line`.
@@ -229,6 +235,7 @@ fn run_line(
                     &mut state,
                     &state_path,
                     &collected,
+                    options.allow_unsupported,
                 ) => false,
                 _ = tokio::signal::ctrl_c() => {
                     eprintln!("\ninterrupted; closing the bus connection");
@@ -302,6 +309,7 @@ async fn visit_all(
     state: &mut Option<LineState>,
     state_path: &Path,
     collected: &Collected,
+    allow_unsupported: bool,
 ) {
     // KNX Data Secure (issue #71): one key per device, since a keyring holds
     // one per address; the admitted tunnelling addresses (issue #297).
@@ -326,6 +334,7 @@ async fn visit_all(
         tunnel: &tunnel,
         on_parse: Some(crate::timing::record_product_parse),
         expected: None,
+        allow_unsupported,
     };
     let total = targets.len();
     for (index, target) in targets.iter().enumerate() {

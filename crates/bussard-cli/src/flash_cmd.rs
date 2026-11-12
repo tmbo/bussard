@@ -140,6 +140,13 @@ pub(crate) struct FlashArgs {
     // Issue #490.
     #[arg(long, value_name = "FILE", requires = "dry_run")]
     pub resident: Option<PathBuf>,
+    /// Write the device even though its application program is not on
+    /// bussard's list of supported devices (`bussard device --supported`).
+    /// Back the device up first. A loopback gateway (a simulator) is never
+    /// refused.
+    // Issue #1089.
+    #[arg(long)]
+    pub allow_unsupported: bool,
 }
 
 impl Run for FlashArgs {
@@ -307,6 +314,14 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let config = resolve_config(model.as_ref(), &overrides)?;
     // Safety envelope (issue #74).
     enforce_write_gate(&config, allow_remote_gateway)?;
+    // The supported-device list (issue #1089), for the application this
+    // download loads, before the bus is opened.
+    let support = crate::support_gate::authorize(
+        &config,
+        target,
+        bussard_service::support::verdict_for_application(&app.id, model_device),
+        args.allow_unsupported,
+    )?;
     let gateway = gateway_display(&config);
     // An edit made outside bussard is recorded before this command acts on it.
     crate::history_cmd::capture_external_edit(dir);
@@ -357,6 +372,7 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             json,
             probed,
             handover,
+            support: &support,
         });
     }
     let planned = match flow::plan_full(&request, probed, &gateway) {
@@ -411,7 +427,10 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         bussard_model::history::SnapshotReason::new("flash")
             .with_args([target.to_string()])
             .with_gateway(Some(gateway.clone()))
-            .with_result("before flashing the application program"),
+            .with_result(crate::support_gate::history_result(
+                "before flashing the application program",
+                &support,
+            )),
     );
     let execution = flow::FlashExecution {
         service,
@@ -436,6 +455,7 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         senders: planned.senders.as_deref().filter(|_| model.is_some()),
         question: planned.question(target, &gateway),
         differential: planned.differential(),
+        support: &support,
     };
     let written = match runtime.block_on(flow::execute(execution, &mut observer)) {
         Ok(written) => written,

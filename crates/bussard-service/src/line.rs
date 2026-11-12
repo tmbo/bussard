@@ -339,6 +339,10 @@ pub struct LineOutcome {
     pub fingerprint: Option<String>,
     /// The pre-write backup, when one was written.
     pub backup: Option<PathBuf>,
+    /// How the device passed the support gate (issue #1089); in
+    /// [`LineMode::Plan`], `Unsupported` for a device an apply refuses
+    /// without the override.
+    pub support: Option<crate::support::SupportStatus>,
 }
 
 /// Resolves a device's KNX Data Secure material; `Err` is the reason.
@@ -371,6 +375,9 @@ pub struct LineVisit<'a> {
     /// no longer produces its fingerprint, or that the plan did not read, is
     /// failed without a write. `None` (the CLI) writes what the read shows.
     pub expected: Option<&'a BTreeMap<IndividualAddress, String>>,
+    /// Whether a device not on the supported list is written anyway (issue
+    /// #1089): the CLI's `--allow-unsupported`, `allow_unsupported` over MCP.
+    pub allow_unsupported: bool,
 }
 
 /// Plans (and, in [`LineMode::Apply`], writes) one device.
@@ -390,6 +397,7 @@ pub async fn visit_device(
         report: None,
         fingerprint: None,
         backup: None,
+        support: None,
     };
     let status = visit(ctx, target, note, &mut outcome).await;
     outcome.status = status;
@@ -408,6 +416,43 @@ async fn visit(
     let desired = match &target.desired {
         Ok(desired) => desired,
         Err(reason) => return DeviceStatus::Skipped(reason.clone()),
+    };
+    // The support gate (issue #1089): a plan reads the device and says it
+    // would be refused; an apply skips it without the override.
+    let verdict = crate::support::verdict_at(Some(model), target.address);
+    let grant = match ctx.mode {
+        LineMode::Plan => {
+            if crate::support::refuses(service.config(), &verdict) {
+                out.support = Some(crate::support::SupportStatus::Unsupported);
+                note.say(&format!(
+                    "{}: {}; an apply refuses it without the override",
+                    target.address,
+                    verdict.line()
+                ));
+            }
+            None
+        }
+        LineMode::Apply => match crate::support::authorize(
+            service.config(),
+            target.address,
+            verdict,
+            ctx.allow_unsupported,
+        ) {
+            Ok(grant) => {
+                out.support = Some(grant.status());
+                if let Some(line) = grant.plan_line() {
+                    note.say(&line);
+                }
+                Some(grant)
+            }
+            Err(refusal) => {
+                out.support = Some(crate::support::SupportStatus::Unsupported);
+                return DeviceStatus::Skipped(format!(
+                    "{}; refused without the override",
+                    refusal.sentence()
+                ));
+            }
+        },
     };
 
     // KNX Data Secure (issue #71): one key per device, since a keyring holds one
@@ -609,6 +654,9 @@ async fn visit(
     // The table write of the single-device apply (issue #901): the same
     // lease, load sequence and read-back verify. A System 7 write's closing
     // restart is waited out below, with the tables read back after it.
+    let Some(grant) = grant.as_ref() else {
+        return DeviceStatus::Failed("no support check for the write".to_string());
+    };
     let request = crate::program::apply::ApplyRequest {
         service,
         target: target.address,
@@ -627,6 +675,7 @@ async fn visit(
         high_water: secure_seq.clone(),
         options: L4Options::secured(source, tool_key.clone(), secure_seq.clone()),
         seed: None,
+        support: grant,
     };
     let (written, _) = crate::program::apply::write_tables(&request, false, &mut ()).await;
     let backed_up = |why: &str| format!("{why}; pre-state backed up to {}", backup_path.display());
@@ -917,6 +966,10 @@ pub struct LineDevice {
     pub notes: Vec<String>,
     /// The pre-write backup.
     pub backup: Option<String>,
+    /// `supported`, `unsupported` or `forced` (issue #1089), when the
+    /// device was visited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportStatus>,
 }
 
 impl LineDevice {
@@ -934,6 +987,7 @@ impl LineDevice {
             sentences: sentences(model, o),
             notes: notes.to_vec(),
             backup: o.backup.as_ref().map(|p| p.display().to_string()),
+            support: o.support,
         }
     }
 }

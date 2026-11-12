@@ -289,6 +289,10 @@ pub struct DescribeReport {
     /// The Data Secure diagnostics of a secured chat walk (issue #533).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub security_diagnostics: Option<SecurityDiagnostics>,
+    /// Whether bussard writes the device without the override (issue
+    /// #1089), for a device the project has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
 }
 
 impl DescribeReport {
@@ -309,6 +313,7 @@ impl DescribeReport {
             knxnet: None,
             serial: None,
             security_diagnostics: None,
+            support: None,
         }
     }
 }
@@ -658,6 +663,7 @@ fn report(
                 ..SecurityDiagnostics::default()
             })
         }),
+        support: loaded.map(|d| crate::support::verdict(Some(&d.device)).view()),
     }
 }
 

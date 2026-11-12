@@ -132,6 +132,7 @@ impl LineState {
             report: None,
             fingerprint: None,
             backup: None,
+            support: None,
         }
     }
 

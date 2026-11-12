@@ -55,6 +55,9 @@ fn sides(plan: &InterfacePlan) -> PlanSides {
     PlanSides {
         live: live.finish(),
         model: model.finish(),
+        // An interface's KNXnet/IP parameter object is not an application
+        // download; the supported-device list does not gate it.
+        unsupported: false,
     }
 }
 

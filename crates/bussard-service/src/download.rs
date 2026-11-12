@@ -251,6 +251,8 @@ pub struct ParamWrite<'a> {
     /// its independent read-back after the write reads the same properties
     /// (`ExpectedProperty::from_checked`), and one element is read once.
     pub read_back_properties: bool,
+    /// The support gate's grant for the device (issue #1089).
+    pub support: &'a crate::support::SupportGrant,
 }
 
 /// Writes the parameter octets that differ and verifies them by reading the
@@ -261,7 +263,8 @@ pub struct ParamWrite<'a> {
 ///
 /// # Errors
 ///
-/// The read-back session could not be opened.
+/// The support grant is for another device, or the read-back session could
+/// not be opened.
 pub async fn write_parameters(
     write: ParamWrite<'_>,
     observer: &mut impl ProgressSink,
@@ -276,7 +279,9 @@ pub async fn write_parameters(
         high_water,
         read_options,
         read_back_properties,
+        support,
     } = write;
+    support.covers(target).map_err(ServiceError::Refused)?;
     let mut facts = DeviceFactsRecord::unread(target);
     facts.set_object_table(&detail.resident.object_table);
     let options = FlashOptions {

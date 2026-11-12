@@ -15,6 +15,13 @@ refuse before opening a connection, because their first bus step acts on the
 device in programming mode. The other write commands first show what they
 would change, then refuse at the prompt.
 
+`flash`, `apply`, `restore`, `replace` and `commission` with `--flash` or
+`--apply` also refuse, on a real gateway, a device whose application program
+is not on bussard's [list of supported devices](device-support.md#supported-devices),
+before anything is written. `--allow-unsupported` writes it anyway; back the
+device up first. `plan`, `describe` and `device` print the verdict, so you
+know before you ask for a write.
+
 ## `write` sends one group value
 
 - **Writes** a single group value (`on`/`off`, `up`/`down`, a number, a

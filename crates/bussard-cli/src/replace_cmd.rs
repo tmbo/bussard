@@ -82,6 +82,13 @@ pub(crate) struct ReplaceArgs {
     bcu_key: Option<String>,
     #[command(flatten)]
     tool_key: BenchToolKey,
+    /// Write the device even though its application program is not on
+    /// bussard's list of supported devices (`bussard device --supported`).
+    /// Back the device up first. A loopback gateway (a simulator) is never
+    /// refused.
+    // Issue #1089.
+    #[arg(long)]
+    allow_unsupported: bool,
 }
 
 impl Run for ReplaceArgs {
@@ -148,6 +155,15 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
 
     let config = resolve_config(Some(&model), &overrides)?;
     enforce_write_gate(&config, allow_remote_gateway)?;
+    // The supported-device list (issue #1089), before the address is
+    // written, so a refusal leaves nothing half done. `flash` and `apply`
+    // ask it again with the same answer.
+    crate::support_gate::authorize(
+        &config,
+        target,
+        bussard_service::support::verdict_at(Some(&model), target),
+        args.allow_unsupported,
+    )?;
     let gateway = gateway_display(&config);
 
     // Phase 1 (read-only, on its own runtime): confirm the old device is gone,
@@ -199,6 +215,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             tool_key: ToolKey {
                 tool_key: args.tool_key.tool_key.clone(),
             },
+            allow_unsupported: args.allow_unsupported,
             ..FlashArgs::default()
         }
         .run(&g.step())?;
@@ -224,6 +241,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         tool_key: ToolKey {
             tool_key: args.tool_key.tool_key.clone(),
         },
+        allow_unsupported: args.allow_unsupported,
         ..ApplyArgs::default()
     }
     .run(&g.step())?;

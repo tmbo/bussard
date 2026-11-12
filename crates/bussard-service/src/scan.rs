@@ -423,6 +423,10 @@ pub struct ScanDevice {
     /// Its identity against `bussard.lock`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub identity: Option<IdentityCheck>,
+    /// Whether bussard writes it without the override (issue #1089), for a
+    /// device the project has.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
 }
 
 /// A project device that did not answer.
@@ -495,6 +499,9 @@ impl ScanOutcome {
                     secure: f.secure.activated().then(|| f.secure.as_str()),
                     secure_note: secure_label(f.secure).filter(|_| f.secure.activated()),
                     identity: f.identity.clone(),
+                    support: model
+                        .filter(|m| m.devices.contains_key(&f.address))
+                        .map(|m| crate::support::verdict_at(Some(m), f.address).view()),
                 })
                 .collect(),
             model_device_count: report.model_device_count,

@@ -83,6 +83,14 @@ pub(crate) struct CommissionArgs {
     /// escape hatch. Prefer `--keyring` for a real installation.
     #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
     tool_key: Option<String>,
+    /// With `--flash` or `--apply`: write devices whose application program
+    /// is not on bussard's list of supported devices (`bussard device
+    /// --supported`). Without it such a device refuses the run before any
+    /// address is assigned. A loopback gateway (a simulator) is never
+    /// refused.
+    // Issue #1089.
+    #[arg(long)]
+    allow_unsupported: bool,
 }
 
 impl Run for CommissionArgs {
@@ -127,6 +135,33 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let gateway = gateway_display(&config);
 
     let mut walk = LineRun::new(&model, area, line_no);
+    // The supported-device list (issue #1089): with a download half, every
+    // device is checked before the first address is assigned, so a line is
+    // not left half commissioned.
+    if options.flash || options.apply {
+        let refusals: Vec<String> = walk
+            .targets()
+            .iter()
+            .filter_map(|target| {
+                bussard_service::support::authorize(
+                    &config,
+                    target.address,
+                    bussard_service::support::verdict_at(Some(&model), target.address),
+                    options.allow_unsupported,
+                )
+                .err()
+                .map(|refusal| refusal.sentence())
+            })
+            .collect();
+        if !refusals.is_empty() {
+            bail!(
+                "refusing to commission line {line} with a download: nothing was assigned.\n  \
+                 {}\nReads work (plan, describe, backup). To write anyway, back the devices up \
+                 first and pass --allow-unsupported.",
+                refusals.join("\n  ")
+            );
+        }
+    }
     if walk.targets().is_empty() {
         bail!(
             "your project has no devices on line {line} (looked in {}/devices)",
@@ -370,6 +405,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
+            allow_unsupported: options.allow_unsupported,
             ..FlashArgs::default()
         }
         .run(&g.step());
@@ -388,6 +424,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
+            allow_unsupported: options.allow_unsupported,
             ..ApplyArgs::default()
         }
         .run(&g.step());

@@ -49,6 +49,8 @@ pub(crate) struct Context<'a> {
     /// (issue #213). It holds the bus lease, so it is released before any
     /// other session opens.
     pub handover: crate::flash_handover::Handover<'a>,
+    /// The supported-device gate's grant (issue #1089).
+    pub support: &'a bussard_service::support::SupportGrant,
 }
 
 /// Runs the parameter-only download (module docs).
@@ -103,7 +105,10 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         bussard_model::history::SnapshotReason::new("flash --parameters-only")
             .with_args([target.to_string()])
             .with_gateway(Some(ctx.gateway.clone()))
-            .with_result("before downloading the parameters"),
+            .with_result(crate::support_gate::history_result(
+                "before downloading the parameters",
+                ctx.support,
+            )),
     );
     let write = ParamsWrite {
         question: planned.question(target, &ctx.gateway),
@@ -114,6 +119,7 @@ pub(crate) fn run(mut ctx: Context<'_>) -> anyhow::Result<ExitCode> {
         app,
         facts: ctx.probed.facts.clone(),
         handover: ctx.handover.take(),
+        support: ctx.support,
     };
     let written = ctx.runtime.block_on(params_only::write_parameters_only(
         write,

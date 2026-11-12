@@ -135,6 +135,7 @@ pub mod security_change;
 pub mod security_diag;
 pub mod setup;
 pub mod status;
+pub mod support;
 pub mod transport;
 pub mod util;
 pub mod validate_report;

@@ -412,6 +412,8 @@ pub struct FlashExecution<'a> {
     /// Whether objects whose resident image matches are skipped (said
     /// before the download).
     pub differential: bool,
+    /// The support gate's grant for the device (issue #1089).
+    pub support: &'a crate::support::SupportGrant,
 }
 
 /// How a download ended.
@@ -434,11 +436,15 @@ pub struct FlashWritten {
 ///
 /// # Errors
 ///
-/// The human said no, or no one could be asked.
+/// The support grant is for another device, the human said no, or no one
+/// could be asked.
 pub async fn execute(
     exec: FlashExecution<'_>,
     observer: &mut impl Observer,
 ) -> Result<FlashWritten, Declined> {
+    exec.support
+        .covers(exec.target)
+        .map_err(Declined::Refused)?;
     crate::observer::ask(observer, &exec.question)?;
     let plan = exec.plan;
     if plan.has_factory_reset() {

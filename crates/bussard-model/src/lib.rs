@@ -53,6 +53,7 @@ pub mod script;
 pub mod secure_invariants;
 pub mod secure_links;
 pub mod serials;
+pub mod supported;
 pub mod tests_schema;
 pub mod text;
 pub mod text_codec;
