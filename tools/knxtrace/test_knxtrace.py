@@ -23,6 +23,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +33,7 @@ import image as memimage  # noqa: E402
 import knxip  # noqa: E402
 import normalize as norm  # noqa: E402
 import opsdiff  # noqa: E402
+import sequence  # noqa: E402
 from knxtrace import main  # noqa: E402
 
 REPO_ROOT = os.path.abspath(
@@ -3204,6 +3206,281 @@ class TestStateDiff(unittest.TestCase):
         self.assertEqual(props["verdict"], memimage.NOT_COMPARABLE, props)
         self.assertEqual(sorted(e["key"][1] for e in props["not_compared"]), [14, 59])
         self.assertEqual(props["compared"], 0)
+
+
+def prop_read(obj: int, pid: int, count: int = 1, index: int = 1, seq: int = 0) -> bytes:
+    return numbered(seq, 0x3D5, bytes([obj, pid, (count << 4) | (index >> 8), index & 0xFF]))
+
+
+def restart(seq: int = 0, erase_code: Optional[int] = None) -> bytes:
+    if erase_code is None:
+        return numbered(seq, 0x380)
+    return numbered(seq, 0x381, bytes([erase_code, 0]))
+
+
+class TestSequence(unittest.TestCase):
+    """The order of the state-changing operations (issue #1055)."""
+
+    UNLOAD = bytes([4]) + bytes(9)
+    START = bytes([1]) + bytes(9)
+    DONE = bytes([2]) + bytes(9)
+    PARAMS = bytes.fromhex("0102030405060708")
+
+    def frames(self, restart_first: bool = False) -> list:
+        """ETS's download of 1.1.5: unload, a load-state read, start, the
+        memory in two chunks, PID_PROGMODE (listed, never counted), one
+        property in two element runs, complete, a memory read, restart."""
+        tool, dev = "0.0.0", "1.1.5"
+        npdus = [
+            prop_write(1, 5, 1, 1, self.UNLOAD),
+            prop_read(1, 5),
+            prop_write(1, 5, 1, 1, self.START),
+            mem_write(0x4000, b"\xaa\xbb"),
+            mem_write(0x4002, b"\xcc\xdd"),
+            prop_write(0, 54, 1, 1, b"\x00"),
+            prop_write(3, 101, 2, 1, self.PARAMS[:4]),
+            prop_write(3, 101, 2, 3, self.PARAMS[4:]),
+            prop_write(1, 5, 1, 1, self.DONE),
+            mem_read(0x4000, 2),
+            restart(),
+        ]
+        if restart_first:
+            npdus.insert(npdus.index(prop_write(1, 5, 1, 1, self.DONE)), npdus.pop())
+        out = [cemi_ldata(tool, dev, t_connect())]
+        # Number the requests in order (the helpers number them 0).
+        out += [cemi_ldata(tool, dev, bytes([(n[0] & 0xC3) | ((i & 0x0F) << 2)]) + n[1:])
+                for i, n in enumerate(npdus)]
+        out.append(cemi_ldata(tool, dev, t_disconnect()))
+        return out
+
+    def capture(self, restart_first: bool = False) -> str:
+        path = tempfile.mkstemp(suffix=".pcapng")[1]
+        self.addCleanup(os.unlink, path)
+        frames = self.frames(restart_first)
+        udp_capture(path, [(tunneling_request(f, seq=n), True) for n, f in enumerate(frames)])
+        return path
+
+    def image_dir(self, restart_first: bool = False) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", self.capture(restart_first), "--device", "1.1.5", "--out", out]), 0)
+        return out
+
+    def plan(self, restart_before_done: bool = False) -> dict:
+        def lc(n, data):
+            return {"index": n, "label": "%d. load control" % n,
+                    "load_controls": [{"form": "property", "object": 1, "data": data.hex()}]}
+
+        steps = [
+            lc(1, self.UNLOAD),
+            lc(2, self.START),
+            {"index": 3, "label": "3. write parameters image", "image": {
+                "address": 0x4000, "file": "seg.bin", "image_kind": "parameters", "length": 4}},
+            {"index": 4, "label": "4. write property", "property": {
+                "object": 3, "pid": 101, "start_element": 1, "count": 4, "data": self.PARAMS.hex()}},
+            lc(5, self.DONE),
+            {"index": 6, "label": "6. restart device"},
+        ]
+        if restart_before_done:
+            steps[4], steps[5] = steps[5], steps[4]
+        return {"device": "1.1.5", "system": "7", "steps": steps, "tables": [],
+                "load_control_records": 3}
+
+    def plan_dir(self, plan: dict) -> str:
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        with open(os.path.join(out, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        with open(os.path.join(out, "seg.bin"), "wb") as fh:
+            fh.write(b"\xaa\xbb\xcc\xdd")
+        return out
+
+    def test_operations_number_the_writes_as_the_image_files(self):
+        image_dir = self.image_dir()
+        ops = sequence.load_operations(image_dir)
+        self.assertEqual([e["op"] for e in ops], [
+            "connect", "load-control", "read", "load-control", "mem-write", "mem-write",
+            "prop-write", "prop-write", "prop-write", "load-control", "read", "restart",
+            "disconnect"])
+        with open(os.path.join(image_dir, "properties.json")) as fh:
+            props = json.load(fh)
+        for e in ops:
+            if e["op"] == "prop-write":
+                rec = props[e["seq"] - 1]
+                self.assertEqual((rec["object"], rec["pid"]), (e["object"], e["pid"]))
+        self.assertEqual([e["seq"] for e in ops if e["op"] == "load-control"], [1, 2, 3])
+        self.assertEqual(ops[4]["target"], "mem 0x4000")
+
+    def test_compare_plan_normalises_chunks_runs_and_exemptions(self):
+        report = memimage.compare(self.plan_dir(self.plan()), self.image_dir())
+        seq = report["sequence"]
+        self.assertEqual(seq["verdict"], memimage.IDENTICAL, seq)
+        # Two memory chunks and two element runs are one token each, and
+        # ETS's PID_PROGMODE write (not compared) is no token.
+        self.assertEqual(seq["ets"], [
+            "load-control obj1 unload", "load-control obj1 start-loading", "mem-write mem 0x4000 x2",
+            "prop-write obj3 PID 101 x2", "load-control obj1 load-completed", "restart"])
+        self.assertEqual(seq["bussard"][:2] + seq["bussard"][4:], seq["ets"][:2] + seq["ets"][4:])
+        self.assertEqual(sequence.summary(seq), "seq=ok(6)")
+        self.assertEqual(report["properties"]["verdict"], memimage.IDENTICAL)
+        # The headline is the state's alone.
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+
+    def test_compare_plan_reports_the_first_divergence(self):
+        report = memimage.compare(self.plan_dir(self.plan(restart_before_done=True)), self.image_dir())
+        seq = report["sequence"]
+        self.assertEqual(seq["verdict"], memimage.DIFFERS)
+        self.assertEqual(seq["first"]["kind"], "order")
+        self.assertEqual(seq["first"]["position"], 5)
+        self.assertEqual(
+            sequence.summary(seq),
+            "seq=differs(first: bussard restart where ETS load-control obj1 load-completed "
+            "(after prop-write obj3 PID 101))")
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+        self.assertTrue(any("first divergence" in line for line in memimage.render(report)))
+
+    def test_compare_plan_one_sided_operation(self):
+        plan = self.plan()
+        plan["steps"] = plan["steps"][:-1]
+        seq = memimage.compare(self.plan_dir(plan), self.image_dir())["sequence"]
+        self.assertEqual(seq["first"]["kind"], "ets-only")
+        self.assertEqual(seq["first"]["text"], "ETS-only restart (after load-control obj1 load-completed)")
+
+    def test_compare_plan_without_sequence_file_is_not_comparable(self):
+        image_dir = self.image_dir()
+        os.unlink(os.path.join(image_dir, sequence.SEQUENCE_FILE))
+        seq = memimage.compare(self.plan_dir(self.plan()), image_dir)["sequence"]
+        self.assertEqual(seq["verdict"], memimage.NOT_COMPARABLE)
+        self.assertEqual(sequence.summary(seq), "seq=n/c")
+
+    def test_read_counts_by_kind_never_judged(self):
+        seq = memimage.compare(self.plan_dir(self.plan()), self.image_dir())["sequence"]
+        reads = seq["reads"]
+        self.assertEqual(reads["ets"], {"property": 1, "memory": 1, "description": 0})
+        self.assertEqual(reads["ets_only"], {"property": 1, "memory": 1, "description": 0})
+        self.assertEqual(reads["bussard_only"], {"property": 0, "memory": 0, "description": 0})
+        self.assertEqual(reads["ets_only_keys"], ["memory mem 0x4000 x1", "property obj1 PID 5 x1"])
+        self.assertEqual(seq["verdict"], memimage.IDENTICAL)
+
+    def test_read_counts_multiset_difference(self):
+        ours = [{"op": "read", "read": "property", "key": "obj1 PID 5"},
+                {"op": "read", "read": "property", "key": "obj1 PID 5"},
+                {"op": "read", "read": "description", "key": "obj4 PID 13"}]
+        ets = [{"op": "read", "read": "property", "key": "obj1 PID 5"},
+               {"op": "read", "read": "memory", "key": "obj4"}]
+        reads = sequence.read_counts(ours, ets)
+        self.assertEqual(reads["bussard_only"], {"property": 1, "memory": 0, "description": 1})
+        self.assertEqual(reads["ets_only"], {"property": 0, "memory": 1, "description": 0})
+
+    def test_plan_operations_restart_and_reads_from_labels(self):
+        plan = {"steps": [
+            {"index": 1, "label": "1. verify property (object type 17 #1, PID 54 == 8 byte(s))"},
+            {"index": 2, "label": "2. read image MCB (object 4, PID 27)"},
+            {"index": 3, "label": "3. factory reset (A_Restart master reset, erase code 3): erase"},
+            {"index": 4, "label": "4. restart device (confirmed: A_Restart master reset, erase code 1)"},
+        ]}
+        ops = sequence.plan_operations(plan)
+        self.assertEqual([(e["op"], e.get("key") or e.get("erase_code")) for e in ops], [
+            ("read", "type17.1 PID 54"), ("read", "obj4 PID 27"), ("restart", 3), ("restart", 1)])
+        self.assertEqual(sequence.tokens(ops), [("restart master-reset erase 3", 1),
+                                                ("restart master-reset erase 1", 1)])
+
+    def test_abs_segments_in_both_forms(self):
+        records = [
+            # The System 7 memory record at 0x0104 (mask 0701): one octet later.
+            {"form": "memory", "lsm": 1, "data": "1300004000020133038000"},
+            {"form": "property", "object": 3, "data": "030044000040ff038000"},
+            {"form": "property", "object": 3, "data": "01000000000000000000"},
+        ]
+        segs = sequence.abs_segments(records)
+        self.assertEqual(segs, [(0x4000, 0x4201, "lsm1"), (0x4400, 0x4440, "lsm3")])
+        self.assertEqual(sequence.memory_target(0x4200, segs), "lsm1")
+        self.assertEqual(sequence.memory_target(0x4440, segs), "mem 0x4400")
+
+    def test_compare_plan_read_compare_writes_are_no_tokens(self):
+        plan = self.plan()
+        plan["steps"][2]["label"] = "3. [S7] alloc + stream segment (read-compare, 4 octets) to 0x4000 on LSM 1"
+        seq = memimage.compare(self.plan_dir(plan), self.image_dir())["sequence"]
+        self.assertEqual(seq["verdict"], memimage.IDENTICAL, seq)
+        self.assertNotIn("mem-write mem 0x4000 x2", seq["ets"])
+        self.assertEqual(seq["read_compare_targets"], ["mem 0x4000"])
+
+    def test_collapse_counts_consecutive_tokens(self):
+        self.assertEqual(sequence.collapse(["a", "a", "b", "a"]), [("a", 2), ("b", 1), ("a", 1)])
+
+    def test_statediff_sequence_of_two_captures(self):
+        import contextlib
+        import io
+
+        def run(ets, ours) -> dict:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                main(["statediff", "--ets", ets, "--bussard", ours, "--device", "1.1.5", "--json"])
+            return json.loads(buf.getvalue())
+
+        same = run(self.capture(), self.capture())["sequence"]
+        self.assertEqual(same["verdict"], memimage.IDENTICAL)
+        self.assertEqual(same["ets_tokens"], 6)
+        other = run(self.capture(), self.capture(restart_first=True))
+        self.assertEqual(other["sequence"]["verdict"], memimage.DIFFERS)
+        self.assertEqual(other["sequence"]["first"]["bussard"], "restart")
+        # The state is the same: the headline does not move.
+        self.assertEqual(other["verdict"], memimage.IDENTICAL)
+
+
+class TestOracleSeqOption(unittest.TestCase):
+    """The rows option `seq=` of scripts/campaign/95-offline-oracle.sh: a
+    row that pins `seq=identical` fails `--check` when the order differs.
+    bussard is a stub that copies a prepared dry-run dump."""
+
+    SCRIPT = os.path.join(REPO_ROOT, "scripts", "campaign", "95-offline-oracle.sh")
+
+    def run_row(self, options: str, restart_before_done: bool = False):
+        import subprocess
+
+        if not shutil.which("bash"):
+            self.skipTest("no bash")
+        work = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, work, ignore_errors=True)
+        seqtest = TestSequence()
+        seqtest.addCleanup = self.addCleanup
+        seqtest.assertEqual = self.assertEqual
+        dump = seqtest.plan_dir(seqtest.plan(restart_before_done))
+        stub = os.path.join(work, "bussard")
+        with open(stub, "w") as fh:
+            fh.write('#!/bin/sh\nwhile [ $# -gt 0 ]; do [ "$1" = --dump-images ] && out="$2"; shift; done\n'
+                     'mkdir -p "$out" && cp "$DUMP"/* "$out"/\n')
+        os.chmod(stub, 0o755)
+        product = os.path.join(work, "product.knxprod")
+        open(product, "w").close()
+        model = os.path.join(work, "model")
+        os.makedirs(model)
+        row = "1.1.5|%s|%s||||%s" % (seqtest.capture(), product, options)
+        env = dict(os.environ, BUSSARD_BIN=stub, DUMP=dump, BUSSARD_NO_DOTENV="1")
+        env.pop("BUSSARD_KEYRING", None)
+        return subprocess.run(
+            ["bash", self.SCRIPT, "--row", row, "--dir", model, "--out", os.path.join(work, "out"),
+             "--check"], env=env, capture_output=True, text=True, timeout=120)
+
+    def test_seq_identical_passes_when_the_order_matches(self):
+        res = self.run_row("seq=identical")
+        self.assertEqual(res.returncode, 0, res.stdout[-2000:] + res.stderr[-2000:])
+        self.assertIn("seq=ok(6)", res.stdout)
+
+    def test_seq_identical_fails_when_the_order_differs(self):
+        res = self.run_row("seq=identical", restart_before_done=True)
+        self.assertEqual(res.returncode, 1, res.stdout[-2000:])
+        self.assertIn("operation order differs, expected identical", res.stdout)
+        # Unpinned, the same row passes: the order is not part of the headline.
+        res = self.run_row("", restart_before_done=True)
+        self.assertEqual(res.returncode, 0, res.stdout[-2000:])
+        self.assertIn("seq=differs(first: bussard restart", res.stdout)
+
+    def test_seq_unknown_value_is_refused(self):
+        res = self.run_row("seq=maybe")
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn("unknown seq=maybe", res.stdout + res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

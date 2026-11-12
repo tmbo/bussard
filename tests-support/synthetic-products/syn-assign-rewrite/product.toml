@@ -1,0 +1,146 @@
+# A synthetic product of the catalogue (#1054), an Assign that rewrites a
+# shown parameter and a choose that hides one. Rendered by ../generate.py into
+# xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-assign with its Assign target shown: "Chore interval" (+3, default 4660,
+12 34) sits in the general block, and a choose on the operating mode (+0,
+default 1) shows "Nap length" (+5, default 60, 00 3C) when 1 and assigns the
+delay (+1, default 300) to "Chore interval" when 2. The `params` variant sets
+"Chore interval" to 1000 and "Nap length" to 7, each read back, then switches
+the mode to automatic: the Assign rewrites the first change and the choose
+hides the second, the two cases of #1049 (Hager E802 showed another value for
+a parameter it had set; Hager 207E hid one). The capture shows what ETS's
+editor shows after the last change and what it downloads at +3 and +5."""
+construct = "Assign rewriting a changed parameter, choose hiding a changed one"
+issues = [1049, 345, 1054]
+
+[product]
+text = "Chore rota"
+order_number = "NEST-ROTA"
+hardware_name = "NEST-ROTA"
+hardware_serial = "00FA002700B3"
+bus_current = 10
+
+[application]
+number = 0x27B3
+version = 0x10
+name = "Chore rota"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Aufgabenrota" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 256
+fill = 0xFF
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+# The construct, part 1: the Assign target, shown in the general block, so
+# the editor changes it before the Assign rewrites it.
+[[parameter]]
+name = "chore"
+type = "Delay"
+text = "Chore interval"
+default = 4660
+memory = { segment = "main", offset = 3, bit_offset = 0 }
+
+# The construct, part 2: shown only while the mode is on.
+[[parameter]]
+name = "nap"
+type = "Delay"
+text = "Nap length"
+default = 60
+memory = { segment = "main", offset = 5, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay", "chore"]
+com_objects = [0, 1]
+
+# The construct, part 3: mode on shows the nap length, mode automatic hides it
+# and assigns the delay to the chore interval.
+[[dynamic.block.choose]]
+parameter = "mode"
+
+[[dynamic.block.choose.when]]
+test = "1"
+parameters = ["nap"]
+com_objects = []
+
+[[dynamic.block.choose.when]]
+test = "2"
+parameters = []
+com_objects = []
+assign = [{ target = "chore", source = "delay" }]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment, MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 256, mode = 0, fill = 0 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 256, verify = false }]

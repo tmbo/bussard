@@ -79,6 +79,11 @@ pub fn serve_config(config_path: &Path) -> Result<()> {
         }
     }
 
+    // The `activated` start states' group keys by address, now that any
+    // replay has loaded the address tables (bussard issue #1054).
+    bus.settle_activated_tables()
+        .map_err(|e| anyhow::anyhow!("security: {e}"))?;
+
     let addr: SocketAddr = format!("{}:{}", cfg.gateway.host, cfg.gateway.port)
         .parse()
         .context("parsing gateway host:port")?;

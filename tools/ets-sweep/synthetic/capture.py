@@ -38,7 +38,9 @@ it cannot derive (`carried_options`).
 `--variant <name>` captures a run variant instead of the `defaults` download
 (#604, "Run variants"; `VARIANTS` below): the same product downloaded another
 way, in one knx-sim process so ETS sees the device a step before left
-(`no-ga`, `links`, `reload`, `other-app`, `partial`, `calc-input`). It
+(`no-ga`, `links`, `reload`, `other-app`, `partial`, `calc-input`,
+`calc-overflow`, `params`, `apply`, `bare-restart`). The parameter changes a
+variant makes are committed in `changes.toml` next to this file. It
 writes `captures/synthetic/<product>/<variant>/` with the capture of the
 variant's last download, the earlier downloads as `base.pcapng` and
 `base-requests.txt`, and the bussard model template the row plans with
@@ -54,7 +56,12 @@ exported under the public `SYNTHETIC_KEYRING_PASSWORD`, not the project
 password: it holds only the synthetic FDSK and the tool key ETS drew for the
 fabricated device, and it is committed next to the capture
 (`project.knxkeys`), so the row (`keyring=`), `ops.txt` and `image.json`
-decode the secured frames anywhere, CI included.
+decode the secured frames anywhere, CI included. Its run variants (#1054)
+run the same way: the first download commissions the factory device, a later
+step of the same sim meets it activated under ETS's tool key, and the keyring
+is exported after the last step. The committed `sim.yaml` of a variant with
+earlier downloads starts the device `activated` from that keyring (knx-sim's
+`status: activated` with `keyring:`, branch feat/1054-sim-activated).
 
 `--no-ets` skips steps 1 to 3 and reuses the sweep's run directory (the ETS
 version, simulator build and date come from `--ets-version`, `--sim-build`
@@ -207,7 +214,7 @@ def sim_yaml(product: str, app: str, mask: str = "07B0", variant: str = VARIANT,
         f"gateway:\n  host: 127.0.0.1\n  port: 3672\n  tunnel_address: 1.1.254\n"
         f"devices:\n- address: 1.1.1\n  knxprod: {prod}\n  application: {app}\n"
         f"  initial_state: unloaded\n  lsm_access: {lsm_access(mask)}\n{options}{knxnet_sim(product)}"
-        f"{secure_sim(product, app)}{replay}"
+        f"{secure_sim(product, app, activated=base)}{replay}"
     )
 
 
@@ -234,15 +241,25 @@ def is_secure(product: str) -> bool:
     return "security" in generate_spec(product)["application"]
 
 
-def secure_sim(product: str, app: str) -> str:
+def secure_sim(product: str, app: str, activated: bool = False) -> str:
     """The `security:` and `properties:` (serial number) lines of a secure
-    product's loopback sim device; empty for a plain product."""
+    product's loopback sim device; empty for a plain product. `activated`
+    (a run variant after an earlier download, #1054): the device as that
+    download left it, security mode on under the tool key of the keyring
+    committed next to the capture. That start state is knx-sim's
+    `status: activated` with `keyring:` (branch feat/1054-sim-activated);
+    without it the sim refuses the block."""
     if not is_secure(product):
         return ""
     import secure
 
     block, props = secure.sim_security(app)
-    return (f"  security:\n    status: {block['status']}\n    tool_key: {block['tool_key']}\n  properties:\n"
+    if activated:
+        head = (f"  security:\n    status: activated\n"
+                f"    keyring: {{ file: {KEYRING_FILE}, password: \"{SYNTHETIC_KEYRING_PASSWORD}\" }}\n")
+    else:
+        head = f"  security:\n    status: {block['status']}\n    tool_key: {block['tool_key']}\n"
+    return (head + "  properties:\n"
             + "".join(f"  - object: {p['object']}\n    pid: {p['pid']}\n    value: {p['value']}\n" for p in props))
 
 
@@ -696,21 +713,37 @@ VARIANTS: dict[str, dict] = {
     "no-ga": {"products": ("syn-minimal",),
               "doc": "the application download with no group address linked: empty address and "
                      "association tables (#542)"},
-    "links": {"products": ("syn-minimal",),
+    "links": {"products": ("syn-minimal", "syn-secure"),
               "doc": "the switch object linked to two group addresses and the status object to one "
                      "(driver `link`), then the application download (#478, #540)"},
-    "reload": {"products": ("syn-s7-0705", "syn-s7-0701"),
+    "reload": {"products": ("syn-s7-0705", "syn-s7-0701", "syn-secure"),
                "doc": "a defaults download, then the same application again over the loaded device; "
-                      "the capture is the second download (#488)"},
+                      "the capture is the second download (#488; on syn-secure the second download runs over "
+                      "the device the first one activated, with ETS's tool key, #1054)"},
     "other-app": {"products": ("syn-s7-0705", "syn-s7-0701"),
                   "doc": "another synthetic application of the same mask downloaded first, then this one "
                          "over it; the capture is the second download (#488)"},
-    "partial": {"products": ("syn-minimal",),
+    "partial": {"products": ("syn-minimal", "syn-property-param", "syn-property-nopar", "syn-trailing-writeprop",
+                             "syn-s7-0705", "syn-secure"),
                 "doc": "a defaults download, a parameter changed in ETS's parameter editor, then ETS's "
-                       "partial download; the capture is the partial download (#543, #490)"},
+                       "partial download; the capture is the partial download (#543, #490; property-only "
+                       "programs #944, #1052, #1038; Data Secure #1054)"},
     "calc-input": {"products": ("syn-param-calculation",),
                    "doc": "the input of the ParameterCalculation changed in ETS's parameter editor, then the "
                           "application download into a fresh device (#427)"},
+    "calc-overflow": {"products": ("syn-param-calculation",),
+                      "doc": "the calculation's input set so that an output leaves its type's range, then the "
+                             "application download into a fresh device; when the editor refuses the input the "
+                             "run stops with that answer (#718, #829)"},
+    "params": {"products": ("syn-choose-per-ref", "syn-choose-partial-segment", "syn-module-repeat",
+                            "syn-union-bitfields", "syn-com-objects", "syn-s7-0705", "syn-module-choose",
+                            "syn-assign-rewrite"),
+               "doc": "parameters changed in ETS's parameter editor (changes.toml: a branch switch, a module "
+                      "instance, a union member), each read back after the last change, then the application "
+                      "download into a fresh device; the Dynamic evaluator off its defaults (#1054, #1049, #1050)"},
+    "apply": {"products": ("syn-minimal", "syn-secure"),
+              "doc": "the application with two links, then a third link added and ETS's partial download; the "
+                     "capture is the partial download, compared with `bussard apply` (#829, #469, #779)"},
     "bare-restart": {"products": ("syn-master-reset",),
                      "doc": "the application download into a device without the Master Reset: knx-sim "
                             "`master_reset: refuse` answers the confirmed A_Restart with error code 2 "
@@ -724,14 +757,115 @@ VARIANTS: dict[str, dict] = {
 OTHER_APP = {"syn-s7-0705": "syn-s7-hidden-default", "syn-s7-0701": "syn-s7-lsm5"}
 # `links`: (object number, group address) in the order the driver links them.
 # The first address of an object that transmits is its sending address.
-LINKS = {"syn-minimal": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")]}
-# `partial` and `calc-input`: the parameter ETS's editor changes, as ETS shows
-# it (`text`, `kind`, `value`), and the device file's key and value for it.
-PARAMS = {
-    "syn-minimal": [{"text": "Delay (s)", "kind": "int", "value": "500", "key": "delay-s", "model": 500}],
-    "syn-param-calculation": [{"text": "Delay (s)", "kind": "int", "value": "500", "key": "delay-s",
-                               "model": 500}],
-}
+LINKS = {"syn-minimal": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")],
+         "syn-secure": [(0, "1/0/1"), (0, "1/0/2"), (1, "1/0/3")]}
+# `links` on syn-secure (#1054): the group addresses ETS is to leave plain
+# (driver `ga_security`); every other one stays at ETS's "Automatic", which
+# secures an address all of whose objects sit on a secure device.
+GA_SECURITY = {"syn-secure": {"1/0/2": "off"}}
+# `apply` (#829): the links of the first download, then the link added before
+# the partial download.
+APPLY_LINKS = {"syn-minimal": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
+               "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")])}
+# The parameter changes of `partial`, `calc-input`, `calc-overflow` and
+# `params`, per product and variant (see the file's header).
+CHANGES = HERE / "changes.toml"
+# The `expect` of a change: what the read-back after the last change shows.
+EXPECT = ("shown", "rewritten", "hidden")
+# The row kinds the driver checks (`set_param` kind): a field. A choice
+# (dropdown, radio) is set by its text whatever control ETS draws for it.
+FIELD_KINDS = ("number", "text", "checkbox")
+
+
+def param_changes(product: str, variant: str) -> list[dict]:
+    """The committed changes of `variant` on `product` (changes.toml),
+    checked: page, label, kind and value are required, `expect` is one of
+    EXPECT. Empty for a variant that changes no parameter."""
+    try:
+        table = tomllib.loads(CHANGES.read_text())
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"{CHANGES}: {exc}") from None
+    changes = table.get(product, {}).get(variant, [])
+    for i, ch in enumerate(changes):
+        missing = {"page", "label", "kind", "value"} - ch.keys()
+        if missing or ch.get("expect", "shown") not in EXPECT or ("key" in ch) != ("model" in ch):
+            raise SystemExit(f"{CHANGES}: {product}.{variant} change #{i + 1} needs page, label, kind, value, "
+                             f"key with model, and expect one of {', '.join(EXPECT)}: {ch}")
+    return [dict(ch) for ch in changes]
+
+
+def norm(text: str) -> str:
+    """A page or label as compared: lower case, letters and digits only."""
+    return re.sub(r"[^0-9a-zäöüß]", "", (text or "").lower())
+
+
+def find_page(pages: list[dict], change: dict) -> dict | None:
+    """The `page_n`-th page of `param_pages` named `change["page"]` (its tree
+    entry, or the last part of its breadcrumb), as {crumb, page}; None when
+    ETS lists no such page (yet)."""
+    want = norm(change["page"])
+    hits = [p for p in pages
+            if norm(p.get("page") or "") == want or norm((p.get("crumb") or "").split(">")[-1]) == want]
+    n = int(change.get("page_n", 0))
+    return {"crumb": hits[n].get("crumb"), "page": hits[n].get("page")} if len(hits) > n else None
+
+
+def set_params(flow, ia: str, changes: list[dict]) -> list[dict]:
+    """Each change through the driver's `set_param` (page by tree entry and
+    breadcrumb, row by label and occurrence), the pages listed again when a
+    change's page is not there yet (an earlier change shows it), then every
+    set change read back once the last is in (`read_param`): `shown` is what
+    ETS shows, `result` set / unreachable / failed / lost (as params.py)."""
+    pages = flow("param_pages", ia=ia).get("pages") or []
+    done: list[dict] = []
+    for ch in changes:
+        page = find_page(pages, ch)
+        if page is None:
+            pages = flow("param_pages", ia=ia).get("pages") or []
+            page = find_page(pages, ch)
+        if page is None:
+            done.append({**ch, "result": "unreachable",
+                         "why": f"no page {ch['page']!r} ({ch.get('page_n', 0)}) among "
+                                f"{[p.get('page') for p in pages][:20]}"})
+            continue
+        body = {"page": page, "label": ch["label"], "n": int(ch.get("n", 0)), "value": ch["value"]}
+        if ch["kind"] in FIELD_KINDS:
+            body["kind"] = ch["kind"]
+        try:
+            r = flow("set_param", ia=ia, **body)
+        except RuntimeError as exc:
+            done.append({**ch, "page_found": page, "result": "failed", "why": str(exc)[:300]})
+            continue
+        result = "set" if r.get("set") else "unreachable" if r.get("unreachable") else "failed"
+        done.append({**ch, "page_found": page, "result": result, "set_to": r.get("value"),
+                     "why": r.get("unreachable"), "after": (r.get("row") or {}).get("value")})
+    for d in done:
+        if d["result"] != "set":
+            continue
+        r = flow("read_param", ia=ia, page=d["page_found"], label=d["label"], n=int(d.get("n", 0)))
+        if not r.get("shown"):
+            d.update({"result": "lost", "why": r.get("why") or "the row is not shown after the last change"})
+            continue
+        d["shown"] = (r.get("row") or {}).get("value", "")
+        if norm(str(d["shown"])) != norm(str(d.get("set_to") or d["value"])):
+            d.update({"result": "lost", "why": f"ETS shows {d['shown']!r}, not {d.get('set_to') or d['value']!r}"})
+    return done
+
+
+def params_problem(done: list[dict]) -> str | None:
+    """Why the parameter changes of a step stop the run, or None. A change
+    not set fails it (`refusal_ok`: ETS refused the value, which is the
+    answer, #718); a change lost after the last change fails it unless its
+    `expect` says a later change rewrites or hides it (#1049)."""
+    for d in done:
+        if d["result"] in ("unreachable", "failed"):
+            if d.get("refusal_ok"):
+                return (f"ETS did not take {d['label']!r} = {d['value']!r} ({d.get('why') or d['result']}): "
+                        "recorded in params.json, nothing downloaded")
+            return f"the parameter editor did not set {d['label']!r} on {d['page']!r}: {d.get('why')}"
+        if d["result"] == "lost" and d.get("expect", "shown") == "shown":
+            return f"{d['label']!r} on {d['page']!r} lost after the last change: {d.get('why')}"
+    return None
 
 
 def variant_steps(product: str, variant: str) -> list[dict]:
@@ -741,13 +875,18 @@ def variant_steps(product: str, variant: str) -> list[dict]:
     if product not in VARIANTS[variant]["products"]:
         raise SystemExit(f"{variant} runs on {', '.join(VARIANTS[variant]['products'])}, not {product}")
     one = {"product": product, "mode": "application", "links": [], "params": []}
+    changes = param_changes(product, variant)
     steps = {
         "no-ga": [{**one, "objects": True}],
         "links": [{**one, "links": LINKS.get(product, []), "objects": True}],
         "reload": [dict(one), dict(one)],
         "other-app": [{**one, "product": OTHER_APP.get(product, "")}, dict(one)],
-        "partial": [dict(one), {**one, "mode": "partial", "params": PARAMS.get(product, [])}],
-        "calc-input": [{**one, "params": PARAMS.get(product, [])}],
+        "partial": [dict(one), {**one, "mode": "partial", "params": changes}],
+        "calc-input": [{**one, "params": changes}],
+        "calc-overflow": [{**one, "params": changes}],
+        "params": [{**one, "params": changes}],
+        "apply": [{**one, "links": APPLY_LINKS.get(product, ([], []))[0], "objects": True},
+                  {**one, "mode": "partial", "links": APPLY_LINKS.get(product, ([], []))[1], "objects": True}],
         "bare-restart": [dict(one)],
     }[variant]
     for i, step in enumerate(steps):
@@ -763,11 +902,12 @@ def variant_options(product: str, variant: str) -> str:
     rel = (OUT / product / variant).relative_to(REPO).as_posix()
     if variant in oracle.LOADED_RUNS:
         return device_state(product, variant)
-    if variant in ("links", "calc-input"):
+    if variant in ("links", "calc-input", "calc-overflow", "params"):
         return f"dir={rel}/model"
-    if variant == "partial":
+    if variant in ("partial", "apply"):
         mask = tomllib.loads((CATALOGUE / product / "product.toml").read_text())["application"]["mask"]
-        return f"run=params base={rel}/base.pcapng dir={rel}/model lsm={lsm_access(str(mask))}"
+        run = "params" if variant == "partial" else "apply"
+        return f"run={run} base={rel}/base.pcapng dir={rel}/model lsm={lsm_access(str(mask))}"
     return ""
 
 
@@ -780,7 +920,7 @@ def model_template(product: str, variant: str, dst: Path) -> None:
     for step in variant_steps(product, variant):
         for number, ga in step["links"]:
             links.setdefault(number, []).append(ga)
-    params = [p for step in variant_steps(product, variant) for p in step["params"]]
+    params = [p for step in variant_steps(product, variant) for p in step["params"] if "key" in p]
     if not links and not params:
         return
     model = dst / "model"
@@ -788,7 +928,9 @@ def model_template(product: str, variant: str, dst: Path) -> None:
     shutil.copyfile(MODEL / "bussard.toml", model / "bussard.toml")
     text = f'# The device of the {variant} variant of {product} (capture.py).\naddress = "1.1.1"\nname = "{product}"\n'
     if params:
-        text += "\n[parameters]\n" + "".join(f'{p["key"]} = {json.dumps(p["model"])}\n' for p in params)
+        # A `slug@<ref>` key (one ref, e.g. a module instance's) is quoted.
+        text += "\n[parameters]\n" + "".join(
+            f'{json.dumps(p["key"]) if "@" in p["key"] else p["key"]} = {json.dumps(p["model"])}\n' for p in params)
     if links:
         objects = {o["number"]: o for o in generate_spec(product).get("com_object", [])}
         text += "\n[links]\n"
@@ -823,6 +965,14 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
 
     target, sid = signed[product]
     mask = str(generate_spec(product)["application"]["mask"])
+    app = rendered_app(product)
+    # A Data Secure product (#1054): the secure project, the password and the
+    # certificate in every driver call, the sim device in factory state with
+    # the synthetic FDSK. The first download commissions it; a later step of
+    # the same sim meets the device activated under ETS's tool key.
+    secure_kw = secure_run(product, app)
+    project = secure_kw.get("project", "ets-sweep")
+    extra = secure_kw.get("flow_extra", {})
     run = sweep.CAPTURES / sid / variant
     shutil.rmtree(run, ignore_errors=True)
     run.mkdir(parents=True)
@@ -830,14 +980,15 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
     result: dict = {"variant": variant, "product": product, "steps": []}
 
     def flow(name: str, /, **body) -> dict:
-        r = vm.driver(c, "POST", f"/ets/{name}", {"project": "ets-sweep", **body}, timeout=900)
-        if not r.get("ok", True):
+        r = vm.driver(c, "POST", f"/ets/{name}", {"project": project, **extra, **body}, timeout=900)
+        if not r.get("ok", True) or str(r.get("error", "")).startswith("unknown flow"):
             raise RuntimeError(f"{name}: {r.get('error')}")
         return r
 
     # The sim's device is the variant's product throughout: `other-app` loads
     # the sibling's application into it first.
-    sim = sweep.RemoteSim(c, target.resolve(), sid, "1.1.1", 3672, None, run / "sim.log", mask=mask,
+    sim = sweep.RemoteSim(c, target.resolve(), sid, "1.1.1", 3672, secure_kw.get("secure"), run / "sim.log",
+                          mask=mask, properties=secure_kw.get("properties"),
                           device_options=VARIANTS[variant].get("sim"))
     in_project = None
     try:
@@ -848,13 +999,13 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
             info: dict = {"step": step["name"], "product": step["product"], "signed_id": prod_sid,
                           "mode": step["mode"]}
             if in_project != step["product"]:
-                flow("project_tab", name="ets-sweep")
+                flow("project_tab", name=project)
                 for d in flow("devices")["devices"]:
                     if not flow("delete_device", ia=d["ia"]).get("deleted"):
                         raise RuntimeError(f"could not delete {d['ia']} before the add")
                 order = generate_spec(step["product"])["product"]["order_number"]
                 add = flow("catalog_add", search=order, version=sweep.app_version(prod_sid), fallback_search="",
-                           password_wait=2)
+                           password_wait=12 if secure_kw else 2)
                 if not add.get("added"):
                     raise RuntimeError(f"catalog add added nothing: {add.get('row')}")
                 info["catalog_row"] = add.get("row")
@@ -865,18 +1016,22 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
             for number, ga in step["links"]:
                 info.setdefault("links", []).append(
                     flow("link", ia="1.1.1", number=number, ga=ga, numbers=numbers).get("row"))
+            for ga, mode in GA_SECURITY.get(product, {}).items() if step["links"] else ():
+                # A plain address next to the secured ones (#1054). The flow
+                # is the driver's; a driver without it leaves the address at
+                # "Automatic", recorded so the row is read as all secured.
+                try:
+                    info.setdefault("ga_security", {})[ga] = flow("ga_security", ga=ga, security=mode)
+                except RuntimeError as exc:
+                    info.setdefault("ga_security", {})[ga] = f"not set, left at Automatic: {exc}"[:300]
             if step["params"]:
-                pages = flow("param_pages", ia="1.1.1").get("pages") or []
-                done = []
-                for p in step["params"]:
-                    r = flow("set_param", ia="1.1.1", text=p["text"], kind=p["kind"], value=p["value"], pages=pages)
-                    done.append({**p, "set": bool(r.get("set")), "page": r.get("page"), "row": r.get("row"),
-                                 "seen": r.get("seen")})
-                (out / "params.json").write_text(json.dumps({"pages": pages, "changes": done}, indent=1,
+                done = set_params(flow, "1.1.1", step["params"])
+                (out / "params.json").write_text(json.dumps({"changes": done}, indent=1,
                                                             ensure_ascii=False) + "\n")
                 info["params"] = done
-                if not all(d["set"] for d in done):
-                    raise RuntimeError(f"the parameter editor did not set {[d for d in done if not d['set']]}")
+                problem = params_problem(done)
+                if problem:
+                    raise RuntimeError(problem)
             if step.get("objects"):
                 objects = flow("objects", ia="1.1.1", numbers=numbers)["objects"]
                 (out / "objects.json").write_text(json.dumps(objects, indent=1, ensure_ascii=False) + "\n")
@@ -911,16 +1066,24 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
             (out / "sim.log").write_text("\n".join(lines[log_from:]) + "\n")
             info["loaded_objects"] = sorted({m.group(1) for l in lines[log_from:] if sweep.Sim.LOADED.search(l)
                                              for m in [re.search(r"object=(\d+)", l)] if m})
-            ops = subprocess.run(["uv", "run", "--quiet", str(sweep.KNXTRACE), "ops", str(out / "ets.pcapng"),
-                                  "--device", "1.1.1"], capture_output=True, text=True)
-            (out / "ops.txt").write_text(ops.stdout + ops.stderr)
-            info["ops"] = sum(1 for l in ops.stdout.splitlines() if re.match(r"\s+\d+\s", l))
+            info["ops"] = sweep.write_ops(out, "1.1.1")
             (out / "driver.json").write_text(json.dumps(info, indent=1, ensure_ascii=False) + "\n")
             result["steps"].append(info)
             print(f"  {info['end']}, ETS {info['ets']}, {info['ops']} ops, loaded {info['loaded_objects']}",
                   flush=True)
             if info["ets"] != "ok":
                 raise RuntimeError(f"step {step['name']}: ETS {info['ets']}: {hist[:3]}")
+        if secure_kw:
+            # The keyring after the last step: the tool key ETS drew when the
+            # first download commissioned the device, the group keys. Every
+            # step's ops.txt is decoded with it.
+            remote = f"{vm.REMOTE_DIR}\\keyrings\\{sid}-{variant}.knxkeys"
+            vm.run(c, f'mkdir "{vm.REMOTE_DIR}\\keyrings"')
+            flow("export_keyring", path=remote, password=SYNTHETIC_KEYRING_PASSWORD)
+            c.open_sftp().get(remote.replace("\\", "/"), str(run / KEYRING_FILE))
+            for info in result["steps"]:
+                info["ops"] = sweep.write_ops(run / info["step"], "1.1.1", run / KEYRING_FILE,
+                                              SYNTHETIC_KEYRING_PASSWORD)
     finally:
         sim.stop()
     (run / "driver.json").write_text(json.dumps(result, indent=1, ensure_ascii=False) + "\n")
@@ -963,6 +1126,11 @@ def copy_variant(product: str, variant: str, sid: str, app: str, mask: str) -> P
         (dst / "base-requests.txt").write_text(
             distil.render(distil.requests(dst / "base.pcapng"), f"{rel}/base.pcapng"))
     (dst / "sim.yaml").write_text(sim_yaml(product, app, mask, variant, base=bool(base)))
+    if is_secure(product):
+        # The keyring the run exported after its last step (#1054): the
+        # image, the row and the sim's activated start decode with it.
+        shutil.copyfile(run / KEYRING_FILE, dst / KEYRING_FILE)
+        secure_model(dst)
     write_image(dst, rel)
     model_template(product, variant, dst)
     return dst
@@ -988,6 +1156,7 @@ def capture_variant(product: str, variant: str, args) -> int:
         import vm
 
         build = sim_build(args.sim_build)
+        secure_run(product, app)  # a Data Secure product's password, before anything is signed (#1054)
         for p in involved:
             check_recapture(p)
         signed = {p: sign(p) for p in involved}

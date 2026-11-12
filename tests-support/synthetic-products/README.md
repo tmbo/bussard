@@ -22,6 +22,7 @@ next to it, and zips it on demand.
 | product | order number | mask | construct | issues |
 | --- | --- | --- | --- | --- |
 | [`syn-assign`](syn-assign/product.toml) | `NEST-CHORE` | 07B0 | Assign from a reached parameter onto an unshown placed one | #345 |
+| [`syn-assign-rewrite`](syn-assign-rewrite/product.toml) | `NEST-ROTA` | 07B0 | Assign rewriting a changed parameter, choose hiding a changed one | #1049, #345, #1054 |
 | [`syn-choose-never-shown`](syn-choose-never-shown/product.toml) | `NEST-GHOST` | 07B0 | choose on a never-shown memoryless parameter, default branch only | #474, #563 |
 | [`syn-choose-partial-segment`](syn-choose-partial-segment/product.toml) | `NEST-HALF` | 07B0 | load-procedure choose writing half the segment | #411 |
 | [`syn-choose-per-ref`](syn-choose-per-ref/product.toml) | `NEST-TWIN` | 07B0 | choose on the unreached second ParameterRef of a reached parameter | #563 |
@@ -40,9 +41,11 @@ next to it, and zips it on demand.
 | [`syn-master-reset`](syn-master-reset/product.toml) | `NEST-RESET` | 07B0 | Master Reset erase code 1 in the load procedure | #546, #611 |
 | [`syn-master-reset-code4`](syn-master-reset-code4/product.toml) | `NEST-RESET4` | 07B0 | Master Reset erase code 4 after the segment allocation | #546, #600, #611 |
 | [`syn-minimal`](syn-minimal/product.toml) | `NEST-LIGHT` | 07B0 | baseline | #596 |
+| [`syn-module-choose`](syn-module-choose/product.toml) | `NEST-ROOST` | 07B0 | module instances in the branches of a choose, literal arguments | #1050, #449, #1054 |
 | [`syn-module-repeat`](syn-module-repeat/product.toml) | `NEST-TRIFEED` | 07B0 | ModuleDef with allocator-fed bases, instantiated three times by a Repeat | #449 |
 | [`syn-param-calculation`](syn-param-calculation/product.toml) | `NEST-CALC` | 07B0 | JavaScript ParameterCalculation, one output LegacyPatchAlways | #427, #450 |
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
+| [`syn-property-nopar`](syn-property-nopar/product.toml) | `NEST-NAP` | 07B0 | property-only program, no `par` allocation | #1052, #944, #1054 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-rf-27b0`](syn-rf-27b0/product.toml) | `NEST-RADIO` | 27B0 | System B on KNX RF (mask 27B0, MT-2) | #604 |
@@ -61,8 +64,10 @@ next to it, and zips it on demand.
 | [`syn-s7-static-split`](syn-s7-static-split/product.toml) | `NEST-FORK` | 0705 | static split of the parameter AbsSegment, a parameter in the gap | #657, #411 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-secure`](syn-secure/product.toml) | `NEST-GUARD` | 07B0 | KNX Data Secure capable 07B0, factory state with a synthetic FDSK | #423, #537, #201 |
+| [`syn-secure-property`](syn-secure-property/product.toml) | `NEST-WARDEN` | 07B0 | Data Secure capable, a parameter placed in a property | #1054, #1041, #669 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
+| [`syn-trailing-writeprop`](syn-trailing-writeprop/product.toml) | `NEST-LATCH` | 07B0 | property-only with a `par` allocation, AppliesTo-less WriteProp first and last | #1038, #944, #1054 |
 | [`syn-union-bitfields`](syn-union-bitfields/product.toml) | `NEST-BITS` | 07B0 | 16-bit union of two types, sub-octet parameters packed by BitOffset | #604 |
 | [`syn-union-default-range`](syn-union-default-range/product.toml) | `NEST-STRAY` | 07B0 | hidden union member, default outside its type | #405 |
 | [`syn-user-memory`](syn-user-memory/product.toml) | `NEST-LARDER` | 07B0 | segment above 0xFFFF without SupportsExtendedMemoryServices | #472 |
@@ -274,11 +279,14 @@ manifest entry. The variants and their products are `VARIANTS` in
 | variant | products | the downloads | the row |
 | --- | --- | --- | --- |
 | `no-ga` | `syn-minimal` | the application, no group address linked (#542) | a flash row, as `defaults` |
-| `links` | `syn-minimal` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540) | `dir=` the model template with those links |
-| `reload` | `syn-s7-0705`, `syn-s7-0701` | the application, then the same application again (#488) | `state=loaded` |
+| `links` | `syn-minimal`, `syn-secure` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540); on `syn-secure` 1/0/2 is set plain (driver `ga_security`), the others stay secured (#1054) | `dir=` the model template with those links |
+| `reload` | `syn-s7-0705`, `syn-s7-0701`, `syn-secure` | the application, then the same application again (#488); on `syn-secure` the second download meets the device the first one activated (#1054) | `state=loaded` (System 7) |
 | `other-app` | `syn-s7-0705`, `syn-s7-0701` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`), then this application (#488) | `state=loaded` |
-| `partial` | `syn-minimal` | the application, then `Delay (s)` set to 500 in ETS's parameter editor and ETS's partial download (#543, #490) | `run=params base=` the first download, `dir=` the model template |
+| `partial` | `syn-minimal`, `syn-property-param`, `syn-property-nopar`, `syn-trailing-writeprop`, `syn-s7-0705`, `syn-secure` | the application, then one parameter changed in ETS's parameter editor and ETS's partial download (#543, #490; #944, #1052, #1038, #1054) | `run=params base=` the first download, `dir=` the model template |
+| `apply` | `syn-minimal`, `syn-secure` | the application with 1/0/1 and 1/0/3 linked, then 1/0/2 linked and ETS's partial download (#829, #469) | `run=apply base=` the first download, `dir=` the model template |
+| `params` | `syn-choose-per-ref`, `syn-choose-partial-segment`, `syn-module-repeat`, `syn-union-bitfields`, `syn-com-objects`, `syn-s7-0705`, `syn-module-choose`, `syn-assign-rewrite` | parameters changed in ETS's parameter editor, each read back after the last change, then the application (#1054, #1049, #1050) | `dir=` the model template |
 | `calc-input` | `syn-param-calculation` | `Delay (s)`, the calculation's input, set to 500, then the application (#427) | `dir=` the model template |
+| `calc-overflow` | `syn-param-calculation` | `Delay (s)` set to 40000, so `Twice the delay plus one` leaves its 16 bits, then the application; a refused input stops the run with that answer (#718) | `dir=` the model template |
 | `bare-restart` | `syn-master-reset` | the application into a device whose knx-sim config has `master_reset: refuse`: it answers the confirmed Master Reset with error code 2 (#611) | none: ETS 6.4.1 fails the download ("ConfirmedRestart ... fehlgeschlagen: UnsupportedEraseCode", 2026-10-31), no Basic Restart follows |
 
 A variant directory holds the files of a `defaults` capture for its last
@@ -290,6 +298,22 @@ model template of a row that plans with links or a parameter value
 (`bussard.toml`, `devices/1.1.1.toml`, `groups.toml`): the oracle script
 imports the product into a copy of it and pins the device (`dir=` in
 `95-offline-oracle.sh`).
+
+The parameter changes of `partial`, `params`, `calc-input` and
+`calc-overflow` are committed in `tools/ets-sweep/synthetic/changes.toml`: the
+page and row as ETS shows them, the value, the device-file key and value the
+model gets, and `expect`. The driver sets each change, then reads every one
+back after the last (`params.json`: `shown`). A change that is not set, or
+that reads back another value, stops the run, except where `expect` says a
+later change rewrites (`rewritten`) or hides (`hidden`) it: those record what
+ETS shows, which is what `syn-assign-rewrite` exists for (#1049).
+
+A Data Secure product's variants (`syn-secure`) commission the factory device
+in their first download; a later step of the same sim meets it activated, and
+the keyring is exported after the last step and committed next to the capture.
+The `sim.yaml` of a variant with earlier downloads starts the device
+`status: activated` from that keyring, then replays `base.pcapng` (knx-sim's
+`activated` start state, branch feat/1054-sim-activated).
 
 ```
 captures/synthetic/<name>/<variant>/base.pcapng        the earlier downloads of the same sim session
@@ -359,7 +383,11 @@ no `signed.toml`, no row and no manifest entry either, until it is captured:
 
 | product | pending on | capture |
 | --- | --- | --- |
-| `syn-secure` | the secure project `ets-sweep-secure` in the VM and the driver's secure flows meeting ETS (#423) | `ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/synthetic/capture.py syn-secure` |
+| `syn-secure-property` | the #1054 VM session | `ETS_SWEEP_PROJECT_PASSWORD=... uv run tools/ets-sweep/synthetic/capture.py syn-secure-property` |
+| `syn-property-nopar` | the #1054 VM session; bussard refuses its parameter-only download (#1052) | `capture.py syn-property-nopar`, then `--variant partial` |
+| `syn-trailing-writeprop` | the #1054 VM session | `capture.py syn-trailing-writeprop`, then `--variant partial` |
+| `syn-module-choose` | the #1054 VM session | `capture.py syn-module-choose`, then `--variant params` |
+| `syn-assign-rewrite` | the #1054 VM session | `capture.py syn-assign-rewrite`, then `--variant params` |
 
 A secure product (`[application.security]`) is captured the way
 `tools/ets-sweep/secure.py` captures a vendor one: `capture.py` starts the
