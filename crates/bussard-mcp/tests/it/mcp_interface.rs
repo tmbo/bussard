@@ -21,13 +21,13 @@ use serde_json::{Value, json};
 const CHANNEL: u8 = 0x56;
 
 /// The mock interface at 1.1.200: DHCP at `ip`, tunnels 1.1.22 to 1.1.29,
-/// "Bocklisch Alpha", writable.
+/// "Demohouse Alpha", writable.
 fn interface(ip: [u8; 4]) -> anyhow::Result<MockDevice> {
     let knxnet = MockKnxnet {
         tunnels: (22..=29)
             .map(|n| format!("1.1.{n}").parse())
             .collect::<Result<Vec<IndividualAddress>, _>>()?,
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         current: [ip, [255, 255, 255, 0], [192, 168, 1, 1]],
         ..MockKnxnet::default()
     };
@@ -41,7 +41,7 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
     std::fs::write(
         dir.join("devices").join("1.1.200.toml"),
         "address = \"1.1.200\"\nname = \"KNX IP Interface\"\n\n[knxnet]\n\
-         assignment = \"dhcp\"\nfriendly_name = \"Bocklisch Alpha\"\n\
+         assignment = \"dhcp\"\nfriendly_name = \"Demohouse Alpha\"\n\
          tunnels = [\"1.1.22\", \"1.1.23\", \"1.1.24\", \"1.1.25\", \"1.1.26\", \"1.1.27\", \
          \"1.1.28\", \"1.1.29\"]\n",
     )?;
@@ -147,7 +147,7 @@ impl Harness {
 
 #[tokio::test]
 async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Result<()> {
-    let h = Harness::start([192, 168, 1, 74]).await?;
+    let h = Harness::start([192, 0, 2, 74]).await?;
 
     let plan = h
         .call("knx_plan_device", json!({"address": "1.1.200"}))
@@ -163,7 +163,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
             "knx_set_interface",
             json!({
                 "address": "1.1.200",
-                "friendly_name": "Bocklisch Beta",
+                "friendly_name": "Demohouse Beta",
                 "add_tunnels": ["1.1.30"],
                 "remove_tunnels": ["1.1.29"],
             }),
@@ -172,7 +172,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
     assert_eq!(edit["ok"], true, "{edit}");
     let file = h.device_file()?;
     assert!(
-        file.contains("friendly_name = \"Bocklisch Beta\""),
+        file.contains("friendly_name = \"Demohouse Beta\""),
         "{file}"
     );
     assert!(file.contains("\"1.1.30\""), "{file}");
@@ -185,7 +185,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
     assert_eq!(plan["noop"], false);
     let sentences = plan["sentences"].as_str().unwrap_or_default();
     assert!(
-        sentences.contains("~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""),
+        sentences.contains("~ friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\""),
         "{sentences}"
     );
     assert!(
@@ -210,7 +210,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
     let name = h.device(|d| d.knxnet_property(76).map(<[u8]>::to_vec))?;
     assert_eq!(
         name.as_deref().and_then(|n| n.get(..14)),
-        Some(&b"Bocklisch Beta"[..])
+        Some(&b"Demohouse Beta"[..])
     );
 
     let again = h
@@ -222,7 +222,7 @@ async fn test_knx_set_interface_then_plan_and_apply_round_trip() -> anyhow::Resu
 
 #[tokio::test]
 async fn test_knx_set_interface_refuses_an_invalid_table() -> anyhow::Result<()> {
-    let h = Harness::start([192, 168, 1, 74]).await?;
+    let h = Harness::start([192, 0, 2, 74]).await?;
     let before = h.device_file()?;
     for (args, needle) in [
         (
@@ -288,7 +288,7 @@ async fn test_knx_plan_device_refuses_to_reconfigure_its_own_interface() -> anyh
 /// digest is refused; without a key store the call is refused.
 #[tokio::test]
 async fn test_knx_interface_secure_plans_and_checks_the_digest() -> anyhow::Result<()> {
-    let h = Harness::start([192, 168, 1, 74]).await?;
+    let h = Harness::start([192, 0, 2, 74]).await?;
     // SAFETY: nextest runs each test in its own process.
     unsafe {
         std::env::set_var("BUSSARD_KEYRING_PASSWORD", "synthetic-store-password");

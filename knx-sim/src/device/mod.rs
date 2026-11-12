@@ -1129,7 +1129,7 @@ mod tests {
             (0, vec![]),
             "past the end is refused"
         );
-        assert_eq!(read(&mut dev, 57, 1, 1)?, (1, vec![192, 168, 1, 74]));
+        assert_eq!(read(&mut dev, 57, 1, 1)?, (1, vec![192, 0, 2, 74]));
         assert_eq!(read(&mut dev, 55, 1, 1)?, (1, vec![0x04]), "DHCP");
         assert_eq!(
             read(&mut dev, 92, 1, 1)?,

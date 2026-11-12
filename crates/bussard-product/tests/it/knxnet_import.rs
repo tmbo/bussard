@@ -24,7 +24,7 @@ const PROJECT_XML: &str = r#"<KNX xmlns="http://knx.org/xml/project/21">
       <Address Address="23" Name="" />
       <Address Address="24" Name="" />
      </AdditionalAddresses>
-     <IPConfig IPAddress="192.168.1.74" MACAddress="00:00:5E:00:53:01" />
+     <IPConfig IPAddress="192.0.2.74" MACAddress="00:00:5E:00:53:01" />
     </DeviceInstance>
     <DeviceInstance Id="P-9999-0_DI-2" Address="201" Name="IP router">
      <IPConfig Assign="Fixed" IPAddress="192.168.1.80" SubnetMask="255.255.255.0" DefaultGateway="192.168.1.1" />

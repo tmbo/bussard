@@ -1755,7 +1755,7 @@
  },
  "75010009_Spannungsversorgung_320mA_REG.knxprod.zip": {
   "apps": [],
-  "error": "error: no application programs found in /Users/tmbo/projects/bussard/tests-support/product-corpus/cache/vendor/75010009_Spannungsversorgung_320mA_REG.knxprod.zip (is it a valid .knxprod?)"
+  "error": "error: no application programs found in tests-support/product-corpus/cache/vendor/75010009_Spannungsversorgung_320mA_REG.knxprod.zip (is it a valid .knxprod?)"
  },
  "7514XX-GLAS-SENSOR__KNX-GLAS-SENSOR-KOMFORT__ETS4-DATABASE_.KNXPROD": {
   "apps": [
@@ -4943,11 +4943,11 @@
  },
  "DALI2_V03_00_10_69943501_Registered_basic_Localized.knxprod": {
   "apps": [],
-  "error": "error: reading product data from /Users/tmbo/projects/bussard/tests-support/product-corpus/cache/vendor/DALI2_V03_00_10_69943501_Registered_basic_Localized.knxprod: archive entry M-0001/M-0001_A-9A1B-30-16F3.xml exceeds the 268435456-byte decompression cap (possible zip bomb)"
+  "error": "error: reading product data from tests-support/product-corpus/cache/vendor/DALI2_V03_00_10_69943501_Registered_basic_Localized.knxprod: archive entry M-0001/M-0001_A-9A1B-30-16F3.xml exceeds the 268435456-byte decompression cap (possible zip bomb)"
  },
  "DALI2_V03_00_10_69943501_Registered_basic_twin_Localized.knxprod": {
   "apps": [],
-  "error": "error: reading product data from /Users/tmbo/projects/bussard/tests-support/product-corpus/cache/vendor/DALI2_V03_00_10_69943501_Registered_basic_twin_Localized.knxprod: archive entry M-0001/M-0001_A-9A1C-30-6CC7.xml exceeds the 268435456-byte decompression cap (possible zip bomb)"
+  "error": "error: reading product data from tests-support/product-corpus/cache/vendor/DALI2_V03_00_10_69943501_Registered_basic_twin_Localized.knxprod: archive entry M-0001/M-0001_A-9A1C-30-6CC7.xml exceeds the 268435456-byte decompression cap (possible zip bomb)"
  },
  "DALIBOX_Broadcast_4CH_1.0_EIFAItRSP.knxprod": {
   "apps": [
@@ -20222,7 +20222,7 @@
  },
  "MDT_KP_SCN_02_USB_Interface_V10.knxprod": {
   "apps": [],
-  "error": "error: no application programs found in /Users/tmbo/projects/bussard/tests-support/product-corpus/cache/vendor/MDT_KP_SCN_02_USB_Interface_V10.knxprod (is it a valid .knxprod?)"
+  "error": "error: no application programs found in tests-support/product-corpus/cache/vendor/MDT_KP_SCN_02_USB_Interface_V10.knxprod (is it a valid .knxprod?)"
  },
  "MDT_KP_SCN_03_DaliControl_16_32_V10.knxprod": {
   "apps": [
@@ -20357,7 +20357,7 @@
  },
  "MDT_KP_STV_02_Bus_Power_Supply_V10.knxprod": {
   "apps": [],
-  "error": "error: no application programs found in /Users/tmbo/projects/bussard/tests-support/product-corpus/cache/vendor/MDT_KP_STV_02_Bus_Power_Supply_V10.knxprod (is it a valid .knxprod?)"
+  "error": "error: no application programs found in tests-support/product-corpus/cache/vendor/MDT_KP_STV_02_Bus_Power_Supply_V10.knxprod (is it a valid .knxprod?)"
  },
  "MDT_KP_VC_02_VisuControl_Easy_Object_Server_V20.knxprod": {
   "apps": [

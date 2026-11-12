@@ -1016,7 +1016,7 @@ mod tests {
             additional_addresses: vec!["1.1.22".parse()?, "1.1.23".parse()?],
             current_assignment: Some(0x04),
             assignment: Some(0x04),
-            current_ip: Some([192, 168, 1, 74]),
+            current_ip: Some([192, 0, 2, 74]),
             current_netmask: Some([255, 255, 255, 0]),
             current_gateway: Some([192, 168, 1, 1]),
             ip: Some([0, 0, 0, 0]),
@@ -1029,7 +1029,7 @@ mod tests {
         };
         let facts = facts_from_values(&values, Some(4), "2026-10-26T10:00:00Z".to_string());
         assert_eq!(facts.assignment_mode, Some(IpAssignment::Dhcp));
-        assert_eq!(facts.current_address, Some("192.168.1.74".parse()?));
+        assert_eq!(facts.current_address, Some("192.0.2.74".parse()?));
         assert_eq!(facts.mac.as_deref(), Some("00:00:5E:00:53:01"));
         assert_eq!(facts.state.as_deref(), Some("ok"));
         assert_eq!(
@@ -1040,7 +1040,7 @@ mod tests {
             ])
         );
         let lines = facts.lines();
-        assert_eq!(lines[0], ("IP address", "192.168.1.74 (dhcp)".to_string()));
+        assert_eq!(lines[0], ("IP address", "192.0.2.74 (dhcp)".to_string()));
         assert!(
             lines
                 .iter()
@@ -1070,11 +1070,11 @@ mod tests {
                 .collect::<Result<_, _>>()?,
             assignment: Some(vec!["dhcp".to_string()]),
             assignment_mode: Some(IpAssignment::Dhcp),
-            current_address: Some(Ipv4Addr::new(192, 168, 1, 74)),
+            current_address: Some(Ipv4Addr::new(192, 0, 2, 74)),
             address: Some(Ipv4Addr::UNSPECIFIED),
             netmask: Some(Ipv4Addr::UNSPECIFIED),
             gateway: Some(Ipv4Addr::UNSPECIFIED),
-            friendly_name: Some("Bocklisch Alpha".to_string()),
+            friendly_name: Some("Demohouse Alpha".to_string()),
             ..KnxnetFacts::default()
         })
     }
@@ -1113,20 +1113,20 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let facts = device()?;
         let mut config = facts.as_config();
-        config.friendly_name = Some("Bocklisch Beta".to_string());
+        config.friendly_name = Some("Demohouse Beta".to_string());
         // Through this very interface: a name change does not drop the tunnel.
         let link = SessionLink {
             source: Some(ia("1.1.22")?),
-            gateway: Some(Ipv4Addr::new(192, 168, 1, 74)),
+            gateway: Some(Ipv4Addr::new(192, 0, 2, 74)),
         };
         let plan = plan_interface(ia("1.1.200")?, &config, &facts, None, &link);
         assert_eq!(pids(&plan), [(76, 1, 30)]);
         assert_eq!(plan.steps[0].value.len(), 30);
-        assert_eq!(&plan.steps[0].value[..14], b"Bocklisch Beta");
+        assert_eq!(&plan.steps[0].value[..14], b"Demohouse Beta");
         assert!(plan.steps[0].value[14..].iter().all(|&b| b == 0));
         assert_eq!(
             plan.changes[0].sentence,
-            "friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""
+            "friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\""
         );
         assert!(plan.self_reconfigure.is_none());
         assert!(plan.refusal(false).is_none());
@@ -1252,7 +1252,7 @@ mod tests {
         config.netmask = Some(Ipv4Addr::new(255, 255, 255, 0));
         let by_ip = SessionLink {
             source: None,
-            gateway: SessionLink::gateway_of("192.168.1.74:3671"),
+            gateway: SessionLink::gateway_of("192.0.2.74:3671"),
         };
         let plan = plan_interface(ia("1.1.200")?, &config, &facts, None, &by_ip);
         let why = plan.refusal(false).ok_or("refused")?;
@@ -1315,7 +1315,7 @@ mod tests {
             .render_text();
         assert_eq!(
             text,
-            "1.1.200 KNX IP Interface\n  ~ friendly name = \"Beta\", was \"Bocklisch Alpha\"\n  \
+            "1.1.200 KNX IP Interface\n  ~ friendly name = \"Beta\", was \"Demohouse Alpha\"\n  \
              writes: KNXnet/IP parameter object (PID 76)\n  backup: b\n"
         );
         assert_eq!(
@@ -1329,8 +1329,8 @@ mod tests {
     #[test]
     fn test_session_link_gateway_of_parses_host_and_port() {
         assert_eq!(
-            SessionLink::gateway_of("192.168.1.74:3671"),
-            Some(Ipv4Addr::new(192, 168, 1, 74))
+            SessionLink::gateway_of("192.0.2.74:3671"),
+            Some(Ipv4Addr::new(192, 0, 2, 74))
         );
         assert_eq!(
             SessionLink::gateway_of("127.0.0.1"),
@@ -1355,7 +1355,7 @@ mod tests {
             tunnels: (22..=29)
                 .map(|n| ia(&format!("1.1.{n}")))
                 .collect::<Result<_, _>>()?,
-            friendly_name: "Bocklisch Alpha".to_string(),
+            friendly_name: "Demohouse Alpha".to_string(),
             ..bussard_testkit::MockKnxnet::default()
         };
         let device = bussard_testkit::MockDevice::new(target).with_mask(0x0021);
@@ -1420,7 +1420,7 @@ mod tests {
             address: Some(Ipv4Addr::new(192, 168, 1, 80)),
             netmask: Some(Ipv4Addr::new(255, 255, 255, 0)),
             gateway: Some(Ipv4Addr::new(192, 168, 1, 1)),
-            friendly_name: Some("Bocklisch Beta".to_string()),
+            friendly_name: Some("Demohouse Beta".to_string()),
             tunnels: (22..=27)
                 .map(|n| ia(&format!("1.1.{n}")))
                 .collect::<Result<_, _>>()?,
@@ -1450,7 +1450,7 @@ mod tests {
         let name = device.knxnet_property(76).ok_or("PID 76")?;
         assert_eq!(
             bussard_mgmt::knxnet::decode_friendly_name(name),
-            "Bocklisch Beta"
+            "Demohouse Beta"
         );
         // Nothing at or above the first KNXnet/IP Secure PID was asked for.
         assert!(

@@ -1378,17 +1378,17 @@ mod tests {
     fn test_base_handle_name_substring_of_text_yields_to_the_text() {
         // "Regler" is a suffix of "Raumtemperaturregler", not a separate word:
         // the plain-name rule must not fire, so the text rule is used instead.
-        // ("Raumtemperaturregler (Büro UG)" in the wild, one word per instance;
+        // ("Raumtemperaturregler (Büro OG)" in the wild, one word per instance;
         // this is the single-instance shape the caller passes in.)
         assert_eq!(
             base_handle(
                 Some("Regler"),
-                Some("Raumtemperaturregler (Büro UG)"),
+                Some("Raumtemperaturregler (Büro OG)"),
                 true,
                 Some(2),
                 6
             ),
-            "raumtemperaturregler-buero-ug-2"
+            "raumtemperaturregler-buero-og-2"
         );
     }
 

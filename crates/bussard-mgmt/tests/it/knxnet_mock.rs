@@ -20,7 +20,7 @@ fn knxnet() -> Result<MockKnxnet, BoxError> {
         tunnels: (22..=29)
             .map(|n| format!("1.1.{n}").parse())
             .collect::<Result<Vec<IndividualAddress>, _>>()?,
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         ..MockKnxnet::default()
     })
 }
@@ -63,10 +63,10 @@ async fn test_read_knxnet_parameters_by_index() -> TestResult {
     assert_eq!(v.additional_addresses[0], "1.1.22".parse()?);
     assert_eq!(v.additional_addresses[7], "1.1.29".parse()?);
     assert_eq!(v.current_assignment, Some(0x04));
-    assert_eq!(v.current_ip, Some([192, 168, 1, 74]));
+    assert_eq!(v.current_ip, Some([192, 0, 2, 74]));
     assert_eq!(v.mac, Some([0x00, 0x00, 0x5E, 0x00, 0x53, 0x01]));
     assert_eq!(v.capabilities, Some(0x0003));
-    assert_eq!(v.friendly_name.as_deref(), Some("Bocklisch Alpha"));
+    assert_eq!(v.friendly_name.as_deref(), Some("Demohouse Alpha"));
     Ok(())
 }
 

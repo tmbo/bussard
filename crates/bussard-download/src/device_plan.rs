@@ -364,7 +364,7 @@ impl DevicePlan {
         self.changes.len()
     }
 
-    /// `apply these 3 changes to 1.1.47 through 192.168.1.74:3671?`
+    /// `apply these 3 changes to 1.1.47 through 192.0.2.74:3671?`
     pub fn question(&self) -> String {
         let n = self.change_count();
         format!(

@@ -178,11 +178,11 @@ assignment_mode = "dhcp"
 current_address = "192.0.2.10"
 current_netmask = "255.255.255.0"
 current_gateway = "192.0.2.1"
-mac = "00:22:D1:04:62:7D"
+mac = "00:00:5E:00:53:7D"
 routing_multicast = "224.0.23.12"
 capabilities = ["device management", "tunnelling"]
 state = "ok"
-friendly_name = "Bocklisch Alpha"
+friendly_name = "Demohouse Alpha"
 ```
 
 ### Why the facts live here

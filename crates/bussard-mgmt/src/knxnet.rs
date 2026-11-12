@@ -607,11 +607,11 @@ mod tests {
 
     #[test]
     fn test_encode_friendly_name_pads_and_round_trips() -> std::result::Result<(), String> {
-        let octets = encode_friendly_name("Bocklisch Alpha").ok_or("encodes")?;
+        let octets = encode_friendly_name("Demohouse Alpha").ok_or("encodes")?;
         assert_eq!(octets.len(), FRIENDLY_NAME_OCTETS);
-        assert_eq!(&octets[..3], b"Boc");
+        assert_eq!(&octets[..3], b"Dem");
         assert_eq!(octets[15], 0);
-        assert_eq!(decode_friendly_name(&octets), "Bocklisch Alpha");
+        assert_eq!(decode_friendly_name(&octets), "Demohouse Alpha");
         assert_eq!(
             decode_friendly_name(&encode_friendly_name("Küche").ok_or("latin-1")?),
             "Küche"

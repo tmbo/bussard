@@ -854,9 +854,9 @@ mod tests {
 
     #[test]
     fn test_plan_room_from_label_splits_floor_and_room() -> Result<(), Box<dyn std::error::Error>> {
-        let room = PlanRoom::from_label("  OG Kind 2 Süd ", &["blind".to_string()])?;
+        let room = PlanRoom::from_label("  OG Gast 2 Süd ", &["blind".to_string()])?;
         assert_eq!(room.floor, "OG");
-        assert_eq!(room.room, "Kind 2 Süd");
+        assert_eq!(room.room, "Gast 2 Süd");
         assert_eq!(room.functions, vec!["blind".to_string()]);
         assert!(matches!(
             PlanRoom::from_label("Küche", &[]),

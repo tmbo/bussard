@@ -8,7 +8,7 @@
     uv run tools/ets-sweep/synthetic/sign.py --dir-only <in.knxprod> [<out>]  # directory signature only
     uv run tools/ets-sweep/synthetic/sign.py --verify <file.knxprod>   # the library's verdict, no change
 
-Uploads `signer.cs` and the product to `C:\\Users\\macremote\\ets-sweep\\signer\\`,
+Uploads `signer.cs` and the product to the VM's `ets-sweep\\signer\\`,
 compiles the signer with the .NET Framework `csc.exe` when its source changed
 (no reference to ETS at compile time: the signer loads `Knx.Ets.XmlSigning.dll`
 from the ETS 6 folder and calls it by reflection), runs it, and downloads the

@@ -27,7 +27,7 @@ const FRIENDLY_NAME: LocalProperty = LocalProperty {
 /// only, as the Jung IPS 300 SREG.
 fn interface() -> TestResult<MockDevice> {
     let knxnet = MockKnxnet {
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         ..MockKnxnet::default()
     };
     Ok(MockDevice::new(ia("1.1.200")?)
@@ -53,7 +53,7 @@ async fn test_device_management_reads_and_writes_local_properties() -> TestResul
     let read = prop_read_req(FRIENDLY_NAME, 9, 1).ok_or("fits")?;
     let con = dm.request_local(read, Duration::from_secs(2)).await?;
     assert_eq!(con.error, None);
-    assert_eq!(con.data, b"Bocklisch");
+    assert_eq!(con.data, b"Demohouse");
 
     let write = prop_write_req(FRIENDLY_NAME, 5, 1, b"Gamma").ok_or("fits")?;
     let con = dm.request_local(write, Duration::from_secs(2)).await?;

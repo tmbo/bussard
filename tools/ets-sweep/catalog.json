@@ -34,7 +34,7 @@
   "products": [
    "Spannungsversorgung 320mA REG"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Spannungsversorgung 320mA REG Version OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Spannungsversorgung 320mA REG Version OK SL Ready",
   "seconds": 25,
   "when": "2026-10-27T22:54:47.864597+00:00",
   "verified": true
@@ -987,7 +987,7 @@
   "products": [
    "KNX TH-B-UP"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: KNX TH-B-UP Version 1.0 OK Best Huts Buss IO-AI Der I Bele' Binä Ausc Teiln Sie E: Onlil Tech p Suchen SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: KNX TH-B-UP Version 1.0 OK Best Huts Buss IO-AI Der I Bele' Binä Ausc Teiln Sie E: Onlil Tech p Suchen SL Ready",
   "seconds": 30,
   "when": "2026-10-27T21:51:46.085501+00:00",
   "verified": true
@@ -997,7 +997,7 @@
   "products": [
    "EyeZen TP"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: EyeZen TP Version 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: EyeZen TP Version 1.0 OK SL Ready",
   "seconds": 106,
   "when": "2026-10-27T21:53:37.759740+00:00",
   "verified": false
@@ -1007,7 +1007,7 @@
   "products": [
    "EyeZen TP v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products 1.5 1.0 Produkt: EyeZen TP v2 ZPDEZRF868 Version SL Ready OK EyeZen RF 868 1.0",
+  "message": "Import erfolgreich. Datei: <vm>\\products 1.5 1.0 Produkt: EyeZen TP v2 ZPDEZRF868 Version SL Ready OK EyeZen RF 868 1.0",
   "seconds": 101,
   "when": "2026-10-27T21:55:23.939321+00:00",
   "verified": false
@@ -1027,7 +1027,7 @@
   "products": [
    "FANinBOX 1 IOV ICH"
   ],
-  "message": "Best Huts Buss Bewe Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products 1.5 1.3 1.0 Produkt: FANinBOX 1 ICH ZPDEZRF868 Version SL Ready EyeZen OK RF 868 1.0",
+  "message": "Best Huts Buss Bewe Import erfolgreich. Datei: <vm>\\products 1.5 1.3 1.0 Produkt: FANinBOX 1 ICH ZPDEZRF868 Version SL Ready EyeZen OK RF 868 1.0",
   "seconds": 98,
   "when": "2026-10-27T21:57:07.429289+00:00",
   "verified": false
@@ -1037,7 +1037,7 @@
   "products": [
    "FANinBOX 230V ICH"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: FANinBOX 230V ICH ZCLFBIIOCI Version 1.2 OK FANinBOX 1 IOV ICH 1.1 1. SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: FANinBOX 230V ICH ZCLFBIIOCI Version 1.2 OK FANinBOX 1 IOV ICH 1.1 1. SL Ready",
   "seconds": 100,
   "when": "2026-10-27T21:58:53.297813+00:00",
   "verified": true
@@ -1047,7 +1047,7 @@
   "products": [
    "Flat 1"
   ],
-  "message": "Best Huts Buss Deck VAC Lüfte Ausc enth Tech Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 1 ZCLFBIIOCI Version 1.2 OK 1.3 FANinBOX 1 IOV ICH 1.1 1. SL Ready",
+  "message": "Best Huts Buss Deck VAC Lüfte Ausc enth Tech Import erfolgreich. Datei: <vm>\\products Produkt: Flat 1 ZCLFBIIOCI Version 1.2 OK 1.3 FANinBOX 1 IOV ICH 1.1 1. SL Ready",
   "seconds": 104,
   "when": "2026-10-27T22:00:42.835001+00:00",
   "verified": true
@@ -1067,7 +1067,7 @@
   "products": [
    "Flat 1 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Flat_1_v2_1.8_ElAFltR_Cert.knxprod Produkt: Flat 1 v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products \\Flat_1_v2_1.8_ElAFltR_Cert.knxprod Produkt: Flat 1 v2 Version 3.0 OK SL Ready",
   "seconds": 247,
   "when": "2026-10-27T22:04:55.970578+00:00",
   "verified": true
@@ -1077,7 +1077,7 @@
   "products": [
    "Flat 2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 2 Version 3.0 OK SL Ready",
   "seconds": 131,
   "when": "2026-10-27T22:07:13.360632+00:00",
   "verified": true
@@ -1097,7 +1097,7 @@
   "products": [
    "Flat 4"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 4 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 4 Version 3.0 OK SL Ready",
   "seconds": 114,
   "when": "2026-10-27T22:09:12.859285+00:00",
   "verified": true
@@ -1107,7 +1107,7 @@
   "products": [
    "Flat 4 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Flat_4_v2_1.8_ElFAltR_Cert.knxprod Produkt: Flat 4 v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products \\Flat_4_v2_1.8_ElFAltR_Cert.knxprod Produkt: Flat 4 v2 Version 3.0 OK SL Ready",
   "seconds": 113,
   "when": "2026-10-27T22:11:11.017767+00:00",
   "verified": true
@@ -1117,7 +1117,7 @@
   "products": [
    "Flat 55 Display"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Display Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 Display Version 3.0 OK SL Ready",
   "seconds": 100,
   "when": "2026-10-27T22:12:56.331372+00:00",
   "verified": true
@@ -1127,7 +1127,7 @@
   "products": [
    "Flat 55 Display v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Display v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 Display v2 Version 3.0 OK SL Ready",
   "seconds": 99,
   "when": "2026-10-27T22:14:41.266523+00:00",
   "verified": true
@@ -1147,7 +1147,7 @@
   "products": [
    "Flat 55 Xl v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 Xl v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 Xl v2 Version 3.0 OK SL Ready",
   "seconds": 100,
   "when": "2026-10-27T22:16:27.059106+00:00",
   "verified": true
@@ -1157,7 +1157,7 @@
   "products": [
    "Flat 55 X2 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
   "seconds": 102,
   "when": "2026-10-27T22:18:14.623428+00:00",
   "verified": true
@@ -1167,7 +1167,7 @@
   "products": [
    "Flat 55 X2 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
   "seconds": 103,
   "when": "2026-10-27T22:20:03.263743+00:00",
   "verified": true
@@ -1177,7 +1177,7 @@
   "products": [
    "Flat 55 X4 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Flat 55 v2 Version 3.0 OK SL Ready",
   "seconds": 95,
   "when": "2026-10-27T22:21:43.894310+00:00",
   "verified": true
@@ -3339,7 +3339,7 @@
    "SCN-BWM60.02 Bewegungsmelder 60 CH",
    "SCN-BWM60T.02 Bewegungsmelder TS 60 CH mit T-Sensor"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: SCN-BWM60.02 Bewegungsmelder 60 CH Produkt: SCN-BWM60T.02 Bewegungsmelder TS 60 CH mit T-Sensor und 2 Sensortasten Version 3.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: SCN-BWM60.02 Bewegungsmelder 60 CH Produkt: SCN-BWM60T.02 Bewegungsmelder TS 60 CH mit T-Sensor und 2 Sensortasten Version 3.0 OK SL Ready",
   "seconds": 66,
   "when": "2026-10-27T22:22:55.611992+00:00",
   "verified": true
@@ -3352,7 +3352,7 @@
    "SCN-BWM63.02 Bewegungsmelder 63",
    "SCN-BWM63T.02 Bewegungsmelder TS 63 mit T-Sensor und"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\MDT_KP_SCN_02_Motion_Detector_V44a.knxprod Produkt: SCN-BWM55.02/.G2 Bewegungsmelder 55 Produkt: SCN-BWM55T.G2 Bewegungsmelder TS 55 mit T-Sensor und 2 Sensortasten Produkt: SCN-BWM63.02 Bewegungsmelder 63 Produkt: SCN-BWM63T.02 Bewegungsmelder TS 63 mit T-Sensor und 2 Sensortasten Version 4.4 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products \\MDT_KP_SCN_02_Motion_Detector_V44a.knxprod Produkt: SCN-BWM55.02/.G2 Bewegungsmelder 55 Produkt: SCN-BWM55T.G2 Bewegungsmelder TS 55 mit T-Sensor und 2 Sensortasten Produkt: SCN-BWM63.02 Bewegungsmelder 63 Produkt: SCN-BWM63T.02 Bewegungsmelder TS 63 mit T-Sensor und 2 Sensortasten Version 4.4 OK SL Ready",
   "seconds": 56,
   "when": "2026-10-27T22:23:56.965124+00:00",
   "verified": false
@@ -3362,7 +3362,7 @@
   "products": [
    "SCN-RT8REG.02 Temperaturregler 8-fach REG"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: SCN-RT8REG.02 Temperaturregler 8-fach REG neld Version 4.4 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: SCN-RT8REG.02 Temperaturregler 8-fach REG neld Version 4.4 OK SL Ready",
   "seconds": 37,
   "when": "2026-10-27T22:24:39.566771+00:00",
   "verified": true
@@ -3372,7 +3372,7 @@
   "products": [
    "SCN-RTC20.02 Zeitschaltuhr 20-Kanal mit Farbdisplay"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products .knxprod Produkt: SCN-RTC20.02 Zeitschaltuhr 20-Kanal mit Farbdisplay Version 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products .knxprod Produkt: SCN-RTC20.02 Zeitschaltuhr 20-Kanal mit Farbdisplay Version 1.0 OK SL Ready",
   "seconds": 40,
   "when": "2026-10-27T22:25:25.589912+00:00",
   "verified": true
@@ -3382,7 +3382,7 @@
   "products": [
    "KNX USB Interface"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: KNX USB Interface anal Version 2. OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: KNX USB Interface anal Version 2. OK SL Ready",
   "seconds": 40,
   "when": "2026-10-27T22:26:10.873089+00:00",
   "verified": true
@@ -3509,7 +3509,7 @@
   "products": [
    "MINiBOX 0-1 OV"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 0-1 OV X3 Version 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX 0-1 OV X3 Version 1.0 OK SL Ready",
   "seconds": 98,
   "when": "2026-10-27T22:27:54.085375+00:00",
   "verified": true
@@ -3519,7 +3519,7 @@
   "products": [
    "MINiBOX 20 v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 20 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX 20 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
   "seconds": 116,
   "when": "2026-10-27T22:29:55.543370+00:00",
   "verified": true
@@ -3539,7 +3539,7 @@
   "products": [
    "MINiBOX 25 v3"
   ],
-  "message": "Best Huts Buss Multi Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 25 v3 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "message": "Best Huts Buss Multi Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX 25 v3 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
   "seconds": 109,
   "when": "2026-10-27T22:31:50.327169+00:00",
   "verified": true
@@ -3549,7 +3549,7 @@
   "products": [
    "MINiBOX 40 v2"
   ],
-  "message": "Best Huts Buss Multi Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 40 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
+  "message": "Best Huts Buss Multi Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX 40 v2 ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 2.1 Version 2. 1.12 2.",
   "seconds": 120,
   "when": "2026-10-27T22:33:56.047797+00:00",
   "verified": true
@@ -3589,7 +3589,7 @@
   "products": [
    "MINiBOX 45 v3"
   ],
-  "message": "Best Huts Buss KNX Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX 45 v3 p SL Ready VIINiBO) OK MINiBOX 0-10V 1.4 Version 2. 1.7 1.4",
+  "message": "Best Huts Buss KNX Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX 45 v3 p SL Ready VIINiBO) OK MINiBOX 0-10V 1.4 Version 2. 1.7 1.4",
   "seconds": 115,
   "when": "2026-10-27T22:35:56.902613+00:00",
   "verified": true
@@ -3599,7 +3599,7 @@
   "products": [
    "MINiBOX QUATRO"
   ],
-  "message": "Best Huts Buss Multi Secu Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: MINiBOX QUATRO ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 -.7 Version 2. 1.6",
+  "message": "Best Huts Buss Multi Secu Import erfolgreich. Datei: <vm>\\products Produkt: MINiBOX QUATRO ZIOMN20V2 p SL Ready VIINiBO) OK MINiBOX 20 v2 -.7 Version 2. 1.6",
   "seconds": 122,
   "when": "2026-10-27T22:38:04.711101+00:00",
   "verified": true
@@ -3619,7 +3619,7 @@
   "products": [
    "Multiroom Klimasteuerung"
   ],
-  "message": "Best Huts Buss Multi 4), Ja 1) Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Multiroom_Climate_Controller_2_1_ElFAltRS.knxprod Produkt: Multiroom Klimasteuerung ZIOMN25V3 p SL Ready VIINiBO) OK MINiBOX 25 v3 1.6 Version 2. 1.3 1.6",
+  "message": "Best Huts Buss Multi 4), Ja 1) Import erfolgreich. Datei: <vm>\\products \\Multiroom_Climate_Controller_2_1_ElFAltRS.knxprod Produkt: Multiroom Klimasteuerung ZIOMN25V3 p SL Ready VIINiBO) OK MINiBOX 25 v3 1.6 Version 2. 1.3 1.6",
   "seconds": 104,
   "when": "2026-10-27T22:39:54.354427+00:00",
   "verified": true
@@ -3639,7 +3639,7 @@
   "products": [
    "NarrowDlM X4"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: NarrowDlM X4 Version .2. OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: NarrowDlM X4 Version .2. OK SL Ready",
   "seconds": 104,
   "when": "2026-10-27T22:41:43.411348+00:00",
   "verified": false
@@ -3649,7 +3649,7 @@
   "products": [
    "PSE-B552TOx.02S KNX Bewegungsmelder 2,2 m TS 55, Secure"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-B552TOx.02S KNX Bewegungsmelder 2,2 m TS 55, Secure Version OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\PSE- Produkt: PSE-B552TOx.02S KNX Bewegungsmelder 2,2 m TS 55, Secure Version OK SL Ready",
   "seconds": 45,
   "when": "2026-10-27T22:42:34.219399+00:00",
   "verified": false
@@ -3659,7 +3659,7 @@
   "products": [
    "PSE-B552TOx.02 KNX Bewegungsmelder 2,2 m TS 55"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-B552TOx.02 KNX Bewegungsmelder 2,2 m TS 55 Version OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\PSE- Produkt: PSE-B552TOx.02 KNX Bewegungsmelder 2,2 m TS 55 Version OK SL Ready",
   "seconds": 36,
   "when": "2026-10-27T22:43:15.767533+00:00",
   "verified": false
@@ -3670,7 +3670,7 @@
    "PSE-BWML0x.01S KNX Mikro Bewegungsmelder, Secure",
    "PSE-PMC0x.01S KNX Mikro Präsenzmelder 3600, 1 Sensor,"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\PSE- Produkt: PSE-BWML0x.01S KNX Mikro Bewegungsmelder, Secure Produkt: PSE-PMC0x.01S KNX Mikro Präsenzmelder 3600, 1 Sensor, Secure Version OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\PSE- Produkt: PSE-BWML0x.01S KNX Mikro Bewegungsmelder, Secure Produkt: PSE-PMC0x.01S KNX Mikro Präsenzmelder 3600, 1 Sensor, Secure Version OK SL Ready",
   "seconds": 41,
   "when": "2026-10-27T22:44:02.712263+00:00",
   "verified": false
@@ -3700,7 +3700,7 @@
   "products": [
    "Presentia C v2"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products \\Presentia_C_v2_1.5_ElFAltRUk_Cert.knxprod Produkt: Presentia C v2 legu Version 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products \\Presentia_C_v2_1.5_ElFAltRUk_Cert.knxprod Produkt: Presentia C v2 legu Version 1.0 OK SL Ready",
   "seconds": 102,
   "when": "2026-10-27T22:45:50.218142+00:00",
   "verified": true
@@ -3710,7 +3710,7 @@
   "products": [
    "Presentia WO"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: Presentia WO ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: Presentia WO ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
   "seconds": 102,
   "when": "2026-10-27T22:47:38.035043+00:00",
   "verified": true
@@ -3730,7 +3730,7 @@
   "products": [
    "QUAD"
   ],
-  "message": "Best Huts Buss KNX- Feucl Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: QUAD ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
+  "message": "Best Huts Buss KNX- Feucl Import erfolgreich. Datei: <vm>\\products Produkt: QUAD ZPDC30LV2 Presentia OK cv2 16 Version 1.0 1.6 SL Ready",
   "seconds": 113,
   "when": "2026-10-27T22:49:36.659441+00:00",
   "verified": true
@@ -3750,7 +3750,7 @@
   "products": [
    "QUAD Plus"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products Produkt: QUAD Plus OK FTR -MSxS.1.1 Version 0.2 0.3 0.3 SL Ready Taster-Sensor [FTR-MSxS.1.1] FTR-MSxS. 1.",
+  "message": "Import erfolgreich. Datei: <vm>\\products Produkt: QUAD Plus OK FTR -MSxS.1.1 Version 0.2 0.3 0.3 SL Ready Taster-Sensor [FTR-MSxS.1.1] FTR-MSxS. 1.",
   "seconds": 102,
   "when": "2026-10-27T22:51:24.357704+00:00",
   "verified": true
@@ -3761,7 +3761,7 @@
    "RF-AKD230CC.02S KNX RF+ LED Controller CC/CV 30 W /",
    "RF-AKD260CC.02S KNX RF+ LED Controller CC/CV 60 W /"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\RF- Produkt: RF-AKD230CC.02S KNX RF+ LED Controller CC/CV 30 W / 230 V 2-l<anäle Produkt: RF-AKD260CC.02S KNX RF+ LED Controller CC/CV 60 W / 230 V 2-l<anäle Taster-Sensor [FTR-MSxS.1.1] Version 0.2 0.3 0.3 SL Ready OK FTR-MSxS. 1. FTR -MSxS.1.1",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\RF- Produkt: RF-AKD230CC.02S KNX RF+ LED Controller CC/CV 30 W / 230 V 2-l<anäle Produkt: RF-AKD260CC.02S KNX RF+ LED Controller CC/CV 60 W / 230 V 2-l<anäle Taster-Sensor [FTR-MSxS.1.1] Version 0.2 0.3 0.3 SL Ready OK FTR-MSxS. 1. FTR -MSxS.1.1",
   "seconds": 45,
   "when": "2026-10-27T22:52:14.884166+00:00",
   "verified": false
@@ -3771,7 +3771,7 @@
   "products": [
    "RF-FKxx.01S KNX RF Fensterkontakt"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\RF- Produkt: RF-FKxx.01S KNX RF Fensterkontakt Con Version 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\RF- Produkt: RF-FKxx.01S KNX RF Fensterkontakt Con Version 1.0 OK SL Ready",
   "seconds": 38,
   "when": "2026-10-27T22:52:58.365474+00:00",
   "verified": true
@@ -3884,7 +3884,7 @@
   "products": [
    "SCN-C02M601 x.02 C02 / VOC Kombisensor 60 CH"
   ],
-  "message": "Import erfolgreich. Datei: C:\\Users\\macremote\\ets-sweep\\products\\SCN- C02M601 Produkt: SCN-C02M601x.02 C02 / VOC Kombisensor 60 CH ikt Version . 1.0 OK SL Ready",
+  "message": "Import erfolgreich. Datei: <vm>\\products\\SCN- C02M601 Produkt: SCN-C02M601x.02 C02 / VOC Kombisensor 60 CH ikt Version . 1.0 OK SL Ready",
   "seconds": 37,
   "when": "2026-10-27T22:53:41.241538+00:00",
   "verified": false

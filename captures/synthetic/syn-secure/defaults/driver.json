@@ -58,7 +58,7 @@
    "entries": [
     "88",
     "Automatisch",
-    "KNX IP (192.168.1.74:3671 - 1.1.200)",
+    "KNX IP (192.0.2.74:3671 - 1.1.200)",
     "knx-sim (127.0.0.1:3672 Udp)",
     "Konfigurierte Verbindungen verwalten...",
     "Arbeitsbereiche"

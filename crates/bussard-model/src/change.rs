@@ -2188,7 +2188,7 @@ mod tests {
         let mut after = before.clone();
         after.tunnels = vec![ia("1.1.22"), ia("1.1.30")];
         after.assignment = IpAssignment::Static;
-        after.address = Some(std::net::Ipv4Addr::new(192, 168, 1, 74));
+        after.address = Some(std::net::Ipv4Addr::new(192, 0, 2, 74));
         after.friendly_name = Some("Beta".to_string());
         let set = describe(&with(Some(before.clone())), &with(Some(after)));
         let sentences: Vec<&str> = set.changes.iter().map(|c| c.sentence.as_str()).collect();
@@ -2196,7 +2196,7 @@ mod tests {
             sentences,
             [
                 "Interface KNX IP Interface: IP assignment is now static (was dhcp).",
-                "Interface KNX IP Interface: static IP address set to 192.168.1.74.",
+                "Interface KNX IP Interface: static IP address set to 192.0.2.74.",
                 "Interface KNX IP Interface: friendly name is now \"Beta\" (was \"Alpha\").",
                 "Interface KNX IP Interface: tunnel address 1.1.30 added.",
                 "Interface KNX IP Interface: tunnel address 1.1.23 removed.",

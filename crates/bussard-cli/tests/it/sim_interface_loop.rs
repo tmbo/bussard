@@ -40,7 +40,7 @@ impl Sim {
             .port();
         let yaml = format!(
             "gateway:\n  host: \"127.0.0.1\"\n  port: {port}\n{gateway_extra}\ndevices:\n  - address: \"1.1.200\"\n    \
-             initial_state: loaded\n    knxnet:\n      friendly_name: \"Bocklisch Alpha\"\n      \
+             initial_state: loaded\n    knxnet:\n      friendly_name: \"Demohouse Alpha\"\n      \
              tunnels: [\"1.1.22\", \"1.1.23\", \"1.1.24\", \"1.1.25\"]\n      tunnel_slots: 8\n      \
              listed: {listed}\n"
         );
@@ -133,7 +133,7 @@ fn run_loop_via(listed: bool, device_management: bool) -> TestResult {
     std::fs::write(
         model.join("devices").join("1.1.200.toml"),
         "address = \"1.1.200\"\nname = \"Simulated IP interface\"\n\n[knxnet]\n\
-         assignment = \"dhcp\"\nfriendly_name = \"Bocklisch Beta\"\n\
+         assignment = \"dhcp\"\nfriendly_name = \"Demohouse Beta\"\n\
          tunnels = [\"1.1.22\", \"1.1.23\", \"1.1.24\", \"1.1.25\", \"1.1.26\", \"1.1.27\"]\n",
     )?;
     let sim = if device_management {
@@ -155,7 +155,7 @@ fn run_loop_via(listed: bool, device_management: bool) -> TestResult {
     let err = String::from_utf8_lossy(&plan.stderr);
     assert!(plan.status.success(), "plan: {out}\n{err}");
     assert!(
-        out.contains("~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""),
+        out.contains("~ friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\""),
         "{out}"
     );
     assert!(out.contains("+ tunnel address 1.1.27 added"), "{out}");

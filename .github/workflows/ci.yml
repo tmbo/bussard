@@ -85,6 +85,9 @@ jobs:
       - name: Changelog fragments
         run: python3 scripts/changelog.py check
 
+      - name: No private data in tracked files
+        run: scripts/check-no-private-data.sh
+
       # The synthetic product generator (epic #596): its unit tests, and
       # `--check`, which fails when a product's committed xml/ or signed.toml
       # no longer matches its product.toml. Both scripts are stdlib-only

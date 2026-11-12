@@ -14,7 +14,7 @@ product = "230021SU"                    # order number, printed on the device
 
 [location]
 floor = "DG"
-room = "Kind 2 Süd"
+room = "Gast 2 Süd"
 
 [parameters]                            # device-level parameters (no channel)
 regenalarm = "1"
@@ -142,7 +142,7 @@ assignment = "dhcp"            # or "static"
 address = "192.0.2.10"       # static only
 netmask = "255.255.255.0"      # static only
 gateway = "192.0.2.1"        # static only
-friendly_name = "Bocklisch Alpha"
+friendly_name = "Demohouse Alpha"
 tunnels = ["1.1.22", "1.1.23", "1.1.24", "1.1.25", "1.1.26", "1.1.27", "1.1.28", "1.1.29"]
 ```
 

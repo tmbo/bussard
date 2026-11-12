@@ -531,7 +531,7 @@ fn ip_interface() -> anyhow::Result<MockDevice> {
         tunnels: (22..=29)
             .map(|n| format!("1.1.{n}").parse())
             .collect::<Result<Vec<IndividualAddress>, _>>()?,
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         ..MockKnxnet::default()
     };
     Ok(MockDevice::new("1.1.200".parse()?)
@@ -693,7 +693,7 @@ async fn test_knx_show_device_live_reads_an_ip_interface() -> anyhow::Result<()>
     );
     assert!(live["knxnet"].is_object(), "{shown}");
     let lines = serde_json::to_string(&live["knxnet_lines"])?;
-    assert!(lines.contains("Bocklisch Alpha"), "{lines}");
+    assert!(lines.contains("Demohouse Alpha"), "{lines}");
     assert!(
         lines.contains("1.1.22"),
         "the tunnelling addresses: {lines}"
