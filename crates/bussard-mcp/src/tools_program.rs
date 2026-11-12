@@ -286,8 +286,8 @@ pub struct ApplyDeviceArgs {
     /// device produces the same hash.
     #[serde(default)]
     pub plan_hash: Option<String>,
-    /// Write a device that is not on bussard's list of supported devices
-    /// anyway. Only after the human explicitly said so, and only with the
+    /// Write a device bussard does not rate proven or likely (not on its
+    /// list of supported devices, or a listed known problem) anyway. Only after the human explicitly said so, and only with the
     /// `plan_digest` of a plan that reported the device unsupported.
     #[serde(default)]
     pub allow_unsupported: bool,
@@ -306,8 +306,8 @@ pub struct RestoreParametersArgs {
     /// (after the human's explicit yes) to write.
     #[serde(default)]
     pub plan_digest: Option<String>,
-    /// Write a device that is not on bussard's list of supported devices
-    /// anyway. Only after the human explicitly said so, and only with the
+    /// Write a device bussard does not rate proven or likely (not on its
+    /// list of supported devices, or a listed known problem) anyway. Only after the human explicitly said so, and only with the
     /// `plan_digest` of a plan that reported the device unsupported.
     #[serde(default)]
     pub allow_unsupported: bool,
@@ -339,8 +339,8 @@ pub struct RestoreTablesArgs {
     /// (after the human's explicit yes) to write.
     #[serde(default)]
     pub plan_digest: Option<String>,
-    /// Write a device that is not on bussard's list of supported devices
-    /// anyway. Only after the human explicitly said so, and only with the
+    /// Write a device bussard does not rate proven or likely (not on its
+    /// list of supported devices, or a listed known problem) anyway. Only after the human explicitly said so, and only with the
     /// `plan_digest` of a plan that reported the device unsupported.
     #[serde(default)]
     pub allow_unsupported: bool,

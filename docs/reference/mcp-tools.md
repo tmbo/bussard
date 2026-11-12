@@ -203,8 +203,8 @@ rates `proven` or `likely`.
   backup comes first; no override is needed.
 - **The plan still works.** An unsupported device gets its plan and its
   `plan_digest`; `next_step` holds the sentence the assistant puts to the
-  human: bussard has not checked this product against ETS, a backup comes
-  first, and ETS is the safe way.
+  human: bussard has not checked this product against ETS (or the known
+  problem with its cause), a backup comes first, and ETS is the safe way.
 - **The write refuses by default.** On a gateway that is not loopback,
   `knx_apply_device`, `knx_restore_parameters`, `knx_restore_tables` and the
   write call of `knx_replace_device` answer `ok: false`, `refused: true`,
@@ -213,7 +213,9 @@ rates `proven` or `likely`.
 - **The override is the human's.** When the chat app can show the server's
   questions (form-mode elicitation), the server asks the human itself
   (`<ia> runs ..., which is not on bussard's list of supported devices. ...
-  Write anyway?`) and the assistant cannot answer for them:
+  Write anyway?`, or for a listed known problem `..., which has a known
+  problem (<problem>: <cause>). ...`) and the assistant cannot answer for
+  them; a `likely` device is never asked about:
   `allow_unsupported` does not count, a yes writes, and a no or a dismissed
   question refuses with nothing written and the digest kept. Otherwise, after
   the human's explicit yes, the assistant calls again with the same digest and

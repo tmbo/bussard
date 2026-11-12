@@ -171,9 +171,9 @@ impl Refused {
 /// checked against ETS.
 fn next_step(target: &str, view: &support::SupportView, via: Via) -> String {
     let what = match view.problem_text() {
-        Some(problem) => format!(
-            "{target} has a known problem on bussard's device-support list ({problem})"
-        ),
+        Some(problem) => {
+            format!("{target} has a known problem on bussard's device-support list ({problem})")
+        }
         None => format!("{target} is not on bussard's list of supported devices"),
     };
     match via {
@@ -524,7 +524,8 @@ mod tests {
     }
 
     #[test]
-    fn test_question_names_the_known_problem_and_its_cause() -> Result<(), Box<dyn std::error::Error>> {
+    fn test_question_names_the_known_problem_and_its_cause()
+    -> Result<(), Box<dyn std::error::Error>> {
         let verdict = Support::Unsupported {
             application_id: Some("0004B00C01".to_string()),
             application: Some("M-0004_A-B00C-01".to_string()),

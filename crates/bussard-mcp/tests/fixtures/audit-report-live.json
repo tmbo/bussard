@@ -330,11 +330,14 @@
   },
   "support": {
     "devices": 5,
+    "likely": 0,
+    "proven": 0,
     "supported": 0,
     "unsupported": [
       {
         "address": "1.1.1",
         "support": {
+          "category": "unsupported",
           "reason": "no product data pinned, application unknown",
           "status": "unsupported"
         }
@@ -342,6 +345,7 @@
       {
         "address": "1.1.2",
         "support": {
+          "category": "unsupported",
           "reason": "no product data pinned, application unknown",
           "status": "unsupported"
         }
@@ -349,6 +353,7 @@
       {
         "address": "1.1.10",
         "support": {
+          "category": "unsupported",
           "reason": "no product data pinned, application unknown",
           "status": "unsupported"
         }
@@ -356,6 +361,7 @@
       {
         "address": "1.1.12",
         "support": {
+          "category": "unsupported",
           "reason": "no product data pinned, application unknown",
           "status": "unsupported"
         }
@@ -363,6 +369,7 @@
       {
         "address": "1.2.3",
         "support": {
+          "category": "unsupported",
           "reason": "no product data pinned, application unknown",
           "status": "unsupported"
         }
