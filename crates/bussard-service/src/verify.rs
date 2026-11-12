@@ -249,6 +249,7 @@ impl ExpectedProperty {
                 start: w.start,
                 count: w.count,
                 value: w.value.clone(),
+                fixed: false,
             })
             .collect();
         bussard_download::held_after(&ranges)
@@ -277,28 +278,6 @@ impl ExpectedProperty {
                 start: p.start_element,
                 count: p.count,
                 value: p.model,
-            })
-            .collect()
-    }
-
-    /// The property writes of `flash` whose value the program's
-    /// property-located parameters compose (issue #669), on every system: what
-    /// a parameter write (an apply) must find in the device's properties, as
-    /// it must find the parameter memory.
-    pub fn from_parameter_writes(flash: &FlashPlan) -> Vec<ExpectedProperty> {
-        // A write the full flash leaves out as held after the parameter reset
-        // (issue #951) is a parameter property all the same.
-        flash
-            .steps
-            .iter()
-            .filter_map(FlashStep::property_write)
-            .filter(|w| w.from_parameters)
-            .map(|w| ExpectedProperty {
-                object: w.object,
-                prop_id: w.prop_id,
-                start: w.start_element,
-                count: w.count.max(1),
-                value: w.value.to_vec(),
             })
             .collect()
     }
@@ -1283,7 +1262,7 @@ mod tests {
                 "{expected:?}"
             );
         }
-        let parameters = ExpectedProperty::from_parameter_writes(&plan);
+        let parameters = ExpectedProperty::from_checked(&plan);
         assert!(parameters.iter().any(|e| e.prop_id == 58));
         assert!(!parameters.iter().any(|e| e.prop_id == 57));
         Ok(())

@@ -34,8 +34,13 @@ pub struct ParamProperty {
     pub device: Option<Vec<u8>>,
     /// The display names of the parameters placed in the property
     /// ([`ParamProperty::parameter_names`]), filled by
-    /// [`read_parameter_properties`]; empty until then.
+    /// [`read_checked_properties`]; empty until then.
     pub parameters: Vec<String>,
+    /// A fixed write (`InlineData`, no parameter composes it) that the
+    /// parameter-only procedure makes (issue #1052): backed up and read back
+    /// like a parameter property, but a difference in it alone is no
+    /// parameter change ([`changed_parameter_properties`]).
+    pub fixed: bool,
 }
 
 impl ParamProperty {
@@ -124,6 +129,7 @@ impl FlashPlan {
                 model: value.to_vec(),
                 device: None,
                 parameters: Vec::new(),
+                fixed: false,
             };
             if !out.iter().any(|p| {
                 (p.object, p.prop_id, p.start_element)
@@ -150,6 +156,8 @@ pub struct PropertyRange {
     pub count: u16,
     /// The octets.
     pub value: Vec<u8>,
+    /// No parameter composes the write ([`ParamProperty::fixed`]).
+    pub fixed: bool,
 }
 
 /// What `writes` (in procedure order) leave on the device: each write on the
@@ -188,6 +196,7 @@ fn still_held(write: &PropertyRange, later: &[PropertyRange]) -> Vec<PropertyRan
             (true, Some((from, _))) => run = Some((from, i + 1)),
             (false, Some((from, to))) => {
                 out.push(PropertyRange {
+                    fixed: write.fixed,
                     object: write.object,
                     prop_id: write.prop_id,
                     // Within the write's own u16 extent.
@@ -243,6 +252,7 @@ impl FlashPlan {
                 start: w.start_element,
                 count: w.count.max(1),
                 value: w.value.to_vec(),
+                fixed: !w.from_parameters,
             })
             .collect();
         held_after(&writes)
@@ -255,28 +265,18 @@ impl FlashPlan {
                 model: r.value,
                 device: None,
                 parameters: Vec::new(),
+                fixed: r.fixed,
             })
             .collect()
     }
 }
 
-/// Reads what the device holds in each of `plan`'s parameter properties
-/// ([`FlashPlan::parameter_properties`]) of `app`: one property read each, on
-/// the connection the parameter memory is read on, so the parameter read
-/// costs one request more per property and nothing when the program places
-/// no parameter in a property. A read that fails leaves the device side
-/// `None`, which [`ParamProperty::differs`] counts as a difference.
-pub async fn read_parameter_properties<Ch: L4Channel>(
-    l4: &mut Layer4Connection<Ch>,
-    plan: &FlashPlan,
-    app: &ApplicationProgram,
-) -> Vec<ParamProperty> {
-    read_properties(l4, plan.parameter_properties(), app).await
-}
-
-/// [`read_parameter_properties`] of [`FlashPlan::checked_properties`]: what
-/// a parameter-only download backs up before it writes and compares after
-/// (issue #1052).
+/// Reads what the device holds in each of `plan`'s
+/// [`FlashPlan::checked_properties`]: one property read each, on the
+/// connection the parameter memory is read on. A read that fails leaves the
+/// device side `None`, which [`ParamProperty::differs`] counts as a
+/// difference. What a parameter-only download backs up before it writes
+/// and compares after (issues #706, #1052).
 pub async fn read_checked_properties<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
@@ -313,9 +313,21 @@ async fn read_properties<Ch: L4Channel>(
     out
 }
 
-/// The properties of `properties` whose device value differs from the model.
+/// The properties of `properties` whose device value differs from the
+/// model: what a read-back after a write reports unverified.
 pub fn changed_properties(properties: &[ParamProperty]) -> Vec<&ParamProperty> {
     properties.iter().filter(|p| p.differs()).collect()
+}
+
+/// The parameter properties of `properties` whose device value differs from
+/// the model: the parameter changes a plan lists and a parameter write is
+/// started for. A fixed write that differs alone is none (issue #1052): it
+/// is rewritten and read back when a parameter change runs the download.
+pub fn changed_parameter_properties(properties: &[ParamProperty]) -> Vec<&ParamProperty> {
+    properties
+        .iter()
+        .filter(|p| !p.fixed && p.differs())
+        .collect()
 }
 
 #[cfg(test)]
@@ -331,6 +343,7 @@ mod tests {
             model: model.to_vec(),
             device: device.map(<[u8]>::to_vec),
             parameters: Vec::new(),
+            fixed: false,
         }
     }
 

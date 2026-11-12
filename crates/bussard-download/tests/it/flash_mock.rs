@@ -8498,6 +8498,9 @@ struct ParDeviceState {
     reset_restores_object_9: bool,
     /// While set, the address table's MCB answers a CRC no table has.
     corrupt_table_mcb: bool,
+    /// While set, a parameter reset (erase code 5) clears the parameters'
+    /// property (object 10 PID 52) and object 9 to zeros.
+    reset_clears_parameters: bool,
     /// The image each object's `PID_MCB_TABLE` describes, answered as one
     /// entry (size and CRC16-CCITT) when the test sets it.
     mcb: BTreeMap<u8, Vec<u8>>,
@@ -8550,6 +8553,12 @@ fn par_device(
             seen.resets.extend(data.first());
             if seen.reset_restores_object_9 && data.first() == Some(&5) {
                 *dev = dev.clone().with_writable_property(9, 208, 1, &[1, 2]);
+            }
+            if seen.reset_clears_parameters && data.first() == Some(&5) {
+                *dev = dev
+                    .clone()
+                    .with_writable_property(9, 208, 1, &[0, 0])
+                    .with_writable_property(10, 52, 1, &[0, 0]);
             }
             return Some(bussard_testkit::Reaction::Answer(
                 A_RESTART_RESPONSE,
@@ -8959,6 +8968,84 @@ async fn test_parameters_only_par_procedure_overlapping_writes_read_back_as_a_no
     assert!(
         bussard_download::changed_properties(&after).is_empty(),
         "a second run would write again: {after:?}"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_rewrites_what_the_reset_cleared() -> TestResult {
+    // A device whose erase code 5 really resets the parameters: everything
+    // the reset cleared is written again and reads back as the model.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let device = par_device(ia("1.1.1")?, true, false, &state);
+    let armed = Arc::clone(&state);
+    let (outcome, _, after, dev) = par_run(
+        &crate::property_only_partial::e802_procedures(),
+        device,
+        &state,
+        move |_| {
+            if let Ok(mut s) = armed.lock() {
+                s.reset_clears_parameters = true;
+            }
+        },
+        Vec::new(),
+    )
+    .await?;
+    assert!(outcome?.ok());
+    assert_eq!(lock_par(&state)?.resets, [5]);
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "{after:?}"
+    );
+    assert_eq!(dev.property(10, 52), Some(&[0x05, 0x14][..]));
+    assert_eq!(dev.property(9, 208), Some(&[0x01, 0x02][..]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_checks_application_program_2_on_object_5() -> TestResult
+{
+    // Application Program 2's code image is kept (Mode 0) and not rewritten;
+    // MergeId 7 checks it on object 5, not on object 4, whose MCB describes
+    // another image.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let target = ia("1.1.1")?;
+    let device = par_device(target, true, true, &state);
+    let app = crate::property_only_partial::par_app_with_ap2(
+        &crate::property_only_partial::ap2_procedures(),
+    )?;
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    {
+        let mut s = lock_par(&state)?;
+        s.mcb.insert(5, vec![9, 9, 9, 9]);
+        s.mcb.insert(4, vec![0, 1, 2, 3, 4, 5]);
+    }
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    let outcome = flash(&mut session, &defaults, Default::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    assert!(
+        !partial
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::WriteRelMem { .. }))
+    );
+    let outcome = flash(&mut session, &partial, Default::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    // A check against object 4 would not match (advisory or not).
+    assert!(
+        !outcome.warnings.iter().any(|w| w.contains("MCB")),
+        "{:?}",
+        outcome.warnings
+    );
+    let after = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "{after:?}"
     );
     Ok(())
 }

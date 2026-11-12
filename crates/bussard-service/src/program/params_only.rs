@@ -338,10 +338,11 @@ pub fn plan_parameters_only(
              flash {target}` instead."
         ));
     }
-    let properties: Vec<ParamProperty> = bussard_download::changed_properties(&read.properties)
-        .into_iter()
-        .cloned()
-        .collect();
+    let properties: Vec<ParamProperty> =
+        bussard_download::changed_parameter_properties(&read.properties)
+            .into_iter()
+            .cloned()
+            .collect();
     Ok(ParamsPlanned {
         partial,
         regions,
@@ -739,6 +740,7 @@ mod tests {
             model: vec![1],
             device,
             parameters: Vec::new(),
+            fixed: false,
         };
         let read = prop(52, Some(vec![0]));
         let unread = prop(53, None);

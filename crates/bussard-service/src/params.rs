@@ -1565,7 +1565,7 @@ pub fn build_device_plan(
                             // compared on its own and written by the same
                             // parameter-only download.
                             let changed_props =
-                                bussard_download::changed_properties(&detail.properties);
+                                bussard_download::changed_parameter_properties(&detail.properties);
                             for prop in &changed_props {
                                 let (row, change) = property_change(prop);
                                 parameters.push(row);

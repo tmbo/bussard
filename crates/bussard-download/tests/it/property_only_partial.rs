@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 
 use bussard_download::{
     FlashStep, PartialPlanError, PropObject, Session, changed_properties, flash,
-    planned_parameter_regions, read_parameter_properties, read_parameter_regions,
+    planned_parameter_regions, read_checked_properties, read_parameter_regions,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_product::application::{ApplicationProgram, parse_application_program};
@@ -147,7 +147,7 @@ async fn test_parameters_only_of_a_property_only_program_writes_the_property() -
     // No parameter memory to read; the property differs from the model.
     let regions = read_parameter_regions(session.l4(), &plan, &[]).await;
     assert!(regions.is_empty(), "{regions:?}");
-    let properties = read_parameter_properties(session.l4(), &plan, &app).await;
+    let properties = read_checked_properties(session.l4(), &plan, &app).await;
     let changed = changed_properties(&properties);
     assert_eq!(changed.len(), 1, "{properties:?}");
     assert_eq!(changed[0].device, Some(vec![0x05, 0x09]));
@@ -203,7 +203,7 @@ async fn test_parameters_only_of_a_property_only_program_writes_the_property() -
     )
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
-    let after = read_parameter_properties(session.l4(), &plan, &app).await;
+    let after = read_checked_properties(session.l4(), &plan, &app).await;
     let _ = session.into_disconnect().await;
     assert!(changed_properties(&after).is_empty(), "{after:?}");
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;
@@ -1043,4 +1043,90 @@ fn test_parameters_only_on_another_system_b_mask_takes_its_master_par_procedure(
     assert!(par.is_built_from_par_procedure());
     assert!(shape(&par).contains(&"table-ref 4".to_string()));
     Ok(())
+}
+
+#[test]
+fn test_parameters_only_refuses_a_parameter_the_par_procedure_does_not_write() -> TestResult {
+    // The parameters' property is written `full` only: the parameter-only
+    // procedure would reset it and never write it back. Refused, naming it.
+    let app = par_app(&e802_procedures().replace(
+        r#"<LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10""#,
+        r#"<LdCtrlWriteProp AppliesTo="full" ObjIdx="10""#,
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    match plan.parameters_only(&BTreeMap::new()) {
+        Err(PartialPlanError::ParameterNotInProcedure { property }) => {
+            assert!(property.contains("PID 52"), "{property}");
+        }
+        other => return Err(format!("expected a refusal: {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_gates_the_steps_the_par_procedure_runs() -> TestResult {
+    // A function property call the complete download makes (`full`) is not
+    // sent by the parameter-only procedure, so it refuses nothing; one the
+    // procedure makes (`par`) has no captured parameter-only form: refused.
+    let call = |applies: &str| {
+        format!(
+            r#"
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+                <LdCtrlInvokeFunctionProp AppliesTo="{applies}" ObjIdx="11" PropId="60" InlineData="01" />
+              </LoadProcedure>"#
+        )
+    };
+    let full = par_plan(&par_app(&call("full"))?, &BTreeMap::new())?;
+    assert!(full.parameters_only(&BTreeMap::new()).is_ok());
+    let par = par_plan(&par_app(&call("full,par"))?, &BTreeMap::new())?;
+    assert!(matches!(
+        par.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::UncapturedStep { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_checked_properties_mark_the_fixed_writes() -> TestResult {
+    // Object 9's `InlineData` write is checked but is no parameter change.
+    let app = par_app(&e802_procedures())?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let mut checked = plan.checked_properties();
+    for p in &mut checked {
+        p.device = Some(vec![0xEE; p.model.len()]);
+    }
+    let changed = bussard_download::changed_parameter_properties(&checked);
+    assert!(
+        changed.iter().all(|p| p.prop_id == 52),
+        "only the parameter property is a parameter change: {changed:?}"
+    );
+    assert!(checked.iter().any(|p| p.fixed && p.prop_id == 208));
+    Ok(())
+}
+
+/// [`par_app_xml`] of `procedures` with a second code segment on object 5
+/// (Application Program 2).
+pub(crate) fn par_app_with_ap2(procedures: &str) -> TestResult<ApplicationProgram> {
+    let xml = par_app_xml(procedures).replace(
+        "</RelativeSegment>\n            </Code>",
+        "</RelativeSegment>\n              <RelativeSegment Id=\"M-00FA_A-0003_RS-2\" Size=\"4\" LoadStateMachine=\"5\" Offset=\"0\"><Data>CQkJCQ==</Data></RelativeSegment>\n            </Code>",
+    );
+    assert!(xml.contains("RS-2"));
+    Ok(parse_application_program("M-00FA_A-0003", xml.as_bytes())?)
+}
+
+/// Application Program 2 with its own code image, kept by the parameter-only
+/// procedure (Mode 0), and MergeId 7's MCB check of object 5.
+pub(crate) fn ap2_procedures() -> String {
+    format!(
+        r#"
+              <LoadProcedure MergeId="3">
+                <LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="4" Mode="1" Fill="0" />
+                <LdCtrlRelSegment AppliesTo="par" LsmIdx="5" Size="4" Mode="0" Fill="0" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+              </LoadProcedure>
+              <LoadProcedure MergeId="5"><LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="5" Offset="0" Size="4" Verify="true" /></LoadProcedure>
+              <LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="5" PropId="27" /></LoadProcedure>"#
+    )
 }

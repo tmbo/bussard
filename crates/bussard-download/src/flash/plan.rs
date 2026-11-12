@@ -1319,7 +1319,7 @@ fn plan_flash_as(
             LoadOp::LoadImageProp {
                 obj_idx: Some(obj_idx),
                 obj_type: None,
-                prop_id: Some(PID_TABLE_REFERENCE),
+                prop_id: Some(TABLE_REFERENCE),
                 ..
             } if download == Download::Par => {
                 steps.push(FlashStep::ReadTableReference { obj_idx: *obj_idx });
@@ -1327,7 +1327,7 @@ fn plan_flash_as(
             LoadOp::CompareProp {
                 obj_idx: Some(obj_idx),
                 obj_type: None,
-                prop_id: Some(PID_TABLE_REFERENCE),
+                prop_id: Some(TABLE_REFERENCE),
                 ..
             } if download == Download::Par => {
                 steps.push(FlashStep::CompareTableReference { obj_idx: *obj_idx });
@@ -2108,9 +2108,8 @@ fn par_program_1_only(template: &[LoadOp]) -> Vec<LoadOp> {
         .collect()
 }
 
-/// `PID_TABLE_REFERENCE`, the base pointer the parameter-only procedure
-/// checks (KNX 3/5/3 §3.9.3.6).
-const PID_TABLE_REFERENCE: u32 = 7;
+/// `PID_TABLE_REFERENCE` as a load procedure names it (KNX 3/5/3 §3.9.3.6).
+const TABLE_REFERENCE: u32 = bussard_mgmt::tables::PID_TABLE_REFERENCE as u32;
 
 /// What [`assemble_ops`] returns: the ops, whether they were spliced into
 /// the master template, and the branch gaps by object index.

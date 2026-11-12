@@ -92,8 +92,8 @@ pub use param_plan::{
     read_current_parameter_memory, read_parameter_regions, regions_memory,
 };
 pub use param_props::{
-    ParamProperty, PropertyRange, changed_properties, held_after, read_checked_properties,
-    read_parameter_properties,
+    ParamProperty, PropertyRange, changed_parameter_properties, changed_properties, held_after,
+    read_checked_properties,
 };
 pub use plan::{ObjectGa, PlanReport, plan};
 pub use preflight::{

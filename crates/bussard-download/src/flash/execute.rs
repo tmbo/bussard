@@ -1011,6 +1011,17 @@ impl StepExecutor for SystemB<'_> {
                         Some(img) if img.kind == ImageKind::Table => {
                             (*obj_idx).min(u32::from(u8::MAX)) as u8
                         }
+                        // The parameter-only procedure keeps a code image
+                        // it does not rewrite (issue #1052): its check names
+                        // the object that holds it, as ETS reads it (E804
+                        // ops 458 to 461), with no write to infer it from.
+                        Some(_) if plan.is_built_from_par_procedure() => resolve_object_target_opt(
+                            Some(*obj_idx),
+                            object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        )
+                        .unwrap_or(app_obj),
                         Some(img) => mcb_read_object(
                             &plan.steps,
                             plan.spliced_from_template,
@@ -1332,7 +1343,7 @@ impl StepExecutor for SystemB<'_> {
                         return Err(WriteError::PropCompareMismatch {
                             address: session.l4().target(),
                             object_index: obj,
-                            property_id: TABLE_REFERENCE_PID,
+                            property_id: bussard_mgmt::tables::PID_TABLE_REFERENCE,
                             expected: expected
                                 .map(|e| e.to_be_bytes().to_vec())
                                 .unwrap_or_default(),
@@ -1799,9 +1810,6 @@ async fn check_tables_before_par_procedure<C: Connector>(
     }
     Ok(())
 }
-
-/// `PID_TABLE_REFERENCE`, the base pointer of a loadable object.
-const TABLE_REFERENCE_PID: u8 = 7;
 
 /// Runs a load procedure's `LdCtrlMasterReset` in the confirmed form (KNX
 /// 3/5/2 §3.7.1.2.3) and waits out the reboot, as ETS does (issue #611).

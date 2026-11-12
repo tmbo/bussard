@@ -117,6 +117,20 @@ pub enum PartialPlanError {
         /// What the reset erases, in words.
         lost: &'static str,
     },
+    /// A parameter of the complete download is written to a property the
+    /// parameter-only procedure does not write (issue #1052): the
+    /// parameter-only download could not set it, and its parameter reset
+    /// would leave it at the factory value.
+    #[error(
+        "the application's parameter-only load procedure does not write {property}, where the \
+         complete download writes parameters; a parameter-only download could not set them \
+         (and its parameter reset would leave them at their defaults). Use a full `bussard \
+         flash`"
+    )]
+    ParameterNotInProcedure {
+        /// The property and its elements, in words.
+        property: String,
+    },
     /// The parameter-only procedure unloads an object whose segment the
     /// complete download allocates, and allocates nothing for it (issue
     /// #1052): the object would be loaded again without its segment.
@@ -156,7 +170,14 @@ impl FlashPlan {
     /// procedure writes no parameter image, or when a parameter segment was not
     /// read back.
     pub fn parameters_only(&self, regions: &ParamRegions) -> Result<FlashPlan, PartialPlanError> {
-        for step in &self.steps {
+        // The steps that will run: the mask's parameter-only procedure's
+        // where the plan carries it (issue #1052), else the complete
+        // download's the cut is taken from.
+        let runs: &[FlashStep] = match self.par_procedure() {
+            Some(par) if !self.is_sys7() => par,
+            _ => &self.steps,
+        };
+        for step in runs {
             let what = match step {
                 FlashStep::InvokeFunctionProp {
                     object, prop_id, ..
@@ -663,7 +684,7 @@ impl FlashPlan {
     /// Whether this plan carries the mask's parameter-only procedure (issue
     /// #1052): a System B program spliced into the master template whose
     /// parameters all live in properties.
-    pub(super) fn takes_par_procedure(&self) -> bool {
+    pub fn takes_par_procedure(&self) -> bool {
         self.sys7.is_none()
             && self.spliced_from_template
             && !self.has_parameter_memory()
@@ -692,6 +713,13 @@ impl FlashPlan {
                     lost,
                 });
             }
+        }
+        // Every parameter element the complete download writes must be one
+        // the parameter-only procedure writes: one it leaves out is neither
+        // set to the model's value nor, after a parameter reset, put back
+        // (issue #1052).
+        if let Some(missing) = self.parameter_elements_outside(par) {
+            return Err(PartialPlanError::ParameterNotInProcedure { property: missing });
         }
         // An object the procedure unloads keeps its segment only when the
         // procedure allocates it again, of the size the device holds.
@@ -800,6 +828,32 @@ impl FlashPlan {
     /// parameter-only procedure (issue #1052).
     pub fn is_built_from_par_procedure(&self) -> bool {
         self.from_par_procedure
+    }
+
+    /// The first property range a parameter of the complete download is
+    /// written to that the parameter-only procedure `par` does not write, in
+    /// words (`object 10 PID 52, elements 1 to 2`); `None` when it writes
+    /// every one.
+    fn parameter_elements_outside(&self, par: &[FlashStep]) -> Option<String> {
+        let covered: BTreeSet<(super::PropObject, u32, u32)> = par
+            .iter()
+            .filter_map(FlashStep::property_write)
+            .flat_map(|w| {
+                (0..u32::from(w.count.max(1)))
+                    .map(move |i| (w.object, w.prop_id, u32::from(w.start_element) + i))
+            })
+            .collect();
+        self.steps
+            .iter()
+            .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
+            .find_map(|w| {
+                let first = u32::from(w.start_element);
+                let last = first + u32::from(w.count.max(1)) - 1;
+                (first..=last)
+                    .any(|e| !covered.contains(&(w.object, w.prop_id, e)))
+                    .then(|| format!("{} PID {}, elements {first} to {last}", w.object, w.prop_id))
+            })
     }
 
     /// Whether this parameter-only download resets the device's parameters
@@ -946,8 +1000,6 @@ impl FlashPlan {
     }
 }
 
-/// The property a [`FlashStep::DescribeProp`] stands in for a write of, one
-/// whose parameters ETS leaves unwritten (issue #947).
 /// What a master reset with `erase_code` erases that a parameter-only
 /// download does not write back, `None` for the codes it may send: 1 (a
 /// restart) and 5 (the parameters, every one of which the procedure writes
@@ -964,6 +1016,8 @@ fn erased_and_not_restored(erase_code: u8) -> Option<&'static str> {
     }
 }
 
+/// The property a [`FlashStep::DescribeProp`] stands in for a write of, one
+/// whose parameters ETS leaves unwritten (issue #947).
 fn left_out_property(step: &FlashStep) -> Option<(super::PropObject, u32)> {
     match step {
         FlashStep::DescribeProp {

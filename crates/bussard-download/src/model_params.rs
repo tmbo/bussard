@@ -158,6 +158,9 @@ pub fn plan_for_parameters(
     memo: &DynamicMemo<'_, ApplicationProgram>,
 ) -> Result<FlashPlan, crate::PlanError> {
     let mut plan = plan_for_readback(product_data, app, model, target, device_mask, memo)?;
+    if !plan.takes_par_procedure() {
+        return Ok(plan);
+    }
     let (overrides, bases) = model_parameters(model, target);
     let table_images = build_table_images(model, target, app, &overrides, memo);
     let object_flags = linked_object_flags(model, target);
@@ -905,7 +908,7 @@ pub fn region_rows(
 }
 
 /// Writes the pre-download parameter memory, and the parameter properties
-/// the device holds (`properties`, as [`crate::read_parameter_properties`]
+/// the device holds (`properties`, as [`crate::read_checked_properties`]
 /// read them; one not read is left out), to
 /// `<dir>/captures/backups/parameters/<ia>-<ts>.json`.
 pub fn write_parameter_memory_backup(

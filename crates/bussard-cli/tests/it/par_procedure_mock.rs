@@ -405,8 +405,12 @@ fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
     bench.ok(&["flash", "1.1.4", "--product", &product, "--yes"])?;
     assert_eq!(bench.property(10, 52)?, Some(vec![5, 9]));
     assert_eq!(bench.take_resets()?, [6, 5]);
-    // Something else changed object 9 since: the backup must hold that.
+    // Something else changed object 9 since: the backup must hold that. A
+    // fixed write that differs alone is no parameter change: the plan has
+    // nothing to write.
     bench.set_property(9, 208, &[7, 7])?;
+    let plan: Value = serde_json::from_str(&bench.ok(&["plan", "1.1.4", "--json"])?)?;
+    assert_eq!(plan["changes"], json!([]), "{plan}");
 
     // `apply`: the plan says the parameters are reset first; the write
     // resets them (erase code 5 only) and writes every property.
@@ -420,7 +424,9 @@ fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
     // The backup holds every property the procedure writes, object 9's
     // fixed value included.
     let backups = bench.backups()?;
-    let first = backups.first().ok_or("no parameter backup")?.clone();
+    // Kept aside: a later backup within the same second reuses its name.
+    let first = bench.tmp.join("first-backup.json");
+    std::fs::copy(backups.first().ok_or("no parameter backup")?, &first)?;
     let backup: Value = serde_json::from_str(&std::fs::read_to_string(&first)?)?;
     let props = backup["properties"].as_array().ok_or("no properties")?;
     assert!(
@@ -457,15 +463,16 @@ fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
 
     // `restore --parameters` of the first backup: the procedure resets the
     // parameters again and writes the backup's values, object 9 included.
-    bench.ok(&[
+    let restored = bench.ok(&[
         "restore",
         "--parameters",
         first.to_str().ok_or("path")?,
         "1.1.4",
         "--yes",
     ])?;
-    assert_eq!(bench.take_resets()?, [5]);
-    assert_eq!(bench.property(10, 52)?, Some(vec![5, 9]));
+    assert!(restored.contains("resets all its parameters"), "{restored}");
+    assert_eq!(bench.take_resets()?, [5], "{restored}");
+    assert_eq!(bench.property(10, 52)?, Some(vec![5, 9]), "{restored}");
     assert_eq!(bench.property(9, 208)?, Some(vec![7, 7]));
     Ok(())
 }
