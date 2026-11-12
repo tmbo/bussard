@@ -2327,6 +2327,19 @@ fn enum_code_of<S: DynamicSource + ?Sized>(app: &S, param_id: &str, value: &str)
     }
 }
 
+/// The vendor default of app-relative `param_ref_id` in a module instance
+/// whose arguments are `args` (`None`: the application level), as
+/// [`DynamicConfig::vendor_default`] gives it for a reached instance: for an
+/// instance the configuration does not reach, whose arguments it therefore
+/// holds none of (issue #1050).
+pub fn vendor_default_with_args<S: DynamicSource + ?Sized>(
+    app: &S,
+    args: Option<&HashMap<String, i64>>,
+    param_ref_id: &str,
+) -> Option<String> {
+    value_of(app, &HashMap::new(), "", args, param_ref_id)
+}
+
 /// The effective value of an app-relative `ParameterRef` in one instance: an
 /// override or `<Assign>` result, else a text parameter's `InitialValue`
 /// (issue #473), else the ref's `Value`, else the parameter's `Value`. A
