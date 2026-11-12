@@ -14,8 +14,15 @@ use bussard_mcp::McpConfig;
 use bussard_model::IndividualAddress;
 use bussard_testkit::{MockDevice, MockGateway, MockKnxnet};
 use bussard_transport::ConnectionConfig;
-use rmcp::ServiceExt;
-use rmcp::model::CallToolRequestParams;
+use std::sync::{Arc, Mutex};
+
+use rmcp::model::{
+    CallToolRequestParams, CallToolResponse, ClientCapabilities, ClientConfig, ElicitRequestParams,
+    ElicitResult, ElicitationAction, ElicitationCapability, FormElicitationCapability,
+    Implementation, InputRequest, ProtocolVersion, RequestMetaObject,
+};
+use rmcp::service::RequestContext;
+use rmcp::{ClientHandler, ErrorData, RoleClient, ServiceExt};
 use serde_json::{Value, json};
 
 const CHANNEL: u8 = 0x56;
@@ -52,8 +59,8 @@ fn write_model(dir: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-struct Harness {
-    client: rmcp::service::RunningService<rmcp::RoleClient, ()>,
+struct Harness<H: ClientHandler = ()> {
+    client: rmcp::service::RunningService<rmcp::RoleClient, H>,
     server_task: tokio::task::JoinHandle<()>,
     gateway: MockGateway,
     dir: tempfile::TempDir,
@@ -68,6 +75,13 @@ impl Harness {
     /// writes through the non-loopback `192.0.2.10:3671` (opted in) while its
     /// bus is wired to the loopback mock, so no real gateway is contacted.
     async fn start_on(ip: [u8; 4], remote: bool) -> anyhow::Result<Harness> {
+        Harness::start_with(ip, remote, ()).await
+    }
+}
+
+impl<H: ClientHandler> Harness<H> {
+    /// [`Harness::start_on`] with `client` as the chat app.
+    async fn start_with(ip: [u8; 4], remote: bool, client: H) -> anyhow::Result<Harness<H>> {
         let gateway = MockGateway::builder()
             .channel(CHANNEL)
             .keep_serving()
@@ -122,7 +136,7 @@ impl Harness {
                 let _ = running.waiting().await;
             }
         });
-        let client = ().serve(client_io).await?;
+        let client = client.serve(client_io).await?;
         Ok(Harness {
             client,
             server_task,
@@ -377,35 +391,234 @@ async fn test_knx_interface_secure_plans_and_checks_the_digest() -> anyhow::Resu
     h.stop().await
 }
 
-/// An IP interface's KNXnet/IP parameter object is not gated by the
-/// supported-device list in this version (#1093): on a real gateway its
-/// write goes through although its application is not on the list, as
-/// `bussard apply` does.
+/// An IP interface's KNXnet/IP parameter object is gated by the
+/// supported-device list like every device write (#1093): on a real gateway
+/// an interface whose application is not on the list is refused, nothing is
+/// written, the digest stays valid, and the override writes it.
 #[tokio::test]
-async fn test_knx_apply_device_writes_an_interface_on_a_real_gateway_ungated() -> anyhow::Result<()>
-{
+async fn test_knx_apply_device_refuses_an_unsupported_interface_then_forces_it()
+-> anyhow::Result<()> {
     let h = Harness::start_on([192, 168, 1, 74], true).await?;
+    let digest = plan_name_change(&h).await?;
+    let refused = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.200", "plan_digest": digest}),
+        )
+        .await?;
+    assert_eq!(refused["code"], "unsupported_device", "{refused}");
+    assert_eq!(refused["override"], "allow_unsupported: true", "{refused}");
+    assert_eq!(h.device(|d| d.writes)?, 0, "nothing written");
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.200", "plan_digest": digest, "allow_unsupported": true}),
+        )
+        .await?;
+    assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["support"], "forced", "{applied}");
+    assert_eq!(friendly_name(&h)?, "Demohouse Gamma");
+    h.stop().await
+}
+
+/// Edits the interface's name and plans it; the plan reports the interface
+/// unsupported. Returns the digest.
+async fn plan_name_change<H: ClientHandler>(h: &Harness<H>) -> anyhow::Result<String> {
     let edit = h
         .call(
             "knx_set_interface",
-            json!({"address": "1.1.200", "friendly_name": "Bocklisch Beta"}),
+            json!({"address": "1.1.200", "friendly_name": "Demohouse Gamma"}),
         )
         .await?;
     assert_eq!(edit["ok"], true, "{edit}");
     let plan = h
         .call("knx_plan_device", json!({"address": "1.1.200"}))
         .await?;
-    let digest = plan["plan_digest"]
+    assert_eq!(plan["support"]["status"], "unsupported", "{plan}");
+    assert_eq!(plan["support"]["override_needed"], true, "{plan}");
+    Ok(plan["plan_digest"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("no digest: {plan}"))?
-        .to_string();
+        .to_string())
+}
+
+/// The friendly name the mock interface holds (PID 76).
+fn friendly_name<H: ClientHandler>(h: &Harness<H>) -> anyhow::Result<String> {
+    let name = h.device(|d| d.knxnet_property(76).map(<[u8]>::to_vec))?;
+    Ok(bussard_mgmt::knxnet::decode_friendly_name(
+        &name.unwrap_or_default(),
+    ))
+}
+
+/// The chat app with its human (#1093): declares form-mode elicitation and
+/// answers bussard's question with `action`, recording each question.
+#[derive(Clone)]
+struct Human {
+    action: ElicitationAction,
+    asked: Arc<Mutex<Vec<String>>>,
+}
+
+impl Human {
+    fn new(action: ElicitationAction) -> Self {
+        Human {
+            action,
+            asked: Arc::default(),
+        }
+    }
+
+    fn asked(&self) -> Vec<String> {
+        self.asked.lock().map(|a| a.clone()).unwrap_or_default()
+    }
+
+    fn capabilities(&self) -> ClientCapabilities {
+        let mut capabilities = ClientCapabilities::default();
+        capabilities.elicitation =
+            Some(ElicitationCapability::new().with_form(FormElicitationCapability::new()));
+        capabilities
+    }
+
+    fn answer(&self, request: ElicitRequestParams) -> ElicitResult {
+        if let ElicitRequestParams::FormElicitationParams { message, .. } = request
+            && let Ok(mut asked) = self.asked.lock()
+        {
+            asked.push(message);
+        }
+        ElicitResult::new(self.action.clone())
+    }
+}
+
+impl ClientHandler for Human {
+    async fn create_elicitation(
+        &self,
+        request: ElicitRequestParams,
+        _context: RequestContext<RoleClient>,
+    ) -> Result<ElicitResult, ErrorData> {
+        Ok(self.answer(request))
+    }
+
+    fn get_info(&self) -> ClientConfig {
+        ClientConfig::new(
+            self.capabilities(),
+            Implementation::new("fake-chat", "0.0.0"),
+        )
+    }
+}
+
+/// With elicitation the human answers bussard's own question (#1093): a yes
+/// writes the interface without `allow_unsupported`.
+#[tokio::test]
+async fn test_knx_apply_device_asks_the_human_and_writes_on_yes() -> anyhow::Result<()> {
+    let human = Human::new(ElicitationAction::Accept);
+    let h = Harness::start_with([192, 168, 1, 74], true, human.clone()).await?;
+    let digest = plan_name_change(&h).await?;
     let applied = h
         .call(
             "knx_apply_device",
             json!({"address": "1.1.200", "plan_digest": digest}),
         )
         .await?;
-    assert!(applied["code"].is_null(), "{applied}");
     assert_eq!(applied["ok"], true, "{applied}");
+    assert_eq!(applied["support"], "forced", "{applied}");
+    let asked = human.asked();
+    assert_eq!(asked.len(), 1, "{asked:?}");
+    assert!(
+        asked[0].contains("not on bussard's list of supported devices")
+            && asked[0].ends_with("Write anyway?"),
+        "{asked:?}"
+    );
+    assert_eq!(friendly_name(&h)?, "Demohouse Gamma");
+    h.stop().await
+}
+
+/// With elicitation the assistant cannot answer for the human (#1093): a
+/// declined question refuses although the assistant passed
+/// `allow_unsupported: true`; nothing is written and the digest is kept.
+#[tokio::test]
+async fn test_knx_apply_device_refuses_when_the_human_declines() -> anyhow::Result<()> {
+    let human = Human::new(ElicitationAction::Decline);
+    let h = Harness::start_with([192, 168, 1, 74], true, human.clone()).await?;
+    let digest = plan_name_change(&h).await?;
+    for _ in 0..2 {
+        let refused = h
+            .call(
+                "knx_apply_device",
+                json!({"address": "1.1.200", "plan_digest": digest, "allow_unsupported": true}),
+            )
+            .await?;
+        assert_eq!(refused["code"], "unsupported_device", "{refused}");
+        assert!(refused["override"].is_null(), "{refused}");
+        let reason = refused["reason"].as_str().unwrap_or_default();
+        assert!(
+            reason.contains("The human declined") && reason.contains("stays valid"),
+            "{refused}"
+        );
+    }
+    // The digest stayed valid: the second call asked again.
+    assert_eq!(human.asked().len(), 2);
+    assert_eq!(h.device(|d| d.writes)?, 0, "nothing written");
+    h.stop().await
+}
+
+/// The `_meta` of a request from a client speaking protocol 2026-07-28.
+fn meta_2026(human: &Human) -> RequestMetaObject {
+    let mut meta = RequestMetaObject::default();
+    meta.set_protocol_version(ProtocolVersion::V_2026_07_28);
+    meta.set_client_info(Implementation::new("fake-chat", "0.0.0"));
+    meta.set_client_capabilities(human.capabilities());
+    meta
+}
+
+/// From protocol 2026-07-28 the question travels as an `InputRequiredResult`
+/// and the client calls again with the human's answer (#1093); the answer
+/// counts once, for the write it was asked for.
+#[tokio::test]
+async fn test_knx_apply_device_asks_over_multi_round_trip() -> anyhow::Result<()> {
+    let human = Human::new(ElicitationAction::Accept);
+    let h = Harness::start_with([192, 168, 1, 74], true, human.clone()).await?;
+    let digest = plan_name_change(&h).await?;
+    let mut args = serde_json::Map::new();
+    args.insert("address".to_string(), json!("1.1.200"));
+    args.insert("plan_digest".to_string(), json!(digest));
+    let mut params = CallToolRequestParams::new("knx_apply_device").with_arguments(args.clone());
+    params.meta = Some(meta_2026(&human));
+    let first = h.client.call_tool_once(params).await?;
+    let CallToolResponse::InputRequired(input) = first else {
+        anyhow::bail!("expected input_required, got {first:?}");
+    };
+    assert!(
+        human.asked().is_empty(),
+        "the server sent no request itself"
+    );
+    assert_eq!(h.device(|d| d.writes)?, 0, "nothing written yet");
+    let state = input
+        .request_state
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("no request state"))?;
+    let mut responses = rmcp::model::InputResponses::new();
+    for (key, request) in input
+        .input_requests
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("no input requests"))?
+    {
+        let InputRequest::Elicitation(request) = request else {
+            anyhow::bail!("not an elicitation");
+        };
+        responses.insert(key, serde_json::to_value(human.answer(request.params))?);
+    }
+    let mut params = CallToolRequestParams::new("knx_apply_device")
+        .with_arguments(args)
+        .with_input_responses(responses)
+        .with_request_state(state);
+    params.meta = Some(meta_2026(&human));
+    let second = h.client.call_tool_once(params).await?;
+    let CallToolResponse::Complete(result) = second else {
+        anyhow::bail!("expected a result, got {second:?}");
+    };
+    let value = result
+        .structured_content
+        .ok_or_else(|| anyhow::anyhow!("no structured content"))?;
+    assert_eq!(value["ok"], true, "{value}");
+    assert_eq!(value["support"], "forced", "{value}");
+    assert_eq!(friendly_name(&h)?, "Demohouse Gamma");
     h.stop().await
 }

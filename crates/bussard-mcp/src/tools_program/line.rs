@@ -246,6 +246,20 @@ impl BussardMcp {
         Ok(report)
     }
 
+    /// Whether the line plan `digest` names for `line` reported a device a
+    /// write refuses as not on the supported list (issue #1089); `false` for
+    /// a digest this session does not know (the pre-flight refuses it).
+    pub(super) fn line_reported_unsupported(&self, line: &str, digest: &str) -> bool {
+        let Ok(parsed) = parse_line(line) else {
+            return false;
+        };
+        let subject = format!("line {}.{}", parsed.0, parsed.1);
+        self.tier()
+            .ok()
+            .and_then(|tier| tier.line_plans.fresh(digest, subject, "line plan", "").ok())
+            .is_some_and(|plan| plan.unsupported)
+    }
+
     /// `knx_apply_device` with `line`; `Err` is a refusal reason.
     ///
     /// One job for the line ([`BussardMcp::run_write`]): the pre-flight (the

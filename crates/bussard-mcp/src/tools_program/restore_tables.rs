@@ -212,20 +212,9 @@ impl BussardMcp {
             let plan = self.tables_plan_json(tier, target, &file, &gateway, &planned);
             return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
-        // The supported-device gate (issue #1089) before the job: the digest
-        // stays valid for the override.
-        if let Some(unsupported) = tier.table_restores.get(digest) {
-            let model = self.state().model.current();
-            if let Err(refused) = super::support::gate(
-                &tier.connection,
-                &model,
-                target,
-                None,
-                (allow_unsupported, unsupported),
-            ) {
-                return Ok(refused.answer(&model, true));
-            }
-        }
+        // The supported-device gate (issue #1089) answered before this call
+        // (`knx_restore_tables`, through `unsupported_override`); the
+        // pre-flight asks it again.
         let digest = digest.to_string();
         self.run_write(
             Subject::Device(target),
@@ -245,6 +234,27 @@ impl BussardMcp {
             },
         )
         .await
+    }
+
+    /// The supported-device gate of a table restore before its job (issue
+    /// #1089): the refusal, `None` to go on (an unknown digest is left to the
+    /// pre-flight's refusal).
+    pub(super) fn tables_unsupported(
+        &self,
+        target: IndividualAddress,
+        digest: &str,
+        allow_unsupported: bool,
+    ) -> Option<super::support::Refused> {
+        let tier = self.tier().ok()?;
+        let unsupported = tier.table_restores.get(digest)?;
+        super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            target,
+            None,
+            (allow_unsupported, unsupported),
+        )
+        .err()
     }
 
     /// Reads `target` and plans writing the tables of the backup at `file`.
@@ -414,10 +424,12 @@ impl BussardMcp {
         let subject = format!("{target} from {}", file.display());
         let again = "call knx_restore_tables without plan_digest, show the plan to the human and \
                      ask again";
-        // One digest, one write: consumed whatever the fresh read says.
-        let unsupported = tier
-            .table_restores
-            .take(digest, subject, "table-restore plan", again)?;
+        // One digest, one write: consumed whatever the fresh read says, except
+        // by the supported-device refusal, which keeps it for the override
+        // as `knx_apply_device` does (issue #1093).
+        let unsupported =
+            tier.table_restores
+                .fresh(digest, subject, "table-restore plan", again)?;
         // The supported-device gate (issue #1089), before the bus.
         let grant = super::support::gate(
             &tier.connection,
@@ -427,6 +439,7 @@ impl BussardMcp {
             (allow_unsupported, unsupported),
         )
         .map_err(|refused| refused.reason())?;
+        tier.table_restores.retire(digest);
         let planned = self.plan_tables(target, file).await;
         let planned = planned?;
         if planned.digest != digest {

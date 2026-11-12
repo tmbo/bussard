@@ -134,11 +134,12 @@ reports. `bussard device --supported` prints it.
   capture.
 - **`live`**: flashed by bussard on a real device and read back.
 
-`flash`, `apply` (also `--line`), `restore`, `replace` and the download half
-of `commission`, and their MCP tools, refuse a device whose application is not
-on the list before anything is written. Reads are never affected: `plan`,
-`describe`, `device`, `backup` and `reconstruct` work on every device, and
-`plan`, `describe` and `device` print the verdict. A group `write`, `assign`
+`flash`, `apply` (also `--line`, and the KNXnet/IP settings of an IP
+interface), `restore`, `replace` and the download half of `commission`, and
+their MCP tools, refuse a device whose application is not on the list before
+anything is written. Reads are never affected: `plan`, `describe`, `device`,
+`backup` and `reconstruct` work on every device, and `plan`, `describe`,
+`device`, `status` and `audit` print the verdict. A group `write`, `assign`
 and `restart` are not gated.
 
 The refusal applies on a gateway that is not loopback, the same rule as the

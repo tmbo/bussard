@@ -203,18 +203,27 @@ bussard writes without a human's override only the application programs on its
   write call of `knx_replace_device` answer `ok: false`, `refused: true`,
   `code: unsupported_device`, `support` and `override`. Nothing is written and
   the digest stays valid.
-- **The override is the human's.** After their explicit yes the assistant
-  calls again with the same digest and `allow_unsupported: true`. The flag
-  counts only with the digest of a plan that reported the device unsupported,
-  the trust model of every other confirmed write. A line plan reports each
-  unsupported device; without the override the line write reports it with
-  status `refused`, and the result is `ok: false`.
+- **The override is the human's.** When the chat app can show the server's
+  questions (form-mode elicitation), the server asks the human itself
+  (`<ia> runs ..., which is not on bussard's list of supported devices. ...
+  Write anyway?`) and the assistant cannot answer for them:
+  `allow_unsupported` does not count, a yes writes, and a no or a dismissed
+  question refuses with nothing written and the digest kept. Otherwise, after
+  the human's explicit yes, the assistant calls again with the same digest and
+  `allow_unsupported: true`. Either way the override counts only with the
+  digest of a plan that reported the device unsupported, the trust model of
+  every other confirmed write. A line plan reports each
+  unsupported device; without the override (or after the human's no to the
+  server's question) the line write reports it with status `refused`, and the
+  result is `ok: false`.
+- **IP interfaces too.** A `knx_apply_device` that writes an IP interface's
+  KNXnet/IP parameter object is gated like any device write; its plan carries
+  `support`.
 - **The result says so.** A written result carries `support`: `forced`,
   `supported`, or `unsupported` on a loopback gateway, which never refuses.
 
 `knx_commission_line` only assigns addresses and is not gated; the download
-that follows goes through `knx_plan_device` and `knx_apply_device`. The
-server does not ask the human itself (elicitation) yet.
+that follows goes through `knx_plan_device` and `knx_apply_device`.
 
 ### Loading the application
 

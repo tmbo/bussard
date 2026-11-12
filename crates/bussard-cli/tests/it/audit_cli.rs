@@ -85,6 +85,9 @@ fn test_audit_static_text_has_every_section() -> TestResult {
         "07B0 System B (4 devices): bussard can: plan/apply, flash, reconstruct, describe",
         "KNX Secure\n",
         "protected group addresses",
+        // The supported-device verdict (issue #1093), one line per device.
+        "Supported devices\n",
+        "on bussard's list of supported devices",
     ] {
         assert!(stdout.contains(section), "missing {section:?}:\n{stdout}");
     }
@@ -116,6 +119,14 @@ fn test_audit_static_json_matches_sections() -> TestResult {
     );
     assert_eq!(report["secure"]["keyring_checked"], false);
     assert!(report["live"].is_null());
+    // The supported-device verdict of every device (issue #1093).
+    let support = report["support"].as_array().ok_or("no support section")?;
+    assert_eq!(support.len(), 4, "{support:?}");
+    for row in support {
+        assert!(row["address"].is_string(), "{row}");
+        let status = &row["support"]["status"];
+        assert!(status == "supported" || status == "unsupported", "{row}");
+    }
     Ok(())
 }
 

@@ -301,6 +301,37 @@ impl BussardMcp {
         }
     }
 
+    /// The supported-device gate of a replacement's write call before it is
+    /// answered (issue #1089): the refusal once the human's yes checks out,
+    /// `None` to go on (any other refusal is the write call's own).
+    pub(super) fn replace_unsupported(
+        &self,
+        job: &str,
+        digest: &str,
+        (yes, download): (Option<bool>, Option<bool>),
+        allow_unsupported: bool,
+    ) -> Option<super::support::Refused> {
+        let tier = self.tier().ok()?;
+        let pending = tier.replaces.get(job)?;
+        let needs_download = matches!(pending.source, Source::Download { .. });
+        Yes {
+            job,
+            digest: Some(digest),
+            yes,
+            download,
+        }
+        .check(&pending.digest, "replacing the device", needs_download)
+        .ok()?;
+        super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            pending.replacement.target,
+            pending.source.application(),
+            (allow_unsupported, pending.unsupported),
+        )
+        .err()
+    }
+
     /// The write call: checks the answer, takes the job up again and runs
     /// the write; answers with the result when it ends within the reply
     /// wait, else with the job.
@@ -341,7 +372,7 @@ impl BussardMcp {
             pending.source.application(),
             (allow_unsupported, pending.unsupported),
         ) {
-            return Ok(refused.answer(&model, true));
+            return Ok(refused.answer(&model, true, super::support::Via::Flag));
         }
         pending.allow_unsupported = allow_unsupported && pending.unsupported;
         tier.jobs.resume(job, "checking the device again")?;

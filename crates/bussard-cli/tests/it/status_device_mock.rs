@@ -116,6 +116,9 @@ fn test_status_address_prints_the_knxnet_state_and_the_drift() -> TestResult {
         "state          ok",
         "[knxnet] in devices/1.1.200.toml differs from the device:",
         "tunnels: 1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.30 in your project",
+        // The supported-device verdict (issue #1093); a loopback gateway
+        // never needs the override.
+        "not on the supported list (no product data pinned, application unknown)",
     ] {
         assert!(
             squash(&stdout).contains(&squash(needle)),
@@ -148,6 +151,12 @@ fn test_status_address_json_carries_facts_model_and_drift() -> TestResult {
     assert_eq!(json["knxnet"]["tunnels"][7], "1.1.29");
     assert_eq!(json["model_knxnet"]["tunnels"][7], "1.1.30");
     assert_eq!(json["knxnet_drift"].as_array().map(Vec::len), Some(1));
+    assert_eq!(json["support"]["status"], "unsupported", "{json}");
+    assert_eq!(
+        json["support"]["reason"], "no product data pinned, application unknown",
+        "{json}"
+    );
+    assert!(json["support"]["override_needed"].is_null(), "{json}");
     Ok(())
 }
 

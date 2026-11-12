@@ -110,8 +110,8 @@ installation.
 
 bussard keeps a [list of supported devices](device-support.md#supported-devices):
 the application programs whose download it has compared with ETS. `flash`,
-`apply`, `restore`, `replace` and the download half of `commission` refuse a
-device that is not on it, on a real gateway, before anything is written:
+`apply` (an IP interface's KNXnet/IP settings too), `restore`, `replace` and
+the download half of `commission` refuse a device that is not on it, on a real gateway, before anything is written:
 
 ```console
 refusing to write: 1.1.7 runs M-0083_A-0120-10 (MDT AKS-0816.03), which is not
@@ -126,7 +126,8 @@ is where a product is checked before it joins the list.
 | Interface | Write to an unsupported device |
 |---|---|
 | CLI | refused; overridable with `--allow-unsupported` |
-| MCP (an LLM over the server) | refused with `code: unsupported_device`; the human must say yes, then the assistant passes `allow_unsupported: true` with the digest of the plan that reported it |
+| MCP, chat app that can show bussard's questions (elicitation) | bussard asks the human itself; a no refuses with `code: unsupported_device`, whatever the assistant passed |
+| MCP, other chat apps | refused with `code: unsupported_device`; the human must say yes, then the assistant passes `allow_unsupported: true` with the digest of the plan that reported it |
 
 The override is the human's. The plan the assistant shows already says the
 device is not on the list, that a backup comes first, and that ETS is the

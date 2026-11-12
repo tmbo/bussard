@@ -61,6 +61,26 @@ pub struct AuditReport {
     /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
+    /// The supported-device verdict of every device (issue #1089), by
+    /// address.
+    pub support: Vec<SupportRow>,
+}
+
+/// One device of the `support` section.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportRow {
+    /// The device address.
+    pub address: String,
+    /// The verdict for its own application, as `plan` and `describe`
+    /// report it.
+    pub support: crate::support::SupportView,
+}
+
+impl SupportRow {
+    /// One line: the address, then [`crate::support::SupportView::line`].
+    pub fn line(&self) -> String {
+        format!("{}: {}", self.address, self.support.line())
+    }
 }
 
 /// One row of the `masks` section.
@@ -168,6 +188,15 @@ impl crate::report::Report for AuditReport {
             self.masks.len(),
             devices - unsupported
         );
+        let listed = self
+            .support
+            .iter()
+            .filter(|row| row.support.is_supported())
+            .count();
+        out.push_str(&format!(
+            " {listed} of {} device(s) are on bussard's list of supported devices.",
+            self.support.len()
+        ));
         if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
             out.push_str(&format!(
                 " {missing} secured device(s) have no tool key in the keyring."
@@ -236,6 +265,15 @@ impl AuditReport {
             devices,
         };
 
+        let support = model
+            .devices
+            .iter()
+            .map(|(addr, loaded)| SupportRow {
+                address: addr.to_string(),
+                support: crate::support::verdict(Some(&loaded.device), None).view(),
+            })
+            .collect();
+
         AuditReport {
             format_version: AUDIT_FORMAT_VERSION,
             model: analysis,
@@ -243,6 +281,7 @@ impl AuditReport {
             secure,
             live: None,
             products: None,
+            support,
         }
     }
 }

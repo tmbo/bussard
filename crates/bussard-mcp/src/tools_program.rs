@@ -116,8 +116,11 @@ use bussard_service::transport::ConnectionConfig;
 use bussard_service::transport::write_gate::{check_write_gate, gateway_display};
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 use rmcp::ErrorData;
-use rmcp::model::CallToolResult;
+use rmcp::RoleServer;
+use rmcp::handler::server::tool::{InputResponses, RequestState};
+use rmcp::model::{CallToolResponse, CallToolResult};
 use rmcp::schemars::{self, JsonSchema};
+use rmcp::service::RequestContext;
 use rmcp::{tool, tool_router};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -182,6 +185,10 @@ pub struct ProgrammingTier {
     /// Replacements `knx_replace_device` identified, waiting for the human's
     /// yes, by job id (issue #751).
     replaces: Store<replace_device::ReplacePlan>,
+    /// bussard's questions to the human about writing a device not on the
+    /// supported list, waiting for a multi round-trip call's second round,
+    /// by request-state id (issue #1093).
+    support_questions: Store<support::Binding>,
 }
 
 impl ProgrammingTier {
@@ -207,6 +214,7 @@ impl ProgrammingTier {
             commission_plans: Store::new(plan_ttl),
             commissions: std::sync::Mutex::new(commission::Commissions::default()),
             replaces: Store::new(plan_ttl),
+            support_questions: Store::new(plan_ttl),
         }
     }
 
@@ -491,28 +499,64 @@ impl BussardMcp {
     async fn knx_apply_device(
         &self,
         Parameters(args): Parameters<ApplyDeviceArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let ask = support::Ask {
+            context: &context,
+            request_state,
+            responses,
+        };
+        let digest = args.plan_digest.trim();
         match target_of(args.address.as_deref(), args.line.as_deref()) {
-            Err(reason) => answer_chat("address", "", Err(reason), &self.model()),
-            Ok(Target::Line(line)) => answer_chat(
-                "line",
-                line,
-                self.apply_line(line, args.plan_digest.trim(), args.allow_unsupported)
-                    .await,
-                &self.model(),
-            ),
-            Ok(Target::Device(address)) => answer_chat(
-                "address",
-                address,
-                self.apply_device(
-                    address,
-                    args.plan_digest.trim(),
-                    args.plan_hash.as_deref().map(str::trim),
-                    args.allow_unsupported,
+            Err(reason) => answer_chat("address", "", Err(reason), &self.model()).map(Into::into),
+            Ok(Target::Line(line)) => {
+                let binding = support::Binding::new("knx_apply_device", line, digest);
+                let unsupported = self.line_reported_unsupported(line, digest);
+                let allow = match self
+                    .line_override(&ask, binding, args.allow_unsupported, unsupported)
+                    .await
+                {
+                    support::Override::Go(allow) => allow,
+                    support::Override::Answer(response) => return Ok(response),
+                };
+                answer_chat(
+                    "line",
+                    line,
+                    self.apply_line(line, digest, allow).await,
+                    &self.model(),
                 )
-                .await,
-                &self.model(),
-            ),
+                .map(Into::into)
+            }
+            Ok(Target::Device(address)) => {
+                let mut allow = args.allow_unsupported;
+                if let Ok(target) = parse_address(address) {
+                    let binding = support::Binding::new("knx_apply_device", target, digest);
+                    match self
+                        .unsupported_override(&ask, binding, allow, |allow| {
+                            self.unsupported_before_write(target, digest, allow)
+                        })
+                        .await
+                    {
+                        support::Override::Go(decided) => allow = decided,
+                        support::Override::Answer(response) => return Ok(response),
+                    }
+                }
+                answer_chat(
+                    "address",
+                    address,
+                    self.apply_device(
+                        address,
+                        digest,
+                        args.plan_hash.as_deref().map(str::trim),
+                        allow,
+                    )
+                    .await,
+                    &self.model(),
+                )
+                .map(Into::into)
+            }
         }
     }
 
@@ -551,14 +595,36 @@ impl BussardMcp {
     #[tool]
     async fn knx_replace_device(
         &self,
-        Parameters(args): Parameters<ReplaceDeviceArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        Parameters(mut args): Parameters<ReplaceDeviceArgs>,
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
         let address = args
             .address
             .clone()
             .or_else(|| args.job.clone())
             .unwrap_or_default();
-        answer_on("address", &address, self.replace_device_tool(args).await)
+        if let (Some(job), Some(digest)) = (args.job.clone(), args.plan_digest.clone()) {
+            let ask = support::Ask {
+                context: &context,
+                request_state,
+                responses,
+            };
+            let (job, digest) = (job.trim(), digest.trim());
+            let binding = support::Binding::new("knx_replace_device", job, digest);
+            let (yes, download) = (args.yes, args.download);
+            match self
+                .unsupported_override(&ask, binding, args.allow_unsupported, |allow| {
+                    self.replace_unsupported(job, digest, (yes, download), allow)
+                })
+                .await
+            {
+                support::Override::Go(allow) => args.allow_unsupported = allow,
+                support::Override::Answer(response) => return Ok(response),
+            }
+        }
+        answer_on("address", &address, self.replace_device_tool(args).await).map(Into::into)
     }
 
     // `knx_restore_parameters` (registered only with `--allow-programming`).
@@ -567,19 +633,37 @@ impl BussardMcp {
     async fn knx_restore_parameters(
         &self,
         Parameters(args): Parameters<RestoreParametersArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let digest = args.plan_digest.as_deref().map(str::trim);
+        let mut allow = args.allow_unsupported;
+        if let (Some(digest), Ok(target)) = (digest, parse_address(&args.address)) {
+            let ask = support::Ask {
+                context: &context,
+                request_state,
+                responses,
+            };
+            let binding = support::Binding::new("knx_restore_parameters", target, digest);
+            match self
+                .unsupported_override(&ask, binding, allow, |allow| {
+                    self.restore_unsupported(target, digest, allow)
+                })
+                .await
+            {
+                support::Override::Go(decided) => allow = decided,
+                support::Override::Answer(response) => return Ok(response),
+            }
+        }
         answer_chat(
             "address",
             &args.address,
-            self.restore_parameters(
-                &args.address,
-                &args.backup,
-                args.plan_digest.as_deref().map(str::trim),
-                args.allow_unsupported,
-            )
-            .await,
+            self.restore_parameters(&args.address, &args.backup, digest, allow)
+                .await,
             &self.model(),
         )
+        .map(Into::into)
     }
 
     // `knx_restart_device` (registered only with `--allow-programming`).
@@ -604,19 +688,37 @@ impl BussardMcp {
     async fn knx_restore_tables(
         &self,
         Parameters(args): Parameters<RestoreTablesArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
+        context: RequestContext<RoleServer>,
+        RequestState(request_state): RequestState,
+        InputResponses(responses): InputResponses,
+    ) -> Result<CallToolResponse, ErrorData> {
+        let digest = args.plan_digest.as_deref().map(str::trim);
+        let mut allow = args.allow_unsupported;
+        if let (Some(digest), Ok(target)) = (digest, parse_address(&args.address)) {
+            let ask = support::Ask {
+                context: &context,
+                request_state,
+                responses,
+            };
+            let binding = support::Binding::new("knx_restore_tables", target, digest);
+            match self
+                .unsupported_override(&ask, binding, allow, |allow| {
+                    self.tables_unsupported(target, digest, allow)
+                })
+                .await
+            {
+                support::Override::Go(decided) => allow = decided,
+                support::Override::Answer(response) => return Ok(response),
+            }
+        }
         answer_chat(
             "address",
             &args.address,
-            self.restore_tables(
-                &args.address,
-                args.backup.as_deref(),
-                args.plan_digest.as_deref().map(str::trim),
-                args.allow_unsupported,
-            )
-            .await,
+            self.restore_tables(&args.address, args.backup.as_deref(), digest, allow)
+                .await,
             &self.model(),
         )
+        .map(Into::into)
     }
 
     // `knx_interface_secure` (registered only with `--allow-programming`).
@@ -1097,11 +1199,9 @@ impl BussardMcp {
         allow_unsupported: bool,
     ) -> Result<Value, String> {
         let target = parse_address(address)?;
-        // The supported-device gate (issue #1089) answers before the job: a
-        // structured refusal, and the digest stays valid for the override.
-        if let Some(refused) = self.unsupported_before_write(target, digest, allow_unsupported)? {
-            return Ok(refused);
-        }
+        // The supported-device gate (issue #1089) answered before this call
+        // (`knx_apply_device`, through `unsupported_override`); the
+        // pre-flight asks it again on what is true then.
         let (digest, plan_hash) = (digest.to_string(), plan_hash.map(str::to_string));
         self.run_write(
             Subject::Device(target),
@@ -1123,7 +1223,7 @@ impl BussardMcp {
                                 &job,
                                 target,
                                 &digest,
-                                plan_hash.as_deref(),
+                                (plan_hash.as_deref(), allow_unsupported),
                                 &gate,
                             ))
                             .await?;
@@ -1157,28 +1257,22 @@ impl BussardMcp {
     }
 
     /// The supported-device gate of a device write (issue #1089) before its
-    /// job: the structured refusal (`code: unsupported_device`) when the
-    /// device is not on the list and the override is missing or not bound
-    /// to a plan that reported it, `None` to go on. The digest stays valid.
-    /// A digest this session does not know is left to the pre-flight's
-    /// refusal.
+    /// job, a KNX IP interface's KNXnet/IP parameter object included (issue
+    /// #1093): the refusal when the device is not on the list and the
+    /// override is missing or not bound to a plan that reported it, `None`
+    /// to go on ([`BussardMcp::unsupported_override`] answers it, the digest
+    /// stays valid). A digest this session does not know for `target` is
+    /// left to the pre-flight's refusal.
     fn unsupported_before_write(
         &self,
         target: IndividualAddress,
         digest: &str,
         allow_unsupported: bool,
-    ) -> Result<Option<Value>, String> {
-        let tier = self.tier()?;
-        let Some(planned) = tier.plans.get(digest) else {
-            return Ok(None);
-        };
+    ) -> Option<support::Refused> {
+        let tier = self.tier().ok()?;
+        let planned = tier.plans.fresh(digest, target, "plan", "").ok()?;
         let model = self.state().model.current();
-        // A KNX IP interface's KNXnet/IP parameter object is not gated in
-        // this version (#1093), as `bussard apply` does not gate it.
-        if bussard_service::knxnet::interface_config(&model, target).is_some() {
-            return Ok(None);
-        }
-        Ok(support::gate(
+        support::gate(
             &tier.connection,
             &model,
             target,
@@ -1186,7 +1280,6 @@ impl BussardMcp {
             (allow_unsupported, planned.unsupported),
         )
         .err()
-        .map(|refused| refused.answer(&model, true)))
     }
 
     /// The programming tier, or the refusal that it is off.

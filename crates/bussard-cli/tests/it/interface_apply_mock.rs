@@ -212,6 +212,44 @@ fn test_interface_apply_refuses_a_stale_plan_hash() -> TestResult {
     Ok(())
 }
 
+/// An apply of the KNXnet/IP parameter object is a device write like any
+/// other (issue #1093): on a non-loopback gateway an interface whose
+/// application is not on the supported list is refused before any socket
+/// opens (the gateway is TEST-NET-1, `192.0.2.1`, which is never contacted).
+#[test]
+fn test_interface_apply_refuses_an_unsupported_interface_on_a_real_gateway() -> TestResult {
+    let model = TempModel::new("bussard-interface-unsupported", CHANGED)?;
+    let dir = model.dir();
+    let dir_s = dir.to_str().ok_or("non-UTF-8 temp dir")?;
+    let apply = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        .env("BUSSARD_NO_DOTENV", "1")
+        .env_remove("BUSSARD_KEYRING")
+        .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
+        .args([
+            "apply",
+            "1.1.200",
+            "--yes",
+            "--allow-remote-gateway",
+            "--dir",
+            dir_s,
+            "--gateway",
+            "192.0.2.1:3671",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()?;
+    let (stdout, stderr) = text(&apply);
+    assert!(!apply.status.success(), "{stdout}\n{stderr}");
+    assert!(
+        stderr.contains("refusing to write: 1.1.200 runs")
+            && stderr.contains("not on bussard's list of supported devices. Nothing was written."),
+        "{stderr}"
+    );
+    assert!(stderr.contains("--allow-unsupported"), "{stderr}");
+    Ok(())
+}
+
 const STATIC: &str = r#"address = "1.1.200"
 name = "KNX IP Interface"
 

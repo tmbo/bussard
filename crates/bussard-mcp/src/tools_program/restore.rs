@@ -135,20 +135,9 @@ impl BussardMcp {
             let plan = self.restore_plan_json(tier, target, &file, &gateway, &planned);
             return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
-        // The supported-device gate (issue #1089) before the job: the digest
-        // stays valid for the override.
-        if let Some((unsupported, application)) = tier.restore_plans.get(digest) {
-            let model = self.state().model.current();
-            if let Err(refused) = super::support::gate(
-                &tier.connection,
-                &model,
-                target,
-                Some(&application),
-                (allow_unsupported, unsupported),
-            ) {
-                return Ok(refused.answer(&model, true));
-            }
-        }
+        // The supported-device gate (issue #1089) answered before this call
+        // (`knx_restore_parameters`, through `unsupported_override`); the
+        // pre-flight asks it again on the fresh plan.
         let digest = digest.to_string();
         self.run_write(
             Subject::Device(target),
@@ -168,6 +157,27 @@ impl BussardMcp {
             },
         )
         .await
+    }
+
+    /// The supported-device gate of a parameter restore before its job
+    /// (issue #1089): the refusal, `None` to go on (an unknown digest is left
+    /// to the pre-flight's refusal).
+    pub(super) fn restore_unsupported(
+        &self,
+        target: IndividualAddress,
+        digest: &str,
+        allow_unsupported: bool,
+    ) -> Option<super::support::Refused> {
+        let tier = self.tier().ok()?;
+        let (unsupported, application) = tier.restore_plans.get(digest)?;
+        super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            target,
+            Some(&application),
+            (allow_unsupported, unsupported),
+        )
+        .err()
     }
 
     /// Reads `target` and plans replaying the backup at `file` onto it.
@@ -293,12 +303,20 @@ impl BussardMcp {
         let subject = format!("{target} from {}", file.display());
         let again = "call knx_restore_parameters without plan_digest, show the plan to the human \
                      and ask again";
-        // One digest, one write: consumed whatever the fresh read says.
+        // One digest, one write: consumed whatever the fresh read says, except
+        // by the supported-device refusal, which keeps it for the override
+        // as `knx_apply_device` does (issue #1093).
         let (unsupported, _) = tier
             .restore_plans
-            .take(digest, subject, "restore plan", again)?;
+            .fresh(digest, &subject, "restore plan", again)?;
         let planned = self.plan_restore(target, file).await;
-        let planned = planned?;
+        let planned = match planned {
+            Ok(planned) => planned,
+            Err(reason) => {
+                tier.restore_plans.retire(digest);
+                return Err(reason);
+            }
+        };
         // The supported-device gate (issue #1089), before the write, on the
         // program the fresh plan decodes with.
         let grant = super::support::gate(
@@ -309,6 +327,7 @@ impl BussardMcp {
             (allow_unsupported, unsupported),
         )
         .map_err(|refused| refused.reason())?;
+        tier.restore_plans.retire(digest);
         if planned.digest != digest {
             return Err(format!(
                 "refusing to restore {target}: the device's memory, the backup or your project \

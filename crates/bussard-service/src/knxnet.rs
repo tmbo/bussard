@@ -887,13 +887,25 @@ impl InterfaceApply {
 /// again are recorded with the device facts when `facts` is given. A write
 /// that fails stops the sequence; the read-back still runs, so the result
 /// says what the device holds.
+///
+/// `grant` is the supported-device gate's pass for `target` (issue #1093):
+/// the write is judged on the list like every other device write, and a
+/// grant made for another device writes nothing.
 pub async fn apply_interface<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     target: IndividualAddress,
     config: &KnxnetConfig,
     plan: &InterfacePlan,
+    grant: &crate::support::SupportGrant,
     facts: Option<(&FactsCache, &mut Established)>,
 ) -> InterfaceApply {
+    if let Err(refused) = grant.covers(target) {
+        return InterfaceApply {
+            written: 0,
+            write_error: Some(refused),
+            readback: WriteReadback::default(),
+        };
+    }
     let mut written = 0;
     let mut write_error = None;
     for step in &plan.steps {
@@ -1008,6 +1020,19 @@ fn backup_text(target: IndividualAddress, facts: &KnxnetFacts) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The support gate's pass for `target` on a loopback gateway (the mock).
+    fn loopback_grant(
+        target: IndividualAddress,
+    ) -> Result<crate::support::SupportGrant, Box<dyn std::error::Error>> {
+        let loopback = bussard_transport::ConnectionConfig::tunnel(std::net::SocketAddrV4::new(
+            Ipv4Addr::LOCALHOST,
+            3671,
+        ));
+        Ok(crate::support::authorize(
+            &loopback, target, None, None, false,
+        )?)
+    }
 
     #[test]
     fn test_facts_from_values_decodes_every_field() -> Result<(), Box<dyn std::error::Error>> {
@@ -1392,11 +1417,13 @@ mod tests {
             &SessionLink::default(),
         );
         assert!(!plan.steps.is_empty());
+        let grant = loopback_grant(target)?;
         let applied = apply_interface(
             &mut l4,
             target,
             config,
             &plan,
+            &grant,
             Some((&cache, &mut read.established)),
         )
         .await;
@@ -1497,7 +1524,8 @@ mod tests {
         let mut config = facts.as_config();
         config.friendly_name = Some("Beta".to_string());
         let plan = plan_interface(target, &config, &facts, None, &SessionLink::default());
-        let applied = apply_interface(&mut l4, target, &config, &plan, None).await;
+        let grant = loopback_grant(target)?;
+        let applied = apply_interface(&mut l4, target, &config, &plan, &grant, None).await;
         let _ = l4.disconnect().await;
         assert_eq!(applied.written, 1, "the device confirmed the write");
         assert!(!applied.verified());
@@ -1548,6 +1576,11 @@ pub struct InterfacePlanOutcome {
     pub pending_model_changes: Option<serde_json::Value>,
     /// When the plan was made, RFC 3339.
     pub planned_at: String,
+    /// The supported-device verdict (issues #1089, #1093): `apply` writes
+    /// the KNXnet/IP parameter object only on the list's terms, like any
+    /// other device write. The surface sets it for its gateway.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
     /// The question and, on the MCP surface, the digest.
     #[serde(flatten)]
     pub approval: crate::report::Approval,
@@ -1582,6 +1615,7 @@ impl InterfacePlanOutcome {
             property_procedure: rows,
             pending_model_changes: None,
             planned_at: crate::monitor::timefmt::to_rfc3339(std::time::SystemTime::now()),
+            support: None,
             approval: crate::report::Approval::question(
                 (!plan.is_empty()).then(|| device_plan.question()),
             ),
@@ -1633,11 +1667,15 @@ impl crate::report::Report for InterfacePlanOutcome {
                 "nothing to write: the interface already matches its [knxnet] table".to_string()
             }
         } else {
-            format!(
+            let step = format!(
                 "Show the plan above to the human (every sentence) and ask whether to write it \
                  to the KNXnet/IP parameter object of {target}. Call knx_apply_device with this \
                  plan_digest only after an explicit yes."
-            )
+            );
+            match self.support.as_ref().and_then(|s| s.assistant_note(target)) {
+                Some(note) => format!("{note} {step}"),
+                None => step,
+            }
         })
     }
 }

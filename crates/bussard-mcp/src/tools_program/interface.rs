@@ -23,6 +23,7 @@ use bussard_service::knxnet::{
 use bussard_service::program::outcome::WriteOutcome;
 use bussard_service::program::plan::Fingerprint;
 use bussard_service::secure::{Key16, SequenceHighWater};
+use bussard_service::support::SupportGrant;
 use bussard_service::{BusService, FactsCache, L4Options, ServiceError};
 
 use super::{BussardMcp, PlanSides, ProgrammingTier, chain};
@@ -42,8 +43,9 @@ struct Planned {
 }
 
 /// The digest halves of an interface plan: the state it read, and the
-/// writes it derived.
-fn sides(plan: &InterfacePlan) -> PlanSides {
+/// writes it derived; `support` is the supported-device verdict the plan
+/// reported and the program it judged (issue #1093).
+fn sides(plan: &InterfacePlan, (unsupported, application): (bool, Option<String>)) -> PlanSides {
     let live = Fingerprint::new(b"interface").put(&plan.state_hash);
     let mut model = Fingerprint::new(b"interface-writes");
     for step in &plan.steps {
@@ -55,10 +57,8 @@ fn sides(plan: &InterfacePlan) -> PlanSides {
     PlanSides {
         live: live.finish(),
         model: model.finish(),
-        // An interface's KNXnet/IP parameter object is not an application
-        // download; the supported-device list does not gate it.
-        unsupported: false,
-        application: None,
+        unsupported,
+        application,
     }
 }
 
@@ -140,6 +140,11 @@ impl BussardMcp {
         // to the [knxnet] changes; `flash` writes it.
         let product = super::product_for(&self.state().dir, &model, target);
         let app = product.source.as_ref().and_then(|p| p.app());
+        // The supported-device verdict (issues #1089, #1093): the KNXnet/IP
+        // parameter object is written on the list's terms like any device.
+        let application = product.source.as_ref().map(|p| p.app_id.clone());
+        let support =
+            bussard_service::support::verdict_at(Some(&model), target, application.as_deref());
         let procedure = app
             .and_then(|a| bussard_service::property_plan::property_plan(a, Some(&model), target));
         let planned = {
@@ -212,8 +217,10 @@ impl BussardMcp {
         }
         out.pending_model_changes =
             serde_json::to_value(self.session_edits().for_device(target)).ok();
+        out.support = Some(support.view_on(&tier.connection));
         if !plan.is_empty() {
-            out.approval.plan_digest = Some(tier.remember_plan(target, sides(plan)));
+            let sides = sides(plan, (!support.is_supported(), application));
+            out.approval.plan_digest = Some(tier.remember_plan(target, sides));
             out.approval.expires_at = Some(tier.plans.expires_at(SystemTime::now()));
         }
         Ok(out)
@@ -223,18 +230,19 @@ impl BussardMcp {
     /// fresh plan of this session, a fresh read reproduces it, the gates
     /// pass, the snapshot and the backup are written), then the write and its
     /// read-back. The caller holds the bus lock and the warm slot. `Err` is
-    /// the pre-flight's refusal.
+    /// the pre-flight's refusal. `plan_hash` refuses a device that moved;
+    /// `allow_unsupported` is the decided supported-device override.
     pub(super) async fn apply_interface(
         &self,
         tier: &ProgrammingTier,
         job: &str,
         target: IndividualAddress,
         digest: &str,
-        plan_hash: Option<&str>,
+        (plan_hash, allow_unsupported): (Option<&str>, bool),
         gate: &Gate,
     ) -> Result<WriteOutcome, String> {
-        let (service, config, planned, mut result, tool_key, high_water) = self
-            .interface_preflight(tier, target, digest, plan_hash)
+        let (service, config, planned, mut result, tool_key, high_water, grant) = self
+            .interface_preflight(tier, target, digest, plan_hash, allow_unsupported)
             .await?;
         gate.pass(&result, None);
         tier.jobs
@@ -247,7 +255,7 @@ impl BussardMcp {
             .with_l4(target, &options, async |l4| {
                 let facts = FactsCache::new(&dir, false);
                 let established = Some((&facts, &mut established));
-                Ok(apply_interface(l4, target, &config, &plan, established).await)
+                Ok(apply_interface(l4, target, &config, &plan, &grant, established).await)
             })
             .await
             .map_err(|err| session_error(target, &err));
@@ -296,6 +304,7 @@ impl BussardMcp {
         target: IndividualAddress,
         digest: &str,
         plan_hash: Option<&str>,
+        allow_unsupported: bool,
     ) -> Result<
         (
             BusService,
@@ -304,6 +313,7 @@ impl BussardMcp {
             WriteOutcome,
             Option<Key16>,
             SequenceHighWater,
+            SupportGrant,
         ),
         String,
     > {
@@ -320,6 +330,17 @@ impl BussardMcp {
                  changed); plan it again with knx_plan_device"
             ));
         };
+        // The supported-device gate (issues #1089, #1093), before the bus,
+        // on the program the plan judged; a refusal keeps the digest for the
+        // override.
+        let grant = super::support::gate(
+            &tier.connection,
+            &model,
+            target,
+            before.application.as_deref(),
+            (allow_unsupported, before.unsupported),
+        )
+        .map_err(|refused| refused.reason())?;
         let material = self.plan_material(target, &model)?;
         let tool_key = material.tool_key.clone();
         let high_water = SequenceHighWater::new();
@@ -334,7 +355,10 @@ impl BussardMcp {
                 None,
             )
             .await?;
-        let now = sides(&planned.plan);
+        let now = sides(
+            &planned.plan,
+            (before.unsupported, before.application.clone()),
+        );
         let moved = match (now.live != before.live, now.model != before.model) {
             (true, true) => Some("the interface's values and your project both changed"),
             (true, false) => Some("the interface's KNXnet/IP values changed"),
@@ -381,8 +405,11 @@ impl BussardMcp {
             backup: Some(backup.display().to_string()),
             snapshot,
             interface_writes: Some(planned.plan.steps.iter().map(|s| s.wire()).collect()),
+            support: Some(grant.status()),
             ..WriteOutcome::new(target)
         };
-        Ok((service, config, planned, result, tool_key, high_water))
+        Ok((
+            service, config, planned, result, tool_key, high_water, grant,
+        ))
     }
 }

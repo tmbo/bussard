@@ -203,7 +203,7 @@ Rocker 1 on Hallway push button now switches Porch light.
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--json` | off | Emit the change set as `{"schema", "ok", "base": <snapshot id>, "count", "touches_protected", "sentences", "changes": [...]}`, the object `knx_describe_change` returns. With `ADDRESS` (schema 2, the `live` object of `knx_show_device {live: true}`): `{"schema", "ok", "address", "secured", "name", "mask", "system_type", "identity", "sentences", "knxnet", "knxnet_lines", "knxnet_error", "model_knxnet", "knxnet_drift"}`. |
+| `--json` | off | Emit the change set as `{"schema", "ok", "base": <snapshot id>, "count", "touches_protected", "sentences", "changes": [...]}`, the object `knx_describe_change` returns. With `ADDRESS` (schema 2, the `live` object of `knx_show_device {live: true}`): `{"schema", "ok", "address", "secured", "name", "mask", "system_type", "identity", "sentences", "knxnet", "knxnet_lines", "knxnet_error", "model_knxnet", "knxnet_drift", "support"}`. |
 | `--raw` | off | Print the file-level diff instead of the sentences. Not with `ADDRESS`. |
 
 Behaviour without an address:
@@ -214,6 +214,7 @@ Behaviour without an address:
 Behaviour with an `ADDRESS`:
 
 - Reads the device's mask and identity and compares them with `bussard.lock`. Read-only.
+- Prints whether the device's application is on the [list of supported devices](../../explanation/device-support.md#supported-devices) (`support`), the line `describe` prints.
 - For a KNX IP interface or router it also reads the KNXnet/IP parameter object: the IP address in use and how it was assigned, the configured method and static settings, the MAC address, the friendly name, the KNX address, the tunnelling addresses, the routing multicast address, the capabilities and the device state (`ok`, `KNX fault`, `IP fault`).
 - What it read is stored with the device facts and compared with the device file's `[knxnet]` table; each difference is one line.
 - A device without the object says so, and is recorded with `no_knxnet = true` in its facts, so the next command does not probe again until the facts are read anew.
