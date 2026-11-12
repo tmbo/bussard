@@ -87,6 +87,22 @@
 #                                (identical, differs or not-comparable);
 #                                unchecked when absent. For a row whose
 #                                load-control records are known to differ
+#                seq=VERDICT     the verdict the operation order must give
+#                                (identical, differs or not-comparable);
+#                                unchecked when absent (issue #1055). The
+#                                order of the state-changing operations
+#                                (load-control events per object, memory
+#                                writes by segment, property writes by object
+#                                and PID, function property calls, restarts
+#                                with their erase code) against ETS's, after
+#                                the state comparison's normalisations (one
+#                                token per run of writes to one target, the
+#                                property writes it lists and does not count
+#                                left out; tools/knxtrace/sequence.py has the
+#                                rule). Shown as seq=ok(n), seq=differs(first:
+#                                ...) or seq=n/c; never part of the headline.
+#                                The reads only one side sends are counted
+#                                in the row's diff.txt, not judged
 #                state=fresh     the capture programs a factory-fresh device
 #                                (a synthetic or ETS-sweep knx-sim capture).
 #                                ETS reads no load state on System 7 before
@@ -202,7 +218,8 @@
 # row whose capture and product exist must give its expected verdict (the
 # headline: the memory verdict, turned `differs` when the memory is identical
 # and the property writes differ, issue #669, unless the row pins props=), its
-# confirmed= verdict when the row names one, and at least its recorded
+# confirmed=, props=, loadctl= and seq= verdicts when the row names them, and
+# at least its recorded
 # coverage, else the script exits 1. Rows without a capture
 # or product data are skipped.
 #
@@ -622,13 +639,14 @@ run_row() {
   product="$(trim "${product:-}")"; application="$(trim "${application:-}")"
   note_text="$(trim "${note_text:-}")"; recorded="$(trim "${recorded:-}")"
   options="$(trim "${options:-}")"
-  local expect="" confirmed="" props="" loadctl="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" word
+  local expect="" confirmed="" props="" loadctl="" seq="" scope="" run="" phase="" base="" rowdir="" lsm="" devstate="" rowkeyring="" rev="" word
   for word in $options; do
     case "$word" in
       expect=*)    expect="${word#expect=}" ;;
       confirmed=*) confirmed="${word#confirmed=}" ;;
       props=*)     props="${word#props=}" ;;
       loadctl=*)   loadctl="${word#loadctl=}" ;;
+      seq=*)       seq="${word#seq=}" ;;
       run=*)       run="${word#run=}" ;;
       phase=*)     phase="${word#phase=}" ;;
       scope=*)     scope="${word#scope=}" ;;
@@ -638,12 +656,16 @@ run_row() {
       state=*)     devstate="${word#state=}" ;;
       keyring=*)   rowkeyring="${word#keyring=}" ;;
       rev=*)       rev="${word#rev=}" ;;
-      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=...)" ;;
+      *)           die "$device: unknown row option: $word (expect=..., confirmed=..., props=..., loadctl=..., seq=..., run=..., phase=..., scope=..., base=..., dir=..., lsm=..., state=..., keyring=..., rev=...)" ;;
     esac
   done
   local scope_args=()
   [ -n "$scope" ] && scope_args=(--scope "$scope")
   [ -n "$phase" ] && scope_args+=(--phase "$phase")
+  case "$seq" in
+    ""|identical|differs|not-comparable) ;;
+    *) die "$device: unknown seq=$seq (identical, differs or not-comparable)" ;;
+  esac
   case "$devstate" in
     ""|fresh|loaded) ;;
     *) die "$device: unknown state=$devstate (fresh or loaded)" ;;
@@ -662,14 +684,15 @@ run_row() {
 
   # The row's recorded coverage and expected verdict, for the summary and
   # --check (written next to the result, whatever the result is).
-  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" <<'PY'
+  "$PYTHON" - "$dir/row.json" "$recorded" "$expect" "$confirmed" "$props" "$loadctl" "$seq" <<'PY'
 import json, sys
-path, recorded, expect, confirmed, props, loadctl = sys.argv[1:7]
+path, recorded, expect, confirmed, props, loadctl, seq = sys.argv[1:8]
 with open(path, "w", encoding="utf-8") as fh:
     json.dump({"recorded_coverage": float(recorded.rstrip("% ")) if recorded else None,
                "expect": expect or "identical", "expect_confirmed": confirmed or None,
                "expect_props": props or None,
                "expect_loadctl": loadctl or None,
+               "expect_seq": seq or None,
                "skipped": None}, fh)
 PY
   if [ -z "$run" ] && { [ -z "$product" ] || [ "$product" = "-" ]; }; then
@@ -919,6 +942,15 @@ for dev in devices:
             first.get("event"))
     elif lc:
         detail += "  loadctl=n/c"
+    # The operation order (issue #1055): shown, and checked only where the
+    # row pins seq=; never part of the headline.
+    seq = r.get("sequence") or {}
+    if seq.get("verdict") == "identical":
+        detail += "  seq=ok(%d)" % seq.get("ets_tokens", 0)
+    elif seq.get("verdict") == "differs":
+        detail += "  seq=differs(first: %s)" % (seq.get("first") or {}).get("text", "?")
+    else:
+        detail += "  seq=n/c"
     if r.get("verdict") == "not-comparable" and parts and not r.get("reason", "").startswith("thin"):
         detail += "  (%s)" % (r.get("reason") or "nothing compared")
     # The headline counts the property writes (issue #669): identical memory
@@ -955,6 +987,11 @@ for dev in devices:
     if want_lc and lc.get("verdict", "not-comparable") != want_lc:
         failures.append("%s: load control %s, expected %s" % (
             dev, lc.get("verdict", "not-comparable"), want_lc))
+    want_seq = row.get("expect_seq")
+    if want_seq and seq.get("verdict", "not-comparable") != want_seq:
+        failures.append("%s: operation order %s, expected %s%s" % (
+            dev, seq.get("verdict", "not-comparable"), want_seq,
+            " (first: %s)" % seq["first"]["text"] if seq.get("first") else ""))
     want = row.get("expect_confirmed")
     if want and conf.get("verdict", "not-comparable") != want:
         failures.append("%s: confirmed %s, expected %s" % (

@@ -34,6 +34,12 @@
 //! the first; the replay waits out the device's 1 s Sync window before it
 //! (`SYNC_WINDOW`), since the sim keeps that window on the wall clock. The
 //! refusals the sim in the VM gave ETS too are listed in `KNOWN_REFUSALS`.
+//! A `security` block with `status: activated` (the `reload`, `partial` and
+//! `apply` rows of bussard issue #1054) starts the device as an earlier secured
+//! download left it: the tool key, the sending sequence and the group keys from
+//! the block or its `keyring`, the senders and flags from the block; the group
+//! keys by address resolve once `base-requests.txt` has loaded the address
+//! table.
 
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
@@ -41,12 +47,11 @@ use std::sync::Arc;
 
 use knx_sim::bus::Bus;
 use knx_sim::bus::event::{Event, RecordingSink};
-use knx_sim::config::{KnxnetSimConfig, PropertyOverride, SecurityConfig, SecurityStatus};
-use knx_sim::device::{
-    Device, LoadState, MasterResetSupport, ProfileOverrides, SecureActivation, profile,
+use knx_sim::config::{
+    KnxnetSimConfig, PropertyOverride, SecurityConfig, SecurityStatus, serial_override,
 };
+use knx_sim::device::{Device, LoadState, MasterResetSupport, ProfileOverrides, profile};
 use knx_sim::prod::read_knxprod_bytes;
-use knx_sim::secure::Key16;
 use knx_sim::wire::{CemiLData, IndividualAddress, MessageCode};
 use serde::Deserialize;
 use zip::write::SimpleFileOptions;
@@ -259,14 +264,21 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     // 0701, property on 0705 (`Device::from_product` would keep property).
     let mask = profile::parse_mask(&pd.mask_version).unwrap_or(0x07B0);
     let sim = sim_device(capture)?;
-    let secure = match &sim.security {
-        Some(sec) if sec.status != SecurityStatus::Plain => Some(SecureActivation {
-            tool_key: Key16::from_hex(&sec.tool_key)
-                .ok_or_else(|| format!("{label}: sim.yaml tool_key is not 32 hex characters"))?,
-            initial_tx_seq: sec.initial_tx_seq,
-            initial_rx_seq: sec.initial_rx_seq,
-        }),
-        _ => None,
+    // The security block as the sim in the VM resolved it: `factory` under
+    // the FDSK, or `activated` with the tool key and tables from the block or
+    // the keyring committed next to it (bussard issue #1054).
+    let (secure, activated_tables) = match &sim.security {
+        Some(sec) if sec.status != SecurityStatus::Plain => {
+            let (activation, tables) = sec
+                .resolve(
+                    capture,
+                    IndividualAddress(ia),
+                    serial_override(&sim.properties),
+                )
+                .map_err(|e| format!("{label}: sim.yaml security: {e}"))?;
+            (Some(activation), Some(tables))
+        }
+        _ => (None, None),
     };
     let device = Device::from_product_with_overrides(
         IndividualAddress(ia),
@@ -282,6 +294,9 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let device = device.with_master_reset(sim.master_reset);
     let device = match &sim.security {
         Some(sec) if sec.status == SecurityStatus::Factory => device.with_factory_security(),
+        Some(sec) if sec.status == SecurityStatus::Activated => device
+            .with_activated_tables(activated_tables.unwrap_or_default())
+            .map_err(|e| format!("{label}: {e}"))?,
         _ => device,
     };
     let mut device = device;
@@ -307,7 +322,15 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         .find(|src| *src != 0)
         .unwrap_or(0);
     let mut synced = false;
-    for (src, dst, tpdu) in base.into_iter().chain(stream) {
+    let base_len = base.len();
+    for (i, (src, dst, tpdu)) in base.into_iter().chain(stream).enumerate() {
+        if i == base_len {
+            // The start state's group keys by address resolve against the
+            // address table the earlier downloads loaded, as the sim does
+            // before its gateway opens.
+            bus.settle_activated_tables()
+                .map_err(|e| format!("{label}: {e}"))?;
+        }
         if is_sync_request(&tpdu) {
             if synced {
                 std::thread::sleep(SYNC_WINDOW);

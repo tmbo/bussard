@@ -450,15 +450,19 @@ class Product:
         whens = []
         for k, branch in enumerate(c["when"]):
             bw = f"{cw} when #{k + 1}"
-            check_keys(bw, branch, {"block"}, {"default", "test"})
+            check_keys(bw, branch, set(), {"default", "test", "block", "module"})
             if ("test" in branch) == (branch.get("default") is True) or branch.get("default") is False:
                 raise SpecError(f"{bw}: give either `test` or `default = true`")
+            if not branch.get("block") and not branch.get("module"):
+                raise SpecError(f"{bw}: a when needs a `block` or a `module`")
             blocks = []
-            for j, b in enumerate(branch["block"]):
+            for j, b in enumerate(branch.get("block", [])):
                 self.choose_blocks = getattr(self, "choose_blocks", 0) + 1
                 blocks.append(self.check_block(f"{bw} block #{j + 1}", b, len(self.blocks) + self.choose_blocks))
-            whens.append({"test": branch["test"], "block": blocks} if "test" in branch
-                         else {"default": True, "block": blocks})
+            modules = [check_module_instance(f"{bw} module #{j + 1}", self, m)
+                       for j, m in enumerate(branch.get("module", []))]
+            whens.append(({"test": branch["test"]} if "test" in branch else {"default": True})
+                         | {"block": blocks, "module": modules})
         return {"parameter": c["parameter"], "when": whens}
 
     def check_calculation(self, cw: str, c: dict, n: int) -> dict:
@@ -522,17 +526,19 @@ class Product:
                 if name in LOAD_OPS_LATER or name in SYS7_LOAD_OPS or name in B_PRODUCT_LOAD_OPS:
                     raise not_yet(ow, f"`{name}`")
                 raise SpecError(f"{ow}: unknown op `{name}`")
+            check_applies_to(ow, op, self.b_product or self.system7)
             if name == "LdCtrlWriteProp":
                 self.check_write_prop(ow, op)
                 continue
-            check_keys(ow, op, {"op"} | set(table[name]))
+            check_keys(ow, op, {"op"} | set(table[name]), {"applies_to"})
 
     def check_write_prop(self, ow: str, op: dict) -> None:
         """`LdCtrlWriteProp`: `object` and `prop_id`, optional `start_element`,
         `count`, `verify`; its value is `inline_data` (hex, syn-product-07b0's
         program version) or, without it, what the parameters placed in that
         property compose (syn-property-param, #604 row 30), so one must be."""
-        check_keys(ow, op, {"op", "object", "prop_id"}, {"start_element", "count", "verify", "inline_data"})
+        check_keys(ow, op, {"op", "object", "prop_id"},
+                   {"start_element", "count", "verify", "inline_data", "applies_to"})
         if "inline_data" in op:
             return
         placed = {(prm["property"]["object_index"], prm["property"]["property_id"])
@@ -598,6 +604,25 @@ LOAD_OPS = {
     "LdCtrlWriteProp": {"object": "ObjIdx", "prop_id": "PropId", "start_element": "StartElement",
                         "count": "Count", "verify": "Verify", "inline_data": "InlineData"},
 }
+# `applies_to` of a merged procedure's op (#1038, #1052): the `AppliesTo`
+# attribute, the downloads the op belongs to, as the corpus writes it
+# (`"full"`, `"par"`, `"full,par"`, `"full,grp"`). Without it the op has no
+# AppliesTo, as in every product before.
+APPLIES_TO = ("full", "par", "grp", "cfg")
+
+
+def check_applies_to(ow: str, op: dict, product_procedure: bool) -> None:
+    """An op's optional `applies_to`: comma-separated download kinds, on a
+    merged procedure's op only."""
+    if "applies_to" not in op:
+        return
+    if product_procedure:
+        raise not_yet(ow, "`applies_to` in a ProductProcedure")
+    kinds = op["applies_to"].split(",")
+    if not kinds or any(k not in APPLIES_TO for k in kinds) or len(set(kinds)) != len(kinds):
+        raise SpecError(f"{ow}: applies_to is a comma-separated list of {', '.join(APPLIES_TO)}")
+
+
 LOAD_OPS_LATER = {"LdCtrlLoadImageProp", "LdCtrlCompareProp",
                   "LdCtrlAbsSegment", "LdCtrlConnect", "LdCtrlDisconnect", "LdCtrlRestart",
                   "LdCtrlUnload", "LdCtrlLoad", "LdCtrlLoadCompleted", "LdCtrlTaskSegment"}
@@ -827,7 +852,12 @@ def check_modules(w: str, p: "Product", spec: dict) -> None:
         mid = f"{p.app_id}_MD-{i + 1}"
         args = {}
         for k, arg in enumerate(md["arguments"]):
-            check_keys(f"{mw} arguments #{k + 1}", arg, {"name", "allocates"})
+            aw = f"{mw} arguments #{k + 1}"
+            # syn-module-choose (#1050): a text argument (`type = "Text"`, no
+            # Allocates) that the instance names with a `<TextArg>`.
+            check_keys(aw, arg, {"name"}, {"allocates", "type"})
+            if ("allocates" in arg) == (arg.get("type") == "Text") or arg.get("type", "Text") != "Text":
+                raise SpecError(f"{aw}: give either `allocates` or `type = \"Text\"`")
             args[arg["name"]] = dict(arg, id=f"{mid}_A-{k + 1}")
         params = {}
         for k, prm in enumerate(md["parameter"]):
@@ -887,6 +917,44 @@ def check_repeat(rw: str, p: "Product", r: dict) -> dict:
     return dict(r, id=f"{p.app_id}_X-{p.repeats}", module_id=f"{md['id']}_M-{p.repeats}")
 
 
+def check_module_instance(iw: str, p: "Product", m: dict) -> dict:
+    """syn-module-choose (#1050): a `<Module>` placed directly in a `<when>`
+    of a Dynamic choose, the MDT shape (M-0083_A-00B1-32: one choose per input
+    pair, each branch holding its instances). `args` gives every argument of
+    the module a literal: a string for a text argument (`<TextArg Value>`), an
+    integer for a numeric one (`<NumericArg Value>`, no allocator)."""
+    check_keys(iw, m, {"name", "module", "args"})
+    md = p.module_defs.get(m["module"])
+    if md is None:
+        raise SpecError(f"{iw}: unknown module_def `{m['module']}`")
+    if set(m["args"]) != set(md["args"]):
+        raise SpecError(f"{iw}: args must name every argument of `{m['module']}`: {sorted(md['args'])}")
+    for name, arg in md["args"].items():
+        v = m["args"][name]
+        text = arg.get("type") == "Text"
+        if text != isinstance(v, str) or isinstance(v, bool):
+            raise SpecError(f"{iw}: argument `{name}` takes {'a string' if text else 'an integer'}")
+    for prm in md["params"].values():
+        mem = prm["memory"]
+        bits = p.types[prm["type"]]["size_bits"]
+        end = (m["args"][mem["base"]] + mem["offset"]) * 8 + mem["bit_offset"] + bits
+        if end > p.segments[mem["segment"]]["size"] * 8:
+            raise SpecError(f"{iw}: `{prm['name']}` at base {m['args'][mem['base']]} does not fit its segment")
+    p.repeats = getattr(p, "repeats", 0) + 1
+    return dict(m, id=f"{md['id']}_M-{p.repeats}")
+
+
+def render_module_instance(x: "Xml", p: "Product", m: dict) -> None:
+    md = p.module_defs[m["module"]]
+    x.open("Module", [("Id", m["id"]), ("Name", m["name"]), ("RefId", md["id"])])
+    for k, (name, arg) in enumerate(md["args"].items()):
+        if arg.get("type") == "Text":
+            x.empty("TextArg", [("RefId", arg["id"]), ("Id", f"{m['id']}_A-{k + 1}"), ("Value", m["args"][name])])
+        else:
+            x.empty("NumericArg", [("RefId", arg["id"]), ("Value", m["args"][name])])
+    x.close("Module")
+
+
 def render_repeat(x: "Xml", p: "Product", r: dict) -> None:
     md = p.module_defs[r["module"]]
     x.open("Repeat", [("Id", r["id"]), ("Name", r["name"]), ("ParameterRefId", p.ref_id(r["parameter"]))])
@@ -916,7 +984,8 @@ def render_module_defs(x: "Xml", p: "Product") -> None:
         x.open("ModuleDef", [("Id", md["id"]), ("Name", md["name"])])
         x.open("Arguments")
         for arg in md["args"].values():
-            x.empty("Argument", [("Id", arg["id"]), ("Name", arg["name"]), ("Allocates", arg["allocates"])])
+            x.empty("Argument", [("Id", arg["id"]), ("Name", arg["name"]), ("Type", arg.get("type")),
+                                 ("Allocates", arg.get("allocates"))])
         x.close("Arguments")
         x.open("Static")
         x.open("Parameters")
@@ -1058,7 +1127,8 @@ def render_load_ops(x: Xml, p: Product, ops: list[dict]) -> None:
                 x.close("when")
             x.close("choose")
         else:
-            x.empty(op["op"], [(attr, op.get(key)) for key, attr in ALL_LOAD_OPS[op["op"]].items()])
+            x.empty(op["op"], [("AppliesTo", op.get("applies_to"))]
+                    + [(attr, op.get(key)) for key, attr in ALL_LOAD_OPS[op["op"]].items()])
 
 
 def render_block(x: Xml, p: Product, b: dict) -> None:
@@ -1095,6 +1165,8 @@ def render_dynamic_choose(x: Xml, p: Product, c: dict) -> None:
         x.open("when", [("test", branch["test"])] if "test" in branch else [("default", True)])
         for b in branch["block"]:
             render_block(x, p, b)
+        for m in branch["module"]:  # #1050
+            render_module_instance(x, p, m)
         x.close("when")
     x.close("choose")
 
@@ -1132,7 +1204,10 @@ def render_application(p: Product) -> bytes:
         ("AdditionalAddressesCount", a.get("additional_addresses_count")),  # #455
         ("NonRegRelevantDataVersion", 0)])
     x.open("Static")
-    x.open("Code")
+    # A property-only program with no segment (syn-property-nopar, #1052) has
+    # no <Code>, as Hager's E802.
+    if p.segments:
+        x.open("Code")
     for s in p.segments.values():
         if s["kind"] == "absolute":
             render_absolute_segment(x, s)
@@ -1145,7 +1220,8 @@ def render_application(p: Product) -> bytes:
         x.open("RelativeSegment", pairs)
         x.text("Data", base64.b64encode(bytes([s.get("fill", 0)]) * s["size"]).decode())
         x.close("RelativeSegment")
-    x.close("Code")
+    if p.segments:
+        x.close("Code")
     x.open("ParameterTypes")
     for t in p.types.values():
         render_type(x, t)
@@ -1200,7 +1276,11 @@ def render_application(p: Product) -> bytes:
             + [("MaxEntries", a["association_table_max_entries"])])
     x.open("LoadProcedures")
     for lp in p.load_procedures:
-        x.open("LoadProcedure", [("MergeId", lp["merge_id"])] if "merge_id" in lp else [])
+        merge = [("MergeId", lp["merge_id"])] if "merge_id" in lp else []
+        if not lp["ops"]:  # an empty merge block, E802's MergeId 2 (#1052)
+            x.empty("LoadProcedure", merge)
+            continue
+        x.open("LoadProcedure", merge)
         render_load_ops(x, p, lp["ops"])
         x.close("LoadProcedure")
     x.close("LoadProcedures")

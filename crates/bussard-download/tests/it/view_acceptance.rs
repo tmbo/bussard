@@ -12,7 +12,8 @@
 //!   table gets a descriptor for ([`dynamic_group_object_descriptors`]);
 //! - [`DeviceAnalysis::ignored_overrides`] names exactly the stored values the image does
 //!   not carry: on refs without a slot (and, for a ref without memory, that
-//!   the evaluation does not reach), or replaced by an `<Assign>`.
+//!   the evaluation does not reach), or replaced by an `<Assign>`; and on a
+//!   module instance's refs the evaluation does not reach (issue #1050).
 //!
 //! The view runs over the product model, the download over the application
 //! XML. The test sits here, not in `bussard-prod`, because the object table
@@ -31,7 +32,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_download::compute::dynamic_group_object_descriptors;
 use bussard_download::model_params::parameter_overrides;
 
-use bussard_model::dynamic::evaluate_dynamic;
+use bussard_model::dynamic::{
+    DynamicConfig, DynamicNode, evaluate_dynamic, selector_key, split_selector,
+    vendor_default_with_args, walk_all,
+};
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 use bussard_product::image::dynamic_parameter_slots;
 use bussard_product::{
@@ -92,6 +96,54 @@ fn located(app: &ApplicationProgram) -> BTreeSet<String> {
         })
         .filter_map(|pref| pref.id.strip_prefix(&prefix).map(str::to_string))
         .collect()
+}
+
+/// The vendor default of a device-form ref (`P-1_R-1`, or a module ref by
+/// its selector key) in `config`: in a reached instance with its arguments;
+/// in an unreached one with the arguments its `<Module>` in the application
+/// XML gives, literal and computed from a literal `Value` (issue #1050).
+/// `None` when the XML alone does not tell the default: an unreached
+/// repetition or submodule, or an argument from an allocator or a parent's
+/// `BaseValue`, whose value depends on the instances reached before it.
+fn default_in(
+    app: &ApplicationProgram,
+    config: &DynamicConfig,
+    key: &str,
+) -> Option<Option<String>> {
+    let (instance, reference) = split_selector(key);
+    let Some(instance) = instance else {
+        return Some(config.vendor_default(app, None, key));
+    };
+    if let Some(m) = config.modules.iter().position(|m| m.id == instance) {
+        return Some(config.vendor_default(app, Some(m), &reference));
+    }
+    if instance.contains("_MI-") {
+        return None;
+    }
+    let mut site = None;
+    walk_all(app, &mut |node, _| {
+        if let DynamicNode::Module {
+            id,
+            args,
+            computed_args,
+            ..
+        } = node
+            && *id == instance
+        {
+            site = Some((args.clone(), computed_args.clone()));
+        }
+        true
+    });
+    let (mut args, computed) = site?;
+    for c in computed {
+        match (c.allocator, c.value, c.base) {
+            (None, Some(value), None) => {
+                args.insert(c.arg, value);
+            }
+            _ => return None,
+        }
+    }
+    Some(vendor_default_with_args(app, Some(&args), &reference))
 }
 
 /// Sorted lists of what only one side has, as a message.
@@ -213,21 +265,69 @@ fn compare(
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|o| o.reference)
+            // A default the XML alone does not tell is left out of the
+            // comparison (see [`default_in`]).
+            .filter(|r| default_in(app, &config, r).is_some())
             .collect();
+    // A module instance's ref (issue #1050), by its selector key: in effect
+    // when the image carries it in its instance (a slot of that instance),
+    // or, for a ref without memory, when the evaluation reaches it, unless
+    // an `<Assign>` replaces it; only a ref a module body places counts, as
+    // the application's refs count only on a page.
+    let instance_key = |m: Option<usize>, r: &str| {
+        m.and_then(|m| config.modules.get(m))
+            .map(|i| selector_key(Some(&i.id), r))
+    };
+    let carried: BTreeSet<String> = slots
+        .iter()
+        .filter_map(|s| instance_key(s.module, s.param_ref_id.as_deref()?))
+        .collect();
+    let module_reached: BTreeSet<String> = config
+        .parameters
+        .iter()
+        .filter_map(|p| instance_key(p.module, &p.param_ref_id))
+        .collect();
+    let module_shown: BTreeSet<String> = config
+        .parameters
+        .iter()
+        .zip(&config.parameter_placements)
+        .filter(|(_, place)| place.shown)
+        .filter_map(|(p, _)| instance_key(p.module, &p.param_ref_id))
+        .collect();
+    let module_in_effect = |key: &str, reference: &str, module: Option<usize>| {
+        let written = if located.contains(reference) {
+            carried.contains(key)
+        } else {
+            module_reached.contains(key)
+        };
+        written && (module_shown.contains(key) || !config.is_assigned(module, reference))
+    };
     let expected: BTreeSet<String> = values
         .iter()
-        .filter(|(r, _)| !r.starts_with("MD-") && held.contains(r.as_str()))
         .filter(|(r, _)| {
-            // The image carries the stored value of a ref the evaluation
-            // reaches (as its slot, or as the source of an `<Assign>`),
-            // unless an `<Assign>` replaces it.
-            let in_effect = reached.contains(r.as_str())
-                && (placed_shown.contains(r.as_str()) || !config.is_assigned(None, r));
-            !in_effect
+            let (instance, reference) = split_selector(r);
+            match instance {
+                Some(instance) => {
+                    let module = config.modules.iter().position(|m| m.id == instance);
+                    let placed = product
+                        .ref_index()
+                        .parameter(&reference)
+                        .iter()
+                        .any(|o| o.module_def.is_some());
+                    placed && !module_in_effect(r, &reference, module)
+                }
+                None => {
+                    // The image carries the stored value of a ref the
+                    // evaluation reaches (as its slot, or as the source of
+                    // an `<Assign>`), unless an `<Assign>` replaces it.
+                    let in_effect = reached.contains(r.as_str())
+                        && (placed_shown.contains(r.as_str()) || !config.is_assigned(None, r));
+                    held.contains(r.as_str()) && !in_effect
+                }
+            }
         })
         .filter(|(r, v)| {
-            let module = None;
-            config.vendor_default(app, module, r).as_deref() != Some(v.as_str())
+            default_in(app, &config, r).is_some_and(|d| d.as_deref() != Some(v.as_str()))
         })
         .map(|(r, _)| r.clone())
         .collect();

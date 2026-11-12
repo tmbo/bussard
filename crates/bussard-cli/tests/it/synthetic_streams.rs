@@ -16,12 +16,27 @@
 //! path is thereby a reviewable diff of these files (the Device Writes rules
 //! in `CLAUDE.md`); `BUSSARD_UPDATE_GOLDENS=1` rewrites them.
 //!
+//! **Parameter change and Data Secure (issue #1054).** `params.txt`, for
+//! [`PARAMETER_PRODUCTS`], is `bussard apply` of a parameter-only change
+//! ([`Configuration::parameter_change`]) over the flashed defaults. For
+//! [`SECURE_PRODUCT`], knx-sim starts the device `activated` (security mode
+//! on, a synthetic tool key set) and the model holds the keys in its key
+//! store: `flash-secure.txt` is the secured flash (tables, parameters and the
+//! security object over `A_SecureData`), `params-secure.txt` a parameter
+//! change applied over it. Their frames are decrypted with the key store's
+//! keyring export; the clock-seeded sending sequence and a Sync_Req the
+//! device ignored within its 1 s window are normalized away
+//! ([`secure_stable`]).
+//!
 //! **CLI and MCP equivalence (step 8, the #314 class).** For every product,
 //! the same write runs through both surfaces from the same flashed state, on
 //! two simulators, and the two normalized streams are compared:
 //!
 //! - the apply: `bussard plan 1.1.10 --json` then `bussard apply 1.1.10
 //!   --yes`, against `knx_plan_device` then `knx_apply_device`;
+//! - the parameter-only change of [`PARAMETER_PRODUCTS`] and, secured, of
+//!   [`SECURE_PRODUCT`] (an apply), and the secured flash of
+//!   [`SECURE_PRODUCT`] into its unloaded activated device (issue #1054);
 //! - the reshape, for a product with an enable switch that shows or hides a
 //!   com-object: the MCP tier writes that as a flash (`method: flash`, issue
 //!   #303), or as an apply that reloads the object table when the planner
@@ -66,8 +81,9 @@ use sha2::{Digest as _, Sha256};
 
 use crate::mcp_stdio_client::McpServer;
 use crate::sim_catalog_loop::{
-    Configuration, DEVICE, SIM_MASKS, SplitMix64, draw_for, knxnet_table, knxnet_tunnels,
-    object_shape, read_synthetic_refusals, switches, synthetic_knxprods,
+    Configuration, DEVICE, KEY_STORE_PASSWORD, SECURE_DEVICE_TABLE, SIM_MASKS, SplitMix64,
+    activated_sim_block, draw_for, knxnet_table, knxnet_tunnels, object_shape,
+    read_synthetic_refusals, secure_groups, switches, synthetic_knxprods, write_key_store,
 };
 
 type BoxError = Box<dyn std::error::Error>;
@@ -79,6 +95,23 @@ const SHARDS: usize = 4;
 /// The seed of every product's configurations. Changing it rewrites every
 /// golden.
 const SEED: u64 = 596;
+
+/// The seed of the parameter-change and Data Secure scenarios (issue #1054),
+/// apart from [`SEED`] so the other goldens keep their draws.
+const SEED_1054: u64 = 1054;
+
+/// The product of the Data Secure scenarios (issue #1054): the catalogue's
+/// only Data Secure capable product. knx-sim starts it `activated` (security
+/// mode on, the tool key below set), the start state ETS's reload, partial
+/// and apply rows meet, and bussard writes it with the key store of the
+/// model: `flash-secure.txt` is the secured flash, `params-secure.txt` a
+/// parameter change applied over it.
+const SECURE_PRODUCT: &str = "syn-secure";
+
+/// The plain products of the parameter-change scenario (issue #1054,
+/// `params.txt`): a parameter the load procedure writes as a property, and a
+/// `<choose>` whose branches pick the parameters shown.
+const PARAMETER_PRODUCTS: [&str; 2] = ["syn-property-param", "syn-choose-per-ref"];
 
 /// How long the simulator may take to load the product and listen.
 const SIM_START_TIMEOUT: Duration = Duration::from_secs(60);
@@ -152,6 +185,23 @@ fn has_apply_variant(product: &str) -> bool {
         .any(|variant| dir.join(variant).is_dir())
 }
 
+/// The golden files of `product`: `flash.txt`, `apply.txt` with an apply
+/// run variant, `params.txt` for [`PARAMETER_PRODUCTS`], and
+/// `flash-secure.txt` and `params-secure.txt` for [`SECURE_PRODUCT`].
+fn goldens_of(product: &str) -> Vec<&'static str> {
+    let mut out = vec!["flash.txt"];
+    if has_apply_variant(product) {
+        out.push("apply.txt");
+    }
+    if PARAMETER_PRODUCTS.contains(&product) {
+        out.push("params.txt");
+    }
+    if product == SECURE_PRODUCT {
+        out.extend(["flash-secure.txt", "params-secure.txt"]);
+    }
+    out
+}
+
 /// The application id a product's rendered XML carries
 /// (`xml/M-00FA/M-00FA_A-<nnnn>-<vv>-0000.xml`).
 fn rendered_application(product: &Path) -> Result<Option<String>, BoxError> {
@@ -206,10 +256,10 @@ fn test_synthetic_streams_goldens_cover_the_catalogue() -> TestResult {
     let mut problems = Vec::new();
     for (product, _) in &covered {
         let dir = catalogue().join(product).join("requests");
-        let mut expected = vec!["flash.txt".to_string()];
-        if has_apply_variant(product) {
-            expected.push("apply.txt".to_string());
-        }
+        let expected: Vec<String> = goldens_of(product)
+            .into_iter()
+            .map(str::to_string)
+            .collect();
         for file in &expected {
             if !dir.join(file).is_file() {
                 problems.push(format!("{product}: requests/{file} is missing"));
@@ -265,7 +315,7 @@ fn run_golden_shard(slot: usize) -> TestResult {
         let flash = work.flash(&base)?;
         let mut goldens = vec![(
             "flash.txt",
-            golden_text(product, "flash", &base, &flash.ops),
+            golden_text(product, "flash", FRESH, &base, &flash.ops),
         )];
         if has_apply_variant(&product.name) {
             let change = base.partial_change(&product.app, &mut rng);
@@ -274,7 +324,40 @@ fn run_golden_shard(slot: usize) -> TestResult {
             let run = cli.run(Some(&flash.pcap), "apply", |port| {
                 cli.bussard(port, &["apply", DEVICE, "--yes"]).map(|_| ())
             })?;
-            goldens.push(("apply.txt", golden_text(product, "apply", &change, &run)));
+            goldens.push((
+                "apply.txt",
+                golden_text(product, "apply", AFTER_FLASH, &change, &run),
+            ));
+        }
+        if PARAMETER_PRODUCTS.contains(&product.name.as_str()) {
+            let change = parameter_change(product, &base)?;
+            let cli = work.fork("params")?;
+            cli.write_device(&change)?;
+            let run = cli.run(Some(&flash.pcap), "params", |port| {
+                cli.bussard(port, &["apply", DEVICE, "--yes"]).map(|_| ())
+            })?;
+            goldens.push((
+                "params.txt",
+                golden_text(product, "apply", AFTER_FLASH, &change, &run),
+            ));
+        }
+        if product.name == SECURE_PRODUCT {
+            let secure = product.secure_work(&bench.root, "golden")?;
+            let flash = secure.flash(&base)?;
+            goldens.push((
+                "flash-secure.txt",
+                golden_text(product, "flash", ACTIVATED, &base, &flash.ops),
+            ));
+            let change = parameter_change(product, &base)?;
+            let cli = secure.fork("params")?;
+            cli.write_device(&change)?;
+            let run = cli.run(Some(&flash.pcap), "params", |port| {
+                cli.bussard(port, &["apply", DEVICE, "--yes"]).map(|_| ())
+            })?;
+            goldens.push((
+                "params-secure.txt",
+                golden_text(product, "apply", AFTER_SECURE_FLASH, &change, &run),
+            ));
         }
         for (file, text) in goldens {
             let path = catalogue().join(&product.name).join("requests").join(file);
@@ -331,7 +414,7 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
             // empty change writes nothing; there is no write to compare.
             checked.push("apply: the partial change is empty".to_string());
         } else {
-            let (method, cli, mcp) = work.compare(&flash.pcap, "apply", &change)?;
+            let (method, cli, mcp) = work.compare(Some(&flash.pcap), "apply", &change)?;
             if method != "apply" && method != "noop" {
                 return Err(format!(
                     "{}: the partial change keeps the object table, yet the plan says \
@@ -352,7 +435,7 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
         if let Some(reshape) = reshaping_change(&product.app, &base, &mut rng) {
             // The planner decides between a flash and an apply that reloads
             // the object table; both surfaces must write the same either way.
-            let (method, cli, mcp) = work.compare(&flash.pcap, "reshape", &reshape)?;
+            let (method, cli, mcp) = work.compare(Some(&flash.pcap), "reshape", &reshape)?;
             let differs = if method == "flash" {
                 compare_streams(&cli, &mcp)
             } else {
@@ -366,6 +449,60 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
             }
         } else {
             checked.push("reshape: no parameter shows or hides a com-object".to_string());
+        }
+        if PARAMETER_PRODUCTS.contains(&product.name.as_str()) {
+            // The parameter-only write (issue #1054): an apply on both.
+            let change = parameter_change(product, &base)?;
+            let (method, cli, mcp) = work.compare(Some(&flash.pcap), "params", &change)?;
+            match (method.as_str(), compare_apply(&cli, &mcp)) {
+                ("apply", None) => checked.push("params identical".to_string()),
+                ("apply", Some(diff)) => {
+                    divergences.push(format!("{} params:\n{diff}", product.name));
+                }
+                (other, _) => {
+                    return Err(format!(
+                        "{}: a parameter change that keeps the object table planned as \
+                         {other:?}",
+                        product.name
+                    )
+                    .into());
+                }
+            }
+        }
+        if product.name == SECURE_PRODUCT {
+            // The secured flash into the activated device, then a parameter
+            // change applied over it (issue #1054, the #314 class under Data
+            // Secure).
+            let secure = product.secure_work(&bench.root, "equivalence")?;
+            let (method, cli, mcp) = secure.compare(None, "flash-secure", &base)?;
+            let differs = if method == "flash" {
+                compare_streams(&cli, &mcp)
+            } else {
+                Some(format!(
+                    "knx_plan_device planned {method:?} for an unloaded activated device, not a \
+                     flash"
+                ))
+            };
+            match differs {
+                None => checked.push("secure flash identical".to_string()),
+                Some(diff) => divergences.push(format!("{} secure flash:\n{diff}", product.name)),
+            }
+            let flash = secure.flash(&base)?;
+            let change = parameter_change(product, &base)?;
+            let (method, cli, mcp) = secure.compare(Some(&flash.pcap), "params-secure", &change)?;
+            match (method.as_str(), compare_apply(&cli, &mcp)) {
+                ("apply", None) => checked.push("secure params identical".to_string()),
+                ("apply", Some(diff)) => {
+                    divergences.push(format!("{} secure params:\n{diff}", product.name));
+                }
+                (other, _) => {
+                    return Err(format!(
+                        "{}: a secured parameter change planned as {other:?}",
+                        product.name
+                    )
+                    .into());
+                }
+            }
         }
         eprintln!(
             "cli-mcp {:<32} {:>5.1}s {}",
@@ -499,7 +636,18 @@ impl Product {
             product: self,
             dir: dir.clone(),
             model,
+            secure: false,
         })
+    }
+
+    /// A fresh work directory for the Data Secure scenarios (issue #1054):
+    /// the simulator starts the device `activated` under the synthetic tool key,
+    /// and every device file marks it activated, every linked group address
+    /// `secure`, with the key store holding the keys.
+    fn secure_work(&self, root: &Path, test: &str) -> Result<Work<'_>, BoxError> {
+        let mut work = self.work(root, &format!("{test}-secure"))?;
+        work.secure = true;
+        Ok(work)
     }
 }
 
@@ -515,6 +663,8 @@ struct Work<'a> {
     /// Holds the model, the simulator configs and the captures.
     dir: PathBuf,
     model: PathBuf,
+    /// The Data Secure scenario ([`Product::secure_work`]).
+    secure: bool,
 }
 
 impl<'a> Work<'a> {
@@ -552,6 +702,7 @@ impl<'a> Work<'a> {
             product: self.product,
             dir,
             model,
+            secure: self.secure,
         })
     }
 
@@ -559,12 +710,30 @@ impl<'a> Work<'a> {
     fn write_device(&self, config: &Configuration) -> Result<(), BoxError> {
         let mut device = config.device_toml();
         device.push_str(&knxnet_table(&self.product.app, &self.product.mask));
+        let mut groups = config.groups_toml();
+        if self.secure {
+            device.push_str(SECURE_DEVICE_TABLE);
+            groups = secure_groups(&groups);
+            let keyring = write_key_store(&self.model, config)?;
+            std::fs::write(self.dir.join("keys.knxkeys"), keyring)?;
+        }
         std::fs::write(
             self.model.join("devices").join(format!("{DEVICE}.toml")),
             device,
         )?;
-        std::fs::write(self.model.join("groups.toml"), config.groups_toml())?;
+        std::fs::write(self.model.join("groups.toml"), groups)?;
         Ok(())
+    }
+
+    /// The environment of every bussard process of this work directory:
+    /// [`BUSSARD_ENV`], plus the key store password in the Data Secure
+    /// scenario.
+    fn env(&self) -> Vec<(&'static str, &'static str)> {
+        let mut env = BUSSARD_ENV.to_vec();
+        if self.secure {
+            env.push(("BUSSARD_KEYRING_PASSWORD", KEY_STORE_PASSWORD));
+        }
+        env
     }
 
     /// Runs `body` against a simulator that records `<name>.pcap` (after
@@ -586,7 +755,8 @@ impl<'a> Work<'a> {
         let result = body(sim.port);
         drop(sim);
         result.map_err(|e| format!("{} {name}: {e}", self.product.name))?;
-        normalized_ops(&self.dir.join(format!("{name}.pcap")))
+        let keyring = self.secure.then(|| self.dir.join("keys.knxkeys"));
+        normalized_ops(&self.dir.join(format!("{name}.pcap")), keyring.as_deref())
     }
 
     /// Runs `bussard <args> --dir <model> --gateway 127.0.0.1:<port>` and
@@ -597,7 +767,7 @@ impl<'a> Work<'a> {
             .arg("--dir")
             .arg(&self.model)
             .args(["--gateway", &format!("127.0.0.1:{port}")])
-            .envs(BUSSARD_ENV)
+            .envs(self.env())
             .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
             .env_remove("BUSSARD_FLASH_SYS7_LSM")
             .env_remove("BUSSARD_KEYRING")
@@ -623,20 +793,20 @@ impl<'a> Work<'a> {
     /// sessions (CLI, MCP).
     fn compare(
         &self,
-        flash: &Path,
+        flash: Option<&Path>,
         name: &str,
         config: &Configuration,
     ) -> Result<(String, String, String), BoxError> {
         let mcp_work = self.fork(&format!("{name}-mcp"))?;
         mcp_work.write_device(config)?;
         let mut method = String::new();
-        let mcp_ops = mcp_work.run(Some(flash), name, |port| {
-            method = mcp_plan_and_apply(&mcp_work.model, port)?;
+        let mcp_ops = mcp_work.run(flash, name, |port| {
+            method = mcp_plan_and_apply(&mcp_work.model, port, &mcp_work.env())?;
             Ok(())
         })?;
         let cli_work = self.fork(&format!("{name}-cli"))?;
         cli_work.write_device(config)?;
-        let cli_ops = cli_work.run(Some(flash), name, |port| {
+        let cli_ops = cli_work.run(flash, name, |port| {
             let plan = cli_work.bussard(port, &["plan", DEVICE, "--json"])?;
             if method == "noop" {
                 // Nothing to write: the CLI's plan must say so too.
@@ -663,11 +833,11 @@ impl<'a> Work<'a> {
 /// --allow-programming`, waiting for the job; returns the plan's `method`
 /// (`apply` or `flash`), or `noop` for a plan with nothing to write (no
 /// apply then).
-fn mcp_plan_and_apply(model: &Path, port: u16) -> Result<String, BoxError> {
+fn mcp_plan_and_apply(model: &Path, port: u16, env: &[(&str, &str)]) -> Result<String, BoxError> {
     let mut server = McpServer::start_without_keyring(
         model,
         port,
-        &BUSSARD_ENV,
+        env,
         &["--allow-programming", "--no-model-edits"],
     )
     .map_err(mcp_error)?;
@@ -751,6 +921,10 @@ impl Sim {
         if knxnet_tunnels(&product.app, &product.mask) > 0 {
             yaml.push_str("    knxnet:\n      tunnel_slots: 16\n");
         }
+        if work.secure {
+            // The `activated` start state (issue #1054).
+            yaml.push_str(&activated_sim_block());
+        }
         if let Some(replay) = replay {
             yaml.push_str(&format!("\nreplay:\n  - \"{}\"\n", replay.display()));
         }
@@ -803,12 +977,21 @@ impl Drop for Sim {
 /// `knxtrace ops` of a capture for 1.1.10, without the header lines (the
 /// capture path, the dropped counts) and the operation numbers, so a golden
 /// diff shows only the operations that changed.
-fn normalized_ops(pcap: &Path) -> Result<String, BoxError> {
-    let mut child = Command::new("python3")
+fn normalized_ops(pcap: &Path, keyring: Option<&Path>) -> Result<String, BoxError> {
+    let mut command = Command::new("python3");
+    command
         .arg(repo().join("tools/knxtrace/knxtrace.py"))
         .arg("ops")
         .arg(pcap)
-        .args(["--device", DEVICE])
+        .args(["--device", DEVICE]);
+    if let Some(keyring) = keyring {
+        // Decrypts the secured frames, so the golden shows what they carry.
+        command
+            .arg("--keyring")
+            .arg(keyring)
+            .env("BUSSARD_KEYRING_PASSWORD", KEY_STORE_PASSWORD);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -839,20 +1022,50 @@ fn normalized_ops(pcap: &Path) -> Result<String, BoxError> {
             Some((n, rest)) if n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty() => rest,
             _ => line,
         };
-        out.push_str(body);
+        let body = secure_stable(body);
+        if body.starts_with("secure-data S-A_Sync_Req") && out.lines().last() == Some(&body) {
+            // A repeated Sync_Req: the device ignored the first within 1 s
+            // of its last Sync_Res (KNX 3/3/7 §5.3.2), a matter of timing.
+            continue;
+        }
+        out.push_str(&body);
         out.push('\n');
     }
     Ok(out.trim_start_matches('\n').to_string())
 }
 
+/// The device of `flash.txt`.
+const FRESH: &str = "a fresh knx-sim device";
+/// The device of `apply.txt` and `params.txt`.
+const AFTER_FLASH: &str = "the state flash.txt left (knx-sim replays that session)";
+/// The device of `flash-secure.txt` (issue #1054).
+const ACTIVATED: &str = "a fresh knx-sim device, security `activated` under the synthetic tool \
+                         key";
+/// The device of `params-secure.txt` (issue #1054).
+const AFTER_SECURE_FLASH: &str = "the state flash-secure.txt left (knx-sim replays that session)";
+
+/// A normalized op without what differs from run to run under Data Secure:
+/// the sending sequence of a secured frame (bussard seeds it from the clock)
+/// and the hash of its encrypted part. The decrypted operation stays.
+fn secure_stable(op: &str) -> String {
+    if !op.starts_with("secure-data ") {
+        return op.to_string();
+    }
+    op.split(' ')
+        .filter(|t| !t.starts_with("seq=") && !t.starts_with("protected_sha="))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The committed form of a golden: a comment header naming the command, the
-/// product and the device file, then the operations.
-fn golden_text(product: &Product, command: &str, config: &Configuration, ops: &str) -> String {
-    let device = if command == "flash" {
-        "a fresh knx-sim device"
-    } else {
-        "the state flash.txt left (knx-sim replays that session)"
-    };
+/// product, the device it met and the device file, then the operations.
+fn golden_text(
+    product: &Product,
+    command: &str,
+    device: &str,
+    config: &Configuration,
+    ops: &str,
+) -> String {
     let mut text = format!(
         "# Golden request stream (epic #596), written by\n\
          # crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with\n\
@@ -975,6 +1188,18 @@ fn line_diff(expected: &str, actual: &str) -> String {
         out.push_str(&format!("+ … {} more\n", plus.len() - 40));
     }
     out
+}
+
+/// The parameter change of the issue #1054 scenarios: [`SEED_1054`]'s draw
+/// of [`Configuration::parameter_change`] over `base`. A draw that changes
+/// nothing is an error, so a golden never records an empty write.
+fn parameter_change(product: &Product, base: &Configuration) -> Result<Configuration, BoxError> {
+    let mut rng = SplitMix64::new(SEED_1054);
+    let change = base.parameter_change(&product.app, &mut rng);
+    if change.values == base.values {
+        return Err(format!("{}: the parameter change changes nothing", product.name).into());
+    }
+    Ok(change)
 }
 
 /// A configuration that changes one enable switch of `base` so that a
@@ -1111,6 +1336,18 @@ mod tests {
         let diff = compare_apply(cli, rediscovers).ok_or("a rediscovery must differ")?;
         assert!(diff.contains("+ prop-read obj0/PID_1"), "{diff}");
         Ok(())
+    }
+
+    #[test]
+    fn test_secure_stable_drops_the_clock_seeded_sequence() {
+        let op = "secure-data S-A_Sync_Req scf=0x92 tool_access=True seq=279317091657 \
+                  protected_len=16 protected_sha=381ee6ce key=tool mac=ok";
+        assert_eq!(
+            secure_stable(op),
+            "secure-data S-A_Sync_Req scf=0x92 tool_access=True protected_len=16 key=tool mac=ok"
+        );
+        let plain = "mem-write 0x6000 addr_int=24576 len=3 sha=88a32a5f extended=False";
+        assert_eq!(secure_stable(plain), plain);
     }
 
     #[test]

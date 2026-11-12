@@ -20,8 +20,14 @@
 //! #390) has no com-objects and no `plan`: each configuration is flashed to a
 //! fresh device and the flash must end with its property read-back verified.
 //!
-//! Step 4 of the issue (the same with Data Secure on) waits for the secure
-//! group simulation; see `dev/testing.md`.
+//! Step 4 of the issue (the same with Data Secure on) runs over the synthetic
+//! catalogue (issue #1054): a Data Secure capable application runs the loop
+//! a second time on a device knx-sim starts `activated` (security mode on,
+//! the synthetic [`SECURE_TOOL_KEY`] set), with the device file marked
+//! activated, every linked group address `secure`, and the keys in the
+//! model's key store; every flash and apply then runs over `A_SecureData`,
+//! the security object included, and ends with its read-back. A step of that
+//! run is reported as `secured: <step>`.
 //!
 //! The simulator is the separate `knx-sim` workspace. It runs as its own
 //! process (`BUSSARD_KNX_SIM_BIN`, the `serve` binary) on a loopback port and
@@ -141,6 +147,7 @@ fn run_synthetic_shard(slot: usize) -> TestResult {
         report: None,
         cache: None,
         work: None,
+        secure: true,
     };
     let reports = run_files(
         &settings,
@@ -303,6 +310,9 @@ struct Settings {
     cache: Option<PathBuf>,
     /// Where each application's work directory goes; kept after the run.
     work: Option<PathBuf>,
+    /// Run a Data Secure capable application a second time, secured
+    /// (issue #1054). On for the synthetic catalogue.
+    secure: bool,
 }
 
 impl Settings {
@@ -372,6 +382,7 @@ impl Settings {
             report: var("BUSSARD_SIM_LOOP_REPORT").map(PathBuf::from),
             cache,
             work: var("BUSSARD_SIM_LOOP_WORK").map(PathBuf::from),
+            secure: false,
         }))
     }
 }
@@ -682,7 +693,31 @@ fn run_application(
         known: false,
         seconds: 0.0,
     };
-    let result = run_loop(settings, file, app, seed, &mask, &mut report.configurations);
+    let mut result = run_loop(
+        settings,
+        file,
+        app,
+        seed,
+        &mask,
+        false,
+        &mut report.configurations,
+    );
+    if result.is_ok() && settings.secure && app.is_secure_enabled {
+        // The same loop on an activated device, over Data Secure (#1054).
+        result = run_loop(
+            settings,
+            file,
+            app,
+            seed,
+            &mask,
+            true,
+            &mut report.configurations,
+        )
+        .map_err(|stop| match stop {
+            Stop::Fail(step, detail) => Stop::Fail(format!("secured: {step}"), detail),
+            Stop::Skip(why) => Stop::Fail("secured".to_string(), format!("skipped: {why}")),
+        });
+    }
     match result {
         Ok(()) => {}
         Err(Stop::Skip(why)) => {
@@ -709,12 +744,15 @@ fn infra<E: std::fmt::Display>(step: &str) -> impl FnOnce(E) -> Stop + '_ {
     move |e| Stop::Fail(step.to_string(), format!("harness: {e}"))
 }
 
+/// The flash-then-plan loop of one application; `secure` runs it on an
+/// `activated` device over Data Secure (issue #1054).
 fn run_loop(
     settings: &Settings,
     file: &Path,
     app: &ApplicationProgram,
     seed: &mut Seed<'_>,
     mask: &str,
+    secure: bool,
     flashed: &mut usize,
 ) -> Result<(), Stop> {
     if mask == PROPERTY_ONLY_MASK {
@@ -756,7 +794,7 @@ fn run_loop(
     // and takes the flash's own read-back as the check.
     let flash_only = configs.iter().all(|c| c.links.is_empty());
 
-    let work = Work::create(settings, app, file).map_err(infra("setup"))?;
+    let work = Work::create(settings, app, file, secure).map_err(infra("setup"))?;
     seed(app, &work.model).map_err(infra("write the product model"))?;
     let mut bench = Bench {
         settings,
@@ -873,7 +911,7 @@ fn run_property_loop(
     for k in 1..=settings.configs {
         configs.push(Configuration::generated(app, &mut rng, k));
     }
-    let work = Work::create(settings, app, file).map_err(infra("setup"))?;
+    let work = Work::create(settings, app, file, false).map_err(infra("setup"))?;
     seed(app, &work.model).map_err(infra("write the product model"))?;
     let mut bench = Bench {
         settings,
@@ -1313,8 +1351,34 @@ impl Configuration {
         app: &ApplicationProgram,
         rng: &mut SplitMix64,
     ) -> Configuration {
-        let mut out = self.clone();
+        let mut out = self.parameter_change(app, rng);
         out.label = format!("{} + partial change", self.label);
+        // One link in, on an object the flashed configuration leaves
+        // unlinked (issue #540: the flash cleared its communication flag, so
+        // `apply` must reload the group-object table), then one of the old
+        // links out (when another stays).
+        let old: Vec<u16> = out.links.keys().copied().collect();
+        out.add_links(app, rng, 1);
+        if old.len() > 1 {
+            let i = rng.below(old.len() as u64) as usize;
+            if let Some(k) = old.get(i) {
+                out.links.remove(k);
+            }
+        }
+        out
+    }
+
+    /// The parameter half of [`Configuration::partial_change`]: up to three
+    /// shown parameters take another value that keeps the object table and
+    /// the load procedure's allocations, the links stay (issue #1054: the
+    /// parameter-only write path).
+    pub(crate) fn parameter_change(
+        &self,
+        app: &ApplicationProgram,
+        rng: &mut SplitMix64,
+    ) -> Configuration {
+        let mut out = self.clone();
+        out.label = format!("{} + parameter change", self.label);
         let shape = object_shape(app, &self.values);
         let memo = bussard_product::dynamic::DynamicMemo::new(app);
         let config = evaluate_dynamic(app, &self.values);
@@ -1345,18 +1409,6 @@ impl Configuration {
             {
                 out.values = trial;
                 changed += 1;
-            }
-        }
-        // One link in, on an object the flashed configuration leaves
-        // unlinked (issue #540: the flash cleared its communication flag, so
-        // `apply` must reload the group-object table), then one of the old
-        // links out (when another stays).
-        let old: Vec<u16> = out.links.keys().copied().collect();
-        out.add_links(app, rng, 1);
-        if old.len() > 1 {
-            let i = rng.below(old.len() as u64) as usize;
-            if let Some(k) = old.get(i) {
-                out.links.remove(k);
             }
         }
         out
@@ -1439,15 +1491,24 @@ struct Work {
     root: PathBuf,
     model: PathBuf,
     archive: PathBuf,
+    /// The secured run (issue #1054): an `activated` device, the keys in the
+    /// model's key store.
+    secure: bool,
 }
 
 impl Work {
-    fn create(settings: &Settings, app: &ApplicationProgram, file: &Path) -> std::io::Result<Work> {
+    fn create(
+        settings: &Settings,
+        app: &ApplicationProgram,
+        file: &Path,
+        secure: bool,
+    ) -> std::io::Result<Work> {
         let base = settings
             .work
             .clone()
             .unwrap_or_else(|| std::env::temp_dir().join("bussard-sim-loop"));
-        let root = base.join(format!("{}-{}", app.id, std::process::id()));
+        let suffix = if secure { "-secure" } else { "" };
+        let root = base.join(format!("{}-{}{suffix}", app.id, std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         let model = root.join("model");
         std::fs::create_dir_all(model.join("products"))?;
@@ -1470,6 +1531,7 @@ impl Work {
             root,
             model,
             archive,
+            secure,
         })
     }
 }
@@ -1544,6 +1606,9 @@ impl Sim {
         if knxnet_tunnels(app, mask) > 0 {
             yaml.push_str("    knxnet:\n      tunnel_slots: 16\n");
         }
+        if work.secure {
+            yaml.push_str(&activated_sim_block());
+        }
         let config = work.root.join("sim.yaml");
         std::fs::write(&config, yaml)?;
         let log = work.root.join("sim.log");
@@ -1588,6 +1653,64 @@ impl Drop for Sim {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// The tool key of an `activated` device of the secured runs (issue #1054),
+/// in the simulator's `security` block and in the key store. SYNTHETIC.
+pub(crate) const SECURE_TOOL_KEY: &str = "5ec0de0a0b0c0d0e0f101112131415f1";
+
+/// The group key of every group address a secured configuration links.
+/// SYNTHETIC.
+pub(crate) const SECURE_GROUP_KEY: &str = "9a7b5c3d1e0f21436587a9cbedf01234";
+
+/// The password of the scratch key stores (and their keyring exports).
+/// SYNTHETIC.
+pub(crate) const KEY_STORE_PASSWORD: &str = "synthetic-store-password";
+
+/// The device file's table that marks the device security-activated.
+pub(crate) const SECURE_DEVICE_TABLE: &str = "\n[security]\nactivated = true\n";
+
+/// The knx-sim `security` block of the `activated` start state (issue #1054):
+/// security mode on, [`SECURE_TOOL_KEY`] set, and a sending sequence an
+/// earlier download left (a tool refuses a device's sequence 0 as stale).
+pub(crate) fn activated_sim_block() -> String {
+    format!(
+        "    security:\n      status: activated\n      tool_key: \"{SECURE_TOOL_KEY}\"\n      \
+         initial_tx_seq: 5000\n"
+    )
+}
+
+/// `groups.toml` with every group address marked `secure = true`.
+pub(crate) fn secure_groups(groups: &str) -> String {
+    groups.replace("\" }", "\", secure = true }")
+}
+
+/// Writes the model's key store for a secured configuration: the device's
+/// tool key and the group key of every linked address. Returns its ETS
+/// keyring export (for `knxtrace --keyring`).
+pub(crate) fn write_key_store(model: &Path, config: &Configuration) -> Result<String, BoxError> {
+    let key = |hex: &str| -> Result<bussard_secure::Key16, BoxError> {
+        let mut out = [0u8; 16];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(hex.get(2 * i..2 * i + 2).ok_or("short key")?, 16)?;
+        }
+        Ok(bussard_secure::Key16::new(out))
+    };
+    let mut store = bussard_project::KeyStore::new("Synthetic");
+    store.devices.insert(
+        DEVICE.parse()?,
+        bussard_project::keystore::StoreDevice {
+            tool_key: Some(key(SECURE_TOOL_KEY)?),
+            ..Default::default()
+        },
+    );
+    for link in config.links.values() {
+        for ga in link.send.iter().chain(&link.listen) {
+            store.group_keys.insert(ga.parse()?, key(SECURE_GROUP_KEY)?);
+        }
+    }
+    store.save(model, KEY_STORE_PASSWORD)?;
+    Ok(store.export_knxkeys(KEY_STORE_PASSWORD)?.xml)
 }
 
 /// A loopback UDP port nothing holds right now.
@@ -1704,6 +1827,13 @@ impl Bench<'_> {
         let keep = config.label.replace([' ', '+'], "-").replace("--", "-");
         let mut toml = config.device_toml();
         toml.push_str(&knxnet_table(self.app, self.mask));
+        let mut groups = config.groups_toml();
+        if self.work.secure {
+            toml.push_str(SECURE_DEVICE_TABLE);
+            groups = secure_groups(&groups);
+            write_key_store(&self.work.model, config)
+                .map_err(|e| std::io::Error::other(e.to_string()))?;
+        }
         std::fs::write(self.work.root.join(format!("device-{keep}.toml")), &toml)?;
         std::fs::write(
             self.work
@@ -1712,13 +1842,20 @@ impl Bench<'_> {
                 .join(format!("{DEVICE}.toml")),
             toml,
         )?;
-        std::fs::write(self.work.model.join("groups.toml"), config.groups_toml())
+        std::fs::write(self.work.model.join("groups.toml"), groups)
     }
 
     /// Runs `bussard <args> --dir <model> --gateway <sim>`.
     fn bussard(&self, args: &[&str]) -> Result<Run, BoxError> {
         let model = self.work.model.to_str().ok_or("non-UTF-8 work path")?;
-        let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
+        let mut command = Command::new(env!("CARGO_BIN_EXE_bussard"));
+        if self.work.secure {
+            // The model's key store (issue #1054).
+            command
+                .env("BUSSARD_KEYRING_PASSWORD", KEY_STORE_PASSWORD)
+                .env_remove("BUSSARD_KEYRING");
+        }
+        let mut child = command
             .args(args)
             .args(["--dir", model, "--gateway", &self.gateway])
             .env("BUSSARD_NO_DOTENV", "1")

@@ -730,7 +730,17 @@ variant: `state=loaded` for a System 7 download into a programmed device,
 `dir=<variant>/model` for a model template with links or a parameter value,
 `run=params base=<variant>/base.pcapng` for the partial download
 (`95-offline-oracle.sh` replays the base into a loopback knx-sim, runs
-`bussard flash --parameters-only` against it and compares the device state).
+`bussard flash --parameters-only` against it and compares the device state),
+`run=apply` for a link change before the partial download (`bussard apply`).
+
+The parameter changes come from `synthetic/changes.toml`, set through the
+driver's current editor flows (`param_pages`, `set_param` with the page as
+`{crumb, page}` and the row by label, `read_param` after the last change);
+`params.json` records what was set and what ETS shows at the end. A Data
+Secure product (`syn-secure`) runs its variants in the secure project with
+the password and certificate on every call; the first download commissions
+the device, the keyring is exported after the last step and every step's
+`ops.txt` decoded with it (#1054).
 
 Results (ETS 6.4.1 build 6.4.8718, VM sim 06a27ec0):
 

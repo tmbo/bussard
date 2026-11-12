@@ -804,6 +804,11 @@ def compose(ops: DeviceOps, out_dir: str, source: str = "") -> Dict[str, object]
         json.dump(description_reads(ops), fh, indent=2)
         fh.write("\n")
 
+    # The order of the operations (bussard issue #1055), for `sequence`.
+    import sequence
+
+    sequence.write_operations(ops, out_dir)
+
     index = {
         "device": ops.device,
         "source": os.path.basename(source),
@@ -1088,6 +1093,11 @@ def compare(
     load_controls = compare_load_controls(plan, image_dir)
     function_props = compare_function_properties(plan, image_dir)
     descriptions = compare_description_reads(plan, image_dir)
+    # The order of the state-changing operations (issue #1055): its own
+    # verdict, never the row's.
+    import sequence
+
+    order = sequence.compare_plan(plan, image_dir, props)
     for r in results:
         r["in_scope"] = scope is None or region_short(r["region"]) in scope
     judged = [r for r in results if r["in_scope"]]
@@ -1144,6 +1154,7 @@ def compare(
         "load_controls": load_controls,
         "function_properties": function_props,
         "property_descriptions": descriptions,
+        "sequence": order,
     }
 
 
@@ -2612,6 +2623,9 @@ def render(report: Dict[str, object]) -> List[str]:
     lines.extend(render_function_properties(report.get("function_properties")))
     lines.extend(render_description_reads(report.get("property_descriptions")))
     lines.extend(render_load_controls(report.get("load_controls")))
+    import sequence
+
+    lines.extend(sequence.render(report.get("sequence")))
     return lines
 
 

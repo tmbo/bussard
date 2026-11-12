@@ -1,0 +1,132 @@
+# A synthetic product of the catalogue (#1054), a property-only program with a
+# `par` allocation and a WriteProp without AppliesTo in its first and its last
+# step. Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+The Hager E804 shape (M-0009_A-E804-10-98AD, #1038, #944) on syn-minimal's
+parameters: the operating mode is placed in object 4 PID 201 and the delay in
+object 4 PID 202, a 16-octet segment on LSM 4 holds no parameter, MergeId 2
+allocates it twice (AppliesTo="full" Mode 1, AppliesTo="par" Mode 0: the
+`par` allocation), MergeId 4 writes it and the two properties
+(AppliesTo="full,par"), and MergeId 1 and MergeId 7, the first and the last
+step, each write object 9 PID 51 by LdCtrlWriteProp with no AppliesTo
+(InlineData 01 and 02). In E804's partial download ETS sent the MergeId 7
+write but not the MergeId 1 one (#1038). The `partial` variant settles which
+of the two steps ETS runs in a parameter-only download, without E804's
+LdCtrlLoadImageProp reads (left out: one construct per product)."""
+construct = "property-only with a `par` allocation, AppliesTo-less WriteProp first and last"
+issues = [1038, 944, 1054]
+
+[product]
+text = "Perch latch"
+order_number = "NEST-LATCH"
+hardware_name = "NEST-LATCH"
+hardware_serial = "00FA002700B1"
+bus_current = 10
+
+[application]
+number = 0x27B1
+version = 0x10
+name = "Perch latch"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Sitzstangenriegel" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+# A segment no parameter is placed in, as E804's (9676 octets there).
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 16
+fill = 0x00
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+property = { object_index = 4, property_id = 201, offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+property = { object_index = 4, property_id = 202, offset = 0, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The construct, part 1: the first step writes object 9 PID 51 = 01, no AppliesTo.
+[[load_procedure]]
+merge_id = 1
+ops = [{ op = "LdCtrlWriteProp", object = 9, prop_id = 51, verify = false, inline_data = "01" }]
+
+# The `par` allocation: the full download fills, the parameter download keeps.
+[[load_procedure]]
+merge_id = 2
+ops = [
+    { op = "LdCtrlRelSegment", applies_to = "full", lsm = 4, size = 16, mode = 1, fill = 0 },
+    { op = "LdCtrlRelSegment", applies_to = "par", lsm = 4, size = 16, mode = 0, fill = 0 },
+]
+
+[[load_procedure]]
+merge_id = 4
+ops = [
+    { op = "LdCtrlWriteRelMem", applies_to = "full,par", object = 4, offset = 0, size = 16, verify = true },
+    { op = "LdCtrlWriteProp", applies_to = "full,par", object = 4, prop_id = 201, start_element = 1, count = 1, verify = false },
+    { op = "LdCtrlWriteProp", applies_to = "full,par", object = 4, prop_id = 202, start_element = 1, count = 1, verify = false },
+]
+
+# The construct, part 2: the last step writes object 9 PID 51 = 02, no AppliesTo.
+[[load_procedure]]
+merge_id = 7
+ops = [{ op = "LdCtrlWriteProp", object = 9, prop_id = 51, verify = false, inline_data = "02" }]
