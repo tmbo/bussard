@@ -200,6 +200,17 @@ class System7(unittest.TestCase):
         with self.assertRaisesRegex(generate.SpecError, "absolute segments only"):
             generate.Product("t", self.s)
 
+    def test_product_refuses_fill_on_a_data_less_segment(self) -> None:
+        b = product_spec("syn-relseg-dataless")
+        b["segment"][0]["fill"] = 0
+        with self.assertRaisesRegex(generate.SpecError, "data_less segment has no fill"):
+            generate.Product("t", b)
+
+    def test_render_data_less_segment_has_no_data(self) -> None:
+        xml = app_xml(product_spec("syn-relseg-dataless"))
+        self.assertIn('LoadStateMachine="4" Offset="0" />', xml)
+        self.assertNotIn("<Data>", xml)
+
     def test_product_refuses_an_unknown_table_segment(self) -> None:
         self.s["application"]["address_table_segment"] = "nowhere"
         with self.assertRaisesRegex(generate.SpecError, "unknown segment `nowhere`"):

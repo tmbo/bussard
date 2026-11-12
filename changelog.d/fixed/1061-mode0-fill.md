@@ -1,0 +1,1 @@
+- Flash: in a System B relative segment without `<Data>` whose full `LdCtrlRelSegment` declares `Mode="0"`, the octets no parameter places now take the record's `Fill` (`00` on every corpus program), as ETS writes them, instead of `ff`. The 11 Theben-made M-00EF programs of the sweep (77024 PowerBlock, InBlock, µBrick, PowerBlock DC, 3622 HomeControl) read identical (#1061).

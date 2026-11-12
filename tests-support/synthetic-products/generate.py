@@ -202,9 +202,13 @@ class Product:
                     raise not_yet(sw, "an absolute segment on a System B mask")
                 self.segments[s["name"]] = check_absolute_segment(sw, s, self.app_id)
                 continue
-            check_keys(sw, s, {"name", "kind", "lsm", "size"}, {"fill"}, {"address"})
+            # `data_less`: no <Data> (syn-relseg-dataless, #1061), so ETS
+            # decides what the unplaced octets hold.
+            check_keys(sw, s, {"name", "kind", "lsm", "size"}, {"fill", "data_less"}, {"address"})
             if s["kind"] != "relative":
                 raise SpecError(f"{sw}: kind is relative or absolute")
+            if s.get("data_less") and "fill" in s:
+                raise SpecError(f"{sw}: a data_less segment has no fill")
             if self.system7:
                 raise SpecError(f"{sw}: a System 7 mask has absolute segments only")
             s = dict(s, id=f"{self.app_id}_RS-{s['lsm']:02d}-{len(self.segments):05d}")
@@ -1208,8 +1212,12 @@ def render_application(p: Product) -> bytes:
         if s["kind"] == "absolute":
             render_absolute_segment(x, s)
             continue
-        x.open("RelativeSegment", [("Id", s["id"]), ("Name", s["name"]), ("Size", s["size"]),
-                                   ("LoadStateMachine", s["lsm"]), ("Offset", 0)])
+        pairs = [("Id", s["id"]), ("Name", s["name"]), ("Size", s["size"]),
+                 ("LoadStateMachine", s["lsm"]), ("Offset", 0)]
+        if s.get("data_less"):
+            x.empty("RelativeSegment", pairs)
+            continue
+        x.open("RelativeSegment", pairs)
         x.text("Data", base64.b64encode(bytes([s.get("fill", 0)]) * s["size"]).decode())
         x.close("RelativeSegment")
     if p.segments:
