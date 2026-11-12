@@ -47,6 +47,9 @@ struct Planned {
     tool_key: Option<bussard_service::secure::Key16>,
     /// The send-sequence high-water mark of the read and the write.
     high_water: SequenceHighWater,
+    /// The program the parameters are decoded and written with (issue
+    /// #1089: the one the support gate judges).
+    application: String,
 }
 
 /// Resolves `backup` (a file name, or a path) to a file in the parameter
@@ -134,14 +137,14 @@ impl BussardMcp {
         };
         // The supported-device gate (issue #1089) before the job: the digest
         // stays valid for the override.
-        if let Some(unsupported) = tier.restore_plans.get(digest) {
-            let model = self.state().model.reload();
+        if let Some((unsupported, application)) = tier.restore_plans.get(digest) {
+            let model = self.state().model.current();
             if let Err(refused) = super::support::gate(
                 &tier.connection,
                 &model,
                 target,
-                allow_unsupported,
-                unsupported,
+                Some(&application),
+                (allow_unsupported, unsupported),
             ) {
                 return Ok(refused.answer(&model, true));
             }
@@ -230,6 +233,7 @@ impl BussardMcp {
             digest,
             tool_key,
             high_water,
+            application: source.app_id.clone(),
         })
     }
 
@@ -250,12 +254,16 @@ impl BussardMcp {
             &planned.plan,
         );
         let model = self.state().model.current();
-        let support = bussard_service::support::verdict_at(Some(&model), target);
+        let support =
+            bussard_service::support::verdict_at(Some(&model), target, Some(&planned.application));
         out.support = Some(support.view_on(&tier.connection));
         if !out.noop {
             let subject = format!("{target} from {}", file.display());
-            tier.restore_plans
-                .insert(planned.digest.clone(), subject, !support.is_supported());
+            tier.restore_plans.insert(
+                planned.digest.clone(),
+                subject,
+                (!support.is_supported(), planned.application.clone()),
+            );
             out.approval.plan_digest = Some(planned.digest.clone());
             out.approval.expires_at =
                 Some(tier.restore_plans.expires_at(std::time::SystemTime::now()));
@@ -286,20 +294,21 @@ impl BussardMcp {
         let again = "call knx_restore_parameters without plan_digest, show the plan to the human \
                      and ask again";
         // One digest, one write: consumed whatever the fresh read says.
-        let unsupported = tier
+        let (unsupported, _) = tier
             .restore_plans
             .take(digest, subject, "restore plan", again)?;
-        // The supported-device gate (issue #1089), before the bus.
-        let grant = super::support::gate(
-            &tier.connection,
-            &self.state().model.reload(),
-            target,
-            allow_unsupported,
-            unsupported,
-        )
-        .map_err(|refused| refused.reason())?;
         let planned = self.plan_restore(target, file).await;
         let planned = planned?;
+        // The supported-device gate (issue #1089), before the write, on the
+        // program the fresh plan decodes with.
+        let grant = super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            target,
+            Some(&planned.application),
+            (allow_unsupported, unsupported),
+        )
+        .map_err(|refused| refused.reason())?;
         if planned.digest != digest {
             return Err(format!(
                 "refusing to restore {target}: the device's memory, the backup or your project \

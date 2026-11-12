@@ -283,7 +283,12 @@ fn run(
     )?;
     // The supported-device verdict (issue #1089): what `apply` would decide
     // on this gateway.
-    let support = bussard_service::support::verdict_at(Some(model_ref), target).view_on(&config);
+    let support = bussard_service::support::verdict_at(
+        Some(model_ref),
+        target,
+        product_ref.map(|p| p.app_id.as_str()),
+    )
+    .view_on(&config);
     let mut read = read_device(
         config,
         target,
@@ -350,12 +355,9 @@ fn run(
         crate::output::report(&out)?;
     } else {
         let style = crate::style::Style::stdout();
-        let line = crate::describe_cmd::support_line(&support);
+        let line = support.line();
         if support.override_needed {
-            println!(
-                "{}\n",
-                style.warn(&format!("{line}; `bussard apply` refuses without it"))
-            );
+            println!("{}\n", style.warn(&line));
         } else {
             println!("{}\n", style.dim(&line));
         }

@@ -168,11 +168,12 @@ Behaviour:
 | `unchanged` | The device already matches the project. |
 | `skipped: <reason>` | An unsupported mask, or no links in the project. |
 | `failed: <reason>` | The device could not be read or written. |
+| `refused: <reason>` | `apply`: the device has changes, but its application program is not on the [list of supported devices](../../explanation/device-support.md#supported-devices) and `--allow-unsupported` was not given. Nothing was written. A device with nothing to write is `unchanged`, whatever the list says. |
 
-- Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed.
+- Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed or was refused.
 - `apply --line` asks one confirmation for the whole run, naming the resolved gateway and the device count. Each device then gets what `apply <ADDRESS>` does: plan, back up, write, verify.
-- Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed devices are retried. A run with no failures deletes the file.
-- `--json` prints (schema 2) `{ok, verified, line, mode, gateway, noop, devices: [{address, name, mask, system_type, status, changes, detail, verified, sentences, notes, backup}], total, changed, unchanged, skipped, failed, sentences, state_file, planned_at}`, the object `knx_plan_device` and `knx_apply_device` with `line` return; `verified` is there for `apply`, `noop`, `sentences` and `planned_at` for `plan`, and `state_file` when the run left one behind.
+- Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed and refused devices are retried, so `apply --line --resume --allow-unsupported` writes the refused ones. A run with no failures deletes the file.
+- `--json` prints (schema 2) `{ok, verified, line, mode, gateway, noop, devices: [{address, name, mask, system_type, status, changes, detail, verified, sentences, notes, backup}], total, changed, unchanged, skipped, failed, refused, sentences, state_file, planned_at}`, the object `knx_plan_device` and `knx_apply_device` with `line` return; `verified` is there for `apply`, `noop`, `sentences` and `planned_at` for `plan`, and `state_file` when the run left one behind.
 
 ## `bussard flash <ADDRESS>`
 
@@ -417,7 +418,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--json` | off | Emit the summary as JSON (schema 2, the result of a `knx_commission_line` job without its envelope: `ok`, `step`, `line`, `gateway`, `stopped`, `reason`, `devices` (each `address`, `name`, `floor`, `room`, `order_number`, `status`, `detail`, `label`, and for a device whose address was written `step`, `from`, `identified` and `readback`), `labels`, `total`, `commissioned`, `present`, `failed`, `not_reached`, `labels_file`); label lines then go to stderr and into each device's `label` field. |
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key for `--flash` and `--apply`. |
-| `--allow-unsupported` | off | With `--flash` or `--apply`: write devices whose application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Without it such a device refuses the run before any address is assigned. |
+| `--allow-unsupported` | off | With `--flash` or `--apply`: write devices whose application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Without it such a device is checked before its address is assigned, left unassigned and reported as failed; the other devices are commissioned and the run exits non-zero. |
 
 Behaviour:
 

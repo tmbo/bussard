@@ -62,8 +62,12 @@ pub fn plain_view(value: &mut Value) {
                 // A page or channel row: its handle names it, its id is ETS's.
                 map.remove("id");
             }
-            for child in map.values_mut() {
-                plain_view(child);
+            // The supported-device verdict (issue #1089) names the
+            // application on purpose: it is left as it is.
+            for (key, child) in map.iter_mut() {
+                if key != "support" {
+                    plain_view(child);
+                }
             }
         }
         Value::Array(items) => items.iter_mut().for_each(plain_view),

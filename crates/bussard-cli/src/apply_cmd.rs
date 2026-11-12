@@ -168,6 +168,10 @@ pub(crate) struct ApplyArgs {
     // Issue #1089.
     #[arg(long)]
     pub allow_unsupported: bool,
+    /// The grant an outer command (`replace`, `commission`) already made
+    /// for this device (issue #1089); never a command-line flag.
+    #[arg(skip)]
+    pub support: Option<bussard_service::support::SupportGrant>,
 }
 
 impl Run for ApplyArgs {
@@ -298,6 +302,7 @@ fn run(
             plan_hash: args.plan_hash.as_deref(),
         },
         allow_unsupported: args.allow_unsupported,
+        given: args.support.as_ref(),
     })
 }
 
@@ -329,6 +334,8 @@ pub(crate) struct WriteJob<'a> {
     pub write: ModelWrite<'a>,
     /// `--allow-unsupported` (issue #1089).
     pub allow_unsupported: bool,
+    /// The grant an outer command already made for the device (issue #1089).
+    pub given: Option<&'a bussard_service::support::SupportGrant>,
 }
 
 /// The model half of [`apply_desired`]: the product data to read and write
@@ -379,6 +386,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         model,
         write,
         allow_unsupported,
+        given,
     } = job;
     // KNX Data Secure (issue #71, spec §6.2): every management APDU rides
     // A_SecureData when the device is security-activated and a tool key is
@@ -409,11 +417,19 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
     // Safety envelope (issue #74).
     enforce_write_gate(&config, allow_remote_gateway)?;
     // The supported-device list (issue #1089), before the bus is opened.
+    // Judged on the program the parameters are written with (`--product`,
+    // `--application`, the device file's override), else the device's own.
     let support = crate::support_gate::authorize(
         &config,
         target,
-        bussard_service::support::verdict_at(model, target),
+        (
+            model
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            write.product.map(|p| p.app_id.as_str()),
+        ),
         allow_unsupported,
+        given,
     )?;
     let gateway = gateway_display(&config);
 

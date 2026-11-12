@@ -253,7 +253,7 @@ fn run_line(
 
     let failed = outcomes
         .iter()
-        .filter(|(o, _)| matches!(o.status, DeviceStatus::Failed(_)))
+        .filter(|(o, _)| matches!(o.status, DeviceStatus::Failed(_) | DeviceStatus::Refused(_)))
         .count();
 
     // A clean sweep retires the state file; anything left undone keeps it so
@@ -452,11 +452,19 @@ fn print_summary(line: &str, mode: Mode, gateway: &str, outcomes: &[Outcome]) {
     let unchanged = count(|s| matches!(s, DeviceStatus::Unchanged));
     let skipped = count(|s| matches!(s, DeviceStatus::Skipped(_)));
     let failed = count(|s| matches!(s, DeviceStatus::Failed(_)));
+    let refused = count(|s| matches!(s, DeviceStatus::Refused(_)));
     let verb = match mode {
         Mode::Plan => "with changes",
         Mode::Apply => "applied",
     };
-    println!("\n{changed} {verb}, {unchanged} unchanged, {skipped} skipped, {failed} failed");
+    let refused = if refused > 0 {
+        format!(", {refused} refused (not on the supported list; --allow-unsupported)")
+    } else {
+        String::new()
+    };
+    println!(
+        "\n{changed} {verb}, {unchanged} unchanged, {skipped} skipped, {failed} failed{refused}"
+    );
 }
 
 #[cfg(test)]

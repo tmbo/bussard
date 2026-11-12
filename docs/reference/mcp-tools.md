@@ -207,8 +207,8 @@ bussard writes without a human's override only the application programs on its
   calls again with the same digest and `allow_unsupported: true`. The flag
   counts only with the digest of a plan that reported the device unsupported,
   the trust model of every other confirmed write. A line plan reports each
-  unsupported device; without the override the line write skips it as
-  refused.
+  unsupported device; without the override the line write reports it with
+  status `refused`, and the result is `ok: false`.
 - **The result says so.** A written result carries `support`: `forced`,
   `supported`, or `unsupported` on a loopback gateway, which never refuses.
 

@@ -147,6 +147,10 @@ pub(crate) struct FlashArgs {
     // Issue #1089.
     #[arg(long)]
     pub allow_unsupported: bool,
+    /// The grant an outer command (`replace`, `commission`) already made
+    /// for this device (issue #1089); never a command-line flag.
+    #[arg(skip)]
+    pub support: Option<bussard_service::support::SupportGrant>,
 }
 
 impl Run for FlashArgs {
@@ -319,8 +323,9 @@ fn run(args: FlashArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let support = crate::support_gate::authorize(
         &config,
         target,
-        bussard_service::support::verdict_for_application(&app.id, model_device),
+        (model_device, Some(&app.id)),
         args.allow_unsupported,
+        args.support.as_ref(),
     )?;
     let gateway = gateway_display(&config);
     // An edit made outside bussard is recorded before this command acts on it.

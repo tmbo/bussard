@@ -501,7 +501,7 @@ impl ScanOutcome {
                     identity: f.identity.clone(),
                     support: model
                         .filter(|m| m.devices.contains_key(&f.address))
-                        .map(|m| crate::support::verdict_at(Some(m), f.address).view()),
+                        .map(|m| crate::support::verdict_at(Some(m), f.address, None).view()),
                 })
                 .collect(),
             model_device_count: report.model_device_count,

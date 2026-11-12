@@ -155,14 +155,17 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
 
     let config = resolve_config(Some(&model), &overrides)?;
     enforce_write_gate(&config, allow_remote_gateway)?;
-    // The supported-device list (issue #1089), before the address is
-    // written, so a refusal leaves nothing half done. `flash` and `apply`
-    // ask it again with the same answer.
-    crate::support_gate::authorize(
+    // The supported-device list (issue #1089), once, before the address is
+    // written, so a refusal leaves nothing half done. The application is the
+    // device's own (its override, else the lock's), the one `flash` selects
+    // from the product data; `flash` and `apply` reuse this grant and refuse
+    // a step that would write another application.
+    let support = crate::support_gate::authorize(
         &config,
         target,
-        bussard_service::support::verdict_at(Some(&model), target),
+        (Some(&loaded.device), None),
         args.allow_unsupported,
+        None,
     )?;
     let gateway = gateway_display(&config);
 
@@ -215,7 +218,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             tool_key: ToolKey {
                 tool_key: args.tool_key.tool_key.clone(),
             },
-            allow_unsupported: args.allow_unsupported,
+            support: Some(support.clone()),
             ..FlashArgs::default()
         }
         .run(&g.step())?;
@@ -241,7 +244,7 @@ fn run(args: ReplaceArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         tool_key: ToolKey {
             tool_key: args.tool_key.tool_key.clone(),
         },
-        allow_unsupported: args.allow_unsupported,
+        support: Some(support.clone()),
         ..ApplyArgs::default()
     }
     .run(&g.step())?;

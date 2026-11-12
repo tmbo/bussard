@@ -58,6 +58,7 @@ fn sides(plan: &InterfacePlan) -> PlanSides {
         // An interface's KNXnet/IP parameter object is not an application
         // download; the supported-device list does not gate it.
         unsupported: false,
+        application: None,
     }
 }
 

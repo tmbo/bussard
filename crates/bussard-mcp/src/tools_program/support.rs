@@ -16,50 +16,48 @@ use serde_json::{Value, json};
 /// The refusal code of a write to a device not on the supported list.
 pub(crate) const UNSUPPORTED_DEVICE: &str = "unsupported_device";
 
-/// Why a write did not pass the support gate.
-pub(crate) enum Refused {
-    /// The device is not on the list and the override was not given (or
-    /// not with a plan that reported it).
-    Unsupported(SupportRefusal),
-}
+/// A write the support gate refused: the device is not on the list and the
+/// override was not given (or not with a plan that reported it).
+pub(crate) struct Refused(SupportRefusal);
 
-/// The support gate of a write of `target`: `allow_unsupported` counts only
-/// when `plan_reported_unsupported`, the plan the digest names said so.
+/// The support gate of a write of `target` that builds its image from
+/// `application` (the program its product data selects, `None` without
+/// product data); `allow_unsupported` counts only when
+/// `plan_reported_unsupported`, the plan the digest names said so.
 pub(crate) fn gate(
     connection: &ConnectionConfig,
     model: &Model,
     target: IndividualAddress,
-    allow_unsupported: bool,
-    plan_reported_unsupported: bool,
+    application: Option<&str>,
+    (allow_unsupported, plan_reported_unsupported): (bool, bool),
 ) -> Result<SupportGrant, Refused> {
     support::authorize(
         connection,
         target,
-        support::verdict_at(Some(model), target),
+        model.devices.get(&target).map(|d| &d.device),
+        application,
         allow_unsupported && plan_reported_unsupported,
     )
-    .map_err(Refused::Unsupported)
+    .map_err(Refused)
 }
 
 impl Refused {
     /// The refusal as one sentence, for a pre-flight that answers with a
     /// reason string.
     pub(crate) fn reason(&self) -> String {
-        match self {
-            Refused::Unsupported(refusal) => format!(
-                "{UNSUPPORTED_DEVICE}: {}. Nothing was written. To write anyway, the human must \
-                 say so explicitly; then call again with allow_unsupported: true and the \
-                 plan_digest of a plan that reported the device unsupported.",
-                refusal.sentence()
-            ),
-        }
+        format!(
+            "{UNSUPPORTED_DEVICE}: {}. Nothing was written. To write anyway, the human must say \
+             so explicitly; then call again with allow_unsupported: true and the plan_digest of \
+             a plan that reported the device unsupported.",
+            self.0.sentence()
+        )
     }
 
     /// The structured refusal: `ok: false`, `refused: true`, `code:
     /// unsupported_device`, the `support` verdict, the `override` and the
     /// homeowner's summary.
     pub(crate) fn answer(&self, model: &Model, digest_kept: bool) -> Value {
-        let Refused::Unsupported(refusal) = self;
+        let refusal = &self.0;
         let target = refusal.target.to_string();
         let reason = format!(
             "{}. Nothing was written.{}",

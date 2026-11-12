@@ -85,9 +85,9 @@ pub(crate) struct CommissionArgs {
     tool_key: Option<String>,
     /// With `--flash` or `--apply`: write devices whose application program
     /// is not on bussard's list of supported devices (`bussard device
-    /// --supported`). Without it such a device refuses the run before any
-    /// address is assigned. A loopback gateway (a simulator) is never
-    /// refused.
+    /// --supported`). Without it such a device is left unassigned and
+    /// reported as failed; the others go on. A loopback gateway (a
+    /// simulator) is never refused.
     // Issue #1089.
     #[arg(long)]
     allow_unsupported: bool,
@@ -135,33 +135,6 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
     let gateway = gateway_display(&config);
 
     let mut walk = LineRun::new(&model, area, line_no);
-    // The supported-device list (issue #1089): with a download half, every
-    // device is checked before the first address is assigned, so a line is
-    // not left half commissioned.
-    if options.flash || options.apply {
-        let refusals: Vec<String> = walk
-            .targets()
-            .iter()
-            .filter_map(|target| {
-                bussard_service::support::authorize(
-                    &config,
-                    target.address,
-                    bussard_service::support::verdict_at(Some(&model), target.address),
-                    options.allow_unsupported,
-                )
-                .err()
-                .map(|refusal| refusal.sentence())
-            })
-            .collect();
-        if !refusals.is_empty() {
-            bail!(
-                "refusing to commission line {line} with a download: nothing was assigned.\n  \
-                 {}\nReads work (plan, describe, backup). To write anyway, back the devices up \
-                 first and pass --allow-unsupported.",
-                refusals.join("\n  ")
-            );
-        }
-    }
     if walk.targets().is_empty() {
         bail!(
             "your project has no devices on line {line} (looked in {}/devices)",
@@ -270,6 +243,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             &config,
             &target,
             products.get(&target.address).cloned(),
+            model.devices.get(&target.address).map(|d| &d.device),
             options,
             g,
         );
@@ -344,11 +318,34 @@ fn commission_one(
     config: &bussard_service::transport::ConnectionConfig,
     target: &Target,
     product: Option<PathBuf>,
+    device: Option<&bussard_model::schema::Device>,
     options: &CommissionArgs,
     g: &Resolved,
 ) -> (Outcome, Option<CommissionDevice>) {
     let (dir, overrides) = (g.dir(), &g.mgmt());
     let fail = |detail: String| (Outcome::failed(target, detail), None);
+    // The supported-device list (issue #1089), for a device this run writes,
+    // before its address is assigned: a refused device is left unassigned
+    // and reported, the others go on. `flash` and `apply` reuse the grant.
+    let support = if options.flash || options.apply {
+        match crate::support_gate::authorize(
+            config,
+            target.address,
+            (device, None),
+            options.allow_unsupported,
+            None,
+        ) {
+            Ok(grant) => Some(grant),
+            Err(err) => {
+                return fail(format!(
+                    "refused, nothing was assigned: {}",
+                    one_line(&format!("{err:#}"))
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     // The bus half: wait for the button, read the identity, write the address.
     let assigned = {
@@ -405,7 +402,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
-            allow_unsupported: options.allow_unsupported,
+            support: support.clone(),
             ..FlashArgs::default()
         }
         .run(&g.step());
@@ -424,7 +421,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
-            allow_unsupported: options.allow_unsupported,
+            support: support.clone(),
             ..ApplyArgs::default()
         }
         .run(&g.step());

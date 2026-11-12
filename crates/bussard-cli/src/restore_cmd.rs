@@ -175,6 +175,7 @@ fn run(
         model: model.as_ref(),
         write: apply_cmd::ModelWrite::default(),
         allow_unsupported: consent.allow_unsupported,
+        given: None,
     })
 }
 
@@ -237,8 +238,12 @@ fn run_parameters(
     let support = crate::support_gate::authorize(
         &config,
         target,
-        bussard_service::support::verdict_at(Some(&model), target),
+        (
+            model.devices.get(&target).map(|d| &d.device),
+            Some(product.app_id.as_str()),
+        ),
         consent.allow_unsupported,
+        None,
     )?;
     let gateway = crate::conn_cmd::gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;

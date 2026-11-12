@@ -122,7 +122,7 @@ fn run(
     let products = ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, target, channel)?;
     // Whether bussard writes the device without the override (issue #1089).
-    let support = bussard_service::support::verdict_at(Some(&model), target).view();
+    let support = bussard_service::support::verdict_at(Some(&model), target, None).view();
     if json {
         crate::output::report(&bussard_service::device_show::DeviceShow {
             support: Some(support),
@@ -132,7 +132,7 @@ fn run(
         print!("{}", view.render_toml());
     } else {
         print!("{}", view.render_table());
-        println!("{}", crate::describe_cmd::support_line(&support));
+        println!("{}", support.line());
     }
     Ok(ExitCode::SUCCESS)
 }

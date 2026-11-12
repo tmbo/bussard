@@ -162,8 +162,9 @@ pub struct ProgrammingTier {
     /// and record.
     jobs: std::sync::Arc<crate::jobs::JobTable>,
     /// Restore plans produced in this session, by digest (issue #290), with
-    /// whether each reported the device unsupported (issue #1089).
-    restore_plans: Store<bool>,
+    /// whether each reported the device unsupported and the program it was
+    /// judged on (issue #1089).
+    restore_plans: Store<(bool, String)>,
     /// Restart questions asked in this session, by digest (issue #717).
     restarts: Store<bussard_service::download::RestartForm>,
     /// Table-restore plans produced in this session, by digest (issue
@@ -242,6 +243,8 @@ struct PlanSides {
     /// Whether the plan reported the device as not on the supported list
     /// (issue #1089): only then does `allow_unsupported` count.
     unsupported: bool,
+    /// The program the plan's write builds from, the one it was judged on.
+    application: Option<String>,
 }
 
 /// Arguments for `knx_plan_device`.
@@ -1060,7 +1063,9 @@ impl BussardMcp {
         // The supported-device verdict (issue #1089): shown before anyone
         // asks to write, and remembered so the override counts only with
         // this digest.
-        let support = bussard_service::support::verdict_at(Some(&model), target);
+        let application = product.source.as_ref().map(|p| p.app_id.clone());
+        let support =
+            bussard_service::support::verdict_at(Some(&model), target, application.as_deref());
         out.support = Some(support.view_on(&tier.connection));
         if !noop {
             let digest = tier.remember_plan(
@@ -1069,6 +1074,7 @@ impl BussardMcp {
                     live: program::plan::live_fingerprint(&read),
                     model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
                     unsupported: !support.is_supported(),
+                    application,
                 },
             );
             out.approval.plan_digest = Some(digest);
@@ -1166,13 +1172,18 @@ impl BussardMcp {
         let Some(planned) = tier.plans.get(digest) else {
             return Ok(None);
         };
-        let model = self.state().model.reload();
+        let model = self.state().model.current();
+        // A KNX IP interface's KNXnet/IP parameter object is not gated in
+        // this version (#1093), as `bussard apply` does not gate it.
+        if bussard_service::knxnet::interface_config(&model, target).is_some() {
+            return Ok(None);
+        }
         Ok(support::gate(
             &tier.connection,
             &model,
             target,
-            allow_unsupported,
-            planned.unsupported,
+            planned.application.as_deref(),
+            (allow_unsupported, planned.unsupported),
         )
         .err()
         .map(|refused| refused.answer(&model, true)))
@@ -1472,18 +1483,19 @@ impl BussardMcp {
         // within the plan lifetime.
         let planned = tier.plans.fresh(digest, target, "plan", again(target))?;
         let model = self.state().model.reload();
-        // The supported-device gate (issue #1089), before the bus.
+        // The model may have changed since the plan (issue #330).
+        refuse_insecure_links(&model, target)?;
+        let product = product_for(&dir, &model, target);
+        // The supported-device gate (issue #1089), before the bus, on the
+        // program the write builds from.
         let grant = support::gate(
             &tier.connection,
             &model,
             target,
-            allow_unsupported,
-            planned.unsupported,
+            product.source.as_ref().map(|p| p.app_id.as_str()),
+            (allow_unsupported, planned.unsupported),
         )
         .map_err(|refused| refused.reason())?;
-        // The model may have changed since the plan (issue #330).
-        refuse_insecure_links(&model, target)?;
-        let product = product_for(&dir, &model, target);
         let desired = program::plan::desired_tables(&model, target, product.source.as_ref())?;
         // KNX Data Secure: the same material the plan resolved, one
         // high-water mark for the read and the write so the send sequence
@@ -1545,6 +1557,7 @@ impl BussardMcp {
             live: program::plan::live_fingerprint(&read),
             model: model_fingerprint(&ctx, security.as_ref(), &built, flash.as_ref()),
             unsupported: planned.unsupported,
+            application: planned.application.clone(),
         };
         let moved = match (now.live != planned.live, now.model != planned.model) {
             (true, true) => Some("the device's live state and your project both changed"),

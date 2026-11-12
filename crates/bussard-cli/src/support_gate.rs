@@ -3,20 +3,31 @@
 //! server asks, and says what it decided.
 
 use bussard_model::IndividualAddress;
-use bussard_service::support::{self, Support, SupportGrant, SupportStatus};
+use bussard_model::schema::Device;
+use bussard_service::support::{self, SupportGrant, SupportStatus};
 use bussard_service::transport::ConnectionConfig;
 
-/// The grant for writing `target` on `config`, or the refusal of an
-/// unsupported device on a non-loopback gateway without
-/// `--allow-unsupported`. A forced write is said on stderr; a loopback
-/// gateway passes silently (`plan`, `describe` and `device` show the verdict).
+/// The grant for writing `device` at `target` on `config`, judged on
+/// `application`, the program the write builds from (`None` without
+/// product data), or the refusal of an unsupported device on a non-loopback
+/// gateway without `--allow-unsupported`. `given` is the grant an outer
+/// command (`replace`, `commission`) already made: it is reused for the same
+/// verdict, so the operator is asked and told once. A forced write is said
+/// on stderr; a loopback gateway passes silently (`plan`, `describe` and
+/// `device` show the verdict).
 pub(crate) fn authorize(
     config: &ConnectionConfig,
     target: IndividualAddress,
-    verdict: Support,
+    (device, application): (Option<&Device>, Option<&str>),
     allow_unsupported: bool,
+    given: Option<&SupportGrant>,
 ) -> anyhow::Result<SupportGrant> {
-    let grant = support::authorize(config, target, verdict, allow_unsupported)?;
+    if let Some(grant) = given {
+        return grant
+            .reuse_for(target, device, application)
+            .map_err(anyhow::Error::msg);
+    }
+    let grant = support::authorize(config, target, device, application, allow_unsupported)?;
     if grant.forced()
         && let Some(line) = grant.plan_line()
     {

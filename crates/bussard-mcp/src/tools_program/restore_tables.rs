@@ -215,13 +215,13 @@ impl BussardMcp {
         // The supported-device gate (issue #1089) before the job: the digest
         // stays valid for the override.
         if let Some(unsupported) = tier.table_restores.get(digest) {
-            let model = self.state().model.reload();
+            let model = self.state().model.current();
             if let Err(refused) = super::support::gate(
                 &tier.connection,
                 &model,
                 target,
-                allow_unsupported,
-                unsupported,
+                None,
+                (allow_unsupported, unsupported),
             ) {
                 return Ok(refused.answer(&model, true));
             }
@@ -360,7 +360,9 @@ impl BussardMcp {
             format!("restore the link tables of {target} from {name} through {gateway}?")
         }));
         let model = self.state().model.current();
-        let support = bussard_service::support::verdict_at(Some(&model), target);
+        // A table restore writes no application image: the device's own
+        // application is judged (issue #1089).
+        let support = bussard_service::support::verdict_at(Some(&model), target, None);
         if !noop {
             let subject = format!("{target} from {}", file.display());
             tier.table_restores
@@ -419,10 +421,10 @@ impl BussardMcp {
         // The supported-device gate (issue #1089), before the bus.
         let grant = super::support::gate(
             &tier.connection,
-            &self.state().model.reload(),
+            &self.state().model.current(),
             target,
-            allow_unsupported,
-            unsupported,
+            None,
+            (allow_unsupported, unsupported),
         )
         .map_err(|refused| refused.reason())?;
         let planned = self.plan_tables(target, file).await;

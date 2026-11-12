@@ -663,7 +663,7 @@ fn report(
                 ..SecurityDiagnostics::default()
             })
         }),
-        support: loaded.map(|d| crate::support::verdict(Some(&d.device)).view()),
+        support: loaded.map(|d| crate::support::verdict(Some(&d.device), None).view()),
     }
 }
 

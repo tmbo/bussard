@@ -82,6 +82,18 @@ enum Source {
     },
 }
 
+impl Source {
+    /// The program the replacement is flashed with when the pinned archive
+    /// is at hand; `None` leaves the verdict to the device's own application
+    /// (issue #1089).
+    fn application(&self) -> Option<&str> {
+        match self {
+            Source::Pinned { application, .. } => Some(application),
+            Source::Download { .. } => None,
+        }
+    }
+}
+
 /// One identified replacement waiting for the human's yes, by job id.
 #[derive(Debug, Clone)]
 pub(super) struct ReplacePlan {
@@ -320,14 +332,14 @@ impl BussardMcp {
         // The supported-device gate (issue #1089) before the address is
         // written, so a refusal leaves nothing half done; the job stays
         // paused and the digest valid.
-        let model = self.state().model.reload();
+        let model = self.state().model.current();
         let target = pending.replacement.target;
         if let Err(refused) = super::support::gate(
             &tier.connection,
             &model,
             target,
-            allow_unsupported,
-            pending.unsupported,
+            pending.source.application(),
+            (allow_unsupported, pending.unsupported),
         ) {
             return Ok(refused.answer(&model, true));
         }
@@ -857,7 +869,7 @@ fn identified_detail(
         ),
     ));
     sentences.push(format!("Product data: {product_data}."));
-    let support = bussard_service::support::verdict_at(Some(model), target);
+    let support = bussard_service::support::verdict_at(Some(model), target, source.application());
     let support = support.view_on(&tier.connection);
     if let Some(note) = support.assistant_note(&target.to_string()) {
         sentences.push(note);
