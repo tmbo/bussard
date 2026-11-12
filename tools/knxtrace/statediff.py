@@ -40,6 +40,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple
 
 import image as memimage
+import sequence
 from normalize import DeviceOps
 
 REGION_NAMES = {1: "address table", 2: "association table"}
@@ -294,6 +295,9 @@ def compare_states(
     if not _records(ets) and not _records(bussard):
         lc = {"verdict": memimage.NOT_COMPARABLE, "reason": "no load-control record on either side",
               "bussard_records": 0, "ets_records": 0}
+    # The order of the state-changing operations (issue #1055): its own
+    # verdict, never the row's.
+    order = sequence.compare_captures(ets, bussard)
     return {
         "device": device,
         "application": None,
@@ -309,6 +313,7 @@ def compare_states(
         "ets_only_octets": 0,
         "ets_only_ranges": [],
         "load_controls": lc,
+        "sequence": order,
     }
 
 
@@ -340,4 +345,5 @@ def render(report: Dict[str, object]) -> List[str]:
     for note in props.get("notes") or []:
         lines.append("  note: %s" % note)
     lines.extend(memimage.render_load_controls(report.get("load_controls")))
+    lines.extend(sequence.render(report.get("sequence")))
     return lines
