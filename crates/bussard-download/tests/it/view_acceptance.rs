@@ -99,27 +99,51 @@ fn located(app: &ApplicationProgram) -> BTreeSet<String> {
 }
 
 /// The vendor default of a device-form ref (`P-1_R-1`, or a module ref by
-/// its selector key) in `config`: in a reached instance with its arguments,
-/// in an unreached one with the literal arguments of its `<Module>` in the
-/// application XML (a repetition or a submodule: none).
-fn default_in(app: &ApplicationProgram, config: &DynamicConfig, key: &str) -> Option<String> {
+/// its selector key) in `config`: in a reached instance with its arguments;
+/// in an unreached one with the arguments its `<Module>` in the application
+/// XML gives, literal and computed from a literal `Value` (issue #1050).
+/// `None` when the XML alone does not tell the default: an unreached
+/// repetition or submodule, or an argument from an allocator or a parent's
+/// `BaseValue`, whose value depends on the instances reached before it.
+fn default_in(
+    app: &ApplicationProgram,
+    config: &DynamicConfig,
+    key: &str,
+) -> Option<Option<String>> {
     let (instance, reference) = split_selector(key);
     let Some(instance) = instance else {
-        return config.vendor_default(app, None, key);
+        return Some(config.vendor_default(app, None, key));
     };
     if let Some(m) = config.modules.iter().position(|m| m.id == instance) {
-        return config.vendor_default(app, Some(m), &reference);
+        return Some(config.vendor_default(app, Some(m), &reference));
     }
-    let mut args = None;
+    if instance.contains("_MI-") {
+        return None;
+    }
+    let mut site = None;
     walk_all(app, &mut |node, _| {
-        if let DynamicNode::Module { id, args: a, .. } = node
+        if let DynamicNode::Module {
+            id,
+            args,
+            computed_args,
+            ..
+        } = node
             && *id == instance
         {
-            args = Some(a.clone());
+            site = Some((args.clone(), computed_args.clone()));
         }
         true
     });
-    vendor_default_with_args(app, args.as_ref(), &reference)
+    let (mut args, computed) = site?;
+    for c in computed {
+        match (c.allocator, c.value, c.base) {
+            (None, Some(value), None) => {
+                args.insert(c.arg, value);
+            }
+            _ => return None,
+        }
+    }
+    Some(vendor_default_with_args(app, Some(&args), &reference))
 }
 
 /// Sorted lists of what only one side has, as a message.
@@ -241,6 +265,9 @@ fn compare(
             .map_err(|e| e.to_string())?
             .into_iter()
             .map(|o| o.reference)
+            // A default the XML alone does not tell is left out of the
+            // comparison (see [`default_in`]).
+            .filter(|r| default_in(app, &config, r).is_some())
             .collect();
     // A module instance's ref (issue #1050), by its selector key: in effect
     // when the image carries it in its instance (a slot of that instance),
@@ -299,7 +326,9 @@ fn compare(
                 }
             }
         })
-        .filter(|(r, v)| default_in(app, &config, r).as_deref() != Some(v.as_str()))
+        .filter(|(r, v)| {
+            default_in(app, &config, r).is_some_and(|d| d.as_deref() != Some(v.as_str()))
+        })
         .map(|(r, _)| r.clone())
         .collect();
     tally.ignored += ignored.len();

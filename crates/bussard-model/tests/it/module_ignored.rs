@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use bussard_model::device_view::{DeviceAnalysis, IgnoredOverride};
+use bussard_model::device_view::{DeviceAnalysis, IgnoredOverride, show_reached_hidden};
 use bussard_model::{IndividualAddress, Model, ProductModel, ProductModels};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -97,6 +97,18 @@ const PRODUCT: &str = r#"{
       "text": "Kanalname",
       "refs": ["MD-4_P-18_R-18"]
     },
+    "MD-4_P-19": {
+      "kind": {"Int": {"min": 0, "max": 255, "signed": false}},
+      "default": "0",
+      "text": "Treppenhauszeit",
+      "refs": ["MD-4_P-19_R-19"]
+    },
+    "P-4": {
+      "kind": {"Text": {"len": 20}},
+      "default": "",
+      "text": "Allgemein Text",
+      "refs": ["P-4_R-4"]
+    },
     "MD-5_P-50": {
       "kind": {"Int": {"min": 0, "max": 255, "signed": false}},
       "default": "0",
@@ -111,7 +123,12 @@ const PRODUCT: &str = r#"{
         "id": "CH-1",
         "text": "Allgemein",
         "number": 1,
-        "nodes": [{"p": "P-1_R-1"}, {"p": "P-2_R-2"}, {"p": "P-3_R-3"}]
+        "nodes": [
+          {"p": "P-1_R-1"},
+          {"p": "P-2_R-2"},
+          {"p": "P-3_R-3"},
+          {"choose": {"ref": "P-2_R-2", "when": [{"test": "1", "nodes": [{"p": "P-4_R-4"}]}]}}
+        ]
       }
     },
     {
@@ -123,7 +140,7 @@ const PRODUCT: &str = r#"{
             "test": "1",
             "nodes": [
               {"module": {"id": "MD-4_M-19", "def": "MD-4", "args": {"MD-4_A-1": 5}}},
-              {"module": {"id": "MD-4_M-20", "def": "MD-4", "args": {"MD-4_A-1": 7}}}
+              {"module": {"id": "MD-4_M-20", "def": "MD-4", "computed": [{"arg": "MD-4_A-1", "value": 7}]}}
             ]
           }
         ]
@@ -170,7 +187,12 @@ const PRODUCT: &str = r#"{
           "id": "MD-4_CH-1",
           "text": "Relaisausgang",
           "number": 1,
-          "nodes": [{"p": "MD-4_P-18_R-18"}, {"p": "MD-4_P-12_R-12"}, {"p": "MD-4_P-13_R-13"}]
+          "nodes": [
+            {"p": "MD-4_P-18_R-18"},
+            {"p": "MD-4_P-12_R-12"},
+            {"p": "MD-4_P-13_R-13"},
+            {"choose": {"ref": "MD-4_P-12_R-12", "when": [{"test": "1", "nodes": [{"p": "MD-4_P-19_R-19"}]}]}}
+          ]
         }
       }
     ],
@@ -195,6 +217,8 @@ const PRODUCT: &str = r#"{
     "MD-4_P-12_R-12": {"parameter": "MD-4_P-12"},
     "MD-4_P-13_R-13": {"parameter": "MD-4_P-13"},
     "MD-4_P-18_R-18": {"parameter": "MD-4_P-18"},
+    "MD-4_P-19_R-19": {"parameter": "MD-4_P-19"},
+    "P-4_R-4": {"parameter": "P-4"},
     "MD-5_P-50_R-50": {"parameter": "MD-5_P-50"}
   }
 }
@@ -208,7 +232,7 @@ product = "2300"
 application = "M-00FA_A-1050-10-0000"
 mask = "07B0"
 channels = [
-  { key = "allgemein-1", id = "CH-1", number = 1, text = "Allgemein" },
+  { key = "allgemein-1", id = "CH-1", number = 1, text = "Allgemein", label_ref = "P-4_R-4" },
   { key = "relaisausgaenge-1", id = "MD-3_M-18_MI-1_CH-25", number = 25, text = "Relaisausgänge" },
   { key = "relaisausgang-1", id = "MD-4_M-19_MI-1_CH-1", number = 1, text = "Relaisausgang", label_ref = "MD-4_M-19_MI-1_P-18_R-18" },
 ]
@@ -281,7 +305,10 @@ fn test_ignored_overrides_module_enum_label_at_default_is_not_reported() -> Test
 
 #[test]
 fn test_ignored_overrides_module_default_takes_the_base_value_argument() -> TestResult {
-    // `MD-4_M-20` passes 7: its default "Adresse" is 0 + 7.
+    // `MD-4_M-19` passes a literal 5: its default "Adresse" is 0 + 5.
+    let at_default = ignored(&[("a@MD-4_M-19_MI-1_P-13_R-13", "5")])?;
+    assert!(at_default.is_empty(), "{at_default:?}");
+    // `MD-4_M-20` passes a computed 7: its default "Adresse" is 0 + 7.
     let at_default = ignored(&[("a@MD-4_M-20_MI-1_P-13_R-13", "7")])?;
     assert!(at_default.is_empty(), "{at_default:?}");
     let bare = ignored(&[("a@MD-4_M-20_MI-1_P-13_R-13", "0")])?;
@@ -341,7 +368,12 @@ fn test_ignored_overrides_module_channel_label_is_not_reported() -> TestResult {
 #[test]
 fn test_visibility_covers_module_refs() -> TestResult {
     let model = model(&[("t@MD-4_M-19_MI-1_P-12_R-12", "freigegeben")])?;
-    let seen = DeviceAnalysis::new(&model, &products()?, ia()?)?.visibility();
+    let products = products()?;
+    let analysis = DeviceAnalysis::new(&model, &products, ia()?)?;
+    // The application-level visibility keeps to application refs (the
+    // checklist and `show_reached_hidden` read it).
+    assert!(analysis.visibility().keys().all(|k| !k.starts_with("MD-")));
+    let seen = analysis.module_visibility();
     let unreached = seen
         .get("MD-4_M-19_MI-1_P-12_R-12")
         .ok_or("no unreached entry")?;
@@ -356,5 +388,56 @@ fn test_visibility_covers_module_refs() -> TestResult {
         .get("MD-3_M-18_MI-1_P-16_R-16")
         .ok_or("no assign target entry")?;
     assert_eq!(hidden.condition.as_deref(), Some("Betriebsart = Rollladen"));
+    Ok(())
+}
+
+#[test]
+fn test_module_visibility_reads_the_stored_values_of_an_unreached_instance() -> TestResult {
+    // "Treppenhauszeit" sits behind the instance's own "Treppenhausfunktion"
+    // = "freigegeben", which the device stores for the unreached instance.
+    let stored = model(&[
+        ("t@MD-4_M-19_MI-1_P-12_R-12", "freigegeben"),
+        ("z@MD-4_M-19_MI-1_P-19_R-19", "30"),
+    ])?;
+    let seen = DeviceAnalysis::new(&stored, &products()?, ia()?)?.module_visibility();
+    let zeit = seen.get("MD-4_M-19_MI-1_P-19_R-19").ok_or("no entry")?;
+    assert!(!zeit.shown && zeit.on_branch, "{zeit:?}");
+    assert_eq!(zeit.needs.as_deref(), Some("Funktion = 2 x Schalten"));
+    // Without the stored value the branch is not taken in the instance.
+    let unset = model(&[("z@MD-4_M-19_MI-1_P-19_R-19", "30")])?;
+    let seen = DeviceAnalysis::new(&unset, &products()?, ia()?)?.module_visibility();
+    let zeit = seen.get("MD-4_M-19_MI-1_P-19_R-19").ok_or("no entry")?;
+    assert!(!zeit.on_branch, "{zeit:?}");
+    Ok(())
+}
+
+#[test]
+fn test_ignored_overrides_application_channel_label_is_still_reported() -> TestResult {
+    // An application ref the lock names as a channel label, stored under
+    // another key and not shown: reported as before #1050.
+    let got = ignored(&[("text@P-4_R-4", "Hallo")])?;
+    let refs: Vec<&str> = got.iter().map(|i| i.reference.as_str()).collect();
+    assert_eq!(refs, ["P-4_R-4"], "{got:?}");
+    Ok(())
+}
+
+#[test]
+fn test_show_reached_hidden_leaves_module_keys_alone() -> TestResult {
+    let mut model = model(&[])?;
+    let device = &mut model.devices.get_mut(&ia()?).ok_or("no device")?.device;
+    device
+        .parameters
+        .retain(|k, _| !k.ends_with("@MD-3_M-18_MI-1_P-14_R-14"));
+    device.parameters.insert(
+        "hidden@MD-3_M-18_MI-1_P-14_R-14".to_string(),
+        "2".to_string(),
+    );
+    let product = serde_json::from_str::<ProductModel>(PRODUCT)?;
+    assert_eq!(show_reached_hidden(device, &product), 0);
+    assert!(
+        device
+            .parameters
+            .contains_key("hidden@MD-3_M-18_MI-1_P-14_R-14")
+    );
     Ok(())
 }

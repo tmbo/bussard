@@ -656,6 +656,10 @@ struct PageState {
 /// The values an inactive page is enabled with: (ref, value) pairs.
 type EnablingValues = Vec<(String, String)>;
 
+/// A configuration that reaches a module instance the device's does not,
+/// with the instance's index in it ([`Pages::what_if`]).
+type WhatIf = (Rc<DynamicConfig>, usize);
+
 /// The ETS parameter pages of one device: which it shows, and where its
 /// parameters and objects sit. Activity and placement come from one
 /// [`evaluate_dynamic`] with the device's values ([`Evaluated`]); the
@@ -700,6 +704,11 @@ struct Pages<'a> {
     /// Where each `<Module>` element sits, by element id, collected on
     /// first use.
     module_sites: OnceCell<HashMap<&'a str, ModuleSite<'a>>>,
+    /// Per module instance the evaluation does not reach (its key): the
+    /// configuration with the failing conditions in front of it set to
+    /// values that hold, and the instance's index in it, evaluated on first
+    /// use; `None` when that does not reach it either.
+    what_if: RefCell<HashMap<String, Option<WhatIf>>>,
 }
 
 /// Where a `<Module>` element sits (issue #1050).
@@ -906,6 +915,7 @@ impl<'a> Pages<'a> {
             assigns: OnceCell::new(),
             module_reach,
             module_sites: OnceCell::new(),
+            what_if: RefCell::new(HashMap::new()),
         };
         for (i, b) in blocks.iter().enumerate() {
             if !pages.states[i].active && !pages.states[i].parent_inactive {
@@ -1030,7 +1040,7 @@ impl<'a> Pages<'a> {
     /// #159).
     fn failing_gates(&self, gates: &[RefGate]) -> Vec<usize> {
         let by_value: Vec<usize> = (0..gates.len())
-            .filter(|n| !gates[*n].holds(self.evaluated.number(&gates[*n].param_ref_id)))
+            .filter(|n| !gates[*n].holds(self.key_number(&gates[*n].param_ref_id)))
             .collect();
         if !by_value.is_empty() {
             return by_value;
@@ -1051,7 +1061,7 @@ impl<'a> Pages<'a> {
             .map(|r| r.parameter.as_str());
         let active =
             param.is_none_or(|p| !self.placed_params.contains(p) || self.active_params.contains(p));
-        active && gate.holds(self.evaluated.number(&gate.param_ref_id))
+        active && gate.holds(self.key_number(&gate.param_ref_id))
     }
 
     /// How many `<ParameterBlock>` ancestors block `i` has.
@@ -1077,8 +1087,97 @@ impl<'a> Pages<'a> {
     /// The device's value of a parameter ref, rendered as the file writes it.
     fn current(&self, reference: &str) -> Option<String> {
         let def = self.def_of(reference);
-        let raw = self.evaluated.value(reference)?;
+        let raw = self.key_value(reference)?;
         Some(display_value(def, &raw))
+    }
+
+    /// The device's value of a device-form ref ([`Evaluated::value`]); for
+    /// a ref of a module instance the evaluation does not reach, its value
+    /// in that instance once reached ([`Self::what_if`]): the stored value,
+    /// else the default with the instance's arguments (issue #1050).
+    fn key_value(&self, key: &str) -> Option<String> {
+        let (instance, reference) = split_selector(key);
+        match instance {
+            Some(instance) if !self.instance_reached(&instance) => {
+                if let Some((config, m)) = self.what_if(&instance) {
+                    return config.value(self.product, Some(m), &reference);
+                }
+                self.evaluated.overrides.get(key).cloned().or_else(|| {
+                    let args = self.instance_conditions(&instance).map(|(_, args)| args);
+                    crate::dynamic::vendor_default_with_args(self.product, args, &reference)
+                })
+            }
+            _ => self.evaluated.value(key),
+        }
+    }
+
+    /// [`Self::key_value`] as a number, what a `<when>` test reads.
+    fn key_number(&self, key: &str) -> Option<f64> {
+        self.key_value(key)?.trim().parse().ok()
+    }
+
+    /// Whether the evaluation reaches module instance `instance` (its key).
+    fn instance_reached(&self, instance: &str) -> bool {
+        self.evaluated
+            .config
+            .modules
+            .iter()
+            .any(|m| m.id == instance)
+    }
+
+    /// The value that makes `gate` hold: an enum code of its parameter that
+    /// passes, else the first value the test names, else the bound of a
+    /// comparison.
+    fn enabling_value(&self, gate: &RefGate) -> Option<i64> {
+        let def = self.def_of(&gate.param_ref_id);
+        let codes = def.map(enum_codes).unwrap_or_default();
+        enabling_code(gate, &codes).or_else(|| match gate.test {
+            WhenTest::Compare { op, value } => Some(match op {
+                CompareOp::Ne | CompareOp::Gt => value.saturating_add(1),
+                CompareOp::Lt => value.saturating_sub(1),
+                CompareOp::Le | CompareOp::Ge => value,
+            }),
+            _ => None,
+        })
+    }
+
+    /// The configuration that reaches module instance `instance` (its key),
+    /// which the device's configuration does not: the device's values with
+    /// the failing conditions in front of the instance set to values that
+    /// hold, and the instance's index in it (issue #1050). Its values and
+    /// arguments (computed ones too) are those the instance has once
+    /// reached. `None` when that does not reach it.
+    fn what_if(&self, instance: &str) -> Option<WhatIf> {
+        if let Some(done) = self.what_if.borrow().get(instance) {
+            return done.clone();
+        }
+        let found = (|| {
+            let (gates, _) = self.instance_conditions(instance)?;
+            let mut values: EnablingValues = Vec::new();
+            for n in self.failing_gates(&gates) {
+                let v = self.enabling_value(&gates[n])?;
+                values.push((gates[n].param_ref_id.clone(), v.to_string()));
+            }
+            let config = match self.by_values.borrow().get(&values) {
+                Some(done) => Some(Rc::clone(done)),
+                None => None,
+            };
+            let config = config.unwrap_or_else(|| {
+                let mut overrides = self.evaluated.overrides.clone();
+                overrides.extend(values.iter().cloned());
+                let config = Rc::new(evaluate_dynamic(self.product, &overrides));
+                self.by_values
+                    .borrow_mut()
+                    .insert(values, Rc::clone(&config));
+                config
+            });
+            let m = config.modules.iter().position(|m| m.id == instance)?;
+            Some((config, m))
+        })();
+        self.what_if
+            .borrow_mut()
+            .insert(instance.to_string(), found.clone());
+        found
     }
 
     /// The failing conditions of inactive block `i` with the values that
@@ -1476,7 +1575,7 @@ impl<'a> Pages<'a> {
         let holds = |gates: &[RefGate]| {
             gates
                 .iter()
-                .all(|g| g.holds(self.evaluated.number(&g.param_ref_id)))
+                .all(|g| g.holds(self.key_number(&g.param_ref_id)))
         };
         let on_branch = occurrences
             .iter()
@@ -1500,12 +1599,7 @@ impl<'a> Pages<'a> {
                     .map(|n| body[n].clone()),
             );
         }
-        let reached = self
-            .evaluated
-            .config
-            .modules
-            .iter()
-            .any(|m| m.id == instance);
+        let reached = self.instance_reached(&instance);
         let page = occurrences
             .first()
             .and_then(|o| o.blocks.last())
@@ -1524,19 +1618,17 @@ impl<'a> Pages<'a> {
     }
 
     /// The vendor default of a device-form ref (`P-1_R-1`, or a module
-    /// ref by its selector key): in an instance the configuration does not
-    /// reach, with the literal arguments of its `<Module>` (issue #1050).
+    /// ref by its selector key). In an instance the configuration does not
+    /// reach, with the arguments the instance has once reached
+    /// ([`Self::what_if`], computed ones too), else the literal ones of its
+    /// `<Module>` (issue #1050).
     fn default_of(&self, key: &str) -> Option<String> {
         let (instance, reference) = split_selector(key);
         match instance {
-            Some(instance)
-                if !self
-                    .evaluated
-                    .config
-                    .modules
-                    .iter()
-                    .any(|m| m.id == instance) =>
-            {
+            Some(instance) if !self.instance_reached(&instance) => {
+                if let Some((config, m)) = self.what_if(&instance) {
+                    return config.vendor_default(self.product, Some(m), &reference);
+                }
                 let args = self.instance_conditions(&instance).map(|(_, args)| args);
                 crate::dynamic::vendor_default_with_args(self.product, args, &reference)
             }
@@ -2717,15 +2809,33 @@ impl DeviceAnalysis<'_> {
     /// app-relative `ParameterRef` id, with whether the configuration shows
     /// it under the device's values: the page states [`Self::view`] lists,
     /// and the conditions inside each page. A ref on several pages counts as
-    /// shown when one of them shows it. A module instance's ref the
-    /// evaluation reaches or the device stores is keyed by its selector
-    /// (`MD-2_M-3_MI-1_P-23_R-1`), with the conditions in front of its
-    /// instance and in the module body (issue #1050). Empty without a
-    /// product model with pages.
+    /// shown when one of them shows it. Module refs are in
+    /// [`Self::module_visibility`]. Empty without a product model with
+    /// pages.
     pub fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         self.pages
             .as_ref()
             .map(Pages::visibility)
+            .unwrap_or_default()
+    }
+
+    /// [`Self::visibility`] of the module refs the evaluation reaches or
+    /// the device stores, keyed by selector (`MD-2_M-3_MI-1_P-23_R-1`): shown
+    /// when the evaluation places the ref as shown, else what it needs, from
+    /// the conditions in front of its instance's `<Module>` and in the module
+    /// body (issue #1050). A ref no module body places is left out. Empty
+    /// without a product model with pages.
+    pub fn module_visibility(&self) -> BTreeMap<String, RefVisibility> {
+        self.pages
+            .as_ref()
+            .map(|pg| {
+                pg.module_visibilities(
+                    pg.module_reach
+                        .keys()
+                        .chain(pg.entries.keys())
+                        .map(String::as_str),
+                )
+            })
             .unwrap_or_default()
     }
 
@@ -2845,25 +2955,25 @@ pub fn show_reached_hidden(device: &mut Device, product: &ProductModel) -> usize
 }
 
 impl Pages<'_> {
+    /// [`Self::module_visibility`] of `keys` (selector keys; others are
+    /// left out), issue #1050.
+    fn module_visibilities<'k>(
+        &self,
+        keys: impl IntoIterator<Item = &'k str>,
+    ) -> BTreeMap<String, RefVisibility> {
+        keys.into_iter()
+            .filter(|k| k.starts_with("MD-"))
+            .filter_map(|k| Some((k.to_string(), self.module_visibility(k)?)))
+            .collect()
+    }
+
     /// [`DeviceAnalysis::visibility`] of every ref the pages hold, and of
     /// every module ref the evaluation reaches or the device stores, by its
     /// selector key ([`Self::module_visibility`], issue #1050).
     fn visibility(&self) -> BTreeMap<String, RefVisibility> {
         let mut out: BTreeMap<String, RefVisibility> = BTreeMap::new();
-        let module_keys: BTreeSet<&str> = self
-            .module_reach
-            .keys()
-            .chain(self.entries.keys())
-            .map(String::as_str)
-            .filter(|k| k.starts_with("MD-"))
-            .collect();
-        for key in module_keys {
-            if let Some(seen) = self.module_visibility(key) {
-                out.insert(key.to_string(), seen);
-            }
-        }
-        // The application's own pages; a module channel's refs are keyed by
-        // instance, and covered above.
+        // The application's own pages: a module channel's refs are keyed by
+        // instance, see [`Self::module_visibilities`].
         for (i, b) in self.blocks.iter().enumerate() {
             if b.module.is_some() {
                 continue;
@@ -2917,7 +3027,8 @@ impl IgnoredOverride {
 
 /// [`DeviceAnalysis::ignored_overrides`] on the pages `pg` of `device`.
 fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
-    let visibility = pg.visibility();
+    let mut visibility = pg.visibility();
+    visibility.extend(pg.module_visibilities(pg.entries.keys().map(String::as_str)));
     let config = &pg.evaluated.config;
     // The refs whose stored value the evaluation uses without showing them:
     // the source of a reached `<Assign>`, which the image writes and which
@@ -2936,6 +3047,15 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
                 .map(|i| selector_key(Some(&i.id), &p.param_ref_id)),
         })
         .collect();
+    // A module channel's label text parameter, which the lock names and a
+    // file may store under another key (issue #1050).
+    let module_labels: HashSet<&str> = device
+        .lock
+        .channel_labels
+        .values()
+        .map(String::as_str)
+        .filter(|r| r.starts_with("MD-"))
+        .collect();
     let mut out = Vec::new();
     for (mem_key, value) in &device.parameters {
         if crate::files::is_hidden_mem_key(mem_key) {
@@ -2945,7 +3065,7 @@ fn ignored_in(device: &Device, pg: &Pages<'_>) -> Vec<IgnoredOverride> {
             continue;
         };
         // A channel label is the channel's name, never a parameter value.
-        if head == "label" || device.lock.channel_labels.values().any(|l| l == reference) {
+        if head == "label" || module_labels.contains(reference) {
             continue;
         }
         let def = pg.def_of(reference);
