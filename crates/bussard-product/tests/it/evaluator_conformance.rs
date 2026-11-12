@@ -578,8 +578,7 @@ fn test_evaluate_dynamic_repeat_instantiates_allocator_fed_modules() -> TestResu
     let image = bussard_product::compute_dynamic_parameter_image(&app, &BTreeMap::new())?;
     assert_eq!(
         segment_octets(&image, &[0, 1, 16, 17, 20, 21, 32, 33, 36, 37])?,
-        // Octet 0 is unplaced: `00` until the planner fills it (#1061).
-        vec![0x00, 7, 5, 2, 9, 9, 5, 2, 9, 9]
+        vec![0xFF, 7, 5, 2, 9, 9, 5, 2, 9, 9]
     );
     // The objects: the application's 1, each channel's 0 and 1 on its base.
     let mut numbers = Vec::new();
@@ -613,11 +612,10 @@ fn test_evaluate_dynamic_repeat_values_are_keyed_per_instance() -> TestResult {
     .map(|(k, v)| (k.to_string(), v.to_string()))
     .collect();
     let image = bussard_product::compute_dynamic_parameter_image(&app, &values)?;
-    // Channel 1 now has one scene (at 20; 21 is unplaced, `00` until the
-    // planner fills it, #1061).
+    // Channel 1 now has one scene (at 20; 21 keeps the erased fill).
     assert_eq!(
         segment_octets(&image, &[16, 17, 20, 21, 32, 36, 37])?,
-        vec![5, 1, 9, 0x00, 33, 44, 9]
+        vec![5, 1, 9, 0xFF, 33, 44, 9]
     );
     Ok(())
 }
@@ -710,9 +708,8 @@ fn test_evaluate_dynamic_never_shown_steering_parameter_system_b_skips_default_o
         assert!(objects.contains(present), "{present} missing: {objects:?}");
     }
     // "Dummy" is hidden, and the fixture declares
-    // `DownloadInvisibleParameters="None"`: its octet is unplaced, `00`
-    // until the planner fills it (#1061).
-    assert_eq!(dummy_octet(&app)?, Some(0x00));
+    // `DownloadInvisibleParameters="None"`: its octet keeps the template.
+    assert_eq!(dummy_octet(&app)?, Some(0xFF));
     Ok(())
 }
 

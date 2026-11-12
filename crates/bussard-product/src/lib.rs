@@ -73,12 +73,11 @@ pub use extract::{Extracted, extract_from_project};
 pub use fetch::{DownloadConsent, MAX_DOWNLOAD_BYTES, Verified, fetch_entry};
 use hardware::HardwareCatalog;
 pub use image::{
-    ERASED_FILL, ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyParameters,
-    PropertyValues, StaticSlot, canonical_parameter_value, compose_property_value,
-    compute_dynamic_parameter_image, compute_parameter_image, compute_parameter_image_placed,
-    compute_parameter_image_placed_with, compute_property_values, decode_parameter_value,
-    dynamic_parameter_slots, fill_unplaced_octets, hidden_slot_value, module_argument,
-    resolve_parameter_key, static_parameter_slots, unplaced_fill, uses_dynamic_image,
+    ParameterSlot, PlacedOctets, PropertyObjectRef, PropertyParameters, PropertyValues, StaticSlot,
+    canonical_parameter_value, compose_property_value, compute_dynamic_parameter_image,
+    compute_parameter_image, compute_parameter_image_placed, compute_parameter_image_placed_with,
+    compute_property_values, decode_parameter_value, dynamic_parameter_slots, hidden_slot_value,
+    module_argument, resolve_parameter_key, static_parameter_slots, uses_dynamic_image,
     write_parameter_value,
 };
 pub use import::{ImportOptions, derive_zip_password, import, import_with};

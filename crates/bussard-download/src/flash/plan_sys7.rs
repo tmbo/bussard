@@ -281,19 +281,12 @@ pub(super) fn plan_flash_sys7(
     // Resolve parameter images up front: each parameter segment's <Data> is only
     // the vendor's template, and the image streamed for it is that template with
     // the parameters laid over it.
-    let (mut param_images, mut placed) =
+    let (param_images, mut placed) =
         bussard_product::compute_parameter_image_placed_with(app, overrides, base_offsets, memo)
             .map_err(|e| PlanError::UnresolvableImage {
                 step: 0,
                 reason: format!("computing the parameter image: {e}"),
             })?;
-    // A System 7 program allocates no relative segment (`LdCtrlRelSegment` is
-    // System B), so a data-less relative segment here has no allocation that
-    // binds it and keeps the erased fill (issues #377, #1061).
-    for (seg_id, image) in param_images.iter_mut() {
-        let fill = bussard_product::unplaced_fill(None);
-        bussard_product::fill_unplaced_octets(app, seg_id, image, placed.get(seg_id), fill);
-    }
 
     // The data-driven mask profile: from `HawkConfigurationData` when the import
     // path supplied one, else the corpus-default fallback (`[system7-spec §2.4]`).
