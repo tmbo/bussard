@@ -221,6 +221,10 @@ pub enum DeviceStatus {
     Skipped(String),
     /// The device could not be planned or written, for the stated reason.
     Failed(String),
+    /// Apply only: the device has changes but is not on the supported list
+    /// and the override was not given (issue #1089). A run with one is not
+    /// ok, and `--resume` tries it again.
+    Refused(String),
 }
 
 impl DeviceStatus {
@@ -233,6 +237,7 @@ impl DeviceStatus {
             DeviceStatus::Unchanged => "unchanged",
             DeviceStatus::Skipped(_) => "skipped",
             DeviceStatus::Failed(_) => "failed",
+            DeviceStatus::Refused(_) => "refused",
         }
     }
 
@@ -247,7 +252,9 @@ impl DeviceStatus {
     /// The reason text for a skip or a failure.
     pub fn detail(&self) -> Option<&str> {
         match self {
-            DeviceStatus::Skipped(d) | DeviceStatus::Failed(d) => Some(d),
+            DeviceStatus::Skipped(d) | DeviceStatus::Failed(d) | DeviceStatus::Refused(d) => {
+                Some(d)
+            }
             _ => None,
         }
     }
@@ -260,6 +267,7 @@ impl DeviceStatus {
             DeviceStatus::Unchanged => "unchanged".to_string(),
             DeviceStatus::Skipped(d) => format!("skipped: {d}"),
             DeviceStatus::Failed(d) => format!("failed: {d}"),
+            DeviceStatus::Refused(d) => format!("refused: {d}"),
         }
     }
 }
@@ -339,6 +347,10 @@ pub struct LineOutcome {
     pub fingerprint: Option<String>,
     /// The pre-write backup, when one was written.
     pub backup: Option<PathBuf>,
+    /// How the device passed the support gate (issue #1089); in
+    /// [`LineMode::Plan`], `Unsupported` for a device an apply refuses
+    /// without the override.
+    pub support: Option<crate::support::SupportStatus>,
 }
 
 /// Resolves a device's KNX Data Secure material; `Err` is the reason.
@@ -371,6 +383,9 @@ pub struct LineVisit<'a> {
     /// no longer produces its fingerprint, or that the plan did not read, is
     /// failed without a write. `None` (the CLI) writes what the read shows.
     pub expected: Option<&'a BTreeMap<IndividualAddress, String>>,
+    /// Whether a device not on the supported list is written anyway (issue
+    /// #1089): the CLI's `--allow-unsupported`, `allow_unsupported` over MCP.
+    pub allow_unsupported: bool,
 }
 
 /// Plans (and, in [`LineMode::Apply`], writes) one device.
@@ -390,6 +405,7 @@ pub async fn visit_device(
         report: None,
         fingerprint: None,
         backup: None,
+        support: None,
     };
     let status = visit(ctx, target, note, &mut outcome).await;
     outcome.status = status;
@@ -409,7 +425,6 @@ async fn visit(
         Ok(desired) => desired,
         Err(reason) => return DeviceStatus::Skipped(reason.clone()),
     };
-
     // KNX Data Secure (issue #71): one key per device, since a keyring holds one
     // per address. A device the keyring does not cover fails alone.
     let material = match (ctx.material)(target.address) {
@@ -555,9 +570,46 @@ async fn visit(
     if !tables_change && reload.is_none() {
         return DeviceStatus::Unchanged;
     }
+    // The support gate (issue #1089), only for a device with something to
+    // write, judged on the application its product data selects: a plan says
+    // an apply would refuse it, an apply refuses it without the override.
+    let application = product.as_ref().map(|p| p.app_id.as_str());
+    let device = model.devices.get(&target.address).map(|d| &d.device);
+    let gate = crate::support::authorize(
+        service.config(),
+        target.address,
+        device,
+        application,
+        ctx.allow_unsupported && ctx.mode == LineMode::Apply,
+    );
     if ctx.mode == LineMode::Plan {
+        if let Err(refusal) = &gate {
+            out.support = Some(crate::support::SupportStatus::Unsupported);
+            note.say(&format!(
+                "{}; an apply refuses it without the override",
+                refusal.sentence()
+            ));
+        }
         return DeviceStatus::Changes(changes);
     }
+    let grant = match gate {
+        Ok(grant) => {
+            out.support = Some(grant.status());
+            if grant.forced()
+                && let Some(line) = grant.plan_line()
+            {
+                note.say(&line);
+            }
+            grant
+        }
+        Err(refusal) => {
+            out.support = Some(crate::support::SupportStatus::Unsupported);
+            return DeviceStatus::Refused(format!(
+                "{}; nothing was written. Pass the override to write it",
+                refusal.sentence()
+            ));
+        }
+    };
 
     // The plan the human approved binds this device (`knx_apply_device` with
     // `line`): a device that moved since is not written.
@@ -627,6 +679,7 @@ async fn visit(
         high_water: secure_seq.clone(),
         options: L4Options::secured(source, tool_key.clone(), secure_seq.clone()),
         seed: None,
+        support: &grant,
     };
     let (written, _) = crate::program::apply::write_tables(&request, false, &mut ()).await;
     let backed_up = |why: &str| format!("{why}; pre-state backed up to {}", backup_path.display());
@@ -917,6 +970,10 @@ pub struct LineDevice {
     pub notes: Vec<String>,
     /// The pre-write backup.
     pub backup: Option<String>,
+    /// `supported`, `unsupported` or `forced` (issue #1089), when the
+    /// device was visited.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportStatus>,
 }
 
 impl LineDevice {
@@ -934,6 +991,7 @@ impl LineDevice {
             sentences: sentences(model, o),
             notes: notes.to_vec(),
             backup: o.backup.as_ref().map(|p| p.display().to_string()),
+            support: o.support,
         }
     }
 }
@@ -983,6 +1041,8 @@ pub struct LineTotals {
     pub skipped: usize,
     /// Devices that failed.
     pub failed: usize,
+    /// Devices refused as not on the supported list (issue #1089).
+    pub refused: usize,
 }
 
 impl LineTotals {
@@ -995,6 +1055,7 @@ impl LineTotals {
             unchanged: count("unchanged"),
             skipped: count("skipped"),
             failed: count("failed"),
+            refused: count("refused"),
         }
     }
 }
@@ -1060,8 +1121,8 @@ impl LineReport {
         let totals = LineTotals::of(&outcomes);
         let plan = mode == LineMode::Plan;
         LineReport {
-            ok: totals.failed == 0,
-            verified: (!plan).then_some(totals.failed == 0),
+            ok: totals.failed == 0 && totals.refused == 0,
+            verified: (!plan).then_some(totals.failed == 0 && totals.refused == 0),
             reason: None,
             line: line.to_string(),
             mode: mode.verb().to_string(),
@@ -1182,6 +1243,29 @@ mod tests {
             DeviceStatus::Skipped("unsupported mask 0012 (System 1)".to_string()).label(),
             "skipped: unsupported mask 0012 (System 1)"
         );
+    }
+
+    #[test]
+    fn test_line_totals_refused_device_makes_the_run_not_ok() -> Result<(), String> {
+        let ia: IndividualAddress = "1.1.7".parse().map_err(|_| "address".to_string())?;
+        let outcome = LineOutcome {
+            address: ia,
+            name: "d".into(),
+            mask: Some(0x07B0),
+            status: DeviceStatus::Refused("not on the list".into()),
+            report: None,
+            fingerprint: None,
+            backup: None,
+            support: Some(crate::support::SupportStatus::Unsupported),
+        };
+        assert_eq!(outcome.status.key(), "refused");
+        assert_eq!(outcome.status.detail(), Some("not on the list"));
+        let totals = LineTotals::of(std::slice::from_ref(&outcome));
+        assert_eq!((totals.refused, totals.failed, totals.skipped), (1, 0, 0));
+        let model = Model::default();
+        let report = LineReport::new(&model, "1.1", LineMode::Apply, "gw", &[(outcome, vec![])]);
+        assert!(!report.ok);
+        Ok(())
     }
 
     #[test]

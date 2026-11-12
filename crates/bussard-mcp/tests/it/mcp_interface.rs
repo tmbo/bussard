@@ -61,6 +61,13 @@ struct Harness {
 
 impl Harness {
     async fn start(ip: [u8; 4]) -> anyhow::Result<Harness> {
+        Harness::start_on(ip, false).await
+    }
+
+    /// [`Harness::start`]; with `remote` the programming tier believes it
+    /// writes through the non-loopback `192.0.2.10:3671` (opted in) while its
+    /// bus is wired to the loopback mock, so no real gateway is contacted.
+    async fn start_on(ip: [u8; 4], remote: bool) -> anyhow::Result<Harness> {
         let gateway = MockGateway::builder()
             .channel(CHANNEL)
             .keep_serving()
@@ -77,22 +84,33 @@ impl Harness {
             std::env::set_var(bussard_mgmt::probe::ADDRESS_PROBE_MS_ENV, "200");
         }
         let connection = ConnectionConfig::tunnel(gateway.addr());
+        let tier_connection = if remote {
+            ConnectionConfig::tunnel(std::net::SocketAddrV4::new(
+                std::net::Ipv4Addr::new(192, 0, 2, 10),
+                3671,
+            ))
+        } else {
+            connection.clone()
+        };
         let config = McpConfig {
             dir: dir.path().to_path_buf(),
-            connection: connection.clone(),
+            connection: tier_connection,
             passive: false,
             allow_writes: false,
             no_model_edits: false,
             capture_db: None,
             allow_programming: true,
-            allow_remote_gateway: false,
+            allow_remote_gateway: remote,
             plan_ttl: Duration::from_secs(600),
             keyring: None,
             allow_home_assistant: false,
             viz_listen: None,
         };
         let state = bussard_mcp::build_state(&config)?;
-        let service = bussard_service::BusService::open(connection, config.write_policy())?;
+        let service = bussard_service::BusService::open(
+            connection,
+            bussard_service::WritePolicy::transmit(false),
+        )?;
         if !service.wait_connected(Duration::from_secs(5)).await {
             anyhow::bail!("the mock tunnel did not come up");
         }
@@ -356,5 +374,38 @@ async fn test_knx_interface_secure_plans_and_checks_the_digest() -> anyhow::Resu
     let store = bussard_project::KeyStore::load(h.dir.path(), "synthetic-store-password")?
         .ok_or_else(|| anyhow::anyhow!("no key store"))?;
     assert!(store.devices[&"1.1.200".parse()?].tool_key.is_none());
+    h.stop().await
+}
+
+/// An IP interface's KNXnet/IP parameter object is not gated by the
+/// supported-device list in this version (#1093): on a real gateway its
+/// write goes through although its application is not on the list, as
+/// `bussard apply` does.
+#[tokio::test]
+async fn test_knx_apply_device_writes_an_interface_on_a_real_gateway_ungated() -> anyhow::Result<()>
+{
+    let h = Harness::start_on([192, 168, 1, 74], true).await?;
+    let edit = h
+        .call(
+            "knx_set_interface",
+            json!({"address": "1.1.200", "friendly_name": "Bocklisch Beta"}),
+        )
+        .await?;
+    assert_eq!(edit["ok"], true, "{edit}");
+    let plan = h
+        .call("knx_plan_device", json!({"address": "1.1.200"}))
+        .await?;
+    let digest = plan["plan_digest"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("no digest: {plan}"))?
+        .to_string();
+    let applied = h
+        .call(
+            "knx_apply_device",
+            json!({"address": "1.1.200", "plan_digest": digest}),
+        )
+        .await?;
+    assert!(applied["code"].is_null(), "{applied}");
+    assert_eq!(applied["ok"], true, "{applied}");
     h.stop().await
 }

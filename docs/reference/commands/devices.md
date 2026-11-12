@@ -260,13 +260,15 @@ langzeitbetrieb.listen = ["0/1/3"]   # CWU Langzeitbetrieb, Jalousie 1, 1.008
 | `<ADDRESS>` | | The device, e.g. `1.1.47`. |
 | `[CHANNEL]` | | The channel or page to list in detail (its handle, id or number, or a page handle), or `device` for the device-level `[parameters]` and `[links]`. |
 | `--toml` | off | Print the paste-ready device-file TOML instead of the table. |
-| `--json` | off | Emit the view as JSON (`channels`, `device_level`, `blocks`, `inactive_channels`, `summary`, `scope` with `parameters` and `objects`, `notes`). |
+| `--json` | off | Emit the view as JSON (`channels`, `device_level`, `blocks`, `inactive_channels`, `summary`, `scope` with `parameters` and `objects`, `notes`, and `support`, the supported-device verdict). |
+| `--supported` | off | List bussard's [supported devices](../../explanation/device-support.md#supported-devices) instead of a device: application, id, evidence and product. With `--json`, `supported` holds each entry with its `note`. |
 
 Behaviour:
 
 - Without a channel it lists the channels: the handle the file uses (`[channel.<handle>]`), the vendor's number and text, your name for it, and how many parameters and objects each has.
 - With a channel it lists that channel's parameters (key, current value, the choices or the range, whether it is at the vendor default, the vendor's text) and objects (key, number, text and function, DPT, flags, what it sends and listens on).
 - Without product data it says so and lists what the lock has.
+- The last line says whether the device's application is on the list of supported devices, and why: `supported (capture): M-0004_A-20DE-22, Jung 230021SU switch actuator`. A device not on it reads, but `flash`, `apply`, `restore` and `replace` refuse to write it on a real gateway without `--allow-unsupported`.
 - An application without channels of its own (none, or one generic channel) is also listed by ETS parameter page, in ETS order, with a handle per page.
 - A page the configuration does not show is marked `inactive`, with the parameters that enable it (outermost first, each with the value that shows the page and its default) and the objects it would show.
 - The inactive marker says how the change reaches the device: a page that shows com-objects needs `bussard flash <ia>`; one that does not is pushed with `bussard apply <ia>` or `knx_apply_device`.

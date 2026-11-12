@@ -79,6 +79,9 @@ fn run(args: &DescribeArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
         bussard_service::describe::session_keys(model.as_ref(), target, tool_key_source)
     })?;
     let config = resolve_config(model.as_ref(), &overrides)?;
+    // The supported-device verdict on this gateway (issue #1089).
+    let support =
+        bussard_service::support::verdict_at(model.as_ref(), target, None).view_on(&config);
     // Device facts live next to the model; without one they are read each time.
     let mut facts = crate::conn_cmd::facts_cache(dir, model.is_some(), g.refresh_facts);
     // Authorize (free access) as ETS does before configuration access (issue
@@ -150,6 +153,10 @@ fn run(args: &DescribeArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             ));
         }
         (Ok(_), None) => anyhow::bail!("{target}: the describe read no device descriptor"),
+    };
+    let report = bussard_service::describe::DescribeReport {
+        support: report.support.map(|_| support),
+        ..report
     };
     if json {
         crate::output::report(&report)?;
@@ -258,6 +265,15 @@ fn render_text(report: &DescribeReport, name: Option<&str>, style: Style) -> Str
             style.warn(&line)
         } else {
             line
+        };
+        out.push_str(&format!("  {line}\n"));
+    }
+    if let Some(support) = &report.support {
+        let line = support.line();
+        let line = if support.is_supported() {
+            line
+        } else {
+            style.warn(&line)
         };
         out.push_str(&format!("  {line}\n"));
     }

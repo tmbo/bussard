@@ -286,6 +286,9 @@ fn flash_reaches_loaded_against_thelsing_knx_linux_ip() -> Result<(), String> {
     // non-existent model dir means no parameter overrides (vendor defaults).
     // `--yes` confirms non-interactively; `--bcu-key FFFFFFFF` presents the
     // free-access key (harmless if the device does not gate on it).
+    // `--allow-unsupported`: the interop device sits behind a multicast
+    // (non-loopback) gateway and its demo application is not on the
+    // supported list, so the support gate (#1089) would refuse the write.
     let model_dir = out_dir.path().join("no-model");
     let (ok, out, err) = bussard(&[
         "flash",
@@ -295,6 +298,7 @@ fn flash_reaches_loaded_against_thelsing_knx_linux_ip() -> Result<(), String> {
         "--dir",
         model_dir.to_str().ok_or("non-UTF-8 path")?,
         "--yes",
+        "--allow-unsupported",
         "--bcu-key",
         "FFFFFFFF",
     ])

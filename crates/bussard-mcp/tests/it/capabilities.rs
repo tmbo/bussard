@@ -1500,9 +1500,20 @@ async fn test_read_tools_technical_is_the_old_payload_and_the_default_is_smaller
         if let Some(channel) = channel {
             args["channel"] = json!(channel);
         }
-        let plain = call(&client, "knx_show_device", args.clone()).await?;
+        let mut plain = call(&client, "knx_show_device", args.clone()).await?;
+        // The supported-device verdict (issue #1089) names the application
+        // on purpose, in both forms; the rest of the plain view drops it.
+        let plain_support = plain.as_object_mut().and_then(|m| m.remove("support"));
+        assert!(
+            plain_support.is_some_and(|s| s["application"].is_string()),
+            "{ia}"
+        );
         args["technical"] = json!(true);
-        let technical = call(&client, "knx_show_device", args).await?;
+        let mut technical = call(&client, "knx_show_device", args).await?;
+        // The supported-device verdict (issue #1089) is the one field added
+        // since; the rest is the old payload.
+        let support = technical.as_object_mut().and_then(|m| m.remove("support"));
+        assert!(support.is_some_and(|s| s["status"].is_string()), "{ia}");
         assert_eq!(
             technical,
             show_device_before(root, ia, channel)?,

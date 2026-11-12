@@ -198,6 +198,7 @@ impl BussardMcp {
         address: &str,
         backup: Option<&str>,
         digest: Option<&str>,
+        allow_unsupported: bool,
     ) -> Result<Value, String> {
         let target = super::parse_address(address)?;
         let (tier, _, gateway) = self.programming_preflight()?;
@@ -211,6 +212,20 @@ impl BussardMcp {
             let plan = self.tables_plan_json(tier, target, &file, &gateway, &planned);
             return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
+        // The supported-device gate (issue #1089) before the job: the digest
+        // stays valid for the override.
+        if let Some(unsupported) = tier.table_restores.get(digest) {
+            let model = self.state().model.current();
+            if let Err(refused) = super::support::gate(
+                &tier.connection,
+                &model,
+                target,
+                None,
+                (allow_unsupported, unsupported),
+            ) {
+                return Ok(refused.answer(&model, true));
+            }
+        }
         let digest = digest.to_string();
         self.run_write(
             Subject::Device(target),
@@ -218,7 +233,9 @@ impl BussardMcp {
             move |me, job, gate| async move {
                 let tier = me.tier()?;
                 me.on_bus(tier, async {
-                    let prepared = me.tables_preflight(tier, target, &file, &digest).await?;
+                    let prepared = me
+                        .tables_preflight(tier, target, &file, &digest, allow_unsupported)
+                        .await?;
                     let record =
                         crate::jobs::record_file(&prepared.dir, prepared.snapshot.as_deref());
                     gate.pass(&prepared.result, record);
@@ -342,10 +359,14 @@ impl BussardMcp {
         let mut approval = Approval::question((!noop).then(|| {
             format!("restore the link tables of {target} from {name} through {gateway}?")
         }));
+        let model = self.state().model.current();
+        // A table restore writes no application image: the device's own
+        // application is judged (issue #1089).
+        let support = bussard_service::support::verdict_at(Some(&model), target, None);
         if !noop {
             let subject = format!("{target} from {}", file.display());
             tier.table_restores
-                .insert(planned.digest.clone(), subject, ());
+                .insert(planned.digest.clone(), subject, !support.is_supported());
             approval.plan_digest = Some(planned.digest.clone());
             approval.expires_at =
                 Some(tier.table_restores.expires_at(std::time::SystemTime::now()));
@@ -373,6 +394,7 @@ impl BussardMcp {
             resulting_association_count: report.resulting_association_count,
             security_object: SecurityObject::of(planned.security.as_ref(), &planned.desired, noop),
             notes,
+            support: Some(support.view_on(&tier.connection)),
             approval,
         }
     }
@@ -385,6 +407,7 @@ impl BussardMcp {
         target: IndividualAddress,
         file: &Path,
         digest: &str,
+        allow_unsupported: bool,
     ) -> Result<Prepared, String> {
         let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
@@ -392,8 +415,18 @@ impl BussardMcp {
         let again = "call knx_restore_tables without plan_digest, show the plan to the human and \
                      ask again";
         // One digest, one write: consumed whatever the fresh read says.
-        tier.table_restores
+        let unsupported = tier
+            .table_restores
             .take(digest, subject, "table-restore plan", again)?;
+        // The supported-device gate (issue #1089), before the bus.
+        let grant = super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            target,
+            None,
+            (allow_unsupported, unsupported),
+        )
+        .map_err(|refused| refused.reason())?;
         let planned = self.plan_tables(target, file).await;
         let planned = planned?;
         if planned.digest != digest {
@@ -429,6 +462,7 @@ impl BussardMcp {
             restored_from: Some(file.display().to_string()),
             backup: Some(backup_path.clone()),
             snapshot: snapshot.clone(),
+            support: Some(grant.status()),
             ..WriteOutcome::new(target)
         };
         Ok(Prepared {
@@ -452,6 +486,7 @@ impl BussardMcp {
             flash: None,
             result,
             origin: Origin::Backup,
+            support: grant,
         })
     }
 }

@@ -45,6 +45,10 @@ pub(super) struct LinePlan {
     model: String,
     /// Each device's fingerprint as the plan read it.
     devices: BTreeMap<IndividualAddress, String>,
+    /// Whether the plan reported a device an apply refuses as not on the
+    /// supported list (issue #1089): only then does `allow_unsupported`
+    /// count.
+    unsupported: bool,
 }
 
 /// The line as a job's address: the line coupler's `area.line.0`.
@@ -135,7 +139,9 @@ impl BussardMcp {
         model: &Model,
         targets: &[LineTarget],
         mode: LineMode,
-        expected: Option<&BTreeMap<IndividualAddress, String>>,
+        // The write's planned fingerprints and whether the supported-device
+        // override counts (issue #1089).
+        write: Option<(&BTreeMap<IndividualAddress, String>, bool)>,
     ) -> Result<Vec<(LineOutcome, Vec<String>)>, String> {
         let (_, service, _) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
@@ -151,7 +157,8 @@ impl BussardMcp {
             material: &material,
             tunnel: &tunnel,
             on_parse: None,
-            expected,
+            expected: write.map(|(expected, _)| expected),
+            allow_unsupported: write.is_some_and(|(_, allow)| allow),
         };
         let total = targets.len();
         let mut outcomes = Vec::with_capacity(total);
@@ -217,6 +224,9 @@ impl BussardMcp {
             let plan = LinePlan {
                 model: model_side.clone(),
                 devices,
+                unsupported: visited.iter().any(|(o, _)| {
+                    o.support == Some(bussard_service::support::SupportStatus::Unsupported)
+                }),
             };
             tier.line_plans
                 .insert(digest.clone(), format!("line {line_text}"), plan);
@@ -242,7 +252,12 @@ impl BussardMcp {
     /// digest, the model, the validation gate, the audit snapshot) answers in
     /// the call; the device writes continue in the server, holding the bus
     /// lock and the warm slot throughout, as the device form's write does.
-    pub(super) async fn apply_line(&self, line: &str, digest: &str) -> Result<Value, String> {
+    pub(super) async fn apply_line(
+        &self,
+        line: &str,
+        digest: &str,
+        allow_unsupported: bool,
+    ) -> Result<Value, String> {
         let parsed = parse_line(line).map_err(|e| e.to_string())?;
         let at = line_address(parsed)?;
         let text = format!("{}.{}", parsed.0, parsed.1);
@@ -259,8 +274,12 @@ impl BussardMcp {
                 let record = crate::jobs::record_file(&me.state().dir, snapshot.as_deref());
                 gate.pass(&report, record);
                 let mode = LineMode::Apply;
-                let expected = Some(&planned.devices);
-                let visited = me.visit_line(tier, &job, &model, &targets, mode, expected);
+                // The override counts only with a plan that reported an
+                // unsupported device (issue #1089); without it each such
+                // device is skipped as refused.
+                let allow = allow_unsupported && planned.unsupported;
+                let write = Some((&planned.devices, allow));
+                let visited = me.visit_line(tier, &job, &model, &targets, mode, write);
                 match visited.await {
                     Err(reason) => {
                         report.ok = false;
@@ -388,6 +407,7 @@ mod tests {
             report: None,
             fingerprint: Some(fingerprint.into()),
             backup: None,
+            support: None,
         };
         let a = line_digest((1, 1), "m", &[outcome("x")]);
         assert_ne!(a, line_digest((1, 1), "m", &[outcome("y")]));

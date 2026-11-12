@@ -83,6 +83,14 @@ pub(crate) struct CommissionArgs {
     /// escape hatch. Prefer `--keyring` for a real installation.
     #[arg(long, value_name = "HEX", conflicts_with = "keyring")]
     tool_key: Option<String>,
+    /// With `--flash` or `--apply`: write devices whose application program
+    /// is not on bussard's list of supported devices (`bussard device
+    /// --supported`). Without it such a device is left unassigned and
+    /// reported as failed; the others go on. A loopback gateway (a
+    /// simulator) is never refused.
+    // Issue #1089.
+    #[arg(long)]
+    allow_unsupported: bool,
 }
 
 impl Run for CommissionArgs {
@@ -235,6 +243,7 @@ fn run(options: &CommissionArgs, g: &Resolved) -> anyhow::Result<ExitCode> {
             &config,
             &target,
             products.get(&target.address).cloned(),
+            model.devices.get(&target.address).map(|d| &d.device),
             options,
             g,
         );
@@ -309,11 +318,34 @@ fn commission_one(
     config: &bussard_service::transport::ConnectionConfig,
     target: &Target,
     product: Option<PathBuf>,
+    device: Option<&bussard_model::schema::Device>,
     options: &CommissionArgs,
     g: &Resolved,
 ) -> (Outcome, Option<CommissionDevice>) {
     let (dir, overrides) = (g.dir(), &g.mgmt());
     let fail = |detail: String| (Outcome::failed(target, detail), None);
+    // The supported-device list (issue #1089), for a device this run writes,
+    // before its address is assigned: a refused device is left unassigned
+    // and reported, the others go on. `flash` and `apply` reuse the grant.
+    let support = if options.flash || options.apply {
+        match crate::support_gate::authorize(
+            config,
+            target.address,
+            (device, None),
+            options.allow_unsupported,
+            None,
+        ) {
+            Ok(grant) => Some(grant),
+            Err(err) => {
+                return fail(format!(
+                    "refused, nothing was assigned: {}",
+                    one_line(&format!("{err:#}"))
+                ));
+            }
+        }
+    } else {
+        None
+    };
 
     // The bus half: wait for the button, read the identity, write the address.
     let assigned = {
@@ -370,6 +402,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
+            support: support.clone(),
             ..FlashArgs::default()
         }
         .run(&g.step());
@@ -388,6 +421,7 @@ fn commission_one(
             tool_key: ToolKey {
                 tool_key: options.tool_key.clone(),
             },
+            support: support.clone(),
             ..ApplyArgs::default()
         }
         .run(&g.step());

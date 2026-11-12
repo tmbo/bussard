@@ -131,6 +131,7 @@ The output above is illustrative: the plan is the one [`plan`](#bussard-plan-add
 | `--tool-key <HEX>` | | The raw 32-hex-character tool key, for a simulator or bench device. Conflicts with `--keyring`. |
 | `--secure-sender <IA>` | off | Single-device mode, Data Secure: add this address (bussard's tunnel address) with sequence 0 to the security individual address table (PID 54), as for `flash`. Conflicts with `--line`. |
 | `--allow-self-reconfigure` | off | A KNX IP interface (see [KNX IP interfaces](#knx-ip-interfaces)): write a change of its IP assignment, static address set or tunnel addresses although bussard tunnels through that interface. The tunnel drops (or, for tunnel addresses, may drop) when the interface applies it. Conflicts with `--line`. |
+| `--allow-unsupported` | off | Write a device (every device of the line with `--line`) although its application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Back it up first. A loopback gateway is never refused. The history record says `support: forced`. |
 
 Behaviour:
 
@@ -167,11 +168,12 @@ Behaviour:
 | `unchanged` | The device already matches the project. |
 | `skipped: <reason>` | An unsupported mask, or no links in the project. |
 | `failed: <reason>` | The device could not be read or written. |
+| `refused: <reason>` | `apply`: the device has changes, but its application program is not on the [list of supported devices](../../explanation/device-support.md#supported-devices) and `--allow-unsupported` was not given. Nothing was written. A device with nothing to write is `unchanged`, whatever the list says. |
 
-- Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed.
+- Neither a skip nor a failure stops the run. The exit code is non-zero if any device failed or was refused.
 - `apply --line` asks one confirmation for the whole run, naming the resolved gateway and the device count. Each device then gets what `apply <ADDRESS>` does: plan, back up, write, verify.
-- Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed devices are retried. A run with no failures deletes the file.
-- `--json` prints (schema 2) `{ok, verified, line, mode, gateway, noop, devices: [{address, name, mask, system_type, status, changes, detail, verified, sentences, notes, backup}], total, changed, unchanged, skipped, failed, sentences, state_file, planned_at}`, the object `knx_plan_device` and `knx_apply_device` with `line` return; `verified` is there for `apply`, `noop`, `sentences` and `planned_at` for `plan`, and `state_file` when the run left one behind.
+- Each outcome is written to `<dir>/captures/apply-line-<line>.json` as it happens. After a tunnel drop, a killed process or Ctrl-C, `--resume` reads that file and skips the finished devices without any bus traffic; failed and refused devices are retried, so `apply --line --resume --allow-unsupported` writes the refused ones. A run with no failures deletes the file.
+- `--json` prints (schema 2) `{ok, verified, line, mode, gateway, noop, devices: [{address, name, mask, system_type, status, changes, detail, verified, sentences, notes, backup}], total, changed, unchanged, skipped, failed, refused, sentences, state_file, planned_at}`, the object `knx_plan_device` and `knx_apply_device` with `line` return; `verified` is there for `apply`, `noop`, `sentences` and `planned_at` for `plan`, and `state_file` when the run left one behind.
 
 ## `bussard flash <ADDRESS>`
 
@@ -210,6 +212,7 @@ The pre-flight report leads with one line per parameter the flash changes, named
 | `--dry-run` | off | Build and print the pre-flight plan against the application's own mask, then stop. No gateway is resolved and no connection is opened, so it works with no gateway configured. |
 | `--dump-images <DIR>` | | With `--dry-run`: write `plan.json` and the exact memory images the flash would stream (one `.bin` each, plus the table images) into `DIR`, for offline comparison with an ETS download of the same device. |
 | `--resident <FILE>` | | With `--dry-run`: plan against a recorded device state instead of no device: the application objects' load states, the application id and the MCB entries, as JSON (`knxtrace image` writes `resident.json` from an ETS capture). The plan then takes the shape a live flash takes on that device: the `par` load procedure for a device holding this application, and no re-load of an object whose image already matches. |
+| `--allow-unsupported` | off | Write the device although its application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Back it up first. A loopback gateway is never refused. The history record says `support: forced`. |
 | `-v` | off | Show the memory-level plan (the step trace) and the raw override keys, and end with the wall-clock time per phase (pre-flight, download, restart and verification) plus the reboot readiness per restart. |
 
 Behaviour:
@@ -415,6 +418,7 @@ The summary table lists each device as `commissioned`, `present` or `failed: <re
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--json` | off | Emit the summary as JSON (schema 2, the result of a `knx_commission_line` job without its envelope: `ok`, `step`, `line`, `gateway`, `stopped`, `reason`, `devices` (each `address`, `name`, `floor`, `room`, `order_number`, `status`, `detail`, `label`, and for a device whose address was written `step`, `from`, `identified` and `readback`), `labels`, `total`, `commissioned`, `present`, `failed`, `not_reached`, `labels_file`); label lines then go to stderr and into each device's `label` field. |
 | `--keyring <FILE>` / `--tool-key <HEX>` | | KNX Data Secure tool key for `--flash` and `--apply`. |
+| `--allow-unsupported` | off | With `--flash` or `--apply`: write devices whose application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Without it such a device is checked before its address is assigned, left unassigned and reported as failed; the other devices are commissioned and the run exits non-zero. |
 
 Behaviour:
 
@@ -482,6 +486,7 @@ $ bussard restore --parameters knx/captures/backups/parameters/<ia>-<unix time>.
 | `--yes` | off | Skip the confirmation prompt. Without a terminal the command is refused unless this is given. |
 | `--keyring <FILE>` | the key store | KNX Data Secure tool keys, as for `apply`; the security object is rewritten with the tables. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
+| `--allow-unsupported` | off | Write the device although its application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Back it up first. A loopback gateway is never refused. The history record says `support: forced`. |
 
 Behaviour:
 
@@ -531,6 +536,7 @@ The steps:
 | `--bcu-key <HEX>` | free access | BCU key for the flash step. |
 | `--keyring <FILE>` | the key store | KNX Data Secure tool keys for the flash and apply steps. |
 | `--tool-key <HEX>` | | A raw 32-hex-character KNX Data Secure tool key, for a simulator or bench device. Conflicts with `--keyring`. |
+| `--allow-unsupported` | off | Write the device although its application program is not on bussard's [list of supported devices](../../explanation/device-support.md#supported-devices). Checked before the address is assigned. Back it up first. A loopback gateway is never refused. The history record says `support: forced`. |
 
 Behaviour:
 

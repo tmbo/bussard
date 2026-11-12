@@ -35,7 +35,8 @@ pub struct DeviceRecord {
 impl DeviceRecord {
     /// Whether a later resume may skip this device untouched.
     pub fn is_finished(&self) -> bool {
-        self.status != "failed"
+        // A refused device (issue #1089) is tried again by `--resume`.
+        self.status != "failed" && self.status != "refused"
     }
 }
 
@@ -132,6 +133,7 @@ impl LineState {
             report: None,
             fingerprint: None,
             backup: None,
+            support: None,
         }
     }
 
@@ -213,8 +215,11 @@ mod tests {
         let mut state = LineState::new("1.1", "127.0.0.1:3671");
         state.devices.insert("1.1.4".to_string(), record("applied"));
         state.devices.insert("1.1.5".to_string(), record("failed"));
+        state.devices.insert("1.1.7".to_string(), record("refused"));
         assert!(state.is_done("1.1.4".parse()?));
         assert!(!state.is_done("1.1.5".parse()?));
+        // A device refused as unsupported (issue #1089) is tried again.
+        assert!(!state.is_done("1.1.7".parse()?));
         assert!(!state.is_done("1.1.6".parse()?));
         Ok(())
     }

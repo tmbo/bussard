@@ -411,6 +411,10 @@ pub struct WriteOutcome {
     /// Milliseconds until the device answered again after the restart.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub answered_after_ms: Option<u64>,
+    /// How the write passed the support gate (issue #1089): `supported`,
+    /// `unsupported` (a loopback gateway) or `forced`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportStatus>,
 }
 
 impl WriteOutcome {

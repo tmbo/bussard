@@ -106,6 +106,33 @@ the real bus is the gateway and the `--allow-remote-gateway` opt-in. Before
 the first write to the real bus, take a `bussard backup` of the whole
 installation.
 
+## Devices bussard has not checked
+
+bussard keeps a [list of supported devices](device-support.md#supported-devices):
+the application programs whose download it has compared with ETS. `flash`,
+`apply`, `restore`, `replace` and the download half of `commission` refuse a
+device that is not on it, on a real gateway, before anything is written:
+
+```console
+refusing to write: 1.1.7 runs M-0083_A-0120-10 (MDT AKS-0816.03), which is not
+on bussard's list of supported devices. Nothing was written.
+Reads work (plan, describe, backup). To write anyway, back the device up first
+and pass --allow-unsupported.
+```
+
+Reads are never refused, and a loopback gateway is not either: the simulator
+is where a product is checked before it joins the list.
+
+| Interface | Write to an unsupported device |
+|---|---|
+| CLI | refused; overridable with `--allow-unsupported` |
+| MCP (an LLM over the server) | refused with `code: unsupported_device`; the human must say yes, then the assistant passes `allow_unsupported: true` with the digest of the plan that reported it |
+
+The override is the human's. The plan the assistant shows already says the
+device is not on the list, that a backup comes first, and that ETS is the
+safe way. A written result carries `support: forced`, and so does the
+history record of a forced write at the CLI.
+
 ## Protected group addresses
 
 Mark a group address `protected = true` in `groups.toml` for wind alarms,

@@ -68,6 +68,13 @@ pub(crate) struct RestoreArgs {
     consent: Consent,
     #[command(flatten)]
     tool_key: BenchToolKey,
+    /// Write the device even though its application program is not on
+    /// bussard's list of supported devices (`bussard device --supported`).
+    /// Back the device up first. A loopback gateway (a simulator) is never
+    /// refused.
+    // Issue #1089.
+    #[arg(long)]
+    allow_unsupported: bool,
 }
 
 impl Run for RestoreArgs {
@@ -77,10 +84,15 @@ impl Run for RestoreArgs {
 
     fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
         let tool_keys = g.tool_keys(self.tool_key.tool_key.as_deref());
-        let yes = self.consent.yes;
+        let consent = Gated {
+            yes: self.consent.yes,
+            allow_unsupported: self.allow_unsupported,
+        };
         match (&self.parameters, self.args.as_slice()) {
-            (Some(backup), [address]) => run_parameters(backup, address, yes, tool_keys, g),
-            (None, [backup_dir, address]) => run(Path::new(backup_dir), address, yes, tool_keys, g),
+            (Some(backup), [address]) => run_parameters(backup, address, consent, tool_keys, g),
+            (None, [backup_dir, address]) => {
+                run(Path::new(backup_dir), address, consent, tool_keys, g)
+            }
             (Some(_), _) => anyhow::bail!(
                 "`restore --parameters <BACKUP_JSON>` takes one more argument, the device \
                  address: `bussard restore --parameters <BACKUP_JSON> <ADDRESS>`"
@@ -94,14 +106,24 @@ impl Run for RestoreArgs {
     }
 }
 
+/// The write's consent: `--yes` and `--allow-unsupported`.
+#[derive(Debug, Clone, Copy)]
+struct Gated {
+    /// `--yes`.
+    yes: bool,
+    /// `--allow-unsupported` (issue #1089).
+    allow_unsupported: bool,
+}
+
 /// Runs `bussard restore`.
 fn run(
     backup_dir: &Path,
     address: &str,
-    yes: bool,
+    consent: Gated,
     tool_key_source: ToolKeySource<'_>,
     g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
+    let yes = consent.yes;
     let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
     let target: IndividualAddress = address
         .parse()
@@ -152,6 +174,8 @@ fn run(
         overrides: &overrides,
         model: model.as_ref(),
         write: apply_cmd::ModelWrite::default(),
+        allow_unsupported: consent.allow_unsupported,
+        given: None,
     })
 }
 
@@ -159,11 +183,12 @@ fn run(
 fn run_parameters(
     backup_path: &Path,
     address: &str,
-    yes: bool,
+    consent: Gated,
     tool_key_source: ToolKeySource<'_>,
     g: &Resolved,
 ) -> anyhow::Result<ExitCode> {
     use bussard_service::L4Options;
+    let yes = consent.yes;
     let (dir, allow_remote_gateway, overrides) = (g.dir(), g.allow_remote_gateway, g.mgmt());
 
     let target: IndividualAddress = address
@@ -209,6 +234,17 @@ fn run_parameters(
     let tool_key = material.tool_key.clone();
     let secure_seq = bussard_service::secure::SequenceHighWater::new();
     crate::conn_cmd::enforce_write_gate(&config, allow_remote_gateway)?;
+    // The supported-device list (issue #1089), before the bus is opened.
+    let support = crate::support_gate::authorize(
+        &config,
+        target,
+        (
+            model.devices.get(&target).map(|d| &d.device),
+            Some(product.app_id.as_str()),
+        ),
+        consent.allow_unsupported,
+        None,
+    )?;
     let gateway = crate::conn_cmd::gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;
     let bus = crate::conn_cmd::BusSession::open(
@@ -302,7 +338,10 @@ fn run_parameters(
         bussard_model::history::SnapshotReason::new("restore --parameters")
             .with_args([target.to_string(), backup_path.display().to_string()])
             .with_gateway(Some(gateway.clone()))
-            .with_result("before restoring the parameter memory"),
+            .with_result(crate::support_gate::history_result(
+                "before restoring the parameter memory",
+                &support,
+            )),
     );
     // The memory this restore overwrites is still the only copy of what the
     // device holds now: back it up first, as `apply` does.
@@ -327,6 +366,7 @@ fn run_parameters(
             high_water: secure_seq,
             read_options: &read_options,
             read_back_properties: true,
+            support: &support,
         },
         &mut observer,
     ))?;

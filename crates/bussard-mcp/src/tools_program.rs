@@ -139,6 +139,7 @@ mod restart;
 mod restore;
 mod restore_tables;
 mod secure_diag;
+mod support;
 
 /// How long a plan stays valid for `knx_apply_device` unless configured.
 pub const DEFAULT_PLAN_TTL: Duration = Duration::from_secs(10 * 60);
@@ -160,12 +161,15 @@ pub struct ProgrammingTier {
     /// [`crate::SharedState::jobs`]: one apply or plan at a time, with status
     /// and record.
     jobs: std::sync::Arc<crate::jobs::JobTable>,
-    /// Restore plans produced in this session, by digest (issue #290).
-    restore_plans: Store<()>,
+    /// Restore plans produced in this session, by digest (issue #290), with
+    /// whether each reported the device unsupported and the program it was
+    /// judged on (issue #1089).
+    restore_plans: Store<(bool, String)>,
     /// Restart questions asked in this session, by digest (issue #717).
     restarts: Store<bussard_service::download::RestartForm>,
-    /// Table-restore plans produced in this session, by digest (issue #717).
-    table_restores: Store<()>,
+    /// Table-restore plans produced in this session, by digest (issue
+    /// #717), with whether each reported the device unsupported (#1089).
+    table_restores: Store<bool>,
     /// Line plans produced in this session, by digest (issue #748).
     line_plans: Store<line::LinePlan>,
     /// Devices `knx_add_device` identified, waiting for the human's yes, by
@@ -236,6 +240,11 @@ struct PlanSides {
     live: [u8; 32],
     /// SHA-256 over the model's links for the device and the desired tables.
     model: [u8; 32],
+    /// Whether the plan reported the device as not on the supported list
+    /// (issue #1089): only then does `allow_unsupported` count.
+    unsupported: bool,
+    /// The program the plan's write builds from, the one it was judged on.
+    application: Option<String>,
 }
 
 /// Arguments for `knx_plan_device`.
@@ -269,6 +278,11 @@ pub struct ApplyDeviceArgs {
     /// device produces the same hash.
     #[serde(default)]
     pub plan_hash: Option<String>,
+    /// Write a device that is not on bussard's list of supported devices
+    /// anyway. Only after the human explicitly said so, and only with the
+    /// `plan_digest` of a plan that reported the device unsupported.
+    #[serde(default)]
+    pub allow_unsupported: bool,
 }
 
 /// Arguments for `knx_restore_parameters`.
@@ -284,6 +298,11 @@ pub struct RestoreParametersArgs {
     /// (after the human's explicit yes) to write.
     #[serde(default)]
     pub plan_digest: Option<String>,
+    /// Write a device that is not on bussard's list of supported devices
+    /// anyway. Only after the human explicitly said so, and only with the
+    /// `plan_digest` of a plan that reported the device unsupported.
+    #[serde(default)]
+    pub allow_unsupported: bool,
 }
 
 /// Arguments for `knx_restart_device`.
@@ -312,6 +331,11 @@ pub struct RestoreTablesArgs {
     /// (after the human's explicit yes) to write.
     #[serde(default)]
     pub plan_digest: Option<String>,
+    /// Write a device that is not on bussard's list of supported devices
+    /// anyway. Only after the human explicitly said so, and only with the
+    /// `plan_digest` of a plan that reported the device unsupported.
+    #[serde(default)]
+    pub allow_unsupported: bool,
 }
 
 /// Arguments for `knx_interface_secure`.
@@ -417,6 +441,11 @@ pub struct ReplaceDeviceArgs {
     /// data (`download_needed`); `yes` never answers that.
     #[serde(default)]
     pub download: Option<bool>,
+    /// Write a replacement that is not on bussard's list of supported
+    /// devices anyway (`support.status: unsupported` at the `identified`
+    /// step). Only after the human explicitly said so.
+    #[serde(default)]
+    pub allow_unsupported: bool,
 }
 
 /// Arguments for `knx_apply_status`.
@@ -468,7 +497,8 @@ impl BussardMcp {
             Ok(Target::Line(line)) => answer_chat(
                 "line",
                 line,
-                self.apply_line(line, args.plan_digest.trim()).await,
+                self.apply_line(line, args.plan_digest.trim(), args.allow_unsupported)
+                    .await,
                 &self.model(),
             ),
             Ok(Target::Device(address)) => answer_chat(
@@ -478,6 +508,7 @@ impl BussardMcp {
                     address,
                     args.plan_digest.trim(),
                     args.plan_hash.as_deref().map(str::trim),
+                    args.allow_unsupported,
                 )
                 .await,
                 &self.model(),
@@ -544,6 +575,7 @@ impl BussardMcp {
                 &args.address,
                 &args.backup,
                 args.plan_digest.as_deref().map(str::trim),
+                args.allow_unsupported,
             )
             .await,
             &self.model(),
@@ -580,6 +612,7 @@ impl BussardMcp {
                 &args.address,
                 args.backup.as_deref(),
                 args.plan_digest.as_deref().map(str::trim),
+                args.allow_unsupported,
             )
             .await,
             &self.model(),
@@ -1027,12 +1060,21 @@ impl BussardMcp {
                 };
             }
         }
+        // The supported-device verdict (issue #1089): shown before anyone
+        // asks to write, and remembered so the override counts only with
+        // this digest.
+        let application = product.source.as_ref().map(|p| p.app_id.clone());
+        let support =
+            bussard_service::support::verdict_at(Some(&model), target, application.as_deref());
+        out.support = Some(support.view_on(&tier.connection));
         if !noop {
             let digest = tier.remember_plan(
                 target,
                 PlanSides {
                     live: program::plan::live_fingerprint(&read),
                     model: model_fingerprint(&ctx, security.as_ref(), built, flash.as_ref()),
+                    unsupported: !support.is_supported(),
+                    application,
                 },
             );
             out.approval.plan_digest = Some(digest);
@@ -1052,8 +1094,14 @@ impl BussardMcp {
         address: &str,
         digest: &str,
         plan_hash: Option<&str>,
+        allow_unsupported: bool,
     ) -> Result<Value, String> {
         let target = parse_address(address)?;
+        // The supported-device gate (issue #1089) answers before the job: a
+        // structured refusal, and the digest stays valid for the override.
+        if let Some(refused) = self.unsupported_before_write(target, digest, allow_unsupported)? {
+            return Ok(refused);
+        }
         let (digest, plan_hash) = (digest.to_string(), plan_hash.map(str::to_string));
         self.run_write(
             Subject::Device(target),
@@ -1086,6 +1134,7 @@ impl BussardMcp {
                             target,
                             &digest,
                             plan_hash.as_deref(),
+                            allow_unsupported,
                         ))
                         .await?;
                         let record =
@@ -1105,6 +1154,39 @@ impl BussardMcp {
             },
         )
         .await
+    }
+
+    /// The supported-device gate of a device write (issue #1089) before its
+    /// job: the structured refusal (`code: unsupported_device`) when the
+    /// device is not on the list and the override is missing or not bound
+    /// to a plan that reported it, `None` to go on. The digest stays valid.
+    /// A digest this session does not know is left to the pre-flight's
+    /// refusal.
+    fn unsupported_before_write(
+        &self,
+        target: IndividualAddress,
+        digest: &str,
+        allow_unsupported: bool,
+    ) -> Result<Option<Value>, String> {
+        let tier = self.tier()?;
+        let Some(planned) = tier.plans.get(digest) else {
+            return Ok(None);
+        };
+        let model = self.state().model.current();
+        // A KNX IP interface's KNXnet/IP parameter object is not gated in
+        // this version (#1093), as `bussard apply` does not gate it.
+        if bussard_service::knxnet::interface_config(&model, target).is_some() {
+            return Ok(None);
+        }
+        Ok(support::gate(
+            &tier.connection,
+            &model,
+            target,
+            planned.application.as_deref(),
+            (allow_unsupported, planned.unsupported),
+        )
+        .err()
+        .map(|refused| refused.answer(&model, true)))
     }
 
     /// The programming tier, or the refusal that it is off.
@@ -1350,7 +1432,10 @@ impl BussardMcp {
             job,
             format!("writing {target}'s links: pre-flight, backups"),
         );
-        let prepared = match self.apply_preflight(tier, target, &digest, None).await {
+        let prepared = match self
+            .apply_preflight(tier, target, &digest, None, consent.allow_unsupported)
+            .await
+        {
             Ok(prepared) => prepared,
             Err(reason) => {
                 return fail(
@@ -1389,6 +1474,7 @@ impl BussardMcp {
         target: IndividualAddress,
         digest: &str,
         plan_hash: Option<&str>,
+        allow_unsupported: bool,
     ) -> Result<Prepared, String> {
         let (_, service, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
@@ -1400,6 +1486,16 @@ impl BussardMcp {
         // The model may have changed since the plan (issue #330).
         refuse_insecure_links(&model, target)?;
         let product = product_for(&dir, &model, target);
+        // The supported-device gate (issue #1089), before the bus, on the
+        // program the write builds from.
+        let grant = support::gate(
+            &tier.connection,
+            &model,
+            target,
+            product.source.as_ref().map(|p| p.app_id.as_str()),
+            (allow_unsupported, planned.unsupported),
+        )
+        .map_err(|refused| refused.reason())?;
         let desired = program::plan::desired_tables(&model, target, product.source.as_ref())?;
         // KNX Data Secure: the same material the plan resolved, one
         // high-water mark for the read and the write so the send sequence
@@ -1460,6 +1556,8 @@ impl BussardMcp {
         let now = PlanSides {
             live: program::plan::live_fingerprint(&read),
             model: model_fingerprint(&ctx, security.as_ref(), &built, flash.as_ref()),
+            unsupported: planned.unsupported,
+            application: planned.application.clone(),
         };
         let moved = match (now.live != planned.live, now.model != planned.model) {
             (true, true) => Some("the device's live state and your project both changed"),
@@ -1614,7 +1712,11 @@ impl BussardMcp {
             backup_path,
             param_backup_path,
             flash,
-            result,
+            result: WriteOutcome {
+                support: Some(grant.status()),
+                ..result
+            },
+            support: grant,
         })
     }
 
@@ -1644,6 +1746,7 @@ impl BussardMcp {
             param_backup_path,
             flash,
             mut result,
+            support,
             ..
         } = p;
         let Some(service) = self.state().bus.service().cloned() else {
@@ -1665,6 +1768,7 @@ impl BussardMcp {
                 readback: product.as_ref().and_then(|source| {
                     program::flash::readback_inputs(source, Some(&model), read.live.tables().mask)
                 }),
+                support: &support,
             };
             let result = self.flash_write(tier, job, &image, ctx, result).await;
             if result.verdict.ok {
@@ -1720,6 +1824,7 @@ impl BussardMcp {
                 // as not answering authorize is not asked again (#215).
                 options,
                 seed: read.seed(),
+                support: &support,
             },
             &mut observer,
         )
@@ -1937,6 +2042,9 @@ pub(super) struct LinksAfter {
     desired: DesiredTables,
     /// The device's parameter values in the model when the yes was given.
     parameters: Option<std::collections::BTreeMap<String, String>>,
+    /// Whether the download was forced past the supported-device list
+    /// (issue #1089): the table write after it is too.
+    allow_unsupported: bool,
 }
 
 impl LinksAfter {
@@ -1948,6 +2056,7 @@ impl LinksAfter {
             target: p.target,
             desired: p.desired.clone(),
             parameters: Self::parameters(&p.model, p.target),
+            allow_unsupported: p.support.forced(),
         })
     }
 
@@ -2016,6 +2125,8 @@ struct Prepared {
     flash: Option<FlashImage>,
     /// The result so far (address, gateway, backups, snapshot).
     result: WriteOutcome,
+    /// The supported-device gate's grant (issue #1089).
+    support: bussard_service::support::SupportGrant,
 }
 
 /// Where a write's desired tables came from: the model's device file

@@ -82,6 +82,18 @@ enum Source {
     },
 }
 
+impl Source {
+    /// The program the replacement is flashed with when the pinned archive
+    /// is at hand; `None` leaves the verdict to the device's own application
+    /// (issue #1089).
+    fn application(&self) -> Option<&str> {
+        match self {
+            Source::Pinned { application, .. } => Some(application),
+            Source::Download { .. } => None,
+        }
+    }
+}
+
 /// One identified replacement waiting for the human's yes, by job id.
 #[derive(Debug, Clone)]
 pub(super) struct ReplacePlan {
@@ -93,6 +105,12 @@ pub(super) struct ReplacePlan {
     source: Source,
     /// The digest the human's yes answers.
     digest: String,
+    /// Whether the `identified` step reported the device as not on the
+    /// supported list (issue #1089): only then does `allow_unsupported`
+    /// count.
+    unsupported: bool,
+    /// Whether the write was forced past the list (set by the write call).
+    allow_unsupported: bool,
 }
 
 /// How `knx_replace_device` names the device in its refusals.
@@ -157,6 +175,7 @@ impl BussardMcp {
                     args.plan_digest.as_deref(),
                     args.yes,
                     args.download,
+                    args.allow_unsupported,
                 )
                 .await;
         }
@@ -243,11 +262,14 @@ impl BussardMcp {
                     replacement.name, replacement.target, pressed.address, replacement.target
                 );
                 let target = replacement.target;
+                let unsupported = !detail.support.is_supported();
                 let plan = ReplacePlan {
                     replacement,
                     pressed,
                     source,
                     digest,
+                    unsupported,
+                    allow_unsupported: false,
                 };
                 tier.replaces.insert(job, "", plan);
                 tier.jobs
@@ -289,9 +311,10 @@ impl BussardMcp {
         digest: Option<&str>,
         yes: Option<bool>,
         download: Option<bool>,
+        allow_unsupported: bool,
     ) -> Result<Value, String> {
         let began = Instant::now();
-        let pending = tier.replaces.get(job).ok_or_else(|| {
+        let mut pending = tier.replaces.get(job).ok_or_else(|| {
             format!(
                 "no identified replacement waits under job {job} (it was written, refused, or \
                  older than the plan lifetime). Call knx_replace_device with the address to \
@@ -306,6 +329,21 @@ impl BussardMcp {
             download,
         }
         .check(&pending.digest, "replacing the device", needs_download)?;
+        // The supported-device gate (issue #1089) before the address is
+        // written, so a refusal leaves nothing half done; the job stays
+        // paused and the digest valid.
+        let model = self.state().model.current();
+        let target = pending.replacement.target;
+        if let Err(refused) = super::support::gate(
+            &tier.connection,
+            &model,
+            target,
+            pending.source.application(),
+            (allow_unsupported, pending.unsupported),
+        ) {
+            return Ok(refused.answer(&model, true));
+        }
+        pending.allow_unsupported = allow_unsupported && pending.unsupported;
         tier.jobs.resume(job, "checking the device again")?;
         tier.replaces.retire(job);
         let me = self.clone();
@@ -406,7 +444,10 @@ impl BussardMcp {
                     }
                 ),
             );
-            let prepared = match self.apply_preflight(tier, target, &digest, None).await {
+            let prepared = match self
+                .apply_preflight(tier, target, &digest, None, p.allow_unsupported)
+                .await
+            {
                 Ok(prepared) => prepared,
                 Err(reason) => {
                     drop(warm);
@@ -828,6 +869,11 @@ fn identified_detail(
         ),
     ));
     sentences.push(format!("Product data: {product_data}."));
+    let support = bussard_service::support::verdict_at(Some(model), target, source.application());
+    let support = support.view_on(&tier.connection);
+    if let Some(note) = support.assistant_note(&target.to_string()) {
+        sentences.push(note);
+    }
     if download_needed {
         sentences.push(
             "The download is copyrighted vendor data stored under products/; it needs the \
@@ -850,6 +896,7 @@ fn identified_detail(
         sentences,
         plan_digest: digest.to_string(),
         expires_at: tier.replaces.expires_at(std::time::SystemTime::now()),
+        support,
     }
 }
 
@@ -926,6 +973,8 @@ struct ReplaceIdentified {
     sentences: Vec<String>,
     /// The digest the yes presents.
     plan_digest: String,
+    /// The supported-device verdict (issue #1089).
+    support: bussard_service::support::SupportView,
     /// When the digest expires.
     expires_at: String,
 }

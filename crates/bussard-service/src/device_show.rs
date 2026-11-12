@@ -79,6 +79,10 @@ pub struct DeviceShow {
     /// An IP interface's KNXnet/IP settings.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub knxnet: Option<KnxnetSection>,
+    /// Whether bussard writes the device without the override (issue
+    /// #1089).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
 }
 
 impl DeviceShow {
@@ -92,6 +96,7 @@ impl DeviceShow {
             how_to_change: None,
             toml: None,
             knxnet: None,
+            support: None,
         }
     }
 

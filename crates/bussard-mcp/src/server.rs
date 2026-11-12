@@ -502,6 +502,8 @@ impl BussardMcp {
         );
         // An IP interface's KNXnet/IP settings and facts (issue #391).
         show.knxnet = KnxnetSection::of(&self.state().dir, &model, ia);
+        // Whether bussard writes it without the override (issue #1089).
+        show.support = Some(bussard_service::support::verdict_at(Some(&model), ia, None).view());
         let mut value = crate::reply::report(&show, &model);
         if !args.technical {
             crate::everyday::plain_view(&mut value);

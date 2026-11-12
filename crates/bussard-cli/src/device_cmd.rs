@@ -6,7 +6,8 @@
 //! product model gives, and its objects with what they send and listen on.
 //! `--toml` prints the paste-ready device-file snippet instead. Files only: the
 //! data comes from `bussard.lock` and `models/`. See
-//! [`bussard_model::device_view`].
+//! [`bussard_model::device_view`]. `--supported` lists bussard's list of
+//! supported devices instead (issue #1089).
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -20,8 +21,8 @@ use crate::cli::{Resolved, Run, Spec};
 #[derive(Debug, clap::Args)]
 pub(crate) struct DeviceArgs {
     /// The device, e.g. `1.1.47`.
-    #[arg(value_name = "ADDRESS")]
-    address: String,
+    #[arg(value_name = "ADDRESS", required_unless_present = "supported")]
+    address: Option<String>,
     /// The channel to list in detail: its handle (`a-1`), id or number, a
     /// page handle, or `device` for the device-level parameters and
     /// objects.
@@ -31,6 +32,12 @@ pub(crate) struct DeviceArgs {
     /// what the file does not set yet.
     #[arg(long, conflicts_with = "json")]
     toml: bool,
+    /// List the application programs bussard writes without
+    /// `--allow-unsupported`, with the evidence for each, instead of a
+    /// device.
+    // Issue #1089.
+    #[arg(long, conflicts_with_all = ["address", "channel", "toml"])]
+    supported: bool,
 }
 
 impl Run for DeviceArgs {
@@ -39,14 +46,50 @@ impl Run for DeviceArgs {
     }
 
     fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
-        run(
-            &self.address,
-            self.channel.as_deref(),
-            g.dir(),
-            self.toml,
-            g.json,
-        )
+        match &self.address {
+            Some(address) if !self.supported => {
+                run(address, self.channel.as_deref(), g.dir(), self.toml, g.json)
+            }
+            _ => list_supported(g.json),
+        }
     }
+}
+
+/// `bussard device --supported`: the supported-device list (issue #1089).
+fn list_supported(json: bool) -> anyhow::Result<ExitCode> {
+    let list = bussard_service::support::SupportedList::embedded();
+    if json {
+        let entries: Vec<serde_json::Value> = list
+            .entries()
+            .iter()
+            .map(|e| {
+                serde_json::json!({
+                    "application": e.application(),
+                    "application_id": e.application_id,
+                    "name": e.name,
+                    "evidence": e.evidence,
+                    "note": e.note,
+                })
+            })
+            .collect();
+        crate::output::print(1, &serde_json::json!({ "ok": true, "supported": entries }))?;
+    } else {
+        for e in list.entries() {
+            println!(
+                "{:<18} {:<10} {:<9} {}",
+                e.application(),
+                e.application_id,
+                e.evidence,
+                e.name
+            );
+        }
+        println!(
+            "\n{} application program(s). Any other is refused by flash, apply, restore and \
+             replace on a real gateway unless you pass --allow-unsupported.",
+            list.entries().len()
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 /// Runs `bussard device`.
@@ -78,12 +121,18 @@ fn run(
     }
     let products = ProductModels::load_apps(dir, app.iter().map(String::as_str));
     let view = bussard_model::device_view::device_view(&model, &products, target, channel)?;
+    // Whether bussard writes the device without the override (issue #1089).
+    let support = bussard_service::support::verdict_at(Some(&model), target, None).view();
     if json {
-        crate::output::report(&bussard_service::device_show::DeviceShow::of(view))?;
+        crate::output::report(&bussard_service::device_show::DeviceShow {
+            support: Some(support),
+            ..bussard_service::device_show::DeviceShow::of(view)
+        })?;
     } else if toml {
         print!("{}", view.render_toml());
     } else {
         print!("{}", view.render_table());
+        println!("{}", support.line());
     }
     Ok(ExitCode::SUCCESS)
 }

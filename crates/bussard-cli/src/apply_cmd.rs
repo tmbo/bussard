@@ -161,6 +161,17 @@ pub(crate) struct ApplyArgs {
     /// without this flag such a plan is refused.
     #[arg(long, conflicts_with = "line")]
     pub allow_self_reconfigure: bool,
+    /// Write a device even though its application program is not on
+    /// bussard's list of supported devices (`bussard device --supported`).
+    /// Back the device up first. A loopback gateway (a simulator) is never
+    /// refused.
+    // Issue #1089.
+    #[arg(long)]
+    pub allow_unsupported: bool,
+    /// The grant an outer command (`replace`, `commission`) already made
+    /// for this device (issue #1089); never a command-line flag.
+    #[arg(skip)]
+    pub support: Option<bussard_service::support::SupportGrant>,
 }
 
 impl Run for ApplyArgs {
@@ -174,9 +185,14 @@ impl Run for ApplyArgs {
     fn run(self, g: &Resolved) -> anyhow::Result<ExitCode> {
         let tool_keys = g.tool_keys(self.tool_key.tool_key.as_deref());
         match (&self.line, &self.address) {
-            (Some(line), _) => {
-                crate::line_cmd::run_apply(line, self.consent.yes, self.resume, tool_keys, g)
-            }
+            (Some(line), _) => crate::line_cmd::run_apply(
+                line,
+                self.consent.yes,
+                self.resume,
+                self.allow_unsupported,
+                tool_keys,
+                g,
+            ),
             (None, _) if g.json => anyhow::bail!(
                 "`bussard apply --json` needs --line: a single-device apply has no JSON output"
             ),
@@ -285,6 +301,8 @@ fn run(
             product: product.as_ref(),
             plan_hash: args.plan_hash.as_deref(),
         },
+        allow_unsupported: args.allow_unsupported,
+        given: args.support.as_ref(),
     })
 }
 
@@ -314,6 +332,10 @@ pub(crate) struct WriteJob<'a> {
     pub model: Option<&'a bussard_model::Model>,
     /// The model half: product data and the approved plan's hash.
     pub write: ModelWrite<'a>,
+    /// `--allow-unsupported` (issue #1089).
+    pub allow_unsupported: bool,
+    /// The grant an outer command already made for the device (issue #1089).
+    pub given: Option<&'a bussard_service::support::SupportGrant>,
 }
 
 /// The model half of [`apply_desired`]: the product data to read and write
@@ -363,6 +385,8 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         overrides,
         model,
         write,
+        allow_unsupported,
+        given,
     } = job;
     // KNX Data Secure (issue #71, spec §6.2): every management APDU rides
     // A_SecureData when the device is security-activated and a tool key is
@@ -392,6 +416,21 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
 
     // Safety envelope (issue #74).
     enforce_write_gate(&config, allow_remote_gateway)?;
+    // The supported-device list (issue #1089), before the bus is opened.
+    // Judged on the program the parameters are written with (`--product`,
+    // `--application`, the device file's override), else the device's own.
+    let support = crate::support_gate::authorize(
+        &config,
+        target,
+        (
+            model
+                .and_then(|m| m.devices.get(&target))
+                .map(|d| &d.device),
+            write.product.map(|p| p.app_id.as_str()),
+        ),
+        allow_unsupported,
+        given,
+    )?;
     let gateway = gateway_display(&config);
 
     // ONE tunnel for the whole command: the read, the confirmation, the
@@ -574,11 +613,14 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
             bussard_model::history::SnapshotReason::new(verb)
                 .with_args([target.to_string()])
                 .with_gateway(Some(gateway.clone()))
-                .with_result(if partial.is_some() {
-                    "before writing the device tables and parameters"
-                } else {
-                    "before writing the device tables"
-                }),
+                .with_result(crate::support_gate::history_result(
+                    if partial.is_some() {
+                        "before writing the device tables and parameters"
+                    } else {
+                        "before writing the device tables"
+                    },
+                    &support,
+                )),
         );
     let changes = report.additions.len() + report.removals.len();
     let question = program::Question {
@@ -645,6 +687,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
             high_water: secure_seq,
             options: read_options,
             seed,
+            support: &support,
         },
         &mut observer,
     ));

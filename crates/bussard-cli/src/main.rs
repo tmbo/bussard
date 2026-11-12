@@ -60,6 +60,7 @@ mod secure_diag_cmd;
 mod secure_key;
 mod status_cmd;
 mod style;
+mod support_gate;
 mod test_cmd;
 mod timing;
 mod validate_cmd;

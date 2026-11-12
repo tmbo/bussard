@@ -189,6 +189,8 @@ pub struct ApplyRequest<'a> {
     pub options: L4Options,
     /// The device facts the read checked, seeding every later connection.
     pub seed: Option<ConnectionSeed>,
+    /// The support gate's grant for the device (issue #1089).
+    pub support: &'a crate::support::SupportGrant,
 }
 
 /// How a write of the link tables ended.
@@ -295,6 +297,10 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
 /// read-back. Never refuses: what failed is in the outcome.
 pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -> Written {
     let mut out = Written::default();
+    if let Err(refusal) = req.support.covers(req.target) {
+        out.tables = Some(TablesWritten::Failed(refusal));
+        return out;
+    }
     let expected = expected(&req);
     let target = req.target;
     // The facts the read checked seed every later connection; a device they
@@ -357,6 +363,7 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
                 high_water: req.high_water.clone(),
                 read_options: &checked,
                 read_back_properties: false,
+                support: req.support,
             },
             &mut *observer,
         )
@@ -380,7 +387,34 @@ pub async fn write_tables(
     observer: &mut impl Observer,
 ) -> (TablesWritten, Option<Result<Duration, String>>) {
     observer.event(Event::Step(Step::WriteTables));
-    let written = match req.service.lease_channel().await {
+    let written = match req.support.covers(req.target) {
+        Err(refusal) => TablesWritten::Failed(refusal),
+        Ok(()) => lease_and_write(req).await,
+    };
+    observer.event(Event::Done {
+        step: Step::WriteTables,
+        verified: written.verified(),
+    });
+    let restart = matches!(&written, TablesWritten::Ran(s) if s.ok && s.restarted);
+    if !(restart && wait_restart) {
+        return (written, None);
+    }
+    observer.event(Event::Step(Step::WaitRestart));
+    let back = crate::restart::wait_until_back(
+        req.service,
+        req.target,
+        &req.options,
+        req.mask,
+        crate::restart::RestartWait::default(),
+    )
+    .await
+    .map_err(|err| err.to_string());
+    (written, Some(back))
+}
+
+/// Leases the bus and writes the link tables `req` carries.
+async fn lease_and_write(req: &ApplyRequest<'_>) -> TablesWritten {
+    match req.service.lease_channel().await {
         Err(err) => TablesWritten::Lease(err),
         Ok(channel) => match bussard_download::write_tables(
             channel,
@@ -405,26 +439,7 @@ pub async fn write_tables(
             Ok(summary) => TablesWritten::Ran(summary),
             Err(err) => TablesWritten::Failed(err),
         },
-    };
-    observer.event(Event::Done {
-        step: Step::WriteTables,
-        verified: written.verified(),
-    });
-    let restart = matches!(&written, TablesWritten::Ran(s) if s.ok && s.restarted);
-    if !(restart && wait_restart) {
-        return (written, None);
     }
-    observer.event(Event::Step(Step::WaitRestart));
-    let back = crate::restart::wait_until_back(
-        req.service,
-        req.target,
-        &req.options,
-        req.mask,
-        crate::restart::RestartWait::default(),
-    )
-    .await
-    .map_err(|err| err.to_string());
-    (written, Some(back))
 }
 
 /// The independent read-back after a write, `None` when a write stopped

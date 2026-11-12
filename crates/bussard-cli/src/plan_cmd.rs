@@ -281,6 +281,14 @@ fn run(
         tool_key_source,
         material.tool_key.is_some(),
     )?;
+    // The supported-device verdict (issue #1089): what `apply` would decide
+    // on this gateway.
+    let support = bussard_service::support::verdict_at(
+        Some(model_ref),
+        target,
+        product_ref.map(|p| p.app_id.as_str()),
+    )
+    .view_on(&config);
     let mut read = read_device(
         config,
         target,
@@ -333,7 +341,7 @@ fn run(
     let identity = read.check().cloned();
     let params = read.params.as_ref();
     if json {
-        let out = PlanOutcome::new(PlanParts {
+        let mut out = PlanOutcome::new(PlanParts {
             target,
             live,
             report,
@@ -343,9 +351,16 @@ fn run(
             identity,
             parameters: params.map(|p| p.readback.clone()),
         });
+        out.support = Some(support);
         crate::output::report(&out)?;
     } else {
         let style = crate::style::Style::stdout();
+        let line = support.line();
+        if support.override_needed {
+            println!("{}\n", style.warn(&line));
+        } else {
+            println!("{}\n", style.dim(&line));
+        }
         if let Some(check) = &identity {
             let line = bussard_service::identity_line(target, check);
             if check.is_drift() {

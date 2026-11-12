@@ -402,6 +402,8 @@ pub struct ParamsWrite<'a> {
     pub handover: Option<Management>,
     /// The question.
     pub question: Question,
+    /// The support gate's grant for the device (issue #1089).
+    pub support: &'a crate::support::SupportGrant,
 }
 
 /// How a parameter-only download ended.
@@ -431,6 +433,10 @@ pub async fn write_parameters_only(
     planned: &ParamsPlanned,
     observer: &mut impl Observer,
 ) -> Result<ParamsWritten, ParamsWriteError> {
+    write
+        .support
+        .covers(write.session.target)
+        .map_err(ParamsWriteError::Refused)?;
     match crate::observer::ask(observer, &write.question) {
         Ok(()) => {}
         Err(Declined::No) => return Ok(ParamsWritten::Declined),

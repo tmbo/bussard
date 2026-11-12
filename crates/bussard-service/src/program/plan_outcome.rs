@@ -120,6 +120,9 @@ pub struct PlanOutcome {
     pub pending_model_changes: Option<serde_json::Value>,
     /// When the plan was made, RFC 3339.
     pub planned_at: String,
+    /// The supported-device verdict (issue #1089), when the surface set it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
     /// The question and, on the MCP surface, the digest.
     #[serde(flatten)]
     pub approval: Approval,
@@ -188,6 +191,7 @@ impl PlanOutcome {
             parameters,
             pending_model_changes: None,
             planned_at: crate::monitor::timefmt::to_rfc3339(std::time::SystemTime::now()),
+            support: None,
             approval: Approval::question(
                 (!noop)
                     .then(|| crate::params::apply_question(&device_plan, built.partial.as_ref())),
@@ -388,6 +392,22 @@ impl Report for PlanOutcome {
     }
 
     fn next_step(&self) -> Option<String> {
+        let step = self.plan_step()?;
+        let support = self
+            .support
+            .as_ref()
+            .filter(|_| !self.noop)
+            .and_then(|s| s.assistant_note(&self.plan.address));
+        Some(match support {
+            Some(note) => format!("{note} {step}"),
+            None => step,
+        })
+    }
+}
+
+impl PlanOutcome {
+    /// [`Report::next_step`] without the supported-device note.
+    fn plan_step(&self) -> Option<String> {
         let target = &self.plan.address;
         let p = &self.parameter_plan;
         let (min, max) = crate::flash::DEVICE_OFFLINE_SECONDS;

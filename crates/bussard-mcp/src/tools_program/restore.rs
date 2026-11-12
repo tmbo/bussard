@@ -47,6 +47,9 @@ struct Planned {
     tool_key: Option<bussard_service::secure::Key16>,
     /// The send-sequence high-water mark of the read and the write.
     high_water: SequenceHighWater,
+    /// The program the parameters are decoded and written with (issue
+    /// #1089: the one the support gate judges).
+    application: String,
 }
 
 /// Resolves `backup` (a file name, or a path) to a file in the parameter
@@ -118,6 +121,7 @@ impl BussardMcp {
         address: &str,
         backup: &str,
         digest: Option<&str>,
+        allow_unsupported: bool,
     ) -> Result<Value, String> {
         let target = super::parse_address(address)?;
         let (tier, _, gateway) = self.programming_preflight()?;
@@ -131,6 +135,20 @@ impl BussardMcp {
             let plan = self.restore_plan_json(tier, target, &file, &gateway, &planned);
             return Ok(crate::reply::report(&plan, &self.state().model.current()));
         };
+        // The supported-device gate (issue #1089) before the job: the digest
+        // stays valid for the override.
+        if let Some((unsupported, application)) = tier.restore_plans.get(digest) {
+            let model = self.state().model.current();
+            if let Err(refused) = super::support::gate(
+                &tier.connection,
+                &model,
+                target,
+                Some(&application),
+                (allow_unsupported, unsupported),
+            ) {
+                return Ok(refused.answer(&model, true));
+            }
+        }
         let digest = digest.to_string();
         self.run_write(
             Subject::Device(target),
@@ -138,10 +156,13 @@ impl BussardMcp {
             move |me, job, gate| async move {
                 let tier = me.tier()?;
                 me.on_bus(tier, async {
-                    let (planned, result, record) =
-                        me.restore_preflight(tier, target, &file, &digest).await?;
+                    let (planned, result, record, grant) = me
+                        .restore_preflight(tier, target, &file, &digest, allow_unsupported)
+                        .await?;
                     gate.pass(&result, record);
-                    Ok(me.restore_write(tier, &job, target, &planned, result).await)
+                    Ok(me
+                        .restore_write(tier, &job, target, &planned, result, &grant)
+                        .await)
                 })
                 .await
             },
@@ -212,6 +233,7 @@ impl BussardMcp {
             digest,
             tool_key,
             high_water,
+            application: source.app_id.clone(),
         })
     }
 
@@ -231,10 +253,17 @@ impl BussardMcp {
             planned.read.check().cloned(),
             &planned.plan,
         );
+        let model = self.state().model.current();
+        let support =
+            bussard_service::support::verdict_at(Some(&model), target, Some(&planned.application));
+        out.support = Some(support.view_on(&tier.connection));
         if !out.noop {
             let subject = format!("{target} from {}", file.display());
-            tier.restore_plans
-                .insert(planned.digest.clone(), subject, ());
+            tier.restore_plans.insert(
+                planned.digest.clone(),
+                subject,
+                (!support.is_supported(), planned.application.clone()),
+            );
             out.approval.plan_digest = Some(planned.digest.clone());
             out.approval.expires_at =
                 Some(tier.restore_plans.expires_at(std::time::SystemTime::now()));
@@ -249,17 +278,37 @@ impl BussardMcp {
         target: IndividualAddress,
         file: &Path,
         digest: &str,
-    ) -> Result<(Planned, WriteOutcome, Option<PathBuf>), String> {
+        allow_unsupported: bool,
+    ) -> Result<
+        (
+            Planned,
+            WriteOutcome,
+            Option<PathBuf>,
+            bussard_service::support::SupportGrant,
+        ),
+        String,
+    > {
         let (_, _, gateway) = self.programming_preflight()?;
         let dir = self.state().dir.clone();
         let subject = format!("{target} from {}", file.display());
         let again = "call knx_restore_parameters without plan_digest, show the plan to the human \
                      and ask again";
         // One digest, one write: consumed whatever the fresh read says.
-        tier.restore_plans
+        let (unsupported, _) = tier
+            .restore_plans
             .take(digest, subject, "restore plan", again)?;
         let planned = self.plan_restore(target, file).await;
         let planned = planned?;
+        // The supported-device gate (issue #1089), before the write, on the
+        // program the fresh plan decodes with.
+        let grant = super::support::gate(
+            &tier.connection,
+            &self.state().model.current(),
+            target,
+            Some(&planned.application),
+            (allow_unsupported, unsupported),
+        )
+        .map_err(|refused| refused.reason())?;
         if planned.digest != digest {
             return Err(format!(
                 "refusing to restore {target}: the device's memory, the backup or your project \
@@ -290,9 +339,10 @@ impl BussardMcp {
             restored_from: Some(file.display().to_string()),
             parameter_backup: Some(backup.display().to_string()),
             snapshot,
+            support: Some(grant.status()),
             ..WriteOutcome::new(target)
         };
-        Ok((planned, result, record))
+        Ok((planned, result, record, grant))
     }
 
     /// The write of a restore whose pre-flight passed, onto the
@@ -304,6 +354,7 @@ impl BussardMcp {
         target: IndividualAddress,
         planned: &Planned,
         mut result: WriteOutcome,
+        support: &bussard_service::support::SupportGrant,
     ) -> WriteOutcome {
         let (Some(partial), Some(detail)) = (
             planned.plan.partial.as_ref(),
@@ -338,6 +389,7 @@ impl BussardMcp {
                 high_water: planned.high_water.clone(),
                 read_options: &read_options,
                 read_back_properties: true,
+                support,
             },
             &mut observer,
         )

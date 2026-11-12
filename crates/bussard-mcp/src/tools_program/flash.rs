@@ -59,6 +59,8 @@ pub(super) struct FlashJob<'a> {
     pub(super) param_backup: Option<&'a str>,
     /// What the read-back after the flash compares with (issue #319).
     pub(super) readback: Option<ReadbackInputs<'a>>,
+    /// The supported-device gate's grant (issue #1089).
+    pub(super) support: &'a bussard_service::support::SupportGrant,
 }
 
 impl BussardMcp {
@@ -113,6 +115,7 @@ impl BussardMcp {
                 action: format!("flash {target}"),
             },
             differential: false,
+            support: ctx.support,
         };
         let written = match program::flash::execute(execution, &mut observer).await {
             Ok(written) => written,
