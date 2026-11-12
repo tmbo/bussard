@@ -34,8 +34,13 @@ pub struct ParamProperty {
     pub device: Option<Vec<u8>>,
     /// The display names of the parameters placed in the property
     /// ([`ParamProperty::parameter_names`]), filled by
-    /// [`read_parameter_properties`]; empty until then.
+    /// [`read_checked_properties`]; empty until then.
     pub parameters: Vec<String>,
+    /// A fixed write (`InlineData`, no parameter composes it) that the
+    /// parameter-only procedure makes (issue #1052): backed up and read back
+    /// like a parameter property, but a difference in it alone is no
+    /// parameter change ([`changed_parameter_properties`]).
+    pub fixed: bool,
 }
 
 impl ParamProperty {
@@ -124,6 +129,7 @@ impl FlashPlan {
                 model: value.to_vec(),
                 device: None,
                 parameters: Vec::new(),
+                fixed: false,
             };
             if !out.iter().any(|p| {
                 (p.object, p.prop_id, p.start_element)
@@ -136,20 +142,189 @@ impl FlashPlan {
     }
 }
 
-/// Reads what the device holds in each of `plan`'s parameter properties
-/// ([`FlashPlan::parameter_properties`]) of `app`: one property read each, on
-/// the connection the parameter memory is read on, so the parameter read
-/// costs one request more per property and nothing when the program places
-/// no parameter in a property. A read that fails leaves the device side
-/// `None`, which [`ParamProperty::differs`] counts as a difference.
-pub async fn read_parameter_properties<Ch: L4Channel>(
+/// A run of property elements a procedure writes: what a read-back must
+/// find there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyRange {
+    /// The interface object, as the plan addresses it.
+    pub object: PropObject,
+    /// The property id.
+    pub prop_id: u32,
+    /// The first element.
+    pub start: u16,
+    /// How many elements.
+    pub count: u16,
+    /// The octets.
+    pub value: Vec<u8>,
+    /// No parameter composes the write ([`ParamProperty::fixed`]).
+    pub fixed: bool,
+}
+
+/// What `writes` (in procedure order) leave on the device: each write on the
+/// runs of its elements no later write to the same object and property
+/// covers (issue #946). A write whose value is not whole elements is kept as
+/// it is. The one rule every read-back of property writes uses.
+pub fn held_after(writes: &[PropertyRange]) -> Vec<PropertyRange> {
+    writes
+        .iter()
+        .enumerate()
+        .flat_map(|(i, w)| still_held(w, writes.get(i + 1..).unwrap_or_default()))
+        .collect()
+}
+
+/// The parts of `write` the device still holds after `later`.
+fn still_held(write: &PropertyRange, later: &[PropertyRange]) -> Vec<PropertyRange> {
+    let count = usize::from(write.count.max(1));
+    if !write.value.len().is_multiple_of(count) {
+        return vec![write.clone()];
+    }
+    let elem = write.value.len() / count;
+    let covered = |element: u32| {
+        later.iter().any(|l| {
+            l.object == write.object
+                && l.prop_id == write.prop_id
+                && (u32::from(l.start)..u32::from(l.start) + u32::from(l.count.max(1)))
+                    .contains(&element)
+        })
+    };
+    let mut out = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for i in 0..=count {
+        let held = i < count && !covered(u32::from(write.start) + i as u32);
+        match (held, run) {
+            (true, None) => run = Some((i, i + 1)),
+            (true, Some((from, _))) => run = Some((from, i + 1)),
+            (false, Some((from, to))) => {
+                out.push(PropertyRange {
+                    fixed: write.fixed,
+                    object: write.object,
+                    prop_id: write.prop_id,
+                    // Within the write's own u16 extent.
+                    start: write.start + from as u16,
+                    count: (to - from) as u16,
+                    value: write
+                        .value
+                        .get(from * elem..to * elem)
+                        .unwrap_or_default()
+                        .to_vec(),
+                });
+                run = None;
+            }
+            (false, None) => {}
+        }
+    }
+    out
+}
+
+impl FlashPlan {
+    /// The steps of the parameter-only procedure behind this plan (issue
+    /// #1052): its own steps for a parameter-only plan built from it, the
+    /// lowering it carries for a full plan, `None` otherwise.
+    fn par_procedure_writes(&self) -> Option<&[crate::flash::FlashStep]> {
+        if self.is_built_from_par_procedure() {
+            Some(&self.steps)
+        } else {
+            self.par_procedure()
+        }
+    }
+
+    /// The properties a parameter-only download of this plan writes and
+    /// reads back (issue #1052). For a plan run by the mask's parameter-only
+    /// procedure ([`FlashPlan::parameters_only`]): every property that
+    /// procedure writes, each on the elements it leaves written
+    /// ([`held_after`]), so a read-back of a correct device finds exactly
+    /// these. Read before the download (the backup must hold each, or nothing
+    /// is written) and after it (each must read back as written), so a write
+    /// the device did not take, or a value a parameter reset changed and
+    /// nothing wrote back, fails the download instead of passing unnoticed.
+    /// For any other plan: [`FlashPlan::parameter_properties`].
+    pub fn checked_properties(&self) -> Vec<ParamProperty> {
+        let Some(steps) = self.par_procedure_writes() else {
+            return self.parameter_properties();
+        };
+        let writes: Vec<PropertyRange> = steps
+            .iter()
+            .filter(|s| s.load_state_control().is_none())
+            .filter_map(crate::flash::FlashStep::property_write)
+            .map(|w| PropertyRange {
+                object: w.object,
+                prop_id: w.prop_id,
+                start: w.start_element,
+                count: w.count.max(1),
+                value: w.value.to_vec(),
+                fixed: !w.from_parameters,
+            })
+            .collect();
+        held_after(&writes)
+            .into_iter()
+            .map(|r| ParamProperty {
+                object: r.object,
+                prop_id: r.prop_id,
+                start_element: r.start,
+                count: r.count,
+                model: r.value,
+                device: None,
+                parameters: Vec::new(),
+                fixed: r.fixed,
+            })
+            .collect()
+    }
+}
+
+/// Reads what the device holds in each of `plan`'s
+/// [`FlashPlan::checked_properties`]: one property read each, on the
+/// connection the parameter memory is read on. A read that fails leaves the
+/// device side `None`, which [`ParamProperty::differs`] counts as a
+/// difference. What a parameter-only download backs up before it writes
+/// and compares after (issues #706, #1052).
+pub async fn read_checked_properties<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Vec<ParamProperty> {
-    let mut out = plan.parameter_properties();
+    read_properties(l4, plan.checked_properties(), Some(app)).await
+}
+
+/// The read-back of a parameter write (issue #1052): reads every property
+/// the written plan `partial` writes ([`FlashPlan::checked_properties`] of
+/// it, so a restore compares the backup's values) and returns the number of
+/// property elements read back as written, or the sentences of the ones
+/// that are not. The one property read-back of `flash --parameters-only`,
+/// `apply` and `restore --parameters`.
+///
+/// # Errors
+///
+/// The properties that do not read back as written, `; `-joined.
+pub async fn read_back_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    partial: &FlashPlan,
+) -> Result<usize, String> {
+    let after = read_properties(l4, partial.checked_properties(), None).await;
+    let unverified: Vec<String> = changed_properties(&after)
+        .iter()
+        .map(|p| p.sentence())
+        .collect();
+    if unverified.is_empty() {
+        Ok(after.iter().map(|p| usize::from(p.count)).sum())
+    } else {
+        Err(format!(
+            "these properties do not read back as written: {}",
+            unverified.join("; ")
+        ))
+    }
+}
+
+/// Reads the device side of each of `out`, naming its parameters from
+/// `app` when given.
+async fn read_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    mut out: Vec<ParamProperty>,
+    app: Option<&ApplicationProgram>,
+) -> Vec<ParamProperty> {
     for property in &mut out {
-        property.parameters = property.parameter_names(app);
+        if let Some(app) = app {
+            property.parameters = property.parameter_names(app);
+        }
         let elem = (property.model.len() / usize::from(property.count)).max(1);
         match read_property_value(
             l4,
@@ -170,9 +345,21 @@ pub async fn read_parameter_properties<Ch: L4Channel>(
     out
 }
 
-/// The properties of `properties` whose device value differs from the model.
+/// The properties of `properties` whose device value differs from the
+/// model: what a read-back after a write reports unverified.
 pub fn changed_properties(properties: &[ParamProperty]) -> Vec<&ParamProperty> {
     properties.iter().filter(|p| p.differs()).collect()
+}
+
+/// The parameter properties of `properties` whose device value differs from
+/// the model: the parameter changes a plan lists and a parameter write is
+/// started for. A fixed write that differs alone is none (issue #1052): it
+/// is rewritten and read back when a parameter change runs the download.
+pub fn changed_parameter_properties(properties: &[ParamProperty]) -> Vec<&ParamProperty> {
+    properties
+        .iter()
+        .filter(|p| !p.fixed && p.differs())
+        .collect()
 }
 
 #[cfg(test)]
@@ -188,6 +375,7 @@ mod tests {
             model: model.to_vec(),
             device: device.map(<[u8]>::to_vec),
             parameters: Vec::new(),
+            fixed: false,
         }
     }
 

@@ -48,6 +48,45 @@ pub struct ParamsRead {
     pub table_change: Option<String>,
 }
 
+/// What every parameter write (`flash --parameters-only`, `apply`, `restore
+/// --parameters`, CLI and MCP) reads of the device's properties, before the
+/// write for the backup and after it for the read-back: the plan's
+/// [`FlashPlan::checked_properties`] (issue #1052). The one function all
+/// three call.
+pub async fn read_written_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+    app: &ApplicationProgram,
+) -> Vec<ParamProperty> {
+    bussard_download::read_checked_properties(l4, plan, app).await
+}
+
+/// What the confirmation of a parameter write says beyond its counts
+/// (issue #1052): that the device's procedure resets all parameters first,
+/// and which of its parts no ETS capture confirms. Empty for any other
+/// parameter-only download. The one text `flash --parameters-only`, `apply`
+/// and the MCP plan show.
+pub fn parameter_write_note(partial: &FlashPlan) -> String {
+    let mut out = String::new();
+    if partial.resets_parameters_first() {
+        out.push_str(
+            "the device's parameter-only procedure resets all its parameters to their defaults \
+             first, then writes every one",
+        );
+    }
+    let unconfirmed = partial.par_procedure_unconfirmed();
+    if !unconfirmed.is_empty() {
+        if !out.is_empty() {
+            out.push_str("; ");
+        }
+        out.push_str(
+            "done by the device's parameter-only procedure, not confirmed by an ETS capture: ",
+        );
+        out.push_str(&unconfirmed.join("; "));
+    }
+    out
+}
+
 /// Reads the parameter regions (plus, on System 7, the code-segment samples
 /// and the link-table comparison) on an open connection.
 pub async fn read_parameters_on<Ch: L4Channel>(
@@ -56,7 +95,7 @@ pub async fn read_parameters_on<Ch: L4Channel>(
     app: &ApplicationProgram,
 ) -> ParamsRead {
     let regions = bussard_download::read_parameter_regions(l4, plan, &[]).await;
-    let properties = bussard_download::read_parameter_properties(l4, plan, app).await;
+    let properties = read_written_properties(l4, plan, app).await;
     let (code_mismatch, table_change) = if plan.is_sys7() {
         (
             bussard_download::sys7_code_mismatch(l4, plan).await,
@@ -100,8 +139,22 @@ pub async fn read_parameters(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Result<ParamsRead, ServiceError> {
-    // Best-effort: a denial or a device without authorize still reads.
-    let options = L4Options::secured(
+    let options = read_options(session);
+    session
+        .service
+        .with_l4(session.target, &options, async |l4| {
+            // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
+            // read goes out in APDU-sized chunks without re-reading it.
+            l4.set_max_apdu(session.max_apdu);
+            Ok::<_, ServiceError>(read_parameters_on(l4, plan, app).await)
+        })
+        .await
+}
+
+/// The options a parameter read opens its connection with. Best-effort: a
+/// denial or a device without authorize still reads.
+fn read_options(session: &ParamsSession<'_>) -> L4Options {
+    L4Options::secured(
         session.service.handle().group_source(),
         session.tool_key.clone(),
         session.high_water.clone(),
@@ -110,14 +163,26 @@ pub async fn read_parameters(
         session
             .bcu_key
             .unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
-    ));
+    ))
+}
+
+/// The read-back after a parameter-only download on a fresh connection:
+/// the parameter memory of `plan` and [`bussard_download::read_back_properties`]
+/// of `partial` (issue #1052).
+async fn read_back(
+    session: &ParamsSession<'_>,
+    plan: &FlashPlan,
+    partial: &FlashPlan,
+) -> Result<(ParamRegions, Result<usize, String>), ServiceError> {
+    let options = read_options(session);
     session
         .service
         .with_l4(session.target, &options, async |l4| {
-            // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
-            // read goes out in APDU-sized chunks without re-reading it.
             l4.set_max_apdu(session.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(l4, plan, app).await)
+            Ok::<_, ServiceError>((
+                bussard_download::read_parameter_regions(l4, plan, &[]).await,
+                bussard_download::read_back_properties(l4, partial).await,
+            ))
         })
         .await
 }
@@ -227,9 +292,15 @@ impl ParamsPlanned {
                 self.properties.len()
             )
         };
+        let note = parameter_write_note(&self.partial);
+        let note = if note.is_empty() {
+            String::new()
+        } else {
+            format!(" ({note})")
+        };
         Question {
             kind: crate::observer::Ask::Write,
-            prompt: format!("download the parameters ({what}) to {target} via {gateway}?"),
+            prompt: format!("download the parameters ({what}) to {target} via {gateway}{note}?"),
             action: format!("flash the parameters of {target} via {gateway}"),
         }
     }
@@ -293,10 +364,11 @@ pub fn plan_parameters_only(
              flash {target}` instead."
         ));
     }
-    let properties: Vec<ParamProperty> = bussard_download::changed_properties(&read.properties)
-        .into_iter()
-        .cloned()
-        .collect();
+    let properties: Vec<ParamProperty> =
+        bussard_download::changed_parameter_properties(&read.properties)
+            .into_iter()
+            .cloned()
+            .collect();
     Ok(ParamsPlanned {
         partial,
         regions,
@@ -400,42 +472,34 @@ pub async fn write_parameters_only(
     observer.event(Event::Step(Step::Download {
         plan: &planned.partial,
     }));
-    let (plan, app) = (write.plan, write.app);
+    let plan = write.plan;
     // Write, restart, verify, then read the parameters back on the same
     // (post-restart) connection (issue #215).
     let (outcome, after) =
         crate::download::flash_session(run, &planned.partial, &mut *observer, async |l4| {
             (
                 bussard_download::read_parameter_regions(l4, plan, &[]).await,
-                bussard_download::read_parameter_properties(l4, plan, app).await,
+                bussard_download::read_back_properties(l4, &planned.partial).await,
             )
         })
         .await;
     let verified = match &outcome {
         Ok(done) if done.ok() => {
-            let (after, after_props) = match after {
+            let (after, properties) = match after {
                 Some(read) => read,
-                None => {
-                    let read = read_parameters(&write.session, plan, app)
-                        .await
-                        .map_err(ParamsWriteError::Session)?;
-                    (read.regions, read.properties)
-                }
+                None => read_back(&write.session, plan, &planned.partial)
+                    .await
+                    .map_err(ParamsWriteError::Session)?,
             };
-            // The properties the download wrote read back as the model.
-            let unverified: Vec<String> = bussard_download::changed_properties(&after_props)
-                .iter()
-                .map(|p| p.sentence())
-                .collect();
-            Some(if unverified.is_empty() {
+            // Every property the download wrote reads back as written
+            // (issue #1052), then the memory.
+            Some(properties.and_then(|_| {
                 bussard_download::verify_readback(
                     &planned.partial,
                     &after,
                     &bussard_download::runtime_segments(plan),
                 )
-            } else {
-                Err(unverified.join("; "))
-            })
+            }))
         }
         _ => None,
     };
@@ -694,6 +758,7 @@ mod tests {
             model: vec![1],
             device,
             parameters: Vec::new(),
+            fixed: false,
         };
         let read = prop(52, Some(vec![0]));
         let unread = prop(53, None);

@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use bussard_download::{
     FlashStep, PlanError, PropObject, Session, build_table_images, changed_properties, flash,
-    planned_parameter_regions, read_parameter_properties, read_parameter_regions,
+    planned_parameter_regions, read_checked_properties, read_parameter_regions,
     read_property_value, template_ops_for,
 };
 use bussard_mgmt::connection::Layer4Connection;
@@ -321,7 +321,7 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
     assert!(outcome.ok(), "{outcome:?}");
     // The parameter read: memory as the model, the property not.
     let regions = read_parameter_regions(session.l4(), &plan, &[]).await;
-    let properties = read_parameter_properties(session.l4(), &plan, app).await;
+    let properties = read_checked_properties(session.l4(), &plan, app).await;
     let partial = plan.parameters_only(&regions)?;
     assert_eq!(partial.changed_octets(), 0);
     let changed = changed_properties(&properties);
@@ -336,7 +336,7 @@ async fn test_parameters_only_download_lands_the_property_placed_parameter() -> 
     )
     .await?;
     assert!(outcome.ok(), "{outcome:?}");
-    let after = read_parameter_properties(session.l4(), &plan, app).await;
+    let after = read_checked_properties(session.l4(), &plan, app).await;
     let _ = session.into_disconnect().await;
     assert!(changed_properties(&after).is_empty(), "{after:?}");
     let dev = gw.with_device(ia("1.1.1")?, |d| d.clone())?;

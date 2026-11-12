@@ -388,6 +388,9 @@ struct SystemB<'a> {
     // The objects a parameter-only download found `Loaded` before its first
     // `Unload` (issue #543), so a replayed `Unload` does not check again.
     partial_checked: BTreeSet<u8>,
+    // The base pointer each object reported before the parameter-only
+    // download unloaded it (issue #1052, [`FlashStep::ReadTableReference`]).
+    table_references: BTreeMap<u8, u32>,
 }
 
 impl StepExecutor for SystemB<'_> {
@@ -730,6 +733,7 @@ impl StepExecutor for SystemB<'_> {
                 from_parameters: false,
                 ..
             } if plan.spliced_from_template
+                && !plan.is_parameters_only()
                 && object.index().is_some_and(|obj_idx| {
                     !object_table.iter().any(|(i, _)| u32::from(*i) == obj_idx)
                 }) => {}
@@ -1007,6 +1011,17 @@ impl StepExecutor for SystemB<'_> {
                         Some(img) if img.kind == ImageKind::Table => {
                             (*obj_idx).min(u32::from(u8::MAX)) as u8
                         }
+                        // The parameter-only procedure keeps a code image
+                        // it does not rewrite (issue #1052): its check names
+                        // the object that holds it, as ETS reads it (E804
+                        // ops 458 to 461), with no write to infer it from.
+                        Some(_) if plan.is_built_from_par_procedure() => resolve_object_target_opt(
+                            Some(*obj_idx),
+                            object_table,
+                            app_obj,
+                            plan.spliced_from_template,
+                        )
+                        .unwrap_or(app_obj),
                         Some(img) => mcb_read_object(
                             &plan.steps,
                             plan.spliced_from_template,
@@ -1304,6 +1319,42 @@ impl StepExecutor for SystemB<'_> {
                     let _ = session.l4().send_data_unacked(apci, &payload).await;
                 }
             }
+            // The parameter-only procedure's base pointer, read before the
+            // unload and checked after the load (KNX 3/5/3 §3.9.3.6, issue
+            // #1052). An object the device does not list is skipped, as its
+            // unload and load are.
+            FlashStep::ReadTableReference { obj_idx } => {
+                if let Some(obj) =
+                    resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
+                {
+                    let value =
+                        super::session::read_table_reference_resumable(session, obj).await?;
+                    self.table_references.insert(obj, value);
+                }
+            }
+            FlashStep::CompareTableReference { obj_idx } => {
+                if let Some(obj) =
+                    resolve_object_target_opt(Some(*obj_idx), object_table, app_obj, true)
+                {
+                    let actual =
+                        super::session::read_table_reference_resumable(session, obj).await?;
+                    let expected = self.table_references.get(&obj).copied();
+                    if Some(actual) != expected {
+                        return Err(WriteError::PropCompareMismatch {
+                            address: session.l4().target(),
+                            object_index: obj,
+                            property_id: bussard_mgmt::tables::PID_TABLE_REFERENCE,
+                            expected: expected
+                                .map(|e| e.to_be_bytes().to_vec())
+                                .unwrap_or_default(),
+                            actual: actual.to_be_bytes().to_vec(),
+                            mask_note: " (the base pointer moved between the unload and the \
+                                        load of the parameter-only download)"
+                                .to_string(),
+                        });
+                    }
+                }
+            }
             // System 7 steps never reach this executor: `flash_sys7` runs a
             // System 7 plan (dispatched at the top of `flash_steps`).
             other => {
@@ -1376,6 +1427,28 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         BTreeSet::new()
     };
 
+    // A parameter-only download by the mask's `par` procedure writes no
+    // table but checks the tables' MCBs after LoadCompleted (MergeId 7):
+    // compare them before the first step, so a device whose links differ
+    // from the project is refused untouched rather than after its
+    // parameters were reset (issue #1052). ETS reads MCBs before its
+    // partial download too (`M-0009_A-E804-10-98AD` ops 24 and 25, objects 3
+    // and 4) and, KNX 3/5/3 §3.9.3.6 says, compares them as its
+    // pre-download check.
+    // A parameter-only download rewrites the resident application
+    // (Configuration Procedures 03_05_03 §3.5.3): every object it unloads
+    // must hold it, checked before the first unload, so object 4 is not
+    // found unloaded after object 5 already was (issue #1052, the `par`
+    // procedure unloads object 5 first).
+    let partial_checked = if plan.is_parameters_only() {
+        check_loaded_before_unloading(session, plan, &object_table, app_obj).await?
+    } else {
+        BTreeSet::new()
+    };
+    if plan.is_built_from_par_procedure() {
+        check_kept_images_before_par_procedure(session, plan, &object_table, app_obj).await?;
+    }
+
     // Data Secure (issue #537): the group key table and the security
     // individual address table must fit the device. A capacity the product
     // does not declare is read from the property description, over the
@@ -1406,7 +1479,8 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         written_samples: Vec::new(),
         mcb_verified: BTreeSet::new(),
         verified: None,
-        partial_checked: BTreeSet::new(),
+        partial_checked,
+        table_references: BTreeMap::new(),
     };
     let threshold = reconnect_exchange_threshold(plan);
     run_steps(session, plan, threshold, &mut progress, &mut exec).await?;
@@ -1701,6 +1775,120 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Reads the load state of every object `plan` unloads (as its `Unload`
+/// steps resolve) and fails with [`WriteError::NotLoaded`] unless each is
+/// `Loaded`; the objects checked.
+async fn check_loaded_before_unloading<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+) -> Result<BTreeSet<u8>, WriteError> {
+    let mut checked = BTreeSet::new();
+    for step in &plan.steps {
+        // A mapped unload (`LdCtrlMapError`) may name an absent object and
+        // is not gated, as its step is not.
+        let FlashStep::Unload {
+            target,
+            absent_ok: false,
+        } = step
+        else {
+            continue;
+        };
+        let Some(obj) =
+            resolve_object_target_opt(*target, object_table, app_obj, plan.spliced_from_template)
+        else {
+            continue;
+        };
+        if !checked.insert(obj) {
+            continue;
+        }
+        let actual = read_load_state_resumable(session, obj).await?;
+        if actual != LoadState::Loaded {
+            return Err(WriteError::NotLoaded {
+                address: session.l4().target(),
+                object_index: obj,
+                actual,
+            });
+        }
+    }
+    Ok(checked)
+}
+
+/// Compares, before anything is written, the MCB of every image a
+/// parameter-only plan built from the `par` procedure checks without
+/// rewriting it (issue #1052): the tables, and a code image the procedure
+/// keeps. A table that differs is [`WriteError::TablesChanged`], a kept code
+/// image [`WriteError::KeptImageChanged`]. An advisory check (one the
+/// application's own procedure does not declare, issue #145) stays advisory
+/// and is not compared here.
+async fn check_kept_images_before_par_procedure<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
+) -> Result<(), WriteError> {
+    for step in &plan.steps {
+        let FlashStep::LoadImageProp {
+            obj_idx,
+            prop_id,
+            count,
+            image: Some(image),
+            advisory: false,
+        } = step
+        else {
+            continue;
+        };
+        if *prop_id != u32::from(bussard_mgmt::PID_MCB_TABLE) {
+            continue;
+        }
+        let rewritten = plan.steps.iter().any(|s| {
+            matches!(s, FlashStep::WriteRelMem { image: w, .. } if w.segment_id == image.segment_id)
+        });
+        if rewritten {
+            continue;
+        }
+        let Some(bytes) = plan.images.get(&image.segment_id) else {
+            continue;
+        };
+        let table = image.kind == ImageKind::Table;
+        let obj = if table {
+            if !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx) {
+                continue;
+            }
+            u8::try_from(*obj_idx).unwrap_or(u8::MAX)
+        } else {
+            match resolve_object_target_opt(
+                Some(*obj_idx),
+                object_table,
+                app_obj,
+                plan.spliced_from_template,
+            ) {
+                Some(obj) => obj,
+                None => continue,
+            }
+        };
+        let count = u8::try_from(*count).unwrap_or(u8::MAX);
+        match read_mcb_table(session.l4(), obj, 1, count, Some(bytes)).await {
+            Ok(_) => {}
+            Err(WriteError::ImagePropMismatch { address, .. }) if table => {
+                return Err(WriteError::TablesChanged {
+                    address,
+                    object_index: obj,
+                });
+            }
+            Err(WriteError::ImagePropMismatch { address, .. }) => {
+                return Err(WriteError::KeptImageChanged {
+                    address,
+                    object_index: obj,
+                });
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// Runs a load procedure's `LdCtrlMasterReset` in the confirmed form (KNX

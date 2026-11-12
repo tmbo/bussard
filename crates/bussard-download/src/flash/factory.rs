@@ -208,8 +208,10 @@ impl FlashStep {
 
     /// The step as a download that resets no parameters runs it: a
     /// [`FlashStep::FactoryHeldProp`] is the write it leaves out, every other
-    /// step itself. The parameter-only download resets nothing, so the
-    /// device may hold another value there.
+    /// step itself. A parameter-only download cut from the complete one
+    /// resets nothing, so the device may hold another value there; one run
+    /// by the mask's `par` procedure keeps the procedure's own reset and
+    /// its held writes as they are (issue #1052).
     pub fn without_parameter_reset(&self) -> FlashStep {
         match self {
             FlashStep::FactoryHeldProp {

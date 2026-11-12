@@ -193,6 +193,8 @@ pub enum ParamWriteOutcome {
     Verified {
         /// How many changed octets the read-back checked.
         octets: usize,
+        /// How many property elements the read-back checked (issue #1052).
+        elements: usize,
     },
     /// The download ran but did not verify.
     NotVerified(Box<FlashOutcome>),
@@ -244,6 +246,11 @@ pub struct ParamWrite<'a> {
     pub high_water: SequenceHighWater,
     /// The session the memory is read back on.
     pub read_options: &'a L4Options,
+    /// Whether this read-back also reads every property the download wrote
+    /// (issue #1052). `restore --parameters` sets it; `apply` does not, as
+    /// its independent read-back after the write reads the same properties
+    /// (`ExpectedProperty::from_checked`), and one element is read once.
+    pub read_back_properties: bool,
 }
 
 /// Writes the parameter octets that differ and verifies them by reading the
@@ -268,6 +275,7 @@ pub async fn write_parameters(
         tool_key,
         high_water,
         read_options,
+        read_back_properties,
     } = write;
     let mut facts = DeviceFactsRecord::unread(target);
     facts.set_object_table(&detail.resident.object_table);
@@ -292,20 +300,31 @@ pub async fn write_parameters(
         Ok(outcome) => return Ok(ParamWriteOutcome::NotVerified(Box::new(outcome))),
         Err(err) => return Ok(ParamWriteOutcome::Failed(err)),
     }
-    let after = service
+    // The memory and every property the download wrote, read back (issue
+    // #1052: a restore by a procedure that resets the parameters first must
+    // find each backed-up value, as `flash --parameters-only` does).
+    let (after, properties) = service
         .with_l4(target, read_options, async |l4| {
-            Ok::<_, ServiceError>(
-                bussard_download::read_parameter_regions(l4, &detail.plan, &[]).await,
-            )
+            let regions = bussard_download::read_parameter_regions(l4, &detail.plan, &[]).await;
+            let properties = if read_back_properties {
+                bussard_download::read_back_properties(l4, partial).await
+            } else {
+                Ok(0)
+            };
+            Ok::<_, ServiceError>((regions, properties))
         })
         .await?;
+    let elements = match properties {
+        Ok(elements) => elements,
+        Err(reason) => return Ok(ParamWriteOutcome::Mismatch(reason)),
+    };
     Ok(
         match bussard_download::verify_readback(
             partial,
             &after,
             &bussard_download::runtime_segments(&detail.plan),
         ) {
-            Ok(octets) => ParamWriteOutcome::Verified { octets },
+            Ok(octets) => ParamWriteOutcome::Verified { octets, elements },
             Err(reason) => ParamWriteOutcome::Mismatch(reason),
         },
     )

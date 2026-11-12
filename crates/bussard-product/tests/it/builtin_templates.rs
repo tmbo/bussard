@@ -96,3 +96,51 @@ fn test_builtin_for_mask_matches_corpus_master() -> TestResult {
     );
     Ok(())
 }
+
+#[test]
+fn test_builtin_par_for_mask_matches_corpus_master() -> TestResult {
+    // Issue #1052: the parameter-only procedure bussard carries is the one
+    // every corpus master declares.
+    let Some(dir) = std::env::var_os("BUSSARD_PRODUCT_CORPUS") else {
+        eprintln!("skipping: BUSSARD_PRODUCT_CORPUS is not set");
+        return Ok(());
+    };
+    let dir = PathBuf::from(dir);
+    let dir = [dir.join("cache/vendor"), dir.join("vendor")]
+        .into_iter()
+        .find(|d| d.is_dir())
+        .unwrap_or(dir);
+    let mut compared = [0usize; BUILTIN_TEMPLATE_MASKS.len()];
+    let mut mismatches = Vec::new();
+    for file in knxprods(&dir) {
+        let Ok(Some(xml)) = master_xml(&file) else {
+            continue;
+        };
+        let master = parse_master_template(&xml, "knx_master.xml")?;
+        for (i, mask) in BUILTIN_TEMPLATE_MASKS.iter().enumerate() {
+            let Some(parsed) = master
+                .masks
+                .get(*mask)
+                .and_then(|procs| procs.iter().find(|p| p.sub_type.as_deref() == Some("par")))
+            else {
+                continue;
+            };
+            compared[i] += 1;
+            if Some(parsed) != MasterTemplate::builtin_par_for_mask(mask).as_ref() {
+                mismatches.push(format!("{} MV-{mask}", file.display()));
+            }
+        }
+    }
+    eprintln!("compared per mask {BUILTIN_TEMPLATE_MASKS:?}: {compared:?}");
+    assert!(
+        mismatches.is_empty(),
+        "the built-in par procedure differs from the master data in {} archive(s): {:?}",
+        mismatches.len(),
+        &mismatches[..mismatches.len().min(10)]
+    );
+    assert!(
+        compared.iter().all(|&n| n > 0),
+        "a built-in mask no corpus master declares a par procedure for: {compared:?}"
+    );
+    Ok(())
+}

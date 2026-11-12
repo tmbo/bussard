@@ -411,7 +411,7 @@ impl FlashPlan {
     /// whose parameters all live in interface-object properties (the Hager
     /// 07B0 actuators, issue #944): [`read_parameter_regions`] then reads
     /// nothing, and that is no failure; the parameters are read with
-    /// [`crate::read_parameter_properties`].
+    /// [`crate::read_checked_properties`].
     pub fn has_parameter_memory(&self) -> bool {
         self.param_images.values().any(|b| !b.is_empty())
     }

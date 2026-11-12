@@ -113,13 +113,8 @@ fn branch_taken(
 /// The ops of `lp` whose `<choose>` branches `config` takes, in order. A
 /// procedure without `<choose>` returns all of its ops.
 ///
-/// Every planner builds a complete download. A procedure that lists its
-/// partial downloads after the complete one
-/// ([`LoadProcedure::lists_partial_downloads`], the Siemens 07B0 product
-/// procedures of issue #614) runs none of their ops
-/// ([`LoadProcedure::is_partial_only`]). Any other procedure keeps its
-/// `AppliesTo="par"` ops, as before: there they restate the complete
-/// download's allocation (issue #490) or write the parameter segment.
+/// `in_download` says which ops the download runs at all
+/// ([`super::plan::assemble_ops`] decides it from `AppliesTo`).
 ///
 /// The evaluation is recursive, as the Dynamic walk's: an op inside nested
 /// `<choose>` blocks carries its branches outermost first
@@ -136,11 +131,11 @@ pub(super) fn taken_ops(
     app: &ApplicationProgram,
     lp: &LoadProcedure,
     config: &DynamicConfig,
+    in_download: &dyn Fn(&LoadProcedure, usize) -> bool,
 ) -> Result<Vec<LoadOp>, PlanError> {
     let mut out = Vec::with_capacity(lp.ops.len());
-    let complete_only = lp.lists_partial_downloads();
     for (i, op) in lp.ops.iter().enumerate() {
-        if complete_only && lp.is_partial_only(i) {
+        if !in_download(lp, i) {
             continue;
         }
         let mut taken = true;
@@ -286,7 +281,7 @@ pub(super) fn guarded_ops(
     app: &ApplicationProgram,
     config: &DynamicConfig,
 ) -> Result<Vec<LoadOp>, PlanError> {
-    let (ops, _, gaps) = super::plan::assemble_ops(app, None, config)?;
+    let (ops, _, gaps) = super::plan::assemble_ops(app, None, config, super::plan::Download::Full)?;
     match partial_rel_mem_refusal(&gaps) {
         Some(err) => Err(err),
         None => Ok(ops),
@@ -923,6 +918,8 @@ pub(super) fn plan_flash_properties(
         typed_objects_by_list: false,
         par_allocations: BTreeMap::new(),
         par_procedure: false,
+        par_steps: None,
+        from_par_procedure: false,
         parameters_only: false,
         kept: Vec::new(),
     })

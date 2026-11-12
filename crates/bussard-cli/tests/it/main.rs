@@ -44,6 +44,7 @@ mod mcp_secure_mock;
 mod mcp_stdio;
 mod mcp_stdio_client;
 mod offline_oracle;
+mod par_procedure_mock;
 mod plan_mock;
 mod plan_property_mock;
 // Includes support/param_mock.rs, whose Secure and large-segment helpers only

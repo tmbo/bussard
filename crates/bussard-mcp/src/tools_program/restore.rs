@@ -337,12 +337,13 @@ impl BussardMcp {
                 tool_key: planned.tool_key.clone(),
                 high_water: planned.high_water.clone(),
                 read_options: &read_options,
+                read_back_properties: true,
             },
             &mut observer,
         )
         .await;
         let (ok, parameters) = match &outcome {
-            Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => (
+            Ok(bussard_service::download::ParamWriteOutcome::Verified { octets, .. }) => (
                 true,
                 ParametersWritten {
                     written: true,

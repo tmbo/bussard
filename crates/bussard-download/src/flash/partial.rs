@@ -26,9 +26,21 @@
 //!   (issue #944, the Hager 07B0 actuators) gets the same bracket on the
 //!   object its `par` allocation names, around every property its parameters
 //!   are placed in (with the property's declaration) instead of a memory
-//!   write; without a `par` allocation of the full allocation's size it is
-//!   refused. Every property a parameter is placed in is written on
-//!   whichever object it sits, for a program with memory parameters too.
+//!   write. Every property a parameter is placed in is written on whichever
+//!   object it sits, for a program with memory parameters too.
+//! - **System B, parameters in properties only, spliced into the master
+//!   template** (issue #1052): the mask's parameter-only procedure itself
+//!   (KNX 3/5/3 §3.9.3.6, [`FlashPlan::par_procedure`]), lowered as the
+//!   complete download is, with the application's ops whose `AppliesTo`
+//!   names `par` or that have none: the base pointer read before the unload
+//!   and checked after the load, the `MergeId` 2, 4, 6 and 7 blocks (a
+//!   `MergeId` 4 parameter reset and every write after it included), the
+//!   program version, LoadCompleted and the restart. A fixed code image is
+//!   not rewritten (ETS's download is differential); its MCB check stays.
+//!   This takes precedence over the cut above; ETS's partial downloads of
+//!   `M-0009_A-E802-13-7620` (no `par` allocation, a parameter reset) and
+//!   `M-0009_A-E804-10-98AD` (a `par` allocation, MergeId 7's trailing
+//!   write, #1038) are the captures.
 //! - **System 7** (issue #146): `StartLoading` the load-state machine that
 //!   holds the parameter segments, each parameter image as an absolute write at
 //!   its segment address, `LoadCompleted`, the procedure's MCB reads, and the
@@ -81,6 +93,75 @@ pub enum PartialPlanError {
         /// The code-segment id.
         segment: String,
     },
+    /// The mask's parameter-only procedure could not be lowered for the
+    /// program (issue #1052).
+    #[error(
+        "the mask's parameter-only load procedure could not be planned for the application: \
+         {reason}; use a full `bussard flash`"
+    )]
+    ParProcedure {
+        /// Why, as the planner said it.
+        reason: String,
+    },
+    /// The parameter-only procedure resets something it does not write back
+    /// (issue #1052): a master reset with an erase code other than 1
+    /// (restart) or 5 (the parameters, all rewritten after it).
+    #[error(
+        "the application's parameter-only load procedure master-resets the device with erase \
+         code {erase_code}, which erases {lost}; a parameter-only download does not write that \
+         back, so it would leave the device without it. Use a full `bussard flash`"
+    )]
+    ResetLosesState {
+        /// The erase code.
+        erase_code: u8,
+        /// What the reset erases, in words.
+        lost: &'static str,
+    },
+    /// A parameter of the complete download is written to a property the
+    /// parameter-only procedure does not write (issue #1052): the
+    /// parameter-only download could not set it, and its parameter reset
+    /// would leave it at the factory value.
+    #[error(
+        "the application's parameter-only load procedure does not write {property}, where the \
+         complete download writes parameters; a parameter-only download could not set them \
+         (and its parameter reset would leave them at their defaults). Use a full `bussard \
+         flash`"
+    )]
+    ParameterNotInProcedure {
+        /// The property and its elements, in words.
+        property: String,
+    },
+    /// The parameter-only procedure allocates an object with the fill bit
+    /// set, so the device refills its segment, and does not write that
+    /// segment again and check its MCB (issue #1052).
+    #[error(
+        "the application's parameter-only load procedure refills object {object}'s segment \
+         ({segment}) and {}; the device would run with that segment erased. Use a full \
+         `bussard flash`",
+        if *rewritten { "checks no MCB of it afterwards" } else { "does not write it again" }
+    )]
+    RefilledSegmentUnwritten {
+        /// The object index.
+        object: u32,
+        /// The code segment id.
+        segment: String,
+        /// Whether the procedure writes it again (and only the check is missing).
+        rewritten: bool,
+    },
+    /// The parameter-only procedure unloads an object whose segment the
+    /// complete download allocates, and allocates nothing for it (issue
+    /// #1052): the object would be loaded again without its segment.
+    #[error(
+        "the application's parameter-only load procedure unloads object {object} and allocates \
+         no segment for it, although the complete download allocates {size} octets there; the \
+         object would be left without its memory. Use a full `bussard flash`"
+    )]
+    DropsSegment {
+        /// The object index.
+        object: u32,
+        /// The size the complete download allocates.
+        size: u32,
+    },
     /// The procedure carries a step whose parameter-only form no capture
     /// shows (issue #946): a function property call, of which the full
     /// procedure makes one per `AppliesTo`, a load-state control naming its
@@ -106,7 +187,14 @@ impl FlashPlan {
     /// procedure writes no parameter image, or when a parameter segment was not
     /// read back.
     pub fn parameters_only(&self, regions: &ParamRegions) -> Result<FlashPlan, PartialPlanError> {
-        for step in &self.steps {
+        // The steps that will run: the mask's parameter-only procedure's
+        // where the plan carries it (issue #1052), else the complete
+        // download's the cut is taken from.
+        let runs: &[FlashStep] = match self.par_procedure() {
+            Some(par) if !self.is_sys7() => par,
+            _ => &self.steps,
+        };
+        for step in runs {
             let what = match step {
                 FlashStep::InvokeFunctionProp {
                     object, prop_id, ..
@@ -139,6 +227,9 @@ impl FlashPlan {
         }
         let steps = if self.is_sys7() {
             self.sys7_parameter_steps(regions)?
+        } else if let Some(par) = &self.par_steps {
+            // Lowered with its description reads already.
+            self.par_procedure_steps(par)?
         } else {
             self.system_b_parameter_steps(regions)?
         };
@@ -146,7 +237,12 @@ impl FlashPlan {
         // the ones its own writes need on its connection (issue #1014; no
         // capture of a parameter-only download shows them, the rule is the
         // full download's).
-        let steps = super::describe::describe_untyped_properties(steps);
+        let by_par = self.par_steps.is_some() && !self.is_sys7();
+        let steps = if by_par {
+            steps
+        } else {
+            super::describe::describe_untyped_properties(steps)
+        };
         let baseline: BTreeMap<String, Vec<u8>> = steps
             .iter()
             .filter_map(|step| match step {
@@ -210,6 +306,8 @@ impl FlashPlan {
             typed_objects_by_list: self.typed_objects_by_list,
             par_allocations: BTreeMap::new(),
             par_procedure: false,
+            par_steps: None,
+            from_par_procedure: by_par,
             parameters_only: true,
             kept: self.kept.clone(),
         })
@@ -311,25 +409,85 @@ impl FlashPlan {
 
     /// The plan with each write of a parameter property set to `values`
     /// ((object, property id, start element) to its value; issue #944): what
-    /// a restore of a property-only program writes. A write `values` does not
-    /// name, and every write not composed from parameters, keeps its value.
+    /// a restore of a property-only program writes. The keys are the ranges
+    /// of [`FlashPlan::checked_properties`], and each value lands element by
+    /// element on the writes that cover it, so a range a later write split
+    /// (issue #946) is restored on both. A plan built from the mask's
+    /// parameter-only procedure (issue #1052) restores every property it
+    /// writes, and a write it leaves out as held after its parameter reset
+    /// becomes a write of the backup's value: after the reset the device
+    /// holds the factory value, not the backup's. Any other write keeps its
+    /// value.
     pub fn with_property_values(
         &self,
         values: &BTreeMap<(super::PropObject, u32, u16), Vec<u8>>,
     ) -> FlashPlan {
+        let mut elements: BTreeMap<(super::PropObject, u32, u32), Vec<u8>> = BTreeMap::new();
+        for range in self.checked_properties() {
+            let Some(value) = values.get(&(range.object, range.prop_id, range.start_element))
+            else {
+                continue;
+            };
+            let count = usize::from(range.count.max(1));
+            if value.is_empty() || !value.len().is_multiple_of(count) {
+                continue;
+            }
+            let elem = value.len() / count;
+            for (i, chunk) in value.chunks(elem).enumerate() {
+                elements.insert(
+                    (
+                        range.object,
+                        range.prop_id,
+                        u32::from(range.start_element) + i as u32,
+                    ),
+                    chunk.to_vec(),
+                );
+            }
+        }
+        let every = self.from_par_procedure;
+        let covers = |object: super::PropObject, prop_id: u32, start: u16, count: u16| {
+            (0..u32::from(count.max(1)))
+                .any(|i| elements.contains_key(&(object, prop_id, u32::from(start) + i)))
+        };
         let mut plan = self.clone();
         for step in &mut plan.steps {
-            if let FlashStep::WriteProp {
+            if let FlashStep::FactoryHeldProp {
                 object,
                 prop_id,
                 start_element,
-                value,
-                from_parameters: true,
+                count,
                 ..
             } = step
-                && let Some(v) = values.get(&(*object, *prop_id, *start_element))
+                && every
+                && covers(*object, *prop_id, *start_element, *count)
             {
-                v.clone_into(value);
+                *step = step.without_parameter_reset();
+            }
+            if let FlashStep::WriteProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                from_parameters,
+                ..
+            } = step
+                && (every || *from_parameters)
+            {
+                let n = usize::from((*count).max(1));
+                if value.is_empty() || !value.len().is_multiple_of(n) {
+                    continue;
+                }
+                let elem = value.len() / n;
+                for i in 0..n {
+                    let key = (*object, *prop_id, u32::from(*start_element) + i as u32);
+                    if let (Some(new), Some(slot)) =
+                        (elements.get(&key), value.get_mut(i * elem..(i + 1) * elem))
+                        && new.len() == slot.len()
+                    {
+                        slot.copy_from_slice(new);
+                    }
+                }
             }
         }
         plan
@@ -473,7 +631,7 @@ impl FlashPlan {
                     }
                     steps.push(step.clone());
                 }
-                // The parameter-only download resets nothing, so a write the
+                // This parameter-only download resets nothing, so a write the
                 // full plan leaves out as held after the reset is written
                 // (issue #951); converted here, one step at a time.
                 FlashStep::FactoryHeldProp {
@@ -538,6 +696,229 @@ impl FlashPlan {
             }
         }
         Ok(steps)
+    }
+
+    /// Whether this plan carries the mask's parameter-only procedure (issue
+    /// #1052): a System B program spliced into the master template whose
+    /// parameters all live in properties.
+    pub fn takes_par_procedure(&self) -> bool {
+        self.sys7.is_none()
+            && self.spliced_from_template
+            && !self.has_parameter_memory()
+            && !self.parameter_properties().is_empty()
+    }
+
+    /// The parameter-only download by the mask's `par` procedure (module
+    /// docs, issue #1052): its steps, less the fixed code images the
+    /// differential download does not rewrite, refused before anything is
+    /// sent when the procedure would erase what it does not write back.
+    fn par_procedure_steps(
+        &self,
+        par: &Result<Vec<FlashStep>, String>,
+    ) -> Result<Vec<FlashStep>, PartialPlanError> {
+        let par = par
+            .as_ref()
+            .map_err(|reason| PartialPlanError::ParProcedure {
+                reason: reason.clone(),
+            })?;
+        for step in par {
+            if let FlashStep::MasterReset { erase_code, .. } = step
+                && let Some(lost) = erased_and_not_restored(*erase_code)
+            {
+                return Err(PartialPlanError::ResetLosesState {
+                    erase_code: *erase_code,
+                    lost,
+                });
+            }
+        }
+        // Every parameter element the complete download writes must be one
+        // the parameter-only procedure writes: one it leaves out is neither
+        // set to the model's value nor, after a parameter reset, put back
+        // (issue #1052).
+        if let Some(missing) = self.parameter_elements_outside(par) {
+            return Err(PartialPlanError::ParameterNotInProcedure { property: missing });
+        }
+        // An object the procedure unloads keeps its segment only when the
+        // procedure allocates it again, of the size the device holds.
+        let full_alloc = |object: Option<u32>| {
+            self.steps.iter().find_map(|s| match s {
+                FlashStep::AllocateSegment { size, target, .. } if *target == object => Some(*size),
+                _ => None,
+            })
+        };
+        let par_alloc = |object: Option<u32>| {
+            par.iter().find_map(|s| match s {
+                FlashStep::AllocateSegment { size, target, .. } if *target == object => Some(*size),
+                _ => None,
+            })
+        };
+        for step in par {
+            let FlashStep::Unload { target, .. } = step else {
+                continue;
+            };
+            match (full_alloc(*target), par_alloc(*target)) {
+                (Some(size), None) if size > 0 => {
+                    return Err(PartialPlanError::DropsSegment {
+                        object: target.unwrap_or(0),
+                        size,
+                    });
+                }
+                (Some(full), Some(again)) if full != again => {
+                    return Err(PartialPlanError::NoParAllocation);
+                }
+                _ => {}
+            }
+        }
+        // A fixed code image is not rewritten where the procedure keeps the
+        // memory (no allocation, or one in Mode 0): the download is
+        // differential (§3.9.3.6 remarks), and the MCB check that follows
+        // compares it. Where the procedure allocates the object with the
+        // fill bit set, the device refills the segment, so the image is
+        // written as the procedure says.
+        //
+        // A refilled segment must be written again and its MCB compared in
+        // the same procedure, the segment found through the binding the
+        // complete download uses (a write naming its object, else the most
+        // recent allocation): otherwise the device would run with an erased
+        // segment that nothing checks. Refused before anything is sent.
+        let refilled: BTreeSet<Option<u32>> = par
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::AllocateSegment { target, fill, .. } if fill.prefill().is_some() => {
+                    Some(*target)
+                }
+                _ => None,
+            })
+            .collect();
+        let par_bound = bound_writes(par);
+        for object in &refilled {
+            let written: Vec<&String> = par_bound
+                .iter()
+                .filter(|(_, o)| o == object)
+                .map(|(s, _)| s)
+                .collect();
+            if written.is_empty() {
+                return Err(PartialPlanError::RefilledSegmentUnwritten {
+                    object: object.unwrap_or(0),
+                    segment: self.segment_of(*object),
+                    rewritten: false,
+                });
+            }
+            for segment in written {
+                let checked = par.iter().any(|s| {
+                    matches!(s, FlashStep::LoadImageProp { image: Some(img), .. }
+                        if &img.segment_id == segment)
+                });
+                if !checked {
+                    return Err(PartialPlanError::RefilledSegmentUnwritten {
+                        object: object.unwrap_or(0),
+                        segment: segment.clone(),
+                        rewritten: true,
+                    });
+                }
+            }
+        }
+        Ok(par
+            .iter()
+            .zip(par_bound_of_each(par))
+            .filter(|(s, bound)| match s {
+                FlashStep::WriteRelMem { image, .. } => {
+                    image.kind == ImageKind::Parameters || refilled.contains(bound)
+                }
+                _ => true,
+            })
+            .map(|(s, _)| s.clone())
+            .collect())
+    }
+
+    /// The steps of the mask's parameter-only procedure this plan carries
+    /// (issue #1052), `None` when it carries none or it could not be
+    /// lowered.
+    pub fn par_procedure(&self) -> Option<&[FlashStep]> {
+        match &self.par_steps {
+            Some(Ok(steps)) => Some(steps),
+            _ => None,
+        }
+    }
+
+    /// The parts of this parameter-only download that follow the mask's
+    /// `par` procedure (issue #1052) but no ETS capture has confirmed yet, in
+    /// words; empty when it takes no such part. The captures are ETS's
+    /// partial downloads of `M-0009_A-E802-13-7620` (no allocation, erase
+    /// code 5 on channel 0) and `M-0009_A-E804-10-98AD` (a Mode 0 allocation,
+    /// MergeId 7's checks and write).
+    pub fn par_procedure_unconfirmed(&self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if !self.from_par_procedure {
+            return out;
+        }
+        let steps = &self.steps;
+        if steps.iter().any(|s| {
+            matches!(
+                s,
+                FlashStep::Unload {
+                    target: Some(5),
+                    ..
+                } | FlashStep::ReadTableReference { obj_idx: 5 }
+            )
+        }) {
+            out.push("object 5 (Application Program 2) loaded with object 4");
+        }
+        if steps.iter().any(|s| {
+            matches!(s, FlashStep::MasterReset { erase_code, channel_number }
+                if (*erase_code, *channel_number) != (5, 0))
+        }) {
+            out.push("a master reset other than erase code 5 on channel 0");
+        }
+        if steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::FactoryHeldProp { .. }))
+        {
+            out.push("a write left out as held after the parameter reset (#951)");
+        }
+        out
+    }
+
+    /// Whether [`FlashPlan::parameters_only`] built this plan from the mask's
+    /// parameter-only procedure (issue #1052).
+    pub fn is_built_from_par_procedure(&self) -> bool {
+        self.from_par_procedure
+    }
+
+    /// The first property range a parameter of the complete download is
+    /// written to that the parameter-only procedure `par` does not write, in
+    /// words (`object 10 PID 52, elements 1 to 2`); `None` when it writes
+    /// every one.
+    fn parameter_elements_outside(&self, par: &[FlashStep]) -> Option<String> {
+        let covered: BTreeSet<(super::PropObject, u32, u32)> = par
+            .iter()
+            .filter_map(FlashStep::property_write)
+            .flat_map(|w| {
+                (0..u32::from(w.count.max(1)))
+                    .map(move |i| (w.object, w.prop_id, u32::from(w.start_element) + i))
+            })
+            .collect();
+        self.steps
+            .iter()
+            .filter_map(FlashStep::property_write)
+            .filter(|w| w.from_parameters)
+            .find_map(|w| {
+                let first = u32::from(w.start_element);
+                let last = first + u32::from(w.count.max(1)) - 1;
+                (first..=last)
+                    .any(|e| !covered.contains(&(w.object, w.prop_id, e)))
+                    .then(|| format!("{} PID {}, elements {first} to {last}", w.object, w.prop_id))
+            })
+    }
+
+    /// Whether this parameter-only download resets the device's parameters
+    /// before it writes them (issue #1052): the confirmation says so.
+    pub fn resets_parameters_first(&self) -> bool {
+        self.parameters_only
+            && self.steps.iter().any(|s| {
+                matches!(s, FlashStep::MasterReset { erase_code, channel_number }
+                    if super::factory::resets_parameters(*erase_code, *channel_number))
+            })
     }
 
     /// The System 7 parameter-only steps (module docs).
@@ -671,6 +1052,67 @@ impl FlashPlan {
             })
             .filter(|(_, changed)| !changed.is_empty())
             .collect()
+    }
+}
+
+/// The object each step of `steps` writes into when it is a
+/// [`FlashStep::WriteRelMem`] (the object the write names, else the most
+/// recent allocation, as the planner binds it); `None` for any other step.
+fn par_bound_of_each(steps: &[FlashStep]) -> Vec<Option<u32>> {
+    let mut current: Option<u32> = None;
+    steps
+        .iter()
+        .map(|s| match s {
+            FlashStep::AllocateSegment { target, .. } => {
+                current = *target;
+                None
+            }
+            FlashStep::WriteRelMem { target, .. } => match target {
+                Some(t) if *t != 0 => Some(*t),
+                _ => current,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+impl FlashPlan {
+    /// The code segment the complete download writes into `object`, in
+    /// words: its id, else `the segment` when none is bound to it.
+    fn segment_of(&self, object: Option<u32>) -> String {
+        bound_writes(&self.steps)
+            .into_iter()
+            .find(|(_, o)| *o == object)
+            .map_or_else(|| "the segment".to_string(), |(s, _)| s)
+    }
+}
+
+/// Each [`FlashStep::WriteRelMem`] of `steps` as (segment id, object it
+/// writes into, [`par_bound_of_each`]).
+fn bound_writes(steps: &[FlashStep]) -> Vec<(String, Option<u32>)> {
+    steps
+        .iter()
+        .zip(par_bound_of_each(steps))
+        .filter_map(|(s, bound)| match s {
+            FlashStep::WriteRelMem { image, .. } => Some((image.segment_id.clone(), bound)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// What a master reset with `erase_code` erases that a parameter-only
+/// download does not write back, `None` for the codes it may send: 1 (a
+/// restart) and 5 (the parameters, every one of which the procedure writes
+/// after it). KNX 3/5/2 §3.7.1.2.3, Table 4.
+fn erased_and_not_restored(erase_code: u8) -> Option<&'static str> {
+    match erase_code {
+        1 | 5 => None,
+        2 => Some("the application, its parameters, the links and the individual address"),
+        3 => Some("the individual address"),
+        4 => Some("the application program"),
+        6 => Some("the links (address and association tables)"),
+        7 => Some("the application, its parameters and the links"),
+        _ => Some("what KNX 3/5/2 does not define for that code"),
     }
 }
 

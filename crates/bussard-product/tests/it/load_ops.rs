@@ -119,3 +119,20 @@ fn test_applies_to_partial_only_scopes() {
     assert!(!applies_to_partial_only("auto"));
     assert!(!applies_to_partial_only(""));
 }
+
+#[test]
+fn test_applies_to_includes_auto_all_and_empty_in_every_download() {
+    use bussard_product::application::{applies_to_includes, applies_to_names};
+    for download in ["full", "par", "grp"] {
+        assert!(applies_to_includes("auto", download));
+        assert!(applies_to_includes("all", download));
+        assert!(applies_to_includes("", download));
+        assert!(applies_to_includes(" , ", download));
+    }
+    assert!(applies_to_includes("full,par", "par"));
+    assert!(!applies_to_includes("full,grp", "par"));
+    assert!(!applies_to_includes("full", "par"));
+    // `names` is the token itself, for the `par`-only allocation (#490).
+    assert!(!applies_to_names("auto", "par"));
+    assert!(applies_to_names("FULL, Par", "par"));
+}

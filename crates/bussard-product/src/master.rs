@@ -195,6 +195,31 @@ impl MasterTemplate {
         })
     }
 
+    /// The built-in parameter-only (`ProcedureSubType="par"`) `Load` procedure
+    /// for `mask`, or `None` for a mask outside [`BUILTIN_TEMPLATE_MASKS`]
+    /// (issue #1052).
+    ///
+    /// It is the "Partial Download Parameters" procedure of KNX 3/5/3
+    /// §3.9.3.6: read each application program object's
+    /// `PID_TABLE_REFERENCE` (`LdCtrlLoadImageProp PID="7"`), unload and
+    /// load objects 5 and 4 around their `MergeId` 3 and 2 blocks, check the
+    /// base pointer is unchanged (`LdCtrlCompareProp PID="7"`, the master's
+    /// `InlineData` a placeholder for the value read before), the `MergeId` 5
+    /// and 4 blocks, `PID_PROGRAM_VERSION`, complete both objects, the
+    /// `MergeId` 6 and 7 blocks and restart. Every `knx_master.xml` of the
+    /// product corpus (1673 archives, 2026-11-11) declares this procedure
+    /// identically for the three masks; `test_builtin_par_for_mask_matches_corpus_master`
+    /// checks it.
+    pub fn builtin_par_for_mask(mask: &str) -> Option<MaskLoadProcedure> {
+        if !BUILTIN_TEMPLATE_MASKS.contains(&mask) {
+            return None;
+        }
+        Some(MaskLoadProcedure {
+            sub_type: Some("par".to_string()),
+            ops: builtin_system_b_par_load(),
+        })
+    }
+
     /// Fills in the built-in template (see [`MasterTemplate::builtin_for_mask`])
     /// for every built-in mask this template has no usable full-download `Load`
     /// procedure for, and returns the masks it filled. A mask the archive's
@@ -296,6 +321,77 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
         completed(3),
         completed(2),
         completed(1),
+        merge("6"),
+        merge("7"),
+        LoadOp::Restart,
+    ]
+}
+
+/// The ops of the built-in System B parameter-only procedure, in order.
+fn builtin_system_b_par_load() -> Vec<LoadOp> {
+    let merge = |id: &str| LoadOp::Merge {
+        merge_id: Some(id.to_string()),
+    };
+    let unload = |lsm: u32| LoadOp::Unload {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
+    let load = |lsm: u32| LoadOp::Load {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
+    let completed = |lsm: u32| LoadOp::LoadCompleted {
+        lsm_idx: Some(lsm),
+        obj_type: None,
+        occurrence: None,
+    };
+    let table_reference = |obj: u32| LoadOp::LoadImageProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        occurrence: None,
+        prop_id: Some(7),
+        count: None,
+    };
+    let same_table_reference = |obj: u32| LoadOp::CompareProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        prop_id: Some(7),
+        inline_data: Some(vec![0; 4]),
+        mask: None,
+        range: None,
+        occurrence: None,
+        start_element: None,
+    };
+    let program_version = |obj: u32| LoadOp::WriteProp {
+        obj_idx: Some(obj),
+        obj_type: None,
+        prop_id: Some(13),
+        inline_data: Some(vec![0; 5]),
+        start_element: None,
+        count: None,
+        verify: Some(true),
+        occurrence: None,
+    };
+    vec![
+        LoadOp::Connect,
+        table_reference(4),
+        table_reference(5),
+        unload(5),
+        unload(4),
+        load(5),
+        merge("3"),
+        same_table_reference(5),
+        load(4),
+        merge("2"),
+        same_table_reference(4),
+        merge("5"),
+        merge("4"),
+        program_version(5),
+        program_version(4),
+        completed(5),
+        completed(4),
         merge("6"),
         merge("7"),
         LoadOp::Restart,

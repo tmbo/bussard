@@ -45,6 +45,8 @@ pub struct FlashInputs<'a> {
     base_offsets: BTreeMap<String, u32>,
     /// The master-template `Load` procedure for the app's mask, if any.
     template_ops: Option<Vec<LoadOp>>,
+    /// The mask's parameter-only (`par`) procedure, if any (issue #1052).
+    par_template_ops: Option<Vec<LoadOp>>,
     /// The computed table images (obj1 address, obj2 association, obj3
     /// group objects), keyed by object index.
     table_images: BTreeMap<u32, Vec<u8>>,
@@ -81,6 +83,7 @@ impl<'a> FlashInputs<'a> {
             .map(|d| d.device.module_bases.clone())
             .unwrap_or_default();
         let template_ops = bussard_download::template_ops_for(product, app);
+        let par_template_ops = bussard_download::par_template_ops_for(product, app);
         let table_images = bussard_download::build_table_images(
             model,
             target,
@@ -106,6 +109,7 @@ impl<'a> FlashInputs<'a> {
                 overrides,
                 base_offsets,
                 template_ops,
+                par_template_ops,
                 table_images,
                 object_flags,
                 knxnet,
@@ -177,6 +181,21 @@ impl<'a> FlashInputs<'a> {
             &self.object_flags,
             &bussard_product::dynamic::DynamicMemo::new(self.app),
         )?;
+        // A parameter-only download runs the mask's `par` procedure where it
+        // has one (issue #1052); only it pays for the second lowering.
+        if self.parameters_only {
+            bussard_download::add_par_procedure(
+                &mut plan,
+                self.app,
+                &self.device,
+                &self.overrides,
+                &self.base_offsets,
+                self.par_template_ops.as_deref(),
+                &self.table_images,
+                &self.object_flags,
+                &bussard_product::dynamic::DynamicMemo::new(self.app),
+            );
+        }
         // A property-only procedure (an IP interface, issue #390) writes the
         // object itself; `apply` keeps its `[knxnet]` table (issue #391).
         // A parameter-only download never writes the block (issue #1023).

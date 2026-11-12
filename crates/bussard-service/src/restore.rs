@@ -395,8 +395,25 @@ impl RestorePlan {
         out
     }
 
-    /// The one question to ask before the write.
+    /// The one question to ask before the write, with the note of a
+    /// procedure that resets the parameters first (issue #1052).
     pub fn question(&self, target: IndividualAddress, gateway: &str) -> String {
+        let note = self
+            .partial
+            .as_ref()
+            .map(crate::program::params_only::parameter_write_note)
+            .filter(|n| !n.is_empty())
+            .map(|n| format!(" ({n})"))
+            .unwrap_or_default();
+        let question = self.bare_question(target, gateway);
+        match question.strip_suffix('?') {
+            Some(stem) => format!("{stem}{note}?"),
+            None => question,
+        }
+    }
+
+    /// [`RestorePlan::question`] without the note.
+    fn bare_question(&self, target: IndividualAddress, gateway: &str) -> String {
         if self.properties.is_empty() {
             format!(
                 "restore {} parameter octet(s) from the backup to {target} via {gateway}?",
@@ -521,7 +538,9 @@ fn backup_properties(
                     property: words.clone(),
                 })?,
         };
-        if p.device.as_deref() != Some(value.as_slice()) {
+        // A fixed write is restored with the rest, but a difference in it
+        // alone is no parameter change (issue #1052).
+        if !p.fixed && p.device.as_deref() != Some(value.as_slice()) {
             changed.push(words);
         }
         values.insert((p.object, p.prop_id, p.start_element), value);
@@ -609,6 +628,12 @@ pub fn build_restore_plan(
     let octet_ranges = octet_ranges(device, &written, &left, TargetLabel::Backup);
     let octets = partial.changed_octets();
     let mut notes = Vec::new();
+    // What the device's parameter-only procedure does beyond the values
+    // (issue #1052), as `apply` and `flash --parameters-only` say it.
+    let note = crate::program::params_only::parameter_write_note(&partial);
+    if !note.is_empty() {
+        notes.push(format!("parameter write: {note}"));
+    }
     let skipped: usize = octet_ranges
         .iter()
         .filter(|r| !r.written)

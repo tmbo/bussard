@@ -563,6 +563,37 @@ pub enum WriteError {
         device_crc: u16,
     },
 
+    /// A parameter-only download found a table object's MCB other than the
+    /// table the project gives it (issue #1052): the download writes no table
+    /// but checks it afterwards, so it stops before writing anything.
+    #[error(
+        "{address}: the table in object {object_index} is not the one the project gives the \
+         device (its PID_MCB_TABLE CRC differs); a parameter-only download does not write \
+         tables, so nothing was written. Run `bussard apply` (it writes the tables first) or a \
+         full `bussard flash`"
+    )]
+    TablesChanged {
+        /// The device.
+        address: IndividualAddress,
+        /// The table object index.
+        object_index: u8,
+    },
+
+    /// A parameter-only download found the MCB of a code image it keeps (it
+    /// does not rewrite it) other than the product's image (issue #1052):
+    /// it stops before writing anything.
+    #[error(
+        "{address}: the image in object {object_index} is not the one the product gives (its \
+         PID_MCB_TABLE CRC differs); a parameter-only download does not rewrite it, so nothing \
+         was written. Run a full `bussard flash`"
+    )]
+    KeptImageChanged {
+        /// The device.
+        address: IndividualAddress,
+        /// The object index.
+        object_index: u8,
+    },
+
     /// A `LdCtrlCompareProp` verify failed: the device's stored interface-object
     /// property does not match the expected data the vendor procedure declared
     /// (after masking). The flash is aborted — the device is not in the state the

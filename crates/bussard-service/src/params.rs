@@ -530,9 +530,23 @@ pub async fn read_state<Ch: L4Channel>(
     // the read-back plan, the decode, the group-object change and the octet
     // attribution below (issue #367).
     let memo = bussard_product::dynamic::DynamicMemo::new(app);
-    let plan = match readback_plan(&source.product, app, model, target, device_mask, &memo) {
+    // With the mask's parameter-only procedure (issue #1052): `apply` and
+    // `restore --parameters` write what it writes from this plan.
+    let plan = match bussard_download::plan_for_parameters(
+        &source.product,
+        app,
+        model,
+        target,
+        device_mask,
+        &memo,
+    ) {
         Ok(plan) => plan,
-        Err(note) => return ParamState::noted(&app.id, note),
+        Err(err) => {
+            return ParamState::noted(
+                &app.id,
+                format!("the parameter memory cannot be located: {err}"),
+            );
+        }
     };
     let access = plan.sys7_lsm_access();
     let resident = probe_resident_state(
@@ -569,7 +583,9 @@ pub async fn read_state<Ch: L4Channel>(
     let regions = read_parameter_regions(l4, &plan, &[]).await;
     // The properties the parameters live in, on the same connection (issue
     // #706).
-    let properties = bussard_download::read_parameter_properties(l4, &plan, app).await;
+    // Every property the parameter write writes (issue #1052): backed up
+    // before it and compared after it, as `flash --parameters-only` does.
+    let properties = crate::program::params_only::read_written_properties(l4, &plan, app).await;
     // The group-object table the full flash writes, against the device's
     // (issue #540): a link the last flash did not know left its object's
     // Communication flag off, and `apply` reloads the table to switch it on.
@@ -845,6 +861,20 @@ pub struct ParameterChange {
     pub device: Option<String>,
     /// What the model asks for, with the unit.
     pub model: String,
+}
+
+/// The one question before an `apply` (CLI and MCP, issue #1052): the
+/// plan's, with [`crate::program::params_only::parameter_write_note`] of its
+/// parameter write inside it when the write resets the parameters first.
+pub fn apply_question(plan: &DevicePlan, partial: Option<&FlashPlan>) -> String {
+    let question = plan.question();
+    let note = partial
+        .map(crate::program::params_only::parameter_write_note)
+        .filter(|n| !n.is_empty());
+    match (note, question.strip_suffix('?')) {
+        (Some(note), Some(stem)) => format!("{stem} ({note})?"),
+        _ => question,
+    }
 }
 
 /// A plan, and what executing its parameter half needs.
@@ -1549,7 +1579,7 @@ pub fn build_device_plan(
                             // compared on its own and written by the same
                             // parameter-only download.
                             let changed_props =
-                                bussard_download::changed_properties(&detail.properties);
+                                bussard_download::changed_parameter_properties(&detail.properties);
                             for prop in &changed_props {
                                 let (row, change) = property_change(prop);
                                 parameters.push(row);
@@ -1592,6 +1622,15 @@ pub fn build_device_plan(
                 }
             }
         },
+    }
+    // What the device's parameter-only procedure does beyond the values
+    // (issue #1052), shown by the CLI plan and the MCP plan alike.
+    if let Some(note) = partial
+        .as_ref()
+        .map(crate::program::params_only::parameter_write_note)
+        .filter(|n| !n.is_empty())
+    {
+        notes.push(format!("parameter write: {note}"));
     }
     notes.extend(ignored_override_notes(model, target, dir));
     sort_changes(&mut changes);

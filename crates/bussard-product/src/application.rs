@@ -973,21 +973,50 @@ impl LoadProcedure {
     /// such a procedure.
     pub fn lists_partial_downloads(&self) -> bool {
         self.applies_to.iter().flatten().any(|scope| {
-            let mut tokens = scope.split(',').map(str::trim).filter(|t| !t.is_empty());
+            let mut tokens = applies_to_tokens(scope);
             tokens.clone().next().is_some() && tokens.all(|t| t.eq_ignore_ascii_case("grp"))
         })
     }
+}
+
+/// The downloads an `AppliesTo` value names (`"full,par"` gives `full` and
+/// `par`), trimmed, empty tokens left out. The one parser of the attribute.
+pub fn applies_to_tokens(applies_to: &str) -> impl Iterator<Item = &str> + Clone {
+    applies_to
+        .split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+}
+
+/// Whether an `AppliesTo` value names `download` (`"par"`, `"full"`, ...)
+/// itself, case-insensitively. `auto` and `all` name no download here; see
+/// [`applies_to_includes`] for whether an op runs in one.
+pub fn applies_to_names(applies_to: &str, download: &str) -> bool {
+    applies_to_tokens(applies_to).any(|t| t.eq_ignore_ascii_case(download))
+}
+
+/// Whether an op with `applies_to` runs in `download` (issue #1052): an
+/// empty value, `auto` and `all` run in every download, as an op without the
+/// attribute does; any other value runs in the downloads it names. The
+/// product corpus puts `auto` and `all` on the ops every download needs
+/// (`LdCtrlConnect`, `LdCtrlRestart`, the load-state controls of a
+/// self-contained procedure: 2610 and 820 ops of the 2026-11-11 corpus), and
+/// [`applies_to_partial_only`] already counts them as the complete download.
+pub fn applies_to_includes(applies_to: &str, download: &str) -> bool {
+    let mut tokens = applies_to_tokens(applies_to).peekable();
+    tokens.peek().is_none()
+        || tokens.any(|t| {
+            t.eq_ignore_ascii_case(download)
+                || t.eq_ignore_ascii_case("auto")
+                || t.eq_ignore_ascii_case("all")
+        })
 }
 
 /// Whether an `AppliesTo` value names only partial downloads (`par`, `grp`)
 /// and not the complete one (`full`, `all`, `auto`). An empty value applies to
 /// every download.
 pub fn applies_to_partial_only(applies_to: &str) -> bool {
-    let tokens: Vec<&str> = applies_to
-        .split(',')
-        .map(str::trim)
-        .filter(|t| !t.is_empty())
-        .collect();
+    let tokens: Vec<&str> = applies_to_tokens(applies_to).collect();
     !tokens.is_empty()
         && tokens
             .iter()

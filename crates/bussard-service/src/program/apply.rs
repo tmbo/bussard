@@ -283,7 +283,7 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
             .map(|inputs| ExpectedSecurity::from_inputs(inputs, &req.desired.addresses)),
         properties: req
             .parameters
-            .map(|(_, detail)| ExpectedProperty::from_parameter_writes(&detail.plan))
+            .map(|(_, detail)| ExpectedProperty::from_checked(&detail.plan))
             .unwrap_or_default(),
         table_bases: super::read::table_bases(req.product),
     }
@@ -356,6 +356,7 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
                 tool_key: req.tool_key.clone(),
                 high_water: req.high_water.clone(),
                 read_options: &checked,
+                read_back_properties: false,
             },
             &mut *observer,
         )

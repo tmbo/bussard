@@ -137,7 +137,7 @@ pub use load_records::{LoadControlForm, LoadControlRecord};
 pub use partial::PartialPlanError;
 pub(crate) use plan::fills_application_program_2;
 use plan::{MAX_MEMORY_END, insert_factory_reset, manufacturer_from_app_id};
-pub use plan::{kept_octets, plan_flash, same_program, select_application};
+pub use plan::{add_par_procedure, kept_octets, plan_flash, same_program, select_application};
 pub use plan_sys7::allocation_change;
 pub(crate) use plan_sys7::sys7_lsm_override;
 pub use plan_sys7::{
@@ -398,8 +398,10 @@ pub enum FlashStep {
     /// and writes the value as before when the device holds something else
     /// or does not answer (the fallback of CLAUDE.md "Speed Changes"). The
     /// value is the model's: the post-flash read-back compares it like a
-    /// write's, and a parameter-only download, which resets nothing, writes
-    /// it ([`FlashPlan::parameters_only`]).
+    /// write's. A parameter-only download cut from the complete one resets
+    /// nothing and writes it; one run by the mask's `par` procedure after
+    /// that procedure's own reset keeps this step ([`FlashPlan::parameters_only`],
+    /// issue #1052).
     FactoryHeldProp {
         /// The interface object the op names.
         object: PropObject,
@@ -611,6 +613,22 @@ pub enum FlashStep {
         /// The master-reset erase code (7 = factory reset keeping the individual
         /// address).
         erase_code: u8,
+    },
+    /// Read the object's `PID_TABLE_REFERENCE` before the parameter-only
+    /// download unloads it (`LdCtrlLoadImageProp PID="7"` of the mask's `par`
+    /// procedure, KNX 3/5/3 §3.9.3.6 step 02; issue #1052).
+    ReadTableReference {
+        /// The object index.
+        obj_idx: u32,
+    },
+    /// Read the object's `PID_TABLE_REFERENCE` after the load and fail the
+    /// download unless it equals the value [`FlashStep::ReadTableReference`]
+    /// read (`LdCtrlCompareProp PID="7"`, step 11): the base pointer must not
+    /// move, or the kept memory is not where the program expects it, and
+    /// ETS reports an error too.
+    CompareTableReference {
+        /// The object index.
+        obj_idx: u32,
     },
     /// Master-reset the device mid-procedure (`LdCtrlMasterReset`).
     ///
@@ -1266,6 +1284,14 @@ pub struct FlashPlan {
     par_allocations: BTreeMap<Option<u32>, (u32, SegmentFill)>,
     /// Whether [`FlashPlan::use_par_procedure`] shaped this plan.
     par_procedure: bool,
+    /// The lowering of the mask's parameter-only procedure for a System B
+    /// program whose parameters all live in properties (issue #1052,
+    /// [`FlashPlan::parameters_only`]), or why it could not be lowered.
+    /// `None` for every other plan.
+    par_steps: Option<Result<Vec<FlashStep>, String>>,
+    /// Whether [`FlashPlan::parameters_only`] built this parameter-only plan
+    /// from the mask's `par` procedure (issue #1052).
+    from_par_procedure: bool,
     /// Whether [`FlashPlan::parameters_only`] cut this plan down to a
     /// parameter-only download (see [`FlashPlan::is_parameters_only`]).
     parameters_only: bool,

@@ -929,7 +929,9 @@ fn test_restore_parameters_round_trip() -> TestResult {
         "{stdout}"
     );
     assert!(
-        stdout.contains("parameters restored and verified: 1 octet(s) read back"),
+        stdout.contains(
+            "parameters restored and verified: 1 octet(s) and 0 property element(s) read back"
+        ),
         "{stdout}"
     );
     let dev = bench.device();

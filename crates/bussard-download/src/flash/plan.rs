@@ -402,6 +402,91 @@ pub fn plan_flash(
     object_flags: &BTreeMap<u16, bussard_model::Flags>,
     memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> std::result::Result<FlashPlan, PlanError> {
+    plan_flash_as(
+        app,
+        device,
+        device_mask,
+        overrides,
+        base_offsets,
+        template_ops,
+        table_images,
+        object_flags,
+        memo,
+        Download::Full,
+    )
+}
+
+/// Adds to `plan` (a [`plan_flash`] of the same inputs) the lowering of the
+/// mask's parameter-only procedure `par_ops` (issue #1052): what
+/// [`FlashPlan::parameters_only`] then runs for a System B program spliced
+/// into the master template whose parameters all live in properties. The
+/// application's blocks are filtered to the ops whose `AppliesTo` includes
+/// `par` (KNX 3/5/3 §3.9.3.6; the E802 and E804 sweep captures). A no-op for
+/// any other plan, and without `par_ops` (a mask whose master data and
+/// bussard declare no such procedure): that plan keeps the cut of the
+/// complete download. Only a caller that plans a parameter-only download
+/// asks for it: the second lowering costs as much as the first.
+#[allow(clippy::too_many_arguments)] // the plan's inputs; a struct would only rename them
+pub fn add_par_procedure(
+    plan: &mut FlashPlan,
+    app: &ApplicationProgram,
+    device: &str,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    par_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    object_flags: &BTreeMap<u16, bussard_model::Flags>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) {
+    let Some(par_ops) = par_ops else {
+        return;
+    };
+    if plan.par_steps.is_some() || !plan.takes_par_procedure() {
+        return;
+    }
+    plan.par_steps = Some(
+        plan_flash_as(
+            app,
+            device,
+            plan.device_mask,
+            overrides,
+            base_offsets,
+            Some(par_ops),
+            table_images,
+            object_flags,
+            memo,
+            Download::Par,
+        )
+        .map(|p| p.steps)
+        .map_err(|e| e.to_string()),
+    );
+}
+
+/// Which download a lowering builds (issue #1052): the complete one, or the
+/// mask's parameter-only (`par`) procedure with the application's ops
+/// filtered by `AppliesTo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Download {
+    /// The complete download.
+    Full,
+    /// The parameter-only download.
+    Par,
+}
+
+/// [`plan_flash`] for one `download`.
+#[allow(clippy::too_many_arguments)] // the plan's inputs; a struct would only rename them
+fn plan_flash_as(
+    app: &ApplicationProgram,
+    device: &str,
+    device_mask: u16,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    template_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    object_flags: &BTreeMap<u16, bussard_model::Flags>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
+    download: Download,
+) -> std::result::Result<FlashPlan, PlanError> {
     // 1. Family gate. System B and System 7 (mask 0705/0701, issue #49) are the
     //    two supported families; every other mask refuses cleanly. System 7 is
     //    dispatched to its own lowering below (after the shared mask-match check).
@@ -490,7 +575,8 @@ pub fn plan_flash(
     //    richest single block. A single-style app has one block, used as-is.
     //    Empty apps are refused.
     let config = memo.evaluate_for(app, overrides);
-    let (ops, spliced_from_template, branch_gaps) = assemble_ops(app, template_ops, &config)?;
+    let (ops, spliced_from_template, branch_gaps) =
+        assemble_ops(app, template_ops, &config, download)?;
     if ops.is_empty() {
         return Err(PlanError::NoProcedure(app.id.clone()));
     }
@@ -527,6 +613,10 @@ pub fn plan_flash(
     // Track the segment id most-recently allocated so a following WriteRelMem
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
+    // The object the most recent relative allocation named: where a write
+    // naming no object (`ObjIdx="0"`) lands, so the parameter-only
+    // procedure's MCB check of that object compares its image (issue #1052).
+    let mut last_alloc_object: Option<u32> = None;
     // The segment each object's allocation bound, so a write naming its object
     // (`ObjIdx`) streams that object's segment even when another object was
     // allocated in between (the ABB PEI program: object 5 is allocated before
@@ -765,6 +855,7 @@ pub fn plan_flash(
                 fill,
                 ..
             } => {
+                last_alloc_object = *lsm_idx;
                 // Bind this allocation to the segment whose code image we will
                 // stream. The op does not name the segment id directly; we pair
                 // it with the application's relative segments in document-ish
@@ -1025,6 +1116,12 @@ pub fn plan_flash(
                 if let Some(oi) = obj_idx {
                     written_image_by_object.insert(*oi, image.clone());
                 }
+                if download == Download::Par
+                    && obj_idx.is_none_or(|o| o == 0)
+                    && let Some(o) = last_alloc_object
+                {
+                    written_image_by_object.insert(o, image.clone());
+                }
                 steps.push(FlashStep::WriteRelMem {
                     offset,
                     image,
@@ -1226,6 +1323,27 @@ pub fn plan_flash(
                 }
             }
 
+            // The parameter-only procedure's base pointer checks (KNX 3/5/3
+            // §3.9.3.6 steps 02, 03, 08, 11): `PID_TABLE_REFERENCE` read before
+            // the unload and compared after the load, where the master's
+            // `InlineData` stands for the value read before (issue #1052).
+            LoadOp::LoadImageProp {
+                obj_idx: Some(obj_idx),
+                obj_type: None,
+                prop_id: Some(TABLE_REFERENCE),
+                ..
+            } if download == Download::Par => {
+                steps.push(FlashStep::ReadTableReference { obj_idx: *obj_idx });
+            }
+            LoadOp::CompareProp {
+                obj_idx: Some(obj_idx),
+                obj_type: None,
+                prop_id: Some(TABLE_REFERENCE),
+                ..
+            } if download == Download::Par => {
+                steps.push(FlashStep::CompareTableReference { obj_idx: *obj_idx });
+            }
+
             LoadOp::CompareProp { .. } => {
                 // A property-verify precondition. The expected bytes come from
                 // the op's own `InlineData` (resolved at parse time), so this
@@ -1312,11 +1430,29 @@ pub fn plan_flash(
                 // written to *that* object; any other check verifies the
                 // last-written (application) image, whose MCB lives on the
                 // discovered application-program object.
+                // The parameter-only procedure writes no table: a table
+                // object's check compares the device's MCB with the table the
+                // complete download writes there (`obj-table-<n>`, the same
+                // image the parameter-only plan carries), which the
+                // parameter-only download requires unchanged; it never
+                // borrows another object's image (issue #1052).
                 let image = written_image_by_object
                     .get(&obj_idx)
                     .cloned()
                     .or_else(|| {
-                        (!unwritten_tables.contains(&obj_idx))
+                        (download == Download::Par)
+                            .then(|| table_images.get(&obj_idx))
+                            .flatten()
+                            .filter(|t| table_object_name(obj_idx).is_some() && !t.is_empty())
+                            .map(|t| ImageRef {
+                                segment_id: format!("obj-table-{obj_idx}"),
+                                kind: ImageKind::Table,
+                                len: t.len(),
+                                offset: 0,
+                            })
+                    })
+                    .or_else(|| {
+                        (!unwritten_tables.contains(&obj_idx) && download == Download::Full)
                             .then(|| last_written_image.clone())
                             .flatten()
                     })
@@ -1397,7 +1533,7 @@ pub fn plan_flash(
     let sparse = steps
         .iter()
         .any(|s| matches!(s, FlashStep::AllocateSegment { fill, .. } if fill.prefill().is_some()));
-    if sparse && form.is_confirmed() {
+    if sparse && form.is_confirmed() && download == Download::Full {
         insert_factory_reset(&mut steps);
     }
     // The description reads ETS makes before it first touches a property it
@@ -1429,6 +1565,8 @@ pub fn plan_flash(
         typed_objects_by_list,
         par_allocations,
         par_procedure: false,
+        par_steps: None,
+        from_par_procedure: false,
         parameters_only: false,
         kept,
     })
@@ -1645,8 +1783,28 @@ pub(super) fn assemble_ops(
     app: &ApplicationProgram,
     template_ops: Option<&[LoadOp]>,
     config: &bussard_product::dynamic::DynamicConfig,
+    download: Download,
 ) -> std::result::Result<AssembledOps, PlanError> {
     use super::plan_props::taken_ops;
+    // The parameter-only procedure runs an application op whose `AppliesTo`
+    // names `par`, or that has none (issue #1052): MergeId 7's no-`AppliesTo`
+    // checks and write run in ETS's partial download of `M-0009_A-E804-10-98AD`
+    // (#1038), its `full`-only allocation does not.
+    //
+    // The complete download runs every op, except that a procedure listing
+    // its partial downloads after the complete one
+    // ([`LoadProcedure::lists_partial_downloads`], the Siemens 07B0 product
+    // procedures of issue #614) runs none of their ops
+    // ([`LoadProcedure::is_partial_only`]). Any other procedure keeps its
+    // `AppliesTo="par"` ops in the complete download, as before: there they
+    // restate the complete download's allocation (issue #490) or write the
+    // parameter segment.
+    let in_download = |lp: &LoadProcedure, i: usize| match download {
+        Download::Full => !(lp.lists_partial_downloads() && lp.is_partial_only(i)),
+        Download::Par => lp
+            .applies_to_of(i)
+            .is_none_or(|a| bussard_product::application::applies_to_includes(a, "par")),
+    };
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures
         .iter()
@@ -1686,7 +1844,7 @@ pub(super) fn assemble_ops(
         let (mut every_branch, mut taken) = (Vec::new(), Vec::new());
         for p in &non_empty {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                let ops = taken_ops(app, p, config)?;
+                let ops = taken_ops(app, p, config, &in_download)?;
                 every_branch.extend(p.ops.iter());
                 taken.extend(ops.iter().cloned());
                 blocks.entry(id).or_default().extend(ops);
@@ -1695,11 +1853,23 @@ pub(super) fn assemble_ops(
         let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
         for p in &companion_blocks {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                blocks.entry(id).or_default().extend(p.ops.clone());
+                // The complete download takes a companion block whole, as
+                // before #1052; the parameter-only procedure filters it.
+                let ops = p
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| download == Download::Full || in_download(p, *i));
+                blocks
+                    .entry(id)
+                    .or_default()
+                    .extend(ops.map(|(_, op)| op.clone()));
             }
         }
         let template = if loads_application_program_2(&blocks) {
             template.to_vec()
+        } else if download == Download::Par {
+            par_program_1_only(template)
         } else {
             application_program_1_only(template)
         };
@@ -1725,7 +1895,7 @@ pub(super) fn assemble_ops(
     let blocks = self_contained_blocks(app);
     let mut out = Vec::new();
     for p in &blocks {
-        out.extend(taken_ops(app, p, config)?);
+        out.extend(taken_ops(app, p, config, &in_download)?);
     }
     let gaps =
         super::plan_props::partial_rel_mem_gaps(blocks.iter().flat_map(|p| p.ops.iter()), &out);
@@ -1928,6 +2098,36 @@ fn application_program_1_only(template: &[LoadOp]) -> Vec<LoadOp> {
     out
 }
 
+/// The parameter-only procedure as ETS runs it when only Application
+/// Program 1 is loaded: every row of object 5 (its table reference reads
+/// and checks, unload, load, merge points 3 and 5, program version and
+/// completion) is left out, as KNX 3/5/3 §3.9.3.6 marks them "not executed
+/// if only AP 1" and ETS's partial download of `M-0009_A-E802-13-7620` sends
+/// nothing to object 5 (issue #1052).
+fn par_program_1_only(template: &[LoadOp]) -> Vec<LoadOp> {
+    let ap2 = Some(OIDX_APPLICATION_PROGRAM_2);
+    template
+        .iter()
+        .filter(|op| match op {
+            LoadOp::Unload { lsm_idx, .. }
+            | LoadOp::Load { lsm_idx, .. }
+            | LoadOp::LoadCompleted { lsm_idx, .. } => *lsm_idx != ap2,
+            LoadOp::WriteProp { obj_idx, .. }
+            | LoadOp::LoadImageProp { obj_idx, .. }
+            | LoadOp::CompareProp { obj_idx, .. } => *obj_idx != ap2,
+            LoadOp::Merge { merge_id } => !merge_id
+                .as_deref()
+                .and_then(|m| m.parse::<u32>().ok())
+                .is_some_and(|id| AP2_MERGE_IDS.contains(&id)),
+            _ => true,
+        })
+        .cloned()
+        .collect()
+}
+
+/// `PID_TABLE_REFERENCE` as a load procedure names it (KNX 3/5/3 §3.9.3.6).
+const TABLE_REFERENCE: u32 = bussard_mgmt::tables::PID_TABLE_REFERENCE as u32;
+
 /// What [`assemble_ops`] returns: the ops, whether they were spliced into
 /// the master template, and the branch gaps by object index.
 pub(super) type AssembledOps = (Vec<LoadOp>, bool, BTreeMap<u32, Vec<(u32, u32)>>);
@@ -2056,7 +2256,7 @@ pub fn kept_octets(
             Err(_) => Vec::new(),
         });
     }
-    Ok(match assemble_ops(app, None, &config) {
+    Ok(match assemble_ops(app, None, &config, Download::Full) {
         Ok((ops, _, gaps)) => kept_from(app, &ops, &gaps),
         Err(_) => Vec::new(),
     })
@@ -2329,9 +2529,8 @@ pub(super) fn resolve_write_image(
         })
         .ok_or_else(|| "no relative segment to write into".to_string())?;
 
-    let wants_params = applies_to
-        .map(|a| a.split(',').any(|t| t.trim().eq_ignore_ascii_case("par")))
-        .unwrap_or(false);
+    let wants_params =
+        applies_to.is_some_and(|a| bussard_product::application::applies_to_names(a, "par"));
 
     // A segment that any parameter targets has a computed parameter image, and
     // that image already *is* the segment's full content: `compute_parameter_image`
@@ -2607,7 +2806,8 @@ mod tests {
             plan.steps[mr_pos],
             FlashStep::MasterReset {
                 erase_code: 4,
-                channel_number: 0
+                channel_number: 0,
+                ..
             }
         ));
         let alloc_pos = plan
@@ -2972,7 +3172,8 @@ mod tests {
             s,
             FlashStep::MasterReset {
                 erase_code: 1,
-                channel_number: 0
+                channel_number: 0,
+                ..
             }
         )));
         Ok(())
@@ -3740,8 +3941,12 @@ mod tests {
         ];
         let memo = bussard_product::dynamic::DynamicMemo::new(&app);
         let overrides = BTreeMap::from([("P-579_R-1032".to_string(), "1".to_string())]);
-        let (ops, spliced, _) =
-            assemble_ops(&app, Some(&template), &memo.evaluate_for(&app, &overrides))?;
+        let (ops, spliced, _) = assemble_ops(
+            &app,
+            Some(&template),
+            &memo.evaluate_for(&app, &overrides),
+            Download::Full,
+        )?;
         assert!(spliced);
         let compares: Vec<_> = ops
             .iter()

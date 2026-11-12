@@ -27,9 +27,8 @@ use bussard_mgmt::LoadState;
 /// Whether an `AppliesTo` value names the `par` procedure and not the `full`
 /// one (`"par"`, but not `"full,par"`).
 pub(super) fn is_par_only(applies_to: &str) -> bool {
-    let mut tokens = applies_to.split(',').map(str::trim);
-    let par = tokens.clone().any(|t| t.eq_ignore_ascii_case("par"));
-    par && !tokens.any(|t| t.eq_ignore_ascii_case("full"))
+    use bussard_product::application::applies_to_names;
+    applies_to_names(applies_to, "par") && !applies_to_names(applies_to, "full")
 }
 
 impl FlashPlan {
