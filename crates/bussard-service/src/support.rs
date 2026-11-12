@@ -1,6 +1,12 @@
-//! Whether bussard supports writing a device (issue #1089): the verdict of
-//! the supported-device list ([`bussard_model::supported`]) for a device's
-//! application program, and the gate every device write passes.
+//! Whether bussard supports writing a device (issues #1089, #1097): the
+//! verdict of the device-support list ([`bussard_model::supported`]) for a
+//! device's application program, and the gate every device write passes.
+//!
+//! An application is `proven` (bussard wrote a real device with it and the
+//! read-back matched), `likely` (computed from the ETS sweep, or a house
+//! capture; not confirmed on a real device) or unsupported (a known problem,
+//! or not on the list). `proven` and `likely` pass the gate; a plan and the
+//! assistant's note say when a device is only `likely`.
 //!
 //! The verdict is one function, [`verdict`], judged on the application a
 //! write builds its image from, so the CLI and the
@@ -25,7 +31,9 @@ use bussard_transport::ConnectionConfig;
 use bussard_transport::write_gate::is_loopback_gateway;
 use serde::Serialize;
 
-pub use bussard_model::supported::{Evidence, SupportedEntry, SupportedList, application_ref_of};
+pub use bussard_model::supported::{
+    Category, Evidence, SupportedEntry, SupportedList, application_ref_of,
+};
 
 /// Why a device is not supported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -35,6 +43,9 @@ pub enum UnsupportedReason {
     NotListed,
     /// The project pins no application for it, so it is unknown.
     NoProductData,
+    /// The list names a known problem (an issue, or the ETS sweep reports it
+    /// differing).
+    KnownProblem,
 }
 
 impl UnsupportedReason {
@@ -43,6 +54,7 @@ impl UnsupportedReason {
         match self {
             UnsupportedReason::NotListed => "application not on the list",
             UnsupportedReason::NoProductData => "no product data pinned, application unknown",
+            UnsupportedReason::KnownProblem => "known problem",
         }
     }
 }
@@ -53,10 +65,13 @@ impl fmt::Display for UnsupportedReason {
     }
 }
 
-/// The verdict of the supported-device list for one application program.
+/// The sentence a plan and the assistant carry for a `likely` device.
+pub const NOT_CONFIRMED: &str = "not confirmed on a real device";
+
+/// The verdict of the device-support list for one application program.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Support {
-    /// The application is on the list.
+    /// The application is `proven` or `likely`: a write passes the gate.
     Supported {
         /// The application id, ten hex digits.
         application_id: String,
@@ -64,10 +79,12 @@ pub enum Support {
         application: String,
         /// The list's name for it.
         name: String,
-        /// Why it is on the list.
+        /// `proven` or `likely`.
+        category: Category,
+        /// What put it there.
         evidence: Evidence,
     },
-    /// It is not.
+    /// It is not: a known problem, not listed, or unknown.
     Unsupported {
         /// The application id, when known.
         application_id: Option<String>,
@@ -77,13 +94,35 @@ pub enum Support {
         name: Option<String>,
         /// Why.
         reason: UnsupportedReason,
+        /// The known problem, for [`UnsupportedReason::KnownProblem`]
+        /// (boxed: most verdicts have none).
+        known: Option<Box<KnownProblem>>,
     },
 }
 
+/// A known problem the list names for an application.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnownProblem {
+    /// The problem in words with its issue (`differs from ETS in the sweep,
+    /// #971`).
+    pub problem: String,
+    /// Its cause, when the issue names one (`capture unusable: ...`).
+    pub cause: Option<String>,
+}
+
 impl Support {
-    /// Whether the application is on the list.
+    /// Whether a write passes the gate: the application is `proven` or
+    /// `likely`.
     pub fn is_supported(&self) -> bool {
         matches!(self, Support::Supported { .. })
+    }
+
+    /// The category: `proven`, `likely` or `unsupported`.
+    pub fn category(&self) -> Category {
+        match self {
+            Support::Supported { category, .. } => *category,
+            Support::Unsupported { .. } => Category::Unsupported,
+        }
     }
 
     /// The application, as a message names it: the ref, or the id.
@@ -129,11 +168,16 @@ impl Support {
                 application_id,
                 application,
                 name,
+                category,
                 evidence,
             } => SupportView {
                 status: SupportStatus::Supported,
+                category: *category,
                 evidence: Some(*evidence),
+                note: (*category == Category::Likely).then_some(NOT_CONFIRMED),
                 reason: None,
+                problem: None,
+                cause: None,
                 application: Some(application.clone()),
                 application_id: Some(application_id.clone()),
                 name: Some(name.clone()),
@@ -144,10 +188,15 @@ impl Support {
                 application,
                 name,
                 reason,
+                known,
             } => SupportView {
                 status: SupportStatus::Unsupported,
+                category: Category::Unsupported,
                 evidence: None,
+                note: None,
                 reason: Some(reason.text()),
+                problem: known.as_ref().map(|k| k.problem.clone()),
+                cause: known.as_ref().and_then(|k| k.cause.clone()),
                 application: application.clone(),
                 application_id: application_id.clone(),
                 name: name.clone(),
@@ -157,18 +206,30 @@ impl Support {
     }
 }
 
-/// The verdict as JSON: `{ status, evidence | reason, application,
-/// application_id, name }`.
+/// The verdict as JSON: `{ status, category, evidence | reason, note,
+/// problem, application, application_id, name }`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SupportView {
-    /// `supported` or `unsupported` (a verdict is never `forced`).
+    /// `supported` (a write passes) or `unsupported` (a verdict is never
+    /// `forced`).
     pub status: SupportStatus,
-    /// Why it is supported.
+    /// `proven`, `likely` or `unsupported`.
+    pub category: Category,
+    /// What put a supported device in its category.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub evidence: Option<Evidence>,
-    /// Why it is not.
+    /// `not confirmed on a real device`, for a `likely` device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<&'static str>,
+    /// Why it is not supported.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<&'static str>,
+    /// The known problem, with its issue.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub problem: Option<String>,
+    /// The known problem's cause, when its issue names one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cause: Option<String>,
     /// The application ref.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application: Option<String>,
@@ -185,7 +246,7 @@ pub struct SupportView {
 }
 
 impl SupportView {
-    /// Whether the device is on the list.
+    /// Whether a write passes the gate (`proven` or `likely`).
     pub fn is_supported(&self) -> bool {
         self.status == SupportStatus::Supported
     }
@@ -201,32 +262,72 @@ impl SupportView {
         }
     }
 
-    /// One line for a plan or a device view: `supported (capture):
-    /// M-0004_A-20DE-22 (Jung 230021SU switch actuator)`, or `not on the
-    /// supported list (application not on the list): M-0083_A-0120-10 (MDT
-    /// AKS-0816.03)`, ending `; writes need --allow-unsupported` when a write
+    /// The known problem with its cause: `differs from ETS in the sweep,
+    /// #1060: capture unusable: ...`, or `None`.
+    pub fn problem_text(&self) -> Option<String> {
+        let problem = self.problem.as_deref()?;
+        Some(match &self.cause {
+            Some(cause) => format!("{problem}: {cause}"),
+            None => problem.to_string(),
+        })
+    }
+
+    /// One line for a plan or a device view: `proven (live):
+    /// M-0004_A-D142-21 (Jung 52921ST F50 push-button module)`, `likely
+    /// (sweep), not confirmed on a real device: ...`, `known problem (differs
+    /// from ETS in the sweep, #971): ...` or `not on the supported list
+    /// (application not on the list): M-0083_A-0120-10 (MDT AKS-0816.03)`,
+    /// the last two ending `; writes need --allow-unsupported` when a write
     /// on this gateway is refused without it.
     pub fn line(&self) -> String {
         let what = self.what();
-        match (self.evidence, self.reason) {
-            (Some(evidence), _) => format!("supported ({evidence}): {what}"),
-            (None, reason) => format!(
-                "not on the supported list ({}): {what}{}",
-                reason.unwrap_or("application not on the list"),
-                if self.override_needed {
-                    "; writes need --allow-unsupported"
-                } else {
-                    ""
-                }
+        let refused = if self.override_needed {
+            "; writes need --allow-unsupported"
+        } else {
+            ""
+        };
+        match (self.evidence, &self.problem) {
+            (Some(evidence), _) => match self.note {
+                Some(note) => format!("{} ({evidence}), {note}: {what}", self.category),
+                None => format!("{} ({evidence}): {what}", self.category),
+            },
+            (None, Some(problem)) => format!("known problem ({problem}): {what}{refused}"),
+            (None, None) => format!(
+                "not on the supported list ({}): {what}{refused}",
+                self.reason.unwrap_or("application not on the list"),
             ),
         }
     }
 
     /// What the assistant puts to the human before a write of an
-    /// unsupported device (issue #1089), or `None` for a supported one.
+    /// unsupported device (issue #1089) or a `likely` one (issue #1097), or
+    /// `None` for a proven one.
     pub fn assistant_note(&self, target: &str) -> Option<String> {
         if self.is_supported() {
-            return None;
+            return self.note.map(|note| {
+                format!(
+                    "{target} runs {}, which bussard rates likely supported: its download matched \
+                     ETS in the {} evidence, but it is {note}. Tell the human this, and that a \
+                     backup first is the safe way. The write is not refused.",
+                    self.what(),
+                    self.evidence.map_or("recorded", Evidence::as_str),
+                )
+            });
+        }
+        if let Some(problem) = self.problem_text() {
+            let how = if self.override_needed {
+                "The write is refused (code unsupported_device) unless the human explicitly says \
+                 to write anyway; only then call the write again with allow_unsupported: true and \
+                 this plan_digest."
+            } else {
+                "The gateway is loopback (a simulator), so the write is not refused."
+            };
+            return Some(format!(
+                "{target} runs {}, which bussard's device-support list names with a known \
+                 problem ({problem}). Tell the human this, with the cause, that a backup comes \
+                 first, and that ETS is the safe way to program it. {how}",
+                self.what()
+            ));
         }
         let how = if self.override_needed {
             "The write is refused (code unsupported_device) unless the human explicitly says to \
@@ -317,14 +418,28 @@ fn decide(
             } else {
                 UnsupportedReason::NoProductData
             },
+            known: None,
         };
     };
     match list.lookup(id) {
-        Some(entry) => Support::Supported {
+        Some(entry) if entry.category.passes() => Support::Supported {
             application_id: entry.application_id.clone(),
             application: entry.application(),
             name: entry.name.clone(),
+            category: entry.category,
             evidence: entry.evidence,
+        },
+        Some(entry) => Support::Unsupported {
+            application_id: Some(entry.application_id.clone()),
+            application: Some(entry.application()),
+            name: Some(entry.name.clone()),
+            reason: UnsupportedReason::KnownProblem,
+            known: entry.problem().map(|problem| {
+                Box::new(KnownProblem {
+                    problem,
+                    cause: entry.cause.clone(),
+                })
+            }),
         },
         None => Support::Unsupported {
             application_id: Some(id.to_ascii_uppercase()),
@@ -335,6 +450,7 @@ fn decide(
             ),
             name,
             reason: UnsupportedReason::NotListed,
+            known: None,
         },
     }
 }
@@ -424,21 +540,40 @@ impl SupportGrant {
         self.status == SupportStatus::Forced
     }
 
-    /// The line a plan and a prompt carry when the device is not on the
-    /// list: `not on the supported list, forced`, or that a loopback gateway
-    /// does not refuse it. `None` for a supported device.
+    /// The line a write tells the operator before it starts, or `None`: a
+    /// forced write, and a `likely` device that is not confirmed on a real
+    /// device. A loopback gateway passing an unsupported device stays
+    /// silent (`plan`, `describe` and `device` show the verdict).
+    pub fn notice(&self) -> Option<String> {
+        if self.forced() || self.verdict.category() == Category::Likely {
+            self.plan_line()
+        } else {
+            None
+        }
+    }
+
+    /// The line a plan and a prompt carry when the device is not proven:
+    /// `1.1.4: likely (house-capture), not confirmed on a real device:
+    /// M-0004_A-20D7-26 (...)`, `1.1.7: not on the supported list, forced:
+    /// M-0083_A-0120-10 (...)`, `1.1.9: known problem (differs from ETS in
+    /// the sweep, #971), forced: ...`, or the same ending `; written because
+    /// the gateway is loopback`. `None` for a proven device.
     pub fn plan_line(&self) -> Option<String> {
+        let view = self.verdict.view();
+        let target = self.target;
+        let what = view.what();
+        let unsupported = match &view.problem {
+            Some(problem) => format!("known problem ({problem})"),
+            None => "not on the supported list".to_string(),
+        };
         match self.status {
+            SupportStatus::Supported if view.note.is_some() => {
+                Some(format!("{target}: {}", view.line()))
+            }
             SupportStatus::Supported => None,
-            SupportStatus::Forced => Some(format!(
-                "{}: not on the supported list, forced ({})",
-                self.target,
-                self.verdict.line()
-            )),
+            SupportStatus::Forced => Some(format!("{target}: {unsupported}, forced: {what}")),
             SupportStatus::Unsupported => Some(format!(
-                "{}: not on the supported list; written because the gateway is loopback ({})",
-                self.target,
-                self.verdict.line()
+                "{target}: {unsupported}; written because the gateway is loopback: {what}"
             )),
         }
     }
@@ -525,13 +660,22 @@ pub struct SupportRefusal {
 impl SupportRefusal {
     /// What is refused, without the override: `1.1.7 runs M-0083_A-0120-10
     /// (MDT AKS-0816.03), which is not on bussard's list of supported
-    /// devices`.
+    /// devices`, or `..., which has a known problem (differs from ETS in the
+    /// sweep, #971)`.
     pub fn sentence(&self) -> String {
-        format!(
-            "{} runs {}, which is not on bussard's list of supported devices",
-            self.target,
-            self.verdict.view().what()
-        )
+        let view = self.verdict.view();
+        match view.problem_text() {
+            Some(problem) => format!(
+                "{} runs {}, which has a known problem ({problem})",
+                self.target,
+                view.what()
+            ),
+            None => format!(
+                "{} runs {}, which is not on bussard's list of supported devices",
+                self.target,
+                view.what()
+            ),
+        }
     }
 }
 
@@ -602,7 +746,14 @@ mod tests {
     type TestResult = Result<(), Box<dyn std::error::Error>>;
 
     const LIST: &str = "[[device]]\napplication_id = \"000420DE22\"\nname = \"Jung 230021SU\"\n\
-                        evidence = \"capture\"\nnote = \"#126\"\n";
+                        category = \"proven\"\nevidence = \"live\"\nmask = \"07B0\"\n\
+                        source = \"#89\"\n\
+                        [[device]]\napplication_id = \"000420D726\"\nname = \"Jung 230241SR\"\n\
+                        category = \"likely\"\nevidence = \"house-capture\"\nmask = \"07B0\"\n\
+                        source = \"#126\"\n\
+                        [[device]]\napplication_id = \"000920AA10\"\nname = \"Hager\"\n\
+                        category = \"unsupported\"\nevidence = \"issue\"\nmask = \"0701\"\n\
+                        source = \"#1057\"\nissue = 971\nreason = \"differs from ETS in the sweep\"\n";
 
     fn tunnel(ip: Ipv4Addr) -> ConnectionConfig {
         ConnectionConfig::tunnel(SocketAddrV4::new(ip, 3671))
@@ -635,8 +786,17 @@ mod tests {
             application: Some("M-0083_A-0120-10".to_string()),
             name: Some("MDT AKS-0816.03".to_string()),
             reason: UnsupportedReason::NotListed,
+            known: None,
         }
     }
+
+    /// A generated half with one sweep `differs` entry whose cause says the
+    /// capture, not bussard, is at fault.
+    const GENERATED: &str = "[source]\nsweep_manifest = \"m\"\nsweep_generated = \"2026-11-10\"\n\
+        synthetic_manifest = \"s\"\ncoverage_floor = 95.0\n\
+        [differs]\nreason = \"differs from ETS in the sweep\"\nentries = [\n\
+        { id = \"0004B00C01\", name = \"Jung B00C\", masks = [\"0701\"], issue = 1060, \
+        cause = \"capture unusable: ETS loaded another application version\" },\n]\n";
 
     #[test]
     fn test_verdict_in_listed_application_is_supported() -> TestResult {
@@ -649,7 +809,8 @@ mod tests {
                 application_id: "000420DE22".to_string(),
                 application: "M-0004_A-20DE-22".to_string(),
                 name: "Jung 230021SU".to_string(),
-                evidence: Evidence::Capture,
+                category: Category::Proven,
+                evidence: Evidence::Live,
             }
         );
         assert_eq!(support.view().status, SupportStatus::Supported);
@@ -692,8 +853,138 @@ mod tests {
     }
 
     #[test]
+    fn test_verdict_in_likely_passes_and_says_not_confirmed() -> TestResult {
+        let list = SupportedList::parse(LIST)?;
+        let device = device(Some("M-0004_A-20D7-26-1234-O000A"))?;
+        let support = verdict_in(&list, Some(&device), None);
+        assert!(support.is_supported());
+        assert_eq!(support.category(), Category::Likely);
+        let view = support.view();
+        assert_eq!(view.note, Some(NOT_CONFIRMED));
+        assert_eq!(
+            view.line(),
+            "likely (house-capture), not confirmed on a real device: M-0004_A-20D7-26 \
+             (Jung 230241SR)"
+        );
+        let note = view.assistant_note("1.1.4").ok_or("no note")?;
+        assert!(note.contains("not confirmed on a real device"), "{note}");
+        let json = serde_json::to_value(&view)?;
+        assert_eq!(json["category"], "likely");
+        assert_eq!(json["status"], "supported");
+        // The gate passes on a real gateway, and the write says why.
+        let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
+        let grant = authorize_verdict(&real, "1.1.4".parse()?, support, false)?;
+        assert_eq!(grant.status(), SupportStatus::Supported);
+        assert_eq!(
+            grant.notice().as_deref(),
+            Some(
+                "1.1.4: likely (house-capture), not confirmed on a real device: \
+                 M-0004_A-20D7-26 (Jung 230241SR)"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_verdict_in_known_problem_is_refused_with_its_issue() -> TestResult {
+        let list = SupportedList::parse(LIST)?;
+        let support = verdict_in(&list, None, Some("M-0009_A-20AA-10-E0C0"));
+        assert!(!support.is_supported());
+        assert_eq!(support.category(), Category::Unsupported);
+        let view = support.view();
+        assert_eq!(view.reason, Some("known problem"));
+        assert_eq!(
+            view.line(),
+            "known problem (differs from ETS in the sweep, #971): M-0009_A-20AA-10 (Hager)"
+        );
+        let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
+        let target: IndividualAddress = "1.1.9".parse()?;
+        let refusal = authorize_verdict(&real, target, support.clone(), false)
+            .err()
+            .ok_or("not refused")?;
+        assert_eq!(
+            refusal.sentence(),
+            "1.1.9 runs M-0009_A-20AA-10 (Hager), which has a known problem (differs from ETS \
+             in the sweep, #971)"
+        );
+        let forced = authorize_verdict(&real, target, support.clone(), true)?;
+        assert_eq!(
+            forced.plan_line().as_deref(),
+            Some(
+                "1.1.9: known problem (differs from ETS in the sweep, #971), forced: \
+                 M-0009_A-20AA-10 (Hager)"
+            )
+        );
+        let local = authorize_verdict(&tunnel(Ipv4Addr::LOCALHOST), target, support, false)?;
+        assert_eq!(
+            local.plan_line().as_deref(),
+            Some(
+                "1.1.9: known problem (differs from ETS in the sweep, #971); written because \
+                 the gateway is loopback: M-0009_A-20AA-10 (Hager)"
+            )
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_verdict_in_known_problem_carries_its_cause() -> TestResult {
+        // The cause is rendered as the issue gives it, never as "bussard's
+        // download does not match ETS": here the capture was unusable.
+        let list = SupportedList::parse_with(LIST, Some(GENERATED))?;
+        let support = verdict_in(&list, None, Some("M-0004_A-B00C-01-439D"));
+        let mut view = support.view_on(&tunnel(Ipv4Addr::new(192, 0, 2, 10)));
+        assert_eq!(
+            view.cause.as_deref(),
+            Some("capture unusable: ETS loaded another application version")
+        );
+        let refusal = authorize_verdict(
+            &tunnel(Ipv4Addr::new(192, 0, 2, 10)),
+            "1.1.9".parse()?,
+            support,
+            false,
+        )
+        .err()
+        .ok_or("not refused")?;
+        assert_eq!(
+            refusal.sentence(),
+            "1.1.9 runs M-0004_A-B00C-01 (Jung B00C), which has a known problem (differs from \
+             ETS in the sweep, #1060: capture unusable: ETS loaded another application version)"
+        );
+        let note = view.assistant_note("1.1.9").ok_or("no note")?;
+        assert_eq!(
+            note,
+            "1.1.9 runs M-0004_A-B00C-01 (Jung B00C), which bussard's device-support list names \
+             with a known problem (differs from ETS in the sweep, #1060: capture unusable: ETS \
+             loaded another application version). Tell the human this, with the cause, that a \
+             backup comes first, and that ETS is the safe way to program it. The write is \
+             refused (code unsupported_device) unless the human explicitly says to write \
+             anyway; only then call the write again with allow_unsupported: true and this \
+             plan_digest."
+        );
+        assert!(!note.contains("does not match"), "{note}");
+        view.override_needed = false;
+        assert!(view.assistant_note("1.1.9").is_some_and(|n| {
+            n.ends_with("The gateway is loopback (a simulator), so the write is not refused.")
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn test_proven_grant_has_no_notice() -> TestResult {
+        let list = SupportedList::parse(LIST)?;
+        let support = verdict_in(&list, None, Some("M-0004_A-20DE-22-C7D8-O000A"));
+        assert_eq!(support.category(), Category::Proven);
+        assert_eq!(support.view().assistant_note("1.1.47"), None);
+        let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
+        let grant = authorize_verdict(&real, "1.1.47".parse()?, support, false)?;
+        assert_eq!(grant.notice(), None);
+        assert_eq!(grant.plan_line(), None);
+        Ok(())
+    }
+
+    #[test]
     fn test_verdict_of_a_selected_program_uses_the_embedded_list() {
-        assert!(verdict(None, Some("M-0004_A-20DE-22-C7D8-O000A")).is_supported());
+        assert!(verdict(None, Some("M-0004_A-D142-21-8848-O000A")).is_supported());
         assert!(!verdict(None, Some("M-0083_A-0120-10-0000")).is_supported());
     }
 
@@ -720,10 +1011,9 @@ mod tests {
         let grant = authorize_verdict(&real, target, unsupported(), true)?;
         assert_eq!(grant.status(), SupportStatus::Forced);
         assert!(grant.forced());
-        assert!(
-            grant
-                .plan_line()
-                .is_some_and(|l| l.contains("not on the supported list, forced"))
+        assert_eq!(
+            grant.plan_line().as_deref(),
+            Some("1.1.7: not on the supported list, forced: M-0083_A-0120-10 (MDT AKS-0816.03)")
         );
         Ok(())
     }
@@ -746,7 +1036,7 @@ mod tests {
             &real,
             target,
             None,
-            Some("M-0004_A-20DE-22-C7D8-O000A"),
+            Some("M-0004_A-D142-21-8848-O000A"),
             false,
         )?;
         assert_eq!(grant.status(), SupportStatus::Supported);
@@ -760,7 +1050,7 @@ mod tests {
     fn test_verdict_judges_the_override_not_the_lock() -> TestResult {
         // The lock pins a listed program, the device file overrides it with
         // an unlisted one: the write builds the override, so it is judged.
-        let mut device = device(Some("M-0004_A-20DE-22-C7D8-O000A"))?;
+        let mut device = device(Some("M-0004_A-D142-21-8848-O000A"))?;
         device.application_override = Some("M-0083_A-0120-10-0000".to_string());
         assert!(!verdict(Some(&device), None).is_supported());
         let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
@@ -774,7 +1064,7 @@ mod tests {
         // The lock pins an unlisted program and the write selected a listed
         // one (`--application`), and the other way round.
         let unlisted = device(Some("M-0083_A-0120-10-0000"))?;
-        let listed = device(Some("M-0004_A-20DE-22-C7D8-O000A"))?;
+        let listed = device(Some("M-0004_A-D142-21-8848-O000A"))?;
         let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
         let target: IndividualAddress = "1.1.7".parse()?;
         assert!(
@@ -782,7 +1072,7 @@ mod tests {
                 &real,
                 target,
                 Some(&unlisted),
-                Some("M-0004_A-20DE-22-C7D8-O000A"),
+                Some("M-0004_A-D142-21-8848-O000A"),
                 false
             )
             .is_ok()
@@ -822,12 +1112,12 @@ mod tests {
     fn test_reuse_for_refuses_a_step_writing_another_application() -> TestResult {
         let target: IndividualAddress = "1.1.7".parse()?;
         let real = tunnel(Ipv4Addr::new(192, 0, 2, 10));
-        let listed = device(Some("M-0004_A-20DE-22-C7D8-O000A"))?;
+        let listed = device(Some("M-0004_A-D142-21-8848-O000A"))?;
         let grant = authorize(&real, target, Some(&listed), None, false)?;
         // The same program passes; an unlisted one in a later step does not.
         assert!(
             grant
-                .reuse_for(target, Some(&listed), Some("M-0004_A-20DE-22-C7D8-O000A"))
+                .reuse_for(target, Some(&listed), Some("M-0004_A-D142-21-8848-O000A"))
                 .is_ok()
         );
         assert!(

@@ -43,8 +43,10 @@ const INPUT_KEY: &str = "unsupported_device";
 /// The prefix of the request state that names a pending question.
 const REQUEST_STATE_PREFIX: &str = "bussard-unsupported:";
 
-/// A write the support gate refused: the device is not on the list and the
-/// override was not given (or not with a plan that reported it).
+/// A write the support gate refused: the device is not rated `proven` or
+/// `likely` (not listed, or a listed known problem, issue #1097) and the
+/// override was not given (or not with a plan that reported it). A `likely`
+/// device passes the gate, so it is never asked about or refused here.
 pub(crate) struct Refused(SupportRefusal);
 
 /// The support gate of a write of `target` that builds its image from
@@ -106,12 +108,18 @@ impl Refused {
         )
     }
 
-    /// The question bussard puts to the human.
+    /// The question bussard puts to the human: the refusal's sentence (a
+    /// known problem with its cause, as the issue states it), why it matters
+    /// and the way back.
     fn question(&self) -> String {
+        let why = if self.0.verdict.view().problem.is_some() {
+            "Writing it anyway can leave the device not working."
+        } else {
+            "bussard has never checked what it writes to this product against ETS, and a wrong \
+             image can leave the device not working."
+        };
         format!(
-            "{}. bussard has never checked what it writes to this product against ETS, and a \
-             wrong image can leave the device not working. Back the device up first; ETS is the \
-             safe way to program it. Write anyway?",
+            "{}. {why} Back the device up first; ETS is the safe way to program it. Write anyway?",
             self.0.sentence()
         )
     }
@@ -143,32 +151,7 @@ impl Refused {
             },
             model,
         );
-        let next_step = match via {
-            Via::Flag => format!(
-                "Tell the human that {target} is not on bussard's list of supported devices: \
-                 bussard has never checked what it writes to this product against ETS, and a \
-                 wrong image can leave the device not working. Recommend a backup first and ETS \
-                 as the safe way. Only if the human explicitly says to write anyway, call the \
-                 same tool again with the same plan_digest and allow_unsupported: true. Never \
-                 decide this for them."
-            ),
-            Via::Asked { shown: true } => format!(
-                "The human said no to bussard's own question about writing {target}, which is \
-                 not on bussard's list of supported devices. Do not write it; recommend ETS for \
-                 this device. Call the tool again only if the human asks to, and bussard asks \
-                 them again."
-            ),
-            Via::Asked { shown: false } => format!(
-                "{target} is not on bussard's list of supported devices, and this chat app did \
-                 not show bussard's question to the human. Nothing was written. Call the tool \
-                 again only if the human asks to; bussard asks them again."
-            ),
-            Via::Replan => format!(
-                "{target} is not on bussard's list of supported devices, and the plan this \
-                 plan_digest names did not report that. Plan again, show the new plan and its \
-                 support verdict to the human, and only then call the write again."
-            ),
-        };
+        let next_step = next_step(&target, &refusal.verdict.view(), via);
         let mut extra = json!({
             "code": UNSUPPORTED_DEVICE,
             "support": refusal.verdict.view(),
@@ -179,6 +162,46 @@ impl Refused {
         }
         crate::reply::merge(&mut out, extra);
         out
+    }
+}
+
+/// What the assistant does after a refusal reached `via`. A listed known
+/// problem is named with its cause as the issue gives it (the capture may be
+/// at fault, not bussard); a device not on the list is one bussard has never
+/// checked against ETS.
+fn next_step(target: &str, view: &support::SupportView, via: Via) -> String {
+    let what = match view.problem_text() {
+        Some(problem) => format!(
+            "{target} has a known problem on bussard's device-support list ({problem})"
+        ),
+        None => format!("{target} is not on bussard's list of supported devices"),
+    };
+    match via {
+        Via::Flag => format!(
+            "Tell the human that {what}{}, and that a wrong image can leave the device not \
+             working; say the cause as it stands. Recommend a backup first and ETS as the safe \
+             way. Only if the human explicitly says to write anyway, call the same tool again \
+             with the same plan_digest and allow_unsupported: true. Never decide this for them.",
+            if view.problem.is_some() {
+                ""
+            } else {
+                ": bussard has never checked what it writes to this product against ETS"
+            }
+        ),
+        Via::Asked { shown: true } => format!(
+            "The human said no to bussard's own question about writing {target}: {what}. Do not \
+             write it; recommend ETS for this device. Call the tool again only if the human asks \
+             to, and bussard asks them again."
+        ),
+        Via::Asked { shown: false } => format!(
+            "{what}, and this chat app did not show bussard's question to the human. Nothing was \
+             written. Call the tool again only if the human asks to; bussard asks them again."
+        ),
+        Via::Replan => format!(
+            "{what}, and the plan this plan_digest names did not report that. Plan again, show \
+             the new plan and its support verdict to the human, and only then call the write \
+             again."
+        ),
     }
 }
 
@@ -380,11 +403,10 @@ impl BussardMcp {
             return Override::Go(false);
         }
         let question = format!(
-            "Line {} has devices that are not on bussard's list of supported devices (the plan \
-             names them). bussard has never checked what it writes to those products against \
-             ETS, and a wrong image can leave a device not working. Back them up first; ETS is \
-             the safe way to program them. Write them anyway? No writes the supported devices \
-             only.",
+            "Line {} has devices bussard does not rate proven or likely: not on its list of \
+             supported devices, or with a known problem (the plan names them and the causes). A \
+             wrong image can leave a device not working. Back them up first; ETS is the safe way \
+             to program them. Write them anyway? No writes the proven and likely devices only.",
             write.subject
         );
         match self.ask_human(&ask, &write, question).await {
@@ -408,8 +430,8 @@ impl BussardMcp {
             Ok(None) => Override::Go(true),
             Ok(Some(refused)) => respond(refused.answer(&model, false, Via::Replan)),
             Err(reason) => respond(crate::reply::refused(format!(
-                "The human said yes to writing a device not on bussard's list of supported \
-                 devices, but by then {reason}. Nothing was written."
+                "The human said yes to writing a device bussard does not rate proven or likely, \
+                 but by then {reason}. Nothing was written."
             ))),
         }
     }
@@ -464,6 +486,67 @@ impl BussardMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use bussard_service::support::{KnownProblem, Support, UnsupportedReason};
+
+    fn known_problem() -> support::SupportView {
+        Support::Unsupported {
+            application_id: Some("0004B00C01".to_string()),
+            application: Some("M-0004_A-B00C-01".to_string()),
+            name: None,
+            reason: UnsupportedReason::KnownProblem,
+            known: Some(Box::new(KnownProblem {
+                problem: "differs from ETS in the sweep, #1060".to_string(),
+                cause: Some("capture unusable".to_string()),
+            })),
+        }
+        .view()
+    }
+
+    #[test]
+    fn test_next_step_renders_the_cause_of_a_known_problem() {
+        assert_eq!(
+            next_step("1.1.9", &known_problem(), Via::Flag),
+            "Tell the human that 1.1.9 has a known problem on bussard's device-support list \
+             (differs from ETS in the sweep, #1060: capture unusable), and that a wrong image \
+             can leave the device not working; say the cause as it stands. Recommend a backup \
+             first and ETS as the safe way. Only if the human explicitly says to write anyway, \
+             call the same tool again with the same plan_digest and allow_unsupported: true. \
+             Never decide this for them."
+        );
+        assert_eq!(
+            next_step("1.1.9", &known_problem(), Via::Asked { shown: true }),
+            "The human said no to bussard's own question about writing 1.1.9: 1.1.9 has a known \
+             problem on bussard's device-support list (differs from ETS in the sweep, #1060: \
+             capture unusable). Do not write it; recommend ETS for this device. Call the tool \
+             again only if the human asks to, and bussard asks them again."
+        );
+    }
+
+    #[test]
+    fn test_question_names_the_known_problem_and_its_cause() -> Result<(), Box<dyn std::error::Error>> {
+        let verdict = Support::Unsupported {
+            application_id: Some("0004B00C01".to_string()),
+            application: Some("M-0004_A-B00C-01".to_string()),
+            name: None,
+            reason: UnsupportedReason::KnownProblem,
+            known: Some(Box::new(KnownProblem {
+                problem: "differs from ETS in the sweep, #1060".to_string(),
+                cause: Some("capture unusable".to_string()),
+            })),
+        };
+        let refused = Refused(SupportRefusal {
+            target: "1.1.9".parse()?,
+            verdict,
+        });
+        assert_eq!(
+            refused.question(),
+            "1.1.9 runs M-0004_A-B00C-01, which has a known problem (differs from ETS in the \
+             sweep, #1060: capture unusable). Writing it anyway can leave the device not working. \
+             Back the device up first; ETS is the safe way to program it. Write anyway?"
+        );
+        Ok(())
+    }
 
     #[test]
     fn test_decide_supported_goes_without_the_override() {

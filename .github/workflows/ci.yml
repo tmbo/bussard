@@ -88,6 +88,14 @@ jobs:
       - name: No private data in tracked files
         run: scripts/check-no-private-data.sh
 
+      # The generated half of the device-support list (#1097) must match
+      # what tools/supported-devices/generate.py computes from the committed
+      # sweep manifest, synthetic manifest and hand-kept files.
+      - name: Device-support list
+        run: |
+          python3 tools/supported-devices/test_generate.py
+          python3 tools/supported-devices/generate.py --check
+
       # The synthetic product generator (epic #596): its unit tests, and
       # `--check`, which fails when a product's committed xml/ or signed.toml
       # no longer matches its product.toml. Both scripts are stdlib-only

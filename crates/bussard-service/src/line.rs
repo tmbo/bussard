@@ -583,21 +583,28 @@ async fn visit(
         ctx.allow_unsupported && ctx.mode == LineMode::Apply,
     );
     if ctx.mode == LineMode::Plan {
-        if let Err(refusal) = &gate {
-            out.support = Some(crate::support::SupportStatus::Unsupported);
-            note.say(&format!(
-                "{}; an apply refuses it without the override",
-                refusal.sentence()
-            ));
+        match &gate {
+            Err(refusal) => {
+                out.support = Some(crate::support::SupportStatus::Unsupported);
+                note.say(&format!(
+                    "{}; an apply refuses it without the override",
+                    refusal.sentence()
+                ));
+            }
+            // A `likely` device: the plan says it is not confirmed on a real
+            // device (#1097).
+            Ok(grant) => {
+                if let Some(line) = grant.notice() {
+                    note.say(&line);
+                }
+            }
         }
         return DeviceStatus::Changes(changes);
     }
     let grant = match gate {
         Ok(grant) => {
             out.support = Some(grant.status());
-            if grant.forced()
-                && let Some(line) = grant.plan_line()
-            {
+            if let Some(line) = grant.notice() {
                 note.say(&line);
             }
             grant

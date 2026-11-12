@@ -140,6 +140,40 @@ sweep or, once it exists, a synthetic product), never by reasoning about
 what ETS probably does. A capture is retaken when the product XML or the ETS
 version changes.
 
+### From evidence to a device-support category (#1097)
+
+The triangle's results decide which devices bussard writes on a real gateway
+(`crates/bussard-model/data/supported-*.toml`, the gate in
+`bussard_service::support`):
+
+- **proven** (hand-kept, `supported-devices.toml`): bussard wrote a real
+  device with the application and the read-back matched. The entry's `source`
+  cites the issue or the dated owner statement of the run.
+- **likely**: the ETS evidence matches, no real device was written. A house
+  device with an identical oracle row is kept by hand (`house-capture`). The
+  rest is computed by `tools/supported-devices/generate.py` from committed
+  files only (rule `sweep-1`): for every captured build of the application
+  id, the sweep manifest's oracle and load-control verdicts `identical` and
+  coverage at or above 95 %; no differing build; and a proven device for every
+  mask a build has. A skipped sibling build counts in `uncompared`, neither
+  for nor against. The family key is the mask; the load-procedure shape is not
+  in committed data yet. A hand entry's mask must match the sweep's, and a
+  passing hand entry with a differing sweep row stops the generator unless
+  its `sweep_differs` says why.
+- **unsupported**: an application the sweep reports `differs`, with its issue
+  from the hand-kept `tools/supported-devices/causes.toml`; everything else is
+  unknown.
+
+`proven` and `likely` pass the gate. `sweep-1` does not yet check the
+application's constructs against the synthetic catalogue or the branches a
+defaults sweep never reaches; a later rule adds both. After committing a new
+`tools/ets-sweep/evidence/manifest.json`, run `python3
+tools/supported-devices/generate.py` (Python 3.11 or newer) and commit the
+list; CI's `--check` fails while it is stale, and while an application the
+sweep reports `differs` has no cause in `causes.toml`. A proven device is one
+line in `supported-devices.toml`, and it can open a whole family: mask `0701`
+has none yet.
+
 ## The product corpus (`BUSSARD_PRODUCT_CORPUS`)
 
 The corpus is the vendor archives `tests-support/product-corpus/fetch.sh`
