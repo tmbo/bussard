@@ -1528,8 +1528,12 @@ class TestPropertyWrites(unittest.TestCase):
         out = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, out, ignore_errors=True)
         self.assertEqual(main(["image", self.ip_capture(True), "--device", "1.1.200", "--out", out]), 0)
-        props = memimage.compare(self.ip_plan(), out)["properties"]
+        report = memimage.compare(self.ip_plan(), out)
+        props = report["properties"]
         self.assertEqual(props["verdict"], memimage.IDENTICAL)
+        # Issue #1043: a property-only plan writes no memory, so the property
+        # parity is the headline; ETS's commissioning is not counted against it.
+        self.assertEqual((report["verdict"], report["reason"]), (memimage.IDENTICAL, ""))
         self.assertEqual(
             [e["key"] for e in props["commissioning"]],
             [["type17.1", 51, 3], ["type11.1", 76, 30], ["type11.1", 92, 16]],
@@ -1541,13 +1545,34 @@ class TestPropertyWrites(unittest.TestCase):
         lines = "\n".join(memimage.render_properties(props))
         self.assertIn("ETS commissioning (not counted): #3   A_PropertyExtValue_WriteCon type11.1 PID 92", lines)
 
+    def test_compare_property_only_plan_differs_on_a_bussard_only_write(self):
+        """Issue #1043: the headline of a property-only plan is the property
+        parity, so a write ETS did not send makes the row differ."""
+        out = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, out, ignore_errors=True)
+        self.assertEqual(main(["image", self.ip_capture(True), "--device", "1.1.200", "--out", out]), 0)
+        plan_dir = self.ip_plan()
+        with open(os.path.join(plan_dir, "plan.json")) as fh:
+            plan = json.load(fh)
+        plan["steps"].append({"index": 2, "label": "2.", "property": {
+            "object_type": 11, "instance": 1, "pid": 205, "start_element": 1,
+            "count": 1, "length": 1, "data": "01"}})
+        with open(os.path.join(plan_dir, "plan.json"), "w") as fh:
+            json.dump(plan, fh)
+        report = memimage.compare(plan_dir, out)
+        self.assertEqual(report["properties"]["verdict"], memimage.DIFFERS)
+        self.assertEqual(report["verdict"], memimage.DIFFERS)
+
     def test_compare_properties_names_a_capture_without_the_procedure(self):
         out = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, out, ignore_errors=True)
         self.assertEqual(main(["image", self.ip_capture(False), "--device", "1.1.200", "--out", out]), 0)
-        props = memimage.compare(self.ip_plan(), out)["properties"]
+        report = memimage.compare(self.ip_plan(), out)
+        props = report["properties"]
         self.assertEqual(props["verdict"], memimage.NOT_COMPARABLE)
         self.assertIn("ETS did not run the load procedure", props["reason"])
+        self.assertEqual(report["verdict"], memimage.NOT_COMPARABLE)
+        self.assertIn("ETS did not run the load procedure", report["reason"])
         self.assertEqual(len(props["commissioning"]), 3)
         lines = "\n".join(memimage.render_properties(props))
         self.assertIn("bussard only: step   1 type11.1 PID 204 (1 octets)", lines)
