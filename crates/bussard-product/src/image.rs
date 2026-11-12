@@ -852,7 +852,13 @@ fn dynamic_image(
         let range =
             write_slot(app, &mut images, &slot, value.as_deref(), source).map_err(|err| {
                 // A computed value that does not fit its parameter (a fraction
-                // for an integer, say) names the calculation behind it.
+                // for an integer, say) names the calculation behind it. It is
+                // refused, unlike a vendor default out of range (#405): ETS's
+                // editor refuses the input whose computed output leaves its
+                // type (#718, `syn-param-calculation` calc-overflow, ETS 6.4.1
+                // 2026-11-12: `Delay (s)` = 40000 kept at 300, nothing
+                // downloaded; run directory
+                // `captures/ets-sweep/M-00FA_A-270B-10-5136/calc-overflow/`).
                 match (
                     &err,
                     slot.param_ref_id

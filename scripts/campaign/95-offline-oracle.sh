@@ -557,9 +557,13 @@ PY
 # step (the base captures replayed into the device), `bussard apply` runs
 # against it on loopback, and knxtrace compares the device state after it with
 # the state after ETS's partial download (the row's capture). The sim records
-# bussard's session as $dir/sim/bussard.pcap.
+# bussard's session as $dir/sim/bussard.pcap. A Data Secure row (keyring=,
+# issue #1054) starts the device `activated` under that keyring's tool key, as
+# the capture's committed sim.yaml does, and decodes all three sessions with
+# it; bussard plans with the key store of its dir= model.
 apply_row() {
   local dir="$1" device="$2" capture="$3" product="$4" application="$5" base="$6" model="$7" lsm="$8" how="${9:-apply}"
+  local keyring="${10:-}"
   local sim_bin="${KNX_SIM_BIN:-$REPO/knx-sim/target/debug/knx-sim}"
   if [ ! -x "$sim_bin" ]; then
     not_comparable "$dir" "$device" "no knx-sim at $sim_bin (cargo build in knx-sim/, or export KNX_SIM_BIN)"
@@ -578,7 +582,13 @@ apply_row() {
     not_comparable "$dir" "$device" "model dir=$7: $(tail -1 "$dir/model.log" 2>/dev/null | cut -c1-160)"
     return 0
   fi
-  local b base_args=()
+  local b base_args=() keyring_args=()
+  if [ -n "$keyring" ]; then
+    [ -f "$keyring" ] || { not_comparable "$dir" "$device" "keyring not found: $keyring"; return 0; }
+    [ -n "${BUSSARD_KEYRING_PASSWORD:-}" ] \
+      || { not_comparable "$dir" "$device" "keyring=$keyring needs its password in \$BUSSARD_KEYRING_PASSWORD"; return 0; }
+    keyring_args=(--keyring "$keyring")
+  fi
   IFS=',' read -r -a bases <<<"$base"
   for b in ${bases+"${bases[@]}"}; do
     [ -f "$b" ] || { not_comparable "$dir" "$device" "base capture not found: $b"; return 0; }
@@ -588,16 +598,20 @@ apply_row() {
   ensure_dir "$sim"
   port="$("$PYTHON" -c 'import socket; s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
   # JSON is YAML: the sim reads it as its config.
-  "$PYTHON" - "$sim/sim.yaml" "$port" "$device" "$prod" "$application" "${lsm:-property}" "$base" <<'PY'
+  "$PYTHON" - "$sim/sim.yaml" "$port" "$device" "$prod" "$application" "${lsm:-property}" "$base" "$keyring" <<'PY'
 import json, os, sys
-path, port, device, prod, app, lsm, base = sys.argv[1:8]
+path, port, device, prod, app, lsm, base, keyring = sys.argv[1:9]
 dev = {"address": device, "knxprod": os.path.abspath(prod), "initial_state": "unloaded", "lsm_access": lsm}
 if app:
     dev["application"] = app
+if keyring:
+    dev["security"] = {"status": "activated",
+                       "keyring": {"file": os.path.abspath(keyring),
+                                   "password": os.environ["BUSSARD_KEYRING_PASSWORD"]}}
 cfg = {"gateway": {"host": "127.0.0.1", "port": int(port), "tunnel_address": "1.1.254", "pcap": "bussard.pcap"},
        "devices": [dev], "replay": [os.path.abspath(p) for p in base.split(",") if p]}
-with open(path, "w", encoding="utf-8") as fh:
-    json.dump(cfg, fh, indent=1)
+with open(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as fh:
+    json.dump(cfg, fh, indent=1)  # 0600: a keyring row's sim config holds its password
 PY
   RUST_LOG=info NO_COLOR=1 "$sim_bin" "$sim/sim.yaml" >"$sim/sim.log" 2>&1 &
   pid=$!
@@ -624,9 +638,10 @@ PY
   # A refused apply writes nothing; the state comparison then says so.
   [ "$rc" = 0 ] || note "bussard ${target[0]} exited $rc: $(grep -v '^\s*$' "$dir/apply.err" | tail -1 | cut -c1-160)"
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
-    --bussard "$sim/bussard.pcap" --device "$device" --json >"$dir/diff.json" || true
+    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} \
+    --json >"$dir/diff.json" || true
   "$PYTHON" "$KNXTRACE" statediff ${base_args+"${base_args[@]}"} --ets "$capture" \
-    --bussard "$sim/bussard.pcap" --device "$device" >"$dir/diff.txt" || true
+    --bussard "$sim/bussard.pcap" --device "$device" ${keyring_args+"${keyring_args[@]}"} >"$dir/diff.txt" || true
   sed 's/^/  /' "$dir/diff.txt"
 }
 
@@ -706,7 +721,7 @@ PY
     return 0
   fi
   if [ "$run" = apply ] || [ "$run" = apply-line ] || [ "$run" = params ]; then
-    apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run"
+    apply_row "$dir" "$device" "$capture" "$product" "$application" "$base" "$rowdir" "$lsm" "$run" "$rowkeyring"
     return 0
   fi
 

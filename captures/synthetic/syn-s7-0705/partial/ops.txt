@@ -1,0 +1,23 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-s7-0705/partial/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 29 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   6  mem-read 0xb6ec addr_int=46828 count=1
+   7  prop-read obj3/PID_PROGRAM_VERSION count=1 index=1
+   8  mem-read 0xb6ed addr_int=46829 count=1
+   9  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+  10  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1
+  11  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  12  prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+  13  prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
+  14  mem-write 0x4440 addr_int=17472 len=3 sha=28d21021 extended=False
+  15  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  16  restart Restart type=basic
+  17  disconnect T_Disconnect
+
+memory image (1 region(s), chunking removed):
+    0x004440..0x004443 len=3 sha=28d21021

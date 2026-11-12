@@ -1446,6 +1446,20 @@ class TestCaptureSecure(unittest.TestCase):
         self.assertEqual(out, {"keyring": "captures/synthetic/syn-secure/defaults/project.knxkeys",
                                "keyring_remote": "<vm>\\keyrings\\x.knxkeys"})
 
+    def test_write_driver_scrubs_a_variant_run(self):
+        # copy_variant copied driver.json as it was; the connection list of a
+        # run variant named the owner's gateway (#1054).
+        with tempfile.TemporaryDirectory() as tmp:
+            run, dst = Path(tmp) / "run", Path(tmp) / "dst"
+            run.mkdir(); dst.mkdir()
+            (run / "driver.json").write_text(json.dumps(
+                {"connections": ["KNX IP (198.51.100.74:3671 - 1.1.200)", "knx-sim (127.0.0.1:3672)"],
+                 "keyring": str(run / "project.knxkeys")}))
+            capture.write_driver(run, dst, "captures/synthetic/syn-secure/apply")
+            out = json.loads((dst / "driver.json").read_text())
+        self.assertEqual(out["connections"], ["KNX IP (192.0.2.74:3671 - 1.1.200)", "knx-sim (127.0.0.1:3672)"])
+        self.assertEqual(out["keyring"], "captures/synthetic/syn-secure/apply/project.knxkeys")
+
     def test_portable_driver_commits_no_lan_endpoint(self):
         text = json.dumps({"entries": ["KNX IP (10.20.30.74:3671 - 1.1.200)", "knx-sim (127.0.0.1:3672 Udp)"],
                            "value": "192.168.27.21"})
@@ -1782,6 +1796,82 @@ class TestCaptureRecapture(unittest.TestCase):
                 capture.ROWS = saved
             self.assertEqual(out.read_text(), saved.read_text())
 
+    def test_seq_verdict_from_regions(self):
+        self.assertEqual(capture.seq_verdict("par=ok(3)  loadctl=ok(17)  seq=ok(23)"), "identical")
+        self.assertEqual(capture.seq_verdict(
+            "seq=differs(first: bussard-only mem-write obj4 (after load-control obj2 rel-segment))"), "differs")
+        self.assertEqual(capture.seq_verdict("loadctl=n/c  seq=n/c"), "not-comparable")
+        # bussard refused the product: nothing compared, nothing to pin.
+        self.assertIsNone(capture.seq_verdict("neither side wrote memory  loadctl=n/c  seq=ok(0)"))
+        self.assertIsNone(capture.seq_verdict("par=ok(256)"))
+
+    def test_row_options_pins_seq_and_a_property_only_parity(self):
+        self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical", "seq": "identical"}),
+                         "loadctl=identical seq=identical")
+        self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical", "seq": "differs"}),
+                         "loadctl=identical seq=differs")
+        self.assertEqual(capture.row_options({"verdict": "identical", "loadctl": "identical", "seq": "not-comparable"}),
+                         "loadctl=identical")
+        # syn-property-nopar/partial (#1052): no memory on either side.
+        self.assertEqual(capture.row_options({"verdict": "not-comparable", "loadctl": "identical",
+                                              "props": "identical", "seq": "identical"}),
+                         "expect=not-comparable loadctl=identical props=identical seq=identical")
+
+    def test_write_rows_keeps_options_the_manifest_does_not_hold(self):
+        # #1054: capture.py rewrote rows.txt without the hand-set seq=identical
+        # of 43 rows. A regeneration keeps every option of the committed row it
+        # does not write, except a verdict the entry records.
+        entry = {"product": "syn-minimal", "variant": "defaults", "application": "M-00FA_A-2700-10-0000",
+                 "oracle": {"verdict": "identical", "coverage": "100.0%", "loadctl": "identical"}}
+        recorded = {**entry, "variant": "no-ga", "oracle": {**entry["oracle"], "seq": "differs"}}
+        with tempfile.TemporaryDirectory() as tmp:
+            rows = Path(tmp) / "rows.txt"
+            rows.write_text(
+                "# head\n"
+                "1.1.1|captures/synthetic/syn-minimal/defaults/ets.pcapng|x|a|n|100.0|loadctl=identical "
+                "seq=identical scope=par\n"
+                "1.1.1|captures/synthetic/syn-minimal/no-ga/ets.pcapng|x|a|n|100.0|loadctl=identical seq=identical\n")
+            saved = capture.ROWS
+            capture.ROWS = rows
+            try:
+                capture.write_rows([entry, recorded])
+            finally:
+                capture.ROWS = saved
+            lines = [l for l in rows.read_text().splitlines() if not l.startswith("#")]
+        self.assertTrue(lines[0].endswith("|loadctl=identical seq=identical scope=par"), lines[0])
+        self.assertTrue(lines[1].endswith("|loadctl=identical seq=differs"), lines[1])
+
+    def test_check_downloaded_version_accepts_a_partial_step_without_version(self):
+        # syn-s7-0705/partial, syn-minimal/apply (#1054): the partial step
+        # writes no version; the base step's full download carries it.
+        expected = capture.expected_program_version("syn-s7-0705")
+        steps = {Path("base"): [("app_id", expected)], Path("capture"): []}
+        with mock.patch.object(capture, "downloaded_versions", side_effect=lambda d: steps[d]):
+            capture.check_downloaded_version("syn-s7-0705", [Path("base"), Path("capture")])
+            with self.assertRaises(SystemExit):
+                capture.check_downloaded_version("syn-s7-0705", [Path("capture")])
+            steps[Path("capture")] = [("app_id", "00fa280011")]
+            with self.assertRaises(SystemExit):
+                capture.check_downloaded_version("syn-s7-0705", [Path("base"), Path("capture")])
+
+    def test_ops_header_names_the_committed_capture(self):
+        # A run kept in the main checkout, finished with --no-ets in a worktree.
+        text = "normalized operation sequence for 1.1.1 (/x/captures/ets-sweep/S/apply/capture/ets.pcapng)\nrest\n"
+        got = capture.OPS_HEADER.sub(r"\g<1>captures/synthetic/syn-minimal/apply/ets.pcapng)", text, count=1)
+        self.assertEqual(got.splitlines()[0],
+                         "normalized operation sequence for 1.1.1 (captures/synthetic/syn-minimal/apply/ets.pcapng)")
+
+    def test_save_row_shots_writes_the_png_and_keeps_its_name(self):
+        import base64
+
+        done = [{"label": "a", "result": "set"},
+                {"label": "b", "result": "unreachable", "row_png": base64.b64encode(b"\x89PNG").decode()}]
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.save_row_shots(done, Path(tmp))
+            self.assertEqual((Path(tmp) / "row-2.png").read_bytes(), b"\x89PNG")
+        self.assertEqual(done[1]["row_png"], "row-2.png")
+        self.assertNotIn("row_png", done[0])
+
 
 
 class TestCouplerAddress(unittest.TestCase):
@@ -2096,6 +2186,92 @@ class TestDriverParamEditor(unittest.TestCase):
             self.d.choose_value(row, {"pick": 0.5}, ["Inaktiv"])
 
 
+class TestDriverSession1054(unittest.TestCase):
+    """Driver failures of the #1054 capture session (2026-11-12)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    def test_popup_lists_open_tolerates_a_vanished_popup(self):
+        # pick_option's "dropdown closed" wait queried a popup that had closed
+        # (InvalidWindowHandle), twice on the MDT 00B1 rerun of #1050.
+        gone = mock.MagicMock()
+        gone.descendants.side_effect = RuntimeError("InvalidWindowHandle")
+        empty = mock.MagicMock()
+        empty.descendants.return_value = []
+        with mock.patch.object(self.d, "ets_popups", return_value=[gone, empty]):
+            self.assertFalse(self.d.popup_lists_open())
+        listing = mock.MagicMock()
+        listing.descendants.return_value = [object()]
+        with mock.patch.object(self.d, "ets_popups", return_value=[gone, listing]):
+            self.assertTrue(self.d.popup_lists_open())
+
+    def test_pick_option_waits_on_a_closing_popup_without_raising(self):
+        text = mock.MagicMock()
+        text.window_text.return_value = "overwrite"
+        item = mock.MagicMock()
+        item.descendants.return_value = [text]
+        pop = mock.MagicMock()
+        calls = {"n": 0}
+
+        def descendants(control_type=None):
+            calls["n"] += 1
+            if calls["n"] > 1:
+                raise RuntimeError("InvalidWindowHandle")  # closed after the click
+            return [item]
+        pop.descendants.side_effect = descendants
+        with mock.patch.object(self.d, "ets_popups", return_value=[pop]), mock.patch.object(self.d, "log"):
+            self.assertTrue(self.d.pick_option("overwrite"))
+        item.click_input.assert_called_once()
+
+    def test_catalog_layout_retries_ensure_layout_until_the_panel_is_back(self):
+        # After the parameter editor the Katalog panel stayed collapsed and the
+        # next catalog_search read no rows; ensure_layout failed once right
+        # after a download.
+        buttons = iter([{"y": 2387}, {"y": 2387}, {"y": 1356}])
+        ensure = mock.MagicMock(return_value={"did": ["katalog"]})
+        with mock.patch.object(self.d, "catalog_import_button", side_effect=lambda: next(buttons)), \
+                mock.patch.object(self.d, "ensure_layout", ensure), \
+                mock.patch.object(self.d, "wait_busy"), mock.patch.object(self.d.time, "sleep"):
+            got = self.d.catalog_layout()
+        self.assertEqual((got["ok"], got["tries"], ensure.call_count), (True, 2, 2))
+        with mock.patch.object(self.d, "catalog_import_button", return_value={"y": 1354}), \
+                mock.patch.object(self.d, "ensure_layout") as untouched:
+            self.assertTrue(self.d.catalog_layout()["ok"])
+        untouched.assert_not_called()
+
+    def test_catalog_search_restores_the_layout_first(self):
+        with mock.patch.object(self.d, "catalog_layout") as layout, \
+                mock.patch.object(self.d, "catalog_dy", return_value=0), \
+                mock.patch.object(self.d, "type_search"), mock.patch.object(self.d, "click"), \
+                mock.patch.object(self.d, "ocr", return_value=[]), mock.patch.object(self.d.time, "sleep"):
+            self.d.flow_catalog_search({"term": "NEST-MOSS"})
+        layout.assert_called_once()
+
+    def test_walk_pages_expands_a_collapsed_entry(self):
+        # syn-module-repeat: after 'Number of feeders' = 2 the tree showed
+        # only '+ General'; its Feeder pages appear once it is expanded.
+        general = {"crumb": "General", "page": "+ General"}
+        feeder = {"crumb": "General > Feeder", "page": "Feeder"}
+        selected = iter([{"crumb": "General", "page": "General"}])
+        expanded = {"done": False}
+
+        def keys(k):
+            if k == "{RIGHT}":
+                expanded["done"] = True
+
+        def nxt(page):
+            return feeder if expanded["done"] and page["page"] == "+ General" else None
+        with mock.patch.object(self.d, "first_page", return_value={**general, "last": None}), \
+                mock.patch.object(self.d, "next_page", side_effect=nxt), \
+                mock.patch.object(self.d, "keys", side_effect=keys), \
+                mock.patch.object(self.d, "selected_page", side_effect=lambda: next(selected)), \
+                mock.patch.object(self.d, "log"):
+            pages = [p["page"] for _, p in self.d.walk_pages(5)]
+        self.assertEqual(pages, ["+ General", "Feeder"])
+
+
 class TestDriverProjectNames(unittest.TestCase):
     """OCR splits 'ets-sweep-secure' into 'ets-sweep' and '-secure' (start
     page tiles, 2026-11-10, #423): neither project may pass for the other."""
@@ -2341,7 +2517,7 @@ class TestDriverDeleteDialog(unittest.TestCase):
         d = self.d
         with mock.patch.multiple(d, require_project=mock.DEFAULT, dismiss_password_dialog=mock.DEFAULT,
                                  wait_busy=mock.DEFAULT, restore_tree_splitter=mock.DEFAULT,
-                                 restore_catalog_splitter=mock.DEFAULT, close_delete_dialog=mock.DEFAULT), \
+                                 catalog_layout=mock.DEFAULT, close_delete_dialog=mock.DEFAULT), \
                 mock.patch.object(d, "flow_devices", side_effect=lambda req: {"devices": next(lists)}), \
                 mock.patch.object(d, "flow_delete_device", side_effect=fake_delete), \
                 mock.patch.object(d, "catalog_dy", side_effect=Reached):

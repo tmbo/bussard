@@ -333,7 +333,7 @@ def copy_capture(product: str, sid: str, app: str, mask: str = "07B0") -> Path:
     dst.mkdir(parents=True, exist_ok=True)
     rel = dst.relative_to(REPO).as_posix()
     shutil.copyfile(src / "ets.pcapng", dst / "ets.pcapng")
-    (dst / "driver.json").write_text(portable_driver((src / "driver.json").read_text(), src, rel))
+    write_driver(src, dst, rel)
     ops = (src / "ops.txt").read_text().replace(str(src / "ets.pcapng"), f"{rel}/ets.pcapng")
     (dst / "ops.txt").write_text(ops)
     reqs = distil.requests(dst / "ets.pcapng")
@@ -378,6 +378,14 @@ def portable_driver(text: str, src: Path, rel: str) -> str:
     192.0.2.x counterpart (RFC 5737), so no local user name or address is
     committed."""
     return LAN_ENDPOINT.sub(r"192.0.2.\1", VM_SWEEP_DIR.sub("<vm>", text.replace(str(src), rel)))
+
+
+def write_driver(src: Path, dst: Path, rel: str) -> None:
+    """`dst/driver.json` from the run directory `src`, scrubbed
+    (`portable_driver`): every capture, defaults and run variants alike,
+    commits it only this way. A variant's copy went out unscrubbed once
+    (#1054: ETS's connection list named the owner's gateway)."""
+    (dst / "driver.json").write_text(portable_driver((src / "driver.json").read_text(), src, rel))
 
 
 def keyring_args(dst: Path) -> tuple[list[str], dict]:
@@ -489,6 +497,9 @@ def oracle_verdict(product: str, app: str, variant: str = VARIANT, extra: str = 
     props = props_verdict(out["regions"])
     if props:
         out["props"] = props
+    seq = seq_verdict(out["regions"])
+    if seq:
+        out["seq"] = seq
     return out
 
 
@@ -513,6 +524,22 @@ def props_verdict(regions: str) -> str | None:
     return {"ok": "identical", "differs": "differs", "n/c": "not-comparable"}[m.group(1)] if m else None
 
 
+SEQ_REGION = re.compile(r"\bseq=(?:(ok)\((\d+)\)|(differs)\b|(n/c)\b)")
+
+
+def seq_verdict(regions: str) -> str | None:
+    """The operation-order verdict of a row from the summary's regions
+    (`seq=ok(n)`, `seq=differs(first: ..)`, `seq=n/c`, #1055), as the `seq=`
+    row option names it; None when the row reports none or compared no
+    operation (`seq=ok(0)`: bussard refused the product, nothing to pin)."""
+    m = SEQ_REGION.search(regions)
+    if not m:
+        return None
+    if m.group(1):
+        return "identical" if int(m.group(2)) > 0 else None
+    return "differs" if m.group(3) else "not-comparable"
+
+
 def load_manifest() -> list[dict]:
     try:
         return json.loads(MANIFEST.read_text())["captures"]
@@ -533,8 +560,15 @@ def write_manifest(entries: list[dict]) -> None:
     )
 
 
+# The verdicts a manifest entry records (`oracle`), and the row option each
+# one pins (`row_options`).
+ORACLE_KEYS = ("verdict", "coverage", "confirmed", "loadctl", "props", "seq")
+VERDICT_OPTIONS = {"expect": "verdict", "confirmed": "confirmed", "loadctl": "loadctl", "props": "props",
+                   "seq": "seq"}
+
+
 def row_options(verdicts: dict) -> str:
-    """The row's `expect=`, `confirmed=`, `loadctl=` and `props=` from the
+    """The row's `expect=`, `confirmed=`, `loadctl=`, `props=` and `seq=` from the
     recorded verdicts, so `--check` holds a product to what its capture
     showed: a `differs` row is the evidence of an open bug and stays green
     until the fix changes the verdict (#596 step 4). An identical headline or
@@ -548,14 +582,22 @@ def row_options(verdicts: dict) -> str:
         opts.append(f"loadctl={verdicts['loadctl']}")
     if verdicts.get("props") in ("differs", "not-comparable"):
         opts.append(f"props={verdicts['props']}")
+    elif verdicts.get("props") == "identical" and verdicts.get("verdict") == "not-comparable":
+        # A property-only parameter download writes no memory on either
+        # side (#1052, #1038): the property parity is the row's evidence.
+        opts.append("props=identical")
+    # The operation order (#1055) is pinned either way: an identical order
+    # is not the script's default (it leaves seq= unchecked).
+    if verdicts.get("seq") in ("identical", "differs"):
+        opts.append(f"seq={verdicts['seq']}")
     return " ".join(opts)
 
 
 # The row options capture.py derives on every capture: from the verdicts
 # (`row_options`), the device state (`device_state`), the variant
 # (`variant_options`) and an IP-enabled product's model (`knxnet_model`).
-DERIVED_OPTIONS = frozenset({"expect", "confirmed", "loadctl", "props", "state", "dir", "run", "base", "lsm",
-                             "keyring"})
+DERIVED_OPTIONS = frozenset({"expect", "confirmed", "loadctl", "props", "seq", "state", "dir", "run", "base",
+                             "lsm", "keyring"})
 
 
 def carried_options(derived: str, previous: str) -> str:
@@ -567,7 +609,37 @@ def carried_options(derived: str, previous: str) -> str:
     return " ".join(o for o in (derived, *kept) if o)
 
 
+def row_options_of(text: str) -> dict[str, list[str]]:
+    """The options of each row in a rows file, by its capture path."""
+    out = {}
+    for line in text.splitlines():
+        if line.startswith("#") or "|" not in line:
+            continue
+        fields = line.split("|")
+        out[fields[1].strip()] = fields[6].split() if len(fields) > 6 else []
+    return out
+
+
+def kept_options(row: str, previous: list[str], verdicts: dict) -> str:
+    """`row` with the options of the committed row it replaces that this
+    regeneration does not write: a hand-set option (`scope=`, a `seq=`
+    pinned by hand) is never dropped. A verdict option (`VERDICT_OPTIONS`)
+    is dropped only when the entry records that verdict: then the capture
+    decided it."""
+    fields = row.split("|")
+    while len(fields) < 7:
+        fields.append("")
+    have = {w.split("=", 1)[0] for w in fields[6].split()}
+    kept = [w for w in previous if (key := w.split("=", 1)[0]) not in have
+            and not (key in VERDICT_OPTIONS and VERDICT_OPTIONS[key] in verdicts)]
+    if not kept:
+        return row
+    fields[6] = " ".join(o for o in (fields[6], *kept) if o)
+    return "|".join(fields)
+
+
 def write_rows(entries: list[dict]) -> None:
+    previous = row_options_of(ROWS.read_text()) if ROWS.exists() else {}
     head = (
         "# Offline oracle rows of the synthetic captures (epic #596), for\n"
         "#   BUSSARD_KEYRING_PASSWORD='SyntheticKeyring1!' \\\n"
@@ -593,8 +665,9 @@ def write_rows(entries: list[dict]) -> None:
         elif not why and e["oracle"]["verdict"] == "not-comparable":
             issues = tomllib.loads((CATALOGUE / e["product"] / "product.toml").read_text())["doc"]["issues"]
             why = "bussard refuses the product, " + ", ".join(f"#{n}" for n in issues)
-        rows.append(oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why,
-                               e["variant"], e.get("row_options", "")))
+        row = oracle_row(e["product"], e["application"], coverage, row_options(e["oracle"]), why,
+                         e["variant"], e.get("row_options", ""))
+        rows.append(kept_options(row, previous.get(row.split("|")[1], []), e["oracle"]))
     ROWS.write_text(head + "\n".join(rows) + "\n")
 
 
@@ -695,13 +768,20 @@ def version_mismatch(found: list[tuple[str, str]], expected: str) -> str | None:
     return None
 
 
-def check_downloaded_version(product: str, run_dir: Path) -> None:
-    """Fails loudly (SystemExit) when the capture in `run_dir` did not
-    download the spec's program version: ETS used a stale catalogue entry
-    (#650). Runs before anything is copied under captures/synthetic/."""
-    why = version_mismatch(downloaded_versions(run_dir), expected_program_version(product))
+def check_downloaded_version(product: str, run_dirs: list[Path]) -> None:
+    """Fails loudly (SystemExit) when the downloads of `product` in
+    `run_dirs` (a capture and the base steps before it) did not download the
+    spec's program version: ETS used a stale catalogue entry (#650). Every
+    version written must be the spec's, and at least one step must write
+    one. A partial download writes none (a System 7 parameter-only download,
+    a link change: `syn-s7-0705/partial`, `syn-minimal/apply`, #1054); its
+    base step's full download shows which application ETS used. Runs before
+    anything is copied under captures/synthetic/."""
+    found = [v for d in run_dirs for v in downloaded_versions(d)]
+    why = version_mismatch(found, expected_program_version(product))
     if why:
-        raise SystemExit(f"{product}: {why} in {run_dir}. ETS's catalogue holds a stale import; bump "
+        where = ", ".join(str(d) for d in run_dirs)
+        raise SystemExit(f"{product}: {why} in {where}. ETS's catalogue holds a stale import; bump "
                          f"[application] version and capture again (#650).")
 
 
@@ -846,6 +926,8 @@ def set_params(flow, ia: str, changes: list[dict]) -> list[dict]:
         result = "set" if r.get("set") else "unreachable" if r.get("unreachable") else "failed"
         done.append({**ch, "page_found": page, "result": result, "set_to": r.get("value"),
                      "why": r.get("unreachable"), "after": (r.get("row") or {}).get("value")})
+        if r.get("row_png"):
+            done[-1]["row_png"] = r["row_png"]  # written next to params.json (`save_row_shots`)
     for d in done:
         if d["result"] != "set":
             continue
@@ -857,6 +939,20 @@ def set_params(flow, ia: str, changes: list[dict]) -> list[dict]:
         if norm(str(d["shown"])) != norm(str(d.get("set_to") or d["value"])):
             d.update({"result": "lost", "why": f"ETS shows {d['shown']!r}, not {d.get('set_to') or d['value']!r}"})
     return done
+
+
+def save_row_shots(done: list[dict], out: Path) -> None:
+    """The screenshots the driver took of rows it could not set (`row_png`,
+    a row with no control it knows, #1054) as `row-<n>.png` in `out`; the
+    entry keeps the file name."""
+    import base64
+
+    for i, d in enumerate(done):
+        png = d.pop("row_png", None)
+        if png:
+            name = f"row-{i + 1}.png"
+            (out / name).write_bytes(base64.b64decode(png))
+            d["row_png"] = name
 
 
 def params_problem(done: list[dict]) -> str | None:
@@ -1033,6 +1129,7 @@ def run_variant(c, product: str, variant: str, signed: dict[str, tuple[Path, str
                     info.setdefault("ga_security", {})[ga] = f"not set, left at Automatic: {exc}"[:300]
             if step["params"]:
                 done = set_params(flow, "1.1.1", step["params"])
+                save_row_shots(done, out)
                 (out / "params.json").write_text(json.dumps({"changes": done}, indent=1,
                                                             ensure_ascii=False) + "\n")
                 info["params"] = done
@@ -1106,6 +1203,9 @@ def merge_pcaps(parts: list[Path]) -> bytes:
     return bytes(out)
 
 
+OPS_HEADER = re.compile(r"^(normalized operation sequence for \S+ \().*\)$", re.M)
+
+
 def copy_variant(product: str, variant: str, sid: str, app: str, mask: str) -> Path:
     """`captures/synthetic/<product>/<variant>/` from the run directory: the
     files of a defaults capture for the last download, `base.pcapng` and
@@ -1119,8 +1219,11 @@ def copy_variant(product: str, variant: str, sid: str, app: str, mask: str) -> P
     rel = dst.relative_to(REPO).as_posix()
     last = run / steps[-1]["name"]
     shutil.copyfile(last / "ets.pcapng", dst / "ets.pcapng")
-    shutil.copyfile(run / "driver.json", dst / "driver.json")
-    ops = (last / "ops.txt").read_text().replace(str(last / "ets.pcapng"), f"{rel}/ets.pcapng")
+    write_driver(run, dst, rel)
+    # The header names the capture it decoded: the committed path, also when
+    # the run directory was decoded elsewhere (a run kept in another checkout
+    # and finished with --no-ets).
+    ops = OPS_HEADER.sub(rf"\g<1>{rel}/ets.pcapng)", (last / "ops.txt").read_text(), count=1)
     (dst / "ops.txt").write_text(ops)
     for name in ("objects.json", "params.json"):
         if (last / name).exists():
@@ -1175,7 +1278,8 @@ def capture_variant(product: str, variant: str, args) -> int:
         sid = signed[product][1]
         result = run_variant(c, product, variant, signed)
         when = datetime.date.today().isoformat()
-    check_downloaded_version(product, calibrate.CAPTURES / sid / variant / steps[-1]["name"])
+    check_downloaded_version(product, [calibrate.CAPTURES / sid / variant / s["name"] for s in steps
+                                       if s["product"] == product])
     dst = copy_variant(product, variant, sid, app, mask)
     extra = carried_options(variant_options(product, variant), previous.get("row_options", ""))
     verdict = oracle_verdict(product, app, variant, extra)
@@ -1189,7 +1293,7 @@ def capture_variant(product: str, variant: str, args) -> int:
                   for s in result["steps"]],
         "row_options": extra,
         "note": previous.get("note"),
-        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "confirmed", "loadctl", "props") if k in verdict},
+        "oracle": {k: verdict[k] for k in ORACLE_KEYS if k in verdict},
     }
     for p in involved:
         if p != product:
@@ -1258,7 +1362,7 @@ def main() -> int:
         when = datetime.date.today().isoformat()
         if result.get("outcome") != "captured":
             raise SystemExit(f"ETS did not complete the download: {result}")
-    check_downloaded_version(product, calibrate.run_dir(sid))
+    check_downloaded_version(product, [calibrate.run_dir(sid)])
     dst = copy_capture(product, sid, app, mask)
     extra = carried_options(knxnet_model(product, dst), previous.get("row_options", ""))
     verdict = oracle_verdict(product, app, extra=extra)
@@ -1267,7 +1371,7 @@ def main() -> int:
         "product": product, "variant": VARIANT, "order_number": order, "application": app, "signed_id": sid,
         "xml_sha256": xml_sha256(product), "ets": ets, "knx_sim": build, "captured": when,
         "ops": result.get("ops"), "requests": requests,
-        "oracle": {k: verdict[k] for k in ("verdict", "coverage", "loadctl", "props") if k in verdict},
+        "oracle": {k: verdict[k] for k in ORACLE_KEYS if k in verdict},
     }
     if extra:
         entry["row_options"] = extra

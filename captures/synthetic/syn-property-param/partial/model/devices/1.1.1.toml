@@ -1,0 +1,6 @@
+# The device of the partial variant of syn-property-param (capture.py).
+address = "1.1.1"
+name = "syn-property-param"
+
+[parameters]
+territory-mark = 7

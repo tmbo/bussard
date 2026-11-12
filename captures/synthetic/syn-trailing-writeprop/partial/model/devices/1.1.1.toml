@@ -1,0 +1,6 @@
+# The device of the partial variant of syn-trailing-writeprop (capture.py).
+address = "1.1.1"
+name = "syn-trailing-writeprop"
+
+[parameters]
+delay-s = 500

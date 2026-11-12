@@ -1731,6 +1731,8 @@ def walk_pages(limit: int = 400):
     for i in range(limit):
         yield i, page
         reached = reached or same_page(page, last)
+        if collapsed_entry(page):
+            expand_entry(page)
         nxt = next_page(page)
         if nxt is None and not reached:
             log(f"walk: Down did not move from {page.get('crumb')!r}; once more")
@@ -1740,6 +1742,25 @@ def walk_pages(limit: int = 400):
         if nxt is None:
             return
         page = nxt
+
+
+def collapsed_entry(page: dict) -> bool:
+    """Whether the page's tree entry is drawn with a '+' expander: a page
+    whose child pages (module instances, #1054) stay hidden until it is
+    expanded. Down skips them, so the walk listed only '+ General' on
+    syn-module-repeat after 'Number of feeders' = 2 (2026-11-12)."""
+    return (page.get("page") or "").lstrip().startswith("+")
+
+
+def expand_entry(page: dict) -> bool:
+    """Expand the selected collapsed entry with Right (the tree keeps the
+    keyboard focus during the walk, see `next_page`); True once ETS draws
+    it without the '+'."""
+    keys("{RIGHT}")
+    done = wait_for("tree entry expanded", lambda: not collapsed_entry(selected_page() or {}), 2, 0.2)
+    if not done:
+        log(f"walk: {page.get('page')!r} did not expand")
+    return bool(done)
 
 
 # Whether the last walk ended before the tree's last page.
@@ -1846,17 +1867,34 @@ def dropdown_options(row: dict) -> list[str]:
     return out
 
 
+def popup_lists_open() -> bool:
+    """Whether an ETS popup still shows list items (an open dropdown). A
+    popup that closes between `ets_popups()` and the query raises
+    (pywinauto's InvalidWindowHandle): that one is closed, not an error. The
+    race failed `pick_option` twice on the MDT 00B1 rerun of #1050."""
+    for p in ets_popups():
+        try:
+            if p.descendants(control_type="ListItem"):
+                return True
+        except Exception:  # noqa: BLE001 - a vanished popup is a closed one
+            continue
+    return False
+
+
 def pick_option(text: str) -> bool:
     """Click the open dropdown's option `text`."""
     for pop in ets_popups():
-        for it in pop.descendants(control_type="ListItem"):
+        try:
+            items = pop.descendants(control_type="ListItem")
+        except Exception:  # noqa: BLE001 - a popup closed under us holds no option
+            continue
+        for it in items:
             texts = " ".join(t.window_text() for t in it.descendants(control_type="Text")).strip()
             if texts == text:
                 it.click_input()
                 COUNTS["clicks"] += 1
                 # The open list covers the dropdown: read the row after.
-                wait_for("dropdown closed", lambda: not any(p.descendants(control_type="ListItem")
-                                                            for p in ets_popups()), 2, 0.15)
+                wait_for("dropdown closed", lambda: not popup_lists_open(), 2, 0.15)
                 return True
     return False
 
@@ -1973,6 +2011,13 @@ def set_row(row: dict, req: dict, page: dict | None = None) -> tuple[str, str]:
     raise LookupError(f"{row['label']!r}: no control ETS lets the driver set ({kind})")
 
 
+def row_bbox(row: dict) -> tuple[int, int, int, int]:
+    """The screen box of a parameter row, label to the control column's
+    right end, for a screenshot of a row the driver could not set."""
+    y = int(row.get("y") or 0)
+    return (PARAM_LIST[2], max(y - 40, PARAM_ROWS[1]), PARAM_ROWS[2], y + 40)
+
+
 @flow("set_param")
 def flow_set_param(req: dict) -> dict:
     """Set the parameter of row `label` (the `n`-th row of that label) on
@@ -1998,7 +2043,18 @@ def flow_set_param(req: dict) -> dict:
     try:
         value, expect = set_row(row, req, page)
     except LookupError as exc:
-        return {"set": False, "unreachable": str(exc), "row": row}
+        out = {"set": False, "unreachable": str(exc), "row": row}
+        if row["kind"] == "none":
+            # A row the classifier read as no control (two options with
+            # their circles not found, #1054: 'O overwrite keep'): the row's
+            # pixels are the evidence the next fix needs.
+            try:
+                buf = io.BytesIO()
+                grab(row_bbox(row)).save(buf, format="PNG")
+                out["row_png"] = base64.b64encode(buf.getvalue()).decode()
+            except Exception as shot:  # noqa: BLE001 - evidence, not a step
+                out["row_png_error"] = str(shot)[:200]
+        return out
     seen: dict = {}
 
     def shows():
@@ -2178,6 +2234,7 @@ def row_is_online(y: int) -> bool:
 
 @flow("catalog_rows")
 def flow_catalog_rows(req: dict) -> dict:
+    catalog_layout()
     return {"rows": catalog_rows()}
 
 
@@ -2190,9 +2247,10 @@ def flow_catalog_add(req: dict) -> dict:
     require_project(req["project"])
     dismiss_password_dialog(req.get("project_password"))
     wait_busy()
-    # ETS moves its splitters between jobs at times: put them back first.
+    # ETS moves its splitters between jobs at times, and leaves the Katalog
+    # panel collapsed after the parameter editor: put them back first.
     restore_tree_splitter()
-    restore_catalog_splitter()
+    catalog_layout()
     closed_delete_dialog = close_delete_dialog()
     before = {d["ia"] for d in flow_devices(req)["devices"]}
     if before and req.get("clear", True):
@@ -3469,6 +3527,31 @@ def expand_catalog_tree() -> bool:
     return True
 
 
+# How far the Import button may sit from where LAYOUT measured it (y 1354)
+# before a catalog flow restores the layout (`restore_catalog_splitter`
+# moves it back from the same distance).
+CATALOG_DY_MAX = 50
+
+
+def catalog_layout(tries: int = 3) -> dict:
+    """Put the Katalog panel where LAYOUT expects it before a catalog flow
+    reads it. After the parameter editor the panel stayed collapsed (its
+    splitter at y 2339) and the next search read no rows ("ETS does not list
+    ... after the import", #1054, 2026-11-12); `ensure_layout` restores it,
+    but right after a download it sometimes does not, so it is retried until
+    the Import button sits within CATALOG_DY_MAX of y 1354."""
+    did = []
+    for attempt in range(tries):
+        btn = catalog_import_button()
+        if btn and abs(btn["y"] - 1354) <= CATALOG_DY_MAX:
+            return {"ok": True, "tries": attempt, "did": did}
+        wait_busy(60)
+        did.append(ensure_layout().get("did", []))
+        time.sleep(1 + attempt)
+    btn = catalog_import_button()
+    return {"ok": bool(btn and abs(btn["y"] - 1354) <= CATALOG_DY_MAX), "tries": tries, "did": did}
+
+
 def catalog_dy() -> int:
     """Vertical offset of the Katalog panel from the layout LAYOUT was
     measured in (Import button at y=1354): ETS reopens panels with other
@@ -3591,6 +3674,12 @@ def flow_catalog_import(req: dict) -> dict:
     # Removing a large product (ALLinBOX 1612) keeps ETS busy after the remove
     # flow returned; three imports in a row found no button (2026-10-28).
     wait_busy()
+    # A Katalog panel the parameter editor left collapsed (#1054): restore
+    # it here, not only when no button is found below. An open result panel
+    # hides the button; that case is handled below, without ensure_layout.
+    first = catalog_import_button()
+    if first and abs(first["y"] - 1354) > CATALOG_DY_MAX:
+        catalog_layout()
     t_btn = time.time()
     while not catalog_import_button() and time.time() - t_btn < 30:
         time.sleep(2)
@@ -3709,6 +3798,7 @@ def flow_catalog_import(req: dict) -> dict:
 def flow_catalog_search(req: dict) -> dict:
     """Type `term` into the Katalog panel's search box and return the result
     rows (order number, name, application) read magnified."""
+    catalog_layout()
     dy = catalog_dy()
     sx, sy = LAYOUT["catalog_search"]
     type_search(req["term"], dy)

@@ -73,6 +73,12 @@ const KNOWN_REFUSALS: &[(&str, &str, usize)] = &[
         "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
         2,
     ),
+    // The same two reads on the second secure product (bussard #859, #1054).
+    (
+        "syn-secure-property/defaults",
+        "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
+        2,
+    ),
 ];
 
 /// Whether `tpdu` is an S-A_Sync_Req (A_SecureData, SCF service 2).
@@ -323,8 +329,15 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
         .unwrap_or(0);
     let mut synced = false;
     let base_len = base.len();
+    // The events of the earlier downloads are the start state's setup, not
+    // the capture: only the capture's refusals are judged. On a Data Secure
+    // variant (bussard #1054) the device starts `activated` under the tool
+    // key, so the base's commissioning under the FDSK, which the sim in the
+    // VM accepted from the factory device, fails its MAC here.
+    let mut base_events = 0;
     for (i, (src, dst, tpdu)) in base.into_iter().chain(stream).enumerate() {
         if i == base_len {
+            base_events = sink.events().len();
             // The start state's group keys by address resolve against the
             // address table the earlier downloads loaded, as the sim does
             // before its gateway opens.
@@ -354,6 +367,7 @@ fn replay(capture: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     let mut failures: Vec<String> = sink
         .events()
         .into_iter()
+        .skip(base_events)
         .filter_map(|e| match e {
             Event::Telegram { summary, .. } if summary.contains("REJECTED") => {
                 match known.iter_mut().find(|(s, n)| *s == summary && *n > 0) {

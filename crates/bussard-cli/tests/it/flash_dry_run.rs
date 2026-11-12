@@ -557,3 +557,101 @@ fn test_flash_dry_run_dump_images_names_the_kept_gap() -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Issue #1070 (#1049): on `syn-assign-rewrite` the model sets "Chore
+/// interval" to 1000 and "Operating mode" to `automatic`, whose Dynamic
+/// `Assign` puts the delay (300) in its place. The download writes 300, as ETS
+/// did (`captures/synthetic/syn-assign-rewrite/params`, ETS 6.4.1, 2026-11-12:
+/// the editor showed 300 after the mode switch and downloaded `01 2c` at +3).
+/// The device view still reports the model's 1000 as set, with no note, and
+/// `validate` finds nothing: the silent case #1070 asks to make visible. When
+/// #1070 is fixed the view assertion flips; the image assertion stays.
+#[test]
+fn test_flash_dry_run_assign_rewrite_writes_the_assigned_value_silently() -> Result<(), String> {
+    let tmp = TmpDir::new("assign-rewrite").map_err(|e| e.to_string())?;
+    let knxprod = synthetic_knxprod("syn-assign-rewrite", tmp.path())?;
+    let template = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../captures/synthetic/syn-assign-rewrite/params/model");
+    let model = tmp.path().join("knx");
+    std::fs::create_dir_all(model.join("devices")).map_err(|e| e.to_string())?;
+    for file in ["bussard.toml", "groups.toml", "devices/1.1.1.toml"] {
+        std::fs::copy(template.join(file), model.join(file)).map_err(|e| e.to_string())?;
+    }
+    let dir = model.to_str().ok_or("non-UTF-8 temp path")?;
+    let prod = knxprod.to_str().ok_or("non-UTF-8 temp path")?;
+    let (ok, stdout, stderr) = bussard(&["import-product", "--dir", dir, prod]);
+    if !ok {
+        return Err(format!(
+            "import failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        ));
+    }
+    // Pin the device to the product's application, as the oracle's row model
+    // does (`95-offline-oracle.sh`, row_model).
+    let sha = sha256_hex(&std::fs::read(&knxprod).map_err(|e| e.to_string())?);
+    let lock = model.join("bussard.lock");
+    let text = std::fs::read_to_string(&lock).map_err(|e| e.to_string())?;
+    std::fs::write(
+        &lock,
+        format!(
+            "{}\n\n[[device]]\naddress = \"1.1.1\"\napplication = \"M-00FA_A-27B3-10-0000\"\n\
+             product_sha256 = \"{sha}\"\n",
+            text.trim_end()
+        ),
+    )
+    .map_err(|e| e.to_string())?;
+
+    let dump = tmp.path().join("dump");
+    let dump_dir = dump.to_str().ok_or("non-UTF-8 temp path")?;
+    let (ok, stdout, stderr) = bussard(&[
+        "flash",
+        "1.1.1",
+        "--dir",
+        dir,
+        "--dry-run",
+        "--dump-images",
+        dump_dir,
+    ]);
+    if !ok {
+        return Err(format!(
+            "dry run failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+        ));
+    }
+    let image = std::fs::read_dir(&dump)
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("obj4_"))
+        })
+        .ok_or("no object 4 image in the dump")?;
+    let bytes = std::fs::read(&image).map_err(|e| e.to_string())?;
+    if bytes.get(3..5) != Some(&[0x01, 0x2c][..]) {
+        return Err(format!(
+            "Chore interval (+3) is not the assigned 300: {:02x?}",
+            bytes.get(..8)
+        ));
+    }
+
+    let (ok, view, stderr) = bussard(&["device", "1.1.1", "device", "--dir", dir]);
+    if !ok {
+        return Err(format!("device view failed: {stderr}"));
+    }
+    let chore = view
+        .lines()
+        .find(|l| l.trim_start().starts_with("chore-interval"))
+        .ok_or_else(|| format!("no chore-interval row: {view}"))?;
+    let fields: Vec<&str> = chore.split_whitespace().collect();
+    if fields.get(1..3) != Some(&["1000", "set"][..]) {
+        return Err(format!(
+            "the view no longer shows the model's 1000 as set (#1070 fixed? update this test): {chore}"
+        ));
+    }
+    let (ok, out, err) = bussard(&["validate", "--dir", dir]);
+    if !ok || !out.contains("No problems found") {
+        return Err(format!(
+            "validate now reports the Assign (#1070 fixed? update this test):\n{out}{err}"
+        ));
+    }
+    Ok(())
+}
