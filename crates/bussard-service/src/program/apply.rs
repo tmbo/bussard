@@ -356,6 +356,7 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
                 tool_key: req.tool_key.clone(),
                 high_water: req.high_water.clone(),
                 read_options: &checked,
+                read_back_properties: false,
             },
             &mut *observer,
         )

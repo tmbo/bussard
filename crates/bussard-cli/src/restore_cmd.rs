@@ -326,6 +326,7 @@ fn run_parameters(
             tool_key,
             high_water: secure_seq,
             read_options: &read_options,
+            read_back_properties: true,
         },
         &mut observer,
     ))?;
