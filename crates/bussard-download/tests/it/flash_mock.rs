@@ -8498,6 +8498,8 @@ struct ParDeviceState {
     reset_restores_object_9: bool,
     /// While set, the address table's MCB answers a CRC no table has.
     corrupt_table_mcb: bool,
+    /// While set, object 4's MCB answers a CRC its code image does not have.
+    corrupt_code_mcb: bool,
     /// While set, a parameter reset (erase code 5) clears the parameters'
     /// property (object 10 PID 52) and object 9 to zeros.
     reset_clears_parameters: bool,
@@ -8569,7 +8571,9 @@ fn par_device(
             && data.get(1) == Some(&27)
             && let Some(image) = data.first().and_then(|o| seen.mcb.get(o))
         {
-            let crc = if seen.corrupt_table_mcb && data.first() == Some(&1) {
+            let crc = if (seen.corrupt_table_mcb && data.first() == Some(&1))
+                || (seen.corrupt_code_mcb && data.first() == Some(&4))
+            {
                 0x1234
             } else {
                 bussard_mgmt::crc16_ccitt(image)
@@ -9047,5 +9051,105 @@ async fn test_parameters_only_par_procedure_checks_application_program_2_on_obje
         bussard_download::changed_properties(&after).is_empty(),
         "{after:?}"
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_refuses_a_changed_kept_image_before_writing()
+-> TestResult {
+    // The E804 shape keeps object 4's code image (Mode 0) and checks its MCB
+    // after LoadCompleted. A device whose image differs is refused before
+    // the first write: no write, no restart, no reset.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let target = ia("1.1.1")?;
+    let device = par_device(target, true, false, &state);
+    let app = crate::property_only_partial::par_app(crate::property_only_partial::E804_PROCEDURES)?;
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    {
+        let mut s = lock_par(&state)?;
+        for (obj, segment) in [(1u8, "obj-table-1"), (4, "M-00FA_A-0003_RS-1")] {
+            let image = defaults.image_bytes(segment).ok_or(segment)?;
+            s.mcb.insert(obj, image.to_vec());
+        }
+    }
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    assert!(
+        flash(&mut session, &defaults, Default::default(), |_| {})
+            .await?
+            .ok()
+    );
+    lock_par(&state)?.corrupt_code_mcb = true;
+    let before = gw.with_device(target, |d| (d.writes, d.restarts))?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let outcome = flash(&mut session, &partial, Default::default(), |_| {}).await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(bussard_mgmt::load::WriteError::KeptImageChanged {
+                object_index: 4,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(gw.with_device(target, |d| (d.writes, d.restarts))?, before);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_checks_every_object_is_loaded_before_the_first_unload() -> TestResult
+{
+    // The par procedure with Application Program 2 unloads object 5, then
+    // object 4. Object 4 is not Loaded: refused before object 5 is unloaded.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let target = ia("1.1.1")?;
+    let device = par_device(target, true, true, &state);
+    let app = crate::property_only_partial::par_app_with_ap2(
+        &crate::property_only_partial::ap2_procedures(),
+    )?;
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    {
+        let mut s = lock_par(&state)?;
+        s.mcb.insert(5, vec![9, 9, 9, 9]);
+    }
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    assert!(
+        flash(&mut session, &defaults, Default::default(), |_| {})
+            .await?
+            .ok()
+    );
+    let requests_before = gw.with_device(target, |d| {
+        d.load_states.insert(4, 0);
+        d.requests.len()
+    })?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let outcome = flash(&mut session, &partial, Default::default(), |_| {}).await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(bussard_mgmt::load::WriteError::NotLoaded {
+                object_index: 4,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    // No load-state control reached object 5 (A_PropertyValue_Write of
+    // object 5 PID 5).
+    let unloads_of_5 = gw.with_device(target, |d| {
+        d.requests[requests_before..]
+            .iter()
+            .filter(|(apci, data)| *apci == 0x3D7 && data.get(..2) == Some(&[5, 5][..]))
+            .count()
+    })?;
+    assert_eq!(unloads_of_5, 0);
     Ok(())
 }

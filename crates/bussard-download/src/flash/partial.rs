@@ -131,6 +131,23 @@ pub enum PartialPlanError {
         /// The property and its elements, in words.
         property: String,
     },
+    /// The parameter-only procedure allocates an object with the fill bit
+    /// set, so the device refills its segment, and does not write that
+    /// segment again and check its MCB (issue #1052).
+    #[error(
+        "the application's parameter-only load procedure refills object {object}'s segment \
+         ({segment}) and {}; the device would run with that segment erased. Use a full \
+         `bussard flash`",
+        if *rewritten { "checks no MCB of it afterwards" } else { "does not write it again" }
+    )]
+    RefilledSegmentUnwritten {
+        /// The object index.
+        object: u32,
+        /// The code segment id.
+        segment: String,
+        /// Whether the procedure writes it again (and only the check is missing).
+        rewritten: bool,
+    },
     /// The parameter-only procedure unloads an object whose segment the
     /// complete download allocates, and allocates nothing for it (issue
     /// #1052): the object would be loaded again without its segment.
@@ -758,21 +775,59 @@ impl FlashPlan {
         // compares it. Where the procedure allocates the object with the
         // fill bit set, the device refills the segment, so the image is
         // written as the procedure says.
-        let refilled = |target: &Option<u32>| {
-            par.iter().any(|s| {
-                matches!(s, FlashStep::AllocateSegment { target: t, fill, .. }
-                    if t == target && fill.prefill().is_some())
+        //
+        // A refilled segment must be written again and its MCB compared in
+        // the same procedure, the segment found through the binding the
+        // complete download uses (a write naming its object, else the most
+        // recent allocation): otherwise the device would run with an erased
+        // segment that nothing checks. Refused before anything is sent.
+        let refilled: BTreeSet<Option<u32>> = par
+            .iter()
+            .filter_map(|s| match s {
+                FlashStep::AllocateSegment { target, fill, .. } if fill.prefill().is_some() => {
+                    Some(*target)
+                }
+                _ => None,
             })
-        };
+            .collect();
+        let par_bound = bound_writes(par);
+        for object in &refilled {
+            let written: Vec<&String> = par_bound
+                .iter()
+                .filter(|(_, o)| o == object)
+                .map(|(s, _)| s)
+                .collect();
+            if written.is_empty() {
+                return Err(PartialPlanError::RefilledSegmentUnwritten {
+                    object: object.unwrap_or(0),
+                    segment: self.segment_of(*object),
+                    rewritten: false,
+                });
+            }
+            for segment in written {
+                let checked = par.iter().any(|s| {
+                    matches!(s, FlashStep::LoadImageProp { image: Some(img), .. }
+                        if &img.segment_id == segment)
+                });
+                if !checked {
+                    return Err(PartialPlanError::RefilledSegmentUnwritten {
+                        object: object.unwrap_or(0),
+                        segment: segment.clone(),
+                        rewritten: true,
+                    });
+                }
+            }
+        }
         Ok(par
             .iter()
-            .filter(|s| match s {
-                FlashStep::WriteRelMem { image, target, .. } => {
-                    image.kind == ImageKind::Parameters || refilled(target)
+            .zip(par_bound_of_each(par))
+            .filter(|(s, bound)| match s {
+                FlashStep::WriteRelMem { image, .. } => {
+                    image.kind == ImageKind::Parameters || refilled.contains(bound)
                 }
                 _ => true,
             })
-            .cloned()
+            .map(|(s, _)| s.clone())
             .collect())
     }
 
@@ -998,6 +1053,51 @@ impl FlashPlan {
             .filter(|(_, changed)| !changed.is_empty())
             .collect()
     }
+}
+
+/// The object each step of `steps` writes into when it is a
+/// [`FlashStep::WriteRelMem`] (the object the write names, else the most
+/// recent allocation, as the planner binds it); `None` for any other step.
+fn par_bound_of_each(steps: &[FlashStep]) -> Vec<Option<u32>> {
+    let mut current: Option<u32> = None;
+    steps
+        .iter()
+        .map(|s| match s {
+            FlashStep::AllocateSegment { target, .. } => {
+                current = *target;
+                None
+            }
+            FlashStep::WriteRelMem { target, .. } => match target {
+                Some(t) if *t != 0 => Some(*t),
+                _ => current,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+impl FlashPlan {
+    /// The code segment the complete download writes into `object`, in
+    /// words: its id, else `the segment` when none is bound to it.
+    fn segment_of(&self, object: Option<u32>) -> String {
+        bound_writes(&self.steps)
+            .into_iter()
+            .find(|(_, o)| *o == object)
+            .map_or_else(|| "the segment".to_string(), |(s, _)| s)
+    }
+}
+
+/// Each [`FlashStep::WriteRelMem`] of `steps` as (segment id, object it
+/// writes into, [`par_bound_of_each`]).
+fn bound_writes(steps: &[FlashStep]) -> Vec<(String, Option<u32>)> {
+    steps
+        .iter()
+        .zip(par_bound_of_each(steps))
+        .filter_map(|(s, bound)| match s {
+            FlashStep::WriteRelMem { image, .. } => Some((image.segment_id.clone(), bound)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// What a master reset with `erase_code` erases that a parameter-only

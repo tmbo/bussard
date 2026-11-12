@@ -914,7 +914,8 @@ fn test_parameters_only_par_procedure_writes_a_code_image_its_allocation_refills
               <LoadProcedure MergeId="2"><LdCtrlRelSegment LsmIdx="4" Size="6" Mode="1" Fill="0" /></LoadProcedure>
               <LoadProcedure MergeId="4">
                 <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" Verify="true" />{E802_MERGE_4}
-              </LoadProcedure>"#
+              </LoadProcedure>
+              <LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="4" PropId="27" /></LoadProcedure>"#
     ))?;
     let plan = par_plan(&app, &BTreeMap::new())?;
     let partial = shape(&plan.parameters_only(&BTreeMap::new())?);
@@ -1129,4 +1130,77 @@ pub(crate) fn ap2_procedures() -> String {
               <LoadProcedure MergeId="5"><LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="5" Offset="0" Size="4" Verify="true" /></LoadProcedure>
               <LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="5" PropId="27" /></LoadProcedure>"#
     )
+}
+
+/// The E802 blocks with a MergeId 2 allocation of object 4 without
+/// `AppliesTo` in Mode 1 (the device refills the segment) and `write` as the
+/// code segment's write; `check` adds MergeId 7's MCB check of object 4.
+fn refilled_procedures(write: &str, check: bool) -> String {
+    let check = if check {
+        r#"<LoadProcedure MergeId="7"><LdCtrlLoadImageProp ObjIdx="4" PropId="27" /></LoadProcedure>"#
+    } else {
+        ""
+    };
+    format!(
+        r#"
+              <LoadProcedure MergeId="2"><LdCtrlRelSegment LsmIdx="4" Size="6" Mode="1" Fill="0" /></LoadProcedure>
+              <LoadProcedure MergeId="4">
+                {write}{E802_MERGE_4}
+              </LoadProcedure>
+              {check}"#
+    )
+}
+
+#[test]
+fn test_parameters_only_refuses_a_refilled_segment_it_does_not_rewrite_and_check() -> TestResult {
+    // (b) The code write is `full` only: the par procedure refills object 4
+    // and nothing writes it again. Refused, naming the segment.
+    let full_only =
+        r#"<LdCtrlWriteRelMem AppliesTo="full" ObjIdx="4" Offset="0" Size="6" Verify="true" />"#;
+    let plan = par_plan(
+        &par_app(&refilled_procedures(full_only, true))?,
+        &BTreeMap::new(),
+    )?;
+    match plan.parameters_only(&BTreeMap::new()) {
+        Err(PartialPlanError::RefilledSegmentUnwritten {
+            object: 4,
+            segment,
+            rewritten: false,
+        }) => assert_eq!(segment, "M-00FA_A-0003_RS-1"),
+        other => return Err(format!("expected a refusal: {other:?}").into()),
+    }
+    // (a) The code write names object 0 and binds to object 4's allocation:
+    // written again, and with MergeId 7's check compared, so accepted; the
+    // check compares the image (not a bare read).
+    let objidx_0 = r#"<LdCtrlWriteRelMem ObjIdx="0" Offset="0" Size="6" Verify="true" />"#;
+    let plan = par_plan(
+        &par_app(&refilled_procedures(objidx_0, true))?,
+        &BTreeMap::new(),
+    )?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    assert!(shape(&partial).contains(&"memory".to_string()));
+    let checks: Vec<&FlashStep> = partial
+        .steps
+        .iter()
+        .filter(|s| matches!(s, FlashStep::LoadImageProp { .. }))
+        .collect();
+    assert!(
+        checks
+            .iter()
+            .any(|s| matches!(s, FlashStep::LoadImageProp { image: Some(_), .. })),
+        "{checks:?}"
+    );
+    // Without a check of it, the rewritten segment is not compared: refused.
+    let plan = par_plan(
+        &par_app(&refilled_procedures(objidx_0, false))?,
+        &BTreeMap::new(),
+    )?;
+    assert!(matches!(
+        plan.parameters_only(&BTreeMap::new()).err(),
+        Some(PartialPlanError::RefilledSegmentUnwritten {
+            rewritten: true,
+            ..
+        })
+    ));
+    Ok(())
 }

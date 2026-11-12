@@ -7,27 +7,28 @@
 //! back the same properties, the fixed object 9 PID 208 included, and say
 //! that the parameters are reset first. bussard's own synthetic data (MIT).
 
-use std::error::Error;
-use std::io::{BufRead, BufReader, Write};
-use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Output, Stdio};
-use std::sync::mpsc::{Receiver, channel};
+use std::path::PathBuf;
+use std::process::{Command, Output, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use crate::mcp_stdio_client::McpServer;
 
 use bussard_model::IndividualAddress;
 use bussard_testkit::consts::{
     OT_ADDRESS_TABLE, OT_APPLICATION_PROGRAM, OT_ASSOCIATION_TABLE, OT_DEVICE,
     OT_GROUP_OBJECT_TABLE,
 };
-use bussard_testkit::{MockDevice, MockGateway, Reaction};
+use bussard_testkit::{BoxError, MockDevice, MockGateway, Reaction, TestResult};
 use serde_json::{Value, json};
-
-type TestResult = Result<(), Box<dyn Error>>;
 
 /// `A_Restart` with the master-reset restart type, and its response.
 const A_RESTART_MASTER_RESET: u16 = 0x381;
 const A_RESTART_RESPONSE: u16 = 0x3A1;
+/// `A_PropertyValue_Write` and its response.
+const A_PROPERTY_VALUE_WRITE: u16 = 0x3D7;
+const A_PROPERTY_VALUE_RESPONSE: u16 = 0x3D6;
 
 /// The E802-shaped synthetic program.
 const APP_XML: &str = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -84,15 +85,20 @@ struct Bench {
     tmp: PathBuf,
     product: PathBuf,
     resets: Arc<Mutex<Vec<u8>>>,
+    /// While set, the device acknowledges a write of object 9 PID 208 and
+    /// keeps what it held (a write it does not take).
+    drop_object_9: Arc<AtomicBool>,
     _rt: tokio::runtime::Runtime,
 }
 
 impl Bench {
-    /// Starts the bench, or `None` when the `zip` CLI is unavailable.
-    fn start(tag: &str) -> Result<Option<Bench>, Box<dyn Error>> {
+    /// Starts the bench.
+    fn start(tag: &str) -> Result<Bench, BoxError> {
         let rt = tokio::runtime::Runtime::new()?;
         let resets = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::clone(&resets);
+        let drop_object_9 = Arc::new(AtomicBool::new(false));
+        let dropping = Arc::clone(&drop_object_9);
         let device = MockDevice::system_b(target()?)
             .with_object_types(&[
                 OT_DEVICE,
@@ -111,6 +117,13 @@ impl Bench {
             .with_writable_property(9, 208, 1, &[0, 0])
             .with_writable_property(10, 52, 1, &[0, 0])
             .with_hook(move |_, apci, data| {
+                if apci == A_PROPERTY_VALUE_WRITE
+                    && dropping.load(Ordering::SeqCst)
+                    && data.get(..2) == Some(&[9, 208][..])
+                {
+                    // Answered as taken, not stored.
+                    return Some(Reaction::Answer(A_PROPERTY_VALUE_RESPONSE, data.to_vec()));
+                }
                 if apci != A_RESTART_MASTER_RESET {
                     return None;
                 }
@@ -135,7 +148,9 @@ impl Bench {
             APP_XML,
         )?;
         let product = tmp.join("par-test.knxprod");
-        let Ok(status) = Command::new("zip")
+        // The `zip` CLI builds the synthetic product; without it the test
+        // fails rather than pass without running.
+        let status = Command::new("zip")
             .current_dir(tmp.join("prod"))
             .args(["-r", "-X", "-q"])
             .arg(&product)
@@ -143,12 +158,9 @@ impl Bench {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-        else {
-            eprintln!("skipping: the `zip` CLI is unavailable");
-            return Ok(None);
-        };
+            .map_err(|e| format!("the `zip` CLI is needed to build the test product: {e}"))?;
         if !status.success() {
-            return Ok(None);
+            return Err("`zip` failed to build the test product".into());
         }
         let bench = Bench {
             gw,
@@ -156,14 +168,30 @@ impl Bench {
             tmp,
             product,
             resets,
+            drop_object_9,
             _rt: rt,
         };
         bench.write_model("")?;
-        Ok(Some(bench))
+        Ok(bench)
     }
 
     fn model(&self) -> PathBuf {
         self.tmp.join("knx")
+    }
+
+    /// `bussard mcp --allow-programming` on the model, the shared client.
+    fn mcp(&self) -> Result<McpServer, BoxError> {
+        McpServer::start_without_keyring(
+            &self.model(),
+            self.port,
+            &[
+                ("BUSSARD_MGMT_TIMEOUT_MS", "300"),
+                ("BUSSARD_ADDRESS_PROBE_MS", "200"),
+                ("BUSSARD_FLASH_L4_TIMEOUT_MS", "300"),
+                ("BUSSARD_FLASH_REBOOT_WAIT_MS", "50"),
+            ],
+            &["--allow-programming", "--no-model-edits"],
+        )
     }
 
     /// The model with `params` as 1.1.4's `[parameters]`, the product pinned
@@ -205,7 +233,7 @@ impl Bench {
     }
 
     /// Runs `bussard <args> --dir <model> --gateway 127.0.0.1:<port>`.
-    fn bussard(&self, args: &[&str]) -> Result<Output, Box<dyn Error>> {
+    fn bussard(&self, args: &[&str]) -> Result<Output, BoxError> {
         let model = self.model();
         let gateway = format!("127.0.0.1:{}", self.port);
         let mut full: Vec<&str> = args.to_vec();
@@ -229,7 +257,7 @@ impl Bench {
     }
 
     /// Runs `args` and fails unless it succeeds; returns stdout.
-    fn ok(&self, args: &[&str]) -> Result<String, Box<dyn Error>> {
+    fn ok(&self, args: &[&str]) -> Result<String, BoxError> {
         let out = self.bussard(args)?;
         let stdout = String::from_utf8_lossy(&out.stdout).to_string();
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
@@ -239,7 +267,7 @@ impl Bench {
         Ok(stdout)
     }
 
-    fn property(&self, object: u8, pid: u8) -> Result<Option<Vec<u8>>, Box<dyn Error>> {
+    fn property(&self, object: u8, pid: u8) -> Result<Option<Vec<u8>>, BoxError> {
         Ok(self
             .gw
             .with_device(target()?, |d| d.property(object, pid).map(<[u8]>::to_vec))?)
@@ -252,13 +280,13 @@ impl Bench {
         Ok(())
     }
 
-    fn take_resets(&self) -> Result<Vec<u8>, Box<dyn Error>> {
+    fn take_resets(&self) -> Result<Vec<u8>, BoxError> {
         let mut seen = self.resets.lock().map_err(|e| e.to_string())?;
         Ok(std::mem::take(&mut *seen))
     }
 
     /// The parameter backups, oldest first.
-    fn backups(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+    fn backups(&self) -> Result<Vec<PathBuf>, BoxError> {
         let dir = self
             .model()
             .join("captures")
@@ -279,113 +307,8 @@ impl Drop for Bench {
     }
 }
 
-fn target() -> Result<IndividualAddress, Box<dyn Error>> {
+fn target() -> Result<IndividualAddress, BoxError> {
     Ok("1.1.4".parse()?)
-}
-
-/// A `bussard mcp` child process spoken to over stdio JSON-RPC.
-struct Server {
-    child: Child,
-    stdin: ChildStdin,
-    lines: Receiver<String>,
-    next_id: u64,
-}
-
-impl Server {
-    fn start(dir: &Path, port: u16) -> Result<Server, Box<dyn Error>> {
-        let mut child = Command::new(env!("CARGO_BIN_EXE_bussard"))
-            .arg("mcp")
-            .arg("--dir")
-            .arg(dir)
-            .arg("--gateway")
-            .arg(format!("127.0.0.1:{port}"))
-            .arg("--allow-programming")
-            .arg("--no-model-edits")
-            .env("BUSSARD_MGMT_TIMEOUT_MS", "300")
-            .env("BUSSARD_ADDRESS_PROBE_MS", "200")
-            .env("BUSSARD_FLASH_L4_TIMEOUT_MS", "300")
-            .env("BUSSARD_FLASH_REBOOT_WAIT_MS", "50")
-            .env_remove("BUSSARD_ALLOW_REAL_GATEWAY")
-            .env_remove("BUSSARD_KEYRING")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        let stdin = child.stdin.take().ok_or("no stdin pipe")?;
-        let stdout = child.stdout.take().ok_or("no stdout pipe")?;
-        let (tx, lines) = channel();
-        std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-                if tx.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let mut server = Server {
-            child,
-            stdin,
-            lines,
-            next_id: 1,
-        };
-        server.request(
-            "initialize",
-            json!({"protocolVersion": "2025-06-18", "capabilities": {},
-                   "clientInfo": {"name": "par-procedure-mock", "version": "0"}}),
-        )?;
-        writeln!(
-            server.stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "method": "notifications/initialized"})
-        )?;
-        server.stdin.flush()?;
-        Ok(server)
-    }
-
-    fn request(&mut self, method: &str, params: Value) -> Result<Value, Box<dyn Error>> {
-        let id = self.next_id;
-        self.next_id += 1;
-        writeln!(
-            self.stdin,
-            "{}",
-            json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
-        )?;
-        self.stdin.flush()?;
-        loop {
-            let message: Value =
-                serde_json::from_str(&self.lines.recv_timeout(Duration::from_secs(90))?)?;
-            if message["id"] == id {
-                if let Some(error) = message.get("error") {
-                    return Err(format!("{method} failed: {error}").into());
-                }
-                return Ok(message["result"].clone());
-            }
-        }
-    }
-
-    /// Calls a tool, retried while the server's tunnel comes up.
-    fn call(&mut self, tool: &str, args: Value) -> Result<Value, Box<dyn Error>> {
-        let mut result = Value::Null;
-        for _ in 0..50 {
-            result = self.request("tools/call", json!({"name": tool, "arguments": args}))?
-                ["structuredContent"]
-                .clone();
-            if !result["reason"]
-                .as_str()
-                .is_some_and(|r| r.contains("is not connected"))
-            {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(200));
-        }
-        Ok(result)
-    }
-}
-
-impl Drop for Server {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
 }
 
 /// Whether the plan's notes say the parameters are reset first.
@@ -398,9 +321,7 @@ fn says_reset(notes: &Value) -> bool {
 
 #[test]
 fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
-    let Some(bench) = Bench::start("par-procedure")? else {
-        return Ok(());
-    };
+    let bench = Bench::start("par-procedure")?;
     let product = bench.product.to_str().ok_or("path")?.to_string();
     bench.ok(&["flash", "1.1.4", "--product", &product, "--yes"])?;
     assert_eq!(bench.property(10, 52)?, Some(vec![5, 9]));
@@ -445,9 +366,18 @@ fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
     // `knx_apply_device`: the same plan note, write and read-back.
     bench.write_model("\"lvl@P-1_R-2\" = \"21\"\n")?;
     {
-        let mut server = Server::start(&bench.model(), bench.port)?;
-        let plan = server.call("knx_plan_device", json!({"address": "1.1.4"}))?;
+        let mut server = bench.mcp()?;
+        let plan =
+            server.call_when_connected("knx_plan_device", json!({"address": "1.1.4"}), 50)?;
         assert!(says_reset(&plan["notes"]), "{plan}");
+        // The approval question the assistant shows says it too (the one
+        // question `apply` asks on the CLI).
+        assert!(
+            plan["question"]
+                .as_str()
+                .is_some_and(|q| q.contains("resets all its parameters")),
+            "{plan}"
+        );
         let digest = plan["plan_digest"]
             .as_str()
             .ok_or("no plan_digest")?
@@ -474,5 +404,39 @@ fn test_apply_mcp_apply_and_restore_run_the_par_procedure() -> TestResult {
     assert_eq!(bench.take_resets()?, [5], "{restored}");
     assert_eq!(bench.property(10, 52)?, Some(vec![5, 9]), "{restored}");
     assert_eq!(bench.property(9, 208)?, Some(vec![7, 7]));
+    Ok(())
+}
+
+#[test]
+fn test_restore_fails_when_a_property_write_is_dropped_after_the_reset() -> TestResult {
+    // The restore runs the reset-first procedure; the device acknowledges the
+    // write of object 9 and does not take it. The read-back of every
+    // property finds it: the restore fails and says so.
+    let bench = Bench::start("par-restore-drop")?;
+    let product = bench.product.to_str().ok_or("path")?.to_string();
+    bench.ok(&["flash", "1.1.4", "--product", &product, "--yes"])?;
+    bench.set_property(9, 208, &[7, 7])?;
+    bench.write_model("\"lvl@P-1_R-2\" = \"20\"\n")?;
+    bench.ok(&["apply", "1.1.4", "--yes"])?;
+    let first = bench.tmp.join("first-backup.json");
+    std::fs::copy(bench.backups()?.first().ok_or("no backup")?, &first)?;
+    bench.take_resets()?;
+    bench.drop_object_9.store(true, Ordering::SeqCst);
+    let out = bench.bussard(&[
+        "restore",
+        "--parameters",
+        first.to_str().ok_or("path")?,
+        "1.1.4",
+        "--yes",
+    ])?;
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(stderr.contains("PID 208"), "stderr:\n{stderr}");
+    assert!(!stdout.contains("restored and verified"), "{stdout}");
+    assert_eq!(bench.take_resets()?, [5]);
     Ok(())
 }

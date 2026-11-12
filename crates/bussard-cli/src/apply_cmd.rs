@@ -584,16 +584,8 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
     let question = program::Question {
         kind: bussard_service::observer::Ask::Write,
         prompt: match built {
-            // The same note as `flash --parameters-only` when the parameter
-            // write resets the parameters first (issue #1052).
-            Some(built) => {
-                let note = partial
-                    .map(bussard_service::program::params_only::parameter_write_note)
-                    .filter(|n| !n.is_empty())
-                    .map(|n| format!(" ({n})"))
-                    .unwrap_or_default();
-                format!("{}{note}", built.plan.question())
-            }
+            // The question the MCP approval asks too (issue #1052).
+            Some(built) => bussard_service::params::apply_question(&built.plan, partial),
             None => format!("{verb} {changes} change(s) to {target} via {gateway}?"),
         },
         action: format!("{verb} {target} via {gateway}"),
@@ -760,13 +752,15 @@ fn render_written(
         }
     }
     match &written.parameters {
-        Some(Ok(bussard_service::download::ParamWriteOutcome::Verified { octets })) => println!(
-            "{}",
-            out.ok(&format!(
-                "parameters verified: {octets} changed octet(s) read back from {target}; the \
+        Some(Ok(bussard_service::download::ParamWriteOutcome::Verified { octets, .. })) => {
+            println!(
+                "{}",
+                out.ok(&format!(
+                    "parameters verified: {octets} changed octet(s) read back from {target}; the \
                  application is Loaded"
-            ))
-        ),
+                ))
+            )
+        }
         Some(Ok(failed)) => {
             eprintln!(
                 "\n{}",

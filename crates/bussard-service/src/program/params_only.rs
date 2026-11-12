@@ -139,8 +139,22 @@ pub async fn read_parameters(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Result<ParamsRead, ServiceError> {
-    // Best-effort: a denial or a device without authorize still reads.
-    let options = L4Options::secured(
+    let options = read_options(session);
+    session
+        .service
+        .with_l4(session.target, &options, async |l4| {
+            // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
+            // read goes out in APDU-sized chunks without re-reading it.
+            l4.set_max_apdu(session.max_apdu);
+            Ok::<_, ServiceError>(read_parameters_on(l4, plan, app).await)
+        })
+        .await
+}
+
+/// The options a parameter read opens its connection with. Best-effort: a
+/// denial or a device without authorize still reads.
+fn read_options(session: &ParamsSession<'_>) -> L4Options {
+    L4Options::secured(
         session.service.handle().group_source(),
         session.tool_key.clone(),
         session.high_water.clone(),
@@ -149,14 +163,26 @@ pub async fn read_parameters(
         session
             .bcu_key
             .unwrap_or(bussard_mgmt::apci::FREE_ACCESS_KEY),
-    ));
+    ))
+}
+
+/// The read-back after a parameter-only download on a fresh connection:
+/// the parameter memory of `plan` and [`bussard_download::read_back_properties`]
+/// of `partial` (issue #1052).
+async fn read_back(
+    session: &ParamsSession<'_>,
+    plan: &FlashPlan,
+    partial: &FlashPlan,
+) -> Result<(ParamRegions, Result<usize, String>), ServiceError> {
+    let options = read_options(session);
     session
         .service
         .with_l4(session.target, &options, async |l4| {
-            // The pre-flight negotiated PID_MAX_APDU_LENGTH; seed it so the
-            // read goes out in APDU-sized chunks without re-reading it.
             l4.set_max_apdu(session.max_apdu);
-            Ok::<_, ServiceError>(read_parameters_on(l4, plan, app).await)
+            Ok::<_, ServiceError>((
+                bussard_download::read_parameter_regions(l4, plan, &[]).await,
+                bussard_download::read_back_properties(l4, partial).await,
+            ))
         })
         .await
 }
@@ -446,42 +472,34 @@ pub async fn write_parameters_only(
     observer.event(Event::Step(Step::Download {
         plan: &planned.partial,
     }));
-    let (plan, app) = (write.plan, write.app);
+    let plan = write.plan;
     // Write, restart, verify, then read the parameters back on the same
     // (post-restart) connection (issue #215).
     let (outcome, after) =
         crate::download::flash_session(run, &planned.partial, &mut *observer, async |l4| {
             (
                 bussard_download::read_parameter_regions(l4, plan, &[]).await,
-                read_written_properties(l4, plan, app).await,
+                bussard_download::read_back_properties(l4, &planned.partial).await,
             )
         })
         .await;
     let verified = match &outcome {
         Ok(done) if done.ok() => {
-            let (after, after_props) = match after {
+            let (after, properties) = match after {
                 Some(read) => read,
-                None => {
-                    let read = read_parameters(&write.session, plan, app)
-                        .await
-                        .map_err(ParamsWriteError::Session)?;
-                    (read.regions, read.properties)
-                }
+                None => read_back(&write.session, plan, &planned.partial)
+                    .await
+                    .map_err(ParamsWriteError::Session)?,
             };
-            // The properties the download wrote read back as the model.
-            let unverified: Vec<String> = bussard_download::changed_properties(&after_props)
-                .iter()
-                .map(|p| p.sentence())
-                .collect();
-            Some(if unverified.is_empty() {
+            // Every property the download wrote reads back as written
+            // (issue #1052), then the memory.
+            Some(properties.and_then(|_| {
                 bussard_download::verify_readback(
                     &planned.partial,
                     &after,
                     &bussard_download::runtime_segments(plan),
                 )
-            } else {
-                Err(unverified.join("; "))
-            })
+            }))
         }
         _ => None,
     };

@@ -1809,15 +1809,15 @@ impl BussardMcp {
                 );
                 audit("parameters", ok);
                 result.parameters = Some(match outcome {
-                    Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => {
-                        ParametersWritten {
-                            written: true,
-                            verified: Some(true),
-                            octets: Some(*octets),
-                            changed: Some(built.parameters.clone()),
-                            ..ParametersWritten::default()
-                        }
-                    }
+                    Ok(bussard_service::download::ParamWriteOutcome::Verified {
+                        octets, ..
+                    }) => ParametersWritten {
+                        written: true,
+                        verified: Some(true),
+                        octets: Some(*octets),
+                        changed: Some(built.parameters.clone()),
+                        ..ParametersWritten::default()
+                    },
                     Ok(failed) => ParametersWritten::failed(failed.failure()),
                     Err(why) => {
                         ParametersWritten::failed(format!("the parameter read-back failed: {why}"))

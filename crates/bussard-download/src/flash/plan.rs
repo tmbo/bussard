@@ -613,6 +613,10 @@ fn plan_flash_as(
     // Track the segment id most-recently allocated so a following WriteRelMem
     // resolves to it when its own AppliesTo does not pin one.
     let mut last_rel_segment: Option<String> = None;
+    // The object the most recent relative allocation named: where a write
+    // naming no object (`ObjIdx="0"`) lands, so the parameter-only
+    // procedure's MCB check of that object compares its image (issue #1052).
+    let mut last_alloc_object: Option<u32> = None;
     // The segment each object's allocation bound, so a write naming its object
     // (`ObjIdx`) streams that object's segment even when another object was
     // allocated in between (the ABB PEI program: object 5 is allocated before
@@ -851,6 +855,7 @@ fn plan_flash_as(
                 fill,
                 ..
             } => {
+                last_alloc_object = *lsm_idx;
                 // Bind this allocation to the segment whose code image we will
                 // stream. The op does not name the segment id directly; we pair
                 // it with the application's relative segments in document-ish
@@ -1110,6 +1115,12 @@ fn plan_flash_as(
                 last_written_image = Some(image.clone());
                 if let Some(oi) = obj_idx {
                     written_image_by_object.insert(*oi, image.clone());
+                }
+                if download == Download::Par
+                    && obj_idx.is_none_or(|o| o == 0)
+                    && let Some(o) = last_alloc_object
+                {
+                    written_image_by_object.insert(o, image.clone());
                 }
                 steps.push(FlashStep::WriteRelMem {
                     offset,
@@ -1842,7 +1853,13 @@ pub(super) fn assemble_ops(
         let gaps = super::plan_props::partial_rel_mem_gaps(every_branch.into_iter(), &taken);
         for p in &companion_blocks {
             if let Some(id) = p.merge_id.as_deref().and_then(|m| m.parse::<u32>().ok()) {
-                let ops = p.ops.iter().enumerate().filter(|(i, _)| in_download(p, *i));
+                // The complete download takes a companion block whole, as
+                // before #1052; the parameter-only procedure filters it.
+                let ops = p
+                    .ops
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| download == Download::Full || in_download(p, *i));
                 blocks
                     .entry(id)
                     .or_default()

@@ -579,6 +579,21 @@ pub enum WriteError {
         object_index: u8,
     },
 
+    /// A parameter-only download found the MCB of a code image it keeps (it
+    /// does not rewrite it) other than the product's image (issue #1052):
+    /// it stops before writing anything.
+    #[error(
+        "{address}: the image in object {object_index} is not the one the product gives (its \
+         PID_MCB_TABLE CRC differs); a parameter-only download does not rewrite it, so nothing \
+         was written. Run a full `bussard flash`"
+    )]
+    KeptImageChanged {
+        /// The device.
+        address: IndividualAddress,
+        /// The object index.
+        object_index: u8,
+    },
+
     /// A `LdCtrlCompareProp` verify failed: the device's stored interface-object
     /// property does not match the expected data the vendor procedure declared
     /// (after masking). The flash is aborted — the device is not in the state the

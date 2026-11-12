@@ -49,11 +49,21 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
             "check obj{} is Loaded, then unload it (partial download, kept memory)",
             target.unwrap_or(0)
         ),
-        FlashStep::AllocateSegment { size, target, .. } if ctx.parameters_only => {
-            format!(
-                "re-allocate the {size}-octet segment of obj{} in Mode 0 (keeps its contents)",
-                target.unwrap_or(0)
-            )
+        FlashStep::AllocateSegment { size, target, fill } if ctx.parameters_only => {
+            // The `par` procedure may refill a segment it writes again
+            // (issue #1052).
+            if fill.prefill().is_some() {
+                format!(
+                    "re-allocate the {size}-octet segment of obj{} with the fill bit set (the \
+                     device refills it; the procedure writes it again)",
+                    target.unwrap_or(0)
+                )
+            } else {
+                format!(
+                    "re-allocate the {size}-octet segment of obj{} in Mode 0 (keeps its contents)",
+                    target.unwrap_or(0)
+                )
+            }
         }
         FlashStep::WriteRelMem { offset, image, .. } if ctx.parameters_only => {
             let before = ctx

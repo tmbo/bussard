@@ -188,7 +188,10 @@ impl PlanOutcome {
             parameters,
             pending_model_changes: None,
             planned_at: crate::monitor::timefmt::to_rfc3339(std::time::SystemTime::now()),
-            approval: Approval::question((!noop).then(|| device_plan.question())),
+            approval: Approval::question(
+                (!noop)
+                    .then(|| crate::params::apply_question(&device_plan, built.partial.as_ref())),
+            ),
             plan: device_plan,
         }
     }

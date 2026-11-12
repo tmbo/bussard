@@ -1435,8 +1435,18 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
     // partial download too (`M-0009_A-E804-10-98AD` ops 24 and 25, objects 3
     // and 4) and, KNX 3/5/3 §3.9.3.6 says, compares them as its
     // pre-download check.
+    // A parameter-only download rewrites the resident application
+    // (Configuration Procedures 03_05_03 §3.5.3): every object it unloads
+    // must hold it, checked before the first unload, so object 4 is not
+    // found unloaded after object 5 already was (issue #1052, the `par`
+    // procedure unloads object 5 first).
+    let partial_checked = if plan.is_parameters_only() {
+        check_loaded_before_unloading(session, plan, &object_table, app_obj).await?
+    } else {
+        BTreeSet::new()
+    };
     if plan.is_built_from_par_procedure() {
-        check_tables_before_par_procedure(session, plan, &object_table).await?;
+        check_kept_images_before_par_procedure(session, plan, &object_table, app_obj).await?;
     }
 
     // Data Secure (issue #537): the group key table and the security
@@ -1469,7 +1479,7 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         written_samples: Vec::new(),
         mcb_verified: BTreeSet::new(),
         verified: None,
-        partial_checked: BTreeSet::new(),
+        partial_checked,
         table_references: BTreeMap::new(),
     };
     let threshold = reconnect_exchange_threshold(plan);
@@ -1767,13 +1777,58 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
     }
 }
 
-/// Compares the MCB of every table object a parameter-only plan built from
-/// the `par` procedure checks against an image (issue #1052) before
-/// anything is written: a mismatch is [`WriteError::TablesChanged`].
-async fn check_tables_before_par_procedure<C: Connector>(
+/// Reads the load state of every object `plan` unloads (as its `Unload`
+/// steps resolve) and fails with [`WriteError::NotLoaded`] unless each is
+/// `Loaded`; the objects checked.
+async fn check_loaded_before_unloading<C: Connector>(
     session: &mut Session<C>,
     plan: &FlashPlan,
     object_table: &[(u8, u16)],
+    app_obj: u8,
+) -> Result<BTreeSet<u8>, WriteError> {
+    let mut checked = BTreeSet::new();
+    for step in &plan.steps {
+        // A mapped unload (`LdCtrlMapError`) may name an absent object and
+        // is not gated, as its step is not.
+        let FlashStep::Unload {
+            target,
+            absent_ok: false,
+        } = step
+        else {
+            continue;
+        };
+        let Some(obj) =
+            resolve_object_target_opt(*target, object_table, app_obj, plan.spliced_from_template)
+        else {
+            continue;
+        };
+        if !checked.insert(obj) {
+            continue;
+        }
+        let actual = read_load_state_resumable(session, obj).await?;
+        if actual != LoadState::Loaded {
+            return Err(WriteError::NotLoaded {
+                address: session.l4().target(),
+                object_index: obj,
+                actual,
+            });
+        }
+    }
+    Ok(checked)
+}
+
+/// Compares, before anything is written, the MCB of every image a
+/// parameter-only plan built from the `par` procedure checks without
+/// rewriting it (issue #1052): the tables, and a code image the procedure
+/// keeps. A table that differs is [`WriteError::TablesChanged`], a kept code
+/// image [`WriteError::KeptImageChanged`]. An advisory check (one the
+/// application's own procedure does not declare, issue #145) stays advisory
+/// and is not compared here.
+async fn check_kept_images_before_par_procedure<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    object_table: &[(u8, u16)],
+    app_obj: u8,
 ) -> Result<(), WriteError> {
     for step in &plan.steps {
         let FlashStep::LoadImageProp {
@@ -1781,26 +1836,51 @@ async fn check_tables_before_par_procedure<C: Connector>(
             prop_id,
             count,
             image: Some(image),
-            ..
+            advisory: false,
         } = step
         else {
             continue;
         };
-        if image.kind != ImageKind::Table
-            || *prop_id != u32::from(bussard_mgmt::PID_MCB_TABLE)
-            || !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
-        {
+        if *prop_id != u32::from(bussard_mgmt::PID_MCB_TABLE) {
+            continue;
+        }
+        let rewritten = plan.steps.iter().any(|s| {
+            matches!(s, FlashStep::WriteRelMem { image: w, .. } if w.segment_id == image.segment_id)
+        });
+        if rewritten {
             continue;
         }
         let Some(bytes) = plan.images.get(&image.segment_id) else {
             continue;
         };
-        let obj = u8::try_from(*obj_idx).unwrap_or(u8::MAX);
+        let table = image.kind == ImageKind::Table;
+        let obj = if table {
+            if !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx) {
+                continue;
+            }
+            u8::try_from(*obj_idx).unwrap_or(u8::MAX)
+        } else {
+            match resolve_object_target_opt(
+                Some(*obj_idx),
+                object_table,
+                app_obj,
+                plan.spliced_from_template,
+            ) {
+                Some(obj) => obj,
+                None => continue,
+            }
+        };
         let count = u8::try_from(*count).unwrap_or(u8::MAX);
         match read_mcb_table(session.l4(), obj, 1, count, Some(bytes)).await {
             Ok(_) => {}
-            Err(WriteError::ImagePropMismatch { address, .. }) => {
+            Err(WriteError::ImagePropMismatch { address, .. }) if table => {
                 return Err(WriteError::TablesChanged {
+                    address,
+                    object_index: obj,
+                });
+            }
+            Err(WriteError::ImagePropMismatch { address, .. }) => {
+                return Err(WriteError::KeptImageChanged {
                     address,
                     object_index: obj,
                 });

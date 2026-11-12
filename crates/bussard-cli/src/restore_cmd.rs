@@ -330,10 +330,10 @@ fn run_parameters(
         &mut observer,
     ))?;
     match (&outcome, outcome.failure()) {
-        (bussard_service::download::ParamWriteOutcome::Verified { octets }, _) => {
+        (bussard_service::download::ParamWriteOutcome::Verified { octets, elements }, _) => {
             println!(
-                "parameters restored and verified: {octets} octet(s) read back from {target}; \
-                 the application is Loaded"
+                "parameters restored and verified: {octets} octet(s) and {elements} property \
+                 element(s) read back from {target}; the application is Loaded"
             );
             Ok(ExitCode::SUCCESS)
         }

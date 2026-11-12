@@ -342,7 +342,7 @@ impl BussardMcp {
         )
         .await;
         let (ok, parameters) = match &outcome {
-            Ok(bussard_service::download::ParamWriteOutcome::Verified { octets }) => (
+            Ok(bussard_service::download::ParamWriteOutcome::Verified { octets, .. }) => (
                 true,
                 ParametersWritten {
                     written: true,

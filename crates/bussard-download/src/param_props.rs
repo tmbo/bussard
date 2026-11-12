@@ -282,17 +282,49 @@ pub async fn read_checked_properties<Ch: L4Channel>(
     plan: &FlashPlan,
     app: &ApplicationProgram,
 ) -> Vec<ParamProperty> {
-    read_properties(l4, plan.checked_properties(), app).await
+    read_properties(l4, plan.checked_properties(), Some(app)).await
 }
 
-/// Reads the device side of each of `out`.
+/// The read-back of a parameter write (issue #1052): reads every property
+/// the written plan `partial` writes ([`FlashPlan::checked_properties`] of
+/// it, so a restore compares the backup's values) and returns the number of
+/// property elements read back as written, or the sentences of the ones
+/// that are not. The one property read-back of `flash --parameters-only`,
+/// `apply` and `restore --parameters`.
+///
+/// # Errors
+///
+/// The properties that do not read back as written, `; `-joined.
+pub async fn read_back_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    partial: &FlashPlan,
+) -> Result<usize, String> {
+    let after = read_properties(l4, partial.checked_properties(), None).await;
+    let unverified: Vec<String> = changed_properties(&after)
+        .iter()
+        .map(|p| p.sentence())
+        .collect();
+    if unverified.is_empty() {
+        Ok(after.iter().map(|p| usize::from(p.count)).sum())
+    } else {
+        Err(format!(
+            "these properties do not read back as written: {}",
+            unverified.join("; ")
+        ))
+    }
+}
+
+/// Reads the device side of each of `out`, naming its parameters from
+/// `app` when given.
 async fn read_properties<Ch: L4Channel>(
     l4: &mut Layer4Connection<Ch>,
     mut out: Vec<ParamProperty>,
-    app: &ApplicationProgram,
+    app: Option<&ApplicationProgram>,
 ) -> Vec<ParamProperty> {
     for property in &mut out {
-        property.parameters = property.parameter_names(app);
+        if let Some(app) = app {
+            property.parameters = property.parameter_names(app);
+        }
         let elem = (property.model.len() / usize::from(property.count)).max(1);
         match read_property_value(
             l4,

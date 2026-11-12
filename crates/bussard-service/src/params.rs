@@ -863,6 +863,20 @@ pub struct ParameterChange {
     pub model: String,
 }
 
+/// The one question before an `apply` (CLI and MCP, issue #1052): the
+/// plan's, with [`crate::program::params_only::parameter_write_note`] of its
+/// parameter write inside it when the write resets the parameters first.
+pub fn apply_question(plan: &DevicePlan, partial: Option<&FlashPlan>) -> String {
+    let question = plan.question();
+    let note = partial
+        .map(crate::program::params_only::parameter_write_note)
+        .filter(|n| !n.is_empty());
+    match (note, question.strip_suffix('?')) {
+        (Some(note), Some(stem)) => format!("{stem} ({note})?"),
+        _ => question,
+    }
+}
+
 /// A plan, and what executing its parameter half needs.
 pub struct BuiltPlan {
     /// The plan to print and confirm.
