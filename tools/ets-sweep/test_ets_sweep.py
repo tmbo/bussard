@@ -282,8 +282,8 @@ class TestParamsModel(unittest.TestCase):
     def test_ref_places_walk_module_instances_in_device_form(self):
         places = params.ref_places(self.MODULE_MODEL)
         self.assertEqual([(p["ref"], p["instance"], p["channel"]) for p in places],
-                         [("MD-2_M-2_P-32_R-50", "MD-2_M-2", "Eingänge A-P"),
-                          ("MD-2_M-3_P-32_R-50", "MD-2_M-3", "Eingänge A-P")])
+                         [("MD-2_M-2_MI-1_P-32_R-50", "MD-2_M-2_MI-1", "Eingänge A-P"),
+                          ("MD-2_M-3_MI-1_P-32_R-50", "MD-2_M-3_MI-1", "Eingänge A-P")])
         self.assertEqual(params.model_ref("MD-2_M-3_P-32_R-50"), "MD-2_P-32_R-50")
         self.assertEqual(params.device_ref("MD-2_M-3", "MD-2_P-32_R-50"), "MD-2_M-3_P-32_R-50")
         self.assertTrue(params.page_matches("Eingang {{ChNo}}: {{0}}", "Eingang B:"))
@@ -299,7 +299,7 @@ class TestParamsModel(unittest.TestCase):
                  "shown": "nicht aktiv", "set_to": "nicht aktiv", "rows_with_label": 1}]
         values, problems = params.model_changes(self.MODULE_MODEL, [], done,
                                                 lambda v: {r.split("@")[1] for r in v}, [[], order])
-        self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "2"}, []))
+        self.assertEqual((values, problems), ({"param@MD-2_M-3_MI-1_P-32_R-50": "2"}, []))
 
     def test_summary_verdict_reads_the_table_line_not_the_heading(self):
         out = ("1.1.1  (ETS partial download after Sendeverzögerung set to 1)\n"
@@ -355,8 +355,8 @@ class TestParamsModel(unittest.TestCase):
     def three(self, page_index):
         # M-2's page is shown but hides the label; M-3 and M-4 show it.
         def shown(values):
-            return {"MD-2_M-2_P-23_R-1", "MD-2_M-3_P-23_R-1", "MD-2_M-4_P-23_R-1",
-                    "MD-2_M-3_P-32_R-50", "MD-2_M-4_P-32_R-50"}
+            return {"MD-2_M-2_MI-1_P-23_R-1", "MD-2_M-3_MI-1_P-23_R-1", "MD-2_M-4_MI-1_P-23_R-1",
+                    "MD-2_M-3_MI-1_P-32_R-50", "MD-2_M-4_MI-1_P-32_R-50"}
         done = [{"page": self.ORDER[page_index], "label": "Wert Kontakt geöffnet", "n": 0, "kind": "dropdown",
                  "result": "set", "shown": "Ein", "set_to": "Ein", "rows_with_label": 1}]
         return params.model_changes(self.THREE, [], done, shown, [self.ORDER])
@@ -365,8 +365,8 @@ class TestParamsModel(unittest.TestCase):
         # The change on the second page (M-3's) is M-3's, though M-2 hides
         # the label: the instance comes from the shown pages, not the
         # instances showing the label.
-        self.assertEqual(self.three(1), ({"param@MD-2_M-3_P-32_R-50": "1"}, []))
-        self.assertEqual(self.three(2), ({"param@MD-2_M-4_P-32_R-50": "1"}, []))
+        self.assertEqual(self.three(1), ({"param@MD-2_M-3_MI-1_P-32_R-50": "1"}, []))
+        self.assertEqual(self.three(2), ({"param@MD-2_M-4_MI-1_P-32_R-50": "1"}, []))
 
     def test_model_changes_module_label_in_a_nested_block(self):
         # The label sits in a block 'Verhalten' nested in the module page,
@@ -379,7 +379,69 @@ class TestParamsModel(unittest.TestCase):
                  "result": "set", "shown": "Ein", "set_to": "Ein", "rows_with_label": 1}]
         values, problems = params.model_changes(model, [], done, lambda v: {r.split("@")[1] for r in v},
                                                 [self.ORDER])
-        self.assertEqual((values, problems), ({"param@MD-2_M-3_P-32_R-50": "1"}, []))
+        self.assertEqual((values, problems), ({"param@MD-2_M-3_MI-1_P-32_R-50": "1"}, []))
+
+    def test_ref_places_selector_keys_for_repeated_and_nested_instances(self):
+        # bussard keys a module value by the instance selector
+        # (`ActiveModule::selector`): `_MI-1` for a single instance, `_MI-<n>`
+        # for the n-th of a `<Repeat>`, a submodule after its parent's.
+        model = {
+            "parameters": {"P-1": {"kind": {"Int": {"min": 1, "max": 3}}, "text": "Number of feeders"},
+                           "MD-1_P-1": {"kind": {"Int": {"min": 0, "max": 9}}, "text": "Portion size"},
+                           "MD-1_SM-1_P-1": {"kind": {"Int": {"min": 0, "max": 9}}, "text": "Lid"}},
+            "parameter_refs": {"P-1_R-1": {"parameter": "P-1"}, "MD-1_P-1_R-1": {"parameter": "MD-1_P-1"},
+                               "MD-1_SM-1_P-1_R-1": {"parameter": "MD-1_SM-1_P-1"}},
+            "dynamic": [{"block": {"text": "General", "nodes": [
+                {"p": "P-1_R-1"}, {"repeat": {"id": "X-1", "ref": "P-1_R-1", "nodes": [
+                    {"module": {"id": "MD-1_M-1", "def": "MD-1"}}]}}]}}],
+            "module_dynamics": {"MD-1": [{"block": {"text": "Feeder", "nodes": [
+                {"p": "MD-1_P-1_R-1"}, {"module": {"id": "MD-1_SM-1_M-1", "def": "MD-1_SM-1"}}]}}],
+                "MD-1_SM-1": [{"p": "MD-1_SM-1_P-1_R-1"}]},
+        }
+        refs = [p["ref"] for p in params.ref_places(model)]
+        self.assertEqual(refs[:3], ["P-1_R-1", "MD-1_M-1_MI-1_P-1_R-1", "MD-1_M-1_MI-1_SM-1_M-1_MI-1_P-1_R-1"])
+        self.assertEqual(refs[3:5], ["MD-1_M-1_MI-2_P-1_R-1", "MD-1_M-1_MI-2_SM-1_M-1_MI-1_P-1_R-1"])
+        self.assertEqual(len(refs), 7)
+        self.assertEqual(params.model_ref("MD-1_M-1_MI-2_P-1_R-1"), "MD-1_P-1_R-1")
+        self.assertEqual(params.model_ref("MD-1_M-1_MI-1_SM-1_M-1_MI-3_P-1_R-1"), "MD-1_SM-1_P-1_R-1")
+        self.assertEqual(params.ref_label(model, "MD-1_M-1_MI-2_P-1_R-1"), "Portion size")
+        self.assertEqual(params.device_ref("MD-2_M-13_MI-1", "MD-2_P-31_R-43"), "MD-2_M-13_MI-1_P-31_R-43")
+        self.assertEqual(params.device_ref("MD-2_M-13_MI-1", "MD-20_P-31_R-43"), "MD-20_P-31_R-43")
+        self.assertIn('"param@MD-1_M-1_MI-2_P-1_R-1" = "5"',
+                      params.device_toml_with({"param@MD-1_M-1_MI-2_P-1_R-1": "5"}))
+
+    def test_model_changes_page_l_is_not_page_i_read_as_l(self):
+        # The MDT 00B1 run of #1050 (params-1-0): OCR read input I's page as
+        # 'Eingang l:' and L's tree entry as 'Eingang L•'. Folding the case
+        # made 'l' the first page matching L's breadcrumb, and the change on
+        # L landed in I's instance (one instance off in the oracle).
+        model = json.loads(json.dumps(self.THREE))
+        model["dynamic"][0]["channel"]["nodes"] = [{"module": {"id": f"MD-2_M-{i}", "def": "MD-2"}}
+                                                   for i in (13, 14, 16, 17)]
+        order = [{"crumb": f"Eingänge > Eingang {c}", "page": p}
+                 for c, p in (("l:", "Eingang l:"), ("J:", "Eingang J:"), ("K:", "Eingang K:"), ("L:", "Eingang L•"))]
+        done = [{"page": {"crumb": "Eingänge > Eingang L:", "page": "Eingang L•"}, "label": "Wert Kontakt geöffnet",
+                 "n": 0, "kind": "dropdown", "result": "set", "shown": "Ein", "set_to": "Ein", "rows_with_label": 1}]
+        values, problems = params.model_changes(model, [], done, lambda v: {r.split("@")[1] for r in v}, [order])
+        self.assertEqual((values, problems), ({"param@MD-2_M-17_MI-1_P-32_R-50": "1"}, []))
+        self.assertNotEqual(params.page_key("Eingang l:"), params.page_key("Eingang L:"))
+        self.assertEqual(params.page_key("Eingang L•"), params.page_key("Eingang L:"))
+
+    def test_model_changes_second_page_of_one_name(self):
+        # Two pages 'Feeder' (a `<Repeat>`, syn-module-repeat): the driver
+        # lists the second with page_n 1; the change on it is MI-2's.
+        model = json.loads(json.dumps(self.THREE))
+        model["dynamic"] = [{"channel": {"text": "Eingänge", "nodes": [{"repeat": {"id": "X", "count": 2, "nodes": [
+            {"module": {"id": "MD-2_M-2", "def": "MD-2"}}]}}]}}]
+        order = [{"crumb": "Eingänge > Eingang A:", "page": "Eingang A:"},
+                 {"crumb": "Eingänge > Eingang A:", "page": "Eingang A:", "page_n": 1}]
+        done = [{"page": {"crumb": "Eingänge > Eingang A:", "page": "Eingang A:", "page_n": 1},
+                 "label": "Wert Kontakt geöffnet", "n": 0, "kind": "dropdown", "result": "set", "shown": "Ein",
+                 "set_to": "Ein", "rows_with_label": 1}]
+        values, problems = params.model_changes(model, [], done, lambda v: {r.split("@")[1] for r in v}, [order])
+        self.assertEqual((values, problems), ({"param@MD-2_M-2_MI-2_P-32_R-50": "1"}, []))
+        self.assertEqual(params.survey_rows([{**order[1], "rows": [
+            {"label": "Wert Kontakt geöffnet", "kind": "dropdown", "value": "Aus"}]}])[0]["page"]["page_n"], 1)
 
     def test_model_changes_unmapped_when_the_instance_hides_the_label(self):
         values, problems = self.three(0)
@@ -1598,7 +1660,11 @@ class TestCaptureVariants(unittest.TestCase):
     def test_find_page_by_name_and_occurrence(self):
         pages = [{"crumb": "General", "page": "General"}, {"crumb": "Feeder", "page": "Feeder"},
                  {"crumb": "Feeder", "page": "Feeder"}, {"crumb": "Perch B", "page": "Perch B"}]
-        self.assertEqual(capture.find_page(pages, {"page": "Feeder", "page_n": 1}), pages[2])
+        self.assertEqual(capture.find_page(pages, {"page": "Feeder", "page_n": 1}), {**pages[2], "page_n": 1})
+        # The driver's own count (`param_pages`) is what `go_to_page` takes.
+        listed = [{**p, "page_n": 1 if i == 2 else 0} for i, p in enumerate(pages)]
+        self.assertEqual(capture.find_page(listed, {"page": "Feeder", "page_n": 1})["page_n"], 1)
+        self.assertNotIn("page_n", capture.find_page(listed, {"page": "Feeder"}))
         self.assertIsNone(capture.find_page(pages, {"page": "Feeder", "page_n": 2}))
         self.assertEqual(capture.find_page(pages, {"page": "perch b"}), pages[3])
 
@@ -2077,6 +2143,80 @@ class TestDriverParamEditor(unittest.TestCase):
         self.assertEqual(got["kind"], "radio")
         self.assertEqual([o["text"] for o in got["options"]], ["Schalten", "Rollladen und Jalousie"])
         self.assertEqual(got["value"], "Schalten")
+
+    def two_options(self, cy, dy=-5, selected=2):
+        """The #1054 rows (row-1.png of syn-choose-partial-segment and
+        syn-module-choose): two radio circles side by side whose centre sits
+        `dy` px off the label's OCR centre `cy`, the `selected`-th filled."""
+        rings = [("ring", 1640, cy + dy, int(selected == 1), 0, self.BORDER),
+                 ("ring", 1801, cy + dy, int(selected == 2), 0, self.BORDER)]
+        # OCR read the row as one line, the first circle as an 'O' (x 1625
+        # to 1878 on the saved row).
+        cells = [{"text": "O overwrite keep", "x": 1625, "y": cy - 12, "w": 253, "h": 20}]
+        return rings, cells
+
+    def test_classify_control_radio_circles_above_the_label_centre(self):
+        # Measured on the saved rows: the ring runs y-20..y+11 at x 1640, its
+        # centre 4 to 5 px above the row's y, where no ring was found.
+        for dy in (-5, -4, 0, 4):
+            rings, cells = self.two_options(1000, dy)
+            got = self.d.classify_control(self.px_of(rings), 1000, cells)
+            self.assertEqual(got["kind"], "radio", dy)
+            self.assertEqual([(abs(o["x"] - x) <= 1, o["text"]) for o, x in zip(got["options"], (1640, 1801))],
+                             [(True, "overwrite"), (True, "keep")], dy)
+            self.assertEqual(got["value"], "keep", dy)
+            self.assertTrue(all(abs(o["y"] - (1000 + dy)) <= 1 for o in got["options"]), got)
+        rings, cells = self.two_options(1000, -5, selected=1)
+        self.assertEqual(self.d.classify_control(self.px_of(rings), 1000, cells)["value"], "overwrite")
+
+    def test_set_row_clicks_the_radio_circle_centre(self):
+        rings, cells = self.two_options(1000, -5)
+        row = {"label": "Keep the warming log on download", "y": 1000,
+               **self.d.classify_control(self.px_of(rings), 1000, cells)}
+        with mock.patch.object(self.d, "click") as click:
+            self.assertEqual(self.d.set_row(row, {"value": "overwrite"}), ("overwrite", "overwrite"))
+        (x, y), _ = click.call_args
+        self.assertLessEqual(abs(x - 1640), 1)
+        self.assertLessEqual(abs(y - 995), 1)
+
+    def test_radio_row_leaves_a_neighbour_rows_circles(self):
+        # A note between two radio rows ~58 px away: the window (RING_DY)
+        # reaches neither row's circles.
+        rings = self.two_options(942, -5)[0] + self.two_options(1058, -5)[0]
+        cells = [{"text": "a note", "x": 1625, "y": 990, "w": 60, "h": 20}]
+        self.assertEqual(self.d.radio_row(self.px_of(rings), 1000, cells)[0], [])
+        self.assertEqual(self.d.classify_control(self.px_of(rings), 1000, cells)["kind"], "none")
+
+    def test_classify_control_checkbox_a_few_px_above_the_label_centre(self):
+        px = self.px_of([("frame", 1625, 979, 1657, 1011, self.BORDER)])
+        self.assertEqual(self.d.classify_control(px, 1000, [])["kind"], "checkbox")
+
+    def test_next_page_moves_to_a_second_page_of_the_same_name(self):
+        # syn-module-repeat (#1054): two child pages 'Feeder' under
+        # 'General'; Down moves the highlight 40 px, the tree does not scroll.
+        top = ("- General", 300)
+        first = {"crumb": "General > Feeder", "page": "Feeder", "y": 340, "top": top}
+        second = {**first, "y": 380}
+        with mock.patch.object(self.d, "keys"), mock.patch.object(self.d, "selected_page", return_value=second):
+            self.assertEqual(self.d.next_page(first), second)
+        self.assertTrue(self.d.other_entry(first, second))
+        # Scrolled by one entry: the same y is not another entry by y alone.
+        self.assertFalse(self.d.other_entry(first, {**second, "y": 340, "top": ("Feeder", 300)}))
+        self.assertFalse(self.d.channel_node_of(first, second))
+        self.assertEqual(self.d.page_occurrence([{"crumb": "General", "page": "- General"}, first], second), 1)
+
+    def test_go_to_page_clicks_the_nth_entry_of_a_name(self):
+        lines = [{"text": "- General", "x": 700, "y": 300, "w": 90, "h": 20},
+                 {"text": "Feeder", "x": 720, "y": 340, "w": 60, "h": 20},
+                 {"text": "Feeder", "x": 720, "y": 380, "w": 60, "h": 20}]
+        target = {"crumb": "General > Feeder", "page": "Feeder", "page_n": 1}
+        with mock.patch.object(self.d, "scroll_tree", return_value=False), \
+                mock.patch.object(self.d, "tree_entries", return_value=lines), \
+                mock.patch.object(self.d, "selected_page", return_value={**target, "y": 380}), \
+                mock.patch.object(self.d, "click") as click:
+            got = self.d.go_to_page(target)
+        click.assert_called_once_with(750, 390)
+        self.assertEqual(got["page_n"], 1)
 
     def test_split_at_circles_leading_circle_letter(self):
         cells = [{"text": "Schalten", "x": 1668, "y": 795, "w": 87, "h": 18},

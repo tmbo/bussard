@@ -101,6 +101,15 @@ def norm(t: str) -> str:
     return re.sub(r"[^a-z0-9äöüß]", "", (t or "").lower())
 
 
+def page_key(t: str) -> str:
+    """A page or breadcrumb as told apart from its siblings: letters and
+    digits only, with their case. `norm` folds the case, and OCR reads
+    MDT's input I as a lower-case 'l': 'Eingang l:' then was 'Eingang L:',
+    and the change on L was stored in I's module instance (#1050). OCR
+    artefacts at the end ('Eingang L•' for 'Eingang L:') drop out."""
+    return re.sub(r"[^0-9A-Za-zÄÖÜäöüß]", "", t or "")
+
+
 def visible_enablers(device: dict) -> list[dict]:
     """The parameters ETS shows at defaults that switch a page on, from
     `bussard device <ia> --json` (bussard's shared Dynamic evaluator, so no
@@ -190,13 +199,17 @@ def survey_rows(survey: list[dict]) -> list[dict]:
                 continue
             if row["kind"] == "radio" and len(row.get("options") or []) < 2:
                 continue
-            out.append({"page": {"crumb": page.get("crumb"), "page": page.get("page")}, "label": row["label"],
+            where = {"crumb": page.get("crumb"), "page": page.get("page")}
+            if page.get("page_n"):
+                where["page_n"] = page["page_n"]  # the n-th page of that name (`go_to_page`)
+            out.append({"page": where, "label": row["label"],
                         "n": row.get("n", 0), "kind": row["kind"], "before": row.get("value", "")})
     return out
 
 
 def row_key(r: dict) -> tuple:
-    return (norm((r.get("page") or {}).get("crumb") or ""), norm(r["label"]), r.get("n", 0))
+    page = r.get("page") or {}
+    return (page_key(page.get("crumb") or ""), page.get("page_n", 0), norm(r["label"]), r.get("n", 0))
 
 
 def change_for(row: dict, rng: random.Random, ranges: dict, tag: str) -> dict | None:
@@ -273,8 +286,8 @@ def dependent_changes(before: list[dict], after: list[dict], seed: int, index: i
     """Up to `k` changes on pages the first changes made ETS show (in
     `after`, not in `before`), seeded like `generate`."""
     rng = random.Random(f"{seed}:{index}:dependent")
-    seen = {norm(p.get("crumb") or "") for p in before}
-    rows = survey_rows([p for p in after if norm(p.get("crumb") or "") not in seen])
+    seen = {(page_key(p.get("crumb") or ""), p.get("page_n", 0)) for p in before}
+    rows = survey_rows([p for p in after if (page_key(p.get("crumb") or ""), p.get("page_n", 0)) not in seen])
     if (model or {}).get("parameters"):
         kinds = label_kinds(model)
         rows = [r for r in rows if fits_model(r, kinds)]
@@ -315,20 +328,59 @@ def ref_label(model: dict, ref: str) -> str:
 
 def model_ref(ref: str) -> str:
     """The product model's reference of a device-form one: a module
-    instance's `MD-2_M-3_P-32_R-44` is the module's `MD-2_P-32_R-44`."""
-    m = re.match(r"^(MD-\d+)_M-\d+(?:_MI-\d+)?(_.+)$", ref)
-    return m.group(1) + m.group(2) if m else ref
+    instance's `MD-2_M-3_MI-1_P-32_R-44` (or the older `MD-2_M-3_P-32_R-44`)
+    is the module's `MD-2_P-32_R-44`; a submodule's
+    `MD-1_M-1_MI-1_SM-1_M-1_MI-3_P-1_R-1` is `MD-1_SM-1_P-1_R-1`, as
+    bussard's `split_selector` (`crates/bussard-model/src/dynamic.rs`)
+    reads them."""
+    m = re.match(r"^(MD-\d+)_M-\d+(?:_MI-\d+)?((?:_SM-\d+_M-\d+(?:_MI-\d+)?)*)(_.+)$", ref)
+    if not m:
+        return ref
+    subs = "".join(f"_SM-{s}" for s in re.findall(r"_SM-(\d+)_M-\d+", m.group(2)))
+    return m.group(1) + subs + m.group(3)
 
 
-def device_ref(instance: str | None, ref: str) -> str:
+def device_ref(instance: str | None, ref: str, module_def: str | None = None) -> str:
     """The device-form reference of `ref` inside module instance `instance`
-    (`MD-2_M-3` + `MD-2_P-32_R-44` -> `MD-2_M-3_P-32_R-44`), as bussard's
-    device files key it (`device_view::device_ref`); the ref itself outside
-    a module."""
+    (a selector, `MD-2_M-3_MI-1` + `MD-2_P-32_R-44` ->
+    `MD-2_M-3_MI-1_P-32_R-44`), as bussard's device files key it
+    (`device_view::device_ref`); the ref itself outside a module.
+    `module_def` is the instance's definition (`MD-2`, a submodule's
+    `MD-1_SM-1`), by default the selector's first part."""
     if not instance or "_" not in instance:
         return ref
-    module_def = instance.split("_", 1)[0]
-    return instance + ref[len(module_def):] if ref.startswith(module_def) else ref
+    module_def = module_def or instance.split("_", 1)[0]
+    return instance + ref[len(module_def):] if ref.startswith(module_def + "_") else ref
+
+
+def instance_selector(parent: str | None, element: str, repetition: int) -> str:
+    """bussard's selector of a module instance (`ActiveModule::selector`):
+    the `<Module>` id with its repetition (`MD-2_M-13` -> `MD-2_M-13_MI-1`,
+    the second of a `<Repeat>` `_MI-2`); a submodule's after its parent's,
+    without the shared `MD-<d>_` (`MD-1_M-1_MI-1_SM-1_M-1_MI-3`)."""
+    if parent is None:
+        return f"{element}_MI-{repetition}"
+    return f"{parent}_{element.split('_', 1)[1]}_MI-{repetition}"
+
+
+# The most repetitions `ref_places` lists for a `<Repeat>` whose count is a
+# parameter (its range's top, else this): the evaluator decides which show.
+MAX_REPEAT_PLACES = 64
+
+
+def repeat_places(model: dict, node: dict) -> int:
+    """How many repetitions of a `<Repeat>` node `ref_places` walks: its
+    fixed `count`, else the top of its count parameter's range."""
+    if node.get("count") is not None:
+        return max(int(node["count"]), 0)
+    r = (model.get("parameter_refs") or {}).get(model_ref(node.get("ref") or "")) or {}
+    p = (model.get("parameters") or {}).get(r.get("parameter") or "") or {}
+    kind = p.get("kind") if isinstance(p.get("kind"), dict) else {}
+    spec = next(iter(kind.values()), None) if kind else None
+    top = spec.get("max") if isinstance(spec, dict) else None
+    if top is None and isinstance(spec, dict):
+        top = max((v for v in spec.get("values") or [] if isinstance(v, int)), default=None)
+    return min(int(top), MAX_REPEAT_PLACES) if isinstance(top, (int, float)) and top > 0 else 1
 
 
 def ref_places(model: dict) -> list[dict]:
@@ -339,8 +391,9 @@ def ref_places(model: dict) -> list[dict]:
     enclosing block, outer first, `page` the innermost: ETS shows a nested
     block as a section of its parent page at times (Theben's 'Allgemein'
     holding 'Verhalten'). A block without a text is named by its parameter
-    (`param_ref`, the ABB 'Page1' block). `instance` is the module instance
-    (None outside one), `group` the instance, or the channel when its text
+    (`param_ref`, the ABB 'Page1' block). `instance` is the module
+    instance's selector (`MD-2_M-13_MI-1`, None outside one; a `<Repeat>`'s
+    instances `_MI-1` to `_MI-<n>`), `group` the instance, or the channel when its text
     is a placeholder: the pages of a group's siblings look alike and are
     told apart by their order. `ref` is in device form. A plain walk of the
     tree's structure: which branch is shown is not decided here (that is
@@ -356,25 +409,31 @@ def ref_places(model: dict) -> list[dict]:
             return ref_label(model, b["param_ref"]) or None
         return None
 
-    def walk(nodes, channel, pages, instance, group, depth=0):
+    def walk(nodes, channel, pages, instance, group, depth=0, rep=1, mdef=None):
         for n in nodes or []:
             if "channel" in n:
                 c = n["channel"]
                 text = c.get("text")
                 g = group or (c.get("id") if text and "{{" in text else None)
-                walk(c.get("nodes"), text, pages, instance, g, depth)
+                walk(c.get("nodes"), text, pages, instance, g, depth, rep, mdef)
             elif "block" in n:
                 b = n["block"]
                 text = block_text(b)
-                walk(b.get("nodes"), channel, pages + [text] if text else pages, instance, group, depth)
+                walk(b.get("nodes"), channel, pages + [text] if text else pages, instance, group, depth, rep, mdef)
             elif "choose" in n:
                 for w in n["choose"].get("when") or []:
-                    walk(w.get("nodes"), channel, pages, instance, group, depth)
+                    walk(w.get("nodes"), channel, pages, instance, group, depth, rep, mdef)
+            elif "repeat" in n:
+                for k in range(1, repeat_places(model, n["repeat"]) + 1):
+                    walk(n["repeat"].get("nodes"), channel, pages, instance, group, depth, k, mdef)
             elif "module" in n and depth < 4:
                 m = n["module"]
-                walk(modules.get(m.get("def")) or [], channel, pages, m.get("id"), m.get("id"), depth + 1)
+                sel = instance_selector(instance, m.get("id") or "", rep)
+                # A module body starts outside any `<Repeat>` (the evaluator
+                # resets the repetition there).
+                walk(modules.get(m.get("def")) or [], channel, pages, sel, sel, depth + 1, 1, m.get("def"))
             elif "p" in n:
-                out.append({"ref": device_ref(instance, n["p"]), "channel": channel,
+                out.append({"ref": device_ref(instance, n["p"], mdef), "channel": channel,
                             "page": pages[-1] if pages else None, "pages": list(pages),
                             "label": ref_label(model, n["p"]), "instance": instance, "group": group})
     walk(model.get("dynamic"), None, [], None, None)
@@ -539,7 +598,7 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     rows_of: dict[tuple, int] = {}
     for page in survey_after:
         for row in page.get("rows") or []:
-            key = (norm(page.get("crumb") or ""), norm(row.get("label") or ""))
+            key = (page_key(page.get("crumb") or ""), page.get("page_n", 0), norm(row.get("label") or ""))
             rows_of[key] = rows_of.get(key, 0) + 1
     values: dict[str, str] = {}
     problems: list[str] = []
@@ -547,7 +606,8 @@ def model_changes(model: dict, survey_after: list[dict], done: list[dict],
     for d in done:
         if d.get("result") != "set":
             continue
-        n_rows = d.get("rows_with_label") or rows_of.get((norm(d["page"].get("crumb") or ""), norm(d["label"])), 0)
+        n_rows = d.get("rows_with_label") or rows_of.get(
+            (page_key(d["page"].get("crumb") or ""), d["page"].get("page_n", 0), norm(d["label"])), 0)
         cands = candidates_of(places, d)
         _, page = page_parts(d["page"])
         if not cands:
@@ -648,13 +708,17 @@ def module_instance_refs(places: list[dict], surveys: list[list[dict]], change: 
     shown_groups = [g for g, ref in probes.items() if ref in shown]
     channel, _ = page_parts(change["page"])
     tpl_channel = by_ref[cands[0]]["channel"]
+    want = page_key(change["page"].get("crumb") or "")
     for survey in surveys:
         same = [p for p in survey if template in best_pages(places, page_parts(p)[1])
                 and (channel is None or channel_matches(tpl_channel, page_parts(p)[0] or ""))]
-        k = next((i for i, p in enumerate(same)
-                  if norm(p.get("crumb") or "") == norm(change["page"].get("crumb") or "")), None)
-        if k is None:
+        # The change's page by its breadcrumb, case kept (`page_key`), and
+        # among pages of one name the `page_n`-th (the driver's count).
+        hits = [i for i, p in enumerate(same) if page_key(p.get("crumb") or "") == want]
+        n = int(change["page"].get("page_n") or 0)
+        if len(hits) <= n:
             continue
+        k = hits[n]
         if k >= len(shown_groups) or len(same) != len(shown_groups):
             return None
         chosen = shown_groups[k]
@@ -763,7 +827,9 @@ def find_row(survey: list[dict], change: dict) -> dict | None:
     """The row of `change` (page by breadcrumb, label, occurrence) in a
     survey."""
     for page in survey:
-        if norm(page.get("crumb") or "") != norm(change["page"].get("crumb") or ""):
+        if page_key(page.get("crumb") or "") != page_key(change["page"].get("crumb") or ""):
+            continue
+        if page.get("page_n", 0) != change["page"].get("page_n", 0):
             continue
         hits = [r for r in page.get("rows") or [] if norm(r.get("label") or "") == norm(change["label"])]
         if len(hits) > change.get("n", 0):

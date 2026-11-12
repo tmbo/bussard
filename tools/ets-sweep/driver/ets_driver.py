@@ -1400,6 +1400,38 @@ def radio_circles(px, cy: int, cells: list[dict], x_max: int = 3300) -> list[int
     return out
 
 
+# How far a radio circle's centre may sit from the row's `y` (the OCR line
+# centre of its label). Descenders pull that centre down: on the saved rows
+# of #1054 ('Keep the warming log on download', 'Roost layout', row-1.png
+# of syn-choose-partial-segment and syn-module-choose, 2026-11-12) the ring
+# runs from y-20 to y+11, its centre 4 to 5 px above `y`, and
+# `radio_circles` finds both circles for every probe from y-7 to y-2 and
+# none at `y`. Rows sit ~60 px apart (Hager TYMS616D), so a neighbour's ring (16 px out)
+# stays out of reach of a probe this close.
+RING_DY = 8
+
+
+def radio_row(px, cy: int, cells: list[dict]) -> tuple[list[int], int]:
+    """The radio circles on the row labelled at `cy` and the y of their
+    centre: `radio_circles` probed at `cy`, then outwards up to `RING_DY`
+    px above and below; of the probes that find the most circles, the
+    middle one (the ring's centre, not the edge of the band it is found
+    in), so the selected test and the click hit the circle's middle."""
+    if not cells:
+        return [], cy
+    found = radio_circles(px, cy, cells)
+    hits: dict[int, list[int]] = {0: found} if found else {}
+    for dy in range(-RING_DY, RING_DY + 1):
+        if dy and (found := radio_circles(px, cy + dy, cells)):
+            hits[dy] = found
+    if not hits:
+        return [], cy
+    most = max(len(v) for v in hits.values())
+    band = sorted(dy for dy, v in hits.items() if len(v) == most)
+    mid = band[len(band) // 2]
+    return hits[mid], cy + mid
+
+
 def split_at_circles(cells: list[dict], circles: list[int]) -> list[dict]:
     """OCR cells cut where a radio circle sits inside one ('Schalten O
     Rollladen und Jalousie' over the second circle): the text split at the
@@ -1466,7 +1498,7 @@ def classify_control(px, cy: int, cells: list[dict]) -> dict:
         unit = " ".join(c["text"] for c in cells if c["x"] > right).strip()
         return {"kind": "number" if spinner else "text", "value": " ".join(c["text"] for c in inside).strip(),
                 "box": [CONTROL_X, right], "unit": unit}
-    circles = radio_circles(px, cy, cells)
+    circles, ring_y = radio_row(px, cy, cells)
     # A checkbox: a ~32 px square at CONTROL_X, its left side a grey border
     # when clear, light blue fill (219, 234, 255) when checked. A value ETS
     # shows as plain text in the control column (a fixed setting, Hager
@@ -1485,7 +1517,7 @@ def classify_control(px, cy: int, cells: list[dict]) -> dict:
             end = circles[i + 1] if i + 1 < len(circles) else 99999
             text = " ".join(c["text"] for c in pieces if cx < c["x"] < end and not _circle_like(c["text"])).strip()
             # The selected circle has a filled centre (195, 208, 221).
-            opts.append({"text": text, "x": cx, "selected": _dark(px(cx, cy))})
+            opts.append({"text": text, "x": cx, "y": ring_y, "selected": _dark(px(cx, ring_y))})
         chosen = next((o["text"] for o in opts if o["selected"]), "")
         return {"kind": "radio", "value": chosen, "options": opts}
     if box:
@@ -1565,10 +1597,12 @@ def selected_page() -> dict:
     crumb = " ".join(l["text"] for l in ocr(BREADCRUMB)).strip()
     img = grab(PARAM_LIST).convert("RGB")
     s = img.width / (PARAM_LIST[2] - PARAM_LIST[0])
-    page, y = None, None
+    page, y, top = None, None, None
     for l in ocr_ink(PARAM_LIST):
         if len(l["text"].strip()) < 2:
             continue
+        if top is None or l["y"] < top[1]:
+            top = (l["text"].strip(), l["y"])
         blue = sum(_blue(img.getpixel((min(int((x - PARAM_LIST[0]) * s), img.width - 1),
                                        min(int((yy - PARAM_LIST[1]) * s), img.height - 1))))
                    for x in range(l["x"], l["x"] + l["w"], 3) for yy in range(l["y"], l["y"] + l["h"], 3))
@@ -1576,7 +1610,20 @@ def selected_page() -> dict:
             page, y = l["text"].strip(), l["y"]
     # The device part of the breadcrumb is the same on every page.
     path = crumb.split(">", 1)[1].strip() if ">" in crumb else crumb
-    return {"crumb": path, "page": page, "y": y}
+    return {"crumb": path, "page": page, "y": y, "top": top}
+
+
+def other_entry(a: dict, b: dict) -> bool:
+    """Whether two reads of the selection are two tree entries although
+    their texts may be alike: the highlight sits at another y while the
+    tree did not scroll (its top line the same). Two child pages of one
+    name ('Feeder' twice under 'General', syn-module-repeat, #1054) read
+    as the same page by text alone, so Down looked like no move."""
+    if a.get("y") is None or b.get("y") is None or not a.get("top") or not b.get("top"):
+        return False
+    (ta, ya), (tb, yb) = a["top"], b["top"]
+    scrolled = abs(ya - yb) >= 10 or not _alike(ta, tb)
+    return not scrolled and abs(a["y"] - b["y"]) >= 10
 
 
 def _page_key(t: str) -> str:
@@ -1622,7 +1669,8 @@ def channel_node_of(prev: dict, page: dict) -> bool:
     same channel (the breadcrumb's first part), and a breadcrumb that does
     not end in that page (`Ausgang 5` or `Ausgang 5 > ...`). Two channels'
     pages of one name ('K1 > Allgemein', 'K2 > Allgemein') are two pages."""
-    if not _alike(prev.get("page"), page.get("page")):
+    if not _alike(prev.get("page"), page.get("page")) or other_entry(prev, page):
+        # Another tree entry (two pages of one name): no channel node.
         return False
     parts = [p.strip() for p in (prev.get("crumb") or "").split(">")]
     theirs = [p.strip() for p in (page.get("crumb") or "").split(">")]
@@ -1708,11 +1756,11 @@ def next_page(current: dict) -> dict | None:
         p = selected_page()
         stable = seen["p"] is not None and same_page(p, seen["p"])
         seen["p"] = p
-        return stable and not same_page(p, current) and page_consistent(p)
+        return stable and (not same_page(p, current) or other_entry(p, current)) and page_consistent(p)
     if wait_for("next page", moved, 4, 0.2):
         return seen["p"]
     late = settled_page(4)
-    return late if late is not None and not same_page(late, current) else None
+    return late if late is not None and (not same_page(late, current) or other_entry(late, current)) else None
 
 
 def walk_pages(limit: int = 400):
@@ -1785,8 +1833,15 @@ def flow_param_pages(req: dict) -> dict:
             pages.pop()
         if req.get("rows"):
             page = {**page, "rows": param_rows()}
-        pages.append({**page, "index": len(pages)})
+        pages.append({**page, "index": len(pages), "page_n": page_occurrence(pages, page)})
     return {"pages": pages, "menu_entry": entry, "short": WALK["short"]}
+
+
+def page_occurrence(pages: list[dict], page: dict) -> int:
+    """How many pages of `pages` (walk order) read as `page` (`same_page`):
+    0 for the first page of its name, 1 for the second 'Feeder' (#1054).
+    `go_to_page` takes it back as the target's `page_n`."""
+    return sum(1 for p in pages if same_page(p, page))
 
 
 def tree_entries() -> list[dict]:
@@ -1811,7 +1866,15 @@ def go_to_page(target: dict, limit: int = 60) -> dict:
     tree (a page in a collapsed channel). No keys before a tree entry was
     clicked, since the focus may sit in a field the last change typed
     into. Raises LookupError when no page is it (a page the configuration
-    hides)."""
+    hides).
+
+    `page_n` in `target` picks the n-th page of that name in tree order
+    (`param_pages` counts them the same way, `page_occurrence`): with the
+    tree scrolled to the top, the n-th entry like it on screen is clicked;
+    when fewer show, the tree is walked and the n-th page like it taken."""
+    n = int(target.get("page_n") or 0)
+    if n:
+        return go_to_nth_page(target, n)
     if same_page(selected_page(), target):
         return selected_page()
     tried: set = set()
@@ -1837,6 +1900,29 @@ def go_to_page(target: dict, limit: int = 60) -> dict:
         if same_page(page, target):
             return page
     raise LookupError(f"page {target.get('crumb')!r} not in the tree")
+
+
+def go_to_nth_page(target: dict, n: int) -> dict:
+    """`go_to_page` for the `n`-th (from 0) page named like `target`."""
+    while scroll_tree(5):
+        pass
+    hits = sorted((l for l in tree_entries() if _alike(l["text"], target.get("page"))), key=lambda l: l["y"])
+    if len(hits) > n:
+        l = hits[n]
+        click(l["x"] + l["w"] // 2, l["y"] + l["h"] // 2)
+        if wait_for("page by click", lambda: same_page(selected_page(), target), 2.5, 0.25):
+            return {**selected_page(), "page_n": n}
+    # Not all on screen (or a collapsed parent): walk, counting.
+    seen, last = 0, None
+    for _, page in walk_pages():
+        if not same_page(page, target):
+            continue
+        if last is not None and not other_entry(last, page) and abs((last.get("y") or 0) - (page.get("y") or 0)) < 10:
+            continue  # the same entry read twice (a channel node, then its page)
+        if seen == n:
+            return {**page, "page_n": n}
+        seen, last = seen + 1, page
+    raise LookupError(f"page {target.get('crumb')!r} ({n}) not in the tree")
 
 
 def find_param_row(rows: list[dict], label: str, n: int = 0) -> dict | None:
@@ -1995,7 +2081,7 @@ def set_row(row: dict, req: dict, page: dict | None = None) -> tuple[str, str]:
         opt = next((o for o in row["options"] if _norm(o["text"]) == _norm(value)), None)
         if opt is None:
             raise LookupError(f"{row['label']!r} has no option {value!r}: {[o['text'] for o in row['options']]}")
-        click(opt["x"], row["y"])
+        click(opt["x"], opt.get("y", row["y"]))
         return value, opt["text"]
     if kind == "dropdown":
         options = dropdown_options(row)
