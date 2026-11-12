@@ -1,0 +1,7 @@
+# The device of the params variant of syn-module-repeat (capture.py).
+address = "1.1.1"
+name = "syn-module-repeat"
+
+[parameters]
+number-of-feeders = 2
+"portion-size@MD-1_M-1_MI-2_P-1_R-1" = 1000

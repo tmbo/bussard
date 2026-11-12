@@ -1,0 +1,7 @@
+# The device of the params variant of syn-choose-partial-segment (capture.py).
+address = "1.1.1"
+name = "syn-choose-partial-segment"
+
+[parameters]
+keep-the-warming-log-on-download = "overwrite"
+delay-s = 42
