@@ -1,0 +1,114 @@
+# Synthetic product (#1061, capture plan of #1054): a parameter segment
+# without <Data> under a Mode 0 allocation whose Fill is neither 00 nor FF.
+# Rendered by ../generate.py into xml/; see ../README.md for the schema.
+
+[doc]
+purpose = """
+syn-minimal with a 16-octet parameter segment that carries no `<Data>` and is
+allocated with `LdCtrlRelSegment Mode="0" Fill="165"`. The two parameters
+place octets 0 to 2; octets 3 to 15 are unplaced. ETS writes the unplaced
+octets of such a segment itself (Mode 0 does not pre-fill), as `00` on the 11
+M-00EF programs of #1061, whose records are `Mode="0" Fill="0"`. Every corpus
+program with this shape declares `Fill="0"`, so the corpus cannot tell
+"ETS writes the declared Fill" from "ETS writes 00 under Mode 0"; this
+capture can (`a5` or `00` at octets 3 to 15). bussard writes `a5` today, by
+the declared Fill, not confirmed by a capture: `requests/flash.txt` pins that
+and is updated from the #1054 capture."""
+construct = "data-less RelativeSegment, Mode 0 with Fill 165 (golden by the declared Fill, not confirmed by a capture; update from the #1054 capture)"
+issues = [1061, 1054]
+
+[product]
+text = "Moss padder"
+order_number = "NEST-MOSS"
+hardware_name = "NEST-MOSS"
+hardware_serial = "00FA002A0025"
+bus_current = 10
+
+[application]
+number = 0x2A25
+version = 0x10
+name = "Moss padder"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Moospolsterer" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[segment]]
+name = "main"
+kind = "relative"
+lsm = 4
+size = 16
+data_less = true
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+memory = { segment = "main", offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+memory = { segment = "main", offset = 1, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The application's part of the 07B0 mask procedure: MergeId 2 allocates the
+# parameter segment (the delta: Mode 0 with Fill 165, #1061), MergeId 4 writes it.
+[[load_procedure]]
+merge_id = 2
+ops = [{ op = "LdCtrlRelSegment", lsm = 4, size = 16, mode = 0, fill = 165 }]
+
+[[load_procedure]]
+merge_id = 4
+ops = [{ op = "LdCtrlWriteRelMem", object = 4, offset = 0, size = 16, verify = false }]

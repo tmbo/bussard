@@ -235,12 +235,15 @@ fn builtin_system_b_full_load() -> Vec<LoadOp> {
         occurrence: None,
     };
     // A relative allocation of a table object: `Size="2" Mode="0" Fill="0"`
-    // (no device-side fill), the size a placeholder the planner replaces.
+    // (no device-side fill), the size a placeholder the planner replaces. The
+    // master data declares `Fill="0"`, so the fill octet is declared, as the
+    // parsed template has it (`test_application_program_1_only_is_the_ap1_procedure`).
     let rel_segment = |lsm: u32| LoadOp::RelSegment {
         lsm_idx: Some(lsm),
         size: Some(2),
         applies_to: None,
         fill: SegmentFill::NONE,
+        declared_fill: Some(0),
     };
     // `Offset="0" Size="1048576" Verify="true"`: the whole table image, the
     // size a sentinel.
