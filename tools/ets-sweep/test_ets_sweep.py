@@ -2001,6 +2001,26 @@ class TestDriverParamEditor(unittest.TestCase):
         self.assertTrue(self.d._alike("- Al-16: Handbetrieb schalten", "- A1-16: Handbetrieb schalten"))
         self.assertFalse(self.d._alike("Ausgang 1: Funktionsfreigabe", "Ausgang 2: Funktionsfreigabe"))
 
+    def test_alike_standalone_letters_must_agree(self):
+        # Issue #1050: MDT inputs are named by letter; the walk stopped at
+        # 'Eingang B:', taken for 'Eingang A:'.
+        alike = self.d._alike
+        self.assertFalse(alike("Eingang A:", "Eingang B:"))
+        self.assertFalse(alike("Eingänge A-P > Eingang A:", "Eingänge A-P > Eingang B:", 0.9))
+        self.assertFalse(alike("Eingang C:", "Eingang D:"))
+        self.assertFalse(alike("Eingänge gruppiert A / B:", "Eingänge gruppiert C / D:"))
+        self.assertTrue(alike("Eingänge gruppiert A / B:", "Eingänge gruppiert A / B:"))
+        self.assertTrue(alike("Eingänge A-P > Eingang A:", "Eingänge A-P > Einqang A:", 0.9))
+        # A capital inside a word, or OCR's 'Al' for 'A1', is no letter name.
+        self.assertTrue(alike("- Al-16: Handbetrieb schalten", "- A1-16: Handbetrieb schalten"))
+        self.assertTrue(alike("Ausqanq 11: Funktionsfreiqabe", "Ausgang 11: Funktionsfreigabe"))
+
+    def test_same_page_tells_letter_named_inputs_apart(self):
+        a = {"crumb": "Eingänge A-P > Eingang A:", "page": "Eingang A:"}
+        b = {"crumb": "Eingänge A-P > Eingang B:", "page": "Eingang B:"}
+        self.assertFalse(self.d.same_page(a, b))
+        self.assertTrue(self.d.same_page(a, dict(a)))
+
     def test_page_consistent_channel_and_lagging_highlight(self):
         ok = self.d.page_consistent
         self.assertTrue(ok({"crumb": "Ausgang 2 > Ausgang 2: Funktionsfreigabe", "page": "Ausgang 2: Funktionsfreigabe"}))

@@ -1586,10 +1586,22 @@ def _page_key(t: str) -> str:
     return _norm(t)
 
 
+def _letter_tokens(t: str) -> list[str]:
+    """The capital letters that stand alone in `t` ('Eingang A:', 'A / B',
+    'A-P'): a channel or input name, not a misread inside a word."""
+    t = re.sub(r"(?<=A)l(?=[\d\-:\s]|$)", "1", t or "")
+    return re.findall(r"(?<![^\W\d_])[A-Z](?![^\W\d_])", t)
+
+
 def _alike(a: str | None, b: str | None, ratio: float = 0.85) -> bool:
     """OCR reads the same entry differently at times ('Ausqanq 10' low in
     the tree, 'Al' for 'A1'): the same digits and letters close. Digits
-    must agree exactly ('Ausgang 1: ...' is not 'Ausgang 2: ...')."""
+    must agree exactly ('Ausgang 1: ...' is not 'Ausgang 2: ...'), and so
+    must the capital letters that stand alone ('Eingang A:' is not
+    'Eingang B:', issue #1050: the walk took the next input's page for the
+    same one and stopped)."""
+    if _letter_tokens(a or "") != _letter_tokens(b or ""):
+        return False
     a, b = _page_key(a or ""), _page_key(b or "")
     if a == b:
         return True
