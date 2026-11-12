@@ -199,7 +199,8 @@ impl FlashPlan {
         // the ones its own writes need on its connection (issue #1014; no
         // capture of a parameter-only download shows them, the rule is the
         // full download's).
-        let steps = if self.par_steps.is_some() && !self.is_sys7() {
+        let by_par = self.par_steps.is_some() && !self.is_sys7();
+        let steps = if by_par {
             steps
         } else {
             super::describe::describe_untyped_properties(steps)
@@ -267,13 +268,8 @@ impl FlashPlan {
             typed_objects_by_list: self.typed_objects_by_list,
             par_allocations: BTreeMap::new(),
             par_procedure: false,
-            // Kept on the parameter-only plan built by the `par` procedure,
-            // so it can say so ([`FlashPlan::par_procedure_unconfirmed`]).
-            par_steps: if self.is_sys7() {
-                None
-            } else {
-                self.par_steps.clone()
-            },
+            par_steps: None,
+            from_par_procedure: by_par,
             parameters_only: true,
             kept: self.kept.clone(),
         })
@@ -375,25 +371,85 @@ impl FlashPlan {
 
     /// The plan with each write of a parameter property set to `values`
     /// ((object, property id, start element) to its value; issue #944): what
-    /// a restore of a property-only program writes. A write `values` does not
-    /// name, and every write not composed from parameters, keeps its value.
+    /// a restore of a property-only program writes. The keys are the ranges
+    /// of [`FlashPlan::checked_properties`], and each value lands element by
+    /// element on the writes that cover it, so a range a later write split
+    /// (issue #946) is restored on both. A plan built from the mask's
+    /// parameter-only procedure (issue #1052) restores every property it
+    /// writes, and a write it leaves out as held after its parameter reset
+    /// becomes a write of the backup's value: after the reset the device
+    /// holds the factory value, not the backup's. Any other write keeps its
+    /// value.
     pub fn with_property_values(
         &self,
         values: &BTreeMap<(super::PropObject, u32, u16), Vec<u8>>,
     ) -> FlashPlan {
+        let mut elements: BTreeMap<(super::PropObject, u32, u32), Vec<u8>> = BTreeMap::new();
+        for range in self.checked_properties() {
+            let Some(value) = values.get(&(range.object, range.prop_id, range.start_element))
+            else {
+                continue;
+            };
+            let count = usize::from(range.count.max(1));
+            if value.is_empty() || !value.len().is_multiple_of(count) {
+                continue;
+            }
+            let elem = value.len() / count;
+            for (i, chunk) in value.chunks(elem).enumerate() {
+                elements.insert(
+                    (
+                        range.object,
+                        range.prop_id,
+                        u32::from(range.start_element) + i as u32,
+                    ),
+                    chunk.to_vec(),
+                );
+            }
+        }
+        let every = self.from_par_procedure;
+        let covers = |object: super::PropObject, prop_id: u32, start: u16, count: u16| {
+            (0..u32::from(count.max(1)))
+                .any(|i| elements.contains_key(&(object, prop_id, u32::from(start) + i)))
+        };
         let mut plan = self.clone();
         for step in &mut plan.steps {
-            if let FlashStep::WriteProp {
+            if let FlashStep::FactoryHeldProp {
                 object,
                 prop_id,
                 start_element,
-                value,
-                from_parameters: true,
+                count,
                 ..
             } = step
-                && let Some(v) = values.get(&(*object, *prop_id, *start_element))
+                && every
+                && covers(*object, *prop_id, *start_element, *count)
             {
-                v.clone_into(value);
+                *step = step.without_parameter_reset();
+            }
+            if let FlashStep::WriteProp {
+                object,
+                prop_id,
+                value,
+                start_element,
+                count,
+                from_parameters,
+                ..
+            } = step
+                && (every || *from_parameters)
+            {
+                let n = usize::from((*count).max(1));
+                if value.is_empty() || !value.len().is_multiple_of(n) {
+                    continue;
+                }
+                let elem = value.len() / n;
+                for i in 0..n {
+                    let key = (*object, *prop_id, u32::from(*start_element) + i as u32);
+                    if let (Some(new), Some(slot)) =
+                        (elements.get(&key), value.get_mut(i * elem..(i + 1) * elem))
+                        && new.len() == slot.len()
+                    {
+                        slot.copy_from_slice(new);
+                    }
+                }
             }
         }
         plan
@@ -668,10 +724,25 @@ impl FlashPlan {
                 _ => {}
             }
         }
+        // A fixed code image is not rewritten where the procedure keeps the
+        // memory (no allocation, or one in Mode 0): the download is
+        // differential (§3.9.3.6 remarks), and the MCB check that follows
+        // compares it. Where the procedure allocates the object with the
+        // fill bit set, the device refills the segment, so the image is
+        // written as the procedure says.
+        let refilled = |target: &Option<u32>| {
+            par.iter().any(|s| {
+                matches!(s, FlashStep::AllocateSegment { target: t, fill, .. }
+                    if t == target && fill.prefill().is_some())
+            })
+        };
         Ok(par
             .iter()
-            .filter(|s| {
-                !matches!(s, FlashStep::WriteRelMem { image, .. } if image.kind != ImageKind::Parameters)
+            .filter(|s| match s {
+                FlashStep::WriteRelMem { image, target, .. } => {
+                    image.kind == ImageKind::Parameters || refilled(target)
+                }
+                _ => true,
             })
             .cloned()
             .collect())
@@ -695,7 +766,7 @@ impl FlashPlan {
     /// MergeId 7's checks and write).
     pub fn par_procedure_unconfirmed(&self) -> Vec<&'static str> {
         let mut out = Vec::new();
-        if !self.parameters_only || self.par_steps.is_none() {
+        if !self.from_par_procedure {
             return out;
         }
         let steps = &self.steps;
@@ -723,6 +794,12 @@ impl FlashPlan {
             out.push("a write left out as held after the parameter reset (#951)");
         }
         out
+    }
+
+    /// Whether [`FlashPlan::parameters_only`] built this plan from the mask's
+    /// parameter-only procedure (issue #1052).
+    pub fn is_built_from_par_procedure(&self) -> bool {
+        self.from_par_procedure
     }
 
     /// Whether this parameter-only download resets the device's parameters

@@ -1416,6 +1416,18 @@ async fn flash_steps<C: Connector, F: FnMut(Progress)>(
         BTreeSet::new()
     };
 
+    // A parameter-only download by the mask's `par` procedure writes no
+    // table but checks the tables' MCBs after LoadCompleted (MergeId 7):
+    // compare them before the first step, so a device whose links differ
+    // from the project is refused untouched rather than after its
+    // parameters were reset (issue #1052). ETS reads MCBs before its
+    // partial download too (`M-0009_A-E804-10-98AD` ops 24 and 25, objects 3
+    // and 4) and, KNX 3/5/3 §3.9.3.6 says, compares them as its
+    // pre-download check.
+    if plan.is_built_from_par_procedure() {
+        check_tables_before_par_procedure(session, plan, &object_table).await?;
+    }
+
     // Data Secure (issue #537): the group key table and the security
     // individual address table must fit the device. A capacity the product
     // does not declare is read from the property description, over the
@@ -1742,6 +1754,50 @@ pub(super) async fn write_image<C: Connector, F: FnMut(Progress)>(
             Err(e) => return Err(e),
         }
     }
+}
+
+/// Compares the MCB of every table object a parameter-only plan built from
+/// the `par` procedure checks against an image (issue #1052) before
+/// anything is written: a mismatch is [`WriteError::TablesChanged`].
+async fn check_tables_before_par_procedure<C: Connector>(
+    session: &mut Session<C>,
+    plan: &FlashPlan,
+    object_table: &[(u8, u16)],
+) -> Result<(), WriteError> {
+    for step in &plan.steps {
+        let FlashStep::LoadImageProp {
+            obj_idx,
+            prop_id,
+            count,
+            image: Some(image),
+            ..
+        } = step
+        else {
+            continue;
+        };
+        if image.kind != ImageKind::Table
+            || *prop_id != u32::from(bussard_mgmt::PID_MCB_TABLE)
+            || !object_table.iter().any(|(i, _)| u32::from(*i) == *obj_idx)
+        {
+            continue;
+        }
+        let Some(bytes) = plan.images.get(&image.segment_id) else {
+            continue;
+        };
+        let obj = u8::try_from(*obj_idx).unwrap_or(u8::MAX);
+        let count = u8::try_from(*count).unwrap_or(u8::MAX);
+        match read_mcb_table(session.l4(), obj, 1, count, Some(bytes)).await {
+            Ok(_) => {}
+            Err(WriteError::ImagePropMismatch { address, .. }) => {
+                return Err(WriteError::TablesChanged {
+                    address,
+                    object_index: obj,
+                });
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(())
 }
 
 /// `PID_TABLE_REFERENCE`, the base pointer of a loadable object.

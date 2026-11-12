@@ -571,7 +571,7 @@ pub(crate) fn par_plan(
         overrides,
         &bussard_product::dynamic::DynamicMemo::new(app),
     );
-    Ok(plan_flash_default(
+    let mut plan = plan_flash_default(
         app,
         "1.1.1",
         0x07B0,
@@ -579,7 +579,21 @@ pub(crate) fn par_plan(
         &BTreeMap::new(),
         Some(&template.ops),
         &tables,
-    )?)
+    )?;
+    let par = bussard_product::master::MasterTemplate::builtin_par_for_mask("07B0")
+        .ok_or("a built-in 07B0 par procedure")?;
+    bussard_download::add_par_procedure(
+        &mut plan,
+        app,
+        "1.1.1",
+        overrides,
+        &BTreeMap::new(),
+        Some(&par.ops),
+        &tables,
+        &BTreeMap::new(),
+        &bussard_product::dynamic::DynamicMemo::new(app),
+    );
+    Ok(plan)
 }
 
 /// The steps of `plan` in words, the ones a parameter-only test compares.
@@ -867,5 +881,166 @@ fn test_parameters_only_without_par_allocation_off_the_template_is_still_refused
         plan.parameters_only(&BTreeMap::new()).err(),
         Some(PartialPlanError::NoParAllocation)
     );
+    Ok(())
+}
+
+/// The E804-shaped procedures (#1038): a MergeId 1 write and a MergeId 7
+/// write without `AppliesTo`, a `par` allocation in Mode 0, the code image,
+/// and MergeId 7's MCB checks of the address table and object 4.
+pub(crate) const E804_PROCEDURES: &str = r#"
+              <LoadProcedure MergeId="1"><LdCtrlWriteProp ObjIdx="9" PropId="51" Verify="false" InlineData="01" /></LoadProcedure>
+              <LoadProcedure MergeId="2">
+                <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
+                <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="6" Mode="0" Fill="0" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="4">
+                <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
+                <LdCtrlDeclarePropDesc AppliesTo="full,par" ObjIdx="10" PropId="52" PropType="PDT_UNSIGNED_CHAR" MaxElements="2" ReadAccess="0" WriteAccess="0" Writable="true" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="10" PropId="52" Count="2" Verify="false" />
+              </LoadProcedure>
+              <LoadProcedure MergeId="7">
+                <LdCtrlLoadImageProp ObjIdx="1" PropId="27" />
+                <LdCtrlLoadImageProp ObjIdx="4" PropId="27" />
+                <LdCtrlWriteProp ObjIdx="9" PropId="51" Verify="false" InlineData="02" />
+              </LoadProcedure>"#;
+
+#[test]
+fn test_parameters_only_par_procedure_writes_a_code_image_its_allocation_refills() -> TestResult {
+    // A MergeId 2 allocation without `AppliesTo` in Mode 1: the par procedure
+    // allocates object 4 with the fill bit set, the device refills the
+    // segment, so the code image is written as the procedure says.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="2"><LdCtrlRelSegment LsmIdx="4" Size="6" Mode="1" Fill="0" /></LoadProcedure>
+              <LoadProcedure MergeId="4">
+                <LdCtrlWriteRelMem ObjIdx="4" Offset="0" Size="6" Verify="true" />{E802_MERGE_4}
+              </LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let partial = shape(&plan.parameters_only(&BTreeMap::new())?);
+    assert!(partial.contains(&"allocate 4 6".to_string()), "{partial:?}");
+    assert!(partial.contains(&"memory".to_string()), "{partial:?}");
+    // In Mode 0 (the E804 shape) the image is kept and not rewritten.
+    let app = par_app(E804_PROCEDURES)?;
+    let partial = shape(&par_plan(&app, &BTreeMap::new())?.parameters_only(&BTreeMap::new())?);
+    assert!(!partial.contains(&"memory".to_string()), "{partial:?}");
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_par_procedure_runs_auto_all_and_empty_applies_to() -> TestResult {
+    // `auto`, `all` and an empty `AppliesTo` run in every download, the
+    // par procedure included; `full` does not.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+                <LdCtrlWriteProp AppliesTo="auto" ObjIdx="11" PropId="1" Verify="false" InlineData="01" />
+                <LdCtrlWriteProp AppliesTo="all" ObjIdx="11" PropId="2" Verify="false" InlineData="02" />
+                <LdCtrlWriteProp AppliesTo="" ObjIdx="11" PropId="3" Verify="false" InlineData="03" />
+                <LdCtrlWriteProp AppliesTo="full" ObjIdx="11" PropId="4" Verify="false" InlineData="04" />
+              </LoadProcedure>"#
+    ))?;
+    let partial = shape(&par_plan(&app, &BTreeMap::new())?.parameters_only(&BTreeMap::new())?);
+    for pid in 1..=3 {
+        assert!(
+            partial.contains(&format!("write 11/{pid}@1")),
+            "{pid}: {partial:?}"
+        );
+    }
+    assert!(
+        !partial.contains(&"write 11/4@1".to_string()),
+        "{partial:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_checked_properties_keep_what_overlapping_writes_leave() -> TestResult {
+    // Elements 1 to 4 of object 11 PID 208, then element 3 again: the
+    // read-back expects 01 02 on 1..=2, 09 on 3, 04 on 4.
+    let app = par_app(&format!(
+        r#"
+              <LoadProcedure MergeId="4">{E802_MERGE_4}
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="11" PropId="208" StartElement="1" Count="4" Verify="false" InlineData="01020304" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="11" PropId="208" StartElement="3" Count="1" Verify="false" InlineData="09" />
+              </LoadProcedure>"#
+    ))?;
+    let plan = par_plan(&app, &BTreeMap::new())?;
+    let ranges: Vec<(u16, u16, Vec<u8>)> = plan
+        .checked_properties()
+        .into_iter()
+        .filter(|p| (p.object, p.prop_id) == (PropObject::Index(11), 208))
+        .map(|p| (p.start_element, p.count, p.model))
+        .collect();
+    assert_eq!(
+        ranges,
+        [(1, 2, vec![1, 2]), (4, 1, vec![4]), (3, 1, vec![9])],
+        "{ranges:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_parameters_only_on_another_system_b_mask_takes_its_master_par_procedure() -> TestResult {
+    // A 17B0 program: bussard carries no par procedure for that mask. Without
+    // one in the product's master data the cut of the complete download runs,
+    // as before (the E804 shape, its `par` allocation); with one, the
+    // procedure runs.
+    let xml = par_app_xml(E804_PROCEDURES).replace("MV-07B0", "MV-17B0");
+    let app = parse_application_program("M-00FA_A-0003", xml.as_bytes())?;
+    let template = bussard_product::master::MasterTemplate::builtin_for_mask("07B0")
+        .ok_or("a 07B0 template standing in for the 17B0 master's")?;
+    let tables = bussard_download::build_table_images(
+        None,
+        ia("1.1.1")?,
+        &app,
+        &BTreeMap::new(),
+        &bussard_product::dynamic::DynamicMemo::new(&app),
+    );
+    let mut plan = plan_flash_default(
+        &app,
+        "1.1.1",
+        0x17B0,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&template.ops),
+        &tables,
+    )?;
+    assert_eq!(
+        bussard_product::MasterTemplate::builtin_par_for_mask("17B0"),
+        None
+    );
+    let memo = bussard_product::dynamic::DynamicMemo::new(&app);
+    bussard_download::add_par_procedure(
+        &mut plan,
+        &app,
+        "1.1.1",
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        None,
+        &tables,
+        &BTreeMap::new(),
+        &memo,
+    );
+    let cut = plan.parameters_only(&BTreeMap::new())?;
+    assert!(!cut.is_built_from_par_procedure());
+    assert!(shape(&cut).contains(&"allocate 4 6".to_string()));
+    // The product's master declares the par procedure for 17B0.
+    let master_par =
+        bussard_product::master::MasterTemplate::builtin_par_for_mask("07B0").ok_or("par ops")?;
+    bussard_download::add_par_procedure(
+        &mut plan,
+        &app,
+        "1.1.1",
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+        Some(&master_par.ops),
+        &tables,
+        &BTreeMap::new(),
+        &memo,
+    );
+    let par = plan.parameters_only(&BTreeMap::new())?;
+    assert!(par.is_built_from_par_procedure());
+    assert!(shape(&par).contains(&"table-ref 4".to_string()));
     Ok(())
 }

@@ -66,17 +66,17 @@ pub use device_plan::{
 pub use flash::{
     Connector, FlashOptions, FlashOutcome, FlashPlan, FlashStep, ImageKind, ImageRef,
     LoadControlForm, PartialPlanError, PlanError, Progress, PropObject, PropertyWrite,
-    RebootReadiness, RestartForm, RestartKind, Session, Sys7TableBases, allocation_change,
-    describe_property, discover_application_object, ets_friendly_name, flash, knxnet_ip_program,
-    plan_flash, property_write_requests, read_property_value, restart_form, select_application,
-    sys7_table_bases, trace, write_property_value,
+    RebootReadiness, RestartForm, RestartKind, Session, Sys7TableBases, add_par_procedure,
+    allocation_change, describe_property, discover_application_object, ets_friendly_name, flash,
+    knxnet_ip_program, plan_flash, property_write_requests, read_property_value, restart_form,
+    select_application, sys7_table_bases, trace, write_property_value,
 };
 pub use model_params::{
     Sys7Identity, build_table_images, describe_group_object_change, flash_gate, identity_gate,
     linked_object_flags, master_template_ops, model_parameters, needs_sys7_identity,
-    parameter_overrides, plan_for_readback, region_rows, resolve_by_order_number, runtime_segments,
-    sys7_code_mismatch, sys7_identity, template_ops_for, verify_readback,
-    write_parameter_memory_backup,
+    par_template_ops_for, parameter_overrides, plan_for_parameters, plan_for_readback, region_rows,
+    resolve_by_order_number, runtime_segments, sys7_code_mismatch, sys7_identity, template_ops_for,
+    verify_readback, write_parameter_memory_backup,
 };
 pub use object_table::{
     ObjectTableChange, ObjectTableCheck, check_object_table, find_object_table,
@@ -92,7 +92,8 @@ pub use param_plan::{
     read_current_parameter_memory, read_parameter_regions, regions_memory,
 };
 pub use param_props::{
-    ParamProperty, changed_properties, read_checked_properties, read_parameter_properties,
+    ParamProperty, PropertyRange, changed_properties, held_after, read_checked_properties,
+    read_parameter_properties,
 };
 pub use plan::{ObjectGa, PlanReport, plan};
 pub use preflight::{

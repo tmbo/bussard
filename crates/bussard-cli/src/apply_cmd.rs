@@ -585,7 +585,15 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
         kind: bussard_service::observer::Ask::Write,
         prompt: match built {
             Some(built) => built.plan.question(),
-            None => format!("{verb} {changes} change(s) to {target} via {gateway}?"),
+            None => {
+                // The same note as `flash --parameters-only` (issue #1052).
+                let note = partial
+                    .map(bussard_service::program::params_only::parameter_write_note)
+                    .filter(|n| !n.is_empty())
+                    .map(|n| format!(" ({n})"))
+                    .unwrap_or_default();
+                format!("{verb} {changes} change(s) to {target} via {gateway}{note}?")
+            }
         },
         action: format!("{verb} {target} via {gateway}"),
     };

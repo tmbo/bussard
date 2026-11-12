@@ -147,48 +147,6 @@ pub struct ExpectedProperty {
     pub value: Vec<u8>,
 }
 
-/// The parts of `write` the device still holds after `later` (the writes
-/// that follow it): the runs of its elements that no later write to the same
-/// object and property covers (issue #946). A write whose value is not whole
-/// elements is kept as it is.
-fn still_held(write: &ExpectedProperty, later: &[ExpectedProperty]) -> Vec<ExpectedProperty> {
-    let count = usize::from(write.count.max(1));
-    if !write.value.len().is_multiple_of(count) {
-        return vec![write.clone()];
-    }
-    let elem = write.value.len() / count;
-    let covered = |element: u32| {
-        later.iter().any(|l| {
-            l.object == write.object
-                && l.prop_id == write.prop_id
-                && (u32::from(l.start)..u32::from(l.start) + u32::from(l.count.max(1)))
-                    .contains(&element)
-        })
-    };
-    let mut out = Vec::new();
-    let mut run: Option<(usize, usize)> = None;
-    for i in 0..=count {
-        let held = i < count && !covered(u32::from(write.start) + i as u32);
-        match (held, run) {
-            (true, None) => run = Some((i, i + 1)),
-            (true, Some((from, _))) => run = Some((from, i + 1)),
-            (false, Some((from, to))) => {
-                out.push(ExpectedProperty {
-                    object: write.object,
-                    prop_id: write.prop_id,
-                    // Within the write's own u16 extent.
-                    start: write.start + from as u16,
-                    count: (to - from) as u16,
-                    value: write.value[from * elem..to * elem].to_vec(),
-                });
-                run = None;
-            }
-            (false, None) => {}
-        }
-    }
-    out
-}
-
 impl ExpectedProperty {
     /// The property writes of `flash` a read-back compares: every write of a
     /// System 7 or property-only plan, the writes of a System B plan whose
@@ -277,10 +235,49 @@ impl ExpectedProperty {
         // `captures/ets-sweep/M-0006_A-E00D-01-28AB-O0009/plain-defaults/ops.txt`
         // ops 8 and 132), and the device reads back `02`. Each write is
         // expected only on the elements no later write covers.
-        writes
+        ExpectedProperty::held_after(&writes)
+    }
+
+    /// What `writes` (in procedure order) leave on the device:
+    /// [`bussard_download::held_after`], the one overlap rule (issue #946).
+    fn held_after(writes: &[ExpectedProperty]) -> Vec<ExpectedProperty> {
+        let ranges: Vec<bussard_download::PropertyRange> = writes
             .iter()
-            .enumerate()
-            .flat_map(|(i, w)| still_held(w, writes.get(i + 1..).unwrap_or_default()))
+            .map(|w| bussard_download::PropertyRange {
+                object: w.object,
+                prop_id: w.prop_id,
+                start: w.start,
+                count: w.count,
+                value: w.value.clone(),
+            })
+            .collect();
+        bussard_download::held_after(&ranges)
+            .into_iter()
+            .map(|r| ExpectedProperty {
+                object: r.object,
+                prop_id: r.prop_id,
+                start: r.start,
+                count: r.count,
+                value: r.value,
+            })
+            .collect()
+    }
+
+    /// What a parameter write of `flash` (an `apply`, a `restore
+    /// --parameters`) must find in the device's properties:
+    /// [`FlashPlan::checked_properties`] (issue #1052), the same list the
+    /// write backs up and `flash --parameters-only` reads back.
+    pub fn from_checked(flash: &FlashPlan) -> Vec<ExpectedProperty> {
+        flash
+            .checked_properties()
+            .into_iter()
+            .map(|p| ExpectedProperty {
+                object: p.object,
+                prop_id: p.prop_id,
+                start: p.start_element,
+                count: p.count,
+                value: p.model,
+            })
             .collect()
     }
 
@@ -1335,22 +1332,29 @@ mod tests {
             count,
             value: value.to_vec(),
         };
+        let held = ExpectedProperty::held_after;
         // A later write of elements 1..=2 covers an earlier one of element 1.
-        assert!(still_held(&w(1, 1, &[1]), &[w(1, 2, &[2, 3])]).is_empty());
+        assert_eq!(
+            held(&[w(1, 1, &[1]), w(1, 2, &[2, 3])]),
+            vec![w(1, 2, &[2, 3])]
+        );
         // A later write of element 2 leaves elements 1 and 3 of 1..=3.
         assert_eq!(
-            still_held(&w(1, 3, &[1, 2, 3]), &[w(2, 1, &[9])]),
-            vec![w(1, 1, &[1]), w(3, 1, &[3])]
+            held(&[w(1, 3, &[1, 2, 3]), w(2, 1, &[9])]),
+            vec![w(1, 1, &[1]), w(3, 1, &[3]), w(2, 1, &[9])]
         );
         // Another property, or no overlap, keeps the write whole.
         let other = ExpectedProperty {
             prop_id: 52,
             ..w(1, 1, &[7])
         };
-        assert_eq!(still_held(&w(1, 1, &[1]), &[other]), vec![w(1, 1, &[1])]);
         assert_eq!(
-            still_held(&w(1, 1, &[1]), &[w(2, 1, &[2])]),
-            vec![w(1, 1, &[1])]
+            held(&[w(1, 1, &[1]), other.clone()]),
+            vec![w(1, 1, &[1]), other]
+        );
+        assert_eq!(
+            held(&[w(1, 1, &[1]), w(2, 1, &[2])]),
+            vec![w(1, 1, &[1]), w(2, 1, &[2])]
         );
     }
 

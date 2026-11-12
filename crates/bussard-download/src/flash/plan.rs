@@ -390,10 +390,6 @@ pub fn same_program(a: &str, b: &str) -> bool {
 /// The Dynamic section is evaluated through `memo` (issue #367), so a caller
 /// that evaluates the same overrides for other reasons (the group-object table
 /// image, a parameter decode) shares the evaluation.
-///
-/// A System B plan spliced into the master template whose parameters all
-/// live in properties also carries the lowering of the mask's parameter-only
-/// procedure (issue #1052, [`FlashPlan::parameters_only`]).
 #[allow(clippy::too_many_arguments)] // the plan's inputs; a struct would only rename them
 pub fn plan_flash(
     app: &ApplicationProgram,
@@ -406,7 +402,7 @@ pub fn plan_flash(
     object_flags: &BTreeMap<u16, bussard_model::Flags>,
     memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
 ) -> std::result::Result<FlashPlan, PlanError> {
-    let mut plan = plan_flash_as(
+    plan_flash_as(
         app,
         device,
         device_mask,
@@ -417,33 +413,53 @@ pub fn plan_flash(
         object_flags,
         memo,
         Download::Full,
-    )?;
-    if plan.takes_par_procedure() {
-        // The mask's `ProcedureSubType="par"` procedure, the application's
-        // blocks filtered to the ops whose `AppliesTo` names `par` or that
-        // have none (KNX 3/5/3 §3.9.3.6; the E802 and E804 sweep captures).
-        let mask = format!("{device_mask:04X}");
-        plan.par_steps = Some(
-            match bussard_product::MasterTemplate::builtin_par_for_mask(&mask) {
-                None => Err(format!("mask {mask} has no parameter-only procedure")),
-                Some(par) => plan_flash_as(
-                    app,
-                    device,
-                    device_mask,
-                    overrides,
-                    base_offsets,
-                    Some(&par.ops),
-                    table_images,
-                    object_flags,
-                    memo,
-                    Download::Par,
-                )
-                .map(|p| p.steps)
-                .map_err(|e| e.to_string()),
-            },
-        );
+    )
+}
+
+/// Adds to `plan` (a [`plan_flash`] of the same inputs) the lowering of the
+/// mask's parameter-only procedure `par_ops` (issue #1052): what
+/// [`FlashPlan::parameters_only`] then runs for a System B program spliced
+/// into the master template whose parameters all live in properties. The
+/// application's blocks are filtered to the ops whose `AppliesTo` includes
+/// `par` (KNX 3/5/3 §3.9.3.6; the E802 and E804 sweep captures). A no-op for
+/// any other plan, and without `par_ops` (a mask whose master data and
+/// bussard declare no such procedure): that plan keeps the cut of the
+/// complete download. Only a caller that plans a parameter-only download
+/// asks for it: the second lowering costs as much as the first.
+#[allow(clippy::too_many_arguments)] // the plan's inputs; a struct would only rename them
+pub fn add_par_procedure(
+    plan: &mut FlashPlan,
+    app: &ApplicationProgram,
+    device: &str,
+    overrides: &BTreeMap<String, String>,
+    base_offsets: &BTreeMap<String, u32>,
+    par_ops: Option<&[LoadOp]>,
+    table_images: &BTreeMap<u32, Vec<u8>>,
+    object_flags: &BTreeMap<u16, bussard_model::Flags>,
+    memo: &bussard_product::dynamic::DynamicMemo<'_, ApplicationProgram>,
+) {
+    let Some(par_ops) = par_ops else {
+        return;
+    };
+    if plan.par_steps.is_some() || !plan.takes_par_procedure() {
+        return;
     }
-    Ok(plan)
+    plan.par_steps = Some(
+        plan_flash_as(
+            app,
+            device,
+            plan.device_mask,
+            overrides,
+            base_offsets,
+            Some(par_ops),
+            table_images,
+            object_flags,
+            memo,
+            Download::Par,
+        )
+        .map(|p| p.steps)
+        .map_err(|e| e.to_string()),
+    );
 }
 
 /// Which download a lowering builds (issue #1052): the complete one, or the
@@ -1539,6 +1555,7 @@ fn plan_flash_as(
         par_allocations,
         par_procedure: false,
         par_steps: None,
+        from_par_procedure: false,
         parameters_only: false,
         kept,
     })
@@ -1775,7 +1792,7 @@ pub(super) fn assemble_ops(
         Download::Full => !(lp.lists_partial_downloads() && lp.is_partial_only(i)),
         Download::Par => lp
             .applies_to_of(i)
-            .is_none_or(|a| bussard_product::application::applies_to_names(a, "par")),
+            .is_none_or(|a| bussard_product::application::applies_to_includes(a, "par")),
     };
     let non_empty: Vec<&LoadProcedure> = app
         .load_procedures

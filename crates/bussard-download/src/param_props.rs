@@ -136,55 +136,127 @@ impl FlashPlan {
     }
 }
 
+/// A run of property elements a procedure writes: what a read-back must
+/// find there.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PropertyRange {
+    /// The interface object, as the plan addresses it.
+    pub object: PropObject,
+    /// The property id.
+    pub prop_id: u32,
+    /// The first element.
+    pub start: u16,
+    /// How many elements.
+    pub count: u16,
+    /// The octets.
+    pub value: Vec<u8>,
+}
+
+/// What `writes` (in procedure order) leave on the device: each write on the
+/// runs of its elements no later write to the same object and property
+/// covers (issue #946). A write whose value is not whole elements is kept as
+/// it is. The one rule every read-back of property writes uses.
+pub fn held_after(writes: &[PropertyRange]) -> Vec<PropertyRange> {
+    writes
+        .iter()
+        .enumerate()
+        .flat_map(|(i, w)| still_held(w, writes.get(i + 1..).unwrap_or_default()))
+        .collect()
+}
+
+/// The parts of `write` the device still holds after `later`.
+fn still_held(write: &PropertyRange, later: &[PropertyRange]) -> Vec<PropertyRange> {
+    let count = usize::from(write.count.max(1));
+    if !write.value.len().is_multiple_of(count) {
+        return vec![write.clone()];
+    }
+    let elem = write.value.len() / count;
+    let covered = |element: u32| {
+        later.iter().any(|l| {
+            l.object == write.object
+                && l.prop_id == write.prop_id
+                && (u32::from(l.start)..u32::from(l.start) + u32::from(l.count.max(1)))
+                    .contains(&element)
+        })
+    };
+    let mut out = Vec::new();
+    let mut run: Option<(usize, usize)> = None;
+    for i in 0..=count {
+        let held = i < count && !covered(u32::from(write.start) + i as u32);
+        match (held, run) {
+            (true, None) => run = Some((i, i + 1)),
+            (true, Some((from, _))) => run = Some((from, i + 1)),
+            (false, Some((from, to))) => {
+                out.push(PropertyRange {
+                    object: write.object,
+                    prop_id: write.prop_id,
+                    // Within the write's own u16 extent.
+                    start: write.start + from as u16,
+                    count: (to - from) as u16,
+                    value: write
+                        .value
+                        .get(from * elem..to * elem)
+                        .unwrap_or_default()
+                        .to_vec(),
+                });
+                run = None;
+            }
+            (false, None) => {}
+        }
+    }
+    out
+}
+
 impl FlashPlan {
+    /// The steps of the parameter-only procedure behind this plan (issue
+    /// #1052): its own steps for a parameter-only plan built from it, the
+    /// lowering it carries for a full plan, `None` otherwise.
+    fn par_procedure_writes(&self) -> Option<&[crate::flash::FlashStep]> {
+        if self.is_built_from_par_procedure() {
+            Some(&self.steps)
+        } else {
+            self.par_procedure()
+        }
+    }
+
     /// The properties a parameter-only download of this plan writes and
-    /// reads back (issue #1052): [`FlashPlan::parameter_properties`], and
-    /// for a plan that carries the mask's parameter-only procedure
-    /// ([`FlashPlan::parameters_only`]) every other property that procedure
-    /// writes too, with the value it writes last. Read before the download
-    /// (the backup must hold each, or nothing is written) and after it (each
-    /// must read back as written), so a write the device did not take, or a
-    /// value a parameter reset changed and nothing wrote back, fails the
-    /// download instead of passing unnoticed.
+    /// reads back (issue #1052). For a plan run by the mask's parameter-only
+    /// procedure ([`FlashPlan::parameters_only`]): every property that
+    /// procedure writes, each on the elements it leaves written
+    /// ([`held_after`]), so a read-back of a correct device finds exactly
+    /// these. Read before the download (the backup must hold each, or nothing
+    /// is written) and after it (each must read back as written), so a write
+    /// the device did not take, or a value a parameter reset changed and
+    /// nothing wrote back, fails the download instead of passing unnoticed.
+    /// For any other plan: [`FlashPlan::parameter_properties`].
     pub fn checked_properties(&self) -> Vec<ParamProperty> {
-        let mut out = self.parameter_properties();
-        let Some(par) = self.par_procedure() else {
-            return out;
+        let Some(steps) = self.par_procedure_writes() else {
+            return self.parameter_properties();
         };
-        let mut fixed: Vec<ParamProperty> = Vec::new();
-        for step in par {
-            if step.load_state_control().is_some() {
-                continue;
-            }
-            let Some(write) = step.property_write() else {
-                continue;
-            };
-            let key = (write.object, write.prop_id, write.start_element);
-            if out
-                .iter()
-                .any(|p| (p.object, p.prop_id, p.start_element) == key)
-            {
-                continue;
-            }
-            let property = ParamProperty {
-                object: write.object,
-                prop_id: write.prop_id,
-                start_element: write.start_element,
-                count: write.count.max(1),
-                model: write.value.to_vec(),
+        let writes: Vec<PropertyRange> = steps
+            .iter()
+            .filter(|s| s.load_state_control().is_none())
+            .filter_map(crate::flash::FlashStep::property_write)
+            .map(|w| PropertyRange {
+                object: w.object,
+                prop_id: w.prop_id,
+                start: w.start_element,
+                count: w.count.max(1),
+                value: w.value.to_vec(),
+            })
+            .collect();
+        held_after(&writes)
+            .into_iter()
+            .map(|r| ParamProperty {
+                object: r.object,
+                prop_id: r.prop_id,
+                start_element: r.start,
+                count: r.count,
+                model: r.value,
                 device: None,
                 parameters: Vec::new(),
-            };
-            match fixed
-                .iter_mut()
-                .find(|p| (p.object, p.prop_id, p.start_element) == key)
-            {
-                Some(p) => *p = property,
-                None => fixed.push(property),
-            }
-        }
-        out.extend(fixed);
-        out
+            })
+            .collect()
     }
 }
 

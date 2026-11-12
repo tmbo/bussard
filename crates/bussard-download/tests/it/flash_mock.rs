@@ -8493,6 +8493,14 @@ struct ParDeviceState {
     resets: Vec<u8>,
     /// While set, object 9 PID 208 reads back as `EE EE` whatever it holds.
     corrupt_object_9: bool,
+    /// While set, a parameter reset (erase code 5) puts object 9 PID 208 back
+    /// to its factory value `01 02`, as a device with a LoadedImage does.
+    reset_restores_object_9: bool,
+    /// While set, the address table's MCB answers a CRC no table has.
+    corrupt_table_mcb: bool,
+    /// The image each object's `PID_MCB_TABLE` describes, answered as one
+    /// entry (size and CRC16-CCITT) when the test sets it.
+    mcb: BTreeMap<u8, Vec<u8>>,
 }
 
 /// A System B device with objects 0 to 10 (object 5 an application program
@@ -8525,7 +8533,8 @@ fn par_device(
         ])
         .with_writable_property(4, 13, 5, &[0; 5])
         .with_writable_property(10, 52, 1, &[0, 0])
-        .with_writable_property(12, 208, 1, &[0]);
+        .with_writable_property(12, 208, 1, &[0])
+        .with_writable_property(9, 51, 1, &[0]);
     if ap2 {
         device = device.with_writable_property(5, 13, 5, &[0; 5]);
     }
@@ -8533,15 +8542,36 @@ fn par_device(
         device = device.with_writable_property(9, 208, 1, &[0, 0]);
     }
     let state = Arc::clone(state);
-    device.with_hook(move |_, apci, data| {
+    device.with_hook(move |dev, apci, data| {
         let Ok(mut seen) = state.lock() else {
             return None;
         };
         if apci == A_RESTART_MASTER_RESET {
             seen.resets.extend(data.first());
+            if seen.reset_restores_object_9 && data.first() == Some(&5) {
+                *dev = dev.clone().with_writable_property(9, 208, 1, &[1, 2]);
+            }
             return Some(bussard_testkit::Reaction::Answer(
                 A_RESTART_RESPONSE,
                 vec![0, 0, 0],
+            ));
+        }
+        if apci == A_PROPERTY_VALUE_READ_REQ
+            && data.get(1) == Some(&27)
+            && let Some(image) = data.first().and_then(|o| seen.mcb.get(o))
+        {
+            let crc = if seen.corrupt_table_mcb && data.first() == Some(&1) {
+                0x1234
+            } else {
+                bussard_mgmt::crc16_ccitt(image)
+            };
+            let mut answer = data.get(..4).unwrap_or_default().to_vec();
+            answer.extend((image.len() as u32).to_be_bytes());
+            answer.extend([0, 0]);
+            answer.extend(crc.to_be_bytes());
+            return Some(bussard_testkit::Reaction::Answer(
+                A_PROPERTY_VALUE_RESPONSE_RES,
+                answer,
             ));
         }
         if apci == A_PROPERTY_VALUE_READ_REQ
@@ -8779,5 +8809,156 @@ async fn test_parameters_only_par_procedure_loads_object_5_with_application_prog
         "{after:?}"
     );
     assert_eq!(dev.property(12, 208), Some(&[0x05][..]));
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_backup_restores_a_held_property() -> TestResult {
+    // A backup of every checked property, taken while object 9 holds `07 07`
+    // (not its factory value): the parameter-only download resets the
+    // parameters (object 9 back to `01 02`) and writes the model; the restore
+    // of the backup resets them again and must write `07 07` back, although
+    // its write is one the procedure leaves out as held after the reset.
+    let state = Arc::new(Mutex::new(ParDeviceState {
+        reset_restores_object_9: true,
+        ..ParDeviceState::default()
+    }));
+    let target = ia("1.1.1")?;
+    let device = par_device(target, true, false, &state);
+    let mut app =
+        crate::property_only_partial::par_app(&crate::property_only_partial::e802_procedures())?;
+    app.factory_properties = vec![bussard_product::application::FactoryProperty {
+        object: 9,
+        prop_id: 208,
+        start: 0,
+        data: vec![1, 2],
+        mask: Vec::new(),
+    }];
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    let outcome = flash(&mut session, &defaults, Default::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    gw.with_device(target, |d| {
+        *d = d.clone().with_writable_property(9, 208, 1, &[7, 7]);
+    })?;
+    // The backup: what every checked property holds before the write.
+    let backup = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
+    let values: BTreeMap<(bussard_download::PropObject, u32, u16), Vec<u8>> = backup
+        .iter()
+        .map(|p| {
+            Ok((
+                (p.object, p.prop_id, p.start_element),
+                p.device.clone().ok_or("every property backed up")?,
+            ))
+        })
+        .collect::<Result<_, String>>()?;
+    assert_eq!(
+        values.get(&(bussard_download::PropObject::Index(9), 208, 1)),
+        Some(&vec![7, 7])
+    );
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    assert!(
+        flash(&mut session, &partial, Default::default(), |_| {})
+            .await?
+            .ok()
+    );
+    assert_eq!(
+        gw.with_device(target, |d| d.property(9, 208).map(<[u8]>::to_vec))?,
+        Some(vec![1, 2])
+    );
+    // The restore: the same procedure, every checked property set to the
+    // backup's value, the held write included.
+    let restore = partial.with_property_values(&values);
+    assert!(
+        !restore
+            .steps
+            .iter()
+            .any(|s| matches!(s, FlashStep::FactoryHeldProp { .. }))
+    );
+    assert!(
+        flash(&mut session, &restore, Default::default(), |_| {})
+            .await?
+            .ok()
+    );
+    let after = bussard_download::read_checked_properties(session.l4(), &plan, &app).await;
+    let _ = session.into_disconnect().await;
+    for p in &after {
+        let want = values.get(&(p.object, p.prop_id, p.start_element));
+        assert_eq!(p.device.as_ref(), want, "{}", p.label());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_refuses_a_changed_table_before_writing() -> TestResult {
+    // The E804 shape checks the address table's MCB after LoadCompleted
+    // (MergeId 7). A device whose table differs from the project's (a link
+    // change not applied yet) is refused before the first write: no load
+    // event, no write, no reset.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let target = ia("1.1.1")?;
+    let device = par_device(target, true, false, &state);
+    let app = crate::property_only_partial::par_app(crate::property_only_partial::E804_PROCEDURES)?;
+    let defaults = crate::property_only_partial::par_plan(&app, &no_overrides())?;
+    let overrides = BTreeMap::from([("P-1_R-2".to_string(), "20".to_string())]);
+    let plan = crate::property_only_partial::par_plan(&app, &overrides)?;
+    {
+        let mut s = lock_par(&state)?;
+        for (obj, segment) in [(1u8, "obj-table-1"), (4, "M-00FA_A-0003_RS-1")] {
+            let image = defaults.image_bytes(segment).ok_or(segment)?;
+            s.mcb.insert(obj, image.to_vec());
+        }
+    }
+    let gw = MockGateway::builder().device(device).start().await?;
+    let mut session = par_session(&gw, target).await?;
+    let outcome = flash(&mut session, &defaults, Default::default(), |_| {}).await?;
+    assert!(outcome.ok(), "{outcome:?}");
+    lock_par(&state)?.corrupt_table_mcb = true;
+    let before = gw.with_device(target, |d| (d.writes, d.restarts))?;
+    let partial = plan.parameters_only(&BTreeMap::new())?;
+    let outcome = flash(&mut session, &partial, Default::default(), |_| {}).await;
+    let _ = session.into_disconnect().await;
+    assert!(
+        matches!(
+            outcome,
+            Err(bussard_mgmt::load::WriteError::TablesChanged {
+                object_index: 1,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(gw.with_device(target, |d| (d.writes, d.restarts))?, before);
+    assert!(lock_par(&state)?.resets.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_parameters_only_par_procedure_overlapping_writes_read_back_as_a_noop() -> TestResult {
+    // Two writes to object 11 PID 208, the second over element 3 of the
+    // first: after the download the checked properties read back as written,
+    // so a second run finds nothing to change.
+    let state = Arc::new(Mutex::new(ParDeviceState::default()));
+    let target = ia("1.1.1")?;
+    let device =
+        par_device(target, true, false, &state).with_writable_property(11, 208, 1, &[0, 0, 0, 0]);
+    let procedures = format!(
+        r#"
+              <LoadProcedure MergeId="4">{}
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="11" PropId="208" StartElement="1" Count="4" Verify="false" InlineData="01020304" />
+                <LdCtrlWriteProp AppliesTo="full,par" ObjIdx="11" PropId="208" StartElement="3" Count="1" Verify="false" InlineData="09" />
+              </LoadProcedure>"#,
+        crate::property_only_partial::E802_MERGE_4
+    );
+    let (outcome, _, after, dev) = par_run(&procedures, device, &state, |_| {}, Vec::new()).await?;
+    assert!(outcome?.ok());
+    assert_eq!(dev.property(11, 208), Some(&[1, 2, 9, 4][..]));
+    assert!(
+        bussard_download::changed_properties(&after).is_empty(),
+        "a second run would write again: {after:?}"
+    );
     Ok(())
 }

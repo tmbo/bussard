@@ -48,6 +48,45 @@ pub struct ParamsRead {
     pub table_change: Option<String>,
 }
 
+/// What every parameter write (`flash --parameters-only`, `apply`, `restore
+/// --parameters`, CLI and MCP) reads of the device's properties, before the
+/// write for the backup and after it for the read-back: the plan's
+/// [`FlashPlan::checked_properties`] (issue #1052). The one function all
+/// three call.
+pub async fn read_written_properties<Ch: L4Channel>(
+    l4: &mut Layer4Connection<Ch>,
+    plan: &FlashPlan,
+    app: &ApplicationProgram,
+) -> Vec<ParamProperty> {
+    bussard_download::read_checked_properties(l4, plan, app).await
+}
+
+/// What the confirmation of a parameter write says beyond its counts
+/// (issue #1052): that the device's procedure resets all parameters first,
+/// and which of its parts no ETS capture confirms. Empty for any other
+/// parameter-only download. The one text `flash --parameters-only`, `apply`
+/// and the MCP plan show.
+pub fn parameter_write_note(partial: &FlashPlan) -> String {
+    let mut out = String::new();
+    if partial.resets_parameters_first() {
+        out.push_str(
+            "the device's parameter-only procedure resets all its parameters to their defaults \
+             first, then writes every one",
+        );
+    }
+    let unconfirmed = partial.par_procedure_unconfirmed();
+    if !unconfirmed.is_empty() {
+        if !out.is_empty() {
+            out.push_str("; ");
+        }
+        out.push_str(
+            "done by the device's parameter-only procedure, not confirmed by an ETS capture: ",
+        );
+        out.push_str(&unconfirmed.join("; "));
+    }
+    out
+}
+
 /// Reads the parameter regions (plus, on System 7, the code-segment samples
 /// and the link-table comparison) on an open connection.
 pub async fn read_parameters_on<Ch: L4Channel>(
@@ -56,7 +95,7 @@ pub async fn read_parameters_on<Ch: L4Channel>(
     app: &ApplicationProgram,
 ) -> ParamsRead {
     let regions = bussard_download::read_parameter_regions(l4, plan, &[]).await;
-    let properties = bussard_download::read_checked_properties(l4, plan, app).await;
+    let properties = read_written_properties(l4, plan, app).await;
     let (code_mismatch, table_change) = if plan.is_sys7() {
         (
             bussard_download::sys7_code_mismatch(l4, plan).await,
@@ -227,31 +266,15 @@ impl ParamsPlanned {
                 self.properties.len()
             )
         };
-        // A parameter-only procedure that resets the parameters first
-        // (issue #1052) changes every parameter for a moment, not only the
-        // ones that differ: say so before the write.
-        let reset = if self.partial.resets_parameters_first() {
-            " (the device's procedure resets all its parameters to their defaults first, then \
-             writes every one)"
-        } else {
-            ""
-        };
-        // A shape of the `par` procedure no ETS capture confirms yet is named.
-        let unconfirmed = self.partial.par_procedure_unconfirmed();
-        let unconfirmed = if unconfirmed.is_empty() {
+        let note = parameter_write_note(&self.partial);
+        let note = if note.is_empty() {
             String::new()
         } else {
-            format!(
-                " Done by the device's parameter-only procedure, not confirmed by an ETS \
-                 capture: {}.",
-                unconfirmed.join("; ")
-            )
+            format!(" ({note})")
         };
         Question {
             kind: crate::observer::Ask::Write,
-            prompt: format!(
-                "download the parameters ({what}) to {target} via {gateway}{reset}?{unconfirmed}"
-            ),
+            prompt: format!("download the parameters ({what}) to {target} via {gateway}{note}?"),
             action: format!("flash the parameters of {target} via {gateway}"),
         }
     }
@@ -429,7 +452,7 @@ pub async fn write_parameters_only(
         crate::download::flash_session(run, &planned.partial, &mut *observer, async |l4| {
             (
                 bussard_download::read_parameter_regions(l4, plan, &[]).await,
-                bussard_download::read_checked_properties(l4, plan, app).await,
+                read_written_properties(l4, plan, app).await,
             )
         })
         .await;

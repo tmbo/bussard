@@ -283,7 +283,7 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
             .map(|inputs| ExpectedSecurity::from_inputs(inputs, &req.desired.addresses)),
         properties: req
             .parameters
-            .map(|(_, detail)| ExpectedProperty::from_parameter_writes(&detail.plan))
+            .map(|(_, detail)| ExpectedProperty::from_checked(&detail.plan))
             .unwrap_or_default(),
         table_bases: super::read::table_bases(req.product),
     }

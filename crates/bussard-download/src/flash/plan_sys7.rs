@@ -855,6 +855,7 @@ pub(super) fn plan_flash_sys7(
         par_allocations: BTreeMap::new(),
         par_procedure: false,
         par_steps: None,
+        from_par_procedure: false,
         parameters_only: false,
         kept,
     })

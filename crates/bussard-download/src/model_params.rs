@@ -42,6 +42,30 @@ pub fn template_ops_for(
     master_template_ops(product_data.master.as_ref()?, mask, app)
 }
 
+/// The parameter-only (`ProcedureSubType="par"`) procedure of `app`'s mask
+/// (issue #1052): the product's own master data's when it declares one,
+/// else the one bussard carries for the System B masks
+/// ([`bussard_product::MasterTemplate::builtin_par_for_mask`]); `None` when
+/// neither has one, and the parameter-only download keeps the cut of the
+/// complete one.
+pub fn par_template_ops_for(
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+) -> Option<Vec<bussard_product::application::LoadOp>> {
+    let mask = app.mask_version.as_deref()?.trim();
+    product_data
+        .master
+        .as_ref()
+        .and_then(|m| m.masks.get(mask))
+        .and_then(|procs| {
+            procs
+                .iter()
+                .find(|p| p.sub_type.as_deref() == Some("par") && !p.ops.is_empty())
+        })
+        .map(|p| p.ops.clone())
+        .or_else(|| bussard_product::MasterTemplate::builtin_par_for_mask(mask).map(|p| p.ops))
+}
+
 /// The complete-download procedure of `master` for `mask` that ETS runs for
 /// `app` (issue #942): the mask's own `ProcedureSubType="ap1"` when the
 /// application loads no Application Program 2 (no block for MergeId 3 or 5,
@@ -115,6 +139,40 @@ pub fn plan_for_readback(
         &object_flags,
         memo,
     )
+}
+
+/// [`plan_for_readback`] for a parameter write (`apply`, `restore
+/// --parameters`): with the mask's parameter-only procedure added
+/// ([`crate::add_par_procedure`], issue #1052), so the write, its backup and
+/// its read-back run what that procedure writes.
+///
+/// # Errors
+///
+/// As [`plan_for_readback`].
+pub fn plan_for_parameters(
+    product_data: &ProductData,
+    app: &ApplicationProgram,
+    model: Option<&bussard_model::Model>,
+    target: IndividualAddress,
+    device_mask: u16,
+    memo: &DynamicMemo<'_, ApplicationProgram>,
+) -> Result<FlashPlan, crate::PlanError> {
+    let mut plan = plan_for_readback(product_data, app, model, target, device_mask, memo)?;
+    let (overrides, bases) = model_parameters(model, target);
+    let table_images = build_table_images(model, target, app, &overrides, memo);
+    let object_flags = linked_object_flags(model, target);
+    crate::add_par_procedure(
+        &mut plan,
+        app,
+        &target.to_string(),
+        &overrides,
+        &bases,
+        par_template_ops_for(product_data, app).as_deref(),
+        &table_images,
+        &object_flags,
+        memo,
+    );
+    Ok(plan)
 }
 
 /// Collects the target device's parameter overrides from the model, re-keyed
