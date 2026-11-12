@@ -1499,6 +1499,163 @@ class TestCaptureVariants(unittest.TestCase):
             capture.model_template("syn-s7-0705", "reload", Path(tmp))
             self.assertFalse((Path(tmp) / "model").exists())
 
+    def test_model_template_quotes_a_ref_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-module-repeat", "params", Path(tmp))
+            device = (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text()
+            self.assertIn('"portion-size@MD-1_M-1_MI-2_P-1_R-1" = 1000', device)
+            self.assertIn("number-of-feeders = 2", device)
+
+    def test_variant_options_of_the_1054_variants(self):
+        self.assertEqual(capture.variant_options("syn-secure", "apply"),
+                         "run=apply base=captures/synthetic/syn-secure/apply/base.pcapng "
+                         "dir=captures/synthetic/syn-secure/apply/model lsm=property")
+        self.assertEqual(capture.variant_options("syn-module-choose", "params"),
+                         "dir=captures/synthetic/syn-module-choose/params/model")
+        self.assertEqual(capture.variant_options("syn-param-calculation", "calc-overflow"),
+                         "dir=captures/synthetic/syn-param-calculation/calc-overflow/model")
+        # A System 7 parameter set into a fresh device keeps state=fresh.
+        row = capture.oracle_row("syn-s7-0705", "A", variant="params",
+                                 extra=capture.variant_options("syn-s7-0705", "params"))
+        self.assertTrue(row.endswith("|dir=captures/synthetic/syn-s7-0705/params/model state=fresh"), row)
+        # The secure partial plans with its own model and decodes with its keyring.
+        row = capture.oracle_row("syn-secure", "A", variant="partial",
+                                 extra=capture.variant_options("syn-secure", "partial"))
+        self.assertIn("keyring=captures/synthetic/syn-secure/partial/project.knxkeys", row)
+        self.assertEqual(row.count("dir="), 1)
+
+    def test_apply_steps_link_then_partial(self):
+        steps = capture.variant_steps("syn-minimal", "apply")
+        self.assertEqual([(s["name"], s["mode"], s["links"]) for s in steps],
+                         [("base", "application", [(0, "1/0/1"), (1, "1/0/3")]),
+                          ("capture", "partial", [(0, "1/0/2")])])
+        with tempfile.TemporaryDirectory() as tmp:
+            capture.model_template("syn-minimal", "apply", Path(tmp))
+            device = (Path(tmp) / "model" / "devices" / "1.1.1.toml").read_text()
+            # The model holds the links after the change: both steps'.
+            self.assertIn('0.listen = ["1/0/1", "1/0/2"]', device)
+            self.assertIn('1.send = "1/0/3"', device)
+
+    def test_every_parameter_variant_has_its_changes(self):
+        for variant in ("partial", "calc-input", "calc-overflow", "params"):
+            for product in capture.VARIANTS[variant]["products"]:
+                changes = capture.param_changes(product, variant)
+                self.assertTrue(changes, f"{product} {variant}: no change in changes.toml")
+                steps = capture.variant_steps(product, variant)
+                self.assertEqual(steps[-1]["params"], changes)
+
+    def test_changes_name_the_products_labels_and_pages(self):
+        # Offline: each change's label is a parameter's text and its page a
+        # block's text (a module page with its text argument filled in).
+        import tomllib
+
+        table = tomllib.loads(capture.CHANGES.read_text())
+        for product, variants in table.items():
+            spec = capture.generate_spec(product)
+            labels = {p["text"] for p in spec["parameter"]}
+            pages = {b["text"] for b in spec["dynamic"]["block"]}
+            for md in spec.get("module_def", []):
+                labels |= {p["text"] for p in md["parameter"]}
+                pages |= {b["text"].split(" {{")[0] for b in md["block"]}
+            for choose in spec["dynamic"].get("choose", []):
+                for when in choose["when"]:
+                    pages |= {b["text"] for b in when.get("block", [])}
+                    pages |= {f"Perch {m['args']['ch']}" for m in when.get("module", []) if "ch" in m["args"]}
+            for variant, changes in variants.items():
+                for ch in changes:
+                    self.assertIn(ch["label"], labels, f"{product} {variant}")
+                    self.assertIn(ch["page"], pages, f"{product} {variant}")
+
+    def test_param_changes_refuse_an_incomplete_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "changes.toml"
+            bad.write_text('[syn-minimal]\npartial = [{ page = "General", label = "Delay (s)", kind = "number", '
+                           'value = "5", expect = "maybe" }]\n')
+            with mock.patch.object(capture, "CHANGES", bad), self.assertRaises(SystemExit):
+                capture.param_changes("syn-minimal", "partial")
+
+    def test_find_page_by_name_and_occurrence(self):
+        pages = [{"crumb": "General", "page": "General"}, {"crumb": "Feeder", "page": "Feeder"},
+                 {"crumb": "Feeder", "page": "Feeder"}, {"crumb": "Perch B", "page": "Perch B"}]
+        self.assertEqual(capture.find_page(pages, {"page": "Feeder", "page_n": 1}), pages[2])
+        self.assertIsNone(capture.find_page(pages, {"page": "Feeder", "page_n": 2}))
+        self.assertEqual(capture.find_page(pages, {"page": "perch b"}), pages[3])
+
+    @staticmethod
+    def fake_flow(pages_seq, set_answers, read_answers):
+        """A driver whose `param_pages` answers come from `pages_seq` in turn,
+        `set_param` and `read_param` by label; records every call."""
+        calls = []
+
+        def flow(name, **body):
+            calls.append((name, body))
+            if name == "param_pages":
+                return {"pages": pages_seq.pop(0) if len(pages_seq) > 1 else pages_seq[0]}
+            if name == "set_param":
+                return set_answers[body["label"]]
+            if name == "read_param":
+                return read_answers[body["label"]]
+            raise AssertionError(name)
+
+        return flow, calls
+
+    def test_set_params_lists_pages_again_and_reads_back(self):
+        general = {"crumb": "General", "page": "General"}
+        perch_b = {"crumb": "Perch B", "page": "Perch B"}
+        flow, calls = self.fake_flow(
+            [[general], [general, perch_b]],
+            {"Roost layout": {"set": True, "value": "two perches"},
+             "Perch height": {"set": True, "value": "1000"}},
+            {"Roost layout": {"shown": True, "row": {"value": "two perches"}},
+             "Perch height": {"shown": True, "row": {"value": "1000"}}})
+        done = capture.set_params(flow, "1.1.1", capture.param_changes("syn-module-choose", "params"))
+        self.assertEqual([d["result"] for d in done], ["set", "set"])
+        self.assertEqual([c[0] for c in calls],
+                         ["param_pages", "set_param", "param_pages", "set_param", "read_param", "read_param"])
+        # A choice goes by its text, a field with its kind.
+        self.assertNotIn("kind", calls[1][1])
+        self.assertEqual(calls[3][1]["kind"], "number")
+        self.assertEqual(calls[3][1]["page"], perch_b)
+        self.assertIsNone(capture.params_problem(done))
+
+    def test_params_problem_accepts_the_expected_rewrite_and_hide(self):
+        general = {"crumb": "General", "page": "General"}
+        flow, _ = self.fake_flow(
+            [[general]],
+            {"Chore interval": {"set": True, "value": "1000"}, "Nap length": {"set": True, "value": "7"},
+             "Operating mode": {"set": True, "value": "automatic"}},
+            {"Chore interval": {"shown": True, "row": {"value": "300"}},
+             "Nap length": {"shown": False, "why": "no row 'Nap length' on the page"},
+             "Operating mode": {"shown": True, "row": {"value": "automatic"}}})
+        done = capture.set_params(flow, "1.1.1", capture.param_changes("syn-assign-rewrite", "params"))
+        self.assertEqual([d["result"] for d in done], ["lost", "lost", "set"])
+        self.assertEqual(done[0]["shown"], "300")
+        self.assertIsNone(capture.params_problem(done))
+        # The same loss on a change that should stay shown stops the run.
+        done[2].update({"result": "lost", "why": "ETS shows 'on'"})
+        self.assertIn("lost after the last change", capture.params_problem(done))
+
+    def test_params_problem_refusal_is_the_answer(self):
+        general = {"crumb": "General", "page": "General"}
+        flow, _ = self.fake_flow([[general]], {"Delay (s)": {"set": False, "unreachable": "value refused"}}, {})
+        done = capture.set_params(flow, "1.1.1", capture.param_changes("syn-param-calculation", "calc-overflow"))
+        self.assertEqual(done[0]["result"], "unreachable")
+        self.assertIn("nothing downloaded", capture.params_problem(done))
+        flow, _ = self.fake_flow([[general]], {"Delay (s)": {"set": False, "unreachable": "no row"}}, {})
+        done = capture.set_params(flow, "1.1.1", capture.param_changes("syn-minimal", "partial"))
+        self.assertIn("did not set", capture.params_problem(done))
+
+    def test_secure_variant_sim_starts_activated_from_the_keyring(self):
+        app = "M-00FA_A-2900-10-0000"
+        yaml = capture.sim_yaml("syn-secure", app, variant="reload", base=True)
+        self.assertIn("    status: activated\n", yaml)
+        self.assertIn(f'keyring: {{ file: project.knxkeys, password: "{capture.SYNTHETIC_KEYRING_PASSWORD}" }}',
+                      yaml)
+        self.assertIn("replay:\n- base.pcapng\n", yaml)
+        self.assertNotIn("tool_key", yaml)
+        # A variant without earlier downloads starts in factory state.
+        self.assertIn("    status: factory\n", capture.sim_yaml("syn-secure", app, variant="links"))
+
 
 class TestOracleDeviceState(unittest.TestCase):
     """One function names the device state of the sweep's rows and of the

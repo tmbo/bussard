@@ -1,0 +1,121 @@
+# A synthetic product of the catalogue (#1054), a property-only program
+# without a `par` allocation. Rendered by ../generate.py into xml/; see
+# ../README.md for the schema.
+
+# No code segment: every parameter lives in an interface-object property.
+segment = []
+
+[doc]
+purpose = """
+The Hager E802 shape (M-0009_A-E802-13-7620, #1052) on syn-minimal's
+parameters: the operating mode is placed in object 4 PID 201 and the delay in
+object 4 PID 202 (`<Property>` instead of `<Memory>`), the application
+declares no code segment, MergeId 2 is empty (no LdCtrlRelSegment, so no
+`par` allocation) and MergeId 4 holds E802's two Master Resets
+(AppliesTo="full,grp" EraseCode 6, AppliesTo="full,par" EraseCode 5: the
+erase-code-5 restart of E802's partial download #1052 asks about) and writes
+the two properties by LdCtrlWriteProp AppliesTo="full,par" without
+InlineData. Without the resets every op of the application would be a
+property op, and bussard would take the program for a property-only device
+such as mask 0021 (no tables); with them it takes the E802 path. bussard
+plans the full download and refuses the parameter-only one ("states no `par`
+allocation"); ETS sends a partial download of E802 anyway (#1052). The
+`partial` variant captures what ETS sends for this shape."""
+construct = "property-only program, no `par` allocation"
+issues = [1052, 944, 1054]
+
+[product]
+text = "Nap timer"
+order_number = "NEST-NAP"
+hardware_name = "NEST-NAP"
+hardware_serial = "00FA002700B0"
+bus_current = 10
+
+[application]
+number = 0x27B0
+version = 0x10
+name = "Nap timer"
+mask = "07B0"
+load_procedure_style = "MergedProcedure"
+address_table_max_entries = 32
+association_table_max_entries = 32
+translations = { "de-DE" = "Nickerchenuhr" }
+
+[application.options]
+Comparable = true
+Reconstructable = true
+
+[[parameter_type]]
+name = "Mode"
+kind = "enum"
+size_bits = 8
+values = [
+    { value = 0, text = "off" },
+    { value = 1, text = "on" },
+    { value = 2, text = "automatic" },
+]
+
+[[parameter_type]]
+name = "Delay"
+kind = "number"
+size_bits = 16
+signed = false
+min = 0
+max = 65535
+
+# The construct, part 1: both parameters in properties of object 4.
+[[parameter]]
+name = "mode"
+type = "Mode"
+text = "Operating mode"
+default = 1
+property = { object_index = 4, property_id = 201, offset = 0, bit_offset = 0 }
+
+[[parameter]]
+name = "delay"
+type = "Delay"
+text = "Delay (s)"
+default = 300
+property = { object_index = 4, property_id = 202, offset = 0, bit_offset = 0 }
+
+[[com_object]]
+number = 0
+name = "switch"
+text = "Switch"
+function_text = "On/Off"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "W"]
+priority = "Low"
+
+[[com_object]]
+number = 1
+name = "status"
+text = "Status"
+function_text = "On/Off status"
+size = "1 Bit"
+dpt = "DPST-1-1"
+flags = ["C", "R", "T"]
+priority = "Low"
+
+[[dynamic.block]]
+name = "general"
+text = "General"
+parameters = ["mode", "delay"]
+com_objects = [0, 1]
+
+# The construct, part 2: MergeId 2 allocates nothing (E802 has an empty
+# `<LoadProcedure MergeId="2" />`), MergeId 4 resets as E802 does and writes
+# the two properties in the full and the parameter download.
+[[load_procedure]]
+merge_id = 2
+ops = []
+
+[[load_procedure]]
+merge_id = 4
+ops = [
+    { op = "LdCtrlMasterReset", applies_to = "full,grp", erase_code = 6, channel = 0 },
+    { op = "LdCtrlMasterReset", applies_to = "full,par", erase_code = 5, channel = 0 },
+    { op = "LdCtrlWriteProp", applies_to = "full,par", object = 4, prop_id = 201, start_element = 1, count = 1, verify = false },
+    { op = "LdCtrlWriteProp", applies_to = "full,par", object = 4, prop_id = 202, start_element = 1, count = 1, verify = false },
+]

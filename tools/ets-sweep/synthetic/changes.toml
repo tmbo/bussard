@@ -1,0 +1,123 @@
+# The parameter changes the run variants of capture.py make in ETS's
+# parameter editor (#604 "Run variants", #1054), per product and variant, in
+# the order the driver sets them. Each change:
+#
+#   page    the page as ETS's tree names it ("General", "Perch B")
+#   page_n  which page of that name, from 0 (the three "Feeder" pages of a
+#           Repeat); default 0
+#   label   the row's label as ETS shows it
+#   n       which row of that label on the page, from 0; default 0
+#   kind    the row's control as the driver reads it: number, text,
+#           dropdown, radio, checkbox
+#   value   the value as ETS shows it
+#   key     the device-file key bussard plans with (`slug` or
+#           `"slug@<ref>"` for one ref, e.g. a module instance's), and
+#   model   its value there; a change without `key` goes into no model
+#   expect  what the read-back after the last change shows: `shown` (the
+#           default: the value set; anything else fails the run), `rewritten`
+#           (a later change rewrites it, #1049: recorded, not a failure),
+#           `hidden` (a later change hides it, #1049: recorded)
+#   refusal_ok  true when the editor may refuse the value (#718): the run
+#           then stops after recording what ETS did, and that is its answer
+#
+# A change here reaches the capture's model/ (capture.py model_template) and
+# params.json; edit it before the capture, never after.
+
+[syn-minimal]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+
+[syn-param-calculation]
+calc-input = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+# #718: 40000 is in the input's range; the outputs 80001 and 40007 are not
+# both: `Twice the delay plus one` overflows its 16 bits.
+calc-overflow = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "40000", key = "delay-s", model = 40000, refusal_ok = true },
+]
+
+# Parameter-only downloads of property-only programs (#944, #1052, #1038) and
+# of System 7 and Data Secure.
+[syn-property-param]
+partial = [
+    { page = "General", label = "Territory mark", kind = "number", value = "7", key = "territory-mark", model = 7 },
+]
+
+[syn-property-nopar]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+
+[syn-trailing-writeprop]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+
+[syn-s7-0705]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+params = [
+    { page = "General", label = "Operating mode", kind = "dropdown", value = "automatic", key = "operating-mode", model = "automatic" },
+    { page = "General", label = "Delay (s)", kind = "number", value = "42", key = "delay-s", model = 42 },
+]
+
+[syn-secure]
+partial = [
+    { page = "General", label = "Delay (s)", kind = "number", value = "500", key = "delay-s", model = 500 },
+]
+
+# `params`: the Dynamic evaluator off its defaults, then a full download.
+[syn-choose-per-ref]
+# Mode off takes the choose branch that shows the second ref's page.
+params = [
+    { page = "General", label = "Operating mode", kind = "dropdown", value = "off", key = "operating-mode@P-1_R-1", model = "off" },
+    { page = "General", label = "Delay (s)", kind = "number", value = "42", key = "delay-s", model = 42 },
+]
+
+[syn-choose-partial-segment]
+# The other branch of the load-procedure choose.
+params = [
+    { page = "General", label = "Keep the warming log on download", kind = "dropdown", value = "overwrite", key = "keep-the-warming-log-on-download", model = "overwrite" },
+    { page = "General", label = "Delay (s)", kind = "number", value = "42", key = "delay-s", model = 42 },
+]
+
+[syn-module-repeat]
+# Two instances instead of three, the second one changed.
+params = [
+    { page = "General", label = "Number of feeders", kind = "number", value = "2", key = "number-of-feeders", model = 2 },
+    { page = "Feeder", page_n = 1, label = "Portion size", kind = "number", value = "1000", key = "portion-size@MD-1_M-1_MI-2_P-1_R-1", model = 1000 },
+]
+
+[syn-union-bitfields]
+params = [
+    { page = "General", label = "Feather count", kind = "number", value = "1000", key = "feather-count", model = 1000 },
+    { page = "General", label = "Fluffed", kind = "dropdown", value = "yes", key = "fluffed", model = "yes" },
+    { page = "General", label = "Plume level", kind = "number", value = "3", key = "plume-level", model = 3 },
+]
+
+[syn-com-objects]
+# No parameter of this product hides an object; the change moves the
+# Dynamic evaluator off its defaults with 34 objects in the table.
+params = [
+    { page = "General", label = "Operating mode", kind = "dropdown", value = "automatic", key = "operating-mode", model = "automatic" },
+    { page = "General", label = "Delay (s)", kind = "number", value = "42", key = "delay-s", model = 42 },
+]
+
+[syn-module-choose]
+# #1050: the second branch shows "Perch B", which is then changed.
+params = [
+    { page = "General", label = "Roost layout", kind = "dropdown", value = "two perches", key = "roost-layout", model = "two perches" },
+    { page = "Perch B", label = "Perch height", kind = "number", value = "1000", key = "perch-height@MD-1_M-3_MI-1_P-1_R-1", model = 1000 },
+]
+
+[syn-assign-rewrite]
+# #1049: the mode switch last, so the Assign rewrites the first change and
+# the choose hides the second.
+params = [
+    { page = "General", label = "Chore interval", kind = "number", value = "1000", key = "chore-interval", model = 1000, expect = "rewritten" },
+    { page = "General", label = "Nap length", kind = "number", value = "7", key = "nap-length", model = 7, expect = "hidden" },
+    { page = "General", label = "Operating mode", kind = "dropdown", value = "automatic", key = "operating-mode", model = "automatic" },
+]

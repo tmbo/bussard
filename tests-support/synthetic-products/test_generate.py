@@ -1022,5 +1022,78 @@ class SystemBOnIp(unittest.TestCase):
             generate.Product("test", s)
 
 
+class AppliesTo(unittest.TestCase):
+    """syn-trailing-writeprop (#1038) and syn-property-nopar (#1052): an
+    op's `applies_to`, rendered as its first attribute."""
+
+    def test_render_applies_to_first(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"] = [
+            {"op": "LdCtrlRelSegment", "applies_to": "full", "lsm": 4, "size": 256, "mode": 1, "fill": 0},
+            {"op": "LdCtrlRelSegment", "applies_to": "par", "lsm": 4, "size": 256, "mode": 0, "fill": 0}]
+        x = app_xml(s)
+        self.assertIn('<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="256" Mode="1" Fill="0" />', x)
+        self.assertIn('<LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="256" Mode="0" Fill="0" />', x)
+
+    def test_render_without_applies_to_unchanged(self) -> None:
+        self.assertNotIn("AppliesTo", app_xml(spec()))
+
+    def test_applies_to_unknown_kind_refused(self) -> None:
+        s = spec()
+        s["load_procedure"][0]["ops"][0]["applies_to"] = "full,partial"
+        with self.assertRaisesRegex(generate.SpecError, "applies_to is a comma-separated list"):
+            generate.Product("test", s)
+
+    def test_applies_to_in_a_product_procedure_not_yet(self) -> None:
+        s = product_spec("syn-s7-0701")
+        s["load_procedure"][0]["ops"][0]["applies_to"] = "full"
+        with self.assertRaisesRegex(generate.SpecError, "no product uses it yet"):
+            generate.Product("test", s)
+
+    def test_property_only_without_segment_renders_empty_code(self) -> None:
+        x = app_xml(product_spec("syn-property-nopar"))
+        self.assertNotIn("<Code>", x)
+        self.assertNotIn("LdCtrlRelSegment", x)
+        self.assertIn('<LoadProcedure MergeId="2" />', x)
+
+
+class ModuleInChoose(unittest.TestCase):
+    """syn-module-choose (#1050): `<Module>`s in a Dynamic choose's `<when>`,
+    literal `<TextArg>` and `<NumericArg Value>` arguments."""
+
+    def test_render_module_instances_in_when(self) -> None:
+        x = app_xml(product_spec("syn-module-choose"))
+        a = "M-00FA_A-27B2-10-0000"
+        self.assertIn(f'<Argument Id="{a}_MD-1_A-1" Name="ch" Type="Text" />', x)
+        self.assertIn(f'<when test="2">\n                  <Module Id="{a}_MD-1_M-2" Name="Perch A" '
+                      f'RefId="{a}_MD-1">', x)
+        self.assertIn(f'<TextArg RefId="{a}_MD-1_A-1" Id="{a}_MD-1_M-3_A-1" Value="B" />', x)
+        self.assertIn(f'<NumericArg RefId="{a}_MD-1_A-2" Value="20" />', x)
+
+    def test_module_argument_wrong_kind_refused(self) -> None:
+        s = product_spec("syn-module-choose")
+        s["dynamic"]["choose"][0]["when"][0]["module"][0]["args"]["ch"] = 1
+        with self.assertRaisesRegex(generate.SpecError, "takes a string"):
+            generate.Product("test", s)
+
+    def test_module_instance_outside_segment_refused(self) -> None:
+        s = product_spec("syn-module-choose")
+        s["dynamic"]["choose"][0]["when"][0]["module"][0]["args"]["param_base"] = 255
+        with self.assertRaisesRegex(generate.SpecError, "does not fit its segment"):
+            generate.Product("test", s)
+
+    def test_when_without_block_or_module_refused(self) -> None:
+        s = product_spec("syn-module-choose")
+        del s["dynamic"]["choose"][0]["when"][0]["module"]
+        with self.assertRaisesRegex(generate.SpecError, "needs a `block` or a `module`"):
+            generate.Product("test", s)
+
+    def test_text_argument_with_allocates_refused(self) -> None:
+        s = product_spec("syn-module-choose")
+        s["module_def"][0]["arguments"][0]["allocates"] = 1
+        with self.assertRaisesRegex(generate.SpecError, "either `allocates` or `type"):
+            generate.Product("test", s)
+
+
 if __name__ == "__main__":
     unittest.main()
