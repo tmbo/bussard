@@ -13,7 +13,8 @@ use bussard_service::transport::ConnectionConfig;
 /// gateway without `--allow-unsupported`. `given` is the grant an outer
 /// command (`replace`, `commission`) already made: it is reused for the same
 /// verdict, so the operator is asked and told once. A forced write is said
-/// on stderr; a loopback gateway passes silently (`plan`, `describe` and
+/// on stderr, as is a `likely` device, which is not confirmed on a real
+/// device (#1097); a loopback gateway passes silently (`plan`, `describe` and
 /// `device` show the verdict).
 pub(crate) fn authorize(
     config: &ConnectionConfig,
@@ -28,9 +29,7 @@ pub(crate) fn authorize(
             .map_err(anyhow::Error::msg);
     }
     let grant = support::authorize(config, target, device, application, allow_unsupported)?;
-    if grant.forced()
-        && let Some(line) = grant.plan_line()
-    {
+    if let Some(line) = grant.notice() {
         eprintln!("{line}");
     }
     Ok(grant)

@@ -17,9 +17,11 @@ would change, then refuse at the prompt.
 
 `flash`, `apply`, `restore`, `replace` and `commission` with `--flash` or
 `--apply` also refuse, on a real gateway, a device whose application program
-is not on bussard's [list of supported devices](device-support.md#supported-devices),
-before anything is written. `--allow-unsupported` writes it anyway; back the device up first.
-`plan`, `describe`, `device`, `status` and `audit` print the verdict, so you
+bussard's [device-support list](device-support.md#supported-devices) does not
+rate `proven` or `likely`, before anything is written; a `likely` device is
+written with a line saying it is not confirmed on a real device.
+`--allow-unsupported` writes it anyway; back the device up first. `plan`,
+`describe`, `device`, `status` and `audit` print the verdict, so you
 know before you ask for a write.
 
 ## `write` sends one group value

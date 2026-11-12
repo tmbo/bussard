@@ -275,9 +275,12 @@ pub fn render_text(report: &AuditReport, style: Style) -> String {
     line(heading("Supported devices"));
     let support = &report.support;
     line(format!(
-        "  {} of {} on bussard's list of supported devices",
+        "  {} of {} written without the override: {} proven, {} likely (not confirmed on a \
+         real device)",
         support.supported,
-        count(support.devices, "device", "devices")
+        count(support.devices, "device", "devices"),
+        support.proven,
+        support.likely
     ));
     for row in &support.unsupported {
         line(format!("    {}", style.warn(&row.line())));

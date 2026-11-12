@@ -53,8 +53,8 @@ pub(super) struct LinePlan {
 
 /// The outcomes of a line write after the human said no to bussard's
 /// question (or the client did not show it, `shown` false) about the devices
-/// not on the supported list (issue #1093): each such device's refusal says
-/// so, instead of pointing to an override that does not count on a client
+/// the gate refuses (issue #1093): each such device's refusal keeps the
+/// gate's verdict (not listed, or a known problem with its cause) and says so, instead of pointing to an override that does not count on a client
 /// that asks the human.
 fn declined_refusals(
     visited: Vec<(LineOutcome, Vec<String>)>,
@@ -68,10 +68,16 @@ fn declined_refusals(
     visited
         .into_iter()
         .map(|(mut outcome, lines)| {
-            if matches!(outcome.status, DeviceStatus::Refused(_)) {
-                outcome.status = DeviceStatus::Refused(format!(
-                    "not on bussard's list of supported devices, and {why}; nothing was written"
-                ));
+            if let DeviceStatus::Refused(reason) = &outcome.status {
+                // The gate's sentence names the verdict: not on the list, or
+                // a listed known problem with its cause (issue #1097).
+                let sentence = reason
+                    .split("; nothing was written")
+                    .next()
+                    .unwrap_or(reason)
+                    .to_string();
+                outcome.status =
+                    DeviceStatus::Refused(format!("{sentence}, and {why}; nothing was written"));
             }
             (outcome, lines)
         })
@@ -455,15 +461,23 @@ mod tests {
             outcome(
                 "1.1.4",
                 DeviceStatus::Refused(
-                    "x; nothing was written. Pass the override to write it".into(),
+                    "1.1.4 runs M-0004_A-B00C-01, which has a known problem (differs from ETS \
+                     in the sweep, #1060: capture unusable); nothing was written. Pass the \
+                     override to write it"
+                        .into(),
                 ),
             )?,
             outcome("1.1.5", DeviceStatus::Applied(2))?,
         ];
         let out = super::declined_refusals(visited, true);
         let detail = out[0].0.status.detail().unwrap_or_default();
-        assert!(detail.contains("the human declined"), "{detail}");
-        assert!(!detail.contains("override"), "{detail}");
+        // The gate's verdict, with the known problem's cause, is kept.
+        assert_eq!(
+            detail,
+            "1.1.4 runs M-0004_A-B00C-01, which has a known problem (differs from ETS in the \
+             sweep, #1060: capture unusable), and the human declined bussard's question about \
+             writing it; nothing was written"
+        );
         assert!(matches!(out[1].0.status, DeviceStatus::Applied(2)));
         let out = super::declined_refusals(
             vec![outcome("1.1.4", DeviceStatus::Refused(String::new()))?],

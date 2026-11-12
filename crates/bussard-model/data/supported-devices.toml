@@ -1,353 +1,174 @@
-# The application programs bussard writes without --allow-unsupported
-# (issue #1089). Embedded in the binary at build time.
+# The hand-kept half of bussard's device-support list (issues #1089, #1097).
+# Embedded in the binary at build time, next to the generated half,
+# `supported-generated.toml` (tools/supported-devices/generate.py). The
+# generator never writes this file, and it skips every application listed
+# here.
 #
 # An entry names an application program by the id the lock pins and the device
 # reports (`application_id`: manufacturer, application number and version, ten
-# hex digits). `evidence` says why it is on the list:
+# hex digits) and puts it in one of three categories:
 #
-#   live       flashed by bussard on a real device and read back
-#   capture    offline oracle identical against an ETS capture at a
-#              meaningful coverage (scripts/campaign/95-offline-oracle.sh)
-#   synthetic  a fabricated product of the synthetic catalogue (#596),
-#              identical against its committed ETS capture
+#   proven       bussard wrote a real device with this application and the
+#                read-back matched. Hand-kept only.
+#   likely       the evidence says the download matches ETS, but bussard has
+#                not written a real device with this application. Mostly
+#                generated from the ETS sweep; here only for house devices
+#                whose offline oracle is identical against a house ETS capture.
+#   unsupported  a known problem, naming its issue.
 #
-# `note` cites the evidence: an issue, or committed material. Add an entry
-# only with evidence you can cite. The table in
-# docs/explanation/device-support.md is generated from this file
-# (crates/bussard-cli/tests/it/docs_consistency.rs checks it).
+# `proven` and `likely` pass the write gate; a plan for a `likely` device says
+# it is not confirmed on a real device. Every other application is refused on a
+# real gateway without --allow-unsupported.
+#
+# Family rule: a `likely` entry needs a `proven` entry with the same `mask`
+# (the family key; see docs/explanation/device-support.md). The parser and the
+# generator both refuse a list that breaks it.
+#
+# `evidence` says what put the entry in its category:
+#
+#   live           flashed by bussard on a real device, read back (proven)
+#   house-capture  offline oracle identical against an ETS capture of a
+#                  house device (scripts/campaign/95-offline-oracle.sh)
+#   sweep          the ETS sweep (tools/ets-sweep/evidence/manifest.json)
+#   issue          an open issue names the problem
+#
+# A hand entry pairs proven with live, likely with house-capture, and
+# unsupported with issue (plus `issue` and `reason`; an entry that passes the
+# gate carries neither). `source` is required: an issue number (#123) or a
+# dated owner statement (2026-11-12).
+#
+# The generator checks every entry against the sweep: `mask` must be the
+# sweep's mask for the id, or, for an id the sweep never saw, `mask_source`
+# cites where it comes from; a proven or likely entry with a differing sweep
+# row needs `sweep_differs` citing why it still stands. The table in docs/explanation/device-support.md is rendered
+# from both halves (crates/bussard-cli/tests/it/docs_consistency.rs checks it).
 
-# House devices, offline oracle identical in every region against the ETS
-# captures of the campaign installation (#126, table "Resolved").
+# Proven: flashed live in the physical-device campaign (#89) and read back.
+# "Read back" there is the device's memory checksum (MCB) compared against the
+# image of every object the load procedure verifies, plus the table read-back
+# named in each source.
 
 [[device]]
 application_id = "0002A0ED10"
 name = "ABB BE/S16.230.3.2 binary input"
-evidence = "capture"
-note = "#126: 1.1.39 identical incl. the 75,662-octet PEI program on object 5; application ref in crates/bussard-download/tests/fixtures/ets-golden/README.md"
-
-[[device]]
-application_id = "000420D726"
-name = "Jung 230241SR switch actuator"
-evidence = "capture"
-note = "#126: 1.1.4 identical (19155 / 3022 / 318 / 144 octets), application A-20D7-26"
-
-[[device]]
-application_id = "000420DE22"
-name = "Jung 230021SU switch actuator"
-evidence = "capture"
-note = "#126: 1.1.47 and 1.1.48 identical, application A-20DE-22"
-
-[[device]]
-application_id = "000420E021"
-name = "Jung 360061SR heating actuator v2.1"
-evidence = "capture"
-note = "#126: 1.1.2 identical (7561 / 3116 / 318 / 140 octets) against M-0004_A-20E0-21-5B9E-O000A"
-
-[[device]]
-application_id = "0004303023"
-name = "Jung 390041SR LED universal dimmer"
-evidence = "capture"
-note = "#126: 1.1.8 identical (10433 / 942 / 82 / 42 octets); application ref in crates/bussard-download/tests/fixtures/ets-golden/README.md"
-
-[[device]]
-application_id = "0004706611"
-name = "Jung 2116REG"
-evidence = "capture"
-note = "#126: 1.1.1 identical (883 + 495 + 1 octets); 2116REG runs M-0004_A-7066-11 (crates/bussard-product/src/import/build.rs fallback_app_id test)"
+category = "proven"
+evidence = "live"
+mask = "07B0"
+source = "#145: 1.1.39 full flash 2026-09-23 21:19 on main bfd8ef2, MCB of objects 1 to 4 match, confirmed restart, inputs work (#89 progress log); image identical to ETS incl. the PEI program (#126)"
 
 [[device]]
 application_id = "0004A01113"
 name = "Jung 3361-1MWW presence detector"
-evidence = "capture"
-note = "#126: 1.1.31 and 1.1.32 identical, all seven segments; application ref in knx-sim/src/device/properties.rs"
+category = "proven"
+evidence = "live"
+mask = "0705"
+source = "#89: 1.1.32 flash 2026-09-23 verified, image identical to the ETS download in every region, reconstruct 3 links match; also 1.1.36 and 1.1.40; application in #126"
 
 [[device]]
 application_id = "0004D14221"
 name = "Jung 52921ST F50 push-button module"
-evidence = "capture"
-note = "#126: 1.1.18 identical (308 / 2668 / 30 / 16 octets); application ref in crates/bussard-download/tests/fixtures/ets-golden/README.md"
-
-[[device]]
-application_id = "0048140C14"
-name = "Theben Meteodata 140 S"
-evidence = "capture"
-note = "#126: 1.1.202 identical where ETS read or wrote (compare-based download, #133); application ref in dev/system7-spec.md"
+category = "proven"
+evidence = "live"
+mask = "07B0"
+source = "#89: 1.1.18 flash with factory reset 2026-09-23 15:35 verified, tables identical to ETS, apply read-back equal to the project; application in #126"
 
 [[device]]
 application_id = "0112000310"
 name = "Helios KWL KNX connect"
-evidence = "capture"
-note = "#126: 1.1.45 identical; application ref in crates/bussard-download/tests/fixtures/ets-golden/README.md"
+category = "proven"
+evidence = "live"
+mask = "07B0"
+source = "#89: 1.1.45 flash with factory reset 2026-09-23 15:37 verified, all regions identical to the ETS capture; application M-0112_A-0003-10 in #452"
 
-# The synthetic catalogue (#596): every product whose committed ETS capture
-# the offline oracle reports identical (captures/synthetic/manifest.json).
-
-[[device]]
-application_id = "00FA270010"
-name = "bussard synthetic syn-minimal (NEST-LIGHT)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%, links 100.0%, no-ga 100.0%, partial 100.0%)"
+# Likely: house devices with an identical offline oracle against an ETS capture
+# (#126, table "Resolved") and no bussard flash recorded in an issue.
 
 [[device]]
-application_id = "00FA270410"
-name = "bussard synthetic syn-le-order (NEST-ALTI)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "000420D726"
+name = "Jung 230241SR switch actuator"
+category = "likely"
+evidence = "house-capture"
+mask = "07B0"
+source = "#126: 1.1.4 identical (19155 / 3022 / 318 / 144 octets), application A-20D7-26"
 
 [[device]]
-application_id = "00FA270510"
-name = "bussard synthetic syn-union-default-range (NEST-STRAY)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "000420DE22"
+name = "Jung 230021SU switch actuator"
+category = "likely"
+evidence = "house-capture"
+mask = "07B0"
+source = "#126: 1.1.47 and 1.1.48 identical, application A-20DE-22"
 
 [[device]]
-application_id = "00FA270610"
-name = "bussard synthetic syn-text-undeclared (NEST-SQUAWK)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "000420E021"
+name = "Jung 360061SR heating actuator v2.1"
+category = "likely"
+evidence = "house-capture"
+mask = "07B0"
+source = "#126: 1.1.2 identical (7561 / 3116 / 318 / 140 octets) against M-0004_A-20E0-21-5B9E-O000A"
 
 [[device]]
-application_id = "00FA270710"
-name = "bussard synthetic syn-relseg-fill (NEST-FILL)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "0004303023"
+name = "Jung 390041SR LED universal dimmer"
+category = "likely"
+evidence = "house-capture"
+mask = "07B0"
+source = "#126: 1.1.8 identical (10433 / 942 / 82 / 42 octets); application ref in crates/bussard-download/tests/fixtures/ets-golden/README.md"
 
 [[device]]
-application_id = "00FA270810"
-name = "bussard synthetic syn-choose-partial-segment (NEST-HALF)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "0004706611"
+name = "Jung 2116REG"
+category = "likely"
+evidence = "house-capture"
+mask = "0705"
+source = "#126: 1.1.1 identical (883 + 495 + 1 octets); the ETS sweep is identical too (M-0004_A-7066-11-BAC2-O000A)"
+
+# Not listed, waiting for the owner: Theben Meteodata 140 S (0048140C14, mask
+# 0701, 1.1.202). The ETS comparison is identical where ETS read or wrote
+# (#126), but no issue records a bussard flash whose read-back matched (#319
+# records one that did not), and mask 0701 has no proven device, so it can be
+# no better than unknown. A dated owner statement of the re-flash after #323
+# makes it `proven` and opens the 0701 family.
+
+# Known problems: open bugs that name an application the sweep finds identical
+# at its defaults. The generator would otherwise rate them likely.
 
 [[device]]
-application_id = "00FA270A10"
-name = "bussard synthetic syn-master-reset (NEST-RESET)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "0009E0EE10"
+name = "Hager STXF121 (TXF121)"
+category = "unsupported"
+evidence = "issue"
+mask = "07B0"
+issue = 959
+reason = "module load procedures merged as absolute operations"
+source = "#959: bussard refuses or writes the module's property writes unlike ETS"
 
 [[device]]
-application_id = "00FA270B10"
-name = "bussard synthetic syn-param-calculation (NEST-CALC)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (calc-input 100.0%, defaults 100.0%)"
+application_id = "0009E0F110"
+name = "Hager STXC51x (TXC513, TXC515)"
+category = "unsupported"
+evidence = "issue"
+mask = "07B0"
+issue = 959
+reason = "module load procedures merged as absolute operations"
+source = "#959 (with #951): bussard also writes object 0 PID 208, ETS does not"
 
 [[device]]
-application_id = "00FA270C10"
-name = "bussard synthetic syn-hidden-default (NEST-EGGHEAT)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "0009E0F210"
+name = "Hager STXD50x (TXD501, TXD503)"
+category = "unsupported"
+evidence = "issue"
+mask = "07B0"
+issue = 959
+reason = "module load procedures merged as absolute operations"
+source = "#959 (with #951): bussard also writes object 0 PID 208, ETS does not"
 
 [[device]]
-application_id = "00FA270E10"
-name = "bussard synthetic syn-choose-never-shown (NEST-GHOST)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271313"
-name = "bussard synthetic syn-module-repeat (NEST-TRIFEED)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271410"
-name = "bussard synthetic syn-legacy-patch-always (NEST-PATCH)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271510"
-name = "bussard synthetic syn-ip-address-param (NEST-HOMING)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271610"
-name = "bussard synthetic syn-user-memory (NEST-LARDER)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271710"
-name = "bussard synthetic syn-writerelmem-size (NEST-QUILL)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271810"
-name = "bussard synthetic syn-text-initialvalue (NEST-NAME)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271910"
-name = "bussard synthetic syn-choose-per-ref (NEST-TWIN)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271B10"
-name = "bussard synthetic syn-com-objects (NEST-CHIRP)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271C10"
-name = "bussard synthetic syn-dynamic-tests (NEST-WORM)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271D10"
-name = "bussard synthetic syn-union-bitfields (NEST-BITS)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271E10"
-name = "bussard synthetic syn-property-param (NEST-TERR)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA271F10"
-name = "bussard synthetic syn-assign (NEST-CHORE)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA272510"
-name = "bussard synthetic syn-product-07b0 (NEST-PLAN)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA272610"
-name = "bussard synthetic syn-map-error (NEST-FALSE)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA272810"
-name = "bussard synthetic syn-color-param (NEST-COLOUR)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA278A10"
-name = "bussard synthetic syn-master-reset-code4 (NEST-RESET4)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA279610"
-name = "bussard synthetic syn-user-memory-extmem (NEST-LARDERX)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA27A810"
-name = "bussard synthetic syn-color-param-hsv (NEST-COLHSV)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA27A910"
-name = "bussard synthetic syn-color-param-hsv2 (NEST-COLHSV2)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA280010"
-name = "bussard synthetic syn-s7-0705 (NEST-DOOR)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%, other-app 100.0%, reload 100.0%)"
-
-[[device]]
-application_id = "00FA280110"
-name = "bussard synthetic syn-s7-0701 (NEST-BKDOOR)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA280910"
-name = "bussard synthetic syn-s7-choose-split (NEST-SPLIT)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA280D10"
-name = "bussard synthetic syn-s7-hidden-default (NEST-EGGBAK)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA280F11"
-name = "bussard synthetic syn-s7-lsm5 (NEST-TWIG5)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA281010"
-name = "bussard synthetic syn-s7-pei80 (NEST-CLAW)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA281110"
-name = "bussard synthetic syn-s7-taskptr (NEST-HUNT)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA281A10"
-name = "bussard synthetic syn-s7-no-comobjects (NEST-SILENT)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA282010"
-name = "bussard synthetic syn-s7-lsm5-0705 (NEST-TWIG5G)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA282111"
-name = "bussard synthetic syn-s7-pid204 (NEST-PLUME)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA282710"
-name = "bussard synthetic syn-s7-delay (NEST-HATCH)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA288910"
-name = "bussard synthetic syn-s7-static-split (NEST-FORK)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA288D10"
-name = "bussard synthetic syn-s7-hidden-default-p11 (NEST-EGGOLD)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA288E10"
-name = "bussard synthetic syn-s7-hidden-default-ets4 (NEST-EGGV4)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA290010"
-name = "bussard synthetic syn-secure (NEST-GUARD)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
-
-[[device]]
-application_id = "00FA2A2210"
-name = "bussard synthetic syn-ip-enabled-tp (NEST-UPLINK)"
-evidence = "synthetic"
-note = "captures/synthetic/manifest.json: oracle identical (defaults 100.0%)"
+application_id = "0009E80213"
+name = "Hager STYMS646R (TYMS646R)"
+category = "unsupported"
+evidence = "issue"
+mask = "07B0"
+issue = 1073
+reason = "property writes to an interface object knx-sim lacks are dropped"
+source = "#1073: in the params row bussard writes 3994 property elements where ETS writes 4118"

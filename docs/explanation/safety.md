@@ -108,10 +108,14 @@ installation.
 
 ## Devices bussard has not checked
 
-bussard keeps a [list of supported devices](device-support.md#supported-devices):
-the application programs whose download it has compared with ETS. `flash`,
-`apply`, `restore`, `replace` and the download half of `commission` refuse a
-device that is not on it, on a real gateway, before anything is written:
+bussard keeps a [device-support list](device-support.md#supported-devices)
+that puts each application program in one of three categories. **proven**:
+bussard wrote a real device with it and the read-back matched. **likely**: its
+download matches ETS in the evidence (the ETS sweep, or a house capture), but
+it is not confirmed on a real device; a plan says so. **Unsupported or
+unknown**: a known problem, or not on the list. `flash`, `apply`, `restore`,
+`replace` and the download half of `commission` write proven and likely
+devices, and refuse any other on a real gateway before anything is written:
 
 ```console
 refusing to write: 1.1.7 runs M-0083_A-0120-10 (MDT AKS-0816.03), which is not
@@ -120,8 +124,9 @@ Reads work (plan, describe, backup). To write anyway, back the device up first
 and pass --allow-unsupported.
 ```
 
-Reads are never refused, and a loopback gateway is not either: the simulator
-is where a product is checked before it joins the list.
+A device with a known problem is refused the same way, and the message names
+the issue. Reads are never refused, and a loopback gateway is not either: the
+simulator is where a product is checked before it joins the list.
 
 | Interface | Write to an unsupported device |
 |---|---|
@@ -131,7 +136,8 @@ is where a product is checked before it joins the list.
 
 The override is the human's. The plan the assistant shows already says the
 device is not on the list, that a backup comes first, and that ETS is the
-safe way. A written result carries `support: forced`, and so does the
+safe way. For a `likely` device it says the device is not confirmed on a real
+device, and the write goes ahead without the override. A written result carries `support: forced`, and so does the
 history record of a forced write at the CLI.
 
 ## Protected group addresses

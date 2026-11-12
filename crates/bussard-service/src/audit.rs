@@ -61,19 +61,23 @@ pub struct AuditReport {
     /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
-    /// The supported-device verdict (issues #1089, #1093): the count, and
-    /// the devices not on the list.
+    /// The supported-device verdict (issues #1089, #1093, #1097): the counts
+    /// per category, and the devices a write refuses.
     pub support: SupportSection,
 }
 
-/// The `support` section: how many devices are on the list of supported
-/// devices, and which are not.
+/// The `support` section: how many devices a write passes without the
+/// override (`proven` and `likely`), and which it refuses.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SupportSection {
     /// The devices in the project.
     pub devices: usize,
-    /// How many of them are on the list.
+    /// How many of them pass the gate: `proven` plus `likely`.
     pub supported: usize,
+    /// How many are `proven`.
+    pub proven: usize,
+    /// How many are `likely` (not confirmed on a real device).
+    pub likely: usize,
     /// The ones that are not, by address, each with its verdict.
     pub unsupported: Vec<SupportRow>,
 }
@@ -201,8 +205,9 @@ impl crate::report::Report for AuditReport {
             devices - unsupported
         );
         out.push_str(&format!(
-            " {} of {} device(s) are on bussard's list of supported devices.",
-            self.support.supported, self.support.devices
+            " {} of {} device(s) are written without the override: {} proven, {} likely (not \
+             confirmed on a real device).",
+            self.support.supported, self.support.devices, self.support.proven, self.support.likely
         ));
         if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
             out.push_str(&format!(
@@ -283,6 +288,14 @@ impl AuditReport {
         let support = SupportSection {
             devices: rows.len(),
             supported: rows.iter().filter(|r| r.support.is_supported()).count(),
+            proven: rows
+                .iter()
+                .filter(|r| r.support.category == crate::support::Category::Proven)
+                .count(),
+            likely: rows
+                .iter()
+                .filter(|r| r.support.category == crate::support::Category::Likely)
+                .count(),
             unsupported: rows
                 .into_iter()
                 .filter(|r| !r.support.is_supported())

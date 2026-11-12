@@ -1,0 +1,86 @@
+# Known causes of the applications the ETS sweep reports `differs`, hand-kept
+# (issue #1097). tools/supported-devices/generate.py reads it and copies the
+# issue and cause into the generated list; regenerating never edits it.
+# Sources: #1057 ("Status 2026-11-11: every row mapped") and the issues it
+# names. Key: the application id (ten hex digits); `rows` the sweep keys.
+
+[cause]
+0002A08711 = { issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix", rows = ["M-0002_A-A087-11-2888"] }
+0004146D11 = { issue = 1062, cause = "Fill=255 segment with Data: ETS leaves the tail at the fill, bussard writes the Data", rows = ["M-0004_A-146D-11-C585-O00F4"] }
+0004705E11 = { issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix", rows = ["M-0004_A-705E-11-F650-O00F4"] }
+0004706811 = { issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix", rows = ["M-0004_A-7068-11-7476-O000A"] }
+0004A03011 = { issue = 1062, cause = "Fill=255 segment with Data: ETS leaves the tail at the fill, bussard writes the Data", rows = ["M-0004_A-A030-11-F428-O00F4"] }
+0004B00C01 = { issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix", rows = ["M-0004_A-B00C-01-439D"] }
+0004B01521 = { issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own", rows = ["M-0004_A-B015-21-F7AD-O007C"] }
+0004C00D12 = { issue = 1058, cause = "a vendor ETS plugin writes octets the product data does not hold", rows = ["M-0004_A-C00D-12-B283-O000A"] }
+0004C02012 = { issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own", rows = ["M-0004_A-C020-12-FF51-O000A"] }
+0008000475 = { issue = 959, cause = "module load procedures merged as absolute operations", rows = ["M-0008_A-0004-75-0A9A-O007C"] }
+0008A03012 = { issue = 1062, cause = "Fill=255 segment with Data: ETS leaves the tail at the fill, bussard writes the Data", rows = ["M-0008_A-A030-12-A4D7-O00F4"] }
+0008C02A21 = { issue = 959, cause = "module load procedures merged as absolute operations", rows = ["M-0008_A-C02A-21-B6D8-O007C"] }
+000920AA10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AA-10-E0C0"] }
+000920AB10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AB-10-D0D0"] }
+000920AC10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AC-10-7BEA"] }
+000920AD10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AD-10-49E7"] }
+000920AE10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AE-10-E386"] }
+000920AF10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20AF-10-6D4E"] }
+000920B010 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B0-10-60F0"] }
+000920B110 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B1-10-2BB0"] }
+000920B210 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B2-10-463B"] }
+000920B410 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B4-10-EB40"] }
+000920B511 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B5-11-99A1"] }
+000920B611 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B6-11-52E9"] }
+000920B811 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B8-11-2099"] }
+000920B910 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20B9-10-E763"] }
+000920BB10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20BB-10-0991"] }
+000920BC10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-20BC-10-CD68"] }
+0009501710 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-5017-10-C823"] }
+0009501810 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-5018-10-AA8A"] }
+0009501910 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-5019-10-8DAD"] }
+0009501A10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-501A-10-8E53"] }
+0009501B10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-501B-10-2095"] }
+0009C02013 = { issue = 1058, cause = "a vendor ETS plugin writes octets the product data does not hold", rows = ["M-0009_A-C020-13-D343-O000A"] }
+0009E0A210 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-E0A2-10-9FA7"] }
+0009E0CE10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-E0CE-10-2402"] }
+0009E0CF10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-E0CF-10-46B8"] }
+0009E80F10 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-E80F-10-DF9D"] }
+0009E82010 = { issue = 971, cause = "Hager: declared property values composed from parameters, pre-write reads, PID 53 description read", rows = ["M-0009_A-E820-10-CFA7"] }
+0048DA2221 = { issue = 1068, cause = "differs, no named cause yet", rows = ["M-0048_A-DA22-21-9D41-O00EF"] }
+0048E03220 = { issue = 1058, cause = "a vendor ETS plugin writes octets the product data does not hold", rows = ["M-0048_A-E032-20-2E0E-O0228"] }
+0071132111 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-0071_A-1321-11-6223"] }
+0071133116 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-0071_A-1331-16-E1BF"] }
+0071134114 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-0071_A-1341-14-A403"] }
+0071322111 = { issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data", rows = ["M-0071_A-3221-11-E63A"] }
+0071322311 = { issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data", rows = ["M-0071_A-3223-11-6D23"] }
+0071332114 = { issue = 1068, cause = "differs, no named cause yet", rows = ["M-0071_A-3321-14-3010"] }
+0071422120 = { issue = 1064, cause = "Zennio 0701: ETS writes other code-segment octets than the product's Data", rows = ["M-0071_A-4221-20-2CC1"] }
+0071556143 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-0071_A-5561-43-27E5"] }
+0076002215 = { issue = 1060, cause = "capture unusable: ETS loaded another application version, or the capture predates the #692 sim fix", rows = ["M-0076_A-0022-15-D6FE"] }
+007C000230 = { issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own", rows = ["M-007C_A-0002-30-DC22"] }
+007C000343 = { issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send", rows = ["M-007C_A-0003-43-4813"] }
+007C000620 = { issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send", rows = ["M-007C_A-0006-20-C776"] }
+007C000E20 = { issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own", rows = ["M-007C_A-000E-20-E64D"] }
+007C001020 = { issue = 1057, cause = "cause mapped in #1057 (local triage table), no issue of its own", rows = ["M-007C_A-0010-20-5E04"] }
+007C001320 = { issue = 1088, cause = "ise smart connect: object 4 memory write after the object 2 allocation that ETS does not send", rows = ["M-007C_A-0013-20-F6B9"] }
+0083025521 = { issue = 1068, cause = "differs, no named cause yet", rows = ["M-0083_A-0255-21-0ECA"] }
+00A6003531 = { issue = 1068, cause = "differs, no named cause yet", rows = ["M-00A6_A-0035-31-4053"] }
+00B6DA2211 = { issue = 1068, cause = "differs, no named cause yet", rows = ["M-00B6_A-DA22-11-489B-O00EF"] }
+00C8210420 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-2104-20-084E-O00C8"] }
+00C8210810 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-2108-10-8BDE-O00C8"] }
+00C8272060 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-2720-60-6B20-O00C8"] }
+00C8272160 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-2721-60-B9F8-O00C8"] }
+00C82A0110 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-2A01-10-2FC4-O00C8"] }
+00C8310810 = { issue = 1063, cause = "Theben 0705: ETS sets C on declared objects, bussard clears it", rows = ["M-00C8_A-3108-10-BCB5-O00C8"] }
+00C8800210 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-00C8_A-8002-10-904E-O00C5"] }
+00E1A00D10 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-00E1_A-A00D-10-12FB-O00C5"] }
+00EFAC1111 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC11-11-A782"] }
+00EFAC1212 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC12-12-C529"] }
+00EFAC1311 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC13-11-8E39"] }
+00EFAC2110 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC21-10-33DB"] }
+00EFAC2210 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC22-10-61BB"] }
+00EFAC3010 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AC30-10-ED4E"] }
+00EFACA210 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-ACA2-10-F570"] }
+00EFACA410 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-ACA4-10-440B"] }
+00EFACA510 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-ACA5-10-A4EC"] }
+00EFAD1110 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-AD11-10-199A"] }
+00EFCB0610 = { issue = 1061, cause = "data-less segment with Mode=0 Fill=0 written as 0xFF where ETS writes 00; fixed, re-sweep pending", rows = ["M-00EF_A-CB06-10-7CB9"] }
+011E365210 = { issue = 1057, cause = "identical on the re-run of 2026-11-11 (#1057); the committed sweep manifest predates the fix", rows = ["M-011E_A-3652-10-D3FC-O00C5"] }

@@ -1,6 +1,6 @@
 - A list of supported devices ships in the binary (#1089): the application
-  programs bussard has checked against ETS, each with its evidence
-  (`capture`, `synthetic`, `live`). `flash`, `apply` (also `--line`),
+  programs bussard has checked against ETS, each with its category and
+  evidence (#1097). `flash`, `apply` (also `--line`),
   `restore`, `replace` and `commission --flash/--apply` refuse a device that
   is not on it on a real gateway, before anything is written;
   `--allow-unsupported` writes it anyway and the history record says

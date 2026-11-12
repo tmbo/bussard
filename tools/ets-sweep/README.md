@@ -244,7 +244,10 @@ manufacturer, sweep outcome, the oracle, load-control and descriptor verdicts
 and the coverage. It holds identifiers and verdicts only, no product data, so
 the supported-device list can cite it. Its `generated` field dates the
 snapshot. To refresh it, copy the file after a `summary.py` run and commit it
-with the verdict changes (`results/changes.json`) named in the PR.
+with the verdict changes (`results/changes.json`) named in the PR. Then run
+`python3 tools/supported-devices/generate.py` and commit the device-support
+list it computes from the manifest (CI checks it is current); an application
+that newly differs needs its cause in `tools/supported-devices/causes.toml`.
 
 ## Partial-download rows (#469)
 

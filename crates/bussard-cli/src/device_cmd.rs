@@ -6,8 +6,8 @@
 //! product model gives, and its objects with what they send and listen on.
 //! `--toml` prints the paste-ready device-file snippet instead. Files only: the
 //! data comes from `bussard.lock` and `models/`. See
-//! [`bussard_model::device_view`]. `--supported` lists bussard's list of
-//! supported devices instead (issue #1089).
+//! [`bussard_model::device_view`]. `--supported` lists bussard's device-support
+//! list instead (issues #1089, #1097).
 
 use std::path::Path;
 use std::process::ExitCode;
@@ -32,10 +32,10 @@ pub(crate) struct DeviceArgs {
     /// what the file does not set yet.
     #[arg(long, conflicts_with = "json")]
     toml: bool,
-    /// List the application programs bussard writes without
-    /// `--allow-unsupported`, with the evidence for each, instead of a
-    /// device.
-    // Issue #1089.
+    /// List bussard's device-support list instead of a device: every
+    /// application program with its category (proven, likely, or a known
+    /// problem) and the evidence for it.
+    // Issues #1089, #1097.
     #[arg(long, conflicts_with_all = ["address", "channel", "toml"])]
     supported: bool,
 }
@@ -55,39 +55,66 @@ impl Run for DeviceArgs {
     }
 }
 
-/// `bussard device --supported`: the supported-device list (issue #1089).
+/// `bussard device --supported`: the device-support list (issues #1089,
+/// #1097), every entry with its category.
 fn list_supported(json: bool) -> anyhow::Result<ExitCode> {
+    use bussard_service::support::Category;
     let list = bussard_service::support::SupportedList::embedded();
     if json {
         let entries: Vec<serde_json::Value> = list
             .entries()
             .iter()
             .map(|e| {
-                serde_json::json!({
-                    "application": e.application(),
-                    "application_id": e.application_id,
-                    "name": e.name,
-                    "evidence": e.evidence,
-                    "note": e.note,
-                })
+                let mut v = serde_json::to_value(e)?;
+                if let Some(obj) = v.as_object_mut() {
+                    obj.insert("application".to_string(), e.application().into());
+                }
+                Ok(v)
             })
-            .collect();
-        crate::output::print(1, &serde_json::json!({ "ok": true, "supported": entries }))?;
+            .collect::<Result<_, serde_json::Error>>()?;
+        crate::output::print(
+            1,
+            &serde_json::json!({
+                "ok": true,
+                "supported": entries,
+                "rules": list.rules(),
+                "families": list.families(),
+                "source": list.source(),
+            }),
+        )?;
     } else {
         for e in list.entries() {
+            let detail = match (e.problem(), &e.rule) {
+                (Some(problem), _) => format!(" [{problem}]"),
+                (None, Some(rule)) => format!(" [{rule}]"),
+                (None, None) => String::new(),
+            };
             println!(
-                "{:<18} {:<10} {:<9} {}",
+                "{:<18} {:<11} {:<13} {:<4} {}{detail}",
                 e.application(),
-                e.application_id,
-                e.evidence,
+                e.category.as_str(),
+                e.evidence.as_str(),
+                e.masks.join(","),
                 e.name
             );
         }
+        let count = |c: Category| list.entries().iter().filter(|e| e.category == c).count();
         println!(
-            "\n{} application program(s). Any other is refused by flash, apply, restore and \
-             replace on a real gateway unless you pass --allow-unsupported.",
-            list.entries().len()
+            "\n{} proven, {} likely (not confirmed on a real device), {} with a known problem. \
+             flash, apply, restore and replace write proven and likely devices; any other is \
+             refused on a real gateway unless you pass --allow-unsupported.",
+            count(Category::Proven),
+            count(Category::Likely),
+            count(Category::Unsupported),
         );
+        for rule in list.rules() {
+            println!(
+                "Rule {}: checked {}; not checked: {}.",
+                rule.id,
+                rule.checked.join(", "),
+                rule.not_checked.join(", ")
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }

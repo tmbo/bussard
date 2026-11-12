@@ -122,26 +122,78 @@ those devices with ETS.
 
 ## Supported devices
 
-The mask says whether bussard can talk to a device at all. The list of
-supported devices says whether bussard has checked what it writes to that
-product: it names each application program whose download bussard has
-compared with ETS, by the application id `bussard.lock` pins and the device
-reports. `bussard device --supported` prints it.
+The mask says whether bussard can talk to a device at all. The device-support
+list says whether bussard has checked what it writes to that product. It
+names application programs by the application id `bussard.lock` pins and the
+device reports, and puts each in one of three categories:
 
-- **`capture`**: the offline oracle is identical against an ETS download of a
-  real device.
-- **`synthetic`**: a fabricated test product, identical against its ETS
-  capture.
-- **`live`**: flashed by bussard on a real device and read back.
+- **proven**: bussard wrote a real device with this application and the
+  read-back matched. Kept by hand; every entry cites the issue or the dated
+  owner statement that records the run.
+- **likely**: the evidence says bussard's download matches ETS, but bussard
+  has not written a real device with this application. A plan for it says
+  "not confirmed on a real device", and so does the assistant over MCP.
+- **unsupported or unknown**: a known problem (the entry names its issue and,
+  where the issue gives one, its cause), or an application the list does not
+  name.
+
+`proven` and `likely` pass the write gate. `bussard device --supported` prints
+the whole list (`--json` too) with the evidence for each entry: `live`,
+`house-capture` (the offline oracle is identical against an ETS download of a
+house device), `sweep` (the ETS sweep over the product catalogue) or `issue`.
+
+### How `likely` is computed
+
+`tools/supported-devices/generate.py` computes the `likely` entries from
+committed files only, and CI fails when the list is stale. The gate looks an
+application up by its id (manufacturer, number and version), and the sweep can
+hold several builds of one id, so rule `sweep-1` holds for every build. It
+takes an application into `likely` when:
+
+1. the ETS sweep (`tools/ets-sweep/evidence/manifest.json`) captured at least
+   one build, and found bussard's image identical to ETS's for every captured
+   build;
+2. the load-control records are identical too;
+3. each comparison covers at least 95 % of the octets bussard places;
+4. no build differs; and
+5. every mask a build has belongs to a family with a proven device.
+
+A build the sweep skipped (ETS's catalogue held another build of the order
+number) counts neither for nor against an entry; the entry records how many
+builds were not compared (`uncompared`). An application with builds on two
+masks lists both and counts in both rows of the table.
+
+The hand-kept entries are checked against the sweep too: a hand entry's mask
+must be the sweep's mask for its id, and a `proven` or `likely` entry with a
+differing sweep row stops the generator unless the entry says why.
+
+The family key is the mask. The shape of the load procedure would separate
+families further, but no committed file records it per application yet. A
+summary of each application's load-control operations, written by
+`tools/ets-sweep/catalog_apps.py` next to its order numbers, would let the key
+include it.
+
+What `likely` does not rest on yet: the constructs an application uses are not
+checked against the synthetic products that isolate them, and a defaults sweep
+reaches the default branches of a product only. Both are open in issue #1097.
+Firmware behaviour (timing, load states, restarts) is shown by a proven device
+alone. An application the sweep reports as differing is listed as unsupported
+with its issue.
+
+The synthetic products (#596) are not on the list: no real device runs them,
+and the knx-sim loop runs on loopback, where nothing is refused. The table
+counts them per family.
+
+### What is gated
 
 `flash`, `apply` (also `--line`), `restore`, `replace` and the download half
-of `commission`, and their MCP tools, refuse a device whose application is not on the list before
+of `commission`, and their MCP tools, refuse an unsupported device before
 anything is written. Reads are never affected: `plan`, `describe`, `device`,
 `backup` and `reconstruct` work on every device, and `plan`, `describe`,
-`device`, `status` and `audit` print the verdict. The KNXnet/IP settings of
-an IP interface (its `[knxnet]` table) are not gated: they are standard
-properties, not built from the application program. A group `write`, `assign`
-and `restart` are not gated.
+`device`, `status` and `audit` print the verdict with its category. The
+KNXnet/IP settings of an IP interface (its `[knxnet]` table) are not gated:
+they are standard properties, not built from the application program. A group
+`write`, `assign` and `restart` are not gated.
 
 The refusal applies on a gateway that is not loopback, the same rule as the
 real-gateway opt-in. A simulator cannot be damaged, so the knx-sim loop and
@@ -151,64 +203,83 @@ back it up first and pass `--allow-unsupported`; over MCP the human has to say
 yes to it (see [Safety](safety.md)). The result and the history record then
 say `support: forced`.
 
+Mask `0701` has no proven device yet, so its applications stay unknown
+however their sweep reads.
+
 <!-- supported-table:start -->
-| Application | Id | Product | Evidence |
+Sweep manifest of 2026-11-10, coverage floor 95.0 %.
+
+| Family (mask) | Proven | Likely | Identical, no proven device | Known problems | Synthetic products |
+|---|---|---|---|---|---|
+| `0701` | 0 | 0 | 364 | 29 | 5 |
+| `0705` | 1 | 275 | 0 | 9 | 8 |
+| `07B0` | 3 | 766 | 0 | 45 | 34 |
+| all | 4 | 1040 | 364 | 83 | 47 |
+
+| Manufacturer | Proven | Likely | Known problems |
 |---|---|---|---|
-| `M-0002_A-A0ED-10` | `0002A0ED10` | ABB BE/S16.230.3.2 binary input | capture |
-| `M-0004_A-20D7-26` | `000420D726` | Jung 230241SR switch actuator | capture |
-| `M-0004_A-20DE-22` | `000420DE22` | Jung 230021SU switch actuator | capture |
-| `M-0004_A-20E0-21` | `000420E021` | Jung 360061SR heating actuator v2.1 | capture |
-| `M-0004_A-3030-23` | `0004303023` | Jung 390041SR LED universal dimmer | capture |
-| `M-0004_A-7066-11` | `0004706611` | Jung 2116REG | capture |
-| `M-0004_A-A011-13` | `0004A01113` | Jung 3361-1MWW presence detector | capture |
-| `M-0004_A-D142-21` | `0004D14221` | Jung 52921ST F50 push-button module | capture |
-| `M-0048_A-140C-14` | `0048140C14` | Theben Meteodata 140 S | capture |
-| `M-00FA_A-2700-10` | `00FA270010` | bussard synthetic syn-minimal (NEST-LIGHT) | synthetic |
-| `M-00FA_A-2704-10` | `00FA270410` | bussard synthetic syn-le-order (NEST-ALTI) | synthetic |
-| `M-00FA_A-2705-10` | `00FA270510` | bussard synthetic syn-union-default-range (NEST-STRAY) | synthetic |
-| `M-00FA_A-2706-10` | `00FA270610` | bussard synthetic syn-text-undeclared (NEST-SQUAWK) | synthetic |
-| `M-00FA_A-2707-10` | `00FA270710` | bussard synthetic syn-relseg-fill (NEST-FILL) | synthetic |
-| `M-00FA_A-2708-10` | `00FA270810` | bussard synthetic syn-choose-partial-segment (NEST-HALF) | synthetic |
-| `M-00FA_A-270A-10` | `00FA270A10` | bussard synthetic syn-master-reset (NEST-RESET) | synthetic |
-| `M-00FA_A-270B-10` | `00FA270B10` | bussard synthetic syn-param-calculation (NEST-CALC) | synthetic |
-| `M-00FA_A-270C-10` | `00FA270C10` | bussard synthetic syn-hidden-default (NEST-EGGHEAT) | synthetic |
-| `M-00FA_A-270E-10` | `00FA270E10` | bussard synthetic syn-choose-never-shown (NEST-GHOST) | synthetic |
-| `M-00FA_A-2713-13` | `00FA271313` | bussard synthetic syn-module-repeat (NEST-TRIFEED) | synthetic |
-| `M-00FA_A-2714-10` | `00FA271410` | bussard synthetic syn-legacy-patch-always (NEST-PATCH) | synthetic |
-| `M-00FA_A-2715-10` | `00FA271510` | bussard synthetic syn-ip-address-param (NEST-HOMING) | synthetic |
-| `M-00FA_A-2716-10` | `00FA271610` | bussard synthetic syn-user-memory (NEST-LARDER) | synthetic |
-| `M-00FA_A-2717-10` | `00FA271710` | bussard synthetic syn-writerelmem-size (NEST-QUILL) | synthetic |
-| `M-00FA_A-2718-10` | `00FA271810` | bussard synthetic syn-text-initialvalue (NEST-NAME) | synthetic |
-| `M-00FA_A-2719-10` | `00FA271910` | bussard synthetic syn-choose-per-ref (NEST-TWIN) | synthetic |
-| `M-00FA_A-271B-10` | `00FA271B10` | bussard synthetic syn-com-objects (NEST-CHIRP) | synthetic |
-| `M-00FA_A-271C-10` | `00FA271C10` | bussard synthetic syn-dynamic-tests (NEST-WORM) | synthetic |
-| `M-00FA_A-271D-10` | `00FA271D10` | bussard synthetic syn-union-bitfields (NEST-BITS) | synthetic |
-| `M-00FA_A-271E-10` | `00FA271E10` | bussard synthetic syn-property-param (NEST-TERR) | synthetic |
-| `M-00FA_A-271F-10` | `00FA271F10` | bussard synthetic syn-assign (NEST-CHORE) | synthetic |
-| `M-00FA_A-2725-10` | `00FA272510` | bussard synthetic syn-product-07b0 (NEST-PLAN) | synthetic |
-| `M-00FA_A-2726-10` | `00FA272610` | bussard synthetic syn-map-error (NEST-FALSE) | synthetic |
-| `M-00FA_A-2728-10` | `00FA272810` | bussard synthetic syn-color-param (NEST-COLOUR) | synthetic |
-| `M-00FA_A-278A-10` | `00FA278A10` | bussard synthetic syn-master-reset-code4 (NEST-RESET4) | synthetic |
-| `M-00FA_A-2796-10` | `00FA279610` | bussard synthetic syn-user-memory-extmem (NEST-LARDERX) | synthetic |
-| `M-00FA_A-27A8-10` | `00FA27A810` | bussard synthetic syn-color-param-hsv (NEST-COLHSV) | synthetic |
-| `M-00FA_A-27A9-10` | `00FA27A910` | bussard synthetic syn-color-param-hsv2 (NEST-COLHSV2) | synthetic |
-| `M-00FA_A-2800-10` | `00FA280010` | bussard synthetic syn-s7-0705 (NEST-DOOR) | synthetic |
-| `M-00FA_A-2801-10` | `00FA280110` | bussard synthetic syn-s7-0701 (NEST-BKDOOR) | synthetic |
-| `M-00FA_A-2809-10` | `00FA280910` | bussard synthetic syn-s7-choose-split (NEST-SPLIT) | synthetic |
-| `M-00FA_A-280D-10` | `00FA280D10` | bussard synthetic syn-s7-hidden-default (NEST-EGGBAK) | synthetic |
-| `M-00FA_A-280F-11` | `00FA280F11` | bussard synthetic syn-s7-lsm5 (NEST-TWIG5) | synthetic |
-| `M-00FA_A-2810-10` | `00FA281010` | bussard synthetic syn-s7-pei80 (NEST-CLAW) | synthetic |
-| `M-00FA_A-2811-10` | `00FA281110` | bussard synthetic syn-s7-taskptr (NEST-HUNT) | synthetic |
-| `M-00FA_A-281A-10` | `00FA281A10` | bussard synthetic syn-s7-no-comobjects (NEST-SILENT) | synthetic |
-| `M-00FA_A-2820-10` | `00FA282010` | bussard synthetic syn-s7-lsm5-0705 (NEST-TWIG5G) | synthetic |
-| `M-00FA_A-2821-11` | `00FA282111` | bussard synthetic syn-s7-pid204 (NEST-PLUME) | synthetic |
-| `M-00FA_A-2827-10` | `00FA282710` | bussard synthetic syn-s7-delay (NEST-HATCH) | synthetic |
-| `M-00FA_A-2889-10` | `00FA288910` | bussard synthetic syn-s7-static-split (NEST-FORK) | synthetic |
-| `M-00FA_A-288D-10` | `00FA288D10` | bussard synthetic syn-s7-hidden-default-p11 (NEST-EGGOLD) | synthetic |
-| `M-00FA_A-288E-10` | `00FA288E10` | bussard synthetic syn-s7-hidden-default-ets4 (NEST-EGGV4) | synthetic |
-| `M-00FA_A-2900-10` | `00FA290010` | bussard synthetic syn-secure (NEST-GUARD) | synthetic |
-| `M-00FA_A-2A22-10` | `00FA2A2210` | bussard synthetic syn-ip-enabled-tp (NEST-UPLINK) | synthetic |
-| `M-0112_A-0003-10` | `0112000310` | Helios KWL KNX connect | capture |
+| `M-0001` | 0 | 37 | 0 |
+| `M-0002` | 1 | 63 | 1 |
+| `M-0004` | 2 | 69 | 8 |
+| `M-0006` | 0 | 6 | 0 |
+| `M-0007` | 0 | 34 | 0 |
+| `M-0008` | 0 | 52 | 3 |
+| `M-0009` | 0 | 35 | 31 |
+| `M-000C` | 0 | 3 | 0 |
+| `M-0048` | 0 | 82 | 2 |
+| `M-0064` | 0 | 11 | 0 |
+| `M-0071` | 0 | 238 | 8 |
+| `M-0072` | 0 | 1 | 0 |
+| `M-0076` | 0 | 2 | 1 |
+| `M-0077` | 0 | 2 | 0 |
+| `M-007C` | 0 | 0 | 6 |
+| `M-0080` | 0 | 5 | 0 |
+| `M-0083` | 0 | 145 | 1 |
+| `M-0085` | 0 | 22 | 0 |
+| `M-0087` | 0 | 1 | 0 |
+| `M-008B` | 0 | 1 | 0 |
+| `M-008E` | 0 | 12 | 0 |
+| `M-009A` | 0 | 15 | 0 |
+| `M-00A6` | 0 | 6 | 1 |
+| `M-00B0` | 0 | 1 | 0 |
+| `M-00B6` | 0 | 49 | 1 |
+| `M-00C5` | 0 | 28 | 0 |
+| `M-00C8` | 0 | 16 | 7 |
+| `M-00C9` | 0 | 32 | 0 |
+| `M-00E1` | 0 | 0 | 1 |
+| `M-00E8` | 0 | 5 | 0 |
+| `M-00EF` | 0 | 10 | 11 |
+| `M-00FC` | 0 | 12 | 0 |
+| `M-00FD` | 0 | 11 | 0 |
+| `M-0112` | 1 | 0 | 0 |
+| `M-011E` | 0 | 15 | 1 |
+| `M-011F` | 0 | 6 | 0 |
+| `M-0151` | 0 | 2 | 0 |
+| `M-0159` | 0 | 1 | 0 |
+| `M-0162` | 0 | 3 | 0 |
+| `M-017D` | 0 | 3 | 0 |
+| `M-0182` | 0 | 1 | 0 |
+| `M-0191` | 0 | 1 | 0 |
+| `M-020D` | 0 | 1 | 0 |
+| `M-020F` | 0 | 1 | 0 |
+
+Kept by hand:
+
+| Application | Id | Product | Mask | Category | Evidence |
+|---|---|---|---|---|---|
+| `M-0002_A-A0ED-10` | `0002A0ED10` | ABB BE/S16.230.3.2 binary input | `07B0` | proven | live |
+| `M-0004_A-20D7-26` | `000420D726` | Jung 230241SR switch actuator | `07B0` | likely | house-capture |
+| `M-0004_A-20DE-22` | `000420DE22` | Jung 230021SU switch actuator | `07B0` | likely | house-capture |
+| `M-0004_A-20E0-21` | `000420E021` | Jung 360061SR heating actuator v2.1 | `07B0` | likely | house-capture |
+| `M-0004_A-3030-23` | `0004303023` | Jung 390041SR LED universal dimmer | `07B0` | likely | house-capture |
+| `M-0004_A-7066-11` | `0004706611` | Jung 2116REG | `0705` | likely | house-capture |
+| `M-0004_A-A011-13` | `0004A01113` | Jung 3361-1MWW presence detector | `0705` | proven | live |
+| `M-0004_A-D142-21` | `0004D14221` | Jung 52921ST F50 push-button module | `07B0` | proven | live |
+| `M-0009_A-E0EE-10` | `0009E0EE10` | Hager STXF121 (TXF121) | `07B0` | unsupported | issue |
+| `M-0009_A-E0F1-10` | `0009E0F110` | Hager STXC51x (TXC513, TXC515) | `07B0` | unsupported | issue |
+| `M-0009_A-E0F2-10` | `0009E0F210` | Hager STXD50x (TXD501, TXD503) | `07B0` | unsupported | issue |
+| `M-0009_A-E802-13` | `0009E80213` | Hager STYMS646R (TYMS646R) | `07B0` | unsupported | issue |
+| `M-0112_A-0003-10` | `0112000310` | Helios KWL KNX connect | `07B0` | proven | live |
 <!-- supported-table:end -->
 
 ## Source address check

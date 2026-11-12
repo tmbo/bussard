@@ -85,10 +85,11 @@ fn test_audit_static_text_has_every_section() -> TestResult {
         "07B0 System B (4 devices): bussard can: plan/apply, flash, reconstruct, describe",
         "KNX Secure\n",
         "protected group addresses",
-        // The supported-device verdict (issue #1093): the count, then the
-        // devices not on the list.
+        // The supported-device verdict (issues #1093, #1097): the counts per
+        // category, then the devices a write refuses.
         "Supported devices\n",
-        "on bussard's list of supported devices",
+        "3 of 4 devices written without the override: 0 proven, 3 likely (not confirmed on a \
+         real device)",
     ] {
         assert!(stdout.contains(section), "missing {section:?}:\n{stdout}");
     }
