@@ -854,18 +854,27 @@ pub fn plan_flash(
                 };
                 let is_duplicate = same_segment
                     && matches!(steps.last(), Some(FlashStep::AllocateSegment { size: prev, .. }) if *prev == size);
+                // The image of the segment's unplaced octets follows the full
+                // download's allocation for it, also when that allocation is
+                // deduped after an identical `par` one (issue #1061). A
+                // `par`-only record does not count: the `par` procedure keeps
+                // the full image (issue #490, `use_par_procedure`). An op
+                // naming an `LsmIdx` sets the fill of a segment on that LSM
+                // only; the document-order fallback of `resolve_rel_segment`
+                // binds a fill only for an op without one.
+                if let Some((seg_id, _)) = &seg
+                    && !applies_to
+                        .as_deref()
+                        .is_some_and(super::par_procedure::is_par_only)
+                    && lsm_idx.is_none_or(|idx| {
+                        segments
+                            .get(seg_id)
+                            .is_some_and(|s| s.load_state_machine == Some(idx))
+                    })
+                {
+                    fill_by_segment.insert(seg_id.clone(), (*fill, *fill_declared));
+                }
                 if !is_duplicate {
-                    // The image of the segment's unplaced octets follows the
-                    // allocation the full download sends for it. A `par`-only
-                    // restatement does not count: the `par` procedure keeps
-                    // the full image (issue #490, `use_par_procedure`).
-                    if let Some((seg_id, _)) = &seg
-                        && !applies_to
-                            .as_deref()
-                            .is_some_and(super::par_procedure::is_par_only)
-                    {
-                        fill_by_segment.insert(seg_id.clone(), (*fill, *fill_declared));
-                    }
                     if let Some(idx) = lsm_idx {
                         match (fill.prefill(), &seg) {
                             (Some(byte), Some(_)) => prefill_by_object.insert(*idx, (byte, size)),
@@ -986,9 +995,13 @@ pub fn plan_flash(
                 })?;
                 // A data-less segment's unplaced octets take the fill of the
                 // allocation bound to it before its first write (issue #1061).
+                // Only the parameter image itself: an empty entry leaves the
+                // #1026 pre-fill image `resolve_write_image` returned.
                 if kind == ImageKind::Parameters
                     && !unplaced_filled.contains(&segment_id)
-                    && let Some(image) = param_images.get_mut(&segment_id)
+                    && let Some(image) = param_images
+                        .get_mut(&segment_id)
+                        .filter(|image| !image.is_empty())
                 {
                     let fill =
                         bussard_product::unplaced_fill(fill_by_segment.get(&segment_id).copied());
@@ -3810,41 +3823,11 @@ mod tests {
     /// `MergeId="4"` block writes the segment, and returns the plan's image
     /// (sized to the placements: the program has no Dynamic section).
     fn dataless_image(alloc: &str, sel: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
-        let xml = format!(
-            r#"<KNX xmlns="http://knx.org/xml/project/23">
-         <ApplicationProgram Id="M-1_A-7" ApplicationNumber="9" ApplicationVersion="1"
-            MaskVersion="MV-07B0" Name="Fill" LoadProcedureStyle="MergedProcedure">
-          <Static>
-           <Code><RelativeSegment Id="M-1_A-7_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
-           <ParameterTypes>
-            <ParameterType Id="M-1_A-7_PT-v" Name="v"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
-           </ParameterTypes>
-           <Parameters>
-            <Parameter Id="M-1_A-7_P-1" Name="value" ParameterType="M-1_A-7_PT-v" Value="7"><Memory CodeSegment="M-1_A-7_RS-1" Offset="1" BitOffset="0" /></Parameter>
-            <Parameter Id="M-1_A-7_P-9" Name="sel" ParameterType="M-1_A-7_PT-v" Value="0" />
-           </Parameters>
-           <ParameterRefs>
-            <ParameterRef Id="M-1_A-7_P-1_R-1" RefId="M-1_A-7_P-1" />
-            <ParameterRef Id="M-1_A-7_P-9_R-9" RefId="M-1_A-7_P-9" />
-           </ParameterRefs>
-           <LoadProcedures>
-            <LoadProcedure MergeId="2">{alloc}</LoadProcedure>
-            <LoadProcedure MergeId="4">
-             <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="4" Verify="true" />
-            </LoadProcedure>
-           </LoadProcedures>
-          </Static>
-         </ApplicationProgram></KNX>"#
-        );
-        let app = parse_application_program("M-1_A-7", xml.as_bytes())?;
-        let plan = plan_flash_default(
-            &app,
-            "1.1.4",
-            0x07B0,
-            &BTreeMap::from([("P-9_R-9".to_string(), sel.to_string())]),
-            &BTreeMap::new(),
-            None,
-            &BTreeMap::new(),
+        let plan = dataless_plan(
+            r#"<TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" />"#,
+            alloc,
+            "full,par",
+            sel,
         )?;
         let written = plan.steps.iter().find_map(|s| match s {
             FlashStep::WriteRelMem { image, .. } => Some(image.segment_id.clone()),
@@ -3859,6 +3842,109 @@ mod tests {
             .image_bytes("M-1_A-7_RS-1")
             .ok_or("no image for the segment")?
             .to_vec())
+    }
+
+    /// The plan behind [`dataless_image`], with the placed parameter's type
+    /// `value_type` (a `TypeNone` leaves an empty parameter image) and the
+    /// write's `AppliesTo` `write_applies_to`.
+    fn dataless_plan(
+        value_type: &str,
+        alloc: &str,
+        write_applies_to: &str,
+        sel: &str,
+    ) -> Result<FlashPlan, Box<dyn std::error::Error>> {
+        let xml = format!(
+            r#"<KNX xmlns="http://knx.org/xml/project/23">
+         <ApplicationProgram Id="M-1_A-7" ApplicationNumber="9" ApplicationVersion="1"
+            MaskVersion="MV-07B0" Name="Fill" LoadProcedureStyle="MergedProcedure">
+          <Static>
+           <Code><RelativeSegment Id="M-1_A-7_RS-1" Size="4" LoadStateMachine="4" Offset="0" /></Code>
+           <ParameterTypes>
+            <ParameterType Id="M-1_A-7_PT-v" Name="v"><TypeNumber SizeInBit="8" Type="unsignedInt" minInclusive="0" maxInclusive="255" /></ParameterType>
+            <ParameterType Id="M-1_A-7_PT-p" Name="p">{value_type}</ParameterType>
+           </ParameterTypes>
+           <Parameters>
+            <Parameter Id="M-1_A-7_P-1" Name="value" ParameterType="M-1_A-7_PT-p" Value="7"><Memory CodeSegment="M-1_A-7_RS-1" Offset="1" BitOffset="0" /></Parameter>
+            <Parameter Id="M-1_A-7_P-9" Name="sel" ParameterType="M-1_A-7_PT-v" Value="0" />
+           </Parameters>
+           <ParameterRefs>
+            <ParameterRef Id="M-1_A-7_P-1_R-1" RefId="M-1_A-7_P-1" />
+            <ParameterRef Id="M-1_A-7_P-9_R-9" RefId="M-1_A-7_P-9" />
+           </ParameterRefs>
+           <LoadProcedures>
+            <LoadProcedure MergeId="2">{alloc}</LoadProcedure>
+            <LoadProcedure MergeId="4">
+             <LdCtrlWriteRelMem AppliesTo="{write_applies_to}" ObjIdx="4" Offset="0" Size="4" Verify="true" />
+            </LoadProcedure>
+           </LoadProcedures>
+          </Static>
+         </ApplicationProgram></KNX>"#
+        );
+        let app = parse_application_program("M-1_A-7", xml.as_bytes())?;
+        Ok(plan_flash_default(
+            &app,
+            "1.1.4",
+            0x07B0,
+            &BTreeMap::from([("P-9_R-9".to_string(), sel.to_string())]),
+            &BTreeMap::new(),
+            None,
+            &BTreeMap::new(),
+        )?)
+    }
+
+    /// Issue #1061 review: an op naming an `LsmIdx` sets the fill of a
+    /// segment on that load state machine only. An allocation on an LSM no
+    /// segment declares binds the parameter segment by document order, but
+    /// its fill does not apply there; with no record of its own the segment
+    /// keeps the erased `0xFF` (#377), as before #1061.
+    #[test]
+    fn test_plan_flash_data_less_segment_other_lsm_stays_erased() -> TestResult {
+        let other_only =
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="8" Mode="1" Fill="0" />"#;
+        assert_eq!(dataless_image(other_only, "0")?, vec![0xFF, 7]);
+        let own_then_other = r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="255" />
+            <LdCtrlRelSegment AppliesTo="full" LsmIdx="5" Size="8" Mode="0" Fill="0" />"#;
+        assert_eq!(dataless_image(own_then_other, "0")?, vec![0xFF, 7]);
+        Ok(())
+    }
+
+    /// Issue #1061 review: the full record decides also when its allocation
+    /// step is deduped after an identical-size `par` record (the MDT
+    /// `A-0007` pair, `par` first here), and a `par` record after it does
+    /// not count.
+    #[test]
+    fn test_plan_flash_data_less_segment_takes_the_full_fill_beside_a_par_record() -> TestResult {
+        let par_first = r#"<LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="4" Mode="0" Fill="255" />
+            <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />"#;
+        assert_eq!(dataless_image(par_first, "0")?, vec![0x00, 7]);
+        let full_first = r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="0" />
+            <LdCtrlRelSegment AppliesTo="par" LsmIdx="4" Size="4" Mode="0" Fill="255" />"#;
+        assert_eq!(dataless_image(full_first, "0")?, vec![0x00, 7]);
+        Ok(())
+    }
+
+    /// Issue #1061 review: a segment whose parameter image is empty (its one
+    /// parameter is a `TypeNone` marker) streams the #1026 pre-fill image of
+    /// its allocation, not the empty parameter image.
+    #[test]
+    fn test_plan_flash_empty_parameter_image_streams_the_prefill() -> TestResult {
+        let plan = dataless_plan(
+            "<TypeNone />",
+            r#"<LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="4" Mode="1" Fill="170" />"#,
+            "full",
+            "0",
+        )?;
+        let image = plan
+            .steps
+            .iter()
+            .find_map(|s| match s {
+                FlashStep::WriteRelMem { image, .. } => Some(image.clone()),
+                _ => None,
+            })
+            .ok_or("no WriteRelMem")?;
+        assert_eq!(image.len, 4);
+        assert_eq!(plan.image_bytes(&image.segment_id), Some(&[0xAA; 4][..]));
+        Ok(())
     }
 
     /// Issue #1061: the unplaced octets of a data-less segment take the fill

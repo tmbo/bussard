@@ -11,8 +11,10 @@ octets of such a segment itself (Mode 0 does not pre-fill), as `00` on the 11
 M-00EF programs of #1061, whose records are `Mode="0" Fill="0"`. Every corpus
 program with this shape declares `Fill="0"`, so the corpus cannot tell
 "ETS writes the declared Fill" from "ETS writes 00 under Mode 0"; this
-capture can (`a5` or `00` at octets 3 to 15). bussard writes `a5` today."""
-construct = "data-less RelativeSegment, Mode 0 with Fill 165"
+capture can (`a5` or `00` at octets 3 to 15). bussard writes `a5` today, by
+the declared Fill, not confirmed by a capture: `requests/flash.txt` pins that
+and is updated from the #1054 capture."""
+construct = "data-less RelativeSegment, Mode 0 with Fill 165 (golden by the declared Fill, not confirmed by a capture; update from the #1054 capture)"
 issues = [1061, 1054]
 
 [product]

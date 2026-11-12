@@ -190,6 +190,12 @@ pub fn fill_unplaced_octets(
 /// program) into
 /// the byte image keyed by the memory's `CodeSegment`. Returns a map from segment id to its image.
 ///
+/// In a relative segment without `<Data>`, the octets no parameter places
+/// are `0x00` placeholders here, not what a download writes: the flash
+/// planner fills them from the allocation it binds to the segment
+/// ([`unplaced_fill`], [`fill_unplaced_octets`]; issue #1061). The flashed
+/// image is the plan's (`FlashPlan::param_images` in `bussard-download`).
+///
 /// # Module-instance offsets
 ///
 /// A module parameter (id `MD-<d>_..._P-<p>`, whose `<Memory>` carries a
@@ -227,8 +233,9 @@ pub fn compute_parameter_image(
 /// hidden parameter the application downloads at its default, every
 /// parameter's default and the default union member on the vendor-default
 /// path, and the overrides. Every other octet of the image holds the
-/// segment's `<Data>` or its fill, which ETS does not write in a download
-/// (issue #290).
+/// segment's `<Data>`, or, in a segment without `<Data>`, a `0x00`
+/// placeholder the flash planner replaces by the segment's fill (issue
+/// #1061); a parameter-only download does not write them (issue #290).
 pub type PlacedOctets = BTreeMap<String, BTreeSet<usize>>;
 
 /// [`compute_parameter_image`], with the octets each placement wrote
@@ -702,7 +709,8 @@ pub fn uses_dynamic_image(app: &ApplicationProgram) -> bool {
 /// parameter's `<Memory>` offset, or for a `<Union>` member the union's base
 /// plus the member offset, in either case plus the module instance's value for
 /// the `BaseOffset` argument. A parameter behind a branch that is not taken is
-/// not written, so its bytes keep the template value (or the segment's fill),
+/// not written, so its bytes keep the template value (or, in a segment
+/// without `<Data>`, the `0x00` placeholder the flash planner fills, #1061),
 /// and so is one behind a `<choose>` whose controlling parameter is itself
 /// inactive, which selects no branch (issue #159), unless the application
 /// has ETS download hidden parameters too
