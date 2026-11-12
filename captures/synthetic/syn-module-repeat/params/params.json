@@ -1,0 +1,40 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Number of feeders",
+   "kind": "number",
+   "value": "2",
+   "key": "number-of-feeders",
+   "model": 2,
+   "page_found": {
+    "crumb": "General",
+    "page": "+ General"
+   },
+   "result": "set",
+   "set_to": "2",
+   "why": null,
+   "after": "2",
+   "shown": "2"
+  },
+  {
+   "page": "Feeder",
+   "page_n": 1,
+   "label": "Portion size",
+   "kind": "number",
+   "value": "1000",
+   "key": "portion-size@MD-1_M-1_MI-2_P-1_R-1",
+   "model": 1000,
+   "page_found": {
+    "crumb": "General > Feeder",
+    "page": "Feeder",
+    "page_n": 1
+   },
+   "result": "set",
+   "set_to": "1000",
+   "why": null,
+   "after": "1000",
+   "shown": "1000"
+  }
+ ]
+}

@@ -1,0 +1,7 @@
+# The device of the params variant of syn-module-choose (capture.py).
+address = "1.1.1"
+name = "syn-module-choose"
+
+[parameters]
+roost-layout = "two perches"
+"perch-height@MD-1_M-3_MI-1_P-1_R-1" = 1000

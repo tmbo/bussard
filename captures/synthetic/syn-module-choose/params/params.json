@@ -1,0 +1,38 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Roost layout",
+   "kind": "dropdown",
+   "value": "two perches",
+   "key": "roost-layout",
+   "model": "two perches",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "two perches",
+   "why": null,
+   "after": "two perches",
+   "shown": "two perches"
+  },
+  {
+   "page": "Perch B",
+   "label": "Perch height",
+   "kind": "number",
+   "value": "1000",
+   "key": "perch-height@MD-1_M-3_MI-1_P-1_R-1",
+   "model": 1000,
+   "page_found": {
+    "crumb": "Perch B",
+    "page": "Perch B"
+   },
+   "result": "set",
+   "set_to": "1000",
+   "why": null,
+   "after": "1000",
+   "shown": "1000"
+  }
+ ]
+}
