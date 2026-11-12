@@ -236,6 +236,16 @@ manifest is also kept as `history/manifest-<stamp>.json`. `benign.json`
 
 Offline tests of the Mac-side pieces: `uv run tools/ets-sweep/test_ets_sweep.py`.
 
+### Committed evidence (#1097)
+
+`results/` stays local. `evidence/manifest.json` is a committed copy of a
+`results/manifest.json`: per application the product file name, mask,
+manufacturer, sweep outcome, the oracle, load-control and descriptor verdicts
+and the coverage. It holds identifiers and verdicts only, no product data, so
+the supported-device list can cite it. Its `generated` field dates the
+snapshot. To refresh it, copy the file after a `summary.py` run and commit it
+with the verdict changes (`results/changes.json`) named in the PR.
+
 ## Partial-download rows (#469)
 
 A partial download (`bussard apply`, ETS's "Partiell") writes into a device
