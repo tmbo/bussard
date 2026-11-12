@@ -108,7 +108,7 @@ def main() -> int:
         entry = {
             "outcome": r.get("outcome", "error"),
             "products": r.get("products", []),
-            "message": r.get("message") or r.get("error", ""),
+            "message": (r.get("message") or r.get("error", "")).replace(vm.REMOTE_DIR, "<vm>"),
             "seconds": round(time.time() - t0),
             "when": datetime.now(timezone.utc).isoformat(),
         }

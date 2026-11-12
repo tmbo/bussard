@@ -98,7 +98,7 @@ impl KnxnetParameters {
             tunnels,
             current_assignment: 0x04,
             assignment: 0x04,
-            current: [[192, 168, 1, 74], [255, 255, 255, 0], [192, 168, 1, 1]],
+            current: [[192, 0, 2, 74], [255, 255, 255, 0], [192, 168, 1, 1]],
             configured: [[0; 4]; 3],
             mac: [0x00, 0x00, 0x5E, 0x00, 0x53, 0x01],
             system_setup_multicast: [224, 0, 23, 12],
@@ -607,7 +607,7 @@ mod tests {
             .property(57)
             .map(|p| p.value.clone())
             .unwrap_or_default();
-        assert_eq!(array_read(57, &ip, 1, 1), Some((1, vec![192, 168, 1, 74])));
+        assert_eq!(array_read(57, &ip, 1, 1), Some((1, vec![192, 0, 2, 74])));
         assert_eq!(
             obj.property(PID_OBJECT_TYPE).map(|p| p.value.clone()),
             Some(vec![0, 11])

@@ -82,7 +82,7 @@ product = "230021SU"                    # printed on the device
 
 [location]
 floor = "DG"
-room = "Kind 2 Süd"
+room = "Gast 2 Süd"
 
 [security]
 activated = true
@@ -213,7 +213,7 @@ fn test_save_keeps_comments_and_edits_only_what_changed() -> TestResult {
     let addr = ia("1.1.47")?;
     {
         let d = &mut model.devices.get_mut(&addr).ok_or("device")?.device;
-        d.name = "Jalousieaktor Kind 2 Süd".to_string();
+        d.name = "Jalousieaktor Gast 2 Süd".to_string();
         d.parameters.insert(
             "betriebsart@MD-3_M-18_MI-1_P-14_R-14".to_string(),
             "3".to_string(),
@@ -236,7 +236,7 @@ fn test_save_keeps_comments_and_edits_only_what_changed() -> TestResult {
 
     let text = fs::read_to_string(dir.join("devices/1.1.47.toml"))?;
     assert!(
-        text.contains("name = \"Jalousieaktor Kind 2 Süd\"\n"),
+        text.contains("name = \"Jalousieaktor Gast 2 Süd\"\n"),
         "{text}"
     );
     assert!(
@@ -854,7 +854,7 @@ name = "KNX IP Interface"
 
 [knxnet]
 assignment = "dhcp"
-friendly_name = "Bocklisch Alpha"   # shown in the ETS bus search
+friendly_name = "Demohouse Alpha"   # shown in the ETS bus search
 tunnels = ["1.1.22", "1.1.23", "1.1.24"]
 "#;
     let dir = tmp("knxnet")?;
@@ -868,7 +868,7 @@ tunnels = ["1.1.22", "1.1.23", "1.1.24"]
         .clone()
         .ok_or("[knxnet] loads")?;
     assert_eq!(knxnet.assignment, IpAssignment::Dhcp);
-    assert_eq!(knxnet.friendly_name.as_deref(), Some("Bocklisch Alpha"));
+    assert_eq!(knxnet.friendly_name.as_deref(), Some("Demohouse Alpha"));
     assert_eq!(
         knxnet.tunnels,
         vec![ia("1.1.22")?, ia("1.1.23")?, ia("1.1.24")?]
@@ -888,15 +888,15 @@ tunnels = ["1.1.22", "1.1.23", "1.1.24"]
             .ok_or("knxnet")?;
         k.tunnels.push(ia("1.1.30")?);
         k.assignment = IpAssignment::Static;
-        k.address = Some("192.168.1.74".parse()?);
+        k.address = Some("192.0.2.74".parse()?);
         k.netmask = Some("255.255.255.0".parse()?);
     }
     model.save(&dir)?;
     let text = fs::read_to_string(dir.join("devices/1.1.200.toml"))?;
     assert!(text.contains("assignment = \"static\""), "{text}");
-    assert!(text.contains("address = \"192.168.1.74\""), "{text}");
+    assert!(text.contains("address = \"192.0.2.74\""), "{text}");
     assert!(
-        text.contains("friendly_name = \"Bocklisch Alpha\"   # shown in the ETS bus search"),
+        text.contains("friendly_name = \"Demohouse Alpha\"   # shown in the ETS bus search"),
         "an untouched key keeps its comment:\n{text}"
     );
     assert!(text.contains("\"1.1.30\"]"), "{text}");

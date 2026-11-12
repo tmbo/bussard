@@ -114,7 +114,7 @@ fn oracle_matches() -> Result<(), Box<dyn std::error::Error>> {
 /// The real project's name is read from `project.xml` and populated on the
 /// model (issue #62). Before this fix `project.xml` was never read, so
 /// `groups.project` was always `None`. The real `home_test.knxproj`'s
-/// `ProjectInformation@Name` is "Bocklisch / Alpha" with a `ThreeLevel`
+/// `ProjectInformation@Name` is "Demohouse / Alpha" with a `ThreeLevel`
 /// group-address style, so import must succeed and carry that name.
 fn real_project_name_is_extracted() -> Result<(), Box<dyn std::error::Error>> {
     let Some((model, _)) = load_real_and_oracle()? else {
@@ -123,7 +123,7 @@ fn real_project_name_is_extracted() -> Result<(), Box<dyn std::error::Error>> {
     };
     assert_eq!(
         model.groups.project.as_deref(),
-        Some("Bocklisch / Alpha"),
+        Some("Demohouse / Alpha"),
         "project name should be read from project.xml"
     );
     Ok(())

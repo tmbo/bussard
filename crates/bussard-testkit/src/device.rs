@@ -436,7 +436,7 @@ impl Default for MockKnxnet {
             ],
             current_assignment: 0x04,
             assignment: 0x04,
-            current: [[192, 168, 1, 74], [255, 255, 255, 0], [192, 168, 1, 1]],
+            current: [[192, 0, 2, 74], [255, 255, 255, 0], [192, 168, 1, 1]],
             configured: [[0, 0, 0, 0], [0, 0, 0, 0], [0, 0, 0, 0]],
             mac: [0x00, 0x00, 0x5E, 0x00, 0x53, 0x01],
             routing_multicast: [224, 0, 23, 12],

@@ -32,13 +32,13 @@ committed and replayed in CI.
 
 | what | value |
 | --- | --- |
-| host, user | `192.168.1.26`, `macremote` (password `WINDOWS_SSH_PW` in the repo `.env`) |
+| host, user, password | `ETS_VM_HOST`, `ETS_VM_USER`, `WINDOWS_SSH_PW` in the repo `.env` (never committed) |
 | ETS | 6.4.1 build 6.4.8718, `C:\Program Files (x86)\ETS6`, GUI process `ETS6N.exe` |
-| desktop session | the RDP session of `macremote`; ssh commands run in session 0 and cannot see it |
+| desktop session | the RDP session of the VM user; ssh commands run in session 0 and cannot see it |
 | Python | 3.12 at `C:\Program Files\Python312\python.exe`, `pywinauto`, `pillow` |
 | capture | the sim writes its own pcap (`gateway.pcap`); dumpcap exists but files were truncated when it was killed over ssh |
-| driver files | `C:\Users\macremote\ets-sweep\` (`ets_driver.py`, `driver.log`, `driver.token`, `cap\`) |
-| network | the VM reaches the Mac (`192.168.1.79`) over UDP; the Mac's stealth mode drops ping only |
+| driver files | `C:\Users\<user>\ets-sweep\` (`ets_driver.py`, `driver.log`, `driver.token`, `cap\`) |
+| network | the VM reaches the Mac (its LAN address) over UDP; the Mac's stealth mode drops ping only |
 
 PowerShell script files are blocked by the Restricted execution policy, which is
 why the driver is Python.
@@ -63,7 +63,7 @@ driver is started by hand in the VM's RDP session, once; it then survives until
 the VM reboots and re-execs itself whenever `vm.py install` uploads a new file:
 
     # in a PowerShell window of the RDP session (detached, no console)
-    Start-Process "C:\Program Files\Python312\python.exe" -ArgumentList "C:\Users\macremote\ets-sweep\ets_driver.py" -WindowStyle Hidden
+    Start-Process "C:\Program Files\Python312\python.exe" -ArgumentList "C:\Users\<user>\ets-sweep\ets_driver.py" -WindowStyle Hidden
 
 `uv run tools/ets-sweep/vm.py driver GET /health` confirms it answers and lists
 the windows it sees (ETS must be among them).
@@ -102,7 +102,7 @@ Abgeschlossen", all four objects Loaded, 50 operations in the capture.
   size, hence the magnified, contrast-stretched OCR for grid cells.
 - A configured tunnelling connection is added under the toolbar connection
   dropdown, "Konfigurierte Verbindungen verwalten...": name `knx-sim`, server
-  `192.168.1.79`, port 3671, protocol **Udp** (not Auto: the TCP attempt stalls
+  the Mac's LAN address, port 3671, protocol **Udp** (not Auto: the TCP attempt stalls
   against the Mac). "Für dieses Projekt verwenden" binds it to the sweep project.
 - ETS **pings** the interface host before a download ("Ping Ergebnis:
   TimedOut" in the connection manager, then "Verbindungsqualität mit 1.1.1 ist
@@ -137,7 +137,7 @@ Each of these ended a run until the sim did it (all 2026-10-27, DA.tp):
 
 `uv run tools/ets-sweep/catalog.py [--filter a,b] [--limit N] [--redo]` uploads
 each corpus `.knxprod` (`tests-support/product-corpus/cache/vendor`, vendor
-data, never committed) to `C:\Users\macremote\ets-sweep\products\` and has
+data, never committed) to `C:\Users\<user>\ets-sweep\products\` and has
 the driver run ETS's catalog import: the Katalog panel's Import button, the
 `Produktdatei öffnen` file dialog (a Win32 dialog, driven by UI Automation),
 `Alle Produkte importieren` on the selection page of a multi-product file,
@@ -548,7 +548,7 @@ ETS exports: a `Hash` on the `ApplicationProgram`, on each `Product` and
 an application id whose last four hex digits are a fingerprint of the
 program's hash. bussard and knx-sim ignore all of it; ETS checks it.
 
-`sign.py` uploads `synthetic/signer.cs` to `C:\Users\macremote\ets-sweep\signer\`,
+`sign.py` uploads `synthetic/signer.cs` to `C:\Users\<user>\ets-sweep\signer\`,
 compiles it with the .NET Framework `csc.exe` once per source change
 (`signer.sha` holds the source digest), runs it on the product and downloads
 the result (`<in>-signed.knxprod`). The signer is our own C#; it loads ETS's

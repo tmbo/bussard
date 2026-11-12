@@ -1446,6 +1446,13 @@ class TestCaptureSecure(unittest.TestCase):
         self.assertEqual(out, {"keyring": "captures/synthetic/syn-secure/defaults/project.knxkeys",
                                "keyring_remote": "<vm>\\keyrings\\x.knxkeys"})
 
+    def test_portable_driver_commits_no_lan_endpoint(self):
+        text = json.dumps({"entries": ["KNX IP (10.20.30.74:3671 - 1.1.200)", "knx-sim (127.0.0.1:3672 Udp)"],
+                           "value": "192.168.27.21"})
+        out = json.loads(capture.portable_driver(text, Path("/nowhere"), "captures/synthetic/x/defaults"))
+        self.assertEqual(out, {"entries": ["KNX IP (192.0.2.74:3671 - 1.1.200)", "knx-sim (127.0.0.1:3672 Udp)"],
+                               "value": "192.168.27.21"})
+
     def test_synthetic_keyring_password_matches_the_oracle_test(self):
         # crates/bussard-cli/tests/it/offline_oracle.rs runs the synthetic
         # rows with the same password.
@@ -2101,7 +2108,7 @@ class TestDriverProjectNames(unittest.TestCase):
     # tile's second fragment sits 5 px lower.
     TILES = [
         {"text": "ets-sweep", "x": 171, "y": 1246, "w": 162, "h": 31},
-        {"text": "Bocklisch / Alpha", "x": 731, "y": 1246, "w": 280, "h": 31},
+        {"text": "Demohouse / Alpha", "x": 731, "y": 1246, "w": 280, "h": 31},
         {"text": "ets-sweep", "x": 1291, "y": 1246, "w": 162, "h": 31},
         {"text": "-secure", "x": 1457, "y": 1251, "w": 116, "h": 18},
     ]

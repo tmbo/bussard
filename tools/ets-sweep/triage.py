@@ -44,7 +44,7 @@ TRIAGE = HERE / "results" / "triage.json"
 REPORT = HERE / "results" / "triage.md"
 CAPTURES = REPO / "captures" / "ets-sweep"
 KNXTRACE = REPO / "tools" / "knxtrace" / "knxtrace.py"
-ETS_LOG = r"C:\Users\macremote\AppData\Local\KNX\ETS6\Log\ETS6.log"
+ETS_LOG = rf"C:\Users\{vm.USER}\AppData\Local\KNX\ETS6\Log\ETS6.log"
 FAILED = {"ets-failed", "driver-error", "sim-refused", "unknown"}
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 

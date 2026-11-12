@@ -6,10 +6,10 @@
 //! ```toml
 //! [knxnet]
 //! assignment = "dhcp"            # or "static"
-//! address = "192.168.1.74"       # static only
+//! address = "192.0.2.74"       # static only
 //! netmask = "255.255.255.0"      # static only
 //! gateway = "192.168.1.1"        # static only
-//! friendly_name = "Bocklisch Alpha"
+//! friendly_name = "Demohouse Alpha"
 //! tunnels = ["1.1.22", "1.1.23"]
 //! ```
 //!
@@ -204,7 +204,7 @@ pub struct KnxnetFacts {
     /// `PID_DEFAULT_GATEWAY`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gateway: Option<Ipv4Addr>,
-    /// `PID_MAC_ADDRESS`, `00:22:D1:04:62:7D`.
+    /// `PID_MAC_ADDRESS`, `00:00:5E:00:53:7D`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mac: Option<String>,
     /// `PID_SYSTEM_SETUP_MULTICAST_ADDRESS`.
@@ -246,7 +246,7 @@ impl KnxnetFacts {
     }
 
     /// The lines `status` and `describe` print, one fact each, in a fixed
-    /// order: `("IP address", "192.168.1.74 (dhcp)")`.
+    /// order: `("IP address", "192.0.2.74 (dhcp)")`.
     pub fn lines(&self) -> Vec<(&'static str, String)> {
         let mut out = Vec::new();
         if let Some(addr) = self.current_address {
@@ -367,7 +367,7 @@ fn list_or_none(list: &[IndividualAddress]) -> String {
     }
 }
 
-/// Formats a MAC address as `00:22:D1:04:62:7D`.
+/// Formats a MAC address as `00:00:5E:00:53:7D`.
 pub fn format_mac(octets: &[u8]) -> String {
     octets
         .iter()
@@ -512,7 +512,7 @@ mod tests {
     fn base() -> Result<KnxnetConfig, Box<dyn std::error::Error>> {
         Ok(KnxnetConfig {
             assignment: IpAssignment::Dhcp,
-            friendly_name: Some("Bocklisch Alpha".to_string()),
+            friendly_name: Some("Demohouse Alpha".to_string()),
             tunnels: vec![ia("1.1.22")?, ia("1.1.23")?],
             ..KnxnetConfig::default()
         })
@@ -533,7 +533,7 @@ mod tests {
             codes(&check_config(ia("1.1.200")?, &c, &[])),
             ["E043", "E043"]
         );
-        c.address = Some(Ipv4Addr::new(192, 168, 1, 74));
+        c.address = Some(Ipv4Addr::new(192, 0, 2, 74));
         c.netmask = Some(Ipv4Addr::new(255, 255, 255, 0));
         assert!(check_config(ia("1.1.200")?, &c, &[]).is_empty());
         Ok(())
@@ -615,7 +615,7 @@ mod tests {
         let facts = KnxnetFacts {
             read_at: "2026-10-26T10:00:00Z".to_string(),
             assignment_mode: Some(IpAssignment::Dhcp),
-            current_address: Some(Ipv4Addr::new(192, 168, 1, 74)),
+            current_address: Some(Ipv4Addr::new(192, 0, 2, 74)),
             address: Some(Ipv4Addr::new(10, 0, 0, 5)),
             friendly_name: Some("Alpha".to_string()),
             tunnels: vec![ia("1.1.22")?],
@@ -644,8 +644,8 @@ mod tests {
             ["device management", "tunnelling"]
         );
         assert_eq!(
-            format_mac(&[0, 0x22, 0xD1, 4, 0x62, 0x7D]),
-            "00:22:D1:04:62:7D"
+            format_mac(&[0, 0, 0x5E, 0, 0x53, 0x7D]),
+            "00:00:5E:00:53:7D"
         );
     }
 }

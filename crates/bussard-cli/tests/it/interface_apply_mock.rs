@@ -41,13 +41,13 @@ impl Drop for TempModel {
     }
 }
 
-/// The mock interface: DHCP, eight tunnels, "Bocklisch Alpha", at `ip`.
+/// The mock interface: DHCP, eight tunnels, "Demohouse Alpha", at `ip`.
 fn interface(ip: [u8; 4]) -> TestResult<MockDevice> {
     let knxnet = MockKnxnet {
         tunnels: (22..=29)
             .map(|n| format!("1.1.{n}").parse())
             .collect::<Result<Vec<IndividualAddress>, _>>()?,
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         current: [ip, [255, 255, 255, 0], [192, 168, 1, 1]],
         ..MockKnxnet::default()
     };
@@ -140,20 +140,20 @@ name = "KNX IP Interface"
 
 [knxnet]
 assignment = "dhcp"
-friendly_name = "Bocklisch Beta"
+friendly_name = "Demohouse Beta"
 tunnels = ["1.1.22", "1.1.23", "1.1.24", "1.1.25", "1.1.26", "1.1.27", "1.1.28", "1.1.30"]
 "#;
 
 #[test]
 fn test_interface_plan_apply_then_plan_is_a_noop() -> TestResult {
     let model = TempModel::new("bussard-interface-apply", CHANGED)?;
-    let bench = Bench::start(interface([192, 168, 1, 74])?)?;
+    let bench = Bench::start(interface([192, 0, 2, 74])?)?;
 
     let plan = bench.run(&model.dir(), &["plan", "1.1.200", "-v"])?;
     let (stdout, stderr) = text(&plan);
     assert!(plan.status.success(), "{stdout}\n{stderr}");
     for needle in [
-        "~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\"",
+        "~ friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\"",
         "+ tunnel address 1.1.30 added",
         "- tunnel address 1.1.29 removed",
         "writes: KNXnet/IP parameter object (PID 76, PID 53)",
@@ -174,7 +174,7 @@ fn test_interface_plan_apply_then_plan_is_a_noop() -> TestResult {
     assert!(stdout.contains("backup written to"), "{stdout}");
     let device = bench.device()?;
     let name = device.knxnet_property(76).ok_or("PID 76")?;
-    assert_eq!(&name[..14], b"Bocklisch Beta");
+    assert_eq!(&name[..14], b"Demohouse Beta");
     assert_eq!(
         device.knxnet_property(53).and_then(|t| t.get(14..16)),
         Some(&[0x11, 0x1E][..])
@@ -200,7 +200,7 @@ fn test_interface_plan_apply_then_plan_is_a_noop() -> TestResult {
 #[test]
 fn test_interface_apply_refuses_a_stale_plan_hash() -> TestResult {
     let model = TempModel::new("bussard-interface-hash", CHANGED)?;
-    let bench = Bench::start(interface([192, 168, 1, 74])?)?;
+    let bench = Bench::start(interface([192, 0, 2, 74])?)?;
     let apply = bench.run(
         &model.dir(),
         &["apply", "1.1.200", "--yes", "--plan", "0000000000000000"],
@@ -270,13 +270,13 @@ fn device_configuration_codes(bench: &Bench) -> TestResult<Vec<u8>> {
 #[test]
 fn test_interface_plan_apply_over_device_management() -> TestResult {
     let model = TempModel::new("bussard-interface-devmgmt", CHANGED)?;
-    let bench = Bench::start_with(interface([192, 168, 1, 74])?, interface_gateway)?;
+    let bench = Bench::start_with(interface([192, 0, 2, 74])?, interface_gateway)?;
 
     let plan = bench.run(&model.dir(), &["plan", "1.1.200", "--device-management"])?;
     let (stdout, stderr) = text(&plan);
     assert!(plan.status.success(), "{stdout}\n{stderr}");
     assert!(
-        stdout.contains("~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""),
+        stdout.contains("~ friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\""),
         "{stdout}"
     );
 
@@ -292,7 +292,7 @@ fn test_interface_plan_apply_over_device_management() -> TestResult {
     );
     let device = bench.device()?;
     let name = device.knxnet_property(76).ok_or("PID 76")?;
-    assert_eq!(&name[..14], b"Bocklisch Beta");
+    assert_eq!(&name[..14], b"Demohouse Beta");
     // The property writes went as local device management, no tunnel was
     // opened.
     let codes = device_configuration_codes(&bench)?;
@@ -318,7 +318,7 @@ fn test_interface_plan_apply_over_device_management() -> TestResult {
 #[test]
 fn test_interface_plan_falls_back_to_device_management_without_a_free_tunnel() -> TestResult {
     let model = TempModel::new("bussard-interface-devmgmt-full", CHANGED)?;
-    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+    let bench = Bench::start_with(interface([192, 0, 2, 74])?, |b| {
         interface_gateway(b).refuse_connect(0x24)
     })?;
     let plan = bench.run(&model.dir(), &["plan", "1.1.200"])?;
@@ -337,7 +337,7 @@ fn test_interface_plan_falls_back_to_device_management_without_a_free_tunnel() -
 fn test_interface_device_management_refuses_another_gateway() -> TestResult {
     let model = TempModel::new("bussard-interface-devmgmt-other", CHANGED)?;
     // The gateway describes itself as 1.0.0, not the interface 1.1.200.
-    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+    let bench = Bench::start_with(interface([192, 0, 2, 74])?, |b| {
         b.interface_device(IndividualAddress::from_raw(0x11C8))
             .description(bussard_testkit::wire::description_response_body(
                 "IPS 300", 4, 0,
@@ -357,7 +357,7 @@ fn test_interface_plan_falls_back_to_device_management_on_a_duplicated_tunnel_ad
     let model = TempModel::new("bussard-interface-devmgmt-dup", CHANGED)?;
     // A device on the line answers at the tunnel's address.
     let tunnel = IndividualAddress::from_raw(bussard_testkit::consts::TUNNEL_IA_RAW);
-    let bench = Bench::start_with(interface([192, 168, 1, 74])?, |b| {
+    let bench = Bench::start_with(interface([192, 0, 2, 74])?, |b| {
         interface_gateway(b).device(MockDevice::new(tunnel))
     })?;
     let plan = bench.run(&model.dir(), &["plan", "1.1.200"])?;
@@ -374,7 +374,7 @@ fn test_interface_plan_falls_back_to_device_management_on_a_duplicated_tunnel_ad
 #[test]
 fn test_describe_reads_the_interface_over_device_management() -> TestResult {
     let model = TempModel::new("bussard-interface-devmgmt-describe", CHANGED)?;
-    let bench = Bench::start_with(interface([192, 168, 1, 74])?, interface_gateway)?;
+    let bench = Bench::start_with(interface([192, 0, 2, 74])?, interface_gateway)?;
     let describe = bench.run(
         &model.dir(),
         &["describe", "1.1.200", "--device-management"],
@@ -389,7 +389,7 @@ fn test_describe_reads_the_interface_over_device_management() -> TestResult {
 #[test]
 fn test_device_management_flag_is_refused_for_other_commands() -> TestResult {
     let model = TempModel::new("bussard-interface-devmgmt-flag", CHANGED)?;
-    let bench = Bench::start(interface([192, 168, 1, 74])?)?;
+    let bench = Bench::start(interface([192, 0, 2, 74])?)?;
     let read = bench.run(&model.dir(), &["read", "1/0/1", "--device-management"])?;
     let (stdout, stderr) = text(&read);
     assert!(!read.status.success(), "{stdout}\n{stderr}");

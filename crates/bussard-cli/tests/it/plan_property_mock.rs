@@ -87,7 +87,7 @@ impl Bench {
         let device = if knxnet {
             let interface = MockKnxnet {
                 tunnels: vec!["1.1.22".parse()?, "1.1.23".parse()?],
-                friendly_name: "Bocklisch Alpha".to_string(),
+                friendly_name: "Demohouse Alpha".to_string(),
                 ..MockKnxnet::default()
             };
             device.with_knxnet_unlisted_writable(&interface, 8)
@@ -177,7 +177,7 @@ fn write_model(dir: &Path, knxnet: bool) -> TestResult {
         dir.join("devices").join("1.1.200.toml"),
         if knxnet {
             "address = \"1.1.200\"\nname = \"KNX IP Interface\"\n\n[knxnet]\n\
-             assignment = \"dhcp\"\nfriendly_name = \"Bocklisch Beta\"\n\
+             assignment = \"dhcp\"\nfriendly_name = \"Demohouse Beta\"\n\
              tunnels = [\"1.1.22\", \"1.1.23\"]\n"
         } else {
             "address = \"1.1.200\"\nname = \"KNX IP Interface\"\n"
@@ -246,7 +246,7 @@ fn test_plan_interface_with_a_property_procedure_shows_both() -> TestResult {
     let (stdout, stderr) = text(&out);
     assert!(out.status.success(), "stdout:\n{stdout}\nstderr:\n{stderr}");
     assert!(
-        stdout.contains("~ friendly name = \"Bocklisch Beta\", was \"Bocklisch Alpha\""),
+        stdout.contains("~ friendly name = \"Demohouse Beta\", was \"Demohouse Alpha\""),
         "{stdout}"
     );
     assert!(

@@ -1255,7 +1255,7 @@ mod tests {
     #[test]
     fn slug_basic() {
         assert_eq!(slugify("Jalousieaktor Wohnen"), "jalousieaktor-wohnen");
-        assert_eq!(slugify("Küche EG"), "kueche-eg");
+        assert_eq!(slugify("Küche OG"), "kueche-og");
         assert_eq!(slugify("A/B  C"), "a-b-c");
         assert_eq!(slugify("   "), "device");
         assert_eq!(slugify("Süd"), "sued");

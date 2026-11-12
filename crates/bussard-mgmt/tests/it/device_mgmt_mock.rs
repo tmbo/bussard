@@ -24,7 +24,7 @@ const FRIENDLY_NAME: PropertyExtAddress = PropertyExtAddress {
 async fn test_layer4_reads_and_writes_properties_over_device_management() -> TestResult {
     let target: IndividualAddress = "1.1.200".parse()?;
     let knxnet = MockKnxnet {
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         ..MockKnxnet::default()
     };
     let gw = MockGateway::builder()
@@ -48,7 +48,7 @@ async fn test_layer4_reads_and_writes_properties_over_device_management() -> Tes
 
     assert_eq!(read_device_descriptor(&mut l4).await?, 0x0021);
     let name = property_ext::read_property_ext(&mut l4, FRIENDLY_NAME, 9, 1).await?;
-    assert_eq!(name.data, b"Bocklisch");
+    assert_eq!(name.data, b"Demohouse");
     property_ext::write_property_ext_con(&mut l4, FRIENDLY_NAME, 5, 1, b"Gamma").await?;
     let name = property_ext::read_property_ext(&mut l4, FRIENDLY_NAME, 5, 1).await?;
     assert_eq!(name.data, b"Gamma");

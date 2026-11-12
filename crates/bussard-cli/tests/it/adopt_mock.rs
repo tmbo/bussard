@@ -1041,7 +1041,7 @@ fn test_adopt_ip_interface_writes_the_knxnet_table() -> TestResult {
     );
     assert!(
         stdout.contains(
-            "KNXnet/IP: assignment dhcp, 2 tunnel address(es), address in use 192.168.1.74"
+            "KNXnet/IP: assignment dhcp, 2 tunnel address(es), address in use 192.0.2.74"
         ),
         "stdout:\n{stdout}"
     );
@@ -1058,7 +1058,7 @@ fn test_adopt_ip_interface_writes_the_knxnet_table() -> TestResult {
     );
     let facts = facts.ok_or("facts file")?;
     assert!(
-        facts.contains("current_address = \"192.168.1.74\""),
+        facts.contains("current_address = \"192.0.2.74\""),
         "{facts}"
     );
     Ok(())

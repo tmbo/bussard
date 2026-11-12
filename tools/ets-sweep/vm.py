@@ -15,8 +15,8 @@
 
 The driver listens on 127.0.0.1:8765 inside the VM; every call here rides an
 ssh direct-tcpip channel, so the VM needs no inbound firewall rule.
-Credentials: WINDOWS_SSH_PW in the repo's .env (never committed); host and user
-below. The driver must run in the VM's interactive desktop session (the one that
+Credentials and address: WINDOWS_SSH_PW, ETS_VM_HOST and ETS_VM_USER in the
+environment or the repo's .env (never committed). The driver must run in the VM's interactive desktop session (the one that
 shows ETS). It is started there once by hand (ssh lands in session 0, and
 scheduled tasks or PsExec are not used from here); afterwards `install` only
 uploads, and the running driver re-execs itself when its file changes.
@@ -32,18 +32,13 @@ from pathlib import Path
 
 import paramiko
 
-HOST = os.environ.get("ETS_VM_HOST", "192.168.1.26")
-USER = os.environ.get("ETS_VM_USER", "macremote")
-# The ssh port: a local relay to the VM when this host's Python cannot reach it directly.
-PORT = int(os.environ.get("ETS_VM_PORT", "22"))
-DRIVER_PORT = 8765
-REMOTE_DIR = rf"C:\Users\{USER}\ets-sweep"
-PYTHON = r"C:\Program Files\Python312\python.exe"
 REPO = Path(__file__).resolve().parents[2]
 
 
-def password() -> str:
-    env = os.environ.get("WINDOWS_SSH_PW")
+def setting(name: str) -> str | None:
+    """`name` from the environment, else from the repo's .env. The VM's
+    address, user and password are the owner's and are never committed."""
+    env = os.environ.get(name)
     if env:
         return env
     # A worktree has no .env of its own; its .git file names the main checkout.
@@ -56,9 +51,27 @@ def password() -> str:
         if not env_file.exists():
             continue
         for line in env_file.read_text().splitlines():
-            if line.startswith("WINDOWS_SSH_PW="):
+            if line.startswith(f"{name}="):
                 return line.split("=", 1)[1].strip().strip('"').strip("'")
-    raise SystemExit("WINDOWS_SSH_PW not set and not in .env")
+    return None
+
+
+# Unset, HOST is empty and `connect` refuses; USER falls back to a placeholder
+# so the paths below still import (the tests need no VM).
+HOST = setting("ETS_VM_HOST") or ""
+USER = setting("ETS_VM_USER") or "ets"
+# The ssh port: a local relay to the VM when this host's Python cannot reach it directly.
+PORT = int(os.environ.get("ETS_VM_PORT", "22"))
+DRIVER_PORT = 8765
+REMOTE_DIR = rf"C:\Users\{USER}\ets-sweep"
+PYTHON = r"C:\Program Files\Python312\python.exe"
+
+
+def password() -> str:
+    value = setting("WINDOWS_SSH_PW")
+    if not value:
+        raise SystemExit("WINDOWS_SSH_PW not set and not in .env")
+    return value
 
 
 def connect() -> paramiko.SSHClient:
@@ -66,6 +79,8 @@ def connect() -> paramiko.SSHClient:
     this Python ('No route to host' while /usr/bin/nc connects, 2026-11-03),
     the connection goes through /usr/bin/nc instead: a system binary is not
     subject to that check, and paramiko speaks ssh over its pipes."""
+    if not HOST:
+        raise SystemExit("ETS_VM_HOST not set and not in .env")
     # A failed handshake ('No existing session') ended a night's sweep once
     # while the VM's sshd answered again minutes later (2026-11-07): retry.
     last: Exception | None = None

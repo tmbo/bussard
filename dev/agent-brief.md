@@ -9,7 +9,7 @@ between tasks belongs here.
 ## Where you work
 
 - Only in the worktree the prompt names, never in the main checkout
-  (`/Users/tmbo/projects/bussard`) and never in another agent's worktree.
+  and never in another agent's worktree.
 - Never write under `knx/`, `captures/` or `shared-with-windows/`. They are
   the owner's installation, in use by other processes.
 - Never contact a real gateway. `bussard.yaml` defaults to the owner's house,

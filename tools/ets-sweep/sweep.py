@@ -274,7 +274,7 @@ def ets_status(history: list[str] | None) -> str:
     return "unknown"
 
 
-ETS_LOG = r"C:\Users\macremote\AppData\Local\KNX\ETS6\Log\ETS6.log"
+ETS_LOG = rf"C:\Users\{vm.USER}\AppData\Local\KNX\ETS6\Log\ETS6.log"
 MISMATCH = re.compile(
     r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d).*Required data mismatch at SystemProperty\((\d+)/(\d+)\)\[\$([0-9A-Fa-f]+)\]: ([0-9A-Fa-f]*) instead of ([0-9A-Fa-f]+)"
 )

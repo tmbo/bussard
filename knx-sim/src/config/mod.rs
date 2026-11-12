@@ -521,7 +521,7 @@ pub struct KnxnetSimConfig {
     /// `dhcp` (the default) or `static`.
     #[serde(default)]
     pub assignment: Option<String>,
-    /// The address in use (default `192.168.1.74`).
+    /// The address in use (default `192.0.2.74`).
     #[serde(default)]
     pub address: Option<String>,
     /// The netmask in use (default `255.255.255.0`).

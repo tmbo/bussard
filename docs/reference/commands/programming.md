@@ -77,7 +77,7 @@ A plan keeps the flags it read in the device facts (`.bussard/`). The next plan 
 A device whose file has a `[knxnet]` table and no links is planned as its KNXnet/IP parameter object instead of its tables. `plan` reads the object and lists each difference from the table as a change with `subject` `interface`:
 
 ```text
-~ friendly name = "Bocklisch Beta", was "Bocklisch Alpha"
+~ friendly name = "Demohouse Beta", was "Demohouse Alpha"
 + tunnel address 1.1.30 added
 - tunnel address 1.1.29 removed
 ~ static address = 192.0.2.80, was 0.0.0.0

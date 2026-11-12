@@ -366,11 +366,18 @@ def secure_model(dst: Path) -> None:
 VM_SWEEP_DIR = re.compile(r"C:\\\\Users\\\\[^\\\\\"]+\\\\ets-sweep")
 
 
+# The host of an `address:port` endpoint other than loopback: ETS's connection
+# list names the owner's gateway. A bare address (a parameter value) stays.
+LAN_ENDPOINT = re.compile(r"\b(?!127\.)\d{1,3}\.\d{1,3}\.\d{1,3}\.(\d{1,3})(?=:\d)")
+
+
 def portable_driver(text: str, src: Path, rel: str) -> str:
     """`driver.json` as committed: the run directory's absolute path (the
-    fetched keyring of a secure run) becomes the capture's relative one and
-    the VM's sweep directory `<vm>`, so no local user name is committed."""
-    return VM_SWEEP_DIR.sub("<vm>", text.replace(str(src), rel))
+    fetched keyring of a secure run) becomes the capture's relative one, the
+    VM's sweep directory `<vm>` and the host of a network endpoint its
+    192.0.2.x counterpart (RFC 5737), so no local user name or address is
+    committed."""
+    return LAN_ENDPOINT.sub(r"192.0.2.\1", VM_SWEEP_DIR.sub("<vm>", text.replace(str(src), rel)))
 
 
 def keyring_args(dst: Path) -> tuple[list[str], dict]:

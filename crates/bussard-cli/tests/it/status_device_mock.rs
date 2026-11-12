@@ -44,7 +44,7 @@ fn interface() -> TestResult<MockDevice> {
         tunnels: (22..=29)
             .map(|n| format!("1.1.{n}").parse())
             .collect::<Result<Vec<IndividualAddress>, _>>()?,
-        friendly_name: "Bocklisch Alpha".to_string(),
+        friendly_name: "Demohouse Alpha".to_string(),
         ..MockKnxnet::default()
     };
     Ok(MockDevice::new("1.1.200".parse()?)
@@ -90,7 +90,7 @@ name = "KNX IP Interface"
 
 [knxnet]
 assignment = "dhcp"
-friendly_name = "Bocklisch Alpha"
+friendly_name = "Demohouse Alpha"
 tunnels = ["1.1.22", "1.1.23", "1.1.24", "1.1.25", "1.1.26", "1.1.27", "1.1.28", "1.1.30"]
 "#;
 
@@ -109,9 +109,9 @@ fn test_status_address_prints_the_knxnet_state_and_the_drift() -> TestResult {
         "Device 1.1.200",
         "mask 0021",
         "KNX IP Interface",
-        "IP address     192.168.1.74 (dhcp)",
+        "IP address     192.0.2.74 (dhcp)",
         "MAC            00:00:5E:00:53:01",
-        "friendly name  Bocklisch Alpha",
+        "friendly name  Demohouse Alpha",
         "tunnels        1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.29",
         "state          ok",
         "[knxnet] in devices/1.1.200.toml differs from the device:",
@@ -125,7 +125,7 @@ fn test_status_address_prints_the_knxnet_state_and_the_drift() -> TestResult {
     let facts = std::fs::read_to_string(model.dir().join(".bussard/facts/1.1.200.toml"))?;
     assert!(facts.contains("[device_facts.knxnet]"), "{facts}");
     assert!(
-        facts.contains("current_address = \"192.168.1.74\""),
+        facts.contains("current_address = \"192.0.2.74\""),
         "{facts}"
     );
     assert!(facts.contains("mac = \"00:00:5E:00:53:01\""), "{facts}");
@@ -143,7 +143,7 @@ fn test_status_address_json_carries_facts_model_and_drift() -> TestResult {
     let json: serde_json::Value = serde_json::from_str(&stdout)?;
     assert_eq!(json["schema"], 2);
     assert_eq!(json["address"], "1.1.200");
-    assert_eq!(json["knxnet"]["current_address"], "192.168.1.74");
+    assert_eq!(json["knxnet"]["current_address"], "192.0.2.74");
     assert_eq!(json["knxnet"]["assignment_mode"], "dhcp");
     assert_eq!(json["knxnet"]["tunnels"][7], "1.1.29");
     assert_eq!(json["model_knxnet"]["tunnels"][7], "1.1.30");
@@ -171,7 +171,7 @@ fn test_describe_prints_the_knxnet_section() -> TestResult {
     assert_eq!(writes, 0);
     assert!(stdout.contains("KNXnet/IP (object 1, read "), "{stdout}");
     assert!(
-        squash(&stdout).contains("IP address 192.168.1.74 (dhcp)"),
+        squash(&stdout).contains("IP address 192.0.2.74 (dhcp)"),
         "{stdout}"
     );
     Ok(())
@@ -200,7 +200,7 @@ fn test_status_address_finds_an_object_the_walk_does_not_list() -> TestResult {
     assert_eq!(writes, 0);
     for needle in [
         "KNXnet/IP (object type 11, read",
-        "IP address 192.168.1.74 (dhcp)",
+        "IP address 192.0.2.74 (dhcp)",
         "tunnels 1.1.22, 1.1.23, 1.1.24, 1.1.25, 1.1.26, 1.1.27, 1.1.28, 1.1.29",
     ] {
         assert!(

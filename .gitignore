@@ -50,8 +50,13 @@ __pycache__/
 _site/
 website/site/
 
-# The TOML conversion of the private house model (phase 1 of the TOML switch).
+# The TOML conversion of the private house model (phase 1 of the TOML switch)
+# and backup copies of the model.
 /knx-toml/
+/knx.*/
+/knx-backup*/
+# ETS sweep reports (derived from the vendor corpus and the owner's VM).
+tools/ets-sweep/results/
 
 # The product models (#339, #906) the tests write next to fixture models; the
 # L002 lint fixture's one is committed with `git add -f`.
