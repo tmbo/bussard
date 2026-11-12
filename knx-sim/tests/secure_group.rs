@@ -21,7 +21,9 @@ use std::sync::Arc;
 
 use knx_sim::bus::event::{Event, RecordingSink};
 use knx_sim::bus::{Bus, StimulusJob};
-use knx_sim::device::{Device, LoadState, ProfileOverrides, SecureActivation, flag};
+use knx_sim::device::{
+    ActivatedTables, Device, LoadState, ProfileOverrides, SecureActivation, flag,
+};
 use knx_sim::secure::{
     A_SECURE_DATA_APCI, DataSecureSession, Key16, SecAlgorithm, Unwrapped, open_group, seal_group,
 };
@@ -81,6 +83,18 @@ fn hex(s: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
 impl Rig {
     /// Build the activated device and program it: tables plus security object.
     fn programmed() -> Result<Self, Box<dyn std::error::Error>> {
+        Self::build(None)
+    }
+
+    /// Build the activated device with the security object of an `activated`
+    /// start state (`tables`, bussard issue #1054) instead of a secured load
+    /// of it; the tool loads only the address, association and group-object
+    /// tables, then the bus settles the group keys by address.
+    fn activated_start(tables: ActivatedTables) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::build(Some(tables))
+    }
+
+    fn build(start: Option<ActivatedTables>) -> Result<Self, Box<dyn std::error::Error>> {
         let sink = Arc::new(RecordingSink::new());
         let product = knx_sim::testfixtures::synthetic_mdt_sys7_product();
         let dev = Device::from_product_with_overrides(
@@ -98,6 +112,11 @@ impl Rig {
             },
             sink.clone(),
         )?;
+        let preset = start.is_some();
+        let dev = match start {
+            Some(tables) => dev.with_activated_tables(tables)?,
+            None => dev,
+        };
         let mut bus = Bus::new(sink.clone());
         bus.add_device(dev);
         let mut rig = Rig {
@@ -121,6 +140,13 @@ impl Rig {
         go.extend_from_slice(&(crwt | 0x03).to_be_bytes());
         go.extend_from_slice(&(crw | 0x07).to_be_bytes());
         rig.load_table(3, 0x8000, &go)?;
+
+        if preset {
+            rig.bus
+                .deliver_from_tool(&cemi(TOOL, DEV, false, vec![0x81]));
+            rig.bus.settle_activated_tables()?;
+            return Ok(rig);
+        }
 
         // Security object: StartLoading, PID 54 clear and one row (the peer
         // 1.1.1, sequence 1500), PID 53 row (index 2 = 1/2/3, group key), PID 61
@@ -621,4 +647,55 @@ fn test_secure_group_tool_flag_and_check_order() -> TestResult {
     )?;
     assert_eq!(rig.object_value(1), Some(vec![]));
     Ok(())
+}
+
+/// The security object of the issue #172 rig, as an `activated` start state
+/// gives it: the group key by group address, the peer as sender, object 1
+/// flagged.
+fn start_tables(group_key_ga: u16) -> ActivatedTables {
+    ActivatedTables {
+        group_keys_by_address: vec![(group_key_ga, Key16::new(GROUP_KEY), true)],
+        senders: vec![(PEER, PEER_SEQ)],
+        go_flags: vec![(1, 0x03)],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn test_activated_start_state_admits_secured_group_traffic() -> TestResult {
+    // No secured load of the security object: the start state holds it, and
+    // the device speaks secured group traffic as after a download.
+    let mut rig = Rig::activated_start(start_tables(GA_SECURE))?;
+    let key = Key16::new(GROUP_KEY);
+    let replies = rig.secure_group(&key, SecAlgorithm::AuthEnc, 2001, &[0x00, 0x89]);
+    assert!(replies.is_empty());
+    assert_eq!(rig.object_value(1), Some(vec![0x09]));
+    // The sender table's sequence holds: the peer's old sequence is refused.
+    let replies = rig.secure_group(&key, SecAlgorithm::AuthEnc, PEER_SEQ, &[0x00, 0x81]);
+    assert!(replies.is_empty());
+    assert_eq!(rig.object_value(1), Some(vec![0x09]));
+    // The plain read of the secured object is ignored.
+    let plain = rig
+        .bus
+        .deliver_from_tool(&cemi(PEER, GA_SECURE, true, vec![0x00, 0x00]));
+    assert!(plain.is_empty(), "{plain:?}");
+    let obj = rig
+        .bus
+        .device(IndividualAddress(DEV))
+        .and_then(|d| d.security_object())
+        .ok_or("no security object")?;
+    assert_eq!((obj.security_mode(), obj.group_key_rows()), (1, 1));
+    assert_eq!(obj.group_key_address_index(1), Some(2), "1/2/3 is TSAP 2");
+    assert_eq!(obj.ia_table_sequence(PEER), Some(PEER_SEQ));
+    Ok(())
+}
+
+#[test]
+fn test_activated_start_state_refuses_a_key_for_an_unused_address() {
+    // 1/2/5 is not in the address table the tool loaded.
+    let err = Rig::activated_start(start_tables(0x0A05))
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("1/2/5"), "{err}");
 }

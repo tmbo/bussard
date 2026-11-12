@@ -83,9 +83,41 @@ impl fmt::Display for GroupAddress {
     }
 }
 
+impl std::str::FromStr for GroupAddress {
+    type Err = String;
+
+    /// Parses the 3-level form `main/middle/sub` (main 0..=31, middle 0..=7,
+    /// sub 0..=255).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let parts: Vec<&str> = s.trim().split('/').collect();
+        let [main, middle, sub] = parts[..] else {
+            return Err(format!("expected main/middle/sub, got {s:?}"));
+        };
+        let num = |p: &str| {
+            p.parse::<u16>()
+                .map_err(|e| format!("bad group address {s:?}: {e}"))
+        };
+        let (main, middle, sub) = (num(main)?, num(middle)?, num(sub)?);
+        if main > 31 || middle > 7 || sub > 255 {
+            return Err(format!("group address out of range: {s:?}"));
+        }
+        Ok(GroupAddress((main << 11) | (middle << 8) | sub))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_group_address_from_str() -> Result<(), String> {
+        let ga: GroupAddress = "1/2/3".parse()?;
+        assert_eq!(ga.raw(), 0x0A03);
+        assert_eq!(ga.to_string(), "1/2/3");
+        assert!("32/0/0".parse::<GroupAddress>().is_err());
+        assert!("1/2".parse::<GroupAddress>().is_err());
+        Ok(())
+    }
 
     #[test]
     fn test_individual_address_roundtrip() {

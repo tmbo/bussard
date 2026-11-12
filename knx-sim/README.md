@@ -57,6 +57,65 @@ architecture.
   properties. The ETS partial-download oracle uses it to run `bussard apply`
   against ETS's state after a full download (bussard issues #469, #478).
 
+## KNX Data Secure start states
+
+A device's `security:` block picks its Data Secure state. `status` is one of:
+
+- `plain` (or no block): no Data Secure.
+- `factory`: secure capable, security mode off, tool access under the FDSK
+  given as `tool_key`. ETS commissions such a device (the `syn-secure/defaults`
+  capture).
+- `activated`: what an earlier secured download left behind (bussard issue
+  #1054): security mode on, the security object `Loaded`, all management
+  access over `A_SecureData` under the tool key. The ETS `reload`, `partial`
+  and `apply` rows start here, and bussard flashes a secured device here.
+
+The `activated` options:
+
+| option | meaning |
+|---|---|
+| `tool_key` | the tool key, 32 hex characters |
+| `keyring` | `{ file, password }`: an ETS keyring export (`.knxkeys`, relative to the config). The device's tool key and `SequenceNumber` come from its `Device` entry (by individual address, else by the serial number of a `properties` override of object 0 PID 11), the group keys from `GroupAddresses` |
+| `group_keys` | group key table rows (PID 53): `{ address: "1/0/1", key }` or `{ index: 2, key }` (address-table index) |
+| `senders` | security individual address table rows (PID 54): `{ address: "1.1.20", seq: 0 }` |
+| `go_security_flags` | group-object security flags (PID 61): `{ object: 1, flags: 3 }` |
+| `initial_tx_seq` | the device's sending sequence; 0 (the default) takes the keyring's `SequenceNumber`. A tool refuses a device sequence of 0 as stale, so set one without a keyring |
+| `initial_rx_seq` | the freshness floor for the tool's first frame |
+
+An explicit `tool_key` or `group_keys` row wins over the keyring. Group keys
+given by address resolve against the device's address table once every
+`replay` capture has run, just before the gateway opens: an explicit address
+the table does not hold stops the simulator, a keyring key for an address the
+device does not use is dropped. The other tables are set as given. The
+options other than `tool_key` are refused on a `factory` device.
+
+Example, the activated `syn-secure` device ETS commissioned in the
+`syn-secure/defaults` capture, with the keyring ETS exported next to it (a
+synthetic device under the public catalogue password):
+
+```yaml
+devices:
+  - address: "1.1.1"
+    knxprod: "syn-secure.knxprod"
+    application: "M-00FA_A-2900-10-0000"
+    initial_state: unloaded
+    lsm_access: property
+    security:
+      status: activated
+      keyring:
+        file: "project.knxkeys"   # relative to this config
+        password: "SyntheticKeyring1!"
+      senders:
+        - { address: "1.1.20", seq: 0 }
+      go_security_flags:
+        - { object: 1, flags: 3 }
+    properties:
+      - { object: 0, pid: 11, value: "00fad4730c98" }
+```
+
+Every key must be synthetic: a config or keyring here is never a user's
+installation. The event log never prints key bytes.
+
 In bussard's testing, knx-sim is the third corner of a triangle with ETS and
 bussard: its calibration tests replay ETS captures, so it stays honest against
 ETS rather than against bussard, and bussard's flash-then-plan loop runs

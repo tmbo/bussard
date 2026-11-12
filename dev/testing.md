@@ -109,6 +109,16 @@ no Layer 4 acks, memory writes as address, length and content hash.
   on, the two must be identical. The flash half needs a parameter that
   shows or hides a com-object (the MCP tier flashes only then):
   `syn-dynamic-tests` (07B0) and `syn-s7-no-comobjects` (0701) have one.
+- **Parameter change and Data Secure (issue #1054).** `params.txt`, for
+  `syn-property-param` and `syn-choose-per-ref`, is `bussard apply` of a
+  parameter-only change over the flashed defaults. `syn-secure` also has
+  `flash-secure.txt`, the secured flash into a device knx-sim starts
+  `activated`, with the keys in the model's key store, and
+  `params-secure.txt`, a parameter change applied over it. Their secured
+  frames are decrypted with the key store's keyring export; the
+  clock-seeded sending sequence and a repeated Sync_Req (the device ignores
+  one within 1 s of its last Sync_Res) are normalized away. Both surfaces
+  write each of these the same way too.
 
 Locally:
 
@@ -222,9 +232,15 @@ programming cycle against a simulated device:
    three parameters that keep the object table, one link removed, one
    added), a plan (no-op), a full flash, a plan (no-op). Then the first
    configuration is flashed over it without `--force`, and planned.
-4. Data Secure (the same cycle with security on, plus admission and
-   unsecuring a group address) is not part of the loop yet: it waits for the
-   secure group simulation (`feat/secure-group-sim`).
+4. Data Secure (issue #1054): over the synthetic catalogue, a Data Secure
+   capable application (`syn-secure`) runs steps 1 to 3 a second time on a
+   device knx-sim starts `activated` (security mode on, a synthetic tool
+   key; `knx-sim/README.md`, "KNX Data Secure start states"), with the device
+   file marked activated, every linked address `secure`, and the keys in the
+   model's key store. Every flash and apply then runs over `A_SecureData`,
+   the security object included, and ends with its read-back; a failure is
+   reported as `secured: <step>`. The corpus loop does not run it. Sender
+   admission and unsecuring a group address are not part of the loop.
 
 ```console
 $ export BUSSARD_PRODUCT_CORPUS="$PWD/tests-support/product-corpus"
