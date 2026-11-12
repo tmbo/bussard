@@ -894,7 +894,13 @@ def find_page(pages: list[dict], change: dict) -> dict | None:
     hits = [p for p in pages
             if norm(p.get("page") or "") == want or norm((p.get("crumb") or "").split(">")[-1]) == want]
     n = int(change.get("page_n", 0))
-    return {"crumb": hits[n].get("crumb"), "page": hits[n].get("page")} if len(hits) > n else None
+    if len(hits) <= n:
+        return None
+    # The driver's own count of the pages that read alike (`page_n` of
+    # `param_pages`) addresses the entry; `go_to_page` takes it back.
+    page = {"crumb": hits[n].get("crumb"), "page": hits[n].get("page")}
+    page_n = int(hits[n].get("page_n", n))
+    return {**page, "page_n": page_n} if page_n else page
 
 
 def set_params(flow, ia: str, changes: list[dict]) -> list[dict]:
