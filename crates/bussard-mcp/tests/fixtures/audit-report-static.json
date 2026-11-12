@@ -159,41 +159,45 @@
     "with_keyring_entry": null,
     "without_keyring_entry": null
   },
-  "support": [
-    {
-      "address": "1.1.1",
-      "support": {
-        "reason": "no product data pinned, application unknown",
-        "status": "unsupported"
+  "support": {
+    "devices": 5,
+    "supported": 0,
+    "unsupported": [
+      {
+        "address": "1.1.1",
+        "support": {
+          "reason": "no product data pinned, application unknown",
+          "status": "unsupported"
+        }
+      },
+      {
+        "address": "1.1.2",
+        "support": {
+          "reason": "no product data pinned, application unknown",
+          "status": "unsupported"
+        }
+      },
+      {
+        "address": "1.1.10",
+        "support": {
+          "reason": "no product data pinned, application unknown",
+          "status": "unsupported"
+        }
+      },
+      {
+        "address": "1.1.12",
+        "support": {
+          "reason": "no product data pinned, application unknown",
+          "status": "unsupported"
+        }
+      },
+      {
+        "address": "1.2.3",
+        "support": {
+          "reason": "no product data pinned, application unknown",
+          "status": "unsupported"
+        }
       }
-    },
-    {
-      "address": "1.1.2",
-      "support": {
-        "reason": "no product data pinned, application unknown",
-        "status": "unsupported"
-      }
-    },
-    {
-      "address": "1.1.10",
-      "support": {
-        "reason": "no product data pinned, application unknown",
-        "status": "unsupported"
-      }
-    },
-    {
-      "address": "1.1.12",
-      "support": {
-        "reason": "no product data pinned, application unknown",
-        "status": "unsupported"
-      }
-    },
-    {
-      "address": "1.2.3",
-      "support": {
-        "reason": "no product data pinned, application unknown",
-        "status": "unsupported"
-      }
-    }
-  ]
+    ]
+  }
 }

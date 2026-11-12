@@ -160,6 +160,32 @@ fn replace_digest(model: &Model, r: &Replacement, p: &Pressed, source: &Source) 
     format!("sha256:{}", h.hex())
 }
 
+/// The replacement waiting under `job`, once the human's answer (`digest`,
+/// `yes`, `download`) checks out against it.
+fn waiting(
+    tier: &ProgrammingTier,
+    job: &str,
+    digest: Option<&str>,
+    yes: Option<bool>,
+    download: Option<bool>,
+) -> Result<ReplacePlan, String> {
+    let pending = tier.replaces.get(job).ok_or_else(|| {
+        format!(
+            "no identified replacement waits under job {job} (it was written, refused, or older \
+             than the plan lifetime). Call knx_replace_device with the address to start again."
+        )
+    })?;
+    let needs_download = matches!(pending.source, Source::Download { .. });
+    Yes {
+        job,
+        digest,
+        yes,
+        download,
+    }
+    .check(&pending.digest, "replacing the device", needs_download)?;
+    Ok(pending)
+}
+
 impl BussardMcp {
     /// `knx_replace_device`'s body; `Err` is a refusal reason.
     pub(super) async fn replace_device_tool(
@@ -302,39 +328,32 @@ impl BussardMcp {
     }
 
     /// The supported-device gate of a replacement's write call before it is
-    /// answered (issue #1089): the refusal once the human's yes checks out,
-    /// `None` to go on (any other refusal is the write call's own).
+    /// answered (issue #1089), once the human's yes checks out against the
+    /// waiting job; a yes that does not is the write call's own refusal.
     pub(super) fn replace_unsupported(
         &self,
         job: &str,
         digest: &str,
         (yes, download): (Option<bool>, Option<bool>),
         allow_unsupported: bool,
-    ) -> Option<super::support::Refused> {
-        let tier = self.tier().ok()?;
-        let pending = tier.replaces.get(job)?;
-        let needs_download = matches!(pending.source, Source::Download { .. });
-        Yes {
-            job,
-            digest: Some(digest),
-            yes,
-            download,
-        }
-        .check(&pending.digest, "replacing the device", needs_download)
-        .ok()?;
-        super::support::gate(
+    ) -> super::support::Check {
+        let tier = self.tier()?;
+        let pending = waiting(tier, job, Some(digest), yes, download)?;
+        Ok(super::support::gate(
             &tier.connection,
             &self.state().model.current(),
             pending.replacement.target,
             pending.source.application(),
             (allow_unsupported, pending.unsupported),
         )
-        .err()
+        .err())
     }
 
     /// The write call: checks the answer, takes the job up again and runs
     /// the write; answers with the result when it ends within the reply
-    /// wait, else with the job.
+    /// wait, else with the job. The supported-device gate decided before
+    /// this call (`knx_replace_device`, through `support_override`), before
+    /// the address is written, so a refusal leaves nothing half done.
     async fn replace_write_call(
         &self,
         tier: &ProgrammingTier,
@@ -345,35 +364,7 @@ impl BussardMcp {
         allow_unsupported: bool,
     ) -> Result<Value, String> {
         let began = Instant::now();
-        let mut pending = tier.replaces.get(job).ok_or_else(|| {
-            format!(
-                "no identified replacement waits under job {job} (it was written, refused, or \
-                 older than the plan lifetime). Call knx_replace_device with the address to \
-                 start again."
-            )
-        })?;
-        let needs_download = matches!(pending.source, Source::Download { .. });
-        Yes {
-            job,
-            digest,
-            yes,
-            download,
-        }
-        .check(&pending.digest, "replacing the device", needs_download)?;
-        // The supported-device gate (issue #1089) before the address is
-        // written, so a refusal leaves nothing half done; the job stays
-        // paused and the digest valid.
-        let model = self.state().model.current();
-        let target = pending.replacement.target;
-        if let Err(refused) = super::support::gate(
-            &tier.connection,
-            &model,
-            target,
-            pending.source.application(),
-            (allow_unsupported, pending.unsupported),
-        ) {
-            return Ok(refused.answer(&model, true, super::support::Via::Flag));
-        }
+        let mut pending = waiting(tier, job, digest, yes, download)?;
         pending.allow_unsupported = allow_unsupported && pending.unsupported;
         tier.jobs.resume(job, "checking the device again")?;
         tier.replaces.retire(job);

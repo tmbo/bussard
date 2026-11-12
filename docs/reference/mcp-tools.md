@@ -216,9 +216,6 @@ bussard writes without a human's override only the application programs on its
   unsupported device; without the override (or after the human's no to the
   server's question) the line write reports it with status `refused`, and the
   result is `ok: false`.
-- **IP interfaces too.** A `knx_apply_device` that writes an IP interface's
-  KNXnet/IP parameter object is gated like any device write; its plan carries
-  `support`.
 - **The result says so.** A written result carries `support`: `forced`,
   `supported`, or `unsupported` on a loopback gateway, which never refuses.
 

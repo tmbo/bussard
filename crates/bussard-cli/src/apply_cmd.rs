@@ -280,8 +280,6 @@ fn run(
                 allow_remote_gateway,
                 plan_hash: args.plan_hash.as_deref(),
                 allow_self_reconfigure: args.allow_self_reconfigure,
-                allow_unsupported: args.allow_unsupported,
-                application: product.as_ref().map(|p| p.app_id.as_str()),
             },
         );
     }

@@ -14,8 +14,8 @@
 //!   model of every other confirmed write (#905).
 //!
 //! A refusal is a normal result with the code `unsupported_device`; nothing is
-//! written and the digest stays valid. [`BussardMcp::unsupported_override`]
-//! is the one helper `knx_apply_device`, `knx_restore_parameters`,
+//! written and the digest stays valid. [`BussardMcp::support_override`] is the
+//! one helper `knx_apply_device`, `knx_restore_parameters`,
 //! `knx_restore_tables` and `knx_replace_device` decide through.
 
 use std::collections::BTreeMap;
@@ -24,12 +24,11 @@ use bussard_model::{IndividualAddress, Model};
 use bussard_service::report::Refusal;
 use bussard_service::support::{self, SupportGrant, SupportRefusal};
 use bussard_service::transport::ConnectionConfig;
-use rmcp::RoleServer;
 use rmcp::model::{
-    CallToolResponse, CallToolResult, ElicitRequestParams, ElicitationAction, ElicitationSchema,
-    InputResponses,
+    CallToolResponse, ElicitRequestParams, ElicitationAction, ElicitationSchema, InputResponses,
 };
 use rmcp::service::RequestContext;
+use rmcp::{ErrorData, RoleServer};
 use serde_json::{Value, json};
 
 use crate::elicit::{self, Shown};
@@ -69,6 +68,13 @@ pub(crate) fn gate(
     .map_err(Refused)
 }
 
+/// The support gate of a write before its job, with the override given or
+/// not: `Ok(None)` passes, `Ok(Some(_))` is the gate's refusal, `Err` is
+/// another refusal the write answers anyway (an unknown or expired digest,
+/// a digest for another subject, a busy bus slot), which bussard never asks
+/// the human about.
+pub(crate) type Check = Result<Option<Refused>, String>;
+
 /// How the override was sought when a write is refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Via {
@@ -86,13 +92,16 @@ pub(crate) enum Via {
 }
 
 impl Refused {
-    /// The refusal as one sentence, for a pre-flight that answers with a
-    /// reason string.
-    pub(crate) fn reason(&self) -> String {
+    /// The pre-flight's refusal when it judges the write on what is true
+    /// then and the check before the job passed: the product data (or the
+    /// device's application) changed since the plan, so the same call can
+    /// only repeat. The caller retires the digest.
+    pub(crate) fn moved(&self) -> String {
         format!(
-            "{UNSUPPORTED_DEVICE}: {}. Nothing was written. To write anyway, the human must say \
-             so explicitly; then call again with allow_unsupported: true and the plan_digest of \
-             a plan that reported the device unsupported.",
+            "refusing to write {}: the product data changed since the plan was made, and now {}. \
+             Nothing was written. Plan again and show the new plan and its support verdict to \
+             the human.",
+            self.0.target,
             self.0.sentence()
         )
     }
@@ -178,14 +187,27 @@ impl Refused {
 /// its request state and input responses.
 pub(crate) struct Ask<'a> {
     /// The call's context: the client's capabilities and protocol.
-    pub(crate) context: &'a RequestContext<RoleServer>,
+    context: &'a RequestContext<RoleServer>,
     /// The request state of the second round, when this is one.
-    pub(crate) request_state: Option<String>,
+    request_state: Option<String>,
     /// The human's answers in the second round.
-    pub(crate) responses: Option<InputResponses>,
+    responses: Option<InputResponses>,
 }
 
-impl Ask<'_> {
+impl<'a> Ask<'a> {
+    /// The answer channel of one call.
+    pub(crate) fn new(
+        context: &'a RequestContext<RoleServer>,
+        request_state: Option<String>,
+        responses: Option<InputResponses>,
+    ) -> Self {
+        Ask {
+            context,
+            request_state,
+            responses,
+        }
+    }
+
     /// Whether the client can put a question to the human: it declared
     /// form-mode elicitation (an elicitation capability without modes means
     /// form mode, as the MCP specification reads it).
@@ -197,26 +219,43 @@ impl Ask<'_> {
     }
 }
 
-/// What bussard's question is bound to: the tool, its subject (a device, a
-/// line, a job) and the plan digest. A second round answers only the
-/// question it was asked for.
+/// One write the override is decided for: the tool, its subject (a device,
+/// a line, a job), the plan digest and the assistant's `allow_unsupported`.
+/// bussard's question is bound to the first three: a second round answers
+/// only the question it was asked for.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Binding {
+pub(crate) struct Write {
     /// The tool.
     tool: &'static str,
     /// The device, line or job.
     subject: String,
     /// The plan digest the write presents.
     digest: String,
+    /// `allow_unsupported` as the assistant passed it.
+    flag: bool,
 }
 
-impl Binding {
-    /// The question of `tool` about `subject`, for the write of `digest`.
-    pub(crate) fn new(tool: &'static str, subject: impl ToString, digest: &str) -> Self {
-        Binding {
+impl Write {
+    /// The write of `tool` about `subject` with `digest` and `flag`.
+    pub(crate) fn new(
+        tool: &'static str,
+        subject: impl ToString,
+        digest: &str,
+        flag: bool,
+    ) -> Self {
+        Write {
             tool,
             subject: subject.to_string(),
             digest: digest.to_string(),
+            flag,
+        }
+    }
+
+    /// The question's binding: the write without the assistant's flag.
+    fn binding(&self) -> Write {
+        Write {
+            flag: false,
+            ..self.clone()
         }
     }
 }
@@ -225,8 +264,52 @@ impl Binding {
 pub(crate) enum Override {
     /// Write, with the override (`true`) or without.
     Go(bool),
+    /// A line write whose question the human declined (or that the client
+    /// did not show): write the supported devices only, and say so.
+    Declined {
+        /// Whether the client showed the question.
+        shown: bool,
+    },
     /// Answer the call with this: a refusal, or the question for the client.
-    Answer(CallToolResponse),
+    Answer(Result<CallToolResponse, ErrorData>),
+}
+
+impl Override {
+    /// The call's answer of an override that does not go on to the write.
+    pub(crate) fn answer(self) -> Result<CallToolResponse, ErrorData> {
+        match self {
+            Override::Answer(answer) => answer,
+            Override::Go(_) | Override::Declined { .. } => Err(ErrorData::internal_error(
+                "the supported-device gate went on without an answer",
+                None,
+            )),
+        }
+    }
+}
+
+/// What the gate decides before anyone is asked.
+#[derive(Debug, PartialEq, Eq)]
+enum Step {
+    /// Write, with the override or without.
+    Go(bool),
+    /// Refuse, saying how the override is sought.
+    Refuse(Via),
+    /// Ask the human.
+    Ask,
+}
+
+/// The decision on the gate's verdict without the override (`plain`) and
+/// with it (`forced`), each `true` when it refuses: a write the override
+/// cannot pass is a plan-again refusal; otherwise the human is asked when
+/// the client can, else the assistant's `flag` decides.
+fn decide(asks_human: bool, flag: bool, plain: bool, forced: bool) -> Step {
+    match (plain, forced) {
+        (false, _) => Step::Go(false),
+        (true, true) => Step::Refuse(Via::Replan),
+        (true, false) if asks_human => Step::Ask,
+        (true, false) if flag => Step::Go(true),
+        (true, false) => Step::Refuse(Via::Flag),
+    }
 }
 
 /// What became of bussard's question.
@@ -244,40 +327,38 @@ enum Asked {
 
 /// `value` as a tool result.
 fn respond(value: Value) -> Override {
-    Override::Answer(CallToolResult::structured(value).into())
+    Override::Answer(crate::reply::ok(value).map(Into::into))
 }
 
 impl BussardMcp {
     /// The override of a device write (issue #1093). `check(allow)` is the
-    /// write's support gate before its job ([`gate`]), `None` when it
-    /// passes. Without elicitation `flag` (`allow_unsupported`) is the
-    /// override and a refusal is answered as before; with it, bussard asks
-    /// the human and `flag` does not count. A declined or dismissed question
-    /// is a refusal with nothing written and the digest kept.
-    pub(crate) async fn unsupported_override(
+    /// write's support gate before its job ([`gate`]) after every check that
+    /// can refuse without the bus; the write gate and the live service are
+    /// checked here. A write one of those refuses goes on without the
+    /// override and is refused by its own pre-flight: bussard asks only
+    /// about a write nothing else stops. Without elicitation `flag`
+    /// (`allow_unsupported`) is the override; with it, bussard asks the human
+    /// and `flag` does not count. A declined or dismissed question is a
+    /// refusal with nothing written and the digest kept.
+    pub(crate) async fn support_override(
         &self,
-        ask: &Ask<'_>,
-        binding: Binding,
-        flag: bool,
-        check: impl Fn(bool) -> Option<Refused>,
+        ask: Ask<'_>,
+        write: Write,
+        check: impl Fn(bool) -> Check,
     ) -> Override {
-        let model = self.state().model.current();
-        if !ask.asks_human() {
-            return match check(flag) {
-                None => Override::Go(flag),
-                Some(refused) => respond(refused.answer(&model, true, Via::Flag)),
-            };
-        }
-        let Some(refused) = check(false) else {
+        let Ok(Some(refused)) = self.ready().and_then(|()| check(false)) else {
             return Override::Go(false);
         };
-        if check(true).is_some() {
-            return respond(refused.answer(&model, true, Via::Replan));
-        }
-        match self.ask_human(ask, &binding, refused.question()).await {
-            Asked::Yes => Override::Go(true),
-            Asked::No { shown } => respond(refused.answer(&model, true, Via::Asked { shown })),
-            Asked::Pending(response) => Override::Answer(response),
+        let forced = !matches!(check(true), Ok(None));
+        let model = self.state().model.current();
+        match decide(ask.asks_human(), write.flag, true, forced) {
+            Step::Go(allow) => Override::Go(allow),
+            Step::Refuse(via) => respond(refused.answer(&model, true, via)),
+            Step::Ask => match self.ask_human(&ask, &write, refused.question()).await {
+                Asked::Yes => self.after_yes(&check),
+                Asked::No { shown } => respond(refused.answer(&model, true, Via::Asked { shown })),
+                Asked::Pending(response) => Override::Answer(Ok(response)),
+            },
         }
     }
 
@@ -285,19 +366,17 @@ impl BussardMcp {
     /// the line plan the digest names reported a device a write refuses as
     /// not on the list. Without elicitation `flag` is the override; with it
     /// bussard asks the human, and a no writes the supported devices only
-    /// (each other one is reported as refused), as a write without the
-    /// override does.
+    /// ([`Override::Declined`]), as a write without the override does.
     pub(crate) async fn line_override(
         &self,
-        ask: &Ask<'_>,
-        binding: Binding,
-        flag: bool,
+        ask: Ask<'_>,
+        write: Write,
         unsupported: bool,
     ) -> Override {
         if !ask.asks_human() {
-            return Override::Go(flag);
+            return Override::Go(write.flag);
         }
-        if !unsupported {
+        if !unsupported || self.ready().is_err() {
             return Override::Go(false);
         }
         let question = format!(
@@ -306,24 +385,45 @@ impl BussardMcp {
              ETS, and a wrong image can leave a device not working. Back them up first; ETS is \
              the safe way to program them. Write them anyway? No writes the supported devices \
              only.",
-            binding.subject
+            write.subject
         );
-        match self.ask_human(ask, &binding, question).await {
+        match self.ask_human(&ask, &write, question).await {
             Asked::Yes => Override::Go(true),
-            Asked::No { .. } => Override::Go(false),
-            Asked::Pending(response) => Override::Answer(response),
+            Asked::No { shown } => Override::Declined { shown },
+            Asked::Pending(response) => Override::Answer(Ok(response)),
+        }
+    }
+
+    /// The refusals a write answers before its job without the bus: the
+    /// programming tier, the write gate, the live service.
+    fn ready(&self) -> Result<(), String> {
+        self.programming_preflight().map(|_| ())
+    }
+
+    /// The write after the human's yes: everything is checked again, since
+    /// the question can outlast the plan lifetime or the bus.
+    fn after_yes(&self, check: &impl Fn(bool) -> Check) -> Override {
+        let model = self.state().model.current();
+        match self.ready().and_then(|()| check(true)) {
+            Ok(None) => Override::Go(true),
+            Ok(Some(refused)) => respond(refused.answer(&model, false, Via::Replan)),
+            Err(reason) => respond(crate::reply::refused(format!(
+                "The human said yes to writing a device not on bussard's list of supported \
+                 devices, but by then {reason}. Nothing was written."
+            ))),
         }
     }
 
     /// Puts `message` to the human as a form-mode elicitation, by the
     /// transport of the call's protocol (see [`crate::elicit`]). The second
     /// round of a multi round-trip call answers the question its request
-    /// state names, when that question was asked for `binding`; any other
+    /// state names, when that question was asked for `write`; any other
     /// state is asked afresh.
-    async fn ask_human(&self, ask: &Ask<'_>, binding: &Binding, message: String) -> Asked {
+    async fn ask_human(&self, ask: &Ask<'_>, write: &Write, message: String) -> Asked {
         let Ok(tier) = self.tier() else {
             return Asked::No { shown: false };
         };
+        let binding = write.binding();
         if let Some(id) = ask
             .request_state
             .as_deref()
@@ -332,7 +432,7 @@ impl BussardMcp {
         {
             // One question, one answer.
             tier.support_questions.retire(id);
-            if asked == *binding {
+            if asked == binding {
                 return match elicit::answer(ask.responses.as_ref(), INPUT_KEY) {
                     ElicitationAction::Accept => Asked::Yes,
                     _ => Asked::No { shown: true },
@@ -358,5 +458,38 @@ impl BussardMcp {
             Shown::Answered(_) => Asked::No { shown: true },
             Shown::Failed => Asked::No { shown: false },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decide_supported_goes_without_the_override() {
+        for (asks, flag) in [(false, false), (false, true), (true, false), (true, true)] {
+            assert_eq!(decide(asks, flag, false, false), Step::Go(false));
+        }
+    }
+
+    #[test]
+    fn test_decide_a_plan_that_did_not_report_it_is_plan_again() {
+        // The flag cannot help when the plan did not report the device
+        // unsupported, on either client.
+        assert_eq!(decide(false, true, true, true), Step::Refuse(Via::Replan));
+        assert_eq!(decide(false, false, true, true), Step::Refuse(Via::Replan));
+        assert_eq!(decide(true, true, true, true), Step::Refuse(Via::Replan));
+    }
+
+    #[test]
+    fn test_decide_asks_the_human_whatever_the_flag() {
+        assert_eq!(decide(true, true, true, false), Step::Ask);
+        assert_eq!(decide(true, false, true, false), Step::Ask);
+    }
+
+    #[test]
+    fn test_decide_without_elicitation_the_flag_decides() {
+        assert_eq!(decide(false, true, true, false), Step::Go(true));
+        assert_eq!(decide(false, false, true, false), Step::Refuse(Via::Flag));
     }
 }

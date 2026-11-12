@@ -187,10 +187,6 @@ pub(crate) fn plan(
         tool_key_source,
     };
     let gateway = gateway_display(&config);
-    // The supported-device verdict (issues #1089, #1093): what `apply` would
-    // decide on this gateway.
-    let support = bussard_service::support::verdict_at(Some(model), target, procedure.app_id)
-        .view_on(&config);
     let runtime = tokio::runtime::Runtime::new()?;
     let crate::interface_session::InterfaceSession {
         bus,
@@ -230,7 +226,7 @@ pub(crate) fn plan(
             ),
             _ => String::new(),
         };
-        let mut out = InterfacePlanOutcome::new(
+        let out = InterfacePlanOutcome::new(
             &plan,
             device_plan,
             read.mask,
@@ -239,12 +235,10 @@ pub(crate) fn plan(
             rows,
             &procedure_text,
         );
-        out.support = Some(support);
         crate::output::report(&out)?;
         return Ok(ExitCode::SUCCESS);
     }
-    println!("{}", bussard_service::identity_line(target, &read.check));
-    println!("{}\n", support.line());
+    println!("{}\n", bussard_service::identity_line(target, &read.check));
     print_plan(&plan, &device_plan, verbose > 0);
     if let (Some(rows), Some(app_id)) = (&rows, procedure.app_id) {
         println!();
@@ -289,10 +283,6 @@ pub(crate) struct InterfaceApplyInputs<'a> {
     pub plan_hash: Option<&'a str>,
     /// `--allow-self-reconfigure`.
     pub allow_self_reconfigure: bool,
-    /// `--allow-unsupported` (issue #1093).
-    pub allow_unsupported: bool,
-    /// The program `--product` / `--application` selected, when one was.
-    pub application: Option<&'a str>,
 }
 
 /// `bussard apply <interface>`: read, plan, refuse or ask once, back up the
@@ -318,19 +308,6 @@ pub(crate) fn apply(
         tool_key_source,
     };
     enforce_write_gate(&config, inputs.allow_remote_gateway)?;
-    // The supported-device list (issues #1089, #1093), before the bus is
-    // opened: the KNXnet/IP parameter object is a device write like any
-    // other.
-    let support = crate::support_gate::authorize(
-        &config,
-        target,
-        (
-            model.devices.get(&target).map(|d| &d.device),
-            inputs.application,
-        ),
-        inputs.allow_unsupported,
-        None,
-    )?;
     let gateway = gateway_display(&config);
     let runtime = tokio::runtime::Runtime::new()?;
     let crate::interface_session::InterfaceSession {
@@ -398,10 +375,7 @@ pub(crate) fn apply(
         bussard_model::history::SnapshotReason::new("apply")
             .with_args([target.to_string()])
             .with_gateway(Some(gateway.clone()))
-            .with_result(crate::support_gate::history_result(
-                "before writing the KNXnet/IP parameter object",
-                &support,
-            )),
+            .with_result("before writing the KNXnet/IP parameter object"),
     );
     let Some(before) = &read.knxnet else {
         anyhow::bail!("{target}: no KNXnet/IP parameter object");
@@ -419,7 +393,6 @@ pub(crate) fn apply(
                 target,
                 session.config,
                 &plan,
-                &support,
                 Some((&facts, &mut established)),
             )
             .await,

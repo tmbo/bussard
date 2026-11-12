@@ -61,9 +61,21 @@ pub struct AuditReport {
     /// The product data the lock pins (absent when `None`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub products: Option<ProductsReport>,
-    /// The supported-device verdict of every device (issue #1089), by
-    /// address.
-    pub support: Vec<SupportRow>,
+    /// The supported-device verdict (issues #1089, #1093): the count, and
+    /// the devices not on the list.
+    pub support: SupportSection,
+}
+
+/// The `support` section: how many devices are on the list of supported
+/// devices, and which are not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SupportSection {
+    /// The devices in the project.
+    pub devices: usize,
+    /// How many of them are on the list.
+    pub supported: usize,
+    /// The ones that are not, by address, each with its verdict.
+    pub unsupported: Vec<SupportRow>,
 }
 
 /// One device of the `support` section.
@@ -188,14 +200,9 @@ impl crate::report::Report for AuditReport {
             self.masks.len(),
             devices - unsupported
         );
-        let listed = self
-            .support
-            .iter()
-            .filter(|row| row.support.is_supported())
-            .count();
         out.push_str(&format!(
-            " {listed} of {} device(s) are on bussard's list of supported devices.",
-            self.support.len()
+            " {} of {} device(s) are on bussard's list of supported devices.",
+            self.support.supported, self.support.devices
         ));
         if let Some(missing) = self.secure.without_keyring_entry.filter(|n| *n > 0) {
             out.push_str(&format!(
@@ -265,7 +272,7 @@ impl AuditReport {
             devices,
         };
 
-        let support = model
+        let rows: Vec<SupportRow> = model
             .devices
             .iter()
             .map(|(addr, loaded)| SupportRow {
@@ -273,6 +280,14 @@ impl AuditReport {
                 support: crate::support::verdict(Some(&loaded.device), None).view(),
             })
             .collect();
+        let support = SupportSection {
+            devices: rows.len(),
+            supported: rows.iter().filter(|r| r.support.is_supported()).count(),
+            unsupported: rows
+                .into_iter()
+                .filter(|r| !r.support.is_supported())
+                .collect(),
+        };
 
         AuditReport {
             format_version: AUDIT_FORMAT_VERSION,

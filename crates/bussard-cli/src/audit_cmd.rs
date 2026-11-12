@@ -273,25 +273,14 @@ pub fn render_text(report: &AuditReport, style: Style) -> String {
     line(String::new());
 
     line(heading("Supported devices"));
-    let listed = report
-        .support
-        .iter()
-        .filter(|row| row.support.is_supported())
-        .count();
+    let support = &report.support;
     line(format!(
-        "  {listed} of {} on bussard's list of supported devices",
-        count(report.support.len(), "device", "devices")
+        "  {} of {} on bussard's list of supported devices",
+        support.supported,
+        count(support.devices, "device", "devices")
     ));
-    for row in &report.support {
-        let text = row.line();
-        line(format!(
-            "    {}",
-            if row.support.is_supported() {
-                text
-            } else {
-                style.warn(&text)
-            }
-        ));
+    for row in &support.unsupported {
+        line(format!("    {}", style.warn(&row.line())));
     }
     line(String::new());
 

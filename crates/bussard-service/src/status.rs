@@ -158,10 +158,11 @@ pub struct StatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub knxnet_error: Option<String>,
     /// The supported-device verdict (issue #1089) for the device's own
-    /// application, as `plan` and `describe` report it; [`status_report`]
-    /// fills it without a gateway, a surface sets it with
-    /// [`crate::support::Support::view_on`] for its connection.
-    pub support: crate::support::SupportView,
+    /// application, as `plan` and `describe` report it: `bussard status`
+    /// sets it for its gateway ([`crate::support::Support::view_on`]);
+    /// `knx_show_device` reports it next to this object instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub support: Option<crate::support::SupportView>,
 }
 
 impl crate::report::Report for StatusReport {
@@ -252,7 +253,7 @@ pub fn status_report(
             })
             .unwrap_or_default(),
         knxnet_error: read.knxnet_error.clone(),
-        support: crate::support::verdict(device, None).view(),
+        support: None,
     };
     report.sentences = sentences(target, &report);
     report

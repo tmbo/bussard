@@ -1230,7 +1230,9 @@ fn test_bus_reads_one_shape_cli_json_is_the_mcp_result_without_its_envelope() ->
     bussard_testkit::shape::assert_one_shape(&reconstruct, &mcp, &[])
         .map_err(|e| format!("reconstruct: {e}"))?;
     let mcp = server.call_ready("knx_show_device", json!({"address": "1.1.4", "live": true}))?;
-    bussard_testkit::shape::assert_one_shape(&status, &mcp["live"], &[])
+    // `support` (#1093): `knx_show_device` carries it once, at its top
+    // level, not again in `live`.
+    bussard_testkit::shape::assert_one_shape(&status, &mcp["live"], &["support"])
         .map_err(|e| format!("status: {e}: {}", mcp["live"]))?;
     let mcp = server.call_ready(
         "knx_find_devices",

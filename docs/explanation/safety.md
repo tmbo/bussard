@@ -110,8 +110,8 @@ installation.
 
 bussard keeps a [list of supported devices](device-support.md#supported-devices):
 the application programs whose download it has compared with ETS. `flash`,
-`apply` (an IP interface's KNXnet/IP settings too), `restore`, `replace` and
-the download half of `commission` refuse a device that is not on it, on a real gateway, before anything is written:
+`apply`, `restore`, `replace` and the download half of `commission` refuse a
+device that is not on it, on a real gateway, before anything is written:
 
 ```console
 refusing to write: 1.1.7 runs M-0083_A-0120-10 (MDT AKS-0816.03), which is not

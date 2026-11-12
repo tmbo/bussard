@@ -51,6 +51,33 @@ pub(super) struct LinePlan {
     unsupported: bool,
 }
 
+/// The outcomes of a line write after the human said no to bussard's
+/// question (or the client did not show it, `shown` false) about the devices
+/// not on the supported list (issue #1093): each such device's refusal says
+/// so, instead of pointing to an override that does not count on a client
+/// that asks the human.
+fn declined_refusals(
+    visited: Vec<(LineOutcome, Vec<String>)>,
+    shown: bool,
+) -> Vec<(LineOutcome, Vec<String>)> {
+    let why = if shown {
+        "the human declined bussard's question about writing it"
+    } else {
+        "the chat app did not show bussard's question about writing it"
+    };
+    visited
+        .into_iter()
+        .map(|(mut outcome, lines)| {
+            if matches!(outcome.status, DeviceStatus::Refused(_)) {
+                outcome.status = DeviceStatus::Refused(format!(
+                    "not on bussard's list of supported devices, and {why}; nothing was written"
+                ));
+            }
+            (outcome, lines)
+        })
+        .collect()
+}
+
 /// The line as a job's address: the line coupler's `area.line.0`.
 fn line_address((area, line_no): (u8, u8)) -> Result<IndividualAddress, String> {
     IndividualAddress::new(area, line_no, 0).map_err(|e| e.to_string())
@@ -271,6 +298,7 @@ impl BussardMcp {
         line: &str,
         digest: &str,
         allow_unsupported: bool,
+        declined: Option<bool>,
     ) -> Result<Value, String> {
         let parsed = parse_line(line).map_err(|e| e.to_string())?;
         let at = line_address(parsed)?;
@@ -294,7 +322,11 @@ impl BussardMcp {
                 let allow = allow_unsupported && planned.unsupported;
                 let write = Some((&planned.devices, allow));
                 let visited = me.visit_line(tier, &job, &model, &targets, mode, write);
-                match visited.await {
+                let visited = visited.await.map(|visited| match declined {
+                    Some(shown) => declined_refusals(visited, shown),
+                    None => visited,
+                });
+                match visited {
                     Err(reason) => {
                         report.ok = false;
                         report.verified = Some(false);
@@ -402,6 +434,46 @@ impl BussardMcp {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn test_declined_refusals_says_the_human_declined() -> Result<(), String> {
+        let outcome = |address: &str, status: DeviceStatus| -> Result<_, String> {
+            Ok((
+                LineOutcome {
+                    address: address.parse().map_err(|e| format!("{e}"))?,
+                    name: String::new(),
+                    mask: None,
+                    status,
+                    report: None,
+                    fingerprint: None,
+                    backup: None,
+                    support: None,
+                },
+                Vec::new(),
+            ))
+        };
+        let visited = vec![
+            outcome(
+                "1.1.4",
+                DeviceStatus::Refused(
+                    "x; nothing was written. Pass the override to write it".into(),
+                ),
+            )?,
+            outcome("1.1.5", DeviceStatus::Applied(2))?,
+        ];
+        let out = super::declined_refusals(visited, true);
+        let detail = out[0].0.status.detail().unwrap_or_default();
+        assert!(detail.contains("the human declined"), "{detail}");
+        assert!(!detail.contains("override"), "{detail}");
+        assert!(matches!(out[1].0.status, DeviceStatus::Applied(2)));
+        let out = super::declined_refusals(
+            vec![outcome("1.1.4", DeviceStatus::Refused(String::new()))?],
+            false,
+        );
+        let detail = out[0].0.status.detail().unwrap_or_default();
+        assert!(detail.contains("did not show"), "{detail}");
+        Ok(())
+    }
+
     use super::*;
 
     #[test]

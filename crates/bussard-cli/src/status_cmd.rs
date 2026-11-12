@@ -112,7 +112,7 @@ fn run(address: &str, g: &Resolved) -> anyhow::Result<ExitCode> {
         .and_then(|m| m.devices.get(&target))
         .map(|d| &d.device);
     let mut report = status_report(target, device, &read, presented_tool_key);
-    report.support = support;
+    report.support = Some(support);
     if json {
         crate::output::report(&report)?;
     } else {
@@ -173,15 +173,17 @@ fn render_text(
         };
         out.push_str(&format!("  {line}\n"));
     }
-    let support = report.support.line();
-    out.push_str(&format!(
-        "  {}\n",
-        if report.support.is_supported() {
-            support
-        } else {
-            style.warn(&support)
-        }
-    ));
+    if let Some(support) = &report.support {
+        let line = support.line();
+        out.push_str(&format!(
+            "  {}\n",
+            if support.is_supported() {
+                line
+            } else {
+                style.warn(&line)
+            }
+        ));
+    }
     match (&report.knxnet, knxnet_error) {
         (Some(k), _) => {
             out.push_str(&render_knxnet(k, style));
