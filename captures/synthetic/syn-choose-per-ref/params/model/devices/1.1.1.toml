@@ -1,0 +1,7 @@
+# The device of the params variant of syn-choose-per-ref (capture.py).
+address = "1.1.1"
+name = "syn-choose-per-ref"
+
+[parameters]
+"operating-mode@P-1_R-1" = "off"
+delay-s = 42

@@ -1,0 +1,55 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Feather count",
+   "kind": "number",
+   "value": "1000",
+   "key": "feather-count",
+   "model": 1000,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "1000",
+   "why": null,
+   "after": "1000",
+   "shown": "1000"
+  },
+  {
+   "page": "General",
+   "label": "Fluffed",
+   "kind": "dropdown",
+   "value": "yes",
+   "key": "fluffed",
+   "model": "yes",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "yes",
+   "why": null,
+   "after": "Yes",
+   "shown": "Yes"
+  },
+  {
+   "page": "General",
+   "label": "Plume level",
+   "kind": "number",
+   "value": "3",
+   "key": "plume-level",
+   "model": 3,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "3",
+   "why": null,
+   "after": "3",
+   "shown": "3"
+  }
+ ]
+}

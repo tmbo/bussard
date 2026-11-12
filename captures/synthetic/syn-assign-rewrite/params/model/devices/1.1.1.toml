@@ -1,0 +1,8 @@
+# The device of the params variant of syn-assign-rewrite (capture.py).
+address = "1.1.1"
+name = "syn-assign-rewrite"
+
+[parameters]
+chore-interval = 1000
+nap-length = 7
+operating-mode = "automatic"

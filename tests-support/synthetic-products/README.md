@@ -47,7 +47,7 @@ next to it, and zips it on demand.
 | [`syn-product-07b0`](syn-product-07b0/product.toml) | `NEST-PLAN` | 07B0 | ProductProcedure on 07B0 with the tables as RelSegments | #614 |
 | [`syn-property-nopar`](syn-property-nopar/product.toml) | `NEST-NAP` | 07B0 | property-only program, no `par` allocation | #1052, #944, #1054 |
 | [`syn-property-param`](syn-property-param/product.toml) | `NEST-TERR` | 07B0 | parameter placed in a property, written by LdCtrlWriteProp | #669 |
-| [`syn-relseg-dataless`](syn-relseg-dataless/product.toml) | `NEST-MOSS` | 07B0 | data-less RelativeSegment, Mode 0 with Fill 165 (golden by the declared Fill, not confirmed by a capture; update from the #1054 capture) | #1061, #1054 |
+| [`syn-relseg-dataless`](syn-relseg-dataless/product.toml) | `NEST-MOSS` | 07B0 | data-less RelativeSegment, Mode 0 with Fill 165 (ETS writes only the octets a parameter occupies; bussard fills the rest, #1084) | #1061, #1054 |
 | [`syn-relseg-fill`](syn-relseg-fill/product.toml) | `NEST-FILL` | 07B0 | RelSegment Mode 0 with Fill 255 | #480 |
 | [`syn-rf-27b0`](syn-rf-27b0/product.toml) | `NEST-RADIO` | 27B0 | System B on KNX RF (mask 27B0, MT-2) | #604 |
 | [`syn-s7-0701`](syn-s7-0701/product.toml) | `NEST-BKDOOR` | 0701 | System 7 baseline (0701, memory-mapped LSM) | #596, #488, #481 |
@@ -204,7 +204,9 @@ whose file carries the real master data, compares the same sequence.
 ## bussard's request streams
 
 `<name>/requests/flash.txt` (and `apply.txt` for a product captured with a
-`links` or `partial` run variant) is what bussard itself sends to the product
+`links`, `partial` or `apply` run variant, `params.txt` for one captured with
+`params` or `partial`, `reload.txt` for one captured with `reload`; the
+`-secure` files of `syn-secure`) is what bussard itself sends to the product
 in knx-sim, normalized by `tools/knxtrace/knxtrace.py ops`; the CLI and the
 MCP server must send the same for the same change. Both are checked in the
 `sim-conformance` CI job by `crates/bussard-cli/tests/it/synthetic_streams.rs`

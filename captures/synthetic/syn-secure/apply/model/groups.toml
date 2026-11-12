@@ -1,0 +1,7 @@
+project = "syn-secure apply"
+
+groups = [
+  { address = "1/0/1", name = "apply 1/0/1" },
+  { address = "1/0/2", name = "apply 1/0/2" },
+  { address = "1/0/3", name = "apply 1/0/3" },
+]

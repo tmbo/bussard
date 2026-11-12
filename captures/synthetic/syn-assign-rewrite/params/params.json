@@ -1,0 +1,56 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Chore interval",
+   "kind": "number",
+   "value": "1000",
+   "key": "chore-interval",
+   "model": 1000,
+   "expect": "rewritten",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "lost",
+   "set_to": "1000",
+   "why": "ETS shows '300', not '1000'",
+   "after": "1000",
+   "shown": "300"
+  },
+  {
+   "page": "General",
+   "label": "Nap length",
+   "kind": "number",
+   "value": "7",
+   "key": "nap-length",
+   "model": 7,
+   "expect": "hidden",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "lost",
+   "set_to": "7",
+   "why": "no row 'Nap length' on the page",
+   "after": "7"
+  },
+  {
+   "page": "General",
+   "label": "Operating mode",
+   "kind": "dropdown",
+   "value": "automatic",
+   "key": "operating-mode",
+   "model": "automatic",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "automatic",
+   "why": null,
+   "after": "automatic",
+   "shown": "automatic"
+  }
+ ]
+}

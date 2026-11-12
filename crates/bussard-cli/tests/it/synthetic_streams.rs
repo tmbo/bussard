@@ -16,9 +16,15 @@
 //! path is thereby a reviewable diff of these files (the Device Writes rules
 //! in `CLAUDE.md`); `BUSSARD_UPDATE_GOLDENS=1` rewrites them.
 //!
-//! **Parameter change and Data Secure (issue #1054).** `params.txt`, for
-//! [`PARAMETER_PRODUCTS`], is `bussard apply` of a parameter-only change
-//! ([`Configuration::parameter_change`]) over the flashed defaults. For
+//! **Parameter change, reload and Data Secure (issue #1054).** `params.txt`,
+//! for [`PARAMETER_PRODUCTS`] and every plain product the catalogue captured
+//! with a `params` or `partial` run variant ([`has_params_variant`]), is
+//! `bussard apply` of a parameter-only change
+//! ([`Configuration::parameter_change`]) over the flashed defaults.
+//! `reload.txt`, for a product captured with a `reload` variant, is `bussard
+//! flash` of the same defaults again over the flashed device (ETS's reload
+//! row); on [`SECURE_PRODUCT`] that is `reload-secure.txt`, over the secured
+//! flash. For
 //! [`SECURE_PRODUCT`], knx-sim starts the device `activated` (security mode
 //! on, a synthetic tool key set) and the model holds the keys in its key
 //! store: `flash-secure.txt` is the secured flash (tables, parameters and the
@@ -34,7 +40,8 @@
 //!
 //! - the apply: `bussard plan 1.1.10 --json` then `bussard apply 1.1.10
 //!   --yes`, against `knx_plan_device` then `knx_apply_device`;
-//! - the parameter-only change of [`PARAMETER_PRODUCTS`] and, secured, of
+//! - the parameter-only change of the products [`has_params_variant`] names
+//!   and, secured, of
 //!   [`SECURE_PRODUCT`] (an apply), and the secured flash of
 //!   [`SECURE_PRODUCT`] into its unloaded activated device (issue #1054);
 //! - the reshape, for a product with an enable switch that shows or hides a
@@ -175,29 +182,56 @@ fn repo() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// Whether the catalogue captured `product` with a run variant that writes
-/// to a loaded device (`links`, `partial`): such a product gets an apply
-/// golden too.
-fn has_apply_variant(product: &str) -> bool {
+/// Whether the catalogue captured `product` with one of `variants`.
+fn has_variant(product: &str, variants: &[&str]) -> bool {
     let dir = repo().join("captures/synthetic").join(product);
-    ["links", "partial"]
-        .iter()
-        .any(|variant| dir.join(variant).is_dir())
+    variants.iter().any(|variant| dir.join(variant).is_dir())
+}
+
+/// Whether the catalogue captured `product` with a run variant that writes
+/// to a loaded device (`links`, `partial`, `apply`): such a product gets an
+/// apply golden too.
+fn has_apply_variant(product: &str) -> bool {
+    has_variant(product, &["links", "partial", "apply"])
+}
+
+/// Whether `product` gets the plain parameter-change scenario (`params.txt`
+/// and its CLI/MCP comparison): one of [`PARAMETER_PRODUCTS`], or a plain
+/// product the catalogue captured with ETS's parameter editor (`params`) or
+/// its parameter-only download (`partial`, issue #1054). [`SECURE_PRODUCT`]
+/// has its secured scenario instead.
+fn has_params_variant(product: &str) -> bool {
+    PARAMETER_PRODUCTS.contains(&product)
+        || (product != SECURE_PRODUCT && has_variant(product, &["params", "partial"]))
+}
+
+/// Whether the catalogue captured `product` with the `reload` variant (ETS's
+/// download over the device it loaded): it gets `reload.txt`, or on
+/// [`SECURE_PRODUCT`] `reload-secure.txt`.
+fn has_reload_variant(product: &str) -> bool {
+    has_variant(product, &["reload"])
 }
 
 /// The golden files of `product`: `flash.txt`, `apply.txt` with an apply
-/// run variant, `params.txt` for [`PARAMETER_PRODUCTS`], and
-/// `flash-secure.txt` and `params-secure.txt` for [`SECURE_PRODUCT`].
+/// run variant, `params.txt` with a parameter variant
+/// ([`has_params_variant`]), `reload.txt` with a reload variant, and
+/// `flash-secure.txt`, `params-secure.txt` (and `reload-secure.txt` with a
+/// reload variant) for [`SECURE_PRODUCT`].
 fn goldens_of(product: &str) -> Vec<&'static str> {
     let mut out = vec!["flash.txt"];
     if has_apply_variant(product) {
         out.push("apply.txt");
     }
-    if PARAMETER_PRODUCTS.contains(&product) {
+    if has_params_variant(product) {
         out.push("params.txt");
     }
     if product == SECURE_PRODUCT {
         out.extend(["flash-secure.txt", "params-secure.txt"]);
+        if has_reload_variant(product) {
+            out.push("reload-secure.txt");
+        }
+    } else if has_reload_variant(product) {
+        out.push("reload.txt");
     }
     out
 }
@@ -329,7 +363,7 @@ fn run_golden_shard(slot: usize) -> TestResult {
                 golden_text(product, "apply", AFTER_FLASH, &change, &run),
             ));
         }
-        if PARAMETER_PRODUCTS.contains(&product.name.as_str()) {
+        if has_params_variant(&product.name) {
             let change = parameter_change(product, &base)?;
             let cli = work.fork("params")?;
             cli.write_device(&change)?;
@@ -339,6 +373,17 @@ fn run_golden_shard(slot: usize) -> TestResult {
             goldens.push((
                 "params.txt",
                 golden_text(product, "apply", AFTER_FLASH, &change, &run),
+            ));
+        }
+        if product.name != SECURE_PRODUCT && has_reload_variant(&product.name) {
+            let cli = work.fork("reload")?;
+            cli.write_device(&base)?;
+            let run = cli.run(Some(&flash.pcap), "reload", |port| {
+                cli.bussard(port, &["flash", DEVICE, "--yes"]).map(|_| ())
+            })?;
+            goldens.push((
+                "reload.txt",
+                golden_text(product, "flash", AFTER_FLASH, &base, &run),
             ));
         }
         if product.name == SECURE_PRODUCT {
@@ -358,6 +403,17 @@ fn run_golden_shard(slot: usize) -> TestResult {
                 "params-secure.txt",
                 golden_text(product, "apply", AFTER_SECURE_FLASH, &change, &run),
             ));
+            if has_reload_variant(&product.name) {
+                let cli = secure.fork("reload")?;
+                cli.write_device(&base)?;
+                let run = cli.run(Some(&flash.pcap), "reload", |port| {
+                    cli.bussard(port, &["flash", DEVICE, "--yes"]).map(|_| ())
+                })?;
+                goldens.push((
+                    "reload-secure.txt",
+                    golden_text(product, "flash", AFTER_SECURE_FLASH, &base, &run),
+                ));
+            }
         }
         for (file, text) in goldens {
             let path = catalogue().join(&product.name).join("requests").join(file);
@@ -450,7 +506,7 @@ fn run_equivalence_shard(slot: usize) -> TestResult {
         } else {
             checked.push("reshape: no parameter shows or hides a com-object".to_string());
         }
-        if PARAMETER_PRODUCTS.contains(&product.name.as_str()) {
+        if has_params_variant(&product.name) {
             // The parameter-only write (issue #1054): an apply on both.
             let change = parameter_change(product, &base)?;
             let (method, cli, mcp) = work.compare(Some(&flash.pcap), "params", &change)?;

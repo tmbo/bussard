@@ -1,0 +1,7 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Keyring Project="ets-sweep-secure" CreatedBy="6.4.1" Created="2026-11-12T10:36:51" Signature="YHwc9tI2F6Bp1GkGu0ogVg==" xmlns="http://knx.org/xml/keyring/1">
+  <Backbone MulticastAddress="224.0.23.12" />
+  <Devices>
+    <Device IndividualAddress="1.1.1" ToolKey="imZsTAkSRcindhaSBDO9vQ==" SequenceNumber="73" FDSK="3Hcom7wQuqhF0g2bXzl4XA==" SerialNumber="00FAD4730C98" />
+  </Devices>
+</Keyring>

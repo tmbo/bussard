@@ -1,0 +1,38 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Operating mode",
+   "kind": "dropdown",
+   "value": "off",
+   "key": "operating-mode@P-1_R-1",
+   "model": "off",
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "off",
+   "why": null,
+   "after": "off",
+   "shown": "off"
+  },
+  {
+   "page": "General",
+   "label": "Delay (s)",
+   "kind": "number",
+   "value": "42",
+   "key": "delay-s",
+   "model": 42,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "42",
+   "why": null,
+   "after": "42",
+   "shown": "42"
+  }
+ ]
+}

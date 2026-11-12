@@ -1,0 +1,7 @@
+# The device of the params variant of syn-s7-0705 (capture.py).
+address = "1.1.1"
+name = "syn-s7-0705"
+
+[parameters]
+operating-mode = "automatic"
+delay-s = 42

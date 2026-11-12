@@ -1,0 +1,12 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Keyring Project="ets-sweep-secure" CreatedBy="6.4.1" Created="2026-11-12T10:49:36" Signature="y809iBQ7+Sn/x1OiTnTukQ==" xmlns="http://knx.org/xml/keyring/1">
+  <Backbone MulticastAddress="224.0.23.12" />
+  <GroupAddresses>
+    <Group Address="2049" Key="oFIbp8kOYFAfy3OCOTwsEA==" />
+    <Group Address="2050" Key="1qMBXRrO+dK6F5e/bZAnpA==" />
+    <Group Address="2051" Key="179xydviJNPdqgfyzz/KEw==" />
+  </GroupAddresses>
+  <Devices>
+    <Device IndividualAddress="1.1.1" ToolKey="xiDHX8n1DXy3aklK4THQkg==" SequenceNumber="91" FDSK="IgLK1sPRp8WUJW2HjAKmvA==" SerialNumber="00FAD4730C98" />
+  </Devices>
+</Keyring>

@@ -28,6 +28,7 @@ cargo clippy -p <crate> --all-targets -- -D warnings
 cargo fmt --all
 cargo test -p <crate> --doc                              # only if you touched doc examples
 cargo deny check                                         # only if you touched dependencies
+scripts/check-no-private-data.sh                         # before every push (CI's fmt + clippy job runs it)
 ```
 
 Crate-scoped only. CI runs the workspace gate; do not duplicate it locally.

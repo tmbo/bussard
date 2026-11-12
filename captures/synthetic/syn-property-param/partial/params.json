@@ -1,0 +1,21 @@
+{
+ "changes": [
+  {
+   "page": "General",
+   "label": "Territory mark",
+   "kind": "number",
+   "value": "7",
+   "key": "territory-mark",
+   "model": 7,
+   "page_found": {
+    "crumb": "General",
+    "page": "General"
+   },
+   "result": "set",
+   "set_to": "7",
+   "why": null,
+   "after": "7",
+   "shown": "7"
+  }
+ ]
+}

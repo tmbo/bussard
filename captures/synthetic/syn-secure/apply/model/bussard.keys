@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- bussard key store (issue #241). Encrypted with the keyring password (BUSSARD_KEYRING_PASSWORD) and git-tracked by design. Change it with `bussard keys`, not by hand: the signature covers every attribute. -->
+<Keyring Signature="FY7wY7yixrN1XtQbCJA8MA==" Project="ets-sweep-secure" CreatedBy="bussard 0.10.0" Created="2026-11-12T11:22:37" Format="bussard.keys/1" xmlns="https://github.com/tmbo/bussard/xml/keys/1">
+  <GroupAddresses>
+    <Group Address="1/0/1" Key="xb3pd1pyX3iN7NKU9weqBw==" />
+    <Group Address="1/0/2" Key="788QIsITtKxcd2y1hEgxVQ==" />
+    <Group Address="1/0/3" Key="SK7WEIJ6WQ/EboVeIiIRmg==" />
+  </GroupAddresses>
+  <Devices>
+    <Device IndividualAddress="1.1.1" ToolKey="weu52ROp+Lw+lkkxEL7yBg==" SerialNumber="00FAD4730C98" FDSK="yzLb2GmI+dJ+7sxIZrLEhA==" SequenceNumber="91" />
+  </Devices>
+</Keyring>

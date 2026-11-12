@@ -1,0 +1,98 @@
+# Golden request stream (epic #596), written by
+# crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with
+# BUSSARD_UPDATE_GOLDENS=1 (dev/testing.md).
+#
+# command: bussard apply 1.1.10 --yes
+# product: syn-s7-0705 (M-00FA_A-2800-10-0000)
+# device:  the state flash.txt left (knx-sim replays that session)
+# format:  tools/knxtrace/knxtrace.py ops, without the operation numbers
+#          and the capture header
+#
+# devices/1.1.10.toml:
+#   address = "1.1.10"
+#   name = "sim loop (defaults + partial change)"
+#
+#   [parameters]
+#   "p@P-1_R-1" = "0"
+#   "p@P-2_R-2" = "65404"
+#
+#   [links]
+#   1.send = "1/0/1"
+
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+descriptor type0 type=0
+descriptor type0 type=0
+descriptor type0 type=0
+descriptor type0 type=0
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x4000 addr_int=16384 count=1
+mem-read 0x4000 addr_int=16384 count=5
+mem-read 0x4400 addr_int=17408 count=1
+mem-read 0x4400 addr_int=17408 count=11
+mem-read 0x4201 addr_int=16897 count=1
+mem-read 0x4201 addr_int=16897 count=3
+prop-read obj1/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj2/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj3/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj5/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj3/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+mem-read 0x4440 addr_int=17472 count=12
+mem-read 0x444c addr_int=17484 count=12
+mem-read 0x4458 addr_int=17496 count=12
+mem-read 0x4464 addr_int=17508 count=12
+mem-read 0x4470 addr_int=17520 count=12
+mem-read 0x447c addr_int=17532 count=4
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
+prop-read obj3/PID_LOAD_STATE_CONTROL count=1 index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+mem-write 0x4440 addr_int=17472 len=3 sha=2b5a752c extended=False
+load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+restart Restart type=basic
+connect T_Connect
+descriptor type0 type=0
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+prop-read obj3/PID_LOAD_STATE_CONTROL count=1 index=1
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+mem-read 0x4440 addr_int=17472 count=12
+mem-read 0x444c addr_int=17484 count=12
+mem-read 0x4458 addr_int=17496 count=12
+mem-read 0x4464 addr_int=17508 count=12
+mem-read 0x4470 addr_int=17520 count=12
+mem-read 0x447c addr_int=17532 count=4
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+descriptor type0 type=0
+descriptor type0 type=0
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x4000 addr_int=16384 count=1
+mem-read 0x4000 addr_int=16384 count=5
+mem-read 0x4400 addr_int=17408 count=1
+mem-read 0x4400 addr_int=17408 count=11
+mem-read 0x4201 addr_int=16897 count=1
+mem-read 0x4201 addr_int=16897 count=3
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+mem-read 0x4440 addr_int=17472 count=12
+mem-read 0x444c addr_int=17484 count=12
+mem-read 0x4458 addr_int=17496 count=12
+mem-read 0x4464 addr_int=17508 count=12
+mem-read 0x4470 addr_int=17520 count=12
+mem-read 0x447c addr_int=17532 count=4
+disconnect T_Disconnect
+
+memory image (1 region(s), chunking removed):
+    0x004440..0x004443 len=3 sha=2b5a752c

@@ -1,0 +1,8 @@
+# The device of the params variant of syn-union-bitfields (capture.py).
+address = "1.1.1"
+name = "syn-union-bitfields"
+
+[parameters]
+feather-count = 1000
+fluffed = "yes"
+plume-level = 3
