@@ -612,3 +612,61 @@ fn test_device_view_for_blocks_details_only_the_wanted_rows() -> TestResult {
     assert!(full.inactive_channels.iter().all(|r| r.inactive.is_some()));
     Ok(())
 }
+
+/// Issue #1050: a value stored for a module instance the `<choose>` around
+/// its `<Module>` does not reach is never written, so it is ignored like an
+/// application ref's; a reached instance's value is not.
+#[test]
+fn test_ignored_overrides_marks_an_unreached_module_instance() -> TestResult {
+    let mut model = blinds_model()?;
+    let products = products()?;
+    let ia: IndividualAddress = "1.1.47".parse()?;
+    let device = &mut model.devices.get_mut(&ia).ok_or("no device")?.device;
+    device.parameters.insert(
+        "treppenhausfunktion@MD-4_M-19_MI-1_P-12_R-12".to_string(),
+        "1".to_string(),
+    );
+    let ignored =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia)?.ignored_overrides();
+    let got: Vec<(&str, &str)> = ignored
+        .iter()
+        .map(|i| (i.reference.as_str(), i.needs.as_str()))
+        .collect();
+    // "betriebsart" of the reached blinds instance MD-3_M-18 is not listed.
+    assert_eq!(
+        got,
+        [("MD-4_M-19_MI-1_P-12_R-12", "Funktion = 2 x Schalten")],
+        "{ignored:?}"
+    );
+
+    // The device view marks the row; under "2 x Schalten" the switch
+    // instance is reached and its value is in effect.
+    let view = device_view(&model, &products, ia, Some("device"))?;
+    let row = view
+        .scope
+        .as_ref()
+        .and_then(|s| {
+            s.parameters
+                .iter()
+                .find(|p| p.reference == "MD-4_M-19_MI-1_P-12_R-12")
+        })
+        .ok_or("no row")?;
+    assert!(row.ignored.is_some(), "{row:?}");
+    let device = &mut model.devices.get_mut(&ia).ok_or("no device")?.device;
+    let funktion = device
+        .parameters
+        .keys()
+        .find(|k| k.ends_with("@P-747_R-84"))
+        .cloned()
+        .ok_or("no funktion")?;
+    device.parameters.insert(funktion, "1".to_string());
+    let ignored =
+        bussard_model::device_view::DeviceAnalysis::new(&model, &products, ia)?.ignored_overrides();
+    assert!(
+        ignored
+            .iter()
+            .all(|i| i.reference != "MD-4_M-19_MI-1_P-12_R-12"),
+        "{ignored:?}"
+    );
+    Ok(())
+}
