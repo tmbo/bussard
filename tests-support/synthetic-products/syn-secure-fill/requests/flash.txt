@@ -1,0 +1,118 @@
+# Golden request stream (epic #596), written by
+# crates/bussard-cli/tests/it/synthetic_streams.rs; regenerate with
+# BUSSARD_UPDATE_GOLDENS=1 (dev/testing.md).
+#
+# command: bussard flash 1.1.10 --yes
+# product: syn-secure-fill (M-00FA_A-2902-10-0000)
+# device:  a fresh knx-sim device
+# format:  tools/knxtrace/knxtrace.py ops, without the operation numbers
+#          and the capture header
+#
+# devices/1.1.10.toml:
+#   address = "1.1.10"
+#   name = "sim loop (defaults)"
+#
+#   [links]
+#   1.send = "1/0/1"
+
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+descriptor type0 type=0
+prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+prop-read obj0/PID_71 count=1 index=0
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+prop-read obj4/PID_PROGRAM_VERSION count=1 index=1
+prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+restart Restart type=master-reset erase_code=7 channel=0
+connect T_Connect
+descriptor type0 type=0
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=True fill_byte=0xff
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=6 fill=False fill_byte=0x00
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-write 0x6000 addr_int=24576 len=3 sha=60fd135a extended=False
+mem-write 0x8000 addr_int=32768 len=4 sha=e5e121e5 extended=False
+mem-write 0xc000 addr_int=49152 len=6 sha=7b9453f4 extended=False
+mem-write 0xa000 addr_int=40960 len=4 sha=bf2fcd6c extended=False
+prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=6189cee9
+load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+restart Restart type=master-reset erase_code=1 channel=0
+connect T_Connect
+descriptor type0 type=0
+disconnect T_Disconnect
+connect T_Connect
+authorize Authorize_Request key=FFFFFFFF(free-access)
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj4/PID_LOAD_STATE_CONTROL count=1 index=1
+mem-read 0x6000 addr_int=24576 count=4
+mem-read 0x8000 addr_int=32768 count=4
+mem-read 0xc000 addr_int=49152 count=4
+mem-read 0xa000 addr_int=40960 count=4
+descriptor type0 type=0
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj1/PID_23 count=1 index=0
+prop-read obj1/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0xa000 addr_int=40960 count=2
+mem-read 0xa002 addr_int=40962 count=2
+prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0
+prop-read obj2/PID_23 count=1 index=0
+prop-read obj2/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0xc000 addr_int=49152 count=2
+mem-read 0xc002 addr_int=49154 count=4
+prop-read obj3/PID_23 count=1 index=0
+prop-read obj3/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x8000 addr_int=32768 count=2
+prop-read obj0/PID_1 count=1 index=1
+prop-read obj1/PID_1 count=1 index=1
+prop-read obj2/PID_1 count=1 index=1
+prop-read obj3/PID_1 count=1 index=1
+prop-read obj4/PID_1 count=1 index=1
+prop-read obj5/PID_1 count=1 index=1
+prop-read obj6/PID_1 count=1 index=1
+prop-read obj4/PID_TABLE_REFERENCE count=1 index=1
+mem-read 0x6000 addr_int=24576 count=63
+mem-read 0x603f addr_int=24639 count=63
+mem-read 0x607e addr_int=24702 count=63
+mem-read 0x60bd addr_int=24765 count=63
+mem-read 0x60fc addr_int=24828 count=4
+disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x006000..0x006003 len=3 sha=60fd135a
+    0x008000..0x008004 len=4 sha=e5e121e5
+    0x00a000..0x00a004 len=4 sha=bf2fcd6c
+    0x00c000..0x00c006 len=6 sha=7b9453f4

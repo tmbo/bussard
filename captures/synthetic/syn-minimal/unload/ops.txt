@@ -1,0 +1,14 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-minimal/unload/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 18 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+   6  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+   7  load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1
+   8  load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1
+   9  load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1
+  10  prop-write obj0/PID_PROGMODE count=1 index=1 len=1 sha=6e340b9c
+  11  disconnect T_Disconnect

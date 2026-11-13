@@ -1,0 +1,74 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-secure-fill/reload/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 94 L4 ack(s)
+
+   1  descriptor type0 type=0
+   2  descriptor type0 type=0
+   3  connect T_Connect
+   4  descriptor type0 type=0
+   5  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   6  disconnect T_Disconnect
+   7  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   8  secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system_broadcast=False service=S-A_Sync_Req seq=279481310360 protected_len=16 protected_sha=6a11c09b key=tool mac=ok sync_detail=S-A_Sync_Req serial=none challenge_len=6
+   9  descriptor type0 type=0 secured=tool
+  10  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1 secured=tool
+  11  descriptor type0 type=0
+  12  descriptor type0 type=0
+  13  connect T_Connect
+  14  descriptor type0 type=0
+  15  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+  16  disconnect T_Disconnect
+  17  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+  18  secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system_broadcast=False service=S-A_Sync_Req seq=279481314860 protected_len=16 protected_sha=21090f55 key=tool mac=ok sync_detail=S-A_Sync_Req serial=none challenge_len=6
+  19  descriptor type0 type=0 secured=tool
+  20  function-prop type17.1/PID51 secured=tool
+  21  connect T_Connect
+  22  descriptor type0 type=0
+  23  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+  24  secure-data S-A_Sync_Req scf=0x92 tool_access=True algorithm=CCM-auth-enc system_broadcast=False service=S-A_Sync_Req seq=279481316126 protected_len=16 protected_sha=422a0ddc key=tool mac=ok sync_detail=S-A_Sync_Req serial=none challenge_len=6
+  25  descriptor type0 type=0 secured=tool
+  26  authorize Authorize_Request key=FFFFFFFF(free-access) secured=tool
+  27  prop-desc-read obj2/PID_23 obj=2 pid=23 pid_name=PID_23 prop_index=0 secured=tool
+  28  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1 secured=tool
+  29  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1 secured=tool
+  30  prop-read obj0/PID_TABLE count=1 index=1 secured=tool
+  31  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1 secured=tool
+  32  prop-read obj0/PID_ORDER_INFO count=1 index=1 secured=tool
+  33  load-event obj5/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+  34  load-event obj4/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+  35  load-event obj3/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+  36  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+  37  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1 secured=tool
+  38  function-prop type17.1/PID5 len=10 sha=ab0c4a5b secured=tool
+  39  load-event obj4/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+  40  alloc-record obj4/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=256 fill=True fill_byte=0xff secured=tool
+  41  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+  42  alloc-record obj3/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=4 fill=False fill_byte=0x00 secured=tool
+  43  load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+  44  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=2 fill=False fill_byte=0x00 secured=tool
+  45  load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1 secured=tool
+  46  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlRelSegment seg_size=2 fill=False fill_byte=0x00 secured=tool
+  47  prop-read obj4/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+  48  mem-write 0x006000 addr_int=24576 len=3 sha=60fd135a extended=True secured=tool
+  49  prop-read obj3/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+  50  mem-write 0x008000 addr_int=32768 len=4 sha=9e88446e extended=True secured=tool
+  51  prop-read obj2/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+  52  mem-write 0x00c000 addr_int=49152 len=2 sha=96a296d2 extended=True secured=tool
+  53  prop-read obj1/PID_TABLE_REFERENCE count=1 index=1 secured=tool
+  54  mem-write 0x00a000 addr_int=40960 len=2 sha=96a296d2 extended=True secured=tool
+  55  function-prop type17.1/PID5 len=10 sha=96eeff56 secured=tool
+  56  prop-write type17.1/PID54 count=1 index=0 len=2 sha=96a296d2 secured=tool
+  57  prop-write type17.1/PID61 count=1 index=1 len=1 sha=6e340b9c secured=tool
+  58  function-prop type17.1/PID5 len=10 sha=337a3271 secured=tool
+  59  prop-write obj4/PID_PROGRAM_VERSION count=1 index=1 len=5 sha=6189cee9 secured=tool
+  60  load-event obj4/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+  61  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+  62  load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+  63  load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1 secured=tool
+  64  restart Restart type=master-reset erase_code=1 channel=0 secured=tool
+  65  disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x006000..0x006003 len=3 sha=60fd135a
+    0x008000..0x008004 len=4 sha=9e88446e
+    0x00a000..0x00a002 len=2 sha=96a296d2
+    0x00c000..0x00c002 len=2 sha=96a296d2
