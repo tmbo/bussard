@@ -1095,35 +1095,29 @@ def partial_oracle(job: dict, work: Path) -> dict:
     rows = work / app / "params-partial" / "rows.txt"
     change = (recorded.get("changes") or [{}])[0]
     # A program whose parameters all live in properties writes no memory in
-    # this download: the row pins the memory headline and judges the
-    # properties (#944, the E804 capture: props=ok(2935) loadctl=ok(4)).
-    pins = "expect=not-comparable props=identical loadctl=identical " if property_only(job, work) else ""
-    # No memory is written in a pinned row, so no coverage is recorded for it.
+    # this download; the oracle's headline is then the property parity
+    # (statediff, #1074), so the row needs no pins and no product model to
+    # decide them. The coverage column is left empty: a step's coverage is
+    # 100 % of what it wrote, or 0 % for a property-only step.
     line = (f"1.1.1|{b}|{defaults.product_path(job['file'])}|{app}|ETS partial download after "
-            f"{change.get('label', '?')} set to {change.get('shown', '?')}|{'0' if pins else '100.0'}|"
-            f"{pins}run=params base={a} "
+            f"{change.get('label', '?')} set to {change.get('shown', '?')}||"
+            f"run=params base={a} "
             f"dir={model}{lsm}")
     rows.write_text(line + "\n")
-    # --check makes the exit code the row's judgement (pins included);
-    # without it the oracle exits 0 whatever it found.
+    # --check makes the exit code the row's judgement; without it the
+    # oracle exits 0 whatever it found.
     r = subprocess.run(["bash", str(ORACLE), "--dir", str(model), "--rows", str(rows), "--check",
                         "--out", str(work / app / "params-partial" / "oracle")],
                        capture_output=True, text=True, env={**os.environ, "BUSSARD_NO_DOTENV": "1"})
-    return pinned_verdict(summary_verdict(r.stdout + r.stderr, "1.1.1"), r.returncode, bool(pins), str(rows))
+    return checked_verdict(summary_verdict(r.stdout + r.stderr, "1.1.1"), r.returncode, str(rows))
 
 
-def pinned_verdict(found: dict, exit_code: int, pinned: bool, rows: str) -> dict:
-    """The row's verdict as the oracle judged it: a pinned row (expect=,
-    props=, loadctl=) passes or fails on the oracle's exit code, not on the
-    headline it pins (`not-comparable` for a property-only program, which
-    reads the same whether its properties matched or not). A pinned row
-    that passes is `identical`, one that fails `differs`, with the headline
-    kept under `headline`."""
+def checked_verdict(found: dict, exit_code: int, rows: str) -> dict:
+    """The row's verdict as the oracle judged it: an `identical` headline
+    whose `--check` failed (a load-control or order difference) is
+    `differs`."""
     out = {**found, "exit": exit_code, "rows": rows}
-    if pinned and found.get("verdict") in VERDICTS:
-        out["headline"] = found["verdict"]
-        out["verdict"] = "identical" if exit_code == 0 else "differs"
-    elif exit_code != 0 and found.get("verdict") == "identical":
+    if exit_code != 0 and found.get("verdict") == "identical":
         out["verdict"] = "differs"
     return out
 
@@ -1141,31 +1135,6 @@ def summary_verdict(output: str, ia: str) -> dict:
         if m and m.group(2) in VERDICTS:
             return {"verdict": m.group(2), "summary": line.strip()}
     return {"verdict": "oracle-error", "summary": ""}
-
-
-def property_only(job: dict, work: Path) -> bool:
-    """Whether every parameter of the application lives in an interface
-    object property (no memory placement)."""
-    shared, _ = shared_for(job, work)
-    # The imported product model (`<app>@<lang>.json`) holds each
-    # parameter's placement; the model cache does not.
-    found = sorted(shared.glob(f".bussard/products/*/{job['id']}@*.json"))
-    if not found:
-        return False
-    return placement_property_only(json.loads(found[0].read_text()))
-
-
-def placement_property_only(product: dict) -> bool:
-    """Whether an imported product model places every parameter in an
-    interface-object property: no parameter has memory, and no union has
-    either (a union member's memory sits on its union)."""
-    def items(v):
-        v = v or {}
-        return list(v.values() if isinstance(v, dict) else v)
-    params_ = items(product.get("parameters"))
-    unions = items(product.get("unions"))
-    return bool(params_) and not any(p.get("memory") for p in params_) \
-        and not any(u.get("memory") for u in unions) and any(p.get("property") for p in params_)
 
 
 def partial(args) -> int:

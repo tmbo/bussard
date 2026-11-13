@@ -3213,16 +3213,29 @@ class TestStateDiff(unittest.TestCase):
     def test_statediff_property_only_step_compares_elements(self):
         # Issue #944: a parameter-only download of a property-only program
         # writes no memory. ETS rewrites all 3 elements of obj 10 PID 55,
-        # bussard the changed one; both end equal. The headline stays the
-        # memory's (nothing written), the properties have their own verdict.
+        # bussard the changed one; both end equal. Neither side wrote memory,
+        # so the property elements are the headline (issue #1074).
         base = self.capture([], props=[(10, 55, 3, 1, b"\x00\x14\x00")])
         ets = self.capture([], [self.START, self.DONE], props=[(10, 55, 3, 1, b"\x01\x14\x00")])
         ours = self.capture([], [self.START, self.DONE], props=[(10, 55, 1, 1, b"\x01")])
         r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
-        self.assertEqual(r["verdict"], memimage.NOT_COMPARABLE, r)
+        self.assertEqual(r["verdict"], memimage.IDENTICAL, r)
         self.assertEqual(r["properties"]["verdict"], memimage.IDENTICAL)
         self.assertEqual((r["properties"]["compared"], r["properties"]["differing"]), (3, 0))
         self.assertEqual(len(r["properties"]["matched"]), 3)
+
+    def test_statediff_property_only_step_differs_on_an_element(self):
+        # Issue #1074: in a step without memory a differing property element
+        # makes the row differ, and a step that writes neither memory nor a
+        # compared property stays not comparable.
+        base = self.capture([], props=[(10, 55, 3, 1, b"\x00\x14\x00")])
+        ets = self.capture([], [self.START, self.DONE], props=[(10, 55, 1, 1, b"\x01")])
+        ours = self.capture([], [self.START, self.DONE], props=[(10, 55, 1, 1, b"\x02")])
+        r = self.run_cli("--base", base, "--ets", ets, "--bussard", ours)
+        self.assertEqual((r["verdict"], r["properties"]["verdict"]), (memimage.DIFFERS, memimage.DIFFERS))
+        empty = self.capture([], [self.START, self.DONE])
+        r = self.run_cli("--base", base, "--ets", empty, "--bussard", empty)
+        self.assertEqual(r["verdict"], memimage.NOT_COMPARABLE, r)
 
     def test_statediff_property_value_differs_keeps_the_memory_headline(self):
         base = self.capture([(0x4000, b"\x02")], props=[(10, 55, 2, 1, b"\x00\x14")])

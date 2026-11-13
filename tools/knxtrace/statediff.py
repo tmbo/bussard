@@ -27,7 +27,8 @@ each) either side wrote in the step, over the base's writes. The load-state
 machine's own PID 5 is left to the load-control comparison, function
 property commands to the fcall comparison. Their verdict is reported apart
 from the memory's (`properties`, the keys the oracle reads as `props=`),
-as imgdiff reports it; the headline stays the memory's. The writes imgdiff
+as imgdiff reports it; the headline stays the memory's, except in a step
+that writes no memory, where it is the properties' (issue #1074). The writes imgdiff
 never compares (the security object's mode, tool key and send sequence,
 PID_PROGMODE, the verify-mode switch) are listed, not compared, and the
 security object's tables compare whole by imgdiff's value check. Objects
@@ -284,8 +285,14 @@ def compare_states(
     differing = sum(int(r["diff_octets"]) for r in out_regions)
     # The headline is the memory's, as imgdiff's: the property writes have
     # their own verdict under `properties`, which a row pins with props=.
+    # A step in which neither side wrote memory but the property elements
+    # compared (a property-only program, issue #1074) takes their verdict,
+    # as imgdiff does for a property-only plan (#1043).
     props = compare_properties(base, ets, bussard)
-    if not compared:
+    if not compared and props.get("compared"):
+        verdict = str(props["verdict"])
+        reason = "no memory written in this step; the property elements are the verdict"
+    elif not compared:
         verdict, reason = memimage.NOT_COMPARABLE, "neither side wrote memory in this step"
     elif differing:
         verdict, reason = memimage.DIFFERS, ""
