@@ -223,6 +223,10 @@ pub struct MockDevice {
     /// [`segment_base_for`] (e.g. above `0xFFFF`, as the Zennio DALIBOX
     /// places its parameter segment at `0x10000`).
     pub segment_bases: HashMap<u8, u32>,
+    /// Ignore the fill flag of `LdCtrlRelSegment` (a fault: a device that
+    /// keeps its memory under a Mode 1 allocation), see
+    /// [`apply_allocation_fill`].
+    pub withhold_fill: bool,
     /// `A_UserMemory_Write`s seen, across every connection.
     pub user_memory_writes: usize,
     /// The group-object table's element count, served as its `PID_TABLE` count.
@@ -339,6 +343,27 @@ impl fmt::Debug for MockDevice {
             .field("hook", &self.hook.is_some())
             .field("control_hook", &self.control_hook.is_some())
             .finish_non_exhaustive()
+    }
+}
+
+/// Fills a `LdCtrlRelSegment` allocation of `size` octets at `base` when the
+/// record (`[event, 0x0B, size(4), mode, fill, ..]`) sets the fill flag, as a
+/// device does (Management Procedures 03_05_02 §3.31.3.4, Mode bit 0; the ETS
+/// reload capture of `syn-secure-fill`, issue #1081). Mode 0 keeps the memory
+/// contents. `withhold` is the fault of a device that ignores the flag.
+pub fn apply_allocation_fill(
+    memory: &mut HashMap<u32, u8>,
+    base: u32,
+    size: u32,
+    record: &[u8],
+    withhold: bool,
+) {
+    if withhold || !record.get(6).is_some_and(|mode| mode & 1 == 1) {
+        return;
+    }
+    let byte = record.get(7).copied().unwrap_or(0);
+    for i in 0..size {
+        memory.insert(base.wrapping_add(i), byte);
     }
 }
 
@@ -634,6 +659,7 @@ impl MockDevice {
             writes_in_verify_mode: Vec::new(),
             extended_memory: true,
             segment_bases: HashMap::new(),
+            withhold_fill: false,
             user_memory_writes: 0,
             go_count: 0,
             nak_writes_into: None,
@@ -913,6 +939,13 @@ impl MockDevice {
     /// without extended memory services (issue #472).
     pub fn without_extended_memory(mut self) -> Self {
         self.extended_memory = false;
+        self
+    }
+
+    /// Ignores the fill flag of every `LdCtrlRelSegment` (fault): the device
+    /// keeps its memory under a Mode 1 allocation (issue #1081).
+    pub fn with_withheld_fill(mut self) -> Self {
+        self.withhold_fill = true;
         self
     }
 
@@ -1801,15 +1834,7 @@ impl MockDevice {
                         self.memory.remove(&old_base.wrapping_add(i));
                     }
                 }
-                // Mode bit 0 fills the allocated memory with the fill byte
-                // (Management Procedures 03_05_02 §3.31.3.4), which ETS relies
-                // on over a programmed device (issue #1081).
-                if value.get(6).is_some_and(|mode| mode & 1 == 1) {
-                    let byte = value.get(7).copied().unwrap_or(0);
-                    for i in 0..size {
-                        self.memory.insert(base.wrapping_add(i), byte);
-                    }
-                }
+                apply_allocation_fill(&mut self.memory, base, size, value, self.withhold_fill);
                 self.segments.insert(oi, (base, size));
             }
             return answer(self.load_state(oi));

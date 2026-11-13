@@ -1640,17 +1640,24 @@ fn lower_map_error(
     Ok(())
 }
 
-/// Inserts a [`FlashStep::FactoryReset`] with erase code 7 right before the
-/// first `Unload` (or at the start when the procedure has none), so read-only
-/// preconditions that precede the first state change still run on the intact
-/// device, and the reset lands before anything is torn down or written.
+/// Inserts a [`FlashStep::FactoryReset`] with erase code 7 after the leading
+/// read-only steps (description reads, declarations, property, memory and
+/// table-reference compares and reads), so every precondition runs on the
+/// intact device and a failed one leaves it as it was; the reset lands
+/// before anything is torn down or written (before the first `Unload`, or at
+/// the end when the procedure has nothing else).
 pub(super) fn insert_factory_reset(steps: &mut Vec<FlashStep>) {
     let at = steps
         .iter()
         .position(|s| {
             !matches!(
                 s,
-                FlashStep::CompareProp { .. } | FlashStep::CompareRelMem { .. }
+                FlashStep::DescribeProp { .. }
+                    | FlashStep::DeclareProp { .. }
+                    | FlashStep::CompareProp { .. }
+                    | FlashStep::CompareRelMem { .. }
+                    | FlashStep::ReadTableReference { .. }
+                    | FlashStep::CompareTableReference { .. }
             )
         })
         .unwrap_or(steps.len());
@@ -3492,6 +3499,8 @@ mod tests {
             )?;
             // The device already runs this application: the `par` procedure.
             plan.use_par_procedure(None);
+            // No factory reset in the plan, so the verdict is the master
+            // reset's alone.
             assert!(!plan.has_factory_reset(), "erase code {code}");
             assert_eq!(plan.erases_resident_objects(), erases, "erase code {code}");
         }

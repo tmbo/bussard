@@ -436,11 +436,12 @@ pub fn apply_freshness(
 /// matches (the ETS group-B differential download): only when the device
 /// carries no application or the same one, never with `full`, and never
 /// when the plan erases resident objects (a factory reset, or a product
-/// Master Reset with an erasing code, issue #623; see
-/// [`FlashPlan::erases_resident_objects`]).
+/// Master Reset with an erasing code, issue #623) or writes a filled segment
+/// sparsely with a confirmed restart (issue #1081); see
+/// [`FlashPlan::allows_resident_skip`].
 pub fn skip_unchanged(full: bool, plan: &FlashPlan, freshness: &Freshness) -> bool {
     !full
-        && !plan.erases_resident_objects()
+        && plan.allows_resident_skip()
         && matches!(
             freshness,
             Freshness::Fresh | Freshness::SameApplication { .. }

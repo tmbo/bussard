@@ -141,7 +141,7 @@ pub mod wire;
 
 pub use device::{
     ControlHook, ExtWriteConfirmation, Hook, MemoryWritePolicy, MockDevice, MockKnxnet,
-    MockPropertyDescription, Reaction, Step,
+    MockPropertyDescription, Reaction, Step, apply_allocation_fill,
 };
 pub use gateway::{
     AckPolicy, CONFIRMATION_DELAY, GatewayBuilder, GatewayStats, Inbound, MockGateway, Outage,

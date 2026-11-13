@@ -1349,7 +1349,7 @@ type ProbeAnswer<Ch> = Option<(Layer4Connection<Ch>, u64)>;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartKind {
     /// The factory reset (`A_Restart` master reset, erase code 7) that opens a
-    /// sparse System B download.
+    /// System B download over another or an unreadable application.
     FactoryReset,
     /// The confirmed restart (`A_Restart` master reset, erase code 1) that ends
     /// it.

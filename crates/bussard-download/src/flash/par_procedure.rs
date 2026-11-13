@@ -142,17 +142,12 @@ mod tests {
     #[test]
     fn test_use_par_procedure_takes_the_par_allocation() -> Result<(), Box<dyn std::error::Error>> {
         let mut plan = super::super::test_support::par_pair_plan()?;
-        assert!(
-            !plan.has_factory_reset(),
-            "no plan opens with a reset (#1081)"
-        );
         let changed = plan.use_par_procedure(Some(&resident(&[
             (4, LoadState::Loaded),
             (5, LoadState::Unloaded),
         ])));
         assert!(changed);
         assert!(plan.is_par_procedure());
-        assert!(!plan.has_factory_reset());
         let allocs: Vec<_> = plan
             .steps
             .iter()

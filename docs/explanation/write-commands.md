@@ -156,13 +156,20 @@ application is refused by that id, and otherwise the load state and the first
 octets of its code decide whether it runs the same application.
 
 **The factory reset (System B).** Many applications write only the octets
-that differ from a fill byte. The segment allocation asks the device to fill
-the whole segment first, so no octet of an earlier image survives, and `flash`
-opens the download with the load procedure's own unloads, as ETS does on a
-fresh or a programmed device. Only a `--force` over another application or an
-unknown one opens the download of an application that supports Secure with a
-confirmed factory reset: it keeps the address, erases application, parameters,
-links and the Data Secure keys, waits for the reboot (at most a minute) and
+that differ from a fill byte. An allocation with the fill flag asks the device
+to fill the whole segment first, so in that segment no octet of an earlier
+image survives; an allocation without it keeps the memory, as ETS's does (the
+`par` procedure of a device that runs the same application then writes the
+whole image, and a segment without `<Data>` leaves the octets no parameter
+occupies as the device holds them). `flash` opens the download with the load
+procedure's own unloads, as ETS does on a fresh or a programmed device, and
+checks that the device filled: the segment's MCB check where the procedure has
+one, otherwise a read of skipped octets after the restart. Only a `--force`
+over another application or an unknown one opens the download of an
+application that supports Secure with a confirmed factory reset, which no
+captured ETS download sends: it keeps the address, erases application,
+parameters, links and the Data Secure keys, waits for the reboot (at most a
+minute) and
 streams every object in full. A device that refuses or ignores the reset fails
 the flash before anything is written. `--no-factory-reset` leaves it out.
 System 7 downloads write every region in full and never reset. An

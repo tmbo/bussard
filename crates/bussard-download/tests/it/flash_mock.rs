@@ -284,6 +284,8 @@ struct DeviceState {
     relocate_on_realloc: bool,
     /// Every relative allocation as `(size, mode octet)`.
     rel_segments: Vec<(u32, u8)>,
+    /// Ignore the fill flag of `LdCtrlRelSegment` (fault, issue #1081).
+    withhold_fill: bool,
     /// Sparse device memory: 24-bit address → octet.
     memory: HashMap<u32, u8>,
     fault: Fault,
@@ -581,20 +583,6 @@ struct DeviceState {
 }
 
 type Shared = Arc<Mutex<DeviceState>>;
-
-/// Fills a `LdCtrlRelSegment` allocation at `base` when its mode sets the fill
-/// flag (`value` = `[event, 0x0B, size(4), mode, fill, ..]`), as a device does
-/// (Management Procedures 03_05_02 §3.31.3.4, Mode bit 0; knx-sim
-/// `load_state.rs`; the ETS reload capture of `syn-secure-fill`, issue
-/// #1081). Mode 0 keeps the memory contents.
-fn fill_allocation(memory: &mut HashMap<u32, u8>, base: u32, size: u32, value: &[u8]) {
-    if value.get(6).is_some_and(|mode| mode & 1 == 1) {
-        let byte = value.get(7).copied().unwrap_or(0);
-        for i in 0..size {
-            memory.insert(base.wrapping_add(i), byte);
-        }
-    }
-}
 
 /// Builds a property-value response payload (4-octet header + data), from spec.
 fn prop_response(object_index: u8, pid: u8, count: u8, start: u16, data: &[u8]) -> Vec<u8> {
@@ -1148,7 +1136,14 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                     s.last_segment_base = base;
                     s.last_segment_size = size;
                     s.next_segment_base = base.wrapping_add(size.max(1));
-                    fill_allocation(&mut s.memory, base, size, value);
+                    let withhold = s.withhold_fill;
+                    bussard_testkit::apply_allocation_fill(
+                        &mut s.memory,
+                        base,
+                        size,
+                        value,
+                        withhold,
+                    );
                     let st = *s.object_load_states.get(&oi).unwrap_or(&LS_LOADING);
                     return Reaction::Answer(
                         A_PROPERTY_VALUE_RESPONSE,
@@ -1203,7 +1198,8 @@ fn handle_request(state: &Shared, req_apci: u16, data: &[u8]) -> Reaction {
                 };
                 s.last_segment_base = base;
                 s.last_segment_size = size;
-                fill_allocation(&mut s.memory, base, size, value);
+                let withhold = s.withhold_fill;
+                bussard_testkit::apply_allocation_fill(&mut s.memory, base, size, value, withhold);
                 // Normally stays in Loading; the LoadedOnAllocate fault drops to
                 // Loaded here, so the allocate's own re-read trips the strict check.
                 if fault == Fault::LoadedOnAllocate && is_app {
@@ -1855,6 +1851,7 @@ fn fresh_device(fault: Fault) -> Shared {
         freed_segment: None,
         relocate_on_realloc: false,
         rel_segments: Vec::new(),
+        withhold_fill: false,
         memory: HashMap::new(),
         fault,
         control_writes: 0,
@@ -2283,7 +2280,7 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() -> TestResult {
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2292,10 +2289,6 @@ async fn flash_with_image_prop_loads_and_verifies_mcb() -> TestResult {
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
     // The plan carries the four MCB checks.
     let checks = plan
         .steps
@@ -2369,7 +2362,7 @@ async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2378,10 +2371,6 @@ async fn flash_skips_restream_when_resident_mcb_matches() -> TestResult {
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(
         &mut bus,
@@ -2436,7 +2425,7 @@ async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2445,10 +2434,6 @@ async fn test_flash_full_streams_when_resident_mcb_matches_but_object_not_loaded
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(
         &mut bus,
@@ -2494,7 +2479,7 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() -> Test
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2503,10 +2488,6 @@ async fn flash_full_streams_when_resident_mcb_absent_even_with_skip_on() -> Test
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(
         &mut bus,
@@ -2554,7 +2535,7 @@ async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() -> TestResu
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2563,10 +2544,6 @@ async fn flash_full_streams_when_resident_mcb_matches_but_skip_off() -> TestResu
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(
         &mut bus,
@@ -2606,7 +2583,7 @@ async fn flash_image_prop_catches_corrupted_stored_image() -> TestResult {
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
 
     let app = app_with_image_prop()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -2615,10 +2592,6 @@ async fn flash_image_prop_catches_corrupted_stored_image() -> TestResult {
         None,
         &BTreeMap::new(),
     )?;
-    // The fill (`Mode=1`) makes the planner add a factory reset, which a
-    // single-connection session cannot reconnect after; this test exercises the
-    // `--no-factory-reset` path.
-    plan.skip_factory_reset();
 
     let l4 = Layer4Connection::connect(
         &mut bus,
@@ -6846,18 +6819,39 @@ async fn test_param_plan_fresh_mock_device_reports_unknown() -> TestResult {
 /// plan opens with no reset (issue #1081) and ends with a confirmed restart
 /// (issue #452: only for a secure-capable application).
 fn app_with_sparse_segment() -> TestResult<ApplicationProgram> {
-    sparse_segment_app("")
+    sparse_segment_app("", "")
+}
+
+/// [`app_with_sparse_segment`] whose procedure checks object 4's MCB after
+/// its `LoadCompleted` (`LdCtrlLoadImageProp`, the shape of 53 of the 56
+/// sweep programs that used to carry the factory reset).
+fn app_with_sparse_segment_and_mcb_check() -> TestResult<ApplicationProgram> {
+    sparse_segment_app("", r#"<LdCtrlLoadImageProp ObjIdx="4" PropId="27" />"#)
+}
+
+/// [`app_with_sparse_segment`] whose procedure opens with a compare of a
+/// property the master data gives no type (object 4, PID 246), so the plan
+/// reads its description first (issue #1014).
+fn app_with_sparse_segment_and_compare() -> TestResult<ApplicationProgram> {
+    sparse_segment_app(
+        r#"<LdCtrlCompareProp InlineData="00010203" ObjIdx="4" PropId="246" />"#,
+        "",
+    )
 }
 
 /// [`app_with_sparse_segment`] whose own load procedure declares a Master
 /// Reset with erase code 7 before its unload (`LdCtrlMasterReset`).
 fn app_with_sparse_segment_and_master_reset() -> TestResult<ApplicationProgram> {
-    sparse_segment_app(r#"<LdCtrlMasterReset EraseCode="7" ChannelNumber="0" />"#)
+    sparse_segment_app(
+        r#"<LdCtrlMasterReset EraseCode="7" ChannelNumber="0" />"#,
+        "",
+    )
 }
 
 /// The sparse-segment application with `before_unload` (load controls)
-/// between its connect and its unload.
-fn sparse_segment_app(before_unload: &str) -> TestResult<ApplicationProgram> {
+/// between its connect and its unload, and `after_complete` after its
+/// `LoadCompleted`.
+fn sparse_segment_app(before_unload: &str, after_complete: &str) -> TestResult<ApplicationProgram> {
     let xml = format!(
         r#"<KNX xmlns="http://knx.org/xml/project/23">
      <ApplicationProgram Id="M-2_A-8" ApplicationNumber="8" ApplicationVersion="1"
@@ -6876,6 +6870,7 @@ fn sparse_segment_app(before_unload: &str) -> TestResult<ApplicationProgram> {
          <LdCtrlRelSegment AppliesTo="full" LsmIdx="4" Size="6" Mode="1" Fill="0" />
          <LdCtrlWriteRelMem AppliesTo="full,par" ObjIdx="4" Offset="0" Size="6" Verify="true" />
          <LdCtrlLoadCompleted LsmIdx="4" />
+         {after_complete}
          <LdCtrlRestart />
          <LdCtrlDisconnect />
         </LoadProcedure>
@@ -6899,6 +6894,23 @@ async fn flash_sparse(
     Shared,
     bussard_download::FlashOutcome,
 )> {
+    let (plan, state, outcome) = flash_sparse_with(app, device, false).await?;
+    let image = sparse_image(&state)?;
+    Ok((image, plan, state, outcome?))
+}
+
+/// [`flash_sparse`] that returns the flash's own result, with the plan's
+/// factory reset of a device that holds another application when
+/// `factory_reset` (`require_factory_reset`).
+async fn flash_sparse_with(
+    app: &ApplicationProgram,
+    device: Shared,
+    factory_reset: bool,
+) -> TestResult<(
+    bussard_download::FlashPlan,
+    Shared,
+    Result<bussard_download::FlashOutcome, WriteError>,
+)> {
     // Shorten the post-reboot poll so the test does not stall; the var only
     // bounds a sleep.
     // SAFETY of env: nextest runs this test in its own process.
@@ -6908,7 +6920,7 @@ async fn flash_sparse(
     let (handle, state, gw) = setup_bus_with(device).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source = handle.group_source();
-    let plan = plan_flash_default(
+    let mut plan = plan_flash_default(
         app,
         "1.1.4",
         0x07B0,
@@ -6917,6 +6929,9 @@ async fn flash_sparse(
         None,
         &BTreeMap::new(),
     )?;
+    if factory_reset {
+        plan.require_factory_reset();
+    }
     let connector = LeaseConnector::plain(handle.clone(), target, source, None);
     let mut session = Session::open(connector, None, None).await?;
     let outcome = flash(
@@ -6928,11 +6943,168 @@ async fn flash_sparse(
         },
         |_| {},
     )
+    .await;
+    let _ = session.into_disconnect().await;
+    drop(gw);
+    Ok((plan, state, outcome))
+}
+
+/// Issue #1081 review: a same-application re-flash of a secure-capable plan
+/// that writes a filled segment sparsely keeps ETS's full procedure even when
+/// the resident MCB matches (`captures/synthetic/syn-secure-fill/reload`): no
+/// resident-MCB skip, so no bare `PID_PROGRAM_VERSION` write to a `Loaded`
+/// object.
+#[tokio::test]
+async fn test_flash_sparse_secure_reflash_runs_the_full_procedure_over_a_matching_image()
+-> TestResult {
+    unsafe {
+        std::env::set_var("BUSSARD_FLASH_REBOOT_WAIT_MS", "50");
+    }
+    let app = app_with_sparse_segment_and_mcb_check()?;
+    let (handle, state, gw) = setup_bus_with(preloaded_device(&SPARSE_IMAGE)?).await?;
+    let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
+    let source = handle.group_source();
+    let plan = plan_flash_default(
+        &app,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    assert!(!plan.allows_resident_skip());
+    let connector = LeaseConnector::plain(handle.clone(), target, source, None);
+    let mut session = Session::open(connector, None, None).await?;
+    let outcome = flash(
+        &mut session,
+        &plan,
+        bussard_download::FlashOptions {
+            verify_after_restart: true,
+            skip_matching_mcb: true,
+            ..Default::default()
+        },
+        |_| {},
+    )
     .await?;
     let _ = session.into_disconnect().await;
     drop(gw);
-    let image = sparse_image(&state)?;
-    Ok((image, plan, state, outcome))
+    assert!(outcome.ok(), "the re-flash must verify: {outcome:?}");
+    let s = lock(&state)?;
+    assert!(s.memory_writes_seen > 0, "the image is written again");
+    assert_eq!(
+        s.rel_segments,
+        vec![(6, 1)],
+        "re-allocated with the fill flag"
+    );
+    Ok(())
+}
+
+/// A device that holds `0xAA` in the sparse segment and ignores the fill flag
+/// of the allocation (fault, issue #1081).
+fn stale_device_without_fill() -> TestResult<Shared> {
+    let state = preloaded_device(&[0xAA; 6])?;
+    lock(&state)?.withhold_fill = true;
+    Ok(state)
+}
+
+/// Issue #1081: a device that keeps its memory under the Mode 1 allocation
+/// leaves stale octets where the sparse write skipped. On a procedure without
+/// an MCB check the read-back samples the skipped octets and the flash is not
+/// reported verified.
+#[tokio::test]
+async fn test_flash_sparse_segment_withheld_fill_fails_the_read_back() -> TestResult {
+    let app = app_with_sparse_segment()?;
+    let (_, state, outcome) = flash_sparse_with(&app, stale_device_without_fill()?, false).await?;
+    let outcome = outcome?;
+    assert_eq!(
+        sparse_image(&state)?[0],
+        0xAA,
+        "the fault kept the stale octet"
+    );
+    assert!(!outcome.spot_checks_match, "the fill sample caught it");
+    assert!(!outcome.ok(), "never reported verified: {outcome:?}");
+    Ok(())
+}
+
+/// The same fault on a procedure that checks the segment's MCB (53 of the 56
+/// sweep programs): the device's CRC runs over the stale octets, so the check
+/// after `LoadCompleted` fails the flash.
+#[tokio::test]
+async fn test_flash_sparse_segment_withheld_fill_fails_the_mcb_check() -> TestResult {
+    let app = app_with_sparse_segment_and_mcb_check()?;
+    let (_, _, outcome) = flash_sparse_with(&app, stale_device_without_fill()?, false).await?;
+    assert!(
+        matches!(outcome, Err(WriteError::ImagePropMismatch { .. })),
+        "the MCB compare fails: {outcome:?}"
+    );
+    Ok(())
+}
+
+/// With the fill honoured the MCB check passes and stands in for the fill
+/// sample: the read-back after the restart reads no skipped octet.
+#[tokio::test]
+async fn test_flash_sparse_segment_mcb_check_covers_the_fill() -> TestResult {
+    let app = app_with_sparse_segment_and_mcb_check()?;
+    let (image, _, _, outcome) = flash_sparse(&app, preloaded_device(&[0xAA; 6])?).await?;
+    assert!(outcome.ok(), "the flash must verify: {outcome:?}");
+    assert_eq!(image, SPARSE_IMAGE.to_vec());
+    Ok(())
+}
+
+/// Issue #1081 review: the factory reset of a device with another
+/// application goes after every read-only precondition, the description read
+/// the compare needs included: [DescribeProp, CompareProp, FactoryReset,
+/// Unload, ...].
+#[test]
+fn test_require_factory_reset_keeps_the_preconditions_first() -> TestResult {
+    let mut plan = plan_flash_default(
+        &app_with_sparse_segment_and_compare()?,
+        "1.1.4",
+        0x07B0,
+        &no_overrides(),
+        &BTreeMap::new(),
+        None,
+        &BTreeMap::new(),
+    )?;
+    plan.require_factory_reset();
+    let head: Vec<&str> = plan
+        .steps
+        .iter()
+        .take(4)
+        .map(|s| match s {
+            FlashStep::DescribeProp { .. } => "describe",
+            FlashStep::CompareProp { .. } => "compare",
+            FlashStep::FactoryReset { .. } => "reset",
+            FlashStep::Unload { .. } => "unload",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(
+        head,
+        ["describe", "compare", "reset", "unload"],
+        "{:?}",
+        plan.steps
+    );
+    Ok(())
+}
+
+/// A failing precondition stops the flash before the factory reset: the
+/// device is not wiped.
+#[tokio::test]
+async fn test_flash_failed_precondition_sends_no_factory_reset() -> TestResult {
+    let state = preloaded_device(&[0xAA; 6])?;
+    lock(&state)?
+        .compare_props
+        .insert((4, 246), vec![0x09, 0x09, 0x09, 0x09]);
+    let app = app_with_sparse_segment_and_compare()?;
+    let (plan, state, outcome) = flash_sparse_with(&app, state, true).await?;
+    assert!(plan.has_factory_reset());
+    assert!(outcome.is_err(), "the compare fails the flash: {outcome:?}");
+    let s = lock(&state)?;
+    assert_eq!(s.factory_resets_seen, 0, "the device was not reset");
+    assert_eq!(s.control_writes, 0, "nothing was unloaded");
+    Ok(())
 }
 
 /// Issue #1081: a sparse write of a filled segment onto a fresh device opens
@@ -7595,10 +7767,11 @@ async fn test_parameters_only_download_with_nothing_changed_writes_nothing() -> 
     Ok(())
 }
 
-/// Flashes [`app_with_sparse_segment`] (factory reset first, as for a device
-/// with another application, confirmed restart last) onto a Data Secure mock whose security layer drops the first
-/// `sync_drops` S-A_Sync_Reqs after every restart, and returns the flash result
-/// and the device state (issue #166).
+/// Flashes [`app_with_sparse_segment`] with the factory reset of a device
+/// that holds another application (`require_factory_reset`) and the
+/// confirmed restart last, onto a Data Secure mock whose security layer drops
+/// the first `sync_drops` S-A_Sync_Reqs after every restart, and returns the
+/// flash result and the device state (issue #166).
 async fn secure_flash_across_slow_security_layer(
     sync_drops: u32,
 ) -> TestResult<(Result<bussard_download::FlashOutcome, WriteError>, Shared)> {
@@ -8305,8 +8478,8 @@ fn test_plan_flash_secure_capable_app_restarts_confirmed_without_reset() -> Test
     // ends with `restart master-reset erase_code=1` (op 1650). Its opening
     // `restart master-reset erase_code=7` (op 5, before any read of the
     // application; `bm-1-1-30.pcapng` and `heizungsaktor-6-fach-1-1-2.pcapng`
-    // the same) is an explicit ETS reset: ETS sends none on a fresh or a
-    // programmed device (`captures/synthetic/syn-secure-fill/defaults` and
+    // the same) is consistent with an explicit ETS reset: ETS sends none on a
+    // fresh or a programmed device (`captures/synthetic/syn-secure-fill/defaults` and
     // `/reload`, issue #1081), so the plan opens with the unloads.
     let app = merged_filled_app(true)?;
     assert_eq!(
@@ -8484,7 +8657,7 @@ async fn test_flash_prefilled_segment_without_image_passes_the_mcb_check() -> Te
     let (mut bus, state, handle) = setup(Fault::None).await?;
     let target: bussard_model::IndividualAddress = "1.1.4".parse()?;
     let source: bussard_model::IndividualAddress = "0.0.255".parse()?;
-    let mut plan = plan_flash_default(
+    let plan = plan_flash_default(
         &app,
         "1.1.4",
         0x07B0,
@@ -8493,7 +8666,6 @@ async fn test_flash_prefilled_segment_without_image_passes_the_mcb_check() -> Te
         None,
         &BTreeMap::new(),
     )?;
-    plan.skip_factory_reset();
     let l4 = Layer4Connection::connect(
         &mut bus,
         target,

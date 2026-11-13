@@ -435,8 +435,10 @@ Procedures 03_05_02 §3.31.3.4, Mode bit 0), and knx-sim does. The plain ETS
 download that left the F50 blinking ran the product's `par` procedure, whose
 allocation keeps the memory (`Mode="0"`, issue #490), over bussard's earlier
 full write of a wrong image (#123). The house captures that open with erase
-code 7 send it before reading anything of the application, so it is an
-explicit ETS reset, not part of a download. ETS's download over a programmed
+code 7 send it before reading anything of the application; no captured
+download sends it, and those captures are consistent with an explicit ETS
+reset (not settled: no capture of a secure-capable device after another
+application, an unload or an address assignment). ETS's download over a programmed
 device sends none (`captures/synthetic/syn-secure-fill/reload`,
 `syn-minimal/reload`), and neither does `flash` now; the reset stays only for
 a `--force` over another or an unreadable application.

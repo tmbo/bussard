@@ -345,8 +345,8 @@ pub(super) fn step_label(step: &FlashStep, ctx: &LabelCtx<'_>) -> String {
              (LdCtrlDeclarePropDesc), nothing sent"
         ),
         FlashStep::FactoryReset { erase_code } => format!(
-            "factory reset (A_Restart master reset, erase code {erase_code}): erase application, \
-             parameters and links, keep the individual address; wait for the reboot and reconnect \
+            "factory reset (A_Restart master reset, erase code {erase_code}, not confirmed by a \
+             capture): erase application, parameters and links, keep the individual address; wait for the reboot and reconnect \
              (a Data Secure device: plain descriptor probes for up to 30 s, then S-A_Sync with retries)"
         ),
         FlashStep::ReadTableReference { obj_idx } => format!(
