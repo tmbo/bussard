@@ -81,6 +81,12 @@ const KNOWN_REFUSALS: &[(&str, &str, usize)] = &[
         "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
         2,
     ),
+    // The same two reads before the links variant's commissioning (#1054).
+    (
+        "syn-secure/links",
+        "REJECTED by 1.1.1: secure refused: plain access refused: device requires KNX Data Secure",
+        2,
+    ),
     // And on the pre-filled secure product (bussard #1081, #1056).
     (
         "syn-secure-fill/defaults",

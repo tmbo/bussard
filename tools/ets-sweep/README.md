@@ -836,3 +836,53 @@ back (OCR reads nothing on a selected row).
   an input changes. Row (`dir=` the model template with `delay-s = 500`):
   `differs`, `par=4/256@+0x3` (bussard runs no calculation), pinned
   `expect=differs` (#427).
+
+Results of VM session 4 (2026-11-13, ETS 6.4.1 build 6.4.8718, VM sim
+9bfa2b84, #1056, #1081):
+
+- `reload` and `other-app` of `syn-minimal` (07B0; the other application is
+  `syn-hidden-default`): the second download is request for request the
+  fresh one, the procedure's own unloads included. Rows `identical`,
+  `seq=ok`.
+- `syn-secure-fill` (new: `syn-secure` with `LdCtrlRelSegment Mode="1"
+  Fill="255"`, the one synthetic product on which bussard plans its leading
+  factory reset, erase code 7): `defaults` and `reload` (over the device the
+  first download activated) both without any reset. ETS relies on the
+  procedure's Unload of objects 5 to 1 and on the allocation record with the
+  fill flag, then writes only the placed octets. Rows `identical`,
+  `seq=differs` (bussard-only erase 7, #1081).
+- `unload` (driver flow `unload`, the device row's context menu "Entladen >
+  Applikationsprogramm"; no confirmation): on 07B0 Authorize, Unload of
+  objects 1 to 5, a `PID_PROGMODE` write, disconnect; on 0705 Unload of LSM
+  1 to 4 and a read of `0x0060`. No restart. No oracle row (bussard has no
+  unload command); knx-sim's calibration replays it and requires every
+  object `Unloaded`.
+- `unload-full` ("Physikalische Adresse und Applikationsprogramm"): ETS asks
+  for the programming button ("Bitte Programmierknopf drücken"), so the sim
+  starts in programming mode; after the unloads ETS resets the address by
+  serial number to 15.15.255 and reads it back, which knx-sim does not
+  answer: "Entladen(Alle): fehlgeschlagen" (#1120). Not committed.
+- `assign` of `syn-minimal` (the sim device at 15.15.255 in programming
+  mode, "Physikalische Adresse"): `A_IndividualAddress_Read`, the write of
+  1.1.1, the read again, then connect, descriptor, `PID_MAX_APDU_LENGTH`,
+  `PID_SERIAL_NUMBER`, a basic restart. The application download after it
+  is the row: `identical`, `seq=ok`.
+- `links` of `syn-secure` with 1/0/2 set to "Erzwungen aus" (driver flow
+  `ga_security`: the Panels menu's Gruppenadressen panel, the address in its
+  middle group, the "Sicherheit" dropdown of the Eigenschaften panel with
+  "Automatisch", "Erzwungen an", "Erzwungen aus"). ETS answers the change
+  with a "Sicherheitshinweis" listing 1/0/1 and 1/0/2 as unencrypted: one
+  object (the switch) cannot mix a secured and a plain address, so 1/0/1
+  goes plain with it, and only 1/0/3 is secured (one group key, PID 53).
+  Linking a plain address next to a secured one shows the same notice.
+  Both flows answer it with Weiter. Row `identical`, `seq=ok`.
+- `apply` of `syn-s7-0705` (`identical`, `seq=ok`) and of `syn-relseg-fill`
+  (`loadctl=differs`, ETS reloads the group-object table too, #1095).
+
+Driver changes of the session: `unload`, `ga_security` (the panel closed
+again and the operations pane reopened afterwards), `ensure_layout` closes a
+group-address panel below the Katalog panel (one left open in
+`ets-sweep-secure` failed `catalog_add` with "the add bar does not target
+1.1 TP Linie"), `download` and `unload` cancel "Verbindung auswählen" (ETS
+offers the interfaces it found when the sim does not answer, the owner's
+real one among them) and raise, and `link` answers the security notice.

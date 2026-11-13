@@ -832,7 +832,7 @@ VARIANTS: dict[str, dict] = {
                "doc": "parameters changed in ETS's parameter editor (changes.toml: a branch switch, a module "
                       "instance, a union member), each read back after the last change, then the application "
                       "download into a fresh device; the Dynamic evaluator off its defaults (#1054, #1049, #1050)"},
-    "apply": {"products": ("syn-minimal", "syn-secure"),
+    "apply": {"products": ("syn-minimal", "syn-secure", "syn-s7-0705", "syn-relseg-fill"),
               "doc": "the application with two links, then a third link added and ETS's partial download; the "
                      "capture is the partial download, compared with `bussard apply` (#829, #469, #779)"},
     "unload": {"products": ("syn-minimal", "syn-s7-0705"),
@@ -880,7 +880,9 @@ GA_SECURITY = {"syn-secure": {"1/0/2": "off"}}
 # `apply` (#829): the links of the first download, then the link added before
 # the partial download.
 APPLY_LINKS = {"syn-minimal": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
-               "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")])}
+               "syn-secure": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
+               "syn-s7-0705": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")]),
+               "syn-relseg-fill": ([(0, "1/0/1"), (1, "1/0/3")], [(0, "1/0/2")])}
 # The parameter changes of `partial`, `calc-input`, `calc-overflow` and
 # `params`, per product and variant (see the file's header).
 CHANGES = HERE / "changes.toml"

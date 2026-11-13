@@ -1,0 +1,39 @@
+normalized operation sequence for 1.1.1 (captures/synthetic/syn-s7-0705/apply/ets.pcapng)
+dropped: 0 L_Data.con echo(es), 0 repeat(s), 55 L4 ack(s)
+
+   1  connect T_Connect
+   2  descriptor type0 type=0
+   3  prop-read obj0/PID_MAX_APDU_LENGTH count=1 index=1
+   4  authorize Authorize_Request key=FFFFFFFF(free-access)
+   5  prop-read obj0/PID_SERIAL_NUMBER count=1 index=1
+   6  mem-read 0xb6ec addr_int=46828 count=1
+   7  prop-read obj3/PID_PROGRAM_VERSION count=1 index=1
+   8  mem-read 0xb6ed addr_int=46829 count=1
+   9  prop-read obj0/PID_MANUFACTURER_ID count=1 index=1
+  10  prop-read obj0/PID_HARDWARE_TYPE count=1 index=1
+  11  load-event obj1/PID_LOAD_STATE_CONTROL event=Unload index=1
+  12  load-event obj2/PID_LOAD_STATE_CONTROL event=Unload index=1
+  13  load-event obj1/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  14  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4000 seg_size=513 access=0x33 mem_type=0x03 mem_attr=0x80
+  15  prop-read obj0/PID_DEVICE_CONTROL count=1 index=1
+  16  prop-write obj0/PID_DEVICE_CONTROL count=1 index=1 len=1 sha=e52d9c50
+  17  mem-write 0x4000 addr_int=16384 len=1 sha=e52d9c50 extended=False
+  18  mem-write 0x4003 addr_int=16387 len=6 sha=943d8073 extended=False
+  19  alloc-record obj1/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4000 pei_type=0 app_id=00fa280010
+  20  load-event obj1/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  21  load-event obj2/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  22  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlAbsSegment(data) seg_addr=0x4201 seg_size=511 access=0x33 mem_type=0x03 mem_attr=0x80
+  23  mem-write 0x4201 addr_int=16897 len=7 sha=1e881706 extended=False
+  24  alloc-record obj2/PID_LOAD_STATE_CONTROL event=AdditionalLoadControls index=1 ctrl=LdCtrlTaskSegment seg_addr=0x4201 pei_type=0 app_id=00fa280010
+  25  load-event obj2/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  26  load-event obj3/PID_LOAD_STATE_CONTROL event=StartLoading index=1
+  27  mem-write 0x4400 addr_int=17408 len=11 sha=040f1782 extended=False
+  28  load-event obj3/PID_LOAD_STATE_CONTROL event=LoadCompleted index=1
+  29  restart Restart type=basic
+  30  disconnect T_Disconnect
+
+memory image (4 region(s), chunking removed):
+    0x004000..0x004001 len=1 sha=e52d9c50
+    0x004003..0x004009 len=6 sha=943d8073
+    0x004201..0x004208 len=7 sha=1e881706
+    0x004400..0x00440b len=11 sha=040f1782
