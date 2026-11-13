@@ -409,7 +409,9 @@ fn confirm(line: &str, devices: usize, gateway: &str, yes: bool) -> anyhow::Resu
     crate::confirm::confirm(
         yes,
         &format!(
-            "apply the links in your project to {devices} device(s) on line {line} via {gateway}?"
+            "apply the links in your project to {devices} device(s) on line {line} via {gateway} \
+             (a device whose tables are written restarts: System 7, and System B with product \
+             data)?"
         ),
         &format!("apply line {line} ({devices} device(s)) via {gateway}"),
     )

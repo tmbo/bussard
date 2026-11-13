@@ -265,7 +265,9 @@ fn respond(dev: &mut MockDevice, req_apci: u16, data: &[u8]) -> Option<(u16, Vec
                     .tables
                     .get(&oi)
                     .map(|t| t.load_state)
-                    .unwrap_or(LS_UNLOADED);
+                    // The group-object table (object 4 here) is Loaded, as a
+                    // download leaves it (issue #1095).
+                    .unwrap_or(if oi == 4 { LS_LOADED } else { LS_UNLOADED });
                 answer(&[st])
             }
             (1 | 2, PID_TABLE) => {

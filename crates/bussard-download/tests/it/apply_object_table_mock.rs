@@ -22,7 +22,7 @@ use bussard_download::apply::apply_tables;
 use bussard_download::apply::discover_table_objects;
 use bussard_download::object_table::object_table_image;
 use bussard_download::{
-    FlashPlan, SystemBLoad, build_table_images, check_object_table, compute_tables,
+    FlashPlan, SystemBLoad, TableRestart, build_table_images, check_object_table, compute_tables,
 };
 use bussard_mgmt::connection::Layer4Connection;
 use bussard_model::schema::{Link, Links};
@@ -253,9 +253,12 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
         .as_ref()
         .ok_or("the outcome reports the reload")?;
     assert!(reload.ok(), "{reload:?}");
-    assert!(
-        outcome.restart_due,
-        "the partial download leaves its restart due"
+    assert_eq!(
+        outcome.restart,
+        TableRestart::Sent {
+            process_wait: Duration::ZERO
+        },
+        "the partial download ends with its restart, in the write session"
     );
 
     // The device holds the model's table, object 2 communicating.
@@ -267,7 +270,7 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
     assert_eq!(held, wanted_image);
     assert_ne!(word(&held, 2) & COMMUNICATION, 0);
     assert_eq!(device.load_state(3), 1, "the object table is Loaded");
-    assert_eq!(device.restarts, 0, "the caller sends the restart");
+    assert_eq!(device.restarts, 1, "one basic restart");
 
     // ETS's order (issue #1095, `captures/synthetic/syn-minimal/apply`):
     // unload 3, 2, 1; open 3, 1, 2 each with its allocation; complete 3, 2, 1.
@@ -293,8 +296,8 @@ async fn test_apply_tables_with_sets_the_communication_flag_of_a_newly_linked_ob
 }
 
 /// The partial download's read-back finds the group-object table the device
-/// acknowledged and did not store: the outcome is not ok, and no restart is
-/// due (issue #1095; a silent success is the P1 of CLAUDE.md).
+/// acknowledged and did not store: the outcome is not ok, and the device is
+/// not restarted (issue #1095; a silent success is the P1 of CLAUDE.md).
 #[tokio::test]
 async fn test_apply_tables_with_a_dropped_object_table_write_does_not_verify() -> TestResult {
     let app = app()?;
@@ -354,8 +357,9 @@ async fn test_apply_tables_with_a_dropped_object_table_write_does_not_verify() -
         .ok_or("the outcome reports the reload")?;
     assert!(!reload.matches, "{reload:?}");
     assert!(!outcome.ok(), "{outcome:?}");
-    assert!(
-        !outcome.restart_due,
+    assert_eq!(
+        outcome.restart,
+        TableRestart::NotDue,
         "no restart after a write that did not verify"
     );
     let devices = gw.devices()?;
@@ -430,5 +434,85 @@ async fn test_apply_tables_with_keep_tables_loads_only_the_object_table() -> Tes
     let devices = gw.devices()?;
     let device = devices.first().ok_or("the device")?;
     assert_eq!(device.table_image(3), Some(wanted_image));
+    Ok(())
+}
+
+/// Issue #1095: a partial download that failed after its Unloads leaves the
+/// group-object table unloaded. The documented go-back (`restore`, the link
+/// tables alone, no group-object image) must not report the device verified
+/// while it does not communicate: it refuses before anything is sent, and
+/// the group-object table stays as the failure left it.
+#[tokio::test]
+async fn test_restore_after_a_download_failed_past_the_unloads_fails_loudly() -> TestResult {
+    let app = app()?;
+    let before = model(&[(1, "1/0/1")])?;
+    let after = model(&[(1, "1/0/1"), (2, "1/0/2")])?;
+    let flashed_image = object_table_image(&flash_plan(&app, &before)?)
+        .ok_or("the flash plan writes the group-object table")?
+        .to_vec();
+    let wanted_image = object_table_image(&flash_plan(&app, &after)?)
+        .ok_or("the flash plan writes the group-object table")?
+        .to_vec();
+    let old = compute_tables(&links(&[(1, "1/0/1")])?);
+    // The device refuses the group-object table's StartLoading: the download
+    // stops after the three Unloads.
+    let device = MockDevice::system_b(target()?)
+        .with_table(1, &table(&old.address_elements(), 2))
+        .with_table(2, &table(&old.association_elements(), 4))
+        .with_table(3, &flashed_image)
+        .with_hook(move |_, apci, data| {
+            (apci == A_PROPERTY_VALUE_WRITE
+                && data.first() == Some(&3)
+                && data.get(1) == Some(&PID_LOAD_STATE_CONTROL)
+                && data.get(4) == Some(&LE_START_LOADING))
+            .then_some(Reaction::Nak)
+        });
+    let gw = MockGateway::builder()
+        .channel(CHANNEL)
+        .idle_timeout(Duration::from_secs(30))
+        .device(device)
+        .start()
+        .await?;
+    let mut bus = Transport::connect(&ConnectionConfig::tunnel(gw.addr())).await?;
+    let (device_ia, tool) = (target()?, "0.0.255".parse()?);
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        device_ia,
+        tool,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let objects = discover_table_objects(&mut l4).await?;
+    let desired = compute_tables(&links(&[(1, "1/0/1"), (2, "1/0/2")])?);
+    let failed = apply_tables(
+        &mut l4,
+        objects,
+        &desired,
+        SystemBLoad {
+            object_table: Some(&wanted_image),
+            ..SystemBLoad::default()
+        },
+    )
+    .await;
+    assert!(failed.is_err(), "the download stops: {failed:?}");
+    let _ = l4.disconnect().await;
+    let unloaded = gw.devices()?.first().ok_or("the device")?.load_state(3);
+    assert_ne!(unloaded, 1, "the group-object table is no longer Loaded");
+
+    // The restore: the backup's link tables alone.
+    let mut l4 = Layer4Connection::connect(
+        &mut bus,
+        device_ia,
+        tool,
+        bussard_mgmt::ConnectOptions::default(),
+    )
+    .await?;
+    let restored = apply_tables(&mut l4, objects, &old, SystemBLoad::default()).await;
+    let _ = l4.disconnect().await;
+    let err = restored.err().ok_or("the restore must fail, not verify")?;
+    assert!(err.to_string().contains("group-object table"), "{err}");
+    let devices = gw.devices()?;
+    let device = devices.first().ok_or("the device")?;
+    assert_eq!(device.load_state(3), unloaded, "nothing was sent");
     Ok(())
 }

@@ -17,11 +17,13 @@
 //!   device families (System B `x7B0`, System 7 `0705` / `0701`) are read the
 //!   same way, and on System B the group-object table is compared with the
 //!   image the full flash writes (issue #540);
-//! * the write is [`bussard_download::write_system_b`] /
-//!   [`bussard_download::write_sys7`] after
+//! * the write is the single-device apply's
+//!   [`crate::program::apply::apply_device`] after
 //!   [`bussard_download::write_pre_write_backup`]: the same per-device backup,
-//!   the same load sequence, the same read-back verify. A System 7 write ends
-//!   with a restart, after which the tables are read back on a fresh session.
+//!   the same load sequence, restart and independent read-back. A System 7
+//!   write ends with a restart; so does a System B write with product data,
+//!   ETS's partial download of the group-object, association and address
+//!   tables (issue #1095). The plan counts the devices that restart.
 //!
 //! The visit never prints; what the CLI printed while visiting a device is
 //! handed to the caller as [`crate::observer::Note`]s: `Say` for a line about the
@@ -351,6 +353,10 @@ pub struct LineOutcome {
     /// [`LineMode::Plan`], `Unsupported` for a device an apply refuses
     /// without the override.
     pub support: Option<crate::support::SupportStatus>,
+    /// The write restarts the device: a System 7 table write, the System B
+    /// partial download of the three tables (issue #1095), or a restart an
+    /// earlier write left pending. The line's question counts them.
+    pub restarts: bool,
 }
 
 /// Resolves a device's KNX Data Secure material; `Err` is the reason.
@@ -406,6 +412,7 @@ pub async fn visit_device(
         fingerprint: None,
         backup: None,
         support: None,
+        restarts: false,
     };
     let status = visit(ctx, target, note, &mut outcome).await;
     outcome.status = status;
@@ -563,12 +570,37 @@ async fn visit(
         None => None,
     };
     let tables_change = !report.is_noop() || flag_writes > 0;
+    // The group-object table image of a device whose table was read: written
+    // with the link tables by the partial download of the three tables
+    // (issue #1095), as the single-device apply does.
+    let group = object_table.as_ref().and_then(|check| {
+        check
+            .live
+            .as_ref()
+            .ok()
+            .map(|_| crate::params::GroupObjectImage {
+                image: check.model.clone(),
+                differs: reload.is_some(),
+            })
+    });
+    let pending = crate::pending_restart::pending(dir, target.address);
+    if let Some(why) = &pending {
+        note.say(&format!("restart pending: {why}"));
+    }
     let changes = report.additions.len()
         + report.removals.len()
         + flag_writes
-        + reload.as_ref().map_or(0, |(_, n)| *n);
-    if !tables_change && reload.is_none() {
+        + reload.as_ref().map_or(0, |(_, n)| *n)
+        + usize::from(pending.is_some());
+    if !tables_change && reload.is_none() && pending.is_none() {
         return DeviceStatus::Unchanged;
+    }
+    // Whether the write restarts the device: a System 7 table write, the
+    // System B partial download, a pending restart. The line's question
+    // counts them (issue #1095).
+    out.restarts = (tables_change && (sys7_live.is_some() || group.is_some())) || pending.is_some();
+    if out.restarts && ctx.mode == LineMode::Plan {
+        note.say("the write restarts the device");
     }
     // The support gate (issue #1089), only for a device with something to
     // write, judged on the application its product data selects: a plan says
@@ -666,23 +698,22 @@ async fn visit(
     out.backup = Some(backup_path.clone());
 
     // The single-device apply's write (issues #901, #1095): the same lease,
-    // load sequence, restart and wait, lock records and independent
-    // read-back.
+    // load sequence, restart and wait, and independent read-back. The line
+    // derives the security inputs from the keyring, not the model, so it does
+    // not record PID 61 flags in the lock (`model: None`); it records the
+    // PID 54 table it wrote below, as before.
     let request = crate::program::apply::ApplyRequest {
         service,
         target: target.address,
         source,
         dir,
-        model: Some(model),
+        model: None,
         product: product.as_ref(),
         mask,
         desired,
         tables_change,
-        object_table: reload.as_ref().map(|(image, _)| image.as_slice()),
-        group_object_image: object_table
-            .as_ref()
-            .filter(|check| check.live.is_ok())
-            .map(|check| check.model.as_slice()),
+        object_table: group.as_ref(),
+        restart_pending: pending.is_some(),
         images: images.as_ref(),
         security: security.as_ref(),
         parameters: None,
@@ -709,21 +740,48 @@ async fn visit(
         }
         _ => {}
     }
-    if let Some(Err(why)) = &written.restarted {
-        return DeviceStatus::Failed(backed_up(&format!("restart: {}", one_line(why))));
-    }
-    for (record, _) in [&written.lock.senders, &written.lock.flags]
-        .into_iter()
-        .flatten()
+    // The tables verified: a secured System B write put this PID 54 table on
+    // the device; record it in the lock, as `adopt` does (issue #297),
+    // whatever the restart does. A reload of the group-object table alone
+    // does not write it.
+    if let (Some(inputs), None, true) = (&security, &sys7_live, tables_change)
+        && let Err(err) =
+            crate::admission::record_secure_senders(dir, target.address, &inputs.senders)
     {
-        if let Err(err) = record {
-            note.warn(&format!("warning: {}: {err}", target.address));
-        }
+        note.warn(&format!("warning: {}: {err}", target.address));
     }
-    match written.readback.as_ref().and_then(|r| r.failure()) {
-        Some(why) => DeviceStatus::Failed(backed_up(&format!("read back: {}", one_line(&why)))),
-        None => DeviceStatus::Applied(changes),
+    if let Some(Err(why)) = &written.restarted {
+        return DeviceStatus::Failed(backed_up(&one_line(&why.to_string())));
     }
+    line_readback_status(written.readback.as_ref(), changes, note, &backed_up)
+}
+
+/// The line status of a write's independent read-back: its notes printed, a
+/// leftover or a table read that did not compare a failure (a read-back that
+/// could not compare is not a success), else `Applied`.
+fn line_readback_status(
+    readback: Option<&crate::verify::WriteReadback>,
+    changes: usize,
+    note: &mut (dyn ProgressSink + Send),
+    backed_up: &dyn Fn(&str) -> String,
+) -> DeviceStatus {
+    let Some(readback) = readback else {
+        return DeviceStatus::Failed(backed_up("not read back after the write"));
+    };
+    for line in &readback.notes {
+        note.say(&format!("read back: {line}"));
+    }
+    if let Some(why) = readback.failure() {
+        return DeviceStatus::Failed(backed_up(&format!("read back: {}", one_line(&why))));
+    }
+    if let Some(line) = readback
+        .notes
+        .iter()
+        .find(|n| n.starts_with("tables not compared"))
+    {
+        return DeviceStatus::Failed(backed_up(&format!("not verified: {}", one_line(line))));
+    }
+    DeviceStatus::Applied(changes)
 }
 
 /// SHA-256 (hex) over one device's state as read and the write the model asks
@@ -978,6 +1036,8 @@ pub struct LineTotals {
     pub failed: usize,
     /// Devices refused as not on the supported list (issue #1089).
     pub refused: usize,
+    /// Devices with changes whose write restarts them (issue #1095).
+    pub restarts: usize,
 }
 
 impl LineTotals {
@@ -991,6 +1051,10 @@ impl LineTotals {
             skipped: count("skipped"),
             failed: count("failed"),
             refused: count("refused"),
+            restarts: outcomes
+                .iter()
+                .filter(|o| o.restarts && matches!(o.status.key(), "changes" | "applied"))
+                .count(),
         }
     }
 }
@@ -1137,11 +1201,14 @@ impl crate::report::Report for LineReport {
         } else {
             format!(
                 "Show the plan to the human: every device with status changes and its \
-                 sentences, and the skipped devices with their reason. Only the link tables are \
-                 written in the line form; a parameter change is planned per device \
-                 (knx_plan_device with address).{failed_note} Ask the question. Call \
-                 knx_apply_device with line {line} and this plan_digest only after an explicit \
-                 yes."
+                 sentences, and the skipped devices with their reason. The line form writes the \
+                 link tables; on a System B device with product data it unloads and reloads the \
+                 group-object, association and address tables and restarts the device \
+                 ({restarts} of the devices with changes restart). A parameter change is planned \
+                 per device (knx_plan_device with address).{failed_note} Ask the question, \
+                 naming the restarts. Call knx_apply_device with line {line} and this \
+                 plan_digest only after an explicit yes.",
+                restarts = self.totals.restarts
             )
         })
     }
@@ -1181,6 +1248,30 @@ mod tests {
     }
 
     #[test]
+    fn test_line_readback_status_fails_a_table_read_that_did_not_compare() {
+        let readback = crate::verify::WriteReadback {
+            notes: vec!["tables not compared: no answer".to_string()],
+            ..crate::verify::WriteReadback::default()
+        };
+        let mut said = crate::observer::Collected::default();
+        let status =
+            line_readback_status(Some(&readback), 2, &mut said, &|why: &str| why.to_string());
+        assert!(
+            matches!(&status, DeviceStatus::Failed(why) if why.contains("not verified")),
+            "{status:?}"
+        );
+        assert_eq!(
+            said.lines,
+            vec!["read back: tables not compared: no answer"]
+        );
+        let clean = crate::verify::WriteReadback::default();
+        let status = line_readback_status(Some(&clean), 2, &mut (), &|why: &str| why.to_string());
+        assert_eq!(status, DeviceStatus::Applied(2));
+        let status = line_readback_status(None, 2, &mut (), &|why: &str| why.to_string());
+        assert!(matches!(status, DeviceStatus::Failed(_)));
+    }
+
+    #[test]
     fn test_line_totals_refused_device_makes_the_run_not_ok() -> Result<(), String> {
         let ia: IndividualAddress = "1.1.7".parse().map_err(|_| "address".to_string())?;
         let outcome = LineOutcome {
@@ -1192,6 +1283,7 @@ mod tests {
             fingerprint: None,
             backup: None,
             support: Some(crate::support::SupportStatus::Unsupported),
+            restarts: false,
         };
         assert_eq!(outcome.status.key(), "refused");
         assert_eq!(outcome.status.detail(), Some("not on the list"));

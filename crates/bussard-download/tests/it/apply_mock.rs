@@ -595,6 +595,9 @@ fn fresh_device(cfg: DeviceCfg) -> Shared {
     let mut load_states = HashMap::new();
     load_states.insert(OBJ_ADDRESS, LS_LOADED);
     load_states.insert(OBJ_ASSOCIATION, LS_LOADED);
+    // The group-object table (object 3) Loaded too: a link-only write refuses
+    // one a failed download left unloaded (issue #1095).
+    load_states.insert(3, LS_LOADED);
     let mut segments = HashMap::new();
     segments.insert(OBJ_ADDRESS, (cfg.segment_base, 2));
     segments.insert(OBJ_ASSOCIATION, (cfg.segment_base.wrapping_add(0x800), 2));

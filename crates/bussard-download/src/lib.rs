@@ -47,7 +47,7 @@ pub mod tables_sys7;
 #[path = "../tests/it/support/corpus.rs"]
 mod corpus;
 
-pub use apply::{SystemBLoad, uses_user_memory};
+pub use apply::{SystemBLoad, TableRestart, uses_user_memory};
 pub use apply_sys7::{Sys7TableImages, sys7_flag_writes, sys7_table_images};
 pub use backup::{
     BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterBackup,
@@ -108,8 +108,8 @@ pub use program::{
 pub use security::{
     GroupKeyEntry, SecureSenderEntry, SecurityInputs, SecurityPlanError, SecurityReadback,
     TableCapacity, build_security_program, check_planned_capacity, device_security_view,
-    has_go_flag_element, program_security_object, read_security_flags, read_security_object,
-    read_security_sender_table, secured_senders, security_inputs_for, sender_table_bytes,
+    program_security_object, read_security_flags, read_security_object, read_security_sender_table,
+    secured_senders, security_inputs_for, sender_table_bytes,
 };
 pub use security_diag::{
     SecurityDiagnostics, clear_security_diagnostics, read_security_diagnostics,

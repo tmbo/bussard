@@ -581,22 +581,26 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
     // Zero-change: nothing to do, WITHOUT touching load states. A missing
     // tunnelling address, a security-flag change and a System 7
     // communication flag that does not follow its links rewrite the tables
-    // too; a System B group-object table that differs from the full flash's
-    // image is reloaded (issue #540).
-    let admits = planned
-        .as_ref()
-        .and_then(|p| p.admission.as_ref())
-        .is_some_and(|a| a.changes());
-    let flags_change = planned
-        .as_ref()
-        .and_then(|p| p.security_change.as_ref())
-        .is_some_and(|c| c.changes());
-    let object_flags = images
-        .as_ref()
-        .is_some_and(|images| !images.flag_writes.is_empty());
-    let tables_change = !report.is_noop() || admits || flags_change || object_flags;
-    let object_table = built.and_then(|b| b.object_table.as_deref());
-    if !tables_change && object_table.is_none() && partial.is_none() {
+    // too (the plan's one formula, `BuiltPlan::tables_change`); a System B
+    // group-object table that differs from the full flash's image is
+    // reloaded (issue #540); a restart left pending is sent (issue #1095). A
+    // restore has no plan: its link change, or a System 7 flag.
+    let tables_change = match built {
+        Some(built) => built.tables_change(&report),
+        None => {
+            !report.is_noop()
+                || images
+                    .as_ref()
+                    .is_some_and(|images| !images.flag_writes.is_empty())
+        }
+    };
+    let object_table = built.and_then(|b| b.object_table.as_ref());
+    let restart_pending = built.is_some_and(|b| b.restart_pending.is_some());
+    if !tables_change
+        && !object_table.is_some_and(|g| g.differs)
+        && partial.is_none()
+        && !restart_pending
+    {
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -683,7 +687,7 @@ pub(crate) fn apply_desired(job: WriteJob<'_>) -> anyhow::Result<ExitCode> {
             desired,
             tables_change,
             object_table,
-            group_object_image: built.and_then(|b| b.object_table_image.as_deref()),
+            restart_pending,
             images: images.as_ref(),
             security: security.as_ref(),
             parameters: partial.zip(param_detail),
@@ -762,18 +766,6 @@ fn render_written(
         }
         None => {}
     }
-    match &written.restarted {
-        Some(Ok(after)) => println!(
-            "restarted {target}: it answered again after {:.1} s",
-            after.as_secs_f64()
-        ),
-        Some(Err(why)) => {
-            eprintln!("\n{}", err.error_line(&format!("{verb} {target}: {why}")));
-            recovery_notice(backup_path, target);
-            return Ok(ExitCode::FAILURE);
-        }
-        None => {}
-    }
     // The verified secured write's PID 54 table and PID 61 flags, saved to
     // the lock as `adopt` does (issues #297, #331).
     let records = [
@@ -797,6 +789,20 @@ fn render_written(
             Some((Err(why), _)) => eprintln!("{}", err.warning_line(why)),
             _ => {}
         }
+    }
+    // The restart that ends the write (issue #1095), after the lock records:
+    // they hold for verified tables whatever the restart does.
+    match &written.restarted {
+        Some(Ok(after)) => println!(
+            "restarted {target}: it answered again after {:.1} s",
+            after.as_secs_f64()
+        ),
+        Some(Err(why)) => {
+            eprintln!("\n{}", err.error_line(&format!("{verb} {target}: {why}")));
+            recovery_notice(backup_path, target);
+            return Ok(ExitCode::FAILURE);
+        }
+        None => {}
     }
     match &written.parameters {
         Some(Ok(bussard_service::download::ParamWriteOutcome::Verified { octets, .. })) => {

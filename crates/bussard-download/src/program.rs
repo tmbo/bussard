@@ -379,14 +379,12 @@ pub struct TableWriteSummary {
     pub association_state: LoadState,
     /// The full outcome, for a report when something did not verify.
     pub detail: String,
-    /// Whether the write ended with a restart (System 7, after it verified):
-    /// the device drops off the bus while it starts, so the caller waits for
-    /// it to answer again before the next connection.
-    pub restarted: bool,
-    /// The System B partial download of the three tables verified and its
-    /// closing restart is due (issue #1095): the caller sends it, or leaves
-    /// it to a parameter download that restarts the device anyway.
-    pub restart_due: bool,
+    /// The restart that ended the write: a System 7 write's basic restart, or
+    /// the System B partial download's (issue #1095). After
+    /// [`crate::apply::TableRestart::Sent`] the device drops off the bus while
+    /// it starts, so the caller waits for it to answer again before the next
+    /// connection.
+    pub restart: crate::apply::TableRestart,
     /// The System B group-object table reload, when the write carried one
     /// (issue #540).
     pub object_table: Option<crate::object_table::ObjectTableOutcome>,
@@ -419,8 +417,13 @@ pub async fn write_tables<Ch: L4Channel>(
                 address_state: v.address_state,
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
-                restarted: v.restarted,
-                restart_due: false,
+                restart: if v.restarted {
+                    crate::apply::TableRestart::Sent {
+                        process_wait: std::time::Duration::ZERO,
+                    }
+                } else {
+                    crate::apply::TableRestart::NotDue
+                },
                 object_table: None,
             })
             .map_err(|e| e.to_string()),
@@ -431,8 +434,7 @@ pub async fn write_tables<Ch: L4Channel>(
                 address_state: v.address_state,
                 association_state: v.association_state,
                 detail: format!("{v:?}"),
-                restarted: false,
-                restart_due: v.restart_due,
+                restart: v.restart.clone(),
                 object_table: v.object_table.clone(),
             })
             .map_err(|e| e.to_string()),

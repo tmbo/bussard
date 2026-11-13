@@ -62,9 +62,7 @@ impl Planned {
     /// address is admitted, a group object leaves or joins Data Secure, or a
     /// System 7 communication flag follows its links.
     pub fn tables_change(&self) -> bool {
-        !self.report.is_noop()
-            || self.built.plan.writes.security_object
-            || !self.built.plan.writes.communication_flags.is_empty()
+        self.built.tables_change(&self.report)
     }
 }
 
@@ -106,16 +104,16 @@ pub fn plan_device(inputs: &PlanInputs<'_>, read: &DeviceRead<LiveTables>) -> Pl
     if let Some(change) = &security_change {
         change.add_to(&mut built.plan, &report, Some(inputs.model));
     }
-    let mut planned = Planned {
+    // After every reason to rewrite the link tables is known (issue #1095):
+    // the partial download's restart, and a restart a write left pending.
+    built.restart_pending = crate::pending_restart::pending(inputs.dir, target);
+    built.mark_restart(&report);
+    Planned {
         report,
         built,
         admission,
         security_change,
-    };
-    // After every reason to rewrite the link tables is known (issue #1095).
-    let tables_change = planned.tables_change();
-    planned.built.mark_group_download(tables_change);
-    planned
+    }
 }
 
 /// The `admit_tunnel_senders` comparison of `target` (issue #297), or `None`

@@ -134,6 +134,7 @@ impl LineState {
             fingerprint: None,
             backup: None,
             support: None,
+            restarts: false,
         }
     }
 

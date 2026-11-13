@@ -61,7 +61,6 @@ pub fn object_table_image(plan: &FlashPlan) -> Option<&[u8]> {
     })
 }
 
-/// The entry count of a table image (its leading big-endian word).
 /// The entry count of a group-object table image: its leading big-endian
 /// word (`0` for an image too short to hold one).
 pub fn table_entry_count(image: &[u8]) -> usize {

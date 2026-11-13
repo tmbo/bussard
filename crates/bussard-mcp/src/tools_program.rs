@@ -1003,10 +1003,9 @@ impl BussardMcp {
         // #297): the security object is written inside the table download.
         // A System 7 communication flag that does not follow its links is written
         // with the tables too.
-        let tables_noop = report.is_noop()
-            && !built.plan.writes.security_object
-            && built.plan.writes.communication_flags.is_empty()
-            && built.object_table.is_none();
+        let tables_noop = !built.tables_change(report)
+            && !built.object_table.as_ref().is_some_and(|g| g.differs)
+            && built.restart_pending.is_none();
         let noop = tables_noop && built.partial.is_none() && flash.is_none();
         if noop {
             // The device already holds the model: nothing this session
@@ -1656,9 +1655,7 @@ impl BussardMcp {
         }
         // The plan is consumed from here on: one digest, one write.
         tier.plans.retire(digest);
-        let tables_change = !report.is_noop()
-            || built.plan.writes.security_object
-            || !built.plan.writes.communication_flags.is_empty();
+        let tables_change = built.tables_change(&report);
         let images = match program::plan::sys7_images(&read, &desired) {
             Ok(images) => images.filter(|_| tables_change),
             Err(e) => return Err(format!("computing the System 7 table images: {e}")),
@@ -1841,9 +1838,7 @@ impl BussardMcp {
             return result;
         }
         let tables = read.live.tables();
-        let tables_change = !report.is_noop()
-            || built.plan.writes.security_object
-            || !built.plan.writes.communication_flags.is_empty();
+        let tables_change = built.tables_change(&report);
         let detail = read.params.as_ref().and_then(|p| p.detail.as_ref());
         let param_write = built.partial.as_ref().zip(detail);
         let (tool, planner) = (origin.tool(), origin.planner());
@@ -1871,8 +1866,8 @@ impl BussardMcp {
                 mask: tables.mask,
                 desired: &desired,
                 tables_change,
-                object_table: built.object_table.as_deref(),
-                group_object_image: built.object_table_image.as_deref(),
+                object_table: built.object_table.as_ref(),
+                restart_pending: built.restart_pending.is_some(),
                 images: images.as_ref(),
                 security: security.as_ref(),
                 parameters: param_write,
@@ -1955,9 +1950,7 @@ impl BussardMcp {
                 });
             }
             Some(Err(reason)) => {
-                result.fail(format!(
-                    "the device did not come back after its restart: {reason}"
-                ));
+                result.fail(reason.to_string());
                 result.verdict.recovery = Some(recovery.clone());
             }
             None => {}

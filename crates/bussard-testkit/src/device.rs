@@ -731,6 +731,16 @@ impl MockDevice {
     /// Sets the interface object types by index.
     pub fn with_object_types(mut self, types: &[u16]) -> Self {
         self.object_types = types.to_vec();
+        // The group-object table reads `Loaded`, as a download leaves it; a
+        // write of the link tables alone refuses one that is not (issue
+        // #1095). A test sets another state with its load controls.
+        for (i, &object_type) in types.iter().enumerate() {
+            if object_type == OT_GROUP_OBJECT_TABLE
+                && let Ok(index) = u8::try_from(i)
+            {
+                self.load_states.entry(index).or_insert(LS_LOADED);
+            }
+        }
         self
     }
 

@@ -71,6 +71,9 @@ pub enum ChangeSubject {
     /// The KNXnet/IP parameter object of an IP interface: the `[knxnet]`
     /// table of its device file (issue #391).
     Interface,
+    /// A restart the last write could not send (issue #1095): the device
+    /// holds the tables, the procedure that wrote them is unfinished.
+    Restart,
 }
 
 /// One line of a device plan.
@@ -243,6 +246,7 @@ impl PlanWrites {
             && self.interface_properties.is_empty()
             && self.communication_flags.is_empty()
             && self.group_object_table.is_none()
+            && !self.restart
     }
 
     /// `address table (4 entries), association table (5 entries), 1 parameter

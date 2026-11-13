@@ -538,18 +538,6 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
     Ok(out)
 }
 
-/// Whether group object `object` has an element in the group-object security
-/// flags (PID 61). Each element belongs to the group-object table entry with
-/// the same index (Resources 03_05_01 §6.3.15.2), and that table holds its
-/// length at index 0 and the descriptor of object n at index n (§4.18.6.2.4.1.1,
-/// Table 86). Group object 0 has no entry and so no flag: ETS downloads a
-/// secured link on it without one (`captures/synthetic/syn-secure/apply`,
-/// issue #1094: object 0 on the secured 1/0/1 and 1/0/2, PID 61 written for
-/// element 1 alone).
-pub fn has_go_flag_element(object: u16) -> bool {
-    object >= 1
-}
-
 /// Builds the security program for `device` from its final address table
 /// (`addresses`, table order: element 1 first), its group-object count, the
 /// group objects to secure, the group addresses the project marks secure and
@@ -557,8 +545,7 @@ pub fn has_go_flag_element(object: u16) -> bool {
 ///
 /// A group address gets a key-table entry when the keyring has a key for it.
 /// A group address the model marks secure without a key is refused. A group
-/// object is flagged when it is in `secure_objects` and has a flag element
-/// ([`has_go_flag_element`]: group object 0 has none).
+/// object is flagged when it is in `secure_objects`.
 pub fn build_security_program(
     device: IndividualAddress,
     addresses: &[GroupAddress],
@@ -582,7 +569,7 @@ pub fn build_security_program(
         }
     }
     let mut flags = vec![0u8; usize::from(go_count)];
-    for &object in secure_objects.iter().filter(|&&o| has_go_flag_element(o)) {
+    for &object in secure_objects {
         let slot = usize::from(object)
             .checked_sub(1)
             .and_then(|i| flags.get_mut(i))
@@ -606,7 +593,6 @@ pub fn build_security_program(
 pub struct DeviceSecurityView {
     /// Group objects to flag: the model marks them `secure`, or they are linked
     /// to a group address that is secure in the model or keyed in the keyring.
-    /// Only objects with a PID 61 element ([`has_go_flag_element`]).
     pub secure_objects: BTreeSet<u16>,
     /// The device's linked group addresses the model marks `secure`.
     pub secure_gas: BTreeSet<GroupAddress>,
@@ -641,7 +627,7 @@ pub fn device_security_view(
             if ga_secure {
                 view.secure_gas.insert(*ga);
             }
-            if (ga_secure || group_keys.contains_key(ga)) && has_go_flag_element(link.object) {
+            if ga_secure || group_keys.contains_key(ga) {
                 view.secure_objects.insert(link.object);
             }
         }
@@ -651,7 +637,7 @@ pub fn device_security_view(
         for (number, co) in &loaded.device.com_objects {
             // Only a linked object communicates at all; an unlinked object's
             // flag is irrelevant and ETS's capture flags only linked ones.
-            if co.secure && linked.contains(number) && has_go_flag_element(*number) {
+            if co.secure && linked.contains(number) {
                 view.secure_objects.insert(*number);
             }
         }
@@ -663,8 +649,7 @@ pub fn device_security_view(
 /// link tables (issue #156): the model's and keyring's view of the device.
 #[derive(Debug, Clone, Default)]
 pub struct SecurityInputs {
-    /// Group objects to flag secured: only objects with a PID 61 element
-    /// ([`has_go_flag_element`]; group object 0 has none).
+    /// Group objects to flag secured.
     pub secure_objects: BTreeSet<u16>,
     /// Linked group addresses the model marks secure (each must have a key).
     pub secure_gas: BTreeSet<GroupAddress>,
@@ -724,10 +709,7 @@ pub fn security_inputs_for(
         let co_secure = loaded
             .and_then(|d| d.device.com_objects.get(&asap))
             .is_some_and(|co| co.secure);
-        // Only an object with a PID 61 element can be flagged (object 0 has
-        // none, issue #1094): every consumer of the set (the program, the
-        // plan's comparison with PID 61, the read-back, the lock) agrees.
-        if (secure || co_secure || group_keys.contains_key(ga)) && has_go_flag_element(asap) {
+        if secure || co_secure || group_keys.contains_key(ga) {
             inputs.secure_objects.insert(asap);
         }
     }
