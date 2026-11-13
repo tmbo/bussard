@@ -1301,6 +1301,26 @@ pub struct FlashPlan {
     /// leave as the device holds them (issue #411, [`KeptOctets`]). Empty
     /// for every plan whose writes cover what they allocate.
     kept: Vec<KeptOctets>,
+    /// The octets no declared parameter occupies in each parameter image of
+    /// a segment without `<Data>` (issue #1084), whatever the allocation's
+    /// fill: [`FlashPlan::refresh_unoccupied`] keeps them when the
+    /// allocation the write lands in keeps the memory, so a change of the
+    /// fill ([`FlashPlan::use_par_procedure`]) moves them in or out of
+    /// [`Self::kept`].
+    unoccupied: Vec<Unoccupied>,
+}
+
+/// The octets of a parameter image of a segment without `<Data>` that no
+/// declared parameter occupies (issue #1084), as runs: kept on the device
+/// when the segment's allocation keeps the memory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Unoccupied {
+    /// The code-segment id.
+    pub(super) segment: String,
+    /// The image's length.
+    pub(super) len: usize,
+    /// The `[start, end)` runs inside the image.
+    pub(super) ranges: Vec<(usize, usize)>,
 }
 
 /// A run of octets of a segment a download does not write, because the load
@@ -1325,6 +1345,19 @@ pub struct FlashPlan {
 /// allocation left; after a re-download it holds what was there before, which
 /// is the point of a keep-data branch (MDT JTA-01 `M-0083_A-00A2`, parameter
 /// `P-324`: the switching times stored in the device).
+///
+/// - **System B, a segment without `<Data>`** ([`Self::unoccupied`], issue
+///   #1084): its allocation does not pre-fill (`Mode` 0), and the download
+///   writes only the octets a declared parameter occupies
+///   ([`bussard_product::declared_parameter_octets`]), as ETS does on all 14
+///   such segments of the ETS sweep and `syn-relseg-dataless`. The device
+///   keeps what it held in the others (Configuration Procedures 03_05_03
+///   §3.5.1.2); no parameter lives there.
+///
+/// The device's `PID_MCB_TABLE` CRC covers the segment's memory as the
+/// device holds it (Resources 03_05_01 §4.2.27.1.2), kept octets included,
+/// so a check of such a segment reads the MCB, as ETS reads it, without
+/// comparing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeptOctets {
     /// The load-state machine (object index on System B, LSM index on
@@ -1342,6 +1375,11 @@ pub struct KeptOctets {
     /// The segment's absolute base address on System 7, `None` on System B
     /// (the device places a relative segment).
     pub address: Option<u32>,
+    /// Whether these are the octets no declared parameter occupies in a
+    /// segment without `<Data>` (issue #1084), rather than a `<choose>`
+    /// branch's gap (issue #411). No parameter lives in them, so the model
+    /// holds no value there to compare or report.
+    pub unoccupied: bool,
 }
 
 impl KeptOctets {
@@ -1354,15 +1392,29 @@ impl KeptOctets {
             .join(", ")
     }
 
+    /// The number of octets kept.
+    pub fn octets(&self) -> usize {
+        self.ranges.iter().map(|(start, end)| end - start).sum()
+    }
+
     /// The gap as the plan and the image dump name it:
     /// `object 4 octets 128..256 kept` (System B),
-    /// `LSM 3 segment 0x4440 octets 1..3 kept` (System 7).
+    /// `LSM 3 segment 0x4440 octets 1..3 kept` (System 7),
+    /// `object 4 octets no parameter occupies kept (13 in 1 run)` (issue
+    /// #1084; the runs are in [`Self::ranges`]).
     pub fn label(&self) -> String {
         match self.address {
             Some(base) => format!(
                 "LSM {} segment {base:#06X} octets {} kept",
                 self.object,
                 self.ranges_text()
+            ),
+            None if self.unoccupied => format!(
+                "object {} octets no parameter occupies kept ({} in {} run{})",
+                self.object,
+                self.octets(),
+                self.ranges.len(),
+                if self.ranges.len() == 1 { "" } else { "s" }
             ),
             None => format!("object {} octets {} kept", self.object, self.ranges_text()),
         }
@@ -1690,9 +1742,16 @@ impl FlashPlan {
     /// The human label of one of this plan's steps, as the dry-run trace and the
     /// progress line print it.
     pub fn step_label(&self, step: &FlashStep) -> String {
+        let uncompared: Vec<String> = self
+            .kept
+            .iter()
+            .filter(|k| k.unoccupied)
+            .map(|k| k.segment.clone())
+            .collect();
         step_label(
             step,
             &LabelCtx {
+                uncompared: &uncompared,
                 confirmed_restart: self.confirmed_restart,
                 sys7_read_compare: self.sys7_read_compare(),
                 parameters_only: self.is_parameters_only(),
@@ -1770,6 +1829,51 @@ impl FlashPlan {
     /// read-back. Empty for every plan whose writes cover what they allocate.
     pub fn kept(&self) -> &[KeptOctets] {
         &self.kept
+    }
+
+    /// The per-octet write mask of the `len` octets a System B write of
+    /// `image` streams from [`ImageRef::offset`] (`0xFF` = written, `0x00` =
+    /// kept, [`KeptOctets`]), when it keeps any of them: the octets no
+    /// declared parameter occupies in a segment without `<Data>` (issue
+    /// #1084). `None` when the write sends the whole part.
+    pub fn kept_mask(&self, image: &ImageRef, len: usize) -> Option<Vec<u8>> {
+        execute::kept_mask(self, image, len)
+    }
+
+    /// The `[start, end)` runs of the part a System B write of `image`
+    /// sends, relative to the part: the whole part, less the octets the plan
+    /// keeps ([`FlashPlan::kept_mask`]).
+    pub(super) fn write_runs(&self, image: &ImageRef) -> Vec<(usize, usize)> {
+        let len = self
+            .images
+            .get(&image.segment_id)
+            .map_or(image.len, |whole| {
+                whole.len().saturating_sub(image.offset).min(image.len)
+            });
+        let mask = self.kept_mask(image, len);
+        execute::written_runs(mask.as_deref(), len)
+    }
+
+    /// Whether a `LoadImageProp` of `image` compares the device's MCB CRC
+    /// with the image: not for a segment the device keeps octets of where no
+    /// parameter lives (issue #1084), whose CRC covers what the device held
+    /// there. The check then reads the MCB, as ETS does, without comparing.
+    pub fn compares_mcb(&self, image: &ImageRef) -> bool {
+        !self
+            .kept
+            .iter()
+            .any(|k| k.unoccupied && k.segment == image.segment_id)
+    }
+
+    /// Rebuilds the [`KeptOctets::unoccupied`] entries of [`Self::kept`] from
+    /// the plan's allocations as they stand (issue #1084): the unoccupied
+    /// octets of a parameter write are kept when the allocation the write
+    /// lands in keeps the memory. Called by the planner and again when
+    /// [`FlashPlan::use_par_procedure`] swaps an allocation's fill.
+    pub(super) fn refresh_unoccupied(&mut self) {
+        self.kept.retain(|k| !k.unoccupied);
+        let found = plan::unoccupied_kept(&self.steps, &self.unoccupied);
+        self.kept.extend(found);
     }
 
     /// The System 7 per-octet write mask for `segment_id`, when the segment
@@ -1861,9 +1965,12 @@ impl FlashPlan {
         self.steps
             .iter()
             .map(|s| match s {
-                FlashStep::WriteRelMem { image, .. } | FlashStep::WriteMem { image, .. } => {
-                    image.len
-                }
+                FlashStep::WriteRelMem { image, .. } => self
+                    .write_runs(image)
+                    .iter()
+                    .map(|(start, end)| end - start)
+                    .sum(),
+                FlashStep::WriteMem { image, .. } => image.len,
                 FlashStep::Sys7AbsSegment {
                     image: Some(image), ..
                 } => image.len,
@@ -1880,9 +1987,12 @@ impl FlashPlan {
         self.steps
             .iter()
             .map(|s| match s {
-                FlashStep::WriteRelMem { image, .. } | FlashStep::WriteMem { image, .. } => {
-                    image.len.div_ceil(chunk)
-                }
+                FlashStep::WriteRelMem { image, .. } => self
+                    .write_runs(image)
+                    .iter()
+                    .map(|(start, end)| (end - start).div_ceil(chunk))
+                    .sum(),
+                FlashStep::WriteMem { image, .. } => image.len.div_ceil(chunk),
                 FlashStep::Sys7AbsSegment {
                     image: Some(image), ..
                 } => image.len.div_ceil(chunk),

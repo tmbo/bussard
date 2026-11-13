@@ -11,11 +11,12 @@ capture (6.4.1, 2026-11-12, #1054) writes octets 0 to 2 only: octets 3 to 15
 are never written, neither `a5` nor `00`. With the 11 M-00EF rows of #1061
 (`Mode="0" Fill="0"`, where ETS wrote `00`) this gives the rule: under Mode 0
 ETS writes exactly the octets some declared parameter occupies, shown or not,
-and nothing else (#1084). bussard writes the declared Fill (`a5`) into octets
-3 to 15 (`requests/flash.txt`); the oracle compares the octets ETS writes, so
-the row is identical. Which value ETS gives the octets of a parameter that is
-declared but not shown, under a Fill other than 00, is still open (#1084)."""
-construct = "data-less RelativeSegment, Mode 0 with Fill 165 (ETS writes only the octets a parameter occupies; bussard fills the rest, #1084)"
+and nothing else (#1084). bussard adopted it (owner decision 2026-11-13):
+it writes octets 0 to 2 too (`requests/flash.txt`) and leaves 3 to 15 as the
+device holds them, confirmed by this capture. Which value ETS gives the
+octets of a parameter that is declared but not shown, under a Fill other
+than 00, is still open (#1084, `syn-relseg-dataless-hidden`)."""
+construct = "data-less RelativeSegment, Mode 0 with Fill 165 (ETS and bussard write only the octets a parameter occupies, #1084)"
 issues = [1061, 1054]
 
 [product]

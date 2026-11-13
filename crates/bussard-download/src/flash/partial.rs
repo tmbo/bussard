@@ -270,6 +270,7 @@ impl FlashPlan {
             };
             let placed = self.placed.get(segment);
             let mask = self.segment_mask(segment);
+            let unoccupied = self.unoccupied_octets(segment);
             let mut skipped = Vec::new();
             for (i, byte) in image.iter_mut().enumerate() {
                 let Some(&held) = current.get(i) else {
@@ -278,7 +279,9 @@ impl FlashPlan {
                 if placed.is_some_and(|p| p.contains(&i)) {
                     continue;
                 }
-                let writable = mask.is_none_or(|m| m.get(i) == Some(&0xFF));
+                // No parameter occupies the octet (issue #1084): the model
+                // holds no value there, so none differs.
+                let writable = mask.is_none_or(|m| m.get(i) == Some(&0xFF)) && !unoccupied(i);
                 if writable && *byte != held {
                     skipped.push((i, *byte));
                 }
@@ -310,7 +313,29 @@ impl FlashPlan {
             from_par_procedure: by_par,
             parameters_only: true,
             kept: self.kept.clone(),
+            unoccupied: self.unoccupied.clone(),
         })
+    }
+
+    /// Whether an octet of `segment` is one no declared parameter occupies in
+    /// a segment without `<Data>` (issue #1084, [`super::KeptOctets::unoccupied`]):
+    /// no download writes it and the model holds no value there. Indexed
+    /// once per segment, so a lookup is constant time.
+    fn unoccupied_octets(&self, segment: &str) -> impl Fn(usize) -> bool + use<> {
+        let mut index: Vec<bool> = Vec::new();
+        for kept in self
+            .kept
+            .iter()
+            .filter(|k| k.unoccupied && k.segment == segment)
+        {
+            for &(start, end) in &kept.ranges {
+                if index.len() < end {
+                    index.resize(end, false);
+                }
+                index[start..end].fill(true);
+            }
+        }
+        move |i| index.get(i).copied().unwrap_or(false)
     }
 
     /// The octets of `segment` a parameter placement writes under the
@@ -382,6 +407,7 @@ impl FlashPlan {
             let backup = wanted.get(segment);
             let placed = self.placed.get(segment);
             let skipped = skip.get(segment);
+            let unoccupied = self.unoccupied_octets(segment);
             let mut left = Vec::new();
             for (i, byte) in image.iter_mut().enumerate() {
                 let held = current.get(i).copied();
@@ -391,7 +417,9 @@ impl FlashPlan {
                 match (writes, restored, held) {
                     (true, Some(b), _) => *byte = b,
                     (_, _, Some(h)) => {
-                        if let Some(b) = restored.filter(|b| *b != h) {
+                        // No parameter occupies the octet (issue #1084):
+                        // nothing to put back, nothing left.
+                        if let Some(b) = restored.filter(|b| *b != h && !unoccupied(i)) {
                             left.push((i, b));
                         }
                         *byte = h;
