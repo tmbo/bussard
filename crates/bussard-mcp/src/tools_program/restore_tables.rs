@@ -187,7 +187,10 @@ fn tables_only_plan(
             "a restore writes the link tables only, as `bussard restore` does".to_string(),
         ),
         octet_ranges: Vec::new(),
+        // A restore writes the backup's tables, not the model's: the
+        // group-object table stays as it is (and must be Loaded, #1095).
         object_table: None,
+        restart_pending: None,
     }
 }
 

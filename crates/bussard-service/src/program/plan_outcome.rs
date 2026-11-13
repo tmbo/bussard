@@ -162,10 +162,9 @@ impl PlanOutcome {
             identity,
             parameters,
         } = parts;
-        let tables_noop = report.is_noop()
-            && !built.plan.writes.security_object
-            && built.plan.writes.communication_flags.is_empty()
-            && built.object_table.is_none();
+        let tables_noop = !built.tables_change(report)
+            && !built.object_table.as_ref().is_some_and(|g| g.differs)
+            && built.restart_pending.is_none();
         let noop = tables_noop && built.partial.is_none();
         PlanOutcome {
             ok: true,

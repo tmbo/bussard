@@ -47,7 +47,7 @@ pub mod tables_sys7;
 #[path = "../tests/it/support/corpus.rs"]
 mod corpus;
 
-pub use apply::{SystemBLoad, uses_user_memory};
+pub use apply::{SystemBLoad, TableRestart, uses_user_memory};
 pub use apply_sys7::{Sys7TableImages, sys7_flag_writes, sys7_table_images};
 pub use backup::{
     BackupError, BackupManifest, BackupStatus, DeviceBackup, ManifestEntry, ParameterBackup,
@@ -80,7 +80,7 @@ pub use model_params::{
 };
 pub use object_table::{
     ObjectTableChange, ObjectTableCheck, check_object_table, find_object_table,
-    read_object_table_at,
+    read_object_table_at, table_entry_count,
 };
 pub use param_decode::{
     DecodedParameters, OctetOwner, OctetRange, OctetRole, attribute_octets, decode_parameters,

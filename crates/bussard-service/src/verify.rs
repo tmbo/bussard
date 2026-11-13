@@ -777,9 +777,7 @@ async fn compare_object_table<Ch: L4Channel>(
     out: &mut WriteReadback,
     model: &[u8],
 ) {
-    let count = model
-        .get(..2)
-        .map_or(0, |w| usize::from(u16::from_be_bytes([w[0], w[1]])));
+    let count = bussard_download::table_entry_count(model);
     let read = match bussard_download::find_object_table(l4).await {
         Ok(Some(index)) => bussard_download::read_object_table_at(l4, index, count)
             .await

@@ -169,11 +169,18 @@ pub struct ApplyRequest<'a> {
     pub mask: u16,
     /// The tables to write.
     pub desired: &'a DesiredTables,
-    /// Whether the link tables are rewritten (otherwise only the group-object
-    /// table is reloaded, when `object_table` is given).
+    /// Whether the link tables are rewritten
+    /// ([`crate::params::BuiltPlan::tables_change`]).
     pub tables_change: bool,
-    /// The System B group-object table image to reload (issue #540).
-    pub object_table: Option<&'a [u8]>,
+    /// The System B group-object table image, for a device whose table was
+    /// read: written with the link tables by the partial download of the
+    /// three tables, which ends with a restart (issue #1095), or alone when
+    /// it differs and the links stay (issue #540). `None` without product
+    /// data, or when the device's table did not read: the link tables alone.
+    pub object_table: Option<&'a crate::params::GroupObjectImage>,
+    /// A restart the last write left unsent ([`crate::pending_restart`]):
+    /// this write sends it when its own does not.
+    pub restart_pending: bool,
     /// The System 7 table images.
     pub images: Option<&'a Sys7TableImages>,
     /// The security object a secured System B write reprograms.
@@ -211,15 +218,30 @@ impl TablesWritten {
     }
 }
 
+/// Why the restart that ends a table write did not complete.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RestartFailure {
+    /// It could not be sent, was refused or was not confirmed. The device
+    /// holds what was written; the restart stays pending
+    /// ([`crate::pending_restart`]) and the next plan offers it.
+    #[error("the restart was not sent ({0}); the next plan offers it again")]
+    NotSent(String),
+    /// It was sent, and the device did not answer again.
+    #[error("the device did not come back after its restart: {0}")]
+    NoAnswer(String),
+}
+
 /// What one write of a device did.
 #[derive(Debug, Default)]
 pub struct Written {
     /// The table write, when the tables (or the group-object table) were
     /// written.
     pub tables: Option<TablesWritten>,
-    /// The wait for a System 7 device's closing restart: how long it took,
-    /// or why the device did not come back.
-    pub restarted: Option<Result<Duration, String>>,
+    /// The restart that ended the table write (a System 7 write's own, or
+    /// the one the System B partial download leaves due, issue #1095): how
+    /// long until the device answered again, or why it was not sent,
+    /// confirmed or answered.
+    pub restarted: Option<Result<Duration, RestartFailure>>,
     /// What a verified secured write recorded in the lock: the PID 54 table
     /// and the PID 61 flags it programmed.
     pub lock: LockRecord,
@@ -238,7 +260,7 @@ impl Written {
         matches!(
             self.tables,
             Some(TablesWritten::Lease(_) | TablesWritten::Failed(_))
-        ) || matches!(self.restarted, Some(Err(_)))
+        ) || matches!(self.restarted, Some(Err(RestartFailure::NoAnswer(_))))
             || matches!(
                 self.parameters,
                 Some(Err(_) | Ok(ParamWriteOutcome::Failed(_)))
@@ -269,7 +291,7 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
     Expected {
         tables: Some(req.desired.clone()),
         group_objects: None,
-        object_table: req.object_table.map(<[u8]>::to_vec),
+        object_table: written_object_table(req).map(<[u8]>::to_vec),
         parameters: written_params.and_then(|_| {
             let product = req.product?;
             product.app().map(|app| ExpectedParameters {
@@ -291,10 +313,21 @@ pub fn expected<'a>(req: &ApplyRequest<'a>) -> Expected<'a> {
     }
 }
 
+/// The group-object table image a write of `req` sends: with a link change
+/// the image the partial download reloads with the link tables (issue #1095),
+/// else the reload of a table that differs (issue #540).
+fn written_object_table<'a>(req: &ApplyRequest<'a>) -> Option<&'a [u8]> {
+    req.object_table
+        .filter(|_| req.images.is_none())
+        .and_then(|group| group.written(req.tables_change))
+}
+
 /// Writes one device: the tables when a link changes (or the group-object
-/// table needs its reload), the restart wait of a System 7 write, the lock
-/// records, the parameter octets that differ, then the independent
-/// read-back. Never refuses: what failed is in the outcome.
+/// table needs its reload), the lock records once they verified, the wait
+/// for the restart that ends the table write, the parameter octets that
+/// differ, a restart left pending, then the independent read-back. A restart
+/// that could not be sent stays pending ([`crate::pending_restart`]). Never
+/// refuses: what failed is in the outcome.
 pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -> Written {
     let mut out = Written::default();
     if let Err(refusal) = req.support.covers(req.target) {
@@ -312,23 +345,31 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
             req.options.authorize
         },
     );
-    if req.tables_change || req.object_table.is_some() {
-        let (tables, restarted) = write_tables(&req, true, &mut *observer).await;
+    // The restart that ends the procedure: sent by the table write, left to
+    // the parameter download, or pending from an earlier write (#1095).
+    let mut restart = if req.restart_pending {
+        bussard_download::TableRestart::NotSent("pending from an earlier write".to_string())
+    } else {
+        bussard_download::TableRestart::NotDue
+    };
+    if req.tables_change || written_object_table(&req).is_some() {
+        let tables = write_tables(&req, &mut *observer).await;
         let verified = tables.verified();
+        if let TablesWritten::Ran(summary) = &tables
+            && summary.restart != bussard_download::TableRestart::NotDue
+        {
+            restart = summary.restart.clone();
+        }
         out.tables = Some(tables);
         if !verified {
             out.readback = read_back(&req, &checked, &expected, &out, &mut *observer).await;
             return out;
         }
-        let failed = matches!(restarted, Some(Err(_)));
-        out.restarted = restarted;
-        if failed {
-            return out;
-        }
-        // The security object was written with this PID 54 table and the
-        // write verified: record it in the lock, as `adopt` does (issue
-        // #297), and the group-object flags it wrote (PID 61, issue #331). A
-        // reload of the group-object table alone writes neither.
+        // The tables verified: the security object was written with this
+        // PID 54 table, record it in the lock as `adopt` does (issue #297),
+        // and the group-object flags it wrote (PID 61, issue #331), whatever
+        // the restart does next. A reload of the group-object table alone
+        // writes neither.
         if let (Some(inputs), Some(_), true) = (req.security, req.model, req.tables_change) {
             out.lock = LockRecord {
                 senders: Some((
@@ -347,9 +388,16 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
                 )),
             };
         }
+        if let bussard_download::TableRestart::Sent { process_wait } = restart {
+            out.restarted = Some(wait_for_restart(&req, &checked, process_wait, observer).await);
+            if matches!(out.restarted, Some(Err(_))) {
+                return out;
+            }
+        }
     }
     // Then the parameter octets that differ (issue #274): the parameter-only
-    // download, verified by reading the memory back.
+    // download, verified by reading the memory back. It restarts the device
+    // itself, which also ends a partial download that left it its restart.
     if let Some((partial, detail)) = req.parameters {
         observer.event(Event::Step(Step::WriteParameters { plan: partial }));
         let outcome = crate::download::write_parameters(
@@ -369,23 +417,112 @@ pub async fn apply_device(req: ApplyRequest<'_>, observer: &mut impl Observer) -
         )
         .await
         .map_err(|err| super::chain(&err));
+        if restart == bussard_download::TableRestart::Deferred
+            && outcome.as_ref().is_ok_and(ParamWriteOutcome::ok)
+            && defers_restart(&req)
+        {
+            restart = bussard_download::TableRestart::Sent {
+                process_wait: Duration::ZERO,
+            };
+        }
         out.parameters = Some(outcome);
+    }
+    // A restart pending from an earlier write that nothing above sent.
+    if req.restart_pending
+        && matches!(restart, bussard_download::TableRestart::NotSent(_))
+        && !out.stopped()
+    {
+        observer.event(Event::Step(Step::WaitRestart));
+        out.restarted = Some(
+            crate::restart::restart_device(
+                req.service,
+                target,
+                &checked,
+                restart_form(&req),
+                crate::restart::RestartWait::default(),
+            )
+            .await
+            .map(|outcome| outcome.answered_after)
+            .map_err(|err| match err {
+                crate::restart::RestartError::NoAnswer { .. }
+                | crate::restart::RestartError::MaskChanged { .. } => {
+                    RestartFailure::NoAnswer(err.to_string())
+                }
+                other => RestartFailure::NotSent(other.to_string()),
+            }),
+        );
+        if matches!(
+            out.restarted,
+            Some(Ok(_)) | Some(Err(RestartFailure::NoAnswer(_)))
+        ) {
+            restart = bussard_download::TableRestart::Sent {
+                process_wait: Duration::ZERO,
+            };
+        }
+    }
+    // The restart the tables need and nothing sent stays pending, so the
+    // next plan offers it; a sent one clears it.
+    match &restart {
+        bussard_download::TableRestart::NotSent(why) => {
+            if !matches!(out.restarted, Some(Err(_))) {
+                out.restarted = Some(Err(RestartFailure::NotSent(why.clone())));
+            }
+            let _ = crate::pending_restart::mark(req.dir, target, why);
+        }
+        bussard_download::TableRestart::Deferred => {
+            let why = "it was left to the parameter download, which did not complete";
+            out.restarted = Some(Err(RestartFailure::NotSent(why.to_string())));
+            let _ = crate::pending_restart::mark(req.dir, target, why);
+        }
+        bussard_download::TableRestart::Sent { .. } => {
+            let _ = crate::pending_restart::clear(req.dir, target);
+        }
+        bussard_download::TableRestart::NotDue => {}
     }
     out.readback = read_back(&req, &checked, &expected, &out, observer).await;
     out
 }
 
-/// Writes the link tables (with the System B group-object table reload and
-/// the security object `req` carries) and, with `wait_restart`, waits for a
-/// System 7 device's closing restart, as ETS's table-only downloads end: the
-/// table write of [`apply_device`] and of a line run's device
-/// ([`crate::line::visit_device`]). Returns how the write ended and how the
-/// wait did, `None` when there was none.
-pub async fn write_tables(
+/// The restart form of `req`'s application ([`bussard_download::restart_form`]),
+/// basic without product data.
+fn restart_form(req: &ApplyRequest<'_>) -> bussard_download::RestartForm {
+    req.product.and_then(ProductSource::app).map_or(
+        bussard_download::RestartForm::Basic,
+        bussard_download::restart_form,
+    )
+}
+
+/// Waits for the device after the restart a table write sent in its own
+/// session: the announced process time, then until it answers again as the
+/// same mask, on the `checked` session options (a device that does not
+/// answer `A_Authorize` is not asked again, #215).
+async fn wait_for_restart(
     req: &ApplyRequest<'_>,
-    wait_restart: bool,
+    checked: &L4Options,
+    process_wait: Duration,
     observer: &mut impl Observer,
-) -> (TablesWritten, Option<Result<Duration, String>>) {
+) -> Result<Duration, RestartFailure> {
+    observer.event(Event::Step(Step::WaitRestart));
+    let started = std::time::Instant::now();
+    tokio::time::sleep(process_wait).await;
+    crate::restart::wait_until_back(
+        req.service,
+        req.target,
+        checked,
+        req.mask,
+        crate::restart::RestartWait::default(),
+    )
+    .await
+    .map(|_| started.elapsed())
+    .map_err(|err| RestartFailure::NoAnswer(err.to_string()))
+}
+
+/// Writes the link tables (with the System B group-object table and the
+/// security object `req` carries): the table write of [`apply_device`]. The
+/// restart that ends it (a System 7 write's, or the System B partial
+/// download's, issue #1095) is sent in the write session; the summary says
+/// how ([`bussard_download::TableRestart`]).
+pub async fn write_tables(req: &ApplyRequest<'_>, observer: &mut impl Observer) -> TablesWritten {
     observer.event(Event::Step(Step::WriteTables));
     let written = match req.support.covers(req.target) {
         Err(refusal) => TablesWritten::Failed(refusal),
@@ -395,21 +532,22 @@ pub async fn write_tables(
         step: Step::WriteTables,
         verified: written.verified(),
     });
-    let restart = matches!(&written, TablesWritten::Ran(s) if s.ok && s.restarted);
-    if !(restart && wait_restart) {
-        return (written, None);
-    }
-    observer.event(Event::Step(Step::WaitRestart));
-    let back = crate::restart::wait_until_back(
-        req.service,
-        req.target,
-        &req.options,
-        req.mask,
-        crate::restart::RestartWait::default(),
-    )
-    .await
-    .map_err(|err| err.to_string());
-    (written, Some(back))
+    written
+}
+
+/// Whether the parameter download `req` carries ends with a restart of its
+/// own, so the partial download of the tables leaves its restart to it
+/// (issue #1095): one restart, at the end, as the plan says.
+pub fn defers_restart(req: &ApplyRequest<'_>) -> bool {
+    req.parameters.is_some_and(|(partial, _)| {
+        partial.steps.iter().any(|step| {
+            matches!(
+                step,
+                bussard_download::FlashStep::Restart
+                    | bussard_download::FlashStep::MasterReset { .. }
+            )
+        })
+    })
 }
 
 /// Leases the bus and writes the link tables `req` carries.
@@ -426,11 +564,13 @@ async fn lease_and_write(req: &ApplyRequest<'_>) -> TablesWritten {
             crate::secure::layer(&req.tool_key, &req.high_water),
             bussard_download::SystemBLoad {
                 security: req.security,
-                object_table: req.object_table,
+                object_table: written_object_table(req),
                 keep_tables: !req.tables_change,
                 user_memory_above_64k: bussard_download::uses_user_memory(
                     req.product.and_then(ProductSource::app),
                 ),
+                confirmed_restart: restart_form(req).is_confirmed(),
+                defer_restart: defers_restart(req),
             },
             req.seed.clone(),
         )
