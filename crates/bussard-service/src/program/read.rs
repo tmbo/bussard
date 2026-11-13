@@ -83,6 +83,10 @@ pub struct DeviceRead<L = LiveRead> {
     pub senders: Option<Vec<SecureSenderEntry>>,
     /// PID 61, when read (and answered), or the cached flags.
     pub flags: Option<Vec<u8>>,
+    /// The group key table's entry count (PID 53), read live on a secured
+    /// System B session (issue #1094): the key side of a group address no
+    /// PID 61 flag shows (group object 0).
+    pub group_keys: Option<u16>,
     /// Whether [`DeviceRead::flags`] came from the cache.
     pub flags_cached: bool,
     /// The properties of a property-only load procedure, when read.
@@ -106,6 +110,7 @@ impl DeviceRead {
             senders,
             flags,
             flags_cached,
+            group_keys,
             property_rows,
         } = self;
         match live {
@@ -117,6 +122,7 @@ impl DeviceRead {
                 senders,
                 flags,
                 flags_cached,
+                group_keys,
                 property_rows,
             }),
             LiveRead::UnsupportedMask { address, mask } => Err((address, mask)),
@@ -217,6 +223,26 @@ pub async fn read_on<Ch: L4Channel>(
         None
     };
     let flags_cached = system_b && known.is_some();
+    // PID 53's entry count (issue #1094), before PID 61, the session's last
+    // read; a refused read leaves it unknown.
+    let group_keys = if system_b && req.secured {
+        match bussard_mgmt::property_ext::read_property_ext_element_count(
+            l4,
+            bussard_mgmt::property_ext::PropertyExtAddress::security(
+                bussard_mgmt::property_ext::PID_GRP_KEY_TABLE,
+            ),
+        )
+        .await
+        {
+            Ok(count) => Some(count),
+            Err(err) => {
+                tracing::debug!("{target}: PID 53 not read: {err}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     // PID 61 on a secured session (issue #331), the session's last read.
     let flags = match known.filter(|_| system_b) {
         Some(flags) => Some(flags),
@@ -250,6 +276,7 @@ pub async fn read_on<Ch: L4Channel>(
         senders,
         flags,
         flags_cached,
+        group_keys,
         property_rows,
     })
 }

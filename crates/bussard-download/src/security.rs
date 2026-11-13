@@ -545,7 +545,9 @@ pub async fn resolve_table_capacity<Ch: L4Channel>(
 ///
 /// A group address gets a key-table entry when the keyring has a key for it.
 /// A group address the model marks secure without a key is refused. A group
-/// object is flagged when it is in `secure_objects`.
+/// object is flagged when it is in `secure_objects` and has a PID 61 element
+/// ([`bussard_model::secure_invariants::has_go_flag_element`]: group object 0
+/// has none and is skipped, its keys still written, issue #1094).
 pub fn build_security_program(
     device: IndividualAddress,
     addresses: &[GroupAddress],
@@ -569,7 +571,10 @@ pub fn build_security_program(
         }
     }
     let mut flags = vec![0u8; usize::from(go_count)];
-    for &object in secure_objects {
+    let flagged = secure_objects
+        .iter()
+        .filter(|&&o| bussard_model::secure_invariants::has_go_flag_element(o));
+    for &object in flagged {
         let slot = usize::from(object)
             .checked_sub(1)
             .and_then(|i| flags.get_mut(i))
@@ -744,7 +749,13 @@ impl SecurityInputs {
         let objects: Vec<String> = self
             .secure_objects
             .iter()
-            .map(ToString::to_string)
+            .map(|&o| {
+                if bussard_model::secure_invariants::has_go_flag_element(o) {
+                    o.to_string()
+                } else {
+                    format!("{o} (keyed; it has no PID 61 element)")
+                }
+            })
             .collect();
         let senders: Vec<String> = self
             .senders
@@ -1334,6 +1345,30 @@ mod tests {
         .ok_or("expected an error")?;
         assert!(matches!(err, SecurityPlanError::MissingGroupKey { .. }));
         assert!(err.to_string().contains("0/3/47"));
+        Ok(())
+    }
+
+    /// Issue #1094, from `captures/synthetic/syn-secure/apply`: object 0 on
+    /// the keyed 1/0/1 and 1/0/2, object 1 on 1/0/3. Every key is written;
+    /// PID 61 has element 1 only (object 1 flagged), nothing for object 0.
+    #[test]
+    fn test_build_security_program_keys_object_0_and_skips_its_flag() -> TestResult {
+        let device: IndividualAddress = "1.1.1".parse()?;
+        let addresses = vec![ga("1/0/1")?, ga("1/0/2")?, ga("1/0/3")?];
+        let keys: HashMap<GroupAddress, Key16> = addresses
+            .iter()
+            .map(|a| (*a, Key16::new([7; 16])))
+            .collect();
+        let program = build_security_program(
+            device,
+            &addresses,
+            1,
+            &BTreeSet::from([0, 1]),
+            &BTreeSet::new(),
+            &keys,
+        )?;
+        assert_eq!(program.group_keys.len(), 3);
+        assert_eq!(program.go_flags, vec![GO_FLAGS_SECURE]);
         Ok(())
     }
 

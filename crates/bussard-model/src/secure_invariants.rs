@@ -95,6 +95,21 @@ fn join<T: ToString>(items: impl IntoIterator<Item = T>) -> String {
         .join(", ")
 }
 
+/// Whether group object `object` has an element in a device's group-object
+/// security flags (PID 61, issue #1094). Each element belongs to the
+/// group-object table entry with the same index (Resources 03_05_01
+/// §6.3.15.2), and that table holds its length at index 0 and the descriptor
+/// of object n at index n (§4.18.6.2.4.1.1, Table 86). Group object 0 has no
+/// entry and so no flag: ETS downloads a secured link on it with its group
+/// key (PID 53) and no flag (`captures/synthetic/syn-secure/apply`).
+///
+/// The one rule every consumer shares: object 0 stays a secured object of
+/// the model and the lock (W041 sees it secured), its group keys follow its
+/// links, and only the PID 61 element is skipped.
+pub fn has_go_flag_element(object: u16) -> bool {
+    object >= 1
+}
+
 /// The model-only invariants: W037, W039 and W041.
 pub(crate) fn check_secure_invariants(model: &Model, diags: &mut Vec<Diagnostic>) {
     let by_ga = linked_objects(model);

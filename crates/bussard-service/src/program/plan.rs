@@ -99,7 +99,11 @@ pub fn plan_device(inputs: &PlanInputs<'_>, read: &DeviceRead<LiveTables>) -> Pl
         let keys = inputs.group_keys.unwrap_or(&empty);
         let security =
             bussard_download::security_inputs_for(Some(inputs.model), target, inputs.desired, keys);
-        SecurityObjectChange::compare(target, inputs.desired, &security, flags)
+        SecurityObjectChange::compare(target, inputs.desired, &security, flags).with_live_keys(
+            inputs.desired,
+            &security,
+            read.group_keys,
+        )
     });
     if let Some(change) = &security_change {
         change.add_to(&mut built.plan, &report, Some(inputs.model));

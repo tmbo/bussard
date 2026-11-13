@@ -18,6 +18,7 @@
 //! never prints a key. The mock binds 127.0.0.1 and every run passes an
 //! explicit loopback `--gateway`.
 
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -257,7 +258,19 @@ fn secure_device_with(
                 *flag = 0x03;
             }
         }
-        log.lock().map_err(|_| "log poisoned")?.pid61 = flags;
+        let mut log = log.lock().map_err(|_| "log poisoned")?;
+        log.pid61 = flags;
+        // The group key table holds the keys of the addresses the secured
+        // objects run (issue #1094: the plan reads its count), unless the
+        // bench sets it.
+        if log.pid53 == 0 {
+            let keyed: BTreeSet<u16> = associations
+                .iter()
+                .filter(|(_, asap)| secured.contains(asap))
+                .map(|(tsap, _)| *tsap)
+                .collect();
+            log.pid53 = u16::try_from(keyed.len())?;
+        }
     }
     let mut address_table = u16::try_from(addresses.len())?.to_be_bytes().to_vec();
     for address in addresses {
@@ -2127,5 +2140,118 @@ fn test_cli_apply_of_links_and_parameters_restarts_once() -> TestResult {
     let (success, stdout, stderr) = applied?;
     assert!(success, "{stdout}\n{stderr}");
     assert_eq!(restarts(&gw)?, 1, "one restart: {stdout}");
+    Ok(())
+}
+
+/// A model for [`test_mcp_secure_on_and_off_for_a_group_linked_only_through_object_0`]:
+/// 1.1.10 sends 1/2/0 from object 20, listens on the secured 1/2/3 with
+/// object 22, and listens on the plain 1/2/4 with group object 0 only.
+fn object_zero_model_dir(tag: &str) -> TestResult<PathBuf> {
+    let dir = model_dir(tag)?;
+    std::fs::write(
+        dir.join("groups.toml"),
+        "groups = [\n  { address = \"1/2/0\", name = \"Status\", dpt = \"1.001\" },\n  \
+         { address = \"1/2/3\", name = \"Secured level\", dpt = \"5.001\", secure = true },\n  \
+         { address = \"1/2/4\", name = \"Scene\", dpt = \"17.001\" },\n]\n",
+    )?;
+    std::fs::write(
+        dir.join("devices").join("1.1.10.toml"),
+        "address = \"1.1.10\"\nname = \"Secure actuator\"\n\n[security]\nactivated = true\n\n\
+         [parameters]\n\"thr@P-0_R-1\" = \"12\"\n\n\
+         [links]\n0.listen = [\"1/2/4\"]\n20.send = \"1/2/0\"\n22.listen = [\"1/2/3\"]\n",
+    )?;
+    let lock = std::fs::read_to_string(dir.join("bussard.lock"))?;
+    std::fs::write(
+        dir.join("bussard.lock"),
+        format!(
+            "{lock}objects = [\n  {{ number = 0, flags = \"CW\" }},\n  \
+             {{ number = 20, flags = \"CT\" }},\n  \
+             {{ number = 22, flags = \"CW\", secure = true }},\n]\n"
+        ),
+    )?;
+    let mut store = bussard_project::KeyStore::new("Synthetic");
+    store.merge_keyring(&keyring()?);
+    store.save(&dir, PASSWORD)?;
+    Ok(dir)
+}
+
+/// Issue #1094: Data Secure on and off for a group address linked only
+/// through group object 0, which has no PID 61 element. The key side is
+/// read from PID 53's count: the plan shows the key joining (leaving) the
+/// group key table, the apply writes PID 53, the next plan is a no-op, and
+/// `bussard validate` is clean (the lock keeps object 0's `secure`).
+#[test]
+fn test_mcp_secure_on_and_off_for_a_group_linked_only_through_object_0() -> TestResult {
+    let rt = tokio::runtime::Runtime::new()?;
+    let log = Arc::new(Mutex::new(SecurityLog {
+        pid53: 1,
+        ..SecurityLog::default()
+    }));
+    let gw = rt.block_on(
+        MockGateway::builder()
+            .channel(0x57)
+            .keep_serving()
+            .idle_timeout(Duration::from_secs(120))
+            .device(secure_device_with(
+                Arc::clone(&log),
+                &["1/2/0", "1/2/3", "1/2/4"],
+                &[(1, 20), (2, 22), (3, 0)],
+                &[12, 0],
+                &[22],
+            )?)
+            .start(),
+    )?;
+    let dir = object_zero_model_dir("object-zero")?;
+    let store_path = bussard_project::KeyStore::path(&dir);
+    let mut server = Server::spawn(
+        &dir,
+        gw.port(),
+        &["--allow-programming", "--allow-writes"],
+        &store_path,
+    )?;
+    let pid53 = || -> TestResult<u16> { Ok(log.lock().map_err(|_| "log poisoned")?.pid53) };
+    let validate = |dir: &Path| -> TestResult<String> {
+        let out = Command::new(env!("CARGO_BIN_EXE_bussard"))
+            .args(["validate", "--dir"])
+            .arg(dir)
+            .env("BUSSARD_KEYRING_PASSWORD", PASSWORD)
+            .output()?;
+        Ok(format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ))
+    };
+
+    let plan = plan_when_connected(&mut server, "1.1.10")?;
+    assert_eq!(plan["noop"], true, "the device runs the model: {plan}");
+
+    for (secure, mark, keys, word) in [(true, "+", 2, "on"), (false, "-", 1, "off")] {
+        let set = server.call("knx_set_group", json!({"ga": "1/2/4", "secure": secure}))?;
+        assert_eq!(set["ok"], true, "set: {set}");
+        let plan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+        assert_eq!(plan["noop"], false, "secure {word}: {plan}");
+        let sentences = plan["sentences"].as_str().unwrap_or_default();
+        assert!(
+            sentences.contains(&format!(
+                "{mark} security object: Data Secure {word} for 1/2/4 (Scene)"
+            )) && sentences.contains("group key table (PID 53)")
+                && sentences.contains("no PID 61 element"),
+            "secure {word}: {plan}"
+        );
+        let digest = plan["plan_digest"].as_str().ok_or("no plan_digest")?;
+        let applied = server.call(
+            "knx_apply_device",
+            json!({"address": "1.1.10", "plan_digest": digest}),
+        )?;
+        assert_eq!(applied["ok"], true, "secure {word}: {applied}");
+        assert_eq!(pid53()?, keys, "secure {word}: PID 53 written");
+        let replan = server.call("knx_plan_device", json!({"address": "1.1.10"}))?;
+        assert_eq!(replan["noop"], true, "secure {word}: {replan}");
+        let report = validate(&dir)?;
+        assert!(!report.contains("W041"), "secure {word}: {report}");
+    }
+    drop(server);
+    let _ = std::fs::remove_dir_all(&dir);
     Ok(())
 }

@@ -159,6 +159,10 @@ pub struct SecurityObject {
     pub keyed_groups: Vec<String>,
     /// The group objects flagged secured (PID 61).
     pub secured_objects: Vec<u16>,
+    /// The secured group objects with no PID 61 element (group object 0,
+    /// issue #1094): their keys are written, no flag.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub secured_without_flag: Vec<u16>,
 }
 
 /// One PID 54 entry.
@@ -194,7 +198,18 @@ impl SecurityObject {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            secured_objects: inputs.secure_objects.iter().copied().collect(),
+            secured_objects: inputs
+                .secure_objects
+                .iter()
+                .copied()
+                .filter(|&o| bussard_model::secure_invariants::has_go_flag_element(o))
+                .collect(),
+            secured_without_flag: inputs
+                .secure_objects
+                .iter()
+                .copied()
+                .filter(|&o| !bussard_model::secure_invariants::has_go_flag_element(o))
+                .collect(),
         })
     }
 }

@@ -38,6 +38,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use bussard_download::{
     ChangeMark, ChangeSubject, DesiredTables, DevicePlan, PlanChange, PlanReport, SecurityInputs,
 };
+use bussard_model::secure_invariants::has_go_flag_element;
 use bussard_model::text::{from_hex, hex_upper};
 use bussard_model::{GroupAddress, IndividualAddress, Model};
 
@@ -49,6 +50,9 @@ pub struct GroupSecurityDelta {
     pub ga: GroupAddress,
     /// The group objects linked to it whose security flag changes, ascending.
     pub objects: Vec<u16>,
+    /// The group objects linked to it that have no PID 61 element (group
+    /// object 0, issue #1094): the key moves, no flag does.
+    pub without_flag: Vec<u16>,
 }
 
 /// What a Secure device's security object must change (issue #331): the
@@ -68,6 +72,11 @@ pub struct SecurityObjectChange {
     pub cleared: Vec<u16>,
     /// Every group object whose flag is set (`0x00` to `0x03`), ascending.
     pub set: Vec<u16>,
+    /// The group key table's entry count the device holds (PID 53) against
+    /// the count the model asks for, when they differ (issue #1094): the
+    /// key side of a group address linked only through objects without a
+    /// PID 61 element (group object 0), which no flag shows.
+    pub key_count: Option<(usize, usize)>,
     /// The group-object flags as read from PID 61 (element 1 first), for the
     /// state hash.
     live_secured: Vec<u16>,
@@ -89,15 +98,16 @@ impl SecurityObjectChange {
             .filter(|(_, flag)| **flag != 0)
             .filter_map(|(i, _)| u16::try_from(i + 1).ok())
             .collect();
-        let cleared: BTreeSet<u16> = live_secured
-            .difference(&inputs.secure_objects)
-            .copied()
-            .collect();
-        let set: BTreeSet<u16> = inputs
+        // PID 61 shows only the objects with an element: group object 0 is
+        // secured with its keys and no flag (issue #1094).
+        let flagged: BTreeSet<u16> = inputs
             .secure_objects
-            .difference(&live_secured)
+            .iter()
             .copied()
+            .filter(|&o| has_go_flag_element(o))
             .collect();
+        let cleared: BTreeSet<u16> = live_secured.difference(&flagged).copied().collect();
+        let set: BTreeSet<u16> = flagged.difference(&live_secured).copied().collect();
         // The objects each group address of the table being written links.
         let mut linked: BTreeMap<GroupAddress, BTreeSet<u16>> = BTreeMap::new();
         for &(tsap, asap) in &desired.associations {
@@ -118,12 +128,14 @@ impl SecurityObjectChange {
                 removed.push(GroupSecurityDelta {
                     ga: *ga,
                     objects: lost,
+                    without_flag: Vec::new(),
                 });
             }
             if keyed && !gained.is_empty() {
                 added.push(GroupSecurityDelta {
                     ga: *ga,
                     objects: gained,
+                    without_flag: Vec::new(),
                 });
             }
         }
@@ -133,13 +145,62 @@ impl SecurityObjectChange {
             added,
             cleared: cleared.into_iter().collect(),
             set: set.into_iter().collect(),
+            key_count: None,
             live_secured: live_secured.into_iter().collect(),
         }
     }
 
+    /// Adds the group key table's side (issue #1094): `live_keys` is the
+    /// entry count the device's PID 53 reports (its keys are write-only).
+    /// When it differs from the keys the model asks for, the group addresses
+    /// linked only through objects without a PID 61 element (group object
+    /// 0) explain it: a keyed one joins the table, a plain one leaves it.
+    /// The PID 61 comparison cannot see them.
+    pub fn with_live_keys(
+        mut self,
+        desired: &DesiredTables,
+        inputs: &SecurityInputs,
+        live_keys: Option<u16>,
+    ) -> SecurityObjectChange {
+        let Some(have) = live_keys.map(usize::from) else {
+            return self;
+        };
+        let want = inputs.keyed(&desired.addresses).len();
+        if have == want {
+            return self;
+        }
+        self.key_count = Some((have, want));
+        let mut linked: BTreeMap<GroupAddress, BTreeSet<u16>> = BTreeMap::new();
+        for &(tsap, asap) in &desired.associations {
+            if let Some(ga) = usize::from(tsap)
+                .checked_sub(1)
+                .and_then(|i| desired.addresses.get(i))
+            {
+                linked.entry(*ga).or_default().insert(asap);
+            }
+        }
+        for (ga, objects) in linked {
+            if objects.iter().any(|&o| has_go_flag_element(o)) {
+                continue;
+            }
+            let keyed = inputs.group_keys.contains_key(&ga);
+            let delta = GroupSecurityDelta {
+                ga,
+                objects: Vec::new(),
+                without_flag: objects.into_iter().collect(),
+            };
+            match (keyed, want > have) {
+                (true, true) => self.added.push(delta),
+                (false, false) => self.removed.push(delta),
+                _ => {}
+            }
+        }
+        self
+    }
+
     /// Whether the security object must be written for this change.
     pub fn changes(&self) -> bool {
-        !self.cleared.is_empty() || !self.set.is_empty()
+        !self.cleared.is_empty() || !self.set.is_empty() || self.key_count.is_some()
     }
 
     /// The plan line, or `None` when the flags already match:
@@ -165,6 +226,20 @@ impl SecurityObjectChange {
         let mut attributed: BTreeSet<u16> = BTreeSet::new();
         for delta in &self.removed {
             attributed.extend(delta.objects.iter().copied());
+            if delta.objects.is_empty() {
+                parts.push(format!(
+                    "Data Secure off for {}: its group key leaves the group key table (PID 53); \
+                     {} {} no security flag (no PID 61 element)",
+                    label(delta.ga),
+                    objects_phrase(&delta.without_flag),
+                    if delta.without_flag.len() == 1 {
+                        "has"
+                    } else {
+                        "have"
+                    },
+                ));
+                continue;
+            }
             parts.push(format!(
                 "Data Secure off for {}: its group key leaves the group key table (PID 53) and \
                  {} {} its security flag (PID 61 0x03 to 0x00)",
@@ -179,6 +254,20 @@ impl SecurityObjectChange {
         }
         for delta in &self.added {
             attributed.extend(delta.objects.iter().copied());
+            if delta.objects.is_empty() {
+                parts.push(format!(
+                    "Data Secure on for {}: its group key joins the group key table (PID 53); \
+                     {} {} no security flag (no PID 61 element)",
+                    label(delta.ga),
+                    objects_phrase(&delta.without_flag),
+                    if delta.without_flag.len() == 1 {
+                        "has"
+                    } else {
+                        "have"
+                    },
+                ));
+                continue;
+            }
             parts.push(format!(
                 "Data Secure on for {}: its group key joins the group key table (PID 53) and \
                  {} {} the security flag (PID 61 0x00 to 0x03)",
@@ -222,9 +311,20 @@ impl SecurityObjectChange {
                 if other_set.len() == 1 { "gets" } else { "get" },
             ));
         }
-        let mark = match (self.cleared.is_empty(), self.set.is_empty()) {
-            (false, true) => ChangeMark::Removed,
-            (true, false) => ChangeMark::Added,
+        // A key difference no group address above explains.
+        if let Some((have, want)) = self.key_count
+            && self.added.is_empty()
+            && self.removed.is_empty()
+        {
+            parts.push(format!(
+                "the group key table holds {have} key(s), your project {want} (PID 53)"
+            ));
+        }
+        let gains = !self.set.is_empty() || self.key_count.is_some_and(|(h, w)| w > h);
+        let loses = !self.cleared.is_empty() || self.key_count.is_some_and(|(h, w)| w < h);
+        let mark = match (loses, gains) {
+            (true, false) => ChangeMark::Removed,
+            (false, true) => ChangeMark::Added,
             _ => ChangeMark::Changed,
         };
         Some(PlanChange {
@@ -253,7 +353,10 @@ impl SecurityObjectChange {
         plan.writes
             .association_table
             .get_or_insert(report.resulting_association_count);
-        let live: Vec<String> = self.live_secured.iter().map(u16::to_string).collect();
+        let mut live: Vec<String> = self.live_secured.iter().map(u16::to_string).collect();
+        if let Some((have, _)) = self.key_count {
+            live.push(format!("keys {have}"));
+        }
         plan.state_hash = format!(
             "{}-pid61-{}",
             plan.state_hash,
@@ -416,7 +519,10 @@ pub fn record_security_flags(
     };
     let mut changed = false;
     for (number, co) in loaded.device.com_objects.iter_mut() {
-        if !linked.contains(number) {
+        // An object without a PID 61 element (group object 0) has no flag
+        // the device could hold: it keeps the model's `secure`, which
+        // `groups secure` sets with the group (issue #1094, W041).
+        if !linked.contains(number) || !has_go_flag_element(*number) {
             continue;
         }
         let flag = secured.contains(number);
@@ -482,7 +588,8 @@ mod tests {
             change.removed,
             vec![GroupSecurityDelta {
                 ga: ga("1/0/4")?,
-                objects: vec![12]
+                objects: vec![12],
+                without_flag: Vec::new(),
             }]
         );
         let line = change.change(None).ok_or("no plan line")?;
