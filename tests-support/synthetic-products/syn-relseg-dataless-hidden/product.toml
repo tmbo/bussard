@@ -12,8 +12,8 @@ rows of #1061 (`Mode="0" Fill="0"`), so the hidden default is not downloaded
 (#448): there ETS writes the octets of hidden parameters as `00`, never their
 default, but `00` is also their Fill. The capture decides which value ETS
 gives a hidden parameter's octets under a Fill other than 00: `00`, the Fill
-`a5`, or none (#1084). bussard writes `a5` there (`requests/flash.txt`).
-Octets 5 to 15 should stay unwritten, as 3 to 15 of syn-relseg-dataless."""
+`a5`, or none (#1084). bussard writes `a5` there and leaves octets 5 to 15
+unwritten, as 3 to 15 of syn-relseg-dataless (`requests/flash.txt`)."""
 construct = "data-less RelativeSegment, Mode 0 with Fill 165, a hidden parameter at octets 3 and 4 (#1084)"
 issues = [1084, 1054]
 

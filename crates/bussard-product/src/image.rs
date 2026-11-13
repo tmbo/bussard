@@ -46,7 +46,11 @@
 //! path). In a relative segment without `<Data>`, every octet no parameter
 //! writes is then set to the fill octet the segment's full-download
 //! `LdCtrlRelSegment` declares, whatever its `Mode` (issues #834, #1061), else
-//! to the values before #1061 (see `unplaced_fill`).
+//! to the values before #1061 (see `unplaced_fill`). A download writes only
+//! the octets of such a segment that a declared parameter occupies
+//! ([`declared_parameter_octets`], issue #1084), so the fill reaches the
+//! device in the octets of a parameter the download does not place, and
+//! nowhere else.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ops::Range;
@@ -115,17 +119,21 @@ const ERASED_FILL: u8 = 0xFF;
 ///   `M-00A6_A-0031-30-EE6B`, 9096 octets; MDT `A-0153/0154/0155`; ekinex
 ///   `A-DA22`), `Mode="1" Fill="255"` leaves `ff` (Enertex `A-0035-31`, Jung
 ///   `A-0024-22` of #377).
-/// - `Mode="0" Fill="0"` writes `00` into every unplaced octet (issue #1061:
-///   11 M-00EF programs, e.g. `M-00EF_A-AC11-11-A782`, 6391 of 6440 octets of
-///   `RS-04-00000` that bussard wrote as `ff`). ETS writes those octets
-///   itself, as the allocation does not pre-fill.
+/// - `Mode="0" Fill="0"` writes `00` into the unplaced octets a hidden
+///   parameter occupies (issue #1061: 11 M-00EF programs, e.g.
+///   `M-00EF_A-AC11-11-A782`, 6391 of 6440 octets of `RS-04-00000` that
+///   bussard wrote as `ff`).
 ///
-/// No corpus program has a full `Mode="0"` record with a `Fill` other than
-/// `0` (every `Mode="0" Fill="255"` record is `AppliesTo="par"`, #480), so
-/// "the declared `Fill`" and "`00` under `Mode` 0" agree on every known
-/// program; the capture of the synthetic `syn-relseg-dataless` (#1054)
-/// decides between them. Known limits of this per-LSM lookup, which no corpus
-/// program hits, are listed in #1084.
+/// Under `Mode` 0 a download writes only the octets a declared parameter
+/// occupies ([`declared_parameter_octets`], issue #1084): the capture of
+/// `syn-relseg-dataless` (`Mode="0" Fill="165"`, #1054) shows ETS writing
+/// octets 0 to 2 and never 3 to 15, neither `a5` nor `00`. So this fill is
+/// what the image holds in the octets no parameter occupies, which no
+/// download sends, and what a parameter the download does not place goes
+/// out with. Whether ETS sends a hidden parameter's octets under a `Fill`
+/// other than `0` as that fill waits for the capture of
+/// `syn-relseg-dataless-hidden` (#1054). Known limits of this per-LSM
+/// lookup, which no corpus program hits, are listed in #1084.
 fn unplaced_fill(app: &ApplicationProgram, seg: &CodeSegment) -> u8 {
     let Some(lsm) = seg.load_state_machine else {
         return ERASED_FILL;
@@ -1058,6 +1066,95 @@ pub fn module_argument(
 ) -> Option<i64> {
     let rel = arg.strip_prefix(&format!("{}_", app.id)).unwrap_or(arg);
     config.module_args(module)?.get(rel).copied()
+}
+
+/// Every octet a declared parameter of `app` occupies, per code segment,
+/// whether the configuration shows the parameter or not: every parameter
+/// with a location, every member of every `<Union>`, and a module parameter
+/// once per module instance (the instances `config` reaches on the Dynamic
+/// path, the declared `<Module>`s otherwise). A field's width is that of its
+/// type (a float's encoding, a text's size); a parameter whose default does
+/// not encode is sized from its type's empty value, and left out when that
+/// fails too.
+///
+/// This is the write set of a relative segment without `<Data>` (issue
+/// #1084): ETS writes exactly these octets there, less those the allocation
+/// pre-fills with the same value, and nothing else. A survey of 828 ETS
+/// sweep downloads found it on all 55 such segments (14 allocated with
+/// `Mode` 0, among them the 11 `M-00EF` programs of #1061 and
+/// `syn-relseg-dataless`; 41 with `Mode` 1). On `syn-relseg-dataless`
+/// (`captures/synthetic/syn-relseg-dataless/defaults/ops.txt`, op 25) ETS
+/// writes octets 0 to 2 of the 16-octet segment, the one parameter's.
+pub fn declared_parameter_octets(
+    app: &ApplicationProgram,
+    config: &crate::dynamic::DynamicConfig,
+) -> PlacedOctets {
+    let union_of = union_index(app);
+    let prefix = format!("{}_", app.id);
+    let dynamic = uses_dynamic_image(app);
+    let mut occupied = PlacedOctets::new();
+    let mut scratch: BTreeMap<String, Vec<u8>> = BTreeMap::new();
+    let mut params: Vec<&Parameter> = app.parameters.values().collect();
+    params.sort_by(|a, b| a.id.cmp(&b.id));
+    for param in params {
+        let Some(at) = location(app, &union_of, param) else {
+            continue;
+        };
+        let rel = param.id.strip_prefix(&prefix).unwrap_or(&param.id);
+        let bases: Vec<i64> = match at.base {
+            None => vec![0],
+            Some(arg) => {
+                let rel_arg = arg.strip_prefix(&prefix).unwrap_or(arg);
+                let def = module_def_of(rel);
+                if dynamic {
+                    config
+                        .modules
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, m)| def.is_none_or(|d| m.module_def == d))
+                        .filter_map(|(i, _)| module_argument(app, config, Some(i), arg))
+                        .collect()
+                } else {
+                    app.module_instances
+                        .iter()
+                        .filter(|m| def.is_none_or(|d| m.module_def == d))
+                        .filter_map(|m| m.arg_values.get(rel_arg).copied())
+                        .collect()
+                }
+            }
+        };
+        let pname = param.name.as_deref().unwrap_or(&param.id);
+        let ptype = parameter_type_of(app, param);
+        let Ok(placement) = encode_value(
+            app,
+            pname,
+            ptype,
+            param.starting_value(),
+            ValueSource::VendorDefault,
+        )
+        .or_else(|_| encode_value(app, pname, ptype, None, ValueSource::VendorDefault)) else {
+            continue;
+        };
+        let seg_size = app.code_segments.get(at.segment).and_then(|s| s.size);
+        let image = scratch.entry(at.segment.to_string()).or_default();
+        for base in bases {
+            let Ok(offset) = usize::try_from(at.offset + base) else {
+                continue;
+            };
+            if let Ok(range) = place_checked(
+                app,
+                pname,
+                image,
+                offset,
+                at.bit_offset,
+                &placement,
+                seg_size,
+            ) {
+                mark(&mut occupied, at.segment, range);
+            }
+        }
+    }
+    occupied
 }
 
 /// Refuses a configuration that reaches a module com-object whose

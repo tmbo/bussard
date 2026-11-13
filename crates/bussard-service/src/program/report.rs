@@ -79,6 +79,15 @@ fn kept_memory_lines(plan: &FlashPlan) -> Vec<String> {
                 k.segment,
                 k.allocated
             ),
+            // A segment without `<Data>` keeps what the device held where no
+            // parameter lives (issue #1084).
+            None if k.unoccupied => format!(
+                "{} (segment {} of {} octets: not written, as in ETS's download; no MCB CRC \
+                 compared)",
+                k.label(),
+                k.segment,
+                k.allocated
+            ),
             None => format!(
                 "{} (segment {} of {} octets: not written, not read back, no MCB CRC compared)",
                 k.label(),

@@ -603,6 +603,11 @@ impl StepExecutor for SystemB<'_> {
                     .map(Vec::as_slice)
                     .unwrap_or_default();
                 let bytes = image_part(whole, image).to_vec();
+                // The octets of the part the device keeps (issue #1084: no
+                // declared parameter occupies them in a segment without
+                // `<Data>`) go out in no request, written or diffed.
+                let kept = kept_mask(plan, image, bytes.len());
+                let runs = written_runs(kept.as_deref(), bytes.len());
                 let partial = plan.baseline.get(&image.segment_id).map(|current| {
                     (
                         image_part(current, image),
@@ -632,8 +637,13 @@ impl StepExecutor for SystemB<'_> {
                     (Some((current, expected)), _) if expected == Some(addr) => {
                         let caps = ChunkCaps::of(session.l4());
                         let chunk = |start: usize, len: usize| caps.at(addr + start as u32, len);
-                        let regions =
-                            diff_regions(&bytes, current, None, sparse_merge_gap(), &chunk);
+                        let regions = diff_regions(
+                            &bytes,
+                            current,
+                            kept.as_deref(),
+                            sparse_merge_gap(),
+                            &chunk,
+                        );
                         for (start, end) in regions {
                             write_image(
                                 session,
@@ -653,7 +663,15 @@ impl StepExecutor for SystemB<'_> {
                             image.segment_id,
                             expected.map_or("an unknown base".to_string(), |a| format!("{a:#X}")),
                         ));
-                        write_image(session, addr, &bytes, &mut *progress).await?;
+                        for &(start, end) in &runs {
+                            write_image(
+                                session,
+                                addr + start as u32,
+                                &bytes[start..end],
+                                &mut *progress,
+                            )
+                            .await?;
+                        }
                     }
                     // A pre-filled segment already holds the fill byte
                     // everywhere: write only the runs that differ, as ETS
@@ -666,12 +684,29 @@ impl StepExecutor for SystemB<'_> {
                             write_image(session, addr + start as u32, run, &mut *progress).await?;
                         }
                     }
-                    (None, None) => write_image(session, addr, &bytes, &mut *progress).await?,
+                    // Each run of the octets the plan writes on its own, as
+                    // ETS does: one run per occupied extent, a hole between
+                    // two never bridged (`M-00EF_A-AC11-11-A782`, ops 28 to
+                    // 320: 0x6002+11, then 0x600F; issue #1084). Without
+                    // kept octets that is the whole part.
+                    (None, None) => {
+                        for &(start, end) in &runs {
+                            write_image(
+                                session,
+                                addr + start as u32,
+                                &bytes[start..end],
+                                &mut *progress,
+                            )
+                            .await?;
+                        }
+                    }
                 }
-                if let Some(sample) = bytes.first().map(|_| take_sample(&bytes)) {
+                // The sample comes from the first run written: a kept octet
+                // holds what the device held.
+                if let Some(&(start, end)) = runs.first().filter(|(start, end)| start < end) {
                     self.written_samples.push(WrittenSample {
-                        address: addr,
-                        bytes: sample,
+                        address: addr + start as u32,
+                        bytes: take_sample(&bytes[start..end]),
                         segment: obj.map(|obj| (obj, image.segment_id.clone())),
                     });
                 }
@@ -1623,6 +1658,40 @@ pub(super) fn image_part<'a>(bytes: &'a [u8], image: &super::ImageRef) -> &'a [u
     let start = image.offset.min(bytes.len());
     let end = image.offset.saturating_add(image.len).min(bytes.len());
     &bytes[start..end.max(start)]
+}
+
+/// The write mask of the part `image` of a System B write step, `len`
+/// octets: `0xFF` where the step writes, `0x00` on an octet the plan keeps
+/// ([`super::KeptOctets`], issue #1084), in the form of a System 7 mask.
+/// `None` when the step writes the whole part (no kept octet inside it).
+pub(super) fn kept_mask(
+    plan: &super::FlashPlan,
+    image: &super::ImageRef,
+    len: usize,
+) -> Option<Vec<u8>> {
+    let mut mask: Option<Vec<u8>> = None;
+    for kept in plan.kept().iter().filter(|k| k.segment == image.segment_id) {
+        for &(start, end) in &kept.ranges {
+            let from = start.max(image.offset) - image.offset;
+            let to = end
+                .min(image.offset.saturating_add(len))
+                .saturating_sub(image.offset);
+            if from < to {
+                mask.get_or_insert_with(|| vec![0xFF; len])[from..to].fill(0);
+            }
+        }
+    }
+    mask
+}
+
+/// The runs `[start, end)` of a part of `len` octets a write step sends:
+/// the octets `mask` ([`kept_mask`]) marks `0xFF`, else the whole part (one
+/// run, empty for an empty part).
+pub(super) fn written_runs(mask: Option<&[u8]>, len: usize) -> Vec<(usize, usize)> {
+    match mask {
+        None => vec![(0, len)],
+        Some(mask) => differing_runs(len, |i| mask.get(i) == Some(&0xFF)),
+    }
 }
 
 /// The octet ranges `[start, end)` of `image` that differ from `current`, the

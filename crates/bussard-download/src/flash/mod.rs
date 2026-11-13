@@ -1325,6 +1325,19 @@ pub struct FlashPlan {
 /// allocation left; after a re-download it holds what was there before, which
 /// is the point of a keep-data branch (MDT JTA-01 `M-0083_A-00A2`, parameter
 /// `P-324`: the switching times stored in the device).
+///
+/// - **System B, a segment without `<Data>`** ([`Self::unoccupied`], issue
+///   #1084): its allocation does not pre-fill (`Mode` 0), and the download
+///   writes only the octets a declared parameter occupies
+///   ([`bussard_product::declared_parameter_octets`]), as ETS does on all 14
+///   such segments of the ETS sweep and `syn-relseg-dataless`. The device
+///   keeps what it held in the others (Configuration Procedures 03_05_03
+///   §3.5.1.2); no parameter lives there.
+///
+/// The device's `PID_MCB_TABLE` CRC covers the segment's memory as the
+/// device holds it (Resources 03_05_01 §4.2.27.1.2), kept octets included,
+/// so a check of such a segment reads the MCB, as ETS reads it, without
+/// comparing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeptOctets {
     /// The load-state machine (object index on System B, LSM index on
@@ -1342,6 +1355,11 @@ pub struct KeptOctets {
     /// The segment's absolute base address on System 7, `None` on System B
     /// (the device places a relative segment).
     pub address: Option<u32>,
+    /// Whether these are the octets no declared parameter occupies in a
+    /// segment without `<Data>` (issue #1084), rather than a `<choose>`
+    /// branch's gap (issue #411). No parameter lives in them, so the model
+    /// holds no value there to compare or report.
+    pub unoccupied: bool,
 }
 
 impl KeptOctets {
@@ -1354,15 +1372,29 @@ impl KeptOctets {
             .join(", ")
     }
 
+    /// The number of octets kept.
+    pub fn octets(&self) -> usize {
+        self.ranges.iter().map(|(start, end)| end - start).sum()
+    }
+
     /// The gap as the plan and the image dump name it:
     /// `object 4 octets 128..256 kept` (System B),
-    /// `LSM 3 segment 0x4440 octets 1..3 kept` (System 7).
+    /// `LSM 3 segment 0x4440 octets 1..3 kept` (System 7),
+    /// `object 4 octets no parameter occupies kept (13 in 1 run)` (issue
+    /// #1084; the runs are in [`Self::ranges`]).
     pub fn label(&self) -> String {
         match self.address {
             Some(base) => format!(
                 "LSM {} segment {base:#06X} octets {} kept",
                 self.object,
                 self.ranges_text()
+            ),
+            None if self.unoccupied => format!(
+                "object {} octets no parameter occupies kept ({} in {} run{})",
+                self.object,
+                self.octets(),
+                self.ranges.len(),
+                if self.ranges.len() == 1 { "" } else { "s" }
             ),
             None => format!("object {} octets {} kept", self.object, self.ranges_text()),
         }
@@ -1770,6 +1802,15 @@ impl FlashPlan {
     /// read-back. Empty for every plan whose writes cover what they allocate.
     pub fn kept(&self) -> &[KeptOctets] {
         &self.kept
+    }
+
+    /// The per-octet write mask of the `len` octets a System B write of
+    /// `image` streams from [`ImageRef::offset`] (`0xFF` = written, `0x00` =
+    /// kept, [`KeptOctets`]), when it keeps any of them: the octets no
+    /// declared parameter occupies in a segment without `<Data>` (issue
+    /// #1084). `None` when the write sends the whole part.
+    pub fn kept_mask(&self, image: &ImageRef, len: usize) -> Option<Vec<u8>> {
+        execute::kept_mask(self, image, len)
     }
 
     /// The System 7 per-octet write mask for `segment_id`, when the segment
