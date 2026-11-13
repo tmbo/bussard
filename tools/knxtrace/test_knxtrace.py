@@ -3425,6 +3425,17 @@ class TestSequence(unittest.TestCase):
         self.assertEqual(sequence.tokens(ops), [("restart master-reset erase 3", 1),
                                                 ("restart master-reset erase 1", 1)])
 
+    def test_plan_operations_fill_only_image_is_no_mem_write(self):
+        # Issue #1088: an image of nothing but the pre-fill octet is no write.
+        plan = {"steps": [
+            {"index": 1, "label": "1. write code image (16 bytes) at segment+0 (obj 4)",
+             "image": {"object": 4, "length": 16, "prefill": 0, "fill_only": True}},
+            {"index": 2, "label": "2. write code image (16 bytes) at segment+0 (obj 4)",
+             "image": {"object": 4, "length": 16, "prefill": 0, "fill_only": False}},
+        ]}
+        ops = sequence.plan_operations(plan)
+        self.assertEqual([(e["op"], e["step"]) for e in ops], [("mem-write", 2)])
+
     def test_abs_segments_in_both_forms(self):
         records = [
             # The System 7 memory record at 0x0104 (mask 0701): one octet later.

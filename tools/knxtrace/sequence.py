@@ -307,7 +307,10 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
                                 "event": memimage.load_event_name(str(rec.get("form")),
                                                                   str(rec.get("data")))})
         img = step.get("image")
-        if isinstance(img, dict):
+        # An image of nothing but its segment's pre-fill octet is no memory
+        # write on the wire: the executor streams only octets that differ
+        # from the fill, as ETS does (issue #1088, `fill_only` in plan.json).
+        if isinstance(img, dict) and not img.get("fill_only"):
             if img.get("address") is not None:
                 target = memory_target(int(img["address"]), segs)
             else:
