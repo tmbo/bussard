@@ -3385,6 +3385,28 @@ class TestSequence(unittest.TestCase):
         self.assertEqual(sequence.tokens(ops), [("restart master-reset erase 3", 1),
                                                 ("restart master-reset erase 1", 1)])
 
+    def test_plan_operations_verify_mode_goes_before_the_next_memory_write(self):
+        # Issue #1076: the verify-mode step arms the switch; the executor
+        # writes PID 14 after the next step's allocation record, right before
+        # its first memory write, as ETS does (syn-s7-0705/defaults).
+        plan = {"steps": [
+            {"index": 1, "label": "1. [S7] open LSM 1 for loading", "load_controls": [
+                {"data": "01000000000000000000", "form": "property", "object": 1}]},
+            {"index": 2, "label": "2. enable verify mode (object 0 PID_DEVICE_CONTROL bit 2)",
+             "property": {"data": "04", "length": 1, "object": 0, "pid": 14,
+                          "start_element": 1}},
+            {"index": 3, "label": "3. [S7] alloc + stream segment (3 bytes) to 0x4000 on LSM 1",
+             "load_controls": [{"data": "03004000000333038000", "form": "property",
+                                "object": 1}],
+             "image": {"address": 0x4000, "length": 3}},
+        ]}
+        ops = sequence.plan_operations(plan)
+        self.assertEqual([(e["op"], e["step"]) for e in ops], [
+            ("load-control", 1), ("load-control", 3), ("prop-write", 2), ("mem-write", 3)])
+        # No memory write after it: the switch is never sent.
+        ops = sequence.plan_operations({"steps": plan["steps"][:2]})
+        self.assertEqual([e["op"] for e in ops], ["load-control"])
+
     def test_abs_segments_in_both_forms(self):
         records = [
             # The System 7 memory record at 0x0104 (mask 0701): one octet later.

@@ -187,6 +187,9 @@ struct DeviceState {
     device_control: u8,
     /// Every value written to `obj0/PID_DEVICE_CONTROL`, in order.
     device_control_writes: Vec<u8>,
+    /// For each `obj0/PID_DEVICE_CONTROL` write, how many allocation records
+    /// and segment content writes had arrived before it (issue #1076).
+    device_control_at: Vec<(usize, usize)>,
     /// `obj3/PID_PROGRAM_VERSION`, the resident application's id (issue
     /// #481); `None` answers count 0, as a device without it.
     program_version: Option<Vec<u8>>,
@@ -319,6 +322,7 @@ fn fresh_device(mode: LsmMode, fault: Fault) -> Shared {
         absent_objects: Vec::new(),
         device_control: 0,
         device_control_writes: Vec::new(),
+        device_control_at: Vec::new(),
         program_version: None,
         restart_at_writes: Vec::new(),
         verify_echoes_sent: 0,
@@ -784,6 +788,8 @@ fn handle_request(state: &Shared, req_apci: u16, payload: &[u8]) -> Reaction {
         {
             s.device_control = v;
             s.device_control_writes.push(v);
+            let at = (s.alloc_records.len(), s.memory_writes_seen);
+            s.device_control_at.push(at);
         }
         // Echo any other property write.
         return Reaction::Answer(
@@ -4351,6 +4357,34 @@ async fn test_flash_sys7_runs_the_ets_prelude() -> Result<(), Box<dyn std::error
     assert_eq!(s.verify_echoes_sent, s.memory_writes_seen);
     // The terminal restart cleared the RAM bit again.
     assert_eq!(s.device_control, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_flash_sys7_enables_verify_mode_after_the_first_allocation()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Issue #1076: ETS writes PID_DEVICE_CONTROL after LSM 1's first
+    // AbsSegment record and before the first memory write of the download
+    // (`captures/synthetic/syn-s7-0705/defaults`, ops 11 to 15). The flash
+    // still ends in the read-back after the terminal restart.
+    let (outcome, state) = run_parity_flash(LsmMode::Property, 0x00).await?;
+    assert!(outcome.ok(), "flash should reach Loaded: {outcome:?}");
+    assert_eq!(outcome.object_states.len(), 3, "{outcome:?}");
+    let s = lock(&state);
+    assert_eq!(s.device_control_writes, vec![DEVICE_CONTROL_VERIFY_MODE]);
+    assert_eq!(
+        s.device_control_at,
+        vec![(1, 0)],
+        "one record, no write yet"
+    );
+    assert_eq!(s.alloc_records.first().map(|(lsm, _)| *lsm), Some(1));
+    assert!(!s.writes_in_verify_mode.is_empty());
+    assert!(
+        s.writes_in_verify_mode.iter().all(|on| *on),
+        "a write went out without verify mode: {:?}",
+        s.writes_in_verify_mode
+    );
+    assert_eq!(s.verify_echoes_sent, s.memory_writes_seen);
     Ok(())
 }
 

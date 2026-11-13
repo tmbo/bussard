@@ -1,0 +1,1 @@
+- System 7 (mask 0705): verify mode (`obj0/PID_DEVICE_CONTROL`) is now switched on after the first `LdCtrlAbsSegment` record, right before the first memory write, as ETS does, instead of before that record. The written state is unchanged; the operation order now matches every 0705 capture (#1076).

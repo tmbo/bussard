@@ -262,31 +262,18 @@ impl StepExecutor for System7<'_> {
                     session.reconnect_after_reboot().await?;
                 }
             }
-            FlashStep::EnableVerifyMode => {
-                // From here every segment write's echo is compared
-                // with the chunk (DMP_MemWrite_RCoV, Management
-                // Procedures 03_05_02 §3.16.3), and the session sets
-                // the mode again on every later connection (issue
-                // #524). A device without it streams as before.
-                match session.enable_verify_mode().await? {
-                    bussard_mgmt::VerifyModeOutcome::Refused { previous } => {
-                        self.warnings.push(format!(
-                            "step {}: the device refused verify mode \
-                             (PID_DEVICE_CONTROL stays {previous:#04X}); the segment \
-                             writes were not self.verified by echo",
-                            index + 1
-                        ));
-                    }
-                    bussard_mgmt::VerifyModeOutcome::Unsupported => {
-                        self.warnings.push(format!(
-                            "step {}: the device has no readable PID_DEVICE_CONTROL; \
-                             the segment writes were not self.verified by echo",
-                            index + 1
-                        ));
-                    }
-                    _ => {}
-                }
-            }
+            // ETS switches verify mode on right before the first memory
+            // write of the download, after that segment's allocation record
+            // (issue #1076; `captures/synthetic/syn-s7-0705/defaults`, ops
+            // 12 to 15). The allocation and its stream are one step here,
+            // so the step arms the switch and `write_image` sends it before
+            // the first plain `A_Memory_Write`, as on System B (issue #705).
+            // From there every echo is compared with its chunk
+            // (DMP_MemWrite_RCoV, Management Procedures 03_05_02 §3.16.3)
+            // and the session sets the mode again on every later connection
+            // (issue #524); a device that declines it streams as before and
+            // `flash` warns.
+            FlashStep::EnableVerifyMode => session.arm_verify_mode(),
             other => match run_shared_step(session, other).await {
                 Some(result) => result?,
                 // System B steps never appear in a System 7 plan.

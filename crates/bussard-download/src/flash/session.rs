@@ -414,7 +414,7 @@ pub struct Session<C: Connector> {
 /// wants it and sets it again on the first write of every later connection.
 #[derive(Debug, Default)]
 struct VerifyModeState {
-    /// A System B plan reached its verify-mode step (issue #705): the next
+    /// The plan reached its verify-mode step (issues #705, #1076): the next
     /// write that goes out over the plain memory services switches verify
     /// mode on first, as ETS does; an extended write leaves it alone.
     armed: bool,
@@ -820,27 +820,12 @@ impl<C: Connector> Session<C> {
         Ok(())
     }
 
-    /// Switches the device's verify mode on for the download (issue #524,
-    /// Management Procedures 03_05_02 §3.16.3) and remembers it, so every
-    /// later connection sets it again before its first write.
-    pub(super) async fn enable_verify_mode(
-        &mut self,
-    ) -> Result<bussard_mgmt::VerifyModeOutcome, WriteError> {
-        let outcome = bussard_mgmt::enable_verify_mode(self.l4()).await?;
-        let on = matches!(
-            outcome,
-            bussard_mgmt::VerifyModeOutcome::Enabled { .. }
-                | bussard_mgmt::VerifyModeOutcome::AlreadyOn(_)
-        );
-        self.verify.wanted = on;
-        self.verify.on_connection = on;
-        Ok(outcome)
-    }
-
-    /// Arms verify mode for a System B download (issue #705): the next write
-    /// that goes out over the plain memory services switches it on first
-    /// ([`Self::ensure_verify_mode`]), where ETS does, after the segment's
-    /// `PID_TABLE_REFERENCE` read and before its first `A_Memory_Write`.
+    /// Arms verify mode for the download: the next write that goes out over
+    /// the plain memory services switches it on first
+    /// ([`Self::ensure_verify_mode`]), where ETS does. On System B (issue
+    /// #705) that is after the segment's `PID_TABLE_REFERENCE` read, on
+    /// System 7 (issue #1076) after the segment's allocation record, both
+    /// before the first `A_Memory_Write`.
     pub(super) fn arm_verify_mode(&mut self) {
         if !self.verify.wanted {
             self.verify.armed = true;
