@@ -34,7 +34,8 @@ import knxip  # noqa: E402
 import normalize as norm  # noqa: E402
 import opsdiff  # noqa: E402
 import sequence  # noqa: E402
-from knxtrace import main  # noqa: E402
+import statediff  # noqa: E402
+from knxtrace import load_ops, main  # noqa: E402
 
 REPO_ROOT = os.path.abspath(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..")
@@ -3115,6 +3116,25 @@ class TestLoadControls(unittest.TestCase):
 class TestStateDiff(unittest.TestCase):
     """`statediff`: the device state after a partial download (issue #469)."""
 
+    def test_segments_read_the_0701_memory_record_as_sequence_does(self):
+        # Issue #1080: ETS's defaults download of the synthetic 0701 product
+        # writes its AbsSegment records at 0x0104 (`13 00 00 4000 0201 ...`
+        # for LSM 1), one octet later than the property form. statediff read
+        # them one octet early (LSM 1 at 0x0040, 2 octets); it now reads them
+        # with sequence's parser, and every memory write of the capture lands
+        # in a named segment.
+        capture = os.path.join(REPO_ROOT, "captures", "synthetic", "syn-s7-0701", "defaults", "ets.pcapng")
+        ops = load_ops(capture)["1.1.1"]
+        segs = statediff.segments([ops])
+        self.assertEqual(segs[:2], [(1, 0x4000, 0x0201), (2, 0x4201, 0x01FF)])
+        records = memimage.load_control_writes(ops)
+        self.assertEqual([(s, s + n, "lsm%d" % o) for o, s, n in segs], sequence.abs_segments(records))
+        self.assertEqual(statediff.region_of(0x4000, segs), ("address table", 0x4000))
+        self.assertEqual(statediff.region_of(0x4201, segs), ("association table", 0x4201))
+        for addr, data in memimage.memory_writes(ops):
+            if addr >= 0x4000:
+                self.assertFalse(statediff.region_of(addr, segs)[0].startswith("memory"), hex(addr))
+
     START = bytes([1]) + bytes(9)
     DONE = bytes([2]) + bytes(9)
     # AbsSegment of the address table at 0x4000, 0x20 octets.
@@ -3426,6 +3446,17 @@ class TestSequence(unittest.TestCase):
         # No memory write after it: the switch is never sent.
         ops = sequence.plan_operations({"steps": plan["steps"][:2]})
         self.assertEqual([e["op"] for e in ops], ["load-control"])
+
+    def test_plan_operations_fill_only_image_is_no_mem_write(self):
+        # Issue #1088: an image of nothing but the pre-fill octet is no write.
+        plan = {"steps": [
+            {"index": 1, "label": "1. write code image (16 bytes) at segment+0 (obj 4)",
+             "image": {"object": 4, "length": 16, "prefill": 0, "fill_only": True}},
+            {"index": 2, "label": "2. write code image (16 bytes) at segment+0 (obj 4)",
+             "image": {"object": 4, "length": 16, "prefill": 0, "fill_only": False}},
+        ]}
+        ops = sequence.plan_operations(plan)
+        self.assertEqual([(e["op"], e["step"]) for e in ops], [("mem-write", 2)])
 
     def test_abs_segments_in_both_forms(self):
         records = [

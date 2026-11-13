@@ -105,25 +105,35 @@ def _segments(allocs: List[Dict[str, object]], refs: Dict[int, int]) -> List[Tup
     return out
 
 
+def abs_segment(rec: Dict[str, object]) -> Optional[Tuple[Optional[int], int, int]]:
+    """(load-state object, start, length) of one `AbsSegment` load-control
+    record, in either form: the property record `[3][sub][start:2][len:2]...`,
+    the System 7 memory record at 0x0104 one octet later (`[lsm|3][sub][00]
+    [start:2][len:2]...`); None for any other record. The one parser of the
+    record (`abs_segments`, `statediff.segments`, issue #1080)."""
+    try:
+        data = bytes.fromhex(str(rec["data"]))
+    except ValueError:
+        return None
+    memory = rec.get("form") == "memory"
+    at = 3 if memory else 2
+    event = data[0] & 0x0F if memory else data[0] if data else None
+    if event != 3 or len(data) < at + 4 or data[1] != memimage.SUB_ABS_DATA:
+        return None
+    start = int.from_bytes(data[at:at + 2], "big")
+    length = int.from_bytes(data[at + 2:at + 4], "big")
+    return memimage._lc_object(rec), start, length
+
+
 def abs_segments(records: List[Dict[str, object]]) -> List[Tuple[int, int, str]]:
-    """(start, end, `lsmN`) of every `AbsSegment` load-control record, in
-    either form: the property record `[3][sub][start:2][len:2]...`, the
-    System 7 memory record at 0x0104 one octet later (`[lsm|3][sub][00]
-    [start:2][len:2]...`)."""
+    """(start, end, `lsmN`) of every `AbsSegment` load-control record
+    (`abs_segment`), in order."""
     out: List[Tuple[int, int, str]] = []
     for rec in records:
-        try:
-            data = bytes.fromhex(str(rec["data"]))
-        except ValueError:
-            continue
-        memory = rec.get("form") == "memory"
-        at = 3 if memory else 2
-        event = data[0] & 0x0F if memory else data[0] if data else None
-        if event != 3 or len(data) < at + 4 or data[1] != memimage.SUB_ABS_DATA:
-            continue
-        start = int.from_bytes(data[at:at + 2], "big")
-        length = int.from_bytes(data[at + 2:at + 4], "big")
-        out.append((start, start + length, "lsm%s" % memimage._lc_object(rec)))
+        seg = abs_segment(rec)
+        if seg is not None:
+            obj, start, length = seg
+            out.append((start, start + length, "lsm%s" % obj))
     return out
 
 
@@ -302,7 +312,10 @@ def plan_operations(plan: dict) -> List[Dict[str, object]]:
                                 "event": memimage.load_event_name(str(rec.get("form")),
                                                                   str(rec.get("data")))})
         img = step.get("image")
-        if isinstance(img, dict):
+        # An image of nothing but its segment's pre-fill octet is no memory
+        # write on the wire: the executor streams only octets that differ
+        # from the fill, as ETS does (issue #1088, `fill_only` in plan.json).
+        if isinstance(img, dict) and not img.get("fill_only"):
             if img.get("address") is not None:
                 target = memory_target(int(img["address"]), segs)
             else:
