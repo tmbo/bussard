@@ -140,7 +140,9 @@ def synthetic_families() -> Counter:
     caps = json.loads(SYNTHETIC.read_text())["captures"]
     verdicts: dict[str, set[str]] = defaultdict(set)
     for cap in caps:
-        verdicts[cap["product"]].add((cap.get("oracle") or {}).get("verdict", ""))
+        if "oracle" not in cap:
+            continue  # a capture with no bussard command to compare (`unload`, #1056)
+        verdicts[cap["product"]].add(cap["oracle"].get("verdict", ""))
     out: Counter = Counter()
     for product, seen in verdicts.items():
         if seen != {"identical"}:

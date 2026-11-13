@@ -876,8 +876,9 @@ Results of VM session 4 (2026-11-13, ETS 6.4.1 build 6.4.8718, VM sim
   goes plain with it, and only 1/0/3 is secured (one group key, PID 53).
   Linking a plain address next to a secured one shows the same notice.
   Both flows answer it with Weiter. Row `identical`, `seq=ok`.
-- `apply` of `syn-s7-0705` (`identical`, `seq=ok`) and of `syn-relseg-fill`
-  (`loadctl=differs`, ETS reloads the group-object table too, #1095).
+- `apply` of `syn-s7-0705` and of `syn-relseg-fill`: both `identical`,
+  `seq=ok` (the latter with bussard after #1113, which reloads the
+  group-object table as ETS does).
 
 Driver changes of the session: `unload`, `ga_security` (the panel closed
 again and the operations pane reopened afterwards), `ensure_layout` closes a
