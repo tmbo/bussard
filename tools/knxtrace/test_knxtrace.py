@@ -869,6 +869,26 @@ class TestImage(unittest.TestCase):
         )
         return path
 
+    def test_compare_counts_octets_bussard_writes_and_ets_leaves(self):
+        """Issue #1084: an octet of bussard's image that ETS never wrote in an
+        allocation without fill is not compared, but it is counted: after
+        ETS's download the device keeps what it held there."""
+        ets = self.tmpdir()
+        main(["image", self.unread_fill_capture(), "--device", "1.1.5", "--out", ets])
+        plan = self.write_plan(
+            [self.step(1, "parameters", 4, "p.bin", 16), self.step(2, "table", 1, "t.bin", 6)],
+            {"p.bin": b"\xaa" * 16, "t.bin": b"\x00\x01\x08\x01\xa5\xa5"},
+        )
+        report = memimage.compare(plan, ets)
+        par, table = report["regions"]
+        self.assertEqual((table["verdict"], table["compared"]), (memimage.IDENTICAL, 4))
+        self.assertEqual((table["bussard_only_octets"], table["bussard_only_ranges"]), (2, [[4, 6]]))
+        # The pre-filled object holds the fill everywhere: nothing is left.
+        self.assertEqual(par.get("bussard_only_octets", 0), 0)
+        self.assertEqual(report["bussard_only_octets"], 2)
+        self.assertEqual(report["verdict"], memimage.IDENTICAL)
+        self.assertIn("bussard writes 2 octet(s) ETS never wrote", "\n".join(memimage.render(report)))
+
     def test_compare_unread_fill_compares_against_the_fill(self):
         """Issue #1026: a fill-allocated object ETS never read the base of holds
         the fill, so bussard's image is compared against it object-relative."""
