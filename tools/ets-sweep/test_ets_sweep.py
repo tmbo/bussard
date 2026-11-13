@@ -1551,12 +1551,15 @@ class TestCaptureVariants(unittest.TestCase):
         steps = capture.variant_steps("syn-s7-0705", "other-app")
         self.assertEqual([(s["name"], s["product"]) for s in steps],
                          [("base", "syn-s7-hidden-default"), ("capture", "syn-s7-0705")])
+        # A programmed System B device (#1056): another 07B0 application first.
+        self.assertEqual([s["product"] for s in capture.variant_steps("syn-minimal", "other-app")],
+                         ["syn-hidden-default", "syn-minimal"])
         self.assertEqual([s["mode"] for s in capture.variant_steps("syn-minimal", "partial")],
                          ["application", "partial"])
 
     def test_variant_steps_refuse_a_product_the_variant_does_not_run_on(self):
         with self.assertRaises(SystemExit):
-            capture.variant_steps("syn-minimal", "reload")
+            capture.variant_steps("syn-relseg-fill", "reload")
 
     def test_variant_options(self):
         self.assertEqual(capture.variant_options("syn-minimal", "links"),
@@ -3028,6 +3031,50 @@ class FakeEts:
             for p in self.patches():
                 stack.enter_context(p)
             return fn()
+
+
+class TestDriverUnloadAndGaSecurity(unittest.TestCase):
+    """The pure helpers of the `unload` and `ga_security` flows (#1056,
+    #1054), from the OCR lines read on ETS 6.4.1 on 2026-11-13."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.d = load_driver()
+
+    @staticmethod
+    def line(text, x, y, w=200, h=24):
+        return {"text": text, "x": x, "y": y, "w": w, "h": h}
+
+    def test_unload_entry_picks_the_submenu_line(self):
+        sub = [self.line("Applikationsprogramm", 1604, 445),
+               self.line("Physikalische Adresse und Applikationsprogramm Strg + U", 1606, 509)]
+        self.assertEqual(self.d.unload_entry(sub, "application")["y"], 445)
+        self.assertEqual(self.d.unload_entry(sub, "full")["y"], 509)
+        self.assertIsNone(self.d.unload_entry(sub[1:], "application"))
+        self.assertIsNone(self.d.unload_entry(sub[:1], "full"))
+
+    def test_ga_panel_header_is_the_topmost_left_line(self):
+        lines = [self.line("Elemente", 24, 1653), self.line("Gruppenadressen", 67, 1741),
+                 self.line("Suchordner", 57, 1797), self.line("Gruppenadressen", 57, 1941),
+                 self.line("1 Neue Hauptgruppe", 82, 1990)]
+        self.assertEqual(self.d.ga_panel_header(lines)["y"], 1741)
+        self.assertIsNone(self.d.ga_panel_header([self.line("Katalog", 68, 1354)]))
+
+    def test_ga_tree_entry_main_and_middle_group(self):
+        lines = [self.line("Gruppenadressen", 67, 1741), self.line("3 Addresses not assigned", 89, 1844),
+                 self.line("1 Neue Hauptgruppe", 82, 1990), self.line("88 1/0 Neue Mittelgruppe", 52, 2031)]
+        self.assertEqual(self.d.ga_tree_entry(lines, "1", 1741)["y"], 1990)
+        self.assertEqual(self.d.ga_tree_entry(lines, "1/0", 1741)["y"], 2031)
+        self.assertIsNone(self.d.ga_tree_entry(lines, "1/1", 1741))
+        self.assertIsNone(self.d.ga_tree_entry(lines, "2", 1741))
+
+    def test_ga_security_value_reads_below_the_label(self):
+        lines = [self.line("Gruppenadress-Einstellungen", 3436, 755), self.line("Zentralfunktion", 3471, 790),
+                 self.line("Sicherheit", 3436, 845), self.line("Automatisch", 3452, 888),
+                 self.line("Datentyp", 3436, 952), self.line("1.001 Schalten", 3452, 995)]
+        self.assertEqual(self.d.ga_security_value(lines), "Automatisch")
+        self.assertIsNone(self.d.ga_security_value(lines[:2]))
+        self.assertEqual(set(self.d.GA_SECURITY_TEXT.values()), {"Automatisch", "Erzwungen an", "Erzwungen aus"})
 
 
 class TestDriverLinksFlow(unittest.TestCase):

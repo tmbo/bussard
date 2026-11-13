@@ -1,0 +1,15 @@
+# ETS request-direction TPDUs in capture order, distilled from captures/synthetic/syn-minimal/assign/base.pcapng
+# by tools/ets-sweep/synthetic/distil.py.
+# Each line: <src_ia_hex> <dst_ia_hex> <tpdu_hex>. Requests only (L_Data.req).
+0000 0000 0100
+0000 0000 00c01101
+0000 0000 0100
+0000 1101 80
+0000 1101 4300
+0000 1101 c2
+0000 1101 47d500381001
+0000 1101 c6
+0000 1101 4bd5000b1001
+0000 1101 ca
+0000 1101 4f80
+0000 1101 81

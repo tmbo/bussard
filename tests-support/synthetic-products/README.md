@@ -65,6 +65,7 @@ next to it, and zips it on demand.
 | [`syn-s7-static-split`](syn-s7-static-split/product.toml) | `NEST-FORK` | 0705 | static split of the parameter AbsSegment, a parameter in the gap | #657, #411 |
 | [`syn-s7-taskptr`](syn-s7-taskptr/product.toml) | `NEST-HUNT` | 0705 | TaskPtr and TaskCtrl2 records on LSM 3 | #527 |
 | [`syn-secure`](syn-secure/product.toml) | `NEST-GUARD` | 07B0 | KNX Data Secure capable 07B0, factory state with a synthetic FDSK | #423, #537, #201 |
+| [`syn-secure-fill`](syn-secure-fill/product.toml) | `NEST-BOLT` | 07B0 | Data Secure capable 07B0, RelSegment Mode 1 with Fill 255 (bussard plans a factory reset) | #1081, #1056, #423 |
 | [`syn-secure-property`](syn-secure-property/product.toml) | `NEST-WARDEN` | 07B0 | Data Secure capable, a parameter placed in a property | #1054, #1041, #669 |
 | [`syn-text-initialvalue`](syn-text-initialvalue/product.toml) | `NEST-NAME` | 07B0 | TypeText with a de-DE InitialValue translation, utf-8 | #473 |
 | [`syn-text-undeclared`](syn-text-undeclared/product.toml) | `NEST-SQUAWK` | 07B0 | TypeText non-ASCII default, no TextParameterEncoding | #416 |
@@ -283,13 +284,16 @@ manifest entry. The variants and their products are `VARIANTS` in
 | --- | --- | --- | --- |
 | `no-ga` | `syn-minimal` | the application, no group address linked (#542) | a flash row, as `defaults` |
 | `links` | `syn-minimal`, `syn-secure` | the switch object linked to 1/0/1 and 1/0/2, the status object to 1/0/3, then the application (#478, #540); on `syn-secure` 1/0/2 is set plain (driver `ga_security`), the others stay secured (#1054) | `dir=` the model template with those links |
-| `reload` | `syn-s7-0705`, `syn-s7-0701`, `syn-secure` | the application, then the same application again (#488); on `syn-secure` the second download meets the device the first one activated (#1054) | `state=loaded` (System 7) |
-| `other-app` | `syn-s7-0705`, `syn-s7-0701` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`), then this application (#488) | `state=loaded` |
+| `reload` | `syn-s7-0705`, `syn-s7-0701`, `syn-secure`, `syn-minimal`, `syn-secure-fill` | the application, then the same application again (#488); on `syn-secure` and `syn-secure-fill` the second download meets the device the first one activated (#1054); on the 07B0 products it is ETS's download over a programmed System B device, where bussard opens a sparse secure download with a factory reset (#1056, #1081) | `state=loaded` (System 7) |
+| `other-app` | `syn-s7-0705`, `syn-s7-0701`, `syn-minimal` | a sibling of the same mask (`syn-s7-hidden-default`, `syn-s7-lsm5`, `syn-hidden-default`), then this application (#488, #1056) | `state=loaded` (System 7) |
 | `partial` | `syn-minimal`, `syn-property-param`, `syn-property-nopar`, `syn-trailing-writeprop`, `syn-s7-0705`, `syn-secure` | the application, then one parameter changed in ETS's parameter editor and ETS's partial download (#543, #490; #944, #1052, #1038, #1054) | `run=params base=` the first download, `dir=` the model template |
 | `apply` | `syn-minimal`, `syn-secure` | the application with 1/0/1 and 1/0/3 linked, then 1/0/2 linked and ETS's partial download (#829, #469) | `run=apply base=` the first download, `dir=` the model template |
 | `params` | `syn-choose-per-ref`, `syn-choose-partial-segment`, `syn-module-repeat`, `syn-union-bitfields`, `syn-com-objects`, `syn-s7-0705`, `syn-module-choose`, `syn-assign-rewrite` | parameters changed in ETS's parameter editor, each read back after the last change, then the application (#1054, #1049, #1050) | `dir=` the model template |
 | `calc-input` | `syn-param-calculation` | `Delay (s)`, the calculation's input, set to 500, then the application (#427) | `dir=` the model template |
 | `calc-overflow` | `syn-param-calculation` | `Delay (s)` set to 40000, so `Twice the delay plus one` leaves its 16 bits, then the application; a refused input stops the run with that answer (#718) | `dir=` the model template |
+| `unload` | `syn-minimal`, `syn-s7-0705` | the application, then ETS's "Entladen" of the application only (#1056): Unload of every load-state object, on 07B0 a `PID_PROGMODE` write, on 0705 a read of 0x0060, no restart | none: bussard has no unload command; knx-sim replays it and requires every object `Unloaded` |
+| `unload-full` | `syn-minimal`, `syn-s7-0705` | the application, then ETS's "Entladen" of the individual address and the application (#1056); knx-sim starts in programming mode, as ETS asks for the button | none: ETS 6.4.1 resets the address by serial number (15.15.255), which knx-sim does not answer, and fails the unload (2026-11-13, #1120) |
+| `assign` | `syn-minimal` | the individual address written to a device in programming mode (knx-sim starts it at 15.15.255 with `prog_mode: true`), then the application (#1056, #779) | a flash row of the application download; the assignment is its base |
 | `bare-restart` | `syn-master-reset` | the application into a device whose knx-sim config has `master_reset: refuse`: it answers the confirmed Master Reset with error code 2 (#611) | none: ETS 6.4.1 fails the download ("ConfirmedRestart ... fehlgeschlagen: UnsupportedEraseCode", 2026-10-31), no Basic Restart follows |
 
 A variant directory holds the files of a `defaults` capture for its last
