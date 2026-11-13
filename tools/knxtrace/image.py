@@ -1011,6 +1011,11 @@ def compare(
         compared = diffs = fill_diffs = 0
         first = None
         fill_offsets: List[int] = []
+        # Octets bussard writes that ETS never wrote and no fill determines
+        # (an allocation without the fill flag, `Mode` 0): exempt from the
+        # comparison, but after ETS's download the device keeps what it held
+        # there, after bussard's it holds bussard's octet (issue #1084).
+        bussard_only: List[int] = []
         conf_compared = 0
         conf_mismatches: List[Dict[str, object]] = []
         for i, b in enumerate(ours):
@@ -1026,6 +1031,7 @@ def compare(
                     )
             theirs = ets.get(addr + i)
             if theirs is None:
+                bussard_only.append(i)
                 continue
             compared += 1
             if theirs != b:
@@ -1040,6 +1046,8 @@ def compare(
         rec = _result(step, name, ours, IDENTICAL, "")
         rec["address"] = addr
         rec["compared"] = compared
+        rec["bussard_only_octets"] = len(bussard_only)
+        rec["bussard_only_ranges"] = _ranges(bussard_only)[:20]
         known = {i for i in placed_offsets if ets.get(addr + i) is not None}
         _add_coverage(rec, placed_offsets, known, addr, None, page_size)
         conf_known = {i for i in placed_offsets if (addr + i) in ets.confirmed}
@@ -1150,6 +1158,7 @@ def compare(
         "regions": results,
         "ets_only_octets": len(ets_only),
         "ets_only_ranges": _ranges(ets_only)[:20],
+        "bussard_only_octets": sum(int(r.get("bussard_only_octets", 0)) for r in results),
         "properties": props,
         "load_controls": load_controls,
         "function_properties": function_props,
@@ -2611,6 +2620,18 @@ def render(report: Dict[str, object]) -> List[str]:
                 )
         else:
             lines.append(head + "not comparable: %s" % r["reason"])
+        if r.get("bussard_only_octets") and r["verdict"] != NOT_COMPARABLE:
+            lines.append(
+                "      bussard writes %d octet(s) ETS never wrote, not compared (no fill: the "
+                "device keeps what it held there after ETS's download): %s"
+                % (
+                    r["bussard_only_octets"],
+                    ", ".join(
+                        "+0x%X" % a if b - a == 1 else "+0x%X..+0x%X" % (a, b - 1)
+                        for a, b in r["bussard_only_ranges"][:6]
+                    ),
+                )
+            )
     if report["ets_only_octets"]:
         lines.append(
             "  ETS also wrote %d octet(s) outside bussard's images: %s"
